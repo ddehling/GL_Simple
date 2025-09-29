@@ -6,10 +6,15 @@ import random
 import sys
 import time
 import ctypes
+import platform
 
 # Default dimensions
 DEFAULT_WIDTH = 800
 DEFAULT_HEIGHT = 600
+
+# Detect platform
+IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
+IS_WINDOWS = sys.platform == 'win32'
 
 
 class ViewportRenderer:
@@ -30,11 +35,20 @@ class ViewportRenderer:
     def init_glfw(self):
         if not glfw.init():
             raise RuntimeError("Failed to initialize GLFW")
-            
-        glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
-        glfw.window_hint(glfw.CONTEXT_CREATION_API, glfw.EGL_CONTEXT_API)
+        
+        if IS_RASPBERRY_PI:
+            # Raspberry Pi: Use OpenGL ES with EGL
+            print("Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
+            glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+            glfw.window_hint(glfw.CONTEXT_CREATION_API, glfw.EGL_CONTEXT_API)
+        else:
+            # Windows/Desktop: Use desktop OpenGL
+            print("Configuring for Desktop (OpenGL 3.3 Core)")
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
         
     def create_window(self):
         self.window = glfw.create_window(self.window_width, self.window_height, 
