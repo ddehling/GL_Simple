@@ -1,12 +1,10 @@
 import time
 import heapq
 import numpy as np
-import cv2
 import corefunctions.soundtestthreaded as sound
 import corefunctions.ImageToDMX as imdmx
 import corefunctions.newrender as sr
-#from pythonosc.osc_server import ThreadingOSCUDPServer
-#from pythonosc.dispatcher import Dispatcher
+from corefunctions.shader_renderer import ShaderRenderer
 import threading
 import queue
 import socket
@@ -48,15 +46,14 @@ class TimedEvent:
         self.state['count'] += 1
         
         # Calculate duration in microseconds for higher precision
-
-        elapsed = (time.perf_counter_ns() - start) / 1.0E9  # Convert ns to μs
+        elapsed = (time.perf_counter_ns() - start) / 1.0E9  # Convert ns to seconds
         if self.state['count']<1000:
             self.frame_duration.append(elapsed)
         return True
     
     def closeevent(self, outstate):
-        median_duration = np.median(self.frame_duration)
-        print(f"Event closed: {self.name} Length:{median_duration}")
+        median_duration = np.median(self.frame_duration) if self.frame_duration else 0
+        print(f"Event closed: {self.name} Length:{median_duration:.6f}s")
         
         # Add logging to file
         # with open("log.txt", "a") as log_file:
@@ -65,11 +62,9 @@ class TimedEvent:
         self.state['count'] = -1
         self.action(self.state, outstate, *self.args, **self.kwargs)
 
-        #print(np.median(self.frame_duration))
-
 
 class EventScheduler:
-    def __init__(self):
+    def __init__(self, use_shader_renderer=False, window_width=1200, window_height=800):
         self.event_queue = []
         self.active_events = []
         self.state = {}
@@ -80,16 +75,41 @@ class EventScheduler:
             (300, 32),   # Frame 1 (secondary display)
         ]
         
-        # Initialize renderer with multiple frames
-        self.renderer = sr.ImageRenderer(
-            frame_dimensions=frame_dimensions,
-            enable_lighting=True
-        )
+        # Determine which renderer to use
+        self.use_shader_renderer = use_shader_renderer
         
-        # Create array of scenes for each frame
-        self.state['render'] = []
-        for frame_id in range(len(frame_dimensions)):
-            self.state['render'].append(sr.Scene(self.renderer, frame_id=frame_id))
+        if use_shader_renderer:
+            print("Initializing GPU shader renderer...")
+            # Create shader renderer with visible OpenGL window
+            self.shader_renderer = ShaderRenderer(
+                frame_dimensions=frame_dimensions,
+                window_width=window_width,
+                window_height=window_height
+            )
+            
+            # Create viewports for each frame
+            for frame_id in range(len(frame_dimensions)):
+                viewport = self.shader_renderer.create_viewport(frame_id)
+                print(f"  Created viewport {frame_id}: {frame_dimensions[frame_id]}")
+                
+            self.state['shader_renderer'] = self.shader_renderer
+            
+            # Create a placeholder for legacy render compatibility
+            self.state['render'] = [None] * len(frame_dimensions)
+            print("✓ GPU shader renderer initialized")
+        else:
+            print("Initializing CPU renderer...")
+            # Initialize renderer with multiple frames
+            self.renderer = sr.ImageRenderer(
+                frame_dimensions=frame_dimensions,
+                enable_lighting=True
+            )
+            
+            # Create array of scenes for each frame
+            self.state['render'] = []
+            for frame_id in range(len(frame_dimensions)):
+                self.state['render'].append(sr.Scene(self.renderer, frame_id=frame_id))
+            print("✓ CPU renderer initialized")
         
         self.state['last_time'] = time.time()
         self.state['soundengine'] = sound.ThreadedAudioEngine()
@@ -101,7 +121,6 @@ class EventScheduler:
         self.state['thunderrate'] = 0.0
         self.state['starryness'] = 0.0
         self.state['simulate'] = True
-        #self.state['osc_messages'] = []
         
         # Define receivers for each display
         receivers = [
@@ -152,45 +171,7 @@ class EventScheduler:
                 # For displays without physical receivers, add None as placeholder
                 self.state['screens'].append(None)
         
-        # Initialize OSC server and message queue
-        # self.osc_messages = queue.Queue(maxsize=1000)
-        # self.dispatcher = Dispatcher()
-        # self.dispatcher.set_default_handler(self._handle_osc)
-        
-        # # Start OSC server on port 5005
-        # self.osc_server = ThreadingOSCUDPServer(("0.0.0.0", 5005), self.dispatcher)
-        # # Set socket options after creation
-        # self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-        
-        # self.osc_thread = threading.Thread(target=self._run_osc_server)
-        # self.osc_thread.daemon = True
-        # self.osc_thread.start()
 
-    # def _handle_osc(self, address, *args):
-    #     """Default handler for all OSC messages"""
-    #     try:
-    #         self.osc_messages.put_nowait((address, args))
-    #     except queue.Full:
-    #         print("Warning: OSC message queue full, dropping message")
-
-    # def _run_osc_server(self):
-    #     """Run the OSC server in a separate thread"""
-    #     print("OSC server starting on port 5005")
-    #     try:
-    #         self.osc_server.serve_forever()
-    #     except Exception as e:
-    #         print(f"OSC server error: {e}")
-
-    # def get_osc_messages(self):
-    #     """Get all OSC messages received since last call"""
-    #     messages = []
-    #     try:
-    #         while True:
-    #             messages.append(self.osc_messages.get_nowait())
-    #     except queue.Empty:
-    #         pass
-    #     return messages
     
     def has_action(self, action):
         return any(event.action == action for event in self.event_queue) or \
@@ -223,13 +204,26 @@ class EventScheduler:
 
     def set_fog(self, frame_id, amount, color=None, dir_scale=None):
         """Convenience method to set fog parameters for a specific frame"""
-        self.renderer.set_fog(frame_id, amount, color, dir_scale)
+        if self.use_shader_renderer:
+            # TODO: Implement fog for shader renderer
+            pass
+        else:
+            self.renderer.set_fog(frame_id, amount, color, dir_scale)
 
     def update(self):
         # Process OSC messages if needed
         # osc_messages = self.get_osc_messages()
         # if osc_messages != []:
         #     self.state['osc_messages'] = osc_messages
+
+        # Poll window events if using shader renderer
+        if self.use_shader_renderer:
+            self.shader_renderer.poll_events()
+            if self.shader_renderer.should_close():
+                print("Window closed by user")
+                self.cleanup()
+                import sys
+                sys.exit(0)
 
         self.state['current_time'] = time.time()
         
@@ -246,53 +240,90 @@ class EventScheduler:
             else:
                 self.active_events.pop(i)
         
+        # Calculate delta time
+        dt = self.state['current_time'] - self.state['last_time']
         self.state['last_time'] = self.state['current_time']
         
-        # Render all frames
+        # Render based on active renderer
+        if self.use_shader_renderer:
+            frames = self._render_shader(dt)
+        else:
+            frames = self._render_legacy()
+        
+        # Send to physical displays
+        self._send_to_displays(frames)
+    
+    def _render_shader(self, dt):
+        """Render using shader renderer"""
+        # Clear window
+        self.shader_renderer.clear_window()
+        
+        frames = []
+        
+        for viewport in self.shader_renderer.viewports:
+            viewport.clear()
+            viewport.update(dt, self.state)
+            viewport.render(self.state)
+            frames.append(viewport.get_frame())
+        
+        return frames
+    
+    def _render_legacy(self):
+        """Render using existing moderngl renderer"""
         frames = []
         for scene in self.state['render']:
-            frames.append(scene.render())
-        
-        # Process and send frames to physical displays
+            if scene is not None:
+                frames.append(scene.render())
+        return frames
+    
+    def _send_to_displays(self, frames):
+        """Send frames to physical displays"""
         gamma = 2.8
-        display_frames = []  # Store processed frames for simulation
         
+        # Process and send frames
         for i, frame in enumerate(frames):
-            # Convert from RGBA to BGR for OpenCV and sACN
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-            
-            # Store original frame for simulation
-            if self.state['simulate']:
-                display_frames.append(frame_bgr.copy())
+            # Convert RGBA to RGB (drop alpha channel)
+            if frame.shape[2] == 4:
+                frame_rgb = frame[:, :, :3]
+            else:
+                frame_rgb = frame
             
             # Apply gamma correction
-            frame_bgr = np.power(frame_bgr / 255.0, gamma) * 255.0
-            frame_bgr = frame_bgr.astype(np.uint8)
+            frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
+            frame_corrected = frame_corrected.astype(np.uint8)
             
-            # Send to physical display if a screen sender exists
+            # Send to physical display if available
             if i < len(self.state['screens']) and self.state['screens'][i] is not None:
                 try:
-                    # Send with RGB channels swapped to match the hardware expectation
-                    self.state['screens'][i].send(frame_bgr[:, :, [2, 1, 0]])
+                    # sACN expects BGR order
+                    self.state['screens'][i].send(frame_corrected[:, :, [2, 1, 0]])
                 except OSError as e:
                     print(f"Network error while sending sACN data to display {i}: {e}")
-
-        # Display frames in simulation mode
-        if self.state['simulate']:
-            window_names = ["Frame 0", "Frame 1", "Frame 2", "Frame 3", "Frame 4"]  # Add more if needed
-            window_sizes = [(900, 450), (900, 96), (400, 400), (400, 400), (400, 400)]  # Default sizes
-            
-            for i, frame in enumerate(display_frames):
-                if i < len(window_names):
-                    win_name = window_names[i]
-                else:
-                    win_name = f"Frame {i}"
-                    
-                cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-                
-                if i < len(window_sizes):
-                    cv2.resizeWindow(win_name, *window_sizes[i])
-                    
-                cv2.imshow(win_name, frame)
-                
-            cv2.waitKey(1)
+        
+        # Swap OpenGL buffers if using shader renderer
+        if self.use_shader_renderer:
+            self.shader_renderer.swap_buffers()
+    
+    def cleanup(self):
+        """Clean up all resources"""
+        print("Cleaning up EventScheduler...")
+        
+        # Cancel all events
+        self.cancel_all_events()
+        
+        # Clean up renderer
+        if self.use_shader_renderer:
+            self.shader_renderer.cleanup()
+        
+        # Clean up sound engine
+        if hasattr(self.state.get('soundengine'), 'stop'):
+            self.state['soundengine'].stop()
+        
+        print("✓ Cleanup complete")
+    
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        try:
+            self.cleanup()
+        except:
+            pass
