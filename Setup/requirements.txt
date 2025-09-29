@@ -1,0 +1,16 @@
+librosa==0.10.2.post1
+moderngl==5.10.0
+numpy==1.26.4
+opencv_contrib_python==4.10.0.84
+opencv_python==4.10.0.84
+Pillow==11.0.0
+pygame==2.6.0
+PyOpenGL==3.1.7
+sacn==1.10.0
+scikit-image==0.22.0
+sounddevice==0.4.7
+soundfile==0.12.1
+zeroconf==0.136.2
+numba==0.60.0
+python-osc==1.8.3
+matplotlib==3.9.1
