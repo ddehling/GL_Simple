@@ -90,6 +90,7 @@ class RainEffect(ShaderEffect):
         self.base_velocities = None  # Original speeds for intensity scaling
         self.dimensions = None  # [width, length] - shape (N, 2)
         self.alphas = None  # [alpha] - shape (N,)
+        self.colors = None  # [r, g, b] - shape (N, 3)
         
         self._initialize_raindrops()
         
@@ -110,7 +111,7 @@ class RainEffect(ShaderEffect):
         
         # Dimensions based on depth
         depth_factors = self.positions[:, 2] / 100.0  # 0.0 (far) to 1.0 (near)
-        base_widths = np.random.uniform(1.0, 2.0, n)
+        base_widths = np.random.uniform(0.5, 1.0, n)
         base_lengths = np.random.uniform(10, 20, n)
         
         self.dimensions = np.column_stack([
@@ -120,6 +121,14 @@ class RainEffect(ShaderEffect):
         
         # Alpha based on depth
         self.alphas = 0.2 + 0.6 * depth_factors
+        
+        # Colors: slight variations of blue/white
+        # Random mix of blue (0.3, 0.7, 1.0) to white-ish (0.6, 0.85, 1.0)
+        self.colors = np.column_stack([
+            np.random.uniform(0.3, 0.7, n),  # R: blue to cyan
+            np.random.uniform(0.7, 0.9, n),  # G: consistent
+            np.ones(n)  # B: full blue
+        ])
         
     def _reset_raindrops(self, mask):
         """Reset raindrops that are off-screen (vectorized)"""
@@ -138,12 +147,17 @@ class RainEffect(ShaderEffect):
         
         # Recalculate dimensions and alpha based on new depth
         depth_factors = self.positions[mask, 2] / 100.0
-        base_widths = np.random.uniform(1.0, 2.0, n_reset)
+        base_widths = np.random.uniform(0.5, 1.0, n_reset)
         base_lengths = np.random.uniform(10, 20, n_reset)
         
         self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)
         self.dimensions[mask, 1] = base_lengths * (0.3 + 0.7 * depth_factors)
         self.alphas[mask] = 0.2 + 0.6 * depth_factors
+        
+        # Reset colors
+        self.colors[mask, 0] = np.random.uniform(0.3, 0.7, n_reset)
+        self.colors[mask, 1] = np.random.uniform(0.7, 0.9, n_reset)
+        self.colors[mask, 2] = 1.0
         
     def _resize_raindrop_arrays(self, new_size):
         """Resize raindrop arrays when intensity changes"""
@@ -172,12 +186,19 @@ class RainEffect(ShaderEffect):
             
             new_alphas = 0.2 + 0.6 * depth_factors
             
+            new_colors = np.column_stack([
+                np.random.uniform(0.3, 0.7, n_new),
+                np.random.uniform(0.7, 0.9, n_new),
+                np.ones(n_new)
+            ])
+            
             # Concatenate
             self.positions = np.vstack([self.positions, new_positions])
             self.velocities = np.concatenate([self.velocities, new_velocities])
             self.base_velocities = np.concatenate([self.base_velocities, new_velocities])
             self.dimensions = np.vstack([self.dimensions, new_dimensions])
             self.alphas = np.concatenate([self.alphas, new_alphas])
+            self.colors = np.vstack([self.colors, new_colors])
             
         elif new_size < current_size:
             # Remove excess raindrops
@@ -186,23 +207,40 @@ class RainEffect(ShaderEffect):
             self.base_velocities = self.base_velocities[:new_size]
             self.dimensions = self.dimensions[:new_size]
             self.alphas = self.alphas[:new_size]
+            self.colors = self.colors[:new_size]
         
     def get_vertex_shader(self):
         return """
         #version 310 es
         precision highp float;
         
-        layout(location = 0) in vec2 position;
+        layout(location = 0) in vec2 position;  // Centered quad: -0.5 to 0.5
         layout(location = 1) in vec3 offset;  // x, y, z
         layout(location = 2) in vec2 size;
         layout(location = 3) in vec4 color;
+        layout(location = 4) in float rotation;  // rotation angle
 
         out vec4 fragColor;
+        out vec2 vertPos;  // Pass through for gradient (0 to 1)
         uniform vec2 resolution;
 
         void main() {
-            // Apply size to quad and add screen-space offset
-            vec2 pos = position * size + offset.xy;
+            // Convert position from -0.5,0.5 range to 0,1 for gradient
+            vertPos = position + 0.5;
+            
+            // First: Scale the quad
+            vec2 scaled = position * size;
+            
+            // Second: Rotate the scaled quad around origin
+            float cosR = cos(rotation);
+            float sinR = sin(rotation);
+            vec2 rotated = vec2(
+                scaled.x * cosR - scaled.y * sinR,
+                scaled.x * sinR + scaled.y * cosR
+            );
+            
+            // Third: Translate to final position
+            vec2 pos = rotated + offset.xy;
             
             // Convert screen coordinates to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -222,10 +260,17 @@ class RainEffect(ShaderEffect):
         precision highp float;
         
         in vec4 fragColor;
+        in vec2 vertPos;  // Position within quad (0 to 1)
         out vec4 outColor;
 
         void main() {
-            outColor = fragColor;
+            // Create vertical gradient: fade out at top, full at bottom
+            // vertPos.y goes from 0 (bottom) to 1 (top) in our coordinate system
+            // We want alpha = 0 at top, alpha = 1 at bottom
+            float fade = 1.0 - vertPos.y;
+            
+            // Apply fade to alpha
+            outColor = vec4(fragColor.rgb, fragColor.a * fade);
         }
         """
     
@@ -260,13 +305,15 @@ class RainEffect(ShaderEffect):
         self.base_velocities = self.base_velocities[sort_indices]
         self.dimensions = self.dimensions[sort_indices]
         self.alphas = self.alphas[sort_indices]
+        self.colors = self.colors[sort_indices]
 
-        # Quad vertices (will be instanced)
+        # Quad vertices - CENTERED from -0.5 to 0.5 for proper rotation
+        # Note: Y axis - negative is bottom, positive is top
         vertices = np.array([
-            0.0, 0.0,
-            1.0, 0.0,
-            1.0, 1.0,
-            0.0, 1.0
+            -0.5, -0.5,  # Bottom left
+             0.5, -0.5,  # Bottom right
+             0.5,  0.5,  # Top right
+            -0.5,  0.5   # Top left
         ], dtype=np.float32)
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
@@ -345,14 +392,24 @@ class RainEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Build instance data (vectorized) - interleave all attributes
-        colors = np.full((len(self.positions), 3), [0.3, 0.7, 1.0], dtype=np.float32)
+        horizontal_velocity = self.wind * 50
+        # Vertical velocity component (per raindrop)
+        vertical_velocity = self.velocities
         
+        # Calculate angle from vertical using velocity components
+        # atan2(horizontal, vertical) gives angle from vertical axis
+        velocity_angle = np.arctan2(horizontal_velocity, vertical_velocity)
+        base_rotation = np.pi   # 90 degrees (to orient vertically)
+        rotations = (base_rotation - velocity_angle).astype(np.float32)
+        
+        # Build instance data (vectorized) - interleave all attributes
+        # Note: No fade_alphas calculation here - fade is now per-drop in fragment shader
         instance_data = np.hstack([
             self.positions,  # x, y, z (3 floats)
             self.dimensions,  # width, length (2 floats)
-            colors,  # r, g, b (3 floats)
-            self.alphas[:, np.newaxis]  # alpha (1 float)
+            self.colors,  # r, g, b (3 floats) - per-raindrop colors
+            self.alphas[:, np.newaxis],  # alpha (1 float) - base alpha from depth
+            rotations[:, np.newaxis]  # rotation (1 float) - wind direction
         ]).astype(np.float32)
         
         # Upload instance data
@@ -362,7 +419,7 @@ class RainEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 9 * 4  # 9 floats * 4 bytes
+        stride = 10 * 4  # 10 floats * 4 bytes
         
         # Offset (location 1) - vec3
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -378,6 +435,11 @@ class RainEffect(ShaderEffect):
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(20))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
+        
+        # Rotation (location 4) - float
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
+        glEnableVertexAttribArray(4)
+        glVertexAttribDivisor(4, 1)
         
         # Draw all drops in one call
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, self.num_raindrops)
