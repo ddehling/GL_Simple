@@ -305,7 +305,9 @@ class RainEffect(ShaderEffect):
         
     def get_vertex_shader(self):
         return """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         layout(location = 0) in vec2 position;
         layout(location = 1) in vec2 offset;
         layout(location = 2) in vec2 size;
@@ -326,7 +328,9 @@ class RainEffect(ShaderEffect):
         
     def get_fragment_shader(self):
         return """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         in vec4 fragColor;
         out vec4 outColor;
 
@@ -334,6 +338,7 @@ class RainEffect(ShaderEffect):
             outColor = fragColor;
         }
         """
+       
     
     def compile_shader(self):
         vertex_shader = self.get_vertex_shader()
@@ -464,7 +469,9 @@ class StarfieldEffect(ShaderEffect):
         
     def get_vertex_shader(self):
         return """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         layout(location = 0) in vec2 position;
         layout(location = 1) in vec2 center;
         layout(location = 2) in float size;
@@ -484,10 +491,13 @@ class StarfieldEffect(ShaderEffect):
             fragCoord = position - vec2(0.5);
         }
         """
+
         
     def get_fragment_shader(self):
         return """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         in vec4 fragColor;
         in vec2 fragCoord;
         out vec4 outColor;
@@ -498,6 +508,7 @@ class StarfieldEffect(ShaderEffect):
             outColor = vec4(fragColor.rgb, fragColor.a * intensity);
         }
         """
+
     
     def compile_shader(self):
         try:

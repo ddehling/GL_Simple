@@ -328,9 +328,9 @@ class EnvironmentalSystem:
         self.current_time = time.time()
        
         # OSC handling
-        messages = self.scheduler.get_osc_messages()
-        if messages != []:
-            print(messages)  # Eventually want to pass these to the scheduler
+        #messages = self.scheduler.get_osc_messages()
+        #if messages != []:
+        #    print(messages)  # Eventually want to pass these to the scheduler
             
         # Handle transitions
         self.transition_update()

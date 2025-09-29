@@ -5,8 +5,8 @@ import cv2
 import corefunctions.soundtestthreaded as sound
 import corefunctions.ImageToDMX as imdmx
 import corefunctions.newrender as sr
-from pythonosc.osc_server import ThreadingOSCUDPServer
-from pythonosc.dispatcher import Dispatcher
+#from pythonosc.osc_server import ThreadingOSCUDPServer
+#from pythonosc.dispatcher import Dispatcher
 import threading
 import queue
 import socket
@@ -101,7 +101,7 @@ class EventScheduler:
         self.state['thunderrate'] = 0.0
         self.state['starryness'] = 0.0
         self.state['simulate'] = True
-        self.state['osc_messages'] = []
+        #self.state['osc_messages'] = []
         
         # Define receivers for each display
         receivers = [
@@ -153,44 +153,44 @@ class EventScheduler:
                 self.state['screens'].append(None)
         
         # Initialize OSC server and message queue
-        self.osc_messages = queue.Queue(maxsize=1000)
-        self.dispatcher = Dispatcher()
-        self.dispatcher.set_default_handler(self._handle_osc)
+        # self.osc_messages = queue.Queue(maxsize=1000)
+        # self.dispatcher = Dispatcher()
+        # self.dispatcher.set_default_handler(self._handle_osc)
         
-        # Start OSC server on port 5005
-        self.osc_server = ThreadingOSCUDPServer(("0.0.0.0", 5005), self.dispatcher)
-        # Set socket options after creation
-        self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+        # # Start OSC server on port 5005
+        # self.osc_server = ThreadingOSCUDPServer(("0.0.0.0", 5005), self.dispatcher)
+        # # Set socket options after creation
+        # self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # self.osc_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
         
-        self.osc_thread = threading.Thread(target=self._run_osc_server)
-        self.osc_thread.daemon = True
-        self.osc_thread.start()
+        # self.osc_thread = threading.Thread(target=self._run_osc_server)
+        # self.osc_thread.daemon = True
+        # self.osc_thread.start()
 
-    def _handle_osc(self, address, *args):
-        """Default handler for all OSC messages"""
-        try:
-            self.osc_messages.put_nowait((address, args))
-        except queue.Full:
-            print("Warning: OSC message queue full, dropping message")
+    # def _handle_osc(self, address, *args):
+    #     """Default handler for all OSC messages"""
+    #     try:
+    #         self.osc_messages.put_nowait((address, args))
+    #     except queue.Full:
+    #         print("Warning: OSC message queue full, dropping message")
 
-    def _run_osc_server(self):
-        """Run the OSC server in a separate thread"""
-        print("OSC server starting on port 5005")
-        try:
-            self.osc_server.serve_forever()
-        except Exception as e:
-            print(f"OSC server error: {e}")
+    # def _run_osc_server(self):
+    #     """Run the OSC server in a separate thread"""
+    #     print("OSC server starting on port 5005")
+    #     try:
+    #         self.osc_server.serve_forever()
+    #     except Exception as e:
+    #         print(f"OSC server error: {e}")
 
-    def get_osc_messages(self):
-        """Get all OSC messages received since last call"""
-        messages = []
-        try:
-            while True:
-                messages.append(self.osc_messages.get_nowait())
-        except queue.Empty:
-            pass
-        return messages
+    # def get_osc_messages(self):
+    #     """Get all OSC messages received since last call"""
+    #     messages = []
+    #     try:
+    #         while True:
+    #             messages.append(self.osc_messages.get_nowait())
+    #     except queue.Empty:
+    #         pass
+    #     return messages
     
     def has_action(self, action):
         return any(event.action == action for event in self.event_queue) or \
