@@ -3,8 +3,6 @@ Complete rain effect - rendering + event integration
 Everything needed for rain in one place!
 """
 import numpy as np
-import random
-import ctypes
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
@@ -76,56 +74,118 @@ def shader_rain(state, outstate, intensity=1.0, wind=0.0):
 # Rendering Classes
 # ============================================================================
 
-class Raindrop:
-    """Individual raindrop particle"""
-    def __init__(self, surface_width, surface_height, wind=0.0):
-        self.surface_width = surface_width
-        self.surface_height = surface_height
-        self.wind = wind
-        self.reset(True)
-        
-    def reset(self, randomize_y=False):
-        """Reset raindrop to top of screen"""
-        self.x = random.uniform(0, self.surface_width)
-        self.y = random.uniform(0, self.surface_height) if randomize_y else -10
-        self.z = random.uniform(0, 100)  # NEW: Depth from 0 (far) to 100 (near)
-        self.speed = random.uniform(100, 300)
-        self.width = random.uniform(1.0, 2.0)
-        self.length = random.uniform(10, 20)
-        
-        # NEW: Scale and alpha based on depth (closer = larger, more opaque)
-        depth_factor = self.z / 100.0  # 0.0 (far) to 1.0 (near)
-        self.width *= (0.3 + 0.7 * depth_factor)  # 30% to 100% size
-        self.length *= (0.3 + 0.7 * depth_factor)
-        self.alpha = 0.2 + 0.6 * depth_factor  # 0.2 to 0.8 opacity
-
-        
-    def update(self, dt):
-        """Update raindrop position"""
-        self.y += self.speed * dt
-        self.x += self.wind * 50 * dt  # Wind effect
-        
-        # Wrap around horizontally
-        if self.x < -10:
-            self.x = self.surface_width + 10
-        elif self.x > self.surface_width + 10:
-            self.x = -10
-            
-        # Reset when off bottom
-        if self.y > self.surface_height + 10:
-            self.reset()
-
-
 class RainEffect(ShaderEffect):
-    """GPU-based rain effect using instanced rendering"""
+    """GPU-based rain effect using instanced rendering with vectorized updates"""
     
     def __init__(self, viewport, num_raindrops: int = 100, wind: float = 0.0):
         super().__init__(viewport)
         self.num_raindrops = num_raindrops
-        self.base_num_raindrops = num_raindrops  # Store original count
+        self.base_num_raindrops = num_raindrops
         self.wind = wind
-        self.raindrops = []
         self.instance_VBO = None
+        
+        # Vectorized raindrop data (all stored as numpy arrays)
+        self.positions = None  # [x, y, z] - shape (N, 3)
+        self.velocities = None  # [speed] - shape (N,)
+        self.base_velocities = None  # Original speeds for intensity scaling
+        self.dimensions = None  # [width, length] - shape (N, 2)
+        self.alphas = None  # [alpha] - shape (N,)
+        
+        self._initialize_raindrops()
+        
+    def _initialize_raindrops(self):
+        """Initialize all raindrop data as numpy arrays"""
+        n = self.num_raindrops
+        
+        # Positions: x, y, z
+        self.positions = np.column_stack([
+            np.random.uniform(0, self.viewport.width, n),  # x
+            np.random.uniform(0, self.viewport.height, n),  # y (randomized)
+            np.random.uniform(0, 100, n)  # z (depth)
+        ])
+        
+        # Velocities
+        self.velocities = np.random.uniform(100, 300, n)
+        self.base_velocities = self.velocities.copy()
+        
+        # Dimensions based on depth
+        depth_factors = self.positions[:, 2] / 100.0  # 0.0 (far) to 1.0 (near)
+        base_widths = np.random.uniform(1.0, 2.0, n)
+        base_lengths = np.random.uniform(10, 20, n)
+        
+        self.dimensions = np.column_stack([
+            base_widths * (0.3 + 0.7 * depth_factors),
+            base_lengths * (0.3 + 0.7 * depth_factors)
+        ])
+        
+        # Alpha based on depth
+        self.alphas = 0.2 + 0.6 * depth_factors
+        
+    def _reset_raindrops(self, mask):
+        """Reset raindrops that are off-screen (vectorized)"""
+        n_reset = np.sum(mask)
+        if n_reset == 0:
+            return
+            
+        # Reset positions
+        self.positions[mask, 0] = np.random.uniform(0, self.viewport.width, n_reset)  # x
+        self.positions[mask, 1] = -10  # y (top of screen)
+        self.positions[mask, 2] = np.random.uniform(0, 100, n_reset)  # z
+        
+        # Reset velocities
+        self.velocities[mask] = np.random.uniform(100, 300, n_reset)
+        self.base_velocities[mask] = self.velocities[mask]
+        
+        # Recalculate dimensions and alpha based on new depth
+        depth_factors = self.positions[mask, 2] / 100.0
+        base_widths = np.random.uniform(1.0, 2.0, n_reset)
+        base_lengths = np.random.uniform(10, 20, n_reset)
+        
+        self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)
+        self.dimensions[mask, 1] = base_lengths * (0.3 + 0.7 * depth_factors)
+        self.alphas[mask] = 0.2 + 0.6 * depth_factors
+        
+    def _resize_raindrop_arrays(self, new_size):
+        """Resize raindrop arrays when intensity changes"""
+        current_size = len(self.positions)
+        
+        if new_size > current_size:
+            # Add new raindrops
+            n_new = new_size - current_size
+            
+            new_positions = np.column_stack([
+                np.random.uniform(0, self.viewport.width, n_new),
+                np.random.uniform(0, self.viewport.height, n_new),
+                np.random.uniform(0, 100, n_new)
+            ])
+            
+            new_velocities = np.random.uniform(100, 300, n_new)
+            
+            depth_factors = new_positions[:, 2] / 100.0
+            base_widths = np.random.uniform(1.0, 2.0, n_new)
+            base_lengths = np.random.uniform(10, 20, n_new)
+            
+            new_dimensions = np.column_stack([
+                base_widths * (0.3 + 0.7 * depth_factors),
+                base_lengths * (0.3 + 0.7 * depth_factors)
+            ])
+            
+            new_alphas = 0.2 + 0.6 * depth_factors
+            
+            # Concatenate
+            self.positions = np.vstack([self.positions, new_positions])
+            self.velocities = np.concatenate([self.velocities, new_velocities])
+            self.base_velocities = np.concatenate([self.base_velocities, new_velocities])
+            self.dimensions = np.vstack([self.dimensions, new_dimensions])
+            self.alphas = np.concatenate([self.alphas, new_alphas])
+            
+        elif new_size < current_size:
+            # Remove excess raindrops
+            self.positions = self.positions[:new_size]
+            self.velocities = self.velocities[:new_size]
+            self.base_velocities = self.base_velocities[:new_size]
+            self.dimensions = self.dimensions[:new_size]
+            self.alphas = self.alphas[:new_size]
         
     def get_vertex_shader(self):
         return """
@@ -155,7 +215,6 @@ class RainEffect(ShaderEffect):
             fragColor = color;
         }
         """
-
         
     def get_fragment_shader(self):
         return """
@@ -192,37 +251,15 @@ class RainEffect(ShaderEffect):
             print(f"Shader compilation error: {e}")
             raise
 
-
-    def _setup_projection(self, shader):
-        """Create orthographic projection for 3D rendering"""
-        width = self.viewport.width
-        height = self.viewport.height
-        near = 0.0
-        far = 100.0
-        
-        # Orthographic projection matrix
-        # Maps: x:[0,width] y:[0,height] z:[0,100] to clip space [-1,1]
-        projection = np.array([
-            [2.0/width,  0.0,         0.0,        -1.0],
-            [0.0,       -2.0/height,  0.0,         1.0],
-            [0.0,        0.0,        -2.0/(far-near), -(far+near)/(far-near)],
-            [0.0,        0.0,         0.0,         1.0]
-        ], dtype=np.float32)
-        
-        loc = glGetUniformLocation(shader, "projection")
-        if loc != -1:
-            glUniformMatrix4fv(loc, 1, GL_FALSE, projection) 
-
     def setup_buffers(self):
         """Initialize OpenGL buffers for instanced rendering"""
-        # Create raindrops
-        self.raindrops = [
-            Raindrop(self.viewport.width, self.viewport.height, self.wind) 
-            for _ in range(self.num_raindrops)
-        ]
-
         # Sort by Z (far to near) for proper depth rendering
-        self.raindrops.sort(key=lambda d: d.z)
+        sort_indices = np.argsort(self.positions[:, 2])
+        self.positions = self.positions[sort_indices]
+        self.velocities = self.velocities[sort_indices]
+        self.base_velocities = self.base_velocities[sort_indices]
+        self.dimensions = self.dimensions[sort_indices]
+        self.alphas = self.alphas[sort_indices]
 
         # Quad vertices (will be instanced)
         vertices = np.array([
@@ -261,9 +298,8 @@ class RainEffect(ShaderEffect):
         
         glBindVertexArray(0)
 
-    
     def update(self, dt: float, state: Dict):
-        """Update raindrop positions"""
+        """Update raindrop positions (vectorized)"""
         if not self.enabled:
             return
         
@@ -273,34 +309,33 @@ class RainEffect(ShaderEffect):
         # Calculate target number of drops
         target_drops = int(self.base_num_raindrops * rain_intensity)
         
-        # Add or remove drops to match target
-        current_count = len(self.raindrops)
-        if target_drops > current_count:
-            # Add new drops
-            for _ in range(target_drops - current_count):
-                drop = Raindrop(self.viewport.width, self.viewport.height, self.wind)
-                self.raindrops.append(drop)
-        elif target_drops < current_count:
-            # Remove excess drops
-            self.raindrops = self.raindrops[:target_drops]
+        # Resize arrays if needed
+        if target_drops != len(self.positions):
+            self._resize_raindrop_arrays(target_drops)
+            self.num_raindrops = target_drops
         
-        # Update all drops with speed multiplier
-        for drop in self.raindrops:
-            drop.wind = self.wind
-            # Store base speed if not already stored
-            if not hasattr(drop, 'base_speed'):
-                drop.base_speed = drop.speed
-            
-            # Adjust speed based on rain intensity
-            drop.speed = drop.base_speed * (rain_intensity+0.1)
-            drop.update(dt)
+        # Update velocities based on intensity
+        self.velocities = self.base_velocities * (rain_intensity + 0.1)
+        
+        # Vectorized position updates
+        self.positions[:, 1] += self.velocities * dt  # Update y
+        self.positions[:, 0] += self.wind * 50 * dt  # Update x (wind)
+        
+        # Horizontal wrapping
+        left_mask = self.positions[:, 0] < -10
+        right_mask = self.positions[:, 0] > self.viewport.width + 10
+        self.positions[left_mask, 0] = self.viewport.width + 10
+        self.positions[right_mask, 0] = -10
+        
+        # Reset drops that went off bottom
+        bottom_mask = self.positions[:, 1] > self.viewport.height + 10
+        self._reset_raindrops(bottom_mask)
 
     def render(self, state: Dict):
         """Render all raindrops using instancing"""
-        if not self.enabled or not self.shader:
+        if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        # NEW: Clear depth buffer
         glClear(GL_DEPTH_BUFFER_BIT)
             
         glUseProgram(self.shader)
@@ -310,41 +345,36 @@ class RainEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
+        # Build instance data (vectorized) - interleave all attributes
+        colors = np.full((len(self.positions), 3), [0.3, 0.7, 1.0], dtype=np.float32)
         
-        # Prepare instance data (offset with Z, size, color for each drop)
-        instance_data = []
-        for drop in self.raindrops:
-            instance_data.extend([
-                drop.x, drop.y, drop.z,  # offset (now 3D)
-                drop.width, drop.length,  # size
-                0.3, 0.7, 1.0, drop.alpha # color
-            ])
-        
-        if not instance_data:
-            return
-            
-        instance_array = np.array(instance_data, dtype=np.float32)
+        instance_data = np.hstack([
+            self.positions,  # x, y, z (3 floats)
+            self.dimensions,  # width, length (2 floats)
+            colors,  # r, g, b (3 floats)
+            self.alphas[:, np.newaxis]  # alpha (1 float)
+        ]).astype(np.float32)
         
         # Upload instance data
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        glBufferData(GL_ARRAY_BUFFER, instance_array.nbytes, instance_array, GL_DYNAMIC_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
         
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 9 * 4  # 9 floats * 4 bytes (changed from 8)
+        stride = 9 * 4  # 9 floats * 4 bytes
         
-        # Offset (location 1) - now vec3
+        # Offset (location 1) - vec3
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
         glVertexAttribDivisor(1, 1)
         
-        # Size (location 2)
+        # Size (location 2) - vec2
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
         glEnableVertexAttribArray(2)
         glVertexAttribDivisor(2, 1)
         
-        # Color (location 3)
+        # Color (location 3) - vec4
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(20))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
