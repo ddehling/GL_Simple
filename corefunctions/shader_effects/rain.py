@@ -122,6 +122,7 @@ class RainEffect(ShaderEffect):
     def __init__(self, viewport, num_raindrops: int = 100, wind: float = 0.0):
         super().__init__(viewport)
         self.num_raindrops = num_raindrops
+        self.base_num_raindrops = num_raindrops  # Store original count
         self.wind = wind
         self.raindrops = []
         self.instance_VBO = None
@@ -265,12 +266,34 @@ class RainEffect(ShaderEffect):
         """Update raindrop positions"""
         if not self.enabled:
             return
-            
-        # Update wind for all drops
+        
+        # Get global rain intensity (0.0 to 1.0+)
+        rain_intensity = state.get('rain', 1.0)
+        
+        # Calculate target number of drops
+        target_drops = int(self.base_num_raindrops * rain_intensity)
+        
+        # Add or remove drops to match target
+        current_count = len(self.raindrops)
+        if target_drops > current_count:
+            # Add new drops
+            for _ in range(target_drops - current_count):
+                drop = Raindrop(self.viewport.width, self.viewport.height, self.wind)
+                self.raindrops.append(drop)
+        elif target_drops < current_count:
+            # Remove excess drops
+            self.raindrops = self.raindrops[:target_drops]
+        
+        # Update all drops with speed multiplier
         for drop in self.raindrops:
             drop.wind = self.wind
+            # Store base speed if not already stored
+            if not hasattr(drop, 'base_speed'):
+                drop.base_speed = drop.speed
+            
+            # Adjust speed based on rain intensity
+            drop.speed = drop.base_speed * (rain_intensity+0.1)
             drop.update(dt)
-    
 
     def render(self, state: Dict):
         """Render all raindrops using instancing"""

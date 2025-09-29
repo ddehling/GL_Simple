@@ -64,7 +64,7 @@ class TimedEvent:
 
 
 class EventScheduler:
-    def __init__(self, use_shader_renderer=False, window_width=1200, window_height=800):
+    def __init__(self, use_shader_renderer=False, window_width=1200, window_height=800, headless=False):
         self.event_queue = []
         self.active_events = []
         self.state = {}
@@ -79,24 +79,27 @@ class EventScheduler:
         self.use_shader_renderer = use_shader_renderer
         
         if use_shader_renderer:
-            print("Initializing GPU shader renderer...")
-            # Create shader renderer with visible OpenGL window
+            mode_str = "headless GPU" if headless else "GPU"
+            print(f"Initializing {mode_str} shader renderer...")
+            # Create shader renderer with visible or hidden OpenGL window
             self.shader_renderer = ShaderRenderer(
                 frame_dimensions=frame_dimensions,
                 window_width=window_width,
-                window_height=window_height
+                window_height=window_height,
+                headless=headless
             )
             
             # Create viewports for each frame
             for frame_id in range(len(frame_dimensions)):
                 viewport = self.shader_renderer.create_viewport(frame_id)
-                print(f"  Created viewport {frame_id}: {frame_dimensions[frame_id]}")
+                if not headless:
+                    print(f"  Created viewport {frame_id}: {frame_dimensions[frame_id]}")
                 
             self.state['shader_renderer'] = self.shader_renderer
             
             # Create a placeholder for legacy render compatibility
             self.state['render'] = [None] * len(frame_dimensions)
-            print("✓ GPU shader renderer initialized")
+            print(f"✓ {mode_str} shader renderer initialized")
         else:
             print("Initializing CPU renderer...")
             # Initialize renderer with multiple frames

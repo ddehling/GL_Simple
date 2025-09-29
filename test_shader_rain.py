@@ -1,4 +1,4 @@
-
+import numpy as np
 import time
 from corefunctions.Events import EventScheduler
 from corefunctions.shader_effects import shader_rain  # Clean import!
@@ -8,14 +8,18 @@ from corefunctions.shader_effects.test_circle import shader_test_circle  # Add t
 def main():
     # Create scheduler with shader renderer enabled
     # Make window bigger to see both viewports clearly
-    scheduler = EventScheduler(use_shader_renderer=True, window_width=1400, window_height=400)
+    headless = False  # Change to True to disable display
     
+    scheduler = EventScheduler(
+        use_shader_renderer=True, 
+        window_width=1400, 
+        window_height=400,
+        headless=headless
+    )  
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
-    event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
-    scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
-    scheduler.schedule_event(0, 15, shader_rain, intensity=1.5, frame_id=0)
-    scheduler.schedule_event(0, 20, shader_rain, intensity=1.5, frame_id=0)
+    event1 = scheduler.schedule_event(0, 30, shader_rain, intensity=1.5, frame_id=0)
+
     event3 = scheduler.schedule_event(20, 10, shader_rain, intensity=1.5, frame_id=0)
     event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
         # Test circle at z=50 (middle depth) - should blend with rain
@@ -63,6 +67,7 @@ def main():
     
     try:
         while time.time() - start_time < 65:  # Run for 65 seconds
+            scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
             scheduler.update()
             
             current_time = time.time()

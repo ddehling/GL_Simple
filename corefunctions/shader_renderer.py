@@ -9,11 +9,12 @@ IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
 class ShaderRenderer:
     """GPU-based renderer with visible OpenGL window and multiple viewports"""
-    def __init__(self, frame_dimensions: List[Tuple[int, int]], window_width=1200, window_height=800):
+    def __init__(self, frame_dimensions: List[Tuple[int, int]], window_width=1200, window_height=800, headless=False):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
         self.window_width = window_width
         self.window_height = window_height
+        self.headless = headless  # Add headless flag
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
@@ -100,18 +101,22 @@ class ShaderRenderer:
         # Center vertically
         y_offset = (self.window_height - display_height) // 2
         
-        print(f"Creating viewport {frame_id}:")
-        print(f"  Framebuffer (LED): {width}x{height}")
-        print(f"  Display: {display_width}x{display_height} at ({x_offset}, {y_offset})")
-        print(f"  Scale factor: {scale:.2f}")
+        if not self.headless:
+            print(f"Creating viewport {frame_id}:")
+            print(f"  Framebuffer (LED): {width}x{height}")
+            print(f"  Display: {display_width}x{display_height} at ({x_offset}, {y_offset})")
+            print(f"  Scale factor: {scale:.2f}")
+        else:
+            print(f"Creating viewport {frame_id}: {width}x{height} (headless)")
         
         viewport = ShaderViewport(frame_id, width, height, 
                                  x_offset, y_offset, 
                                  display_width, display_height,
-                                 self.window)
+                                 self.window, headless=self.headless)
         viewport.init_framebuffer()
         self.viewports.append(viewport)
         return viewport
+
     
     def get_viewport(self, frame_id: int) -> Optional['ShaderViewport']:
         """Get viewport by frame_id"""
@@ -129,8 +134,9 @@ class ShaderRenderer:
         return glfw.window_should_close(self.window)
     
     def swap_buffers(self):
-        """Swap window buffers"""
-        glfw.swap_buffers(self.window)
+        """Swap window buffers (skip in headless mode)"""
+        if not self.headless:
+            glfw.swap_buffers(self.window)
     
     def clear_window(self):
         """Clear the entire window"""
@@ -154,7 +160,7 @@ class ShaderViewport:
     def __init__(self, frame_id: int, width: int, height: int, 
                  window_x: int, window_y: int, 
                  display_width: int, display_height: int,
-                 glfw_window):
+                 glfw_window, headless=False):
         self.frame_id = frame_id
         self.width = width  # Actual framebuffer size (for LED output)
         self.height = height
@@ -163,12 +169,36 @@ class ShaderViewport:
         self.display_width = display_width  # Display size in window (scaled)
         self.display_height = display_height
         self.glfw_window = glfw_window
+        self.headless = headless  # Add headless flag
         self.effects = []
         
         # Framebuffer for LED output (separate from window rendering)
         self.fbo = None
         self.color_texture = None
         self.depth_renderbuffer = None
+        
+    def init_glfw(self):
+        """Initialize GLFW with OpenGL ES 3.1"""
+        if not glfw.init():
+            raise RuntimeError("Failed to initialize GLFW")
+        
+        # Set visibility based on headless mode
+        if self.headless:
+            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+            print("Configuring headless mode (window hidden)")
+        
+        if IS_RASPBERRY_PI:
+            print("Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
+            glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+            glfw.window_hint(glfw.CONTEXT_CREATION_API, glfw.EGL_CONTEXT_API)
+        else:
+            if not self.headless:
+                print("Configuring for Desktop (OpenGL ES 3.1)")
+            glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
         
     def init_framebuffer(self):
         """Create framebuffer for offscreen rendering (for LED output)"""
@@ -241,10 +271,10 @@ class ShaderViewport:
                 effect.update(dt, state)
     
     def render(self, state: Dict):
-        """Render effects to both framebuffer and window"""
+        """Render effects to framebuffer (and optionally to window)"""
         glfw.make_context_current(self.glfw_window)
         
-        # Render to framebuffer (for LED output at actual resolution)
+        # Always render to framebuffer (for LED output at actual resolution)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)
         glScissor(0, 0, self.width, self.height)
@@ -253,14 +283,15 @@ class ShaderViewport:
             if effect.enabled:
                 effect.render(state)
         
-        # Render to window (for visualization at display resolution)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
-        glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
-        
-        for effect in self.effects:
-            if effect.enabled:
-                effect.render(state)
+        # Only render to window if not in headless mode
+        if not self.headless:
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
+            glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
+            
+            for effect in self.effects:
+                if effect.enabled:
+                    effect.render(state)
     
     def get_frame(self) -> np.ndarray:
         """Read framebuffer into numpy array for LED output"""
