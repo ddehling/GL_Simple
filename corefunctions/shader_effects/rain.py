@@ -88,10 +88,17 @@ class Raindrop:
         """Reset raindrop to top of screen"""
         self.x = random.uniform(0, self.surface_width)
         self.y = random.uniform(0, self.surface_height) if randomize_y else -10
+        self.z = random.uniform(0, 100)  # NEW: Depth from 0 (far) to 100 (near)
         self.speed = random.uniform(100, 300)
         self.width = random.uniform(1.0, 2.0)
         self.length = random.uniform(10, 20)
-        self.alpha = random.uniform(0.5, 0.8)
+        
+        # NEW: Scale and alpha based on depth (closer = larger, more opaque)
+        depth_factor = self.z / 100.0  # 0.0 (far) to 1.0 (near)
+        self.width *= (0.3 + 0.7 * depth_factor)  # 30% to 100% size
+        self.length *= (0.3 + 0.7 * depth_factor)
+        self.alpha = 0.2 + 0.6 * depth_factor  # 0.2 to 0.8 opacity
+
         
     def update(self, dt):
         """Update raindrop position"""
@@ -125,7 +132,7 @@ class RainEffect(ShaderEffect):
         precision highp float;
         
         layout(location = 0) in vec2 position;
-        layout(location = 1) in vec2 offset;
+        layout(location = 1) in vec3 offset;  // x, y, z
         layout(location = 2) in vec2 size;
         layout(location = 3) in vec4 color;
 
@@ -133,14 +140,21 @@ class RainEffect(ShaderEffect):
         uniform vec2 resolution;
 
         void main() {
-            vec2 pos = position * size + offset;
+            // Apply size to quad and add screen-space offset
+            vec2 pos = position * size + offset.xy;
+            
+            // Convert screen coordinates to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
             
-            gl_Position = vec4(clipPos, 0.0, 1.0);
+            // Use Z for depth buffer (normalize to 0-1 range)
+            float depth = offset.z / 100.0;
+            
+            gl_Position = vec4(clipPos, depth, 1.0);
             fragColor = color;
         }
         """
+
         
     def get_fragment_shader(self):
         return """
@@ -176,7 +190,28 @@ class RainEffect(ShaderEffect):
         except Exception as e:
             print(f"Shader compilation error: {e}")
             raise
-    
+
+
+    def _setup_projection(self, shader):
+        """Create orthographic projection for 3D rendering"""
+        width = self.viewport.width
+        height = self.viewport.height
+        near = 0.0
+        far = 100.0
+        
+        # Orthographic projection matrix
+        # Maps: x:[0,width] y:[0,height] z:[0,100] to clip space [-1,1]
+        projection = np.array([
+            [2.0/width,  0.0,         0.0,        -1.0],
+            [0.0,       -2.0/height,  0.0,         1.0],
+            [0.0,        0.0,        -2.0/(far-near), -(far+near)/(far-near)],
+            [0.0,        0.0,         0.0,         1.0]
+        ], dtype=np.float32)
+        
+        loc = glGetUniformLocation(shader, "projection")
+        if loc != -1:
+            glUniformMatrix4fv(loc, 1, GL_FALSE, projection) 
+
     def setup_buffers(self):
         """Initialize OpenGL buffers for instanced rendering"""
         # Create raindrops
@@ -184,7 +219,10 @@ class RainEffect(ShaderEffect):
             Raindrop(self.viewport.width, self.viewport.height, self.wind) 
             for _ in range(self.num_raindrops)
         ]
-        
+
+        # Sort by Z (far to near) for proper depth rendering
+        self.raindrops.sort(key=lambda d: d.z)
+
         # Quad vertices (will be instanced)
         vertices = np.array([
             0.0, 0.0,
@@ -194,7 +232,10 @@ class RainEffect(ShaderEffect):
         ], dtype=np.float32)
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
-        
+        glBindVertexArray(0)
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+
         # Create VAO
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
@@ -218,6 +259,7 @@ class RainEffect(ShaderEffect):
         self.VBOs.append(self.instance_VBO)
         
         glBindVertexArray(0)
+
     
     def update(self, dt: float, state: Dict):
         """Update raindrop positions"""
@@ -229,10 +271,14 @@ class RainEffect(ShaderEffect):
             drop.wind = self.wind
             drop.update(dt)
     
+
     def render(self, state: Dict):
         """Render all raindrops using instancing"""
         if not self.enabled or not self.shader:
             return
+        
+        # NEW: Clear depth buffer
+        glClear(GL_DEPTH_BUFFER_BIT)
             
         glUseProgram(self.shader)
         
@@ -241,13 +287,14 @@ class RainEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Prepare instance data (offset, size, color for each drop)
+        
+        # Prepare instance data (offset with Z, size, color for each drop)
         instance_data = []
         for drop in self.raindrops:
             instance_data.extend([
-                drop.x, drop.y,           # offset
+                drop.x, drop.y, drop.z,  # offset (now 3D)
                 drop.width, drop.length,  # size
-                0.3, 0.7, 1.0, drop.alpha # color (light blue)
+                0.3, 0.7, 1.0, drop.alpha # color
             ])
         
         if not instance_data:
@@ -262,20 +309,20 @@ class RainEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 8 * 4  # 8 floats * 4 bytes
+        stride = 9 * 4  # 9 floats * 4 bytes (changed from 8)
         
-        # Offset (location 1)
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        # Offset (location 1) - now vec3
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
         glVertexAttribDivisor(1, 1)
         
         # Size (location 2)
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8))
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
         glEnableVertexAttribArray(2)
         glVertexAttribDivisor(2, 1)
         
         # Color (location 3)
-        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(16))
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(20))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
         

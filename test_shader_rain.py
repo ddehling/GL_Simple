@@ -2,6 +2,8 @@
 import time
 from corefunctions.Events import EventScheduler
 from corefunctions.shader_effects import shader_rain  # Clean import!
+from corefunctions.shader_effects.test_circle import shader_test_circle  # Add this import
+
 
 def main():
     # Create scheduler with shader renderer enabled
@@ -11,8 +13,17 @@ def main():
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
     event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
+    scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
+    scheduler.schedule_event(0, 15, shader_rain, intensity=1.5, frame_id=0)
+    scheduler.schedule_event(0, 20, shader_rain, intensity=1.5, frame_id=0)
     event3 = scheduler.schedule_event(20, 10, shader_rain, intensity=1.5, frame_id=0)
     event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
+        # Test circle at z=50 (middle depth) - should blend with rain
+    scheduler.schedule_event(0, 60, shader_test_circle, 
+                           x=60, y=30, radius=15, z=50, 
+                           color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
+                           frame_id=0)
+    
     print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     print(f"Events in queue: {len(scheduler.event_queue)}")
