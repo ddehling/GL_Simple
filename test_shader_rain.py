@@ -1,6 +1,7 @@
+
 import time
 from corefunctions.Events import EventScheduler
-from corefunctions.shader_events import shader_rain
+from corefunctions.shader_effects import shader_rain  # Clean import!
 
 def main():
     # Create scheduler with shader renderer enabled
@@ -9,8 +10,9 @@ def main():
     
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
-    event1 = scheduler.schedule_event(0, 60, shader_rain, intensity=1.5, frame_id=0)
-    event2 = scheduler.schedule_event(0, 60, shader_rain, intensity=0.8, frame_id=1)
+    event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
+    event3 = scheduler.schedule_event(20, 10, shader_rain, intensity=1.5, frame_id=0)
+    event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
     print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     print(f"Events in queue: {len(scheduler.event_queue)}")
