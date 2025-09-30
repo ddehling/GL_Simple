@@ -111,7 +111,7 @@ class RainEffect(ShaderEffect):
         
         # Dimensions based on depth
         depth_factors = self.positions[:, 2] / 100.0  # 0.0 (far) to 1.0 (near)
-        base_widths = np.random.uniform(0.5, 1.0, n)
+        base_widths = np.random.uniform(1.0, 2.0, n)
         base_lengths = np.random.uniform(10, 20, n)
         
         self.dimensions = np.column_stack([
@@ -147,7 +147,7 @@ class RainEffect(ShaderEffect):
         
         # Recalculate dimensions and alpha based on new depth
         depth_factors = self.positions[mask, 2] / 100.0
-        base_widths = np.random.uniform(0.5, 1.0, n_reset)
+        base_widths = np.random.uniform(1.0, 2.0, n_reset)
         base_lengths = np.random.uniform(10, 20, n_reset)
         
         self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)

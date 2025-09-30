@@ -9,18 +9,27 @@ IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
 class ShaderRenderer:
     """GPU-based renderer with visible OpenGL window and multiple viewports"""
-    def __init__(self, frame_dimensions: List[Tuple[int, int]], window_width=1200, window_height=800, headless=False):
+    def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
-        self.window_width = window_width
-        self.window_height = window_height
-        self.headless = headless  # Add headless flag
+        self.padding = padding
+        self.headless = headless
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
         
+        # Calculate window size based on viewport dimensions
+        total_width = sum(w for w, h in frame_dimensions)
+        max_height = max(h for w, h in frame_dimensions)
+        
+        self.window_width = total_width + padding * (self.num_frames + 1)
+        self.window_height = max_height + padding * 2
+        
+        print(f"Calculated window size: {self.window_width}x{self.window_height} (native viewport size)")
+        
         self.init_glfw()
         self.create_window()
+        
         
     def init_glfw(self):
         """Initialize GLFW with OpenGL ES 3.1"""
@@ -70,33 +79,15 @@ class ShaderRenderer:
             
         width, height = self.frame_dimensions[frame_id]
         
-        # Calculate display scaling - make viewports fill the window nicely
-        padding = 20
-        
-        # Calculate total width needed and scale to fit
-        total_content_width = sum(w for w, h in self.frame_dimensions)
-        total_padding = padding * (self.num_frames + 1)
-        available_width = self.window_width - total_padding
-        
-        # Scale to fill most of the window
-        scale = available_width / total_content_width
-        
-        # Also check height constraint
-        max_height = max(h for w, h in self.frame_dimensions)
-        height_scale = (self.window_height - 2 * padding) / max_height
-        
-        # Use the smaller scale to ensure everything fits
-        scale = min(scale, height_scale)
-        
-        # Calculate scaled dimensions for display
-        display_width = int(width * scale)
-        display_height = int(height * scale)
+        # No scaling - use native dimensions for display
+        display_width = width
+        display_height = height
         
         # Calculate x position (accumulate previous widths)
-        x_offset = padding
+        x_offset = self.padding
         for i in range(frame_id):
             prev_width, _ = self.frame_dimensions[i]
-            x_offset += int(prev_width * scale) + padding
+            x_offset += prev_width + self.padding
         
         # Center vertically
         y_offset = (self.window_height - display_height) // 2
@@ -105,7 +96,7 @@ class ShaderRenderer:
             print(f"Creating viewport {frame_id}:")
             print(f"  Framebuffer (LED): {width}x{height}")
             print(f"  Display: {display_width}x{display_height} at ({x_offset}, {y_offset})")
-            print(f"  Scale factor: {scale:.2f}")
+            print(f"  Scale factor: 1.0 (native)")
         else:
             print(f"Creating viewport {frame_id}: {width}x{height} (headless)")
         
@@ -116,6 +107,7 @@ class ShaderRenderer:
         viewport.init_framebuffer()
         self.viewports.append(viewport)
         return viewport
+
 
     
     def get_viewport(self, frame_id: int) -> Optional['ShaderViewport']:

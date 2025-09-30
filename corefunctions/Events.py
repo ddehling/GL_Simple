@@ -64,7 +64,7 @@ class TimedEvent:
 
 
 class EventScheduler:
-    def __init__(self, use_shader_renderer=False, window_width=1200, window_height=800, headless=False):
+    def __init__(self, use_shader_renderer=False, headless=False):
         self.event_queue = []
         self.active_events = []
         self.state = {}
@@ -81,11 +81,10 @@ class EventScheduler:
         if use_shader_renderer:
             mode_str = "headless GPU" if headless else "GPU"
             print(f"Initializing {mode_str} shader renderer...")
-            # Create shader renderer with visible or hidden OpenGL window
+            # Create shader renderer - window size calculated automatically
             self.shader_renderer = ShaderRenderer(
                 frame_dimensions=frame_dimensions,
-                window_width=window_width,
-                window_height=window_height,
+                padding=20,
                 headless=headless
             )
             

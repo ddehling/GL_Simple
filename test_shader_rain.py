@@ -11,11 +11,10 @@ def main():
     headless = False  # Change to True to disable display
     
     scheduler = EventScheduler(
-        use_shader_renderer=True, 
-        window_width=1400, 
-        window_height=400,
+        use_shader_renderer=True,
         headless=headless
-    )  
+    )
+    
     viewport0 = scheduler.shader_renderer.get_viewport(0)
     if viewport0:
         fog0 = viewport0.add_effect(ShaderFog, 
