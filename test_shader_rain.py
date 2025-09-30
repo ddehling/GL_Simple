@@ -3,7 +3,7 @@ import time
 from corefunctions.Events import EventScheduler
 from corefunctions.shader_effects import shader_rain  # Clean import!
 from corefunctions.shader_effects.test_circle import shader_test_circle  # Add this import
-
+from corefunctions.shader_effects.shader_fog import ShaderFog
 
 def main():
     # Create scheduler with shader renderer enabled
@@ -16,6 +16,14 @@ def main():
         window_height=400,
         headless=headless
     )  
+    viewport0 = scheduler.shader_renderer.get_viewport(0)
+    if viewport0:
+        fog0 = viewport0.add_effect(ShaderFog, 
+                                    strength=2.6, 
+                                    color=(0.5, 0.6, 0.8),  # Blue-ish fog
+                                    fog_near=20.0,
+                                    fog_far=80.0)
+        print(f"Added fog to viewport 0")
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
     event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -69,6 +77,8 @@ def main():
         while time.time() - start_time < 65:  # Run for 65 seconds
             scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
             scheduler.state['wind']=np.sin((time.time()) / 12) 
+            scheduler.state['fog_strength'] = 0.8 + 0.8 * np.sin(time.time() / 3)
+            scheduler.state['fog_strength_1'] = 0.5
             scheduler.update()
             
             current_time = time.time()

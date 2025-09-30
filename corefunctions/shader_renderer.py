@@ -175,7 +175,8 @@ class ShaderViewport:
         # Framebuffer for LED output (separate from window rendering)
         self.fbo = None
         self.color_texture = None
-        self.depth_renderbuffer = None
+        self.depth_texture = None  # Changed from depth_renderbuffer
+        
         
     def init_glfw(self):
         """Initialize GLFW with OpenGL ES 3.1"""
@@ -214,19 +215,24 @@ class ShaderViewport:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         
-        # Create depth renderbuffer
-        self.depth_renderbuffer = glGenRenderbuffers(1)
-        glBindRenderbuffer(GL_RENDERBUFFER, self.depth_renderbuffer)
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, 
-                             self.width, self.height)
+        # Create depth texture (changed from renderbuffer so effects can read it)
+        self.depth_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, 
+                     self.width, self.height,
+                     0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, None)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         
         # Create framebuffer
         self.fbo = glGenFramebuffers(1)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
                               GL_TEXTURE_2D, self.color_texture, 0)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                                 GL_RENDERBUFFER, self.depth_renderbuffer)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_TEXTURE_2D, self.depth_texture, 0)
         
         # Check framebuffer completeness
         status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
@@ -235,6 +241,7 @@ class ShaderViewport:
         
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         print(f"  Framebuffer created: {self.width}x{self.height}")
+
     
     def add_effect(self, effect_class, **params):
         """Add a shader effect to the rendering pipeline"""
@@ -317,7 +324,7 @@ class ShaderViewport:
             glDeleteFramebuffers(1, [self.fbo])
         if self.color_texture:
             glDeleteTextures([self.color_texture])
-        if self.depth_renderbuffer:
-            glDeleteRenderbuffers(1, [self.depth_renderbuffer])
+        if self.depth_texture:
+            glDeleteTextures([self.depth_texture])
 
 
