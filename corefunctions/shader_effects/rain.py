@@ -383,7 +383,7 @@ class RainEffect(ShaderEffect):
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        glClear(GL_DEPTH_BUFFER_BIT)
+        #glClear(GL_DEPTH_BUFFER_BIT)
             
         glUseProgram(self.shader)
         

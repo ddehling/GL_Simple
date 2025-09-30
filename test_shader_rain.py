@@ -18,12 +18,12 @@ def main():
     )  
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
-    event1 = scheduler.schedule_event(0, 30, shader_rain, intensity=1.5, frame_id=0)
-
-    event3 = scheduler.schedule_event(20, 10, shader_rain, intensity=1.5, frame_id=0)
+    event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
+    event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
+    event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
     event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
         # Test circle at z=50 (middle depth) - should blend with rain
-    scheduler.schedule_event(0, 60, shader_test_circle, 
+    event3=scheduler.schedule_event(0, 60, shader_test_circle, 
                            x=60, y=30, radius=15, z=50, 
                            color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
                            frame_id=0)
@@ -68,6 +68,7 @@ def main():
     try:
         while time.time() - start_time < 65:  # Run for 65 seconds
             scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
+            scheduler.state['wind']=np.sin((time.time()) / 12) 
             scheduler.update()
             
             current_time = time.time()

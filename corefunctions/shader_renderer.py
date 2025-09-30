@@ -250,19 +250,21 @@ class ShaderViewport:
         """Clear the viewport in both window and framebuffer"""
         glfw.make_context_current(self.glfw_window)
         
-        # Clear framebuffer
+        # Clear framebuffer (including depth!)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)
         glScissor(0, 0, self.width, self.height)
         glClearColor(0.0, 0.0, 0.0, 0.0)
-        glClear(GL_COLOR_BUFFER_BIT)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)  # Clear depth too
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         
         # Clear window viewport region
-        glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
-        glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
-        glClearColor(0.0, 0.0, 0.0, 1.0)
-        glClear(GL_COLOR_BUFFER_BIT)
+        if not self.headless:
+            glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
+            glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
+            glClearColor(0.0, 0.0, 0.0, 1.0)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)  # Clear depth too
+
     
     def update(self, dt: float, state: Dict):
         """Update all effects"""
