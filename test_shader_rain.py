@@ -4,6 +4,7 @@ from corefunctions.Events import EventScheduler
 from corefunctions.shader_effects import shader_rain
 from corefunctions.shader_effects import shader_firefly
 from corefunctions.shader_effects.test_circle import shader_test_circle
+from corefunctions.shader_effects.stars import shader_stars
 from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.celestial_bodies import (
     shader_celestial_bodies, 
@@ -62,6 +63,8 @@ def main():
                             corners=corners_frame0, frame_id=0)
     scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
+    scheduler.schedule_event(0, 600, shader_stars, num_stars=200, frame_id=0)
+
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
