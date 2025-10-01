@@ -608,11 +608,6 @@ class CelestialBodiesEffect(ShaderEffect):
         # Use inverse bilinear interpolation
         x, y, converged = self._inverse_bilinear_map(azimuth, elevation)
         
-        # Debug output for viewport 1
-
-        # Even if not converged well, still check visibility with larger margin
-        # This prevents popping when bodies are just outside viewport
-        
         # Expand check margin for bodies near viewport edges
         margin = apparent_radius + 10  # Extra pixels for smooth transitions
         
@@ -628,8 +623,10 @@ class CelestialBodiesEffect(ShaderEffect):
             y_max < 0 or y_min > self.height
         )
         
+        # Trust the bounding box check - if any part of the body could be visible,
+        # render it even if the center coordinate mapping is approximate
+        return (x, y, intersects_viewport)
 
-        return (x, y, intersects_viewport and converged)
 
 
 
