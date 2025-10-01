@@ -51,7 +51,7 @@ def shader_falling_leaves(state, outstate, density=1.0):
             leaves_effect = viewport.add_effect(
                 FallingLeavesEffect,
                 density=density,
-                max_leaves=25
+                max_leaves=100
             )
             state['leaves_effect'] = leaves_effect
             print(f"✓ Initialized shader falling leaves for frame {frame_id}")
@@ -73,55 +73,6 @@ def shader_falling_leaves(state, outstate, density=1.0):
             state['leaves_effect'].cleanup()
             print(f"✓ Cleaned up shader falling leaves for frame {frame_id}")
 
-
-def shader_secondary_falling_leaves(state, outstate, density=1.0):
-    """
-    Shader-based secondary (polar) falling leaves effect
-    
-    Usage:
-        scheduler.schedule_event(0, 60, shader_secondary_falling_leaves, density=1.5, frame_id=1)
-    """
-    frame_id = state.get('frame_id', 1)
-    shader_renderer = outstate.get('shader_renderer')
-    
-    if shader_renderer is None:
-        print("WARNING: shader_renderer not found in state!")
-        return
-    
-    viewport = shader_renderer.get_viewport(frame_id)
-    if viewport is None:
-        print(f"WARNING: viewport {frame_id} not found!")
-        return
-    
-    # Initialize effect on first call
-    if state['count'] == 0:
-        print(f"Initializing secondary falling leaves effect for frame {frame_id}")
-        
-        try:
-            leaves_effect = viewport.add_effect(
-                SecondaryFallingLeavesEffect,
-                density=density,
-                max_leaves=40
-            )
-            state['leaves_effect'] = leaves_effect
-            print(f"✓ Initialized shader secondary leaves for frame {frame_id}")
-        except Exception as e:
-            print(f"✗ Failed to initialize secondary leaves: {e}")
-            import traceback
-            traceback.print_exc()
-            return
-    
-    # Update density if it changes in global state
-    if 'leaves_effect' in state:
-        state['leaves_effect'].density = outstate.get('leaf_density', density)
-    
-    # On close event, clean up
-    if state['count'] == -1:
-        if 'leaves_effect' in state:
-            print(f"Cleaning up secondary leaves effect for frame {frame_id}")
-            viewport.effects.remove(state['leaves_effect'])
-            state['leaves_effect'].cleanup()
-            print(f"✓ Cleaned up shader secondary leaves for frame {frame_id}")
 
 
 # ============================================================================
@@ -148,7 +99,8 @@ class FallingLeavesEffect(ShaderEffect):
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [r, g, b] in RGB
         self.alphas = np.zeros(0, dtype=np.float32)
         self.lifetimes = np.zeros(0, dtype=np.float32)
-        self.leaf_types = np.zeros(0, dtype=np.int32)  # NEW: leaf shape type
+        self.leaf_types = np.zeros(0, dtype=np.int32)
+        self.distances = np.zeros(0, dtype=np.float32)  # NEW: depth (5-25)
         
     def _spawn_leaves(self, count: int, season: float = 0.625):
         """Spawn new leaves at random positions"""
@@ -165,15 +117,25 @@ class FallingLeavesEffect(ShaderEffect):
             np.random.uniform(1.0, 2.0, count)
         ])
         
-        new_sizes = np.random.uniform(2.0, 3.5, count)
+        # NEW: Generate random distances (depth) between 5 and 25
+        new_distances = np.random.uniform(5.0, 25.0, count)
+        
+        # Base size scaled by distance (closer = larger)
+        base_sizes = np.random.uniform(2.0, 3.5, count)
+        new_sizes = base_sizes * (5.0 / new_distances)  # Scale by distance
+        
         new_rotations = np.random.uniform(0, 2 * np.pi, count)
         new_rotation_speeds = np.random.uniform(-1.0, 1.0, count)
         new_flutter_phases = np.random.uniform(0, 2 * np.pi, count)
         new_flutter_amplitudes = np.random.uniform(0.5, 1.2, count)
-        new_alphas = np.random.uniform(0.9, 1.0, count)
+        
+        # Adjust alpha based on distance (farther = more transparent)
+        base_alphas = np.random.uniform(0.9, 1.0, count)
+        new_alphas = base_alphas 
+        
         new_lifetimes = np.ones(count)
         
-        # NEW: Assign random leaf types (0-4 for 5 different shapes)
+        # Assign random leaf types (0-4 for 5 different shapes)
         new_leaf_types = np.random.randint(0, 5, count)
         
         # Generate colors based on season
@@ -191,8 +153,7 @@ class FallingLeavesEffect(ShaderEffect):
         self.alphas = np.concatenate([self.alphas, new_alphas]) if len(self.alphas) > 0 else new_alphas
         self.lifetimes = np.concatenate([self.lifetimes, new_lifetimes]) if len(self.lifetimes) > 0 else new_lifetimes
         self.leaf_types = np.concatenate([self.leaf_types, new_leaf_types]) if len(self.leaf_types) > 0 else new_leaf_types
-
-
+        self.distances = np.concatenate([self.distances, new_distances]) if len(self.distances) > 0 else new_distances
     
     def _generate_leaf_colors(self, count: int, season: float) -> np.ndarray:
         """Generate leaf colors based on season (RGB format)"""
@@ -269,6 +230,7 @@ class FallingLeavesEffect(ShaderEffect):
         layout(location = 3) in float rotation; // Leaf rotation
         layout(location = 4) in vec4 color;     // Color (r, g, b, alpha)
         layout(location = 5) in float leafType; // Leaf shape type
+        layout(location = 6) in float distance; // Depth value (5-25)
         
         out vec4 fragColor;
         out vec2 fragPos;  // Position within quad (-1 to 1)
@@ -297,10 +259,16 @@ class FallingLeavesEffect(ShaderEffect):
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
             
-            gl_Position = vec4(clipPos, 0.5, 1.0);
+            // Convert distance (5-25) to depth (0-1)
+            // distance 5 (near) -> depth 0.2 (close to camera)
+            // distance 25 (far) -> depth 1.0 (far from camera)
+            float depth = distance/100.0 ;
+            
+            gl_Position = vec4(clipPos, depth, 1.0);
             fragColor = color;
         }
         """
+
 
 
     def get_fragment_shader(self):
@@ -546,7 +514,7 @@ class FallingLeavesEffect(ShaderEffect):
             (self.positions[:, 1] < self.viewport.height + margin) & 
             (self.lifetimes > 0)
         )
-        
+                
         if not np.all(valid_mask):
             self.positions = self.positions[valid_mask]
             self.velocities = self.velocities[valid_mask]
@@ -559,6 +527,7 @@ class FallingLeavesEffect(ShaderEffect):
             self.alphas = self.alphas[valid_mask]
             self.lifetimes = self.lifetimes[valid_mask]
             self.leaf_types = self.leaf_types[valid_mask]
+            self.distances = self.distances[valid_mask]  # NEW: Filter distances too
 
     def render(self, state: Dict):
         """Render all leaves using instancing"""
@@ -572,13 +541,15 @@ class FallingLeavesEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Build instance data
+        # Build instance data - NOW INCLUDING LEAF_TYPES AND DISTANCES
         instance_data = np.hstack([
             self.positions,
             self.sizes[:, np.newaxis],
             self.rotations[:, np.newaxis],
             self.colors,
-            self.alphas[:, np.newaxis]
+            self.alphas[:, np.newaxis],
+            self.leaf_types[:, np.newaxis].astype(np.float32),  # Convert to float for shader
+            self.distances[:, np.newaxis]
         ]).astype(np.float32)
         
         # Upload instance data
@@ -588,7 +559,7 @@ class FallingLeavesEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 8 * 4  # 8 floats per instance
+        stride = 10 * 4  # NOW 10 floats per instance (was 8)
         
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
@@ -606,9 +577,24 @@ class FallingLeavesEffect(ShaderEffect):
         glEnableVertexAttribArray(4)
         glVertexAttribDivisor(4, 1)
         
+        # NEW: Leaf type attribute
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
+        glEnableVertexAttribArray(5)
+        glVertexAttribDivisor(5, 1)
+        
+        # NEW: Distance attribute
+        glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
+        glEnableVertexAttribArray(6)
+        glVertexAttribDivisor(6, 1)
+        
         # Enable blending
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        # NEW: Enable depth testing so leaves respect depth
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)  # Write to depth buffer
         
         # Render
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(self.positions))
@@ -616,4 +602,3 @@ class FallingLeavesEffect(ShaderEffect):
         glBindVertexArray(0)
         glUseProgram(0)
         glDisable(GL_BLEND)
-

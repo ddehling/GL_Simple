@@ -85,10 +85,10 @@ def main():
     # event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
     # scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
     #     # Test circle at z=50 (middle depth) - should blend with rain
-    # event3=scheduler.schedule_event(0, 60, shader_test_circle, 
-    #                        x=60, y=30, radius=15, z=50, 
-    #                        color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
-    #                        frame_id=0)
+    event3=scheduler.schedule_event(0, 60, shader_test_circle, 
+                            x=60, y=30, radius=15, z=15, 
+                            color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
+                           frame_id=0)
     
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
