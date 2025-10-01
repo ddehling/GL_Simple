@@ -96,7 +96,7 @@ class Being:
             np.random.uniform(-0.5, 0.5)
         ], dtype=np.float32)
         
-        self.size = np.random.uniform(8, 15)
+        self.size = np.random.uniform(3, 6)
         self.base_hue = np.random.uniform(0, 1)
         self.hue_drift_rate = np.random.uniform(0.05, 0.2)
         self.hue_drift_phase = np.random.uniform(0, 2 * np.pi)
@@ -110,13 +110,13 @@ class Being:
         self.last_behavior_change = time.time()
         self.behavior_duration = np.random.uniform(5, 15)
         
-        self.tentacles = np.random.randint(0, 5)
+        self.tentacles = np.random.randint(2, 5)  # More tentacles, min 2
         self.tentacle_params = []
         
         for _ in range(self.tentacles):
             self.tentacle_params.append({
                 'angle': np.random.uniform(0, 2 * np.pi),
-                'length': np.random.uniform(5, 15),
+                'length': np.random.uniform(10,20),  # Much longer tentacles
                 'wave_rate': np.random.uniform(0.5, 2.0),
                 'wave_phase': np.random.uniform(0, 2 * np.pi)
             })
@@ -124,12 +124,13 @@ class Being:
         self.color_pulses = []  # Active communication pulses
 
 
+
 class ChromaticFogBeingsEffect(ShaderEffect):
     """GPU-based chromatic fog beings using metaball rendering"""
     
     def __init__(self, viewport, num_beings: int = 4):
         super().__init__(viewport)
-        self.num_beings = np.clip(num_beings, 3, 6)
+        self.num_beings = np.clip(num_beings, 1, 4)
         self.beings: List[Being] = []
         self.fade_factor = 0.0
         self.next_communication = time.time() + np.random.uniform(3, 8)
@@ -158,6 +159,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         }
         """
     
+
     def get_fragment_shader(self):
         return """
         #version 310 es
@@ -178,9 +180,9 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         uniform float beingComplexities[6];
         uniform float beingPhases[6];
         
-        // Tentacle data (max 4 tentacles per being)
+        // Tentacle data (max 6 tentacles per being)
         uniform int beingTentacleCounts[6];
-        uniform vec4 tentacleData[24];  // [angle, length, wave_rate, wave_phase] * 6 beings * 4 tentacles
+        uniform vec4 tentacleData[36];  // [angle, length, wave_rate, wave_phase] * 6 beings * 6 tentacles
         
         // Pulse data (max 2 pulses per being)
         uniform int beingPulseCounts[6];
@@ -199,6 +201,58 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             return exp(-dist * dist / (2.0 * size * size));
         }
         
+        // Distance from point to line segment
+        float distanceToSegment(vec2 p, vec2 a, vec2 b) {
+            vec2 pa = p - a;
+            vec2 ba = b - a;
+            float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+            return length(pa - ba * h);
+        }
+        
+        // Smooth tentacle rendering using line segments
+        float renderTentacle(vec2 screenPos, vec2 center, float baseAngle, float length, 
+                            float waveRate, float wavePhase, float baseSize) {
+            if (length < 1.0) return 0.0;
+            
+            float density = 0.0;
+            int segments = min(int(length * 0.8), 16);  // Scale segments with length
+            
+            vec2 prevPos = center;
+            
+            for (int s = 0; s <= segments; s++) {
+                float ratio = float(s) / float(segments);
+                float segmentLength = length * ratio;
+                
+                // Create smooth wave motion along tentacle
+                float waveOffset = ratio * 2.0;  // Wave travels along tentacle
+                float waveFactor = sin(time * waveRate + wavePhase + waveOffset * 3.14159);
+                float undulation = ratio * sin(time * 0.3) * 0.3;
+                float angle = baseAngle + undulation + waveFactor * 0.8;
+                
+                vec2 segmentPos = center + vec2(cos(angle), sin(angle)) * segmentLength;
+                
+                // Draw line segment from previous position to current
+                if (s > 0) {
+                    float dist = distanceToSegment(screenPos, prevPos, segmentPos);
+                    
+                    // Gradual taper - thicker base, thinner tip
+                    float taperFactor = 1.0 - ratio * 0.6;
+                    float segmentSize = baseSize * taperFactor;
+                    
+                    // Create soft falloff for tentacle thickness
+                    float segmentDensity = exp(-dist * dist / (2.0 * segmentSize * segmentSize));
+                    
+                    // Add extra brightness to base segments
+                    float baseBrightness = 1.0 + (1.0 - ratio) * 0.3;
+                    density += segmentDensity * baseBrightness * 0.8;
+                }
+                
+                prevPos = segmentPos;
+            }
+            
+            return density;
+        }
+        
         void main() {
             // Convert fragCoord from [-1, 1] to screen space [0, resolution]
             vec2 screenPos = (fragCoord + 1.0) * 0.5 * resolution;
@@ -215,6 +269,10 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 float complexity = beingComplexities[i];
                 float phase = beingPhases[i];
                 
+                // Calculate distance from center for brightness gradient
+                float distFromCenter = length(screenPos - center);
+                float normalizedDist = distFromCenter / (size * 2.5);  // Normalize to being size
+                
                 // Base density
                 float density = metaball(screenPos, center, size);
                 
@@ -229,34 +287,25 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                     density += 0.7 * metaball(screenPos, lobePos, lobeSize);
                 }
                 
-                // Add tentacles
+                // Add tentacles using improved line segment rendering
                 int tentacleCount = beingTentacleCounts[i];
-                int tentacleBaseIdx = i * 4;
+                int tentacleBaseIdx = i * 6;
                 
-                for (int t = 0; t < tentacleCount && t < 4; t++) {
+                for (int t = 0; t < tentacleCount && t < 6; t++) {
                     vec4 tentacle = tentacleData[tentacleBaseIdx + t];
                     float baseAngle = tentacle.x;
                     float length = tentacle.y;
                     float waveRate = tentacle.z;
                     float wavePhase = tentacle.w;
                     
-                    // Draw segments along tentacle
-                    int segments = min(int(length), 8);
-                    float segmentSize = size * 0.3;
+                    // Thicker tentacles - use 70% of body size for base thickness
+                    float tentacleSize = size * 0.7;
+                    float tentacleDensity = renderTentacle(
+                        screenPos, center, baseAngle, length, 
+                        waveRate, wavePhase, tentacleSize
+                    );
                     
-                    for (int s = 0; s < segments; s++) {
-                        float ratio = float(s) / float(segments);
-                        float segmentLength = length * ratio;
-                        
-                        // Undulating motion
-                        float undulation = ratio * sin(time);
-                        float angle = baseAngle + undulation + sin(time * waveRate + wavePhase) * 0.5;
-                        
-                        vec2 segmentPos = center + vec2(cos(angle), sin(angle)) * segmentLength;
-                        float taperSize = segmentSize * (1.0 - ratio * 0.8);
-                        
-                        density += 0.5 * metaball(screenPos, segmentPos, taperSize);
-                    }
+                    density += tentacleDensity;
                 }
                 
                 // Add communication pulses
@@ -288,9 +337,18 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 if (density > 0.05) {
                     float normalizedDensity = min(density, 1.0);
                     
-                    // Calculate color
+                    // Create radial brightness gradient - brighter in center, darker at edges
+                    float brightnessGradient = 1.0 - smoothstep(0.0, 1.0, normalizedDist);
+                    brightnessGradient = pow(brightnessGradient, 0.7);  // Adjust falloff curve
+                    
+                    // Calculate color with radial brightness
                     float saturation = 0.9 - normalizedDensity * 0.3;
-                    float value = 0.2 + normalizedDensity * 0.6;
+                    float baseValue = 0.2 + normalizedDensity * 0.6;
+                    
+                    // Add radial brightness boost (brighter in center)
+                    float value = baseValue + brightnessGradient * 0.5;
+                    value = clamp(value, 0.0, 1.0);
+                    
                     float alpha = normalizedDensity * 0.4;
                     
                     vec3 color = hsv2rgb(vec3(hue, saturation, value));
@@ -311,6 +369,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             outColor = vec4(accumulatedColor, accumulatedAlpha);
         }
         """
+
     
     def compile_shader(self):
         """Compile and link fog being shaders"""
@@ -425,6 +484,27 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             being.shape_phase += being.shape_evolution_rate * dt
             being.hue_drift_phase += being.hue_drift_rate * dt
             
+            # Update tentacle angles - make them rotate slowly around the body
+            for tentacle in being.tentacle_params:
+                # Slowly rotate the base angle
+                tentacle['angle'] += np.random.uniform(-0.05, 0.05) * dt
+                
+                # Add some organic drift to the rotation
+                tentacle['angle'] += np.sin(current_time * 0.3 + tentacle['wave_phase']) * 0.2 * dt
+                
+                # Keep angle in 0-2π range
+                tentacle['angle'] = tentacle['angle'] % (2 * np.pi)
+                
+                # Occasionally adjust wave parameters for variety
+                if np.random.random() < 0.01:
+                    tentacle['wave_rate'] += np.random.uniform(-0.1, 0.1)
+                    tentacle['wave_rate'] = np.clip(tentacle['wave_rate'], 0.3, 2.5)
+                
+                # Occasionally adjust length slightly
+                if np.random.random() < 0.005:
+                    tentacle['length'] += np.random.uniform(-2, 2)
+                    tentacle['length'] = np.clip(tentacle['length'], 10, 40)
+            
             # Update pulses
             remaining_pulses = []
             for pulse in being.color_pulses:
@@ -450,6 +530,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 receiver.target_behavior = np.random.randint(0, 3)
                 receiver.target_entity = sender
                 receiver.last_behavior_change = current_time
+
     
     def render(self, state: Dict):
         """Render fog beings using shader"""
@@ -503,13 +584,13 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         if loc != -1:
             glUniform1fv(loc, len(self.beings), phases)
         
-        # Upload tentacle data
+        # Upload tentacle data - increased to 6 tentacles per being
         tentacle_counts = np.array([len(b.tentacle_params) for b in self.beings], dtype=np.int32)
-        tentacle_data = np.zeros((24, 4), dtype=np.float32)
+        tentacle_data = np.zeros((36, 4), dtype=np.float32)  # Changed from 24 to 36
         
         for i, being in enumerate(self.beings):
-            for j, tentacle in enumerate(being.tentacle_params[:4]):
-                idx = i * 4 + j
+            for j, tentacle in enumerate(being.tentacle_params[:6]):  # Changed from 4 to 6
+                idx = i * 6 + j  # Changed from 4 to 6
                 tentacle_data[idx] = [
                     tentacle['angle'],
                     tentacle['length'],
@@ -523,7 +604,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         
         loc = glGetUniformLocation(self.shader, "tentacleData")
         if loc != -1:
-            glUniform4fv(loc, 24, tentacle_data.flatten())
+            glUniform4fv(loc, 36, tentacle_data.flatten())  # Changed from 24 to 36
         
         # Upload pulse data
         pulse_counts = np.array([len(b.color_pulses) for b in self.beings], dtype=np.int32)

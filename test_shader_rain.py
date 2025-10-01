@@ -66,7 +66,7 @@ def main():
                             corners=corners_frame0, frame_id=0)
     scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
-    scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
+    #scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
     #scheduler.schedule_event(0, 60, shader_eye, frame_id=0)
 #     scheduler.schedule_event(
 #     0,40,shader_forest,
@@ -74,7 +74,7 @@ def main():
 #     density=1.0,
 #     frame_id=0
 # )
-    scheduler.schedule_event(0, 60, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
+    scheduler.schedule_event(0, 100, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
