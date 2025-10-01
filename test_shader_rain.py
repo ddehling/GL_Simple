@@ -68,8 +68,8 @@ def main():
     scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
     #scheduler.schedule_event(0, 60, shader_eye, frame_id=0)
     scheduler.schedule_event(
-    0,600,shader_forest,
-    season=0.5,  # Fall colors
+    0,40,shader_forest,
+    season=0.85,  # Fall colors
     density=1.0,
     frame_id=0
 )

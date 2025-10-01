@@ -153,8 +153,16 @@ class ForestEffect(ShaderEffect):
             needle_sat = random.uniform(*palette['sat_range'])
             needle_val = random.uniform(*palette['val_range'])
             
+            # Color variation range for this tree
+            hue_variation = random.uniform(0.02, 0.08)
+            sat_variation = random.uniform(0.1, 0.3)
+            val_variation = random.uniform(0.1, 0.25)
+            
             sway_amount = random.uniform(0.4, 1.2)
             sway_phase = random.uniform(0, 6.28)
+            
+            # Random seed for this tree's noise pattern
+            noise_seed = random.uniform(0, 1000)
             
             trees.append({
                 'x': x, 'y': y,
@@ -167,9 +175,13 @@ class ForestEffect(ShaderEffect):
                 'needle_hue': needle_hue,
                 'needle_sat': needle_sat,
                 'needle_val': needle_val,
+                'hue_variation': hue_variation,
+                'sat_variation': sat_variation,
+                'val_variation': val_variation,
                 'sway_amount': sway_amount,
                 'sway_phase': sway_phase,
-                'depth': depth
+                'depth': depth,
+                'noise_seed': noise_seed
             })
         
         # Sort by depth (back to front)
@@ -331,11 +343,16 @@ class ForestEffect(ShaderEffect):
         layout(location = 4) in float alpha;
         layout(location = 5) in float wind_factor; // How much this segment sways
         layout(location = 6) in float sway_phase;
-        layout(location = 7) in float segment_type; // 0=trunk, 1=needles
+        layout(location = 7) in float segment_type; // 0=trunk, 1=needles, 2=branch
+        layout(location = 8) in vec3 color_variation; // hue_var, sat_var, val_var
+        layout(location = 9) in float noise_seed;
         
         out vec4 fragColor;
         out vec2 vertPos;
-        out float segmentType;
+        out vec2 worldPos;
+        flat out float segmentType;
+        flat out vec3 colorVariation;
+        flat out float noiseSeed;
         
         uniform vec2 resolution;
         uniform float time;
@@ -351,10 +368,12 @@ class ForestEffect(ShaderEffect):
         void main() {
             vertPos = position + 0.5;  // Convert to 0-1 range
             segmentType = segment_type;
+            colorVariation = color_variation;
+            noiseSeed = noise_seed;
             
             // Calculate wind displacement
             float wind_displacement = 0.0;
-            if (segment_type > 0.5) {  // Only needles sway
+            if (segment_type > 0.5) {  // Needles and branches sway
                 float sway = sin(time * 0.5 + sway_phase) * wind * wind_factor;
                 wind_displacement = sway * 8.0;
             }
@@ -363,6 +382,8 @@ class ForestEffect(ShaderEffect):
             vec2 scaled = position * size;
             vec2 pos = scaled + offset.xy + vec2(wind_displacement, 0.0);
             
+            worldPos = pos;  // Pass world position for noise
+            
             // Convert to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
@@ -370,7 +391,7 @@ class ForestEffect(ShaderEffect):
             float depth = offset.z / 100.0;
             gl_Position = vec4(clipPos, depth, 1.0);
             
-            // Convert HSV to RGB
+            // Pass base color to fragment shader
             vec3 rgb = hsv2rgb(color_hsv);
             fragColor = vec4(rgb, alpha);
         }
@@ -434,31 +455,142 @@ class ForestEffect(ShaderEffect):
         
         in vec4 fragColor;
         in vec2 vertPos;
-        in float segmentType;
+        in vec2 worldPos;
+        flat in float segmentType;
+        flat in vec3 colorVariation;
+        flat in float noiseSeed;
         
         out vec4 outColor;
         
         uniform float fade;
+        uniform float time;
+        
+        // Simple 2D noise function
+        float hash(vec2 p) {
+            p = fract(p * vec2(443.897, 441.423));
+            p += dot(p, p.yx + 19.19);
+            return fract(p.x * p.y);
+        }
+        
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+        
+        float fbm(vec2 p) {
+            float value = 0.0;
+            float amplitude = 0.5;
+            float frequency = 1.0;
+            
+            for(int i = 0; i < 4; i++) {
+                value += amplitude * noise(p * frequency);
+                frequency *= 2.0;
+                amplitude *= 0.5;
+            }
+            return value;
+        }
+        
+        // RGB to HSV
+        vec3 rgb2hsv(vec3 c) {
+            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+            
+            float d = q.x - min(q.w, q.y);
+            float e = 1.0e-10;
+            return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+        }
+        
+        // HSV to RGB
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
         
         void main() {
             float alpha = fragColor.a;
+            vec3 baseColor = fragColor.rgb;
             
-            // For needle segments, create triangular fade
-            if (segmentType > 0.5) {
-                // Fade based on distance from center
+            // Generate noise based on world position and tree seed
+            vec2 noisePos = worldPos * 0.1 + vec2(noiseSeed);
+            float noiseValue = fbm(noisePos);
+            
+            // Add finer detail noise
+            float detailNoise = noise(worldPos * 0.5 + vec2(noiseSeed * 2.0));
+            
+            // For needle segments, create organic texture
+            if (segmentType > 0.5 && segmentType < 1.5) {
+                // Distance from center for edge detection
                 float dist_from_center = abs(vertPos.x - 0.5) * 2.0;
-                float edge_fade = 1.0 - smoothstep(0.7, 1.0, dist_from_center);
                 
-                // Fade from top to bottom
-                float vertical_fade = vertPos.y;
+                // Create needle clusters using noise
+                float clusterNoise = fbm(worldPos * 0.3 + vec2(noiseSeed));
+                float needlePattern = fbm(worldPos * 2.0 + vec2(noiseSeed * 3.0));
                 
-                alpha *= edge_fade * vertical_fade;
+                // Create gaps and clusters - MORE VISIBLE
+                float density = clusterNoise * 0.4 + 0.6;  // Increased base density
+                float needleAlpha = smoothstep(0.2, 0.5, needlePattern * density);  // Easier threshold
+                
+                // Edge fade - SOFTER
+                float edge_fade = 1.0 - smoothstep(0.7, 1.0, dist_from_center);  // Wider visible area
+                
+                // Vertical fade (darker at top, lighter at bottom) - LESS AGGRESSIVE
+                float vertical_fade = vertPos.y * 0.5 + 0.5;  // More uniform
+                
+                alpha *= needleAlpha * edge_fade * vertical_fade * 1.5;  // Boost overall alpha
+                
+                // Apply color variation using HSV
+                vec3 hsv = rgb2hsv(baseColor);
+                hsv.x += (noiseValue - 0.5) * colorVariation.x; // Hue variation
+                hsv.y += (detailNoise - 0.5) * colorVariation.y; // Saturation variation
+                hsv.z += (noiseValue - 0.5) * colorVariation.z;  // Value variation
+                
+                // Add depth-based darkening - LESS EXTREME
+                hsv.z *= 0.7 + vertical_fade * 0.3;
+                
+                baseColor = hsv2rgb(hsv);
+            }
+            // For branch segments
+            else if (segmentType > 1.5) {
+                // Branches have less alpha and more variation
+                float branchNoise = noise(worldPos * 0.8 + vec2(noiseSeed * 1.5));
+                alpha *= 0.6 + branchNoise * 0.4;
+                
+                // Darker branches
+                vec3 hsv = rgb2hsv(baseColor);
+                hsv.z *= 0.5 + branchNoise * 0.3;
+                baseColor = hsv2rgb(hsv);
+            }
+            // For trunk
+            else {
+                // Add bark texture
+                float barkNoise = fbm(worldPos * 0.2 + vec2(noiseSeed));
+                float barkDetail = noise(worldPos * 1.5);
+                
+                vec3 hsv = rgb2hsv(baseColor);
+                hsv.z *= 0.8 + barkNoise * 0.4;
+                hsv.y *= 0.7 + barkDetail * 0.3;
+                baseColor = hsv2rgb(hsv);
+            }
+            
+            // Discard very transparent pixels
+            if (alpha < 0.05) {
+                discard;
             }
             
             // Apply global fade
             alpha *= fade;
             
-            outColor = vec4(fragColor.rgb, alpha);
+            outColor = vec4(baseColor, alpha);
         }
         """
     
@@ -545,6 +677,8 @@ class ForestEffect(ShaderEffect):
         
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LESS)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
     def update(self, dt: float, state: Dict):
         """Update animation time"""
@@ -587,7 +721,7 @@ class ForestEffect(ShaderEffect):
         glUseProgram(0)
     
     def _render_trees(self):
-        """Render tree segments"""
+        """Render tree segments with branches"""
         glUseProgram(self.shader)
         
         # Set uniforms
@@ -615,31 +749,46 @@ class ForestEffect(ShaderEffect):
             trunk_width = tree['base_width'] * 0.11
             depth = tree['depth']
             
-            # Trunk (segment_type = 0)
+            # Get ground height
+            ground_y = self.viewport.height * 5 // 6
+            
+            # Trunk - bottom should always be at ground level
             instances.append([
-                tree['x'], tree['y'] - trunk_height/2, depth,  # offset
+                tree['x'], ground_y - trunk_height/2, depth,  # Use ground_y instead of tree['y']
                 trunk_width, trunk_height,  # size
                 tree['trunk_hue'], tree['trunk_sat'], tree['trunk_val'],  # color
                 1.0,  # alpha
                 0.0,  # wind_factor (trunk doesn't sway)
                 0.0,  # sway_phase
-                0.0   # segment_type (trunk)
+                0.0,  # segment_type (trunk)
+                0.02, 0.1, 0.15,  # color_variation (subtle for trunk)
+                tree['noise_seed']
             ])
             
-            # Needle segments (segment_type = 1)
+            # BRANCHES DISABLED - keeping trunk and foliage only
+            
+            # Now add needle segments
             segment_height = (tree['height'] - trunk_height) / tree['segments']
             
             for i in range(tree['segments']):
                 width_factor = (tree['segments'] - i) / tree['segments']
                 segment_width = tree['base_width'] * np.power(width_factor, 1.5)
+                segment_y = ground_y - trunk_height - (i + 0.5) * segment_height 
+            
+
+            # Now add needle segments
+            for i in range(tree['segments']):
+                width_factor = (tree['segments'] - i) / tree['segments']
+                segment_width = tree['base_width'] * np.power(width_factor, 1.5)
                 segment_y = tree['y'] - trunk_height - (i + 0.5) * segment_height
                 
-                # Color variation
+                # Color variation (more at top)
                 hue_var = (i / tree['segments']) * 0.05
                 
                 # Wind effect increases with height
                 wind_factor = tree['sway_amount'] * ((i + 1) / tree['segments']) ** 2
                 
+                # Main foliage segment
                 instances.append([
                     tree['x'], segment_y, depth,
                     segment_width, segment_height,
@@ -647,9 +796,11 @@ class ForestEffect(ShaderEffect):
                     0.9,  # alpha
                     wind_factor,
                     tree['sway_phase'],
-                    1.0   # segment_type (needles)
+                    1.0,  # segment_type (needles)
+                    tree['hue_variation'], tree['sat_variation'], tree['val_variation'],
+                    tree['noise_seed']
                 ])
-        
+
         if not instances:
             glUseProgram(0)
             return
@@ -663,7 +814,7 @@ class ForestEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 12 * 4  # 12 floats * 4 bytes
+        stride = 16 * 4  # 16 floats * 4 bytes
         
         # Offset (location 1)
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -699,6 +850,16 @@ class ForestEffect(ShaderEffect):
         glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(44))
         glEnableVertexAttribArray(7)
         glVertexAttribDivisor(7, 1)
+        
+        # Color variation (location 8)
+        glVertexAttribPointer(8, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(48))
+        glEnableVertexAttribArray(8)
+        glVertexAttribDivisor(8, 1)
+        
+        # Noise seed (location 9)
+        glVertexAttribPointer(9, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(60))
+        glEnableVertexAttribArray(9)
+        glVertexAttribDivisor(9, 1)
         
         # Draw all segments
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(instances))
