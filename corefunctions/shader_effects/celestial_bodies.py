@@ -475,7 +475,7 @@ class CelestialBodiesEffect(ShaderEffect):
         void main() {
             // Convert distance to normalized depth (0 = near, 1 = far)
             // Assuming distance range is 0-100 like the eye effect
-            float depth = bodyDistance / 100.0;
+            float depth = bodyDistance / 100.0+0.9;
             
             gl_Position = vec4(position, depth, 1.0);
             // Convert from [-1, 1] to [0, 1] for texture sampling
