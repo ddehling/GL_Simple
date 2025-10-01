@@ -326,11 +326,44 @@ class CelestialBodiesEffect(ShaderEffect):
         Returns (x, y, converged)
         """
         # Unpack corners
+    # Unpack corners
         az_tl, el_tl = self.tl
         az_tr, el_tr = self.tr
         az_br, el_br = self.br
         az_bl, el_bl = self.bl
         
+        # SPECIAL CASE: Check if viewport spans full azimuth range (360° wraparound)
+        az_range = max(az_tl, az_tr, az_br, az_bl) - min(az_tl, az_tr, az_br, az_bl)
+        if az_range > 350:  # Full panoramic view
+            # For panoramic views, azimuth maps linearly across width
+            # Normalize azimuth to [0, 360]
+            az_normalized = azimuth % 360
+            if az_normalized < 0:
+                az_normalized += 360
+            
+            # Map to u coordinate [0, 1]
+            # Assume left edge is at -180, right edge at +180
+            u = (az_normalized + 180) / 360.0
+            
+            # Elevation still uses standard interpolation
+            # Linear interpolation for v based on elevation
+            el_top = (el_tl + el_tr) / 2  # Average top elevation
+            el_bottom = (el_bl + el_br) / 2  # Average bottom elevation
+            
+            if abs(el_top - el_bottom) < 0.01:  # Degenerate case
+                v = 0.5
+            else:
+                v = (elevation - el_top) / (el_bottom - el_top)
+            
+            # Convert to pixels
+            x = u * self.width
+            y = v * self.height
+            
+            # Check if within viewport bounds
+            converged = (0 <= x <= self.width) and (0 <= y <= self.height)
+            return (x, y, converged)
+        
+        # STANDARD CASE: Normal bilinear interpolation for limited FOV
         # Handle azimuth wraparound - normalize target and corners to same range
         def normalize_azimuth(az, reference):
             """Normalize azimuth to be close to reference (handle wraparound)"""
@@ -575,6 +608,8 @@ class CelestialBodiesEffect(ShaderEffect):
         # Use inverse bilinear interpolation
         x, y, converged = self._inverse_bilinear_map(azimuth, elevation)
         
+        # Debug output for viewport 1
+
         # Even if not converged well, still check visibility with larger margin
         # This prevents popping when bodies are just outside viewport
         
@@ -593,7 +628,9 @@ class CelestialBodiesEffect(ShaderEffect):
             y_max < 0 or y_min > self.height
         )
         
+
         return (x, y, intersects_viewport and converged)
+
 
 
     def update(self, dt: float, state: Dict):

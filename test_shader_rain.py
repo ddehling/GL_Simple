@@ -33,10 +33,10 @@ def main():
     
     # Define corners for frame 1 (upward-facing view)
     corners_frame1 = [
-        (-180, 90),  # Top-left
-        (180, 90),   # Top-right
-        (180, 45),   # Bottom-right
-        (-180, 45)   # Bottom-left
+        (-180, 80),  # Top-left
+        (180, 80),   # Top-right
+        (180, 50),   # Bottom-right
+        (-180, 50)   # Bottom-left
     ]
     
 
