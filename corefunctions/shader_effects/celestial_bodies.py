@@ -54,7 +54,7 @@ class CelestialBody:
 
     def update(self, current_time: float, whomp: float = 0):
         """Update orbital position (works in RADIANS)"""
-        speed = 0.25
+        speed = 2.5
         delta_time = current_time - self.last_update
         self.angle += self.orbital_speed * delta_time * speed
         self.angle %= 2 * math.pi  # Keep angle in [0, 2π]
@@ -295,6 +295,11 @@ class CelestialBodiesEffect(ShaderEffect):
         """Pre-compute angular coordinates for each pixel in viewport"""
         height, width = self.viewport.height, self.viewport.width
         
+        # Store corners for inverse mapping
+        self.tl, self.tr, self.br, self.bl = self.corners
+        self.width = width
+        self.height = height
+        
         # Create normalized coordinate grids (0 to 1)
         y_norm = np.linspace(0, 1, height)
         x_norm = np.linspace(0, 1, width)
@@ -313,6 +318,81 @@ class CelestialBodiesEffect(ShaderEffect):
         el_top = tl[1] * (1 - X_norm) + tr[1] * X_norm
         el_bottom = bl[1] * (1 - X_norm) + br[1] * X_norm
         self.elevation_grid = el_top * (1 - Y_norm) + el_bottom * Y_norm
+
+    def _inverse_bilinear_map(self, azimuth: float, elevation: float) -> Tuple[float, float, bool]:
+        """
+        Inverse bilinear interpolation to find screen position from angular coordinates
+        Uses iterative solver (Newton-Raphson)
+        Returns (x, y, converged)
+        """
+        # Unpack corners
+        az_tl, el_tl = self.tl
+        az_tr, el_tr = self.tr
+        az_br, el_br = self.br
+        az_bl, el_bl = self.bl
+        
+        # Handle azimuth wraparound - normalize target and corners to same range
+        def normalize_azimuth(az, reference):
+            """Normalize azimuth to be close to reference (handle wraparound)"""
+            while az - reference > 180:
+                az -= 360
+            while az - reference < -180:
+                az += 360
+            return az
+        
+        # Normalize all azimuths relative to target
+        az_tl = normalize_azimuth(az_tl, azimuth)
+        az_tr = normalize_azimuth(az_tr, azimuth)
+        az_br = normalize_azimuth(az_br, azimuth)
+        az_bl = normalize_azimuth(az_bl, azimuth)
+        
+        # Initial guess (center of viewport)
+        u, v = 0.5, 0.5
+        
+        # Newton-Raphson iteration
+        for iteration in range(20):  # Max iterations
+            # Current position estimate
+            az_est = ((1-u)*(1-v)*az_tl + u*(1-v)*az_tr + 
+                    u*v*az_br + (1-u)*v*az_bl)
+            el_est = ((1-u)*(1-v)*el_tl + u*(1-v)*el_tr + 
+                    u*v*el_br + (1-u)*v*el_bl)
+            
+            # Error
+            error_az = azimuth - az_est
+            error_el = elevation - el_est
+            error = np.sqrt(error_az**2 + error_el**2)
+            
+            if error < 0.01:  # Converged
+                break
+            
+            # Compute Jacobian
+            daz_du = (-(1-v)*az_tl + (1-v)*az_tr + v*az_br - v*az_bl)
+            daz_dv = (-(1-u)*az_tl - u*az_tr + u*az_br + (1-u)*az_bl)
+            del_du = (-(1-v)*el_tl + (1-v)*el_tr + v*el_br - v*el_bl)
+            del_dv = (-(1-u)*el_tl - u*el_tr + u*el_br + (1-u)*el_bl)
+            
+            # Jacobian matrix determinant
+            det = daz_du * del_dv - daz_dv * del_du
+            
+            if abs(det) < 1e-10:  # Singular, can't solve
+                return (self.width * u, self.height * v, False)
+            
+            # Newton-Raphson update
+            du = (del_dv * error_az - daz_dv * error_el) / det
+            dv = (-del_du * error_az + daz_du * error_el) / det
+            
+            u += du
+            v += dv
+        
+        # Convert normalized coordinates to pixels
+        x = u * self.width
+        y = v * self.height
+        
+        # Check if solution converged (even if outside viewport)
+        converged = error < 1.0  # Within 1 degree
+        
+        return (x, y, converged)
+
         
     def get_vertex_shader(self):
         return """
@@ -322,13 +402,14 @@ class CelestialBodiesEffect(ShaderEffect):
         layout(location = 0) in vec2 position;  // Quad vertex position
         layout(location = 1) in vec3 instance_data;  // x, y, z (screen pos + depth)
         layout(location = 2) in vec4 color_size;  // r, g, b, radius
-        layout(location = 3) in vec2 body_params;  // corona_size, glow_factor
+        layout(location = 3) in vec3 body_params;  // corona_size, glow_factor, roughness
         
         out vec4 fragColor;
         out vec2 fragPos;
         out float fragRadius;
         out float fragCoronaSize;
         out float fragGlowFactor;
+        out float fragRoughness;
         
         uniform vec2 resolution;
         
@@ -350,14 +431,14 @@ class CelestialBodiesEffect(ShaderEffect):
             
             // Pass data to fragment shader
             fragColor = vec4(color_size.rgb, 1.0);
-            // IMPORTANT: Pass scaled position so distance calculation works
-            fragPos = scaled;  // Now in pixel space
+            fragPos = scaled;  // In pixel space
             fragRadius = color_size.a;
             fragCoronaSize = body_params.x;
             fragGlowFactor = body_params.y;
+            fragRoughness = body_params.z;
         }
         """
-        
+
     def get_fragment_shader(self):
         return """
         #version 310 es
@@ -368,8 +449,14 @@ class CelestialBodiesEffect(ShaderEffect):
         in float fragRadius;
         in float fragCoronaSize;
         in float fragGlowFactor;
+        in float fragRoughness;
         
         out vec4 outColor;
+        
+        // Simple noise function for surface texture
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
         
         void main() {
             // Distance from center of celestial body (now in pixel space)
@@ -378,7 +465,13 @@ class CelestialBodiesEffect(ShaderEffect):
             // Core body radius (the solid part)
             float core_radius = fragRadius / fragCoronaSize;
             
-            // Core body with anti-aliasing
+            // Add per-pixel noise for surface texture (only in core)
+            float noise = 0.0;
+            if (dist < core_radius) {
+                noise = (hash(fragPos * 0.1) - 0.5) * fragRoughness;
+            }
+            
+            // Core body with anti-aliasing and noise
             float core_alpha = smoothstep(core_radius + 0.5, core_radius - 0.5, dist);
             
             // Corona glow (extends to full radius)
@@ -388,10 +481,11 @@ class CelestialBodiesEffect(ShaderEffect):
             // Combine core and corona
             float total_alpha = core_alpha + corona_alpha;
             
+            // Apply noise to brightness (only in core)
+            vec3 final_color = fragColor.rgb * (1.0 + noise * core_alpha);
+            
             // Reduce saturation in corona
-            vec3 final_color = fragColor.rgb;
             if (core_alpha < 0.5) {
-                // In corona region, desaturate
                 float gray = dot(final_color, vec3(0.299, 0.587, 0.114));
                 final_color = mix(vec3(gray), final_color, 0.6);
             }
@@ -467,34 +561,31 @@ class CelestialBodiesEffect(ShaderEffect):
         
         glBindVertexArray(0)
 
-    def _get_screen_position(self, azimuth: float, elevation: float) -> Tuple[float, float, bool]:
+
+    def _get_screen_position(self, azimuth: float, elevation: float, apparent_radius: float = 0) -> Tuple[float, float, bool]:
         """
         Convert angular coordinates to screen position
         Returns (x, y, is_visible)
         """
-        # Find closest pixel in the grid
-        # This is a simple nearest-neighbor approach; could be optimized
-        az_diff = np.abs(self.azimuth_grid - azimuth)
-        el_diff = np.abs(self.elevation_grid - elevation)
+        # Use inverse bilinear interpolation
+        x, y, converged = self._inverse_bilinear_map(azimuth, elevation)
         
-        # Handle azimuth wraparound (e.g., 179° and -179° are close)
-        az_diff = np.minimum(az_diff, 360 - az_diff)
+        if not converged:
+            return (x, y, False)
         
-        # Combined distance
-        dist = np.sqrt(az_diff**2 + el_diff**2)
+        # Check if any part of the body intersects the viewport
+        x_min = x - apparent_radius
+        x_max = x + apparent_radius
+        y_min = y - apparent_radius
+        y_max = y + apparent_radius
         
-        # Find minimum distance
-        min_idx = np.unravel_index(np.argmin(dist), dist.shape)
-        min_dist = dist[min_idx]
+        # Check intersection with viewport [0, width] x [0, height]
+        intersects_viewport = not (
+            x_max < 0 or x_min > self.width or
+            y_max < 0 or y_min > self.height
+        )
         
-        # If too far from any grid point, not visible
-        if min_dist > 5.0:  # 5 degree tolerance
-            return (0, 0, False)
-        
-        # Convert array indices to screen coordinates
-        y, x = min_idx
-        
-        return (float(x), float(y), True)
+        return (x, y, intersects_viewport)
 
     def update(self, dt: float, state: Dict):
         """Update is handled externally by CelestialBody.update()"""
@@ -521,21 +612,34 @@ class CelestialBodiesEffect(ShaderEffect):
             
             azimuth, elevation = pos
             
-            # Convert to screen coordinates
-            screen_x, screen_y, is_visible = self._get_screen_position(azimuth, elevation)
-            
-            if not is_visible:
-                continue
-            
             # Calculate apparent size in pixels (base size scaled by corona)
             pixel_radius = body.size * body.corona_size
             
-            # Calculate depth (closer bodies render on top)
-            # Use inverse of distance so closer = larger depth value
-            depth = 100.0 / max(body.distance, 0.1)
+            # Convert to screen coordinates WITH radius check
+            screen_x, screen_y, is_visible = self._get_screen_position(
+                azimuth, elevation, apparent_radius=pixel_radius
+            )
+            
+            if not is_visible:
+                continue
+            # Calculate apparent size in pixels (base size scaled by corona)
+            pixel_radius = body.size * body.corona_size
+            
+            # Calculate depth for celestial bodies (second furthest objects)
+            # Map distance to z-range: 90-98 (with closer bodies slightly nearer)
+            # Bodies with larger distance values are physically further, so lower z
+            # Normalize to a reasonable range and invert so closer bodies have lower z
+            z_base = 98.0  # Base depth for furthest bodies
+            z_range = 8.0  # Range of depths (90-98)
+            
+            # Normalize distance (assuming distances range from ~0.4 to ~6)
+            # Closer bodies (smaller distance) get slightly lower z values but still far
+            distance_factor = np.clip(body.distance / 10.0, 0.0, 1.0)
+            depth = z_base - (distance_factor * z_range)  # 90 to 98
             
             # Convert HSV color to RGB
             h, s, v = body.color_h, body.color_s, body.color_v
+
             # Simple HSV to RGB conversion
             c = v * s
             x = c * (1 - abs((h * 6) % 2 - 1))
@@ -556,16 +660,18 @@ class CelestialBodiesEffect(ShaderEffect):
             
             r, g, b = r + m, g + m, b + m
             
-            # Apply visibility and roughness
-            brightness = visibility * (1.0 + np.random.random() * body.roughness)
+            # Apply visibility (but NOT random roughness here!)
+            brightness = visibility
             
             visible_bodies.append({
                 'position': (screen_x, screen_y, depth),
                 'color': (r * brightness, g * brightness, b * brightness),
                 'radius': pixel_radius,
                 'corona_size': body.corona_size,
-                'glow_factor': body.glow_factor
+                'glow_factor': body.glow_factor,
+                'roughness': body.roughness  # Pass roughness to shader instead
             })
+
         
         if not visible_bodies:
             return
@@ -581,8 +687,10 @@ class CelestialBodiesEffect(ShaderEffect):
             instance_data.extend([
                 pos[0], pos[1], pos[2],  # position + depth
                 col[0], col[1], col[2], body_data['radius'],  # color + radius
-                body_data['corona_size'], body_data['glow_factor']  # body params
+                body_data['corona_size'], body_data['glow_factor'], body_data['roughness']  # body params
             ])
+        
+        instance_data = np.array(instance_data, dtype=np.float32)
         
         instance_data = np.array(instance_data, dtype=np.float32)
         
@@ -600,7 +708,8 @@ class CelestialBodiesEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 9 * 4  # 9 floats per instance
+        # Setup instance attributes
+        stride = 10 * 4  # 10 floats per instance (was 9)
         
         # Position (location 1) - vec3
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -612,8 +721,8 @@ class CelestialBodiesEffect(ShaderEffect):
         glEnableVertexAttribArray(2)
         glVertexAttribDivisor(2, 1)
         
-        # Body params (location 3) - vec2
-        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(28))
+        # Body params (location 3) - vec3 (now includes roughness)
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(28))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
         
