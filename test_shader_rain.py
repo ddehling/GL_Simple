@@ -7,6 +7,7 @@ from corefunctions.shader_effects.test_circle import shader_test_circle
 from corefunctions.shader_effects.stars import shader_stars
 from corefunctions.shader_effects.shader_eye import shader_eye
 from corefunctions.shader_effects.shader_fog import ShaderFog
+from corefunctions.shader_effects.forest import shader_forest
 from corefunctions.shader_effects.celestial_bodies import (
     shader_celestial_bodies, 
     CELESTIAL_BODIES
@@ -65,7 +66,13 @@ def main():
     scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
     scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
-    scheduler.schedule_event(0, 60, shader_eye, frame_id=0)
+    #scheduler.schedule_event(0, 60, shader_eye, frame_id=0)
+    scheduler.schedule_event(
+    0,600,shader_forest,
+    season=0.5,  # Fall colors
+    density=1.0,
+    frame_id=0
+)
 
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -125,7 +132,7 @@ def main():
             scheduler.state['wind']=np.sin((time.time()) / 12) 
             scheduler.state['fog_strength'] = 0.25 + 0.25 * np.sin(time.time() / 3)
             scheduler.state['firefly_density'] = 0.5*np.sin((time.time()) / 4) +0.5
-            scheduler.state['starryness'] =1+ 0*0.5*np.sin((time.time()) / 4) +0.5
+            scheduler.state['season'] =0.5*np.sin((time.time()) / 4) +0.5
             scheduler.update()
             
             current_time = time.time()
