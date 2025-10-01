@@ -477,6 +477,8 @@ class CelestialBodiesEffect(ShaderEffect):
         }
         """
 
+
+
     def get_fragment_shader(self):
         return """
         #version 310 es
@@ -499,7 +501,7 @@ class CelestialBodiesEffect(ShaderEffect):
         uniform float visibility;       // overall visibility
         uniform float time;             // For animated noise
         
-        // Simple noise function for surface texture (ORIGINAL)
+        // Enhanced noise function with multiple frequencies
         float hash(vec2 p) {
             return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
         }
@@ -534,12 +536,22 @@ class CelestialBodiesEffect(ShaderEffect):
             // Core body radius
             float coreRadius = bodyAngularSize / coronaSize;
             
-            // Add per-pixel noise for surface texture (only in core) - ORIGINAL APPROACH
-            float noise = 0.0;
+            // Multi-scale surface noise (only in core)
+            float surfaceNoise = 0.0;
             if (angDist < coreRadius) {
-                // Use screen pixel coordinates with time seed
-                vec2 noisePos = gl_FragCoord.xy + vec2(time * 100.0);
-                noise = (hash(noisePos * 0.1) - 0.5) * roughness;
+                vec2 pixelCoord = gl_FragCoord.xy;
+                
+                // Layer 1: Fine detail
+                float noise1 = hash(pixelCoord * 0.5+vec2(time));
+                // Layer 2: Medium detail
+                float noise2 = hash(pixelCoord * 0.1 + vec2(123.45)+vec2(time));
+                // Layer 3: Large features
+                float noise3 = hash(pixelCoord * 0.05 + vec2(678.90));
+                
+                // Combine layers
+                surfaceNoise = (noise1 * 0.5 + noise2 * 0.3 + noise3 * 0.2);
+                // Center around 0 and scale by roughness
+                surfaceNoise = (surfaceNoise - 0.5) * roughness * 2.0;
             }
             
             // Core body with anti-aliasing
@@ -555,8 +567,10 @@ class CelestialBodiesEffect(ShaderEffect):
             
             if (totalAlpha < 0.01) discard;
             
-            // Apply noise to brightness (only in core)
-            vec3 finalColor = bodyColor * (1.0 + noise * coreAlpha);
+            // Apply noise ADDITIVELY to avoid dimming
+            vec3 baseColor = bodyColor;
+            vec3 noiseContribution = baseColor * surfaceNoise * coreAlpha;
+            vec3 finalColor = baseColor + noiseContribution;
             
             // Reduce saturation in corona
             if (coreAlpha < 0.5) {
@@ -574,6 +588,8 @@ class CelestialBodiesEffect(ShaderEffect):
             outColor = vec4(finalColor, totalAlpha * visibility);
         }
         """
+
+
 
 
 
