@@ -11,18 +11,20 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0):
+def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0, drift_x=0.0, drift_y=0.0):
     """
     Shader-based twinkling stars effect compatible with EventScheduler
     
     Usage:
-        scheduler.schedule_event(0, 60, shader_stars, num_stars=150, frame_id=0)
+        scheduler.schedule_event(0, 60, shader_stars, num_stars=150, drift_x=5.0, drift_y=-2.0, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
         num_stars: Number of stars to render
         twinkle_speed: Speed multiplier for twinkling animation
+        drift_x: Horizontal drift speed (pixels per second)
+        drift_y: Vertical drift speed (pixels per second)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -44,7 +46,9 @@ def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0):
             stars_effect = viewport.add_effect(
                 TwinklingStarsEffect,
                 num_stars=num_stars,
-                twinkle_speed=twinkle_speed
+                twinkle_speed=twinkle_speed,
+                drift_x=drift_x,
+                drift_y=drift_y
             )
             state['stars_effect'] = stars_effect
             print(f"✓ Initialized shader stars for frame {frame_id}")
@@ -57,7 +61,9 @@ def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0):
     # Update parameters from global state
     if 'stars_effect' in state:
         state['stars_effect'].twinkle_speed = outstate.get('twinkle_speed', twinkle_speed)
-    
+        state['stars_effect'].drift_x = outstate.get('drift_x', drift_x)
+        state['stars_effect'].drift_y = outstate.get('drift_y', drift_y)
+        state['stars_effect'].starryness = outstate.get('starryness', 1.0)
     # On close event, clean up
     if state['count'] == -1:
         if 'stars_effect' in state:
@@ -74,20 +80,25 @@ def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0):
 class TwinklingStarsEffect(ShaderEffect):
     """GPU-based twinkling stars using instanced rendering"""
     
-    def __init__(self, viewport, num_stars: int = 100, twinkle_speed: float = 1.0):
+    def __init__(self, viewport, num_stars: int = 100, twinkle_speed: float = 1.0, 
+                 drift_x: float = 0.0, drift_y: float = 0.0):
         super().__init__(viewport)
         self.num_stars = num_stars
         self.twinkle_speed = twinkle_speed
+        self.drift_x = drift_x  # Pixels per second
+        self.drift_y = drift_y  # Pixels per second
+        self.starryness = 1.0  # Global brightness scalar
         self.instance_VBO = None
         self.time = 0.0
         
         # Vectorized star data
-        self.positions = None  # [x, y] - shape (N, 2)
+        self.positions = None  # [x, y, z] - shape (N, 3)
         self.sizes = None  # Base sizes - shape (N,)
         self.colors = None  # [r, g, b] - shape (N, 3)
         self.twinkle_phases = None  # Phase offset for each star - shape (N,)
         self.twinkle_frequencies = None  # How fast each star twinkles - shape (N,)
         self.twinkle_amplitudes = None  # How much each star twinkles - shape (N,)
+        self.drift_multipliers = None  # Speed multiplier for each star - shape (N,)
         
         self._initialize_stars()
         
@@ -128,11 +139,18 @@ class TwinklingStarsEffect(ShaderEffect):
                     np.random.uniform(0.9, 1.0, n),
                     np.random.uniform(0.7, 0.9, n)
                 ]),
+                # # 15% cool white (slight blue)
+                # np.column_stack([
+                #     np.random.uniform(0.8, 0.95, n),
+                #     np.random.uniform(0.85, 0.95, n),
+                #     np.ones(n)
+                # ])
+                # ,
                 # 15% cool white (slight blue)
                 np.column_stack([
-                    np.random.uniform(0.8, 0.95, n),
-                    np.random.uniform(0.85, 0.95, n),
-                    np.ones(n)
+                    np.random.uniform(0.25, 0.95, n),
+                    np.random.uniform(0.25, 0.95, n),
+                    np.random.uniform(0.25, 0.95, n)
                 ])
             )
         )
@@ -141,6 +159,9 @@ class TwinklingStarsEffect(ShaderEffect):
         self.twinkle_phases = np.random.uniform(0, 2 * np.pi, n)
         self.twinkle_frequencies = np.random.uniform(0.5, 2.0, n)
         self.twinkle_amplitudes = np.random.uniform(0.3, 0.7, n)
+        
+        # Drift speed multipliers - each star drifts at slightly different speed
+        self.drift_multipliers = np.random.uniform(0.5, 1.5, n)
         
     def get_vertex_shader(self):
         return """
@@ -275,12 +296,23 @@ class TwinklingStarsEffect(ShaderEffect):
         glBindVertexArray(0)
 
     def update(self, dt: float, state: Dict):
-        """Update star twinkling animation"""
+        """Update star twinkling animation and drift"""
         if not self.enabled:
             return
         
         # Update time for twinkling
         self.time += dt * self.twinkle_speed
+        
+        # Update positions for drift with individual multipliers
+        if self.drift_x != 0.0 or self.drift_y != 0.0:
+            # Apply drift to x and y with individual star multipliers
+            self.positions[:, 0] += self.drift_x * dt * self.drift_multipliers
+            self.positions[:, 1] += self.drift_y * dt * self.drift_multipliers
+            
+            # Wrap around screen edges using modulo
+            self.positions[:, 0] = self.positions[:, 0] % self.viewport.width
+            self.positions[:, 1] = self.positions[:, 1] % self.viewport.height
+
 
     def render(self, state: Dict):
         """Render all stars using instancing"""
@@ -298,14 +330,17 @@ class TwinklingStarsEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Calculate twinkling alpha for each star
+        # Calculate twinkling brightness for each star
         # Use sine wave with phase offset and frequency variation
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
-        # Map from [-1, 1] to brightness range
-        # Base brightness: 0.4 to 1.0 (never fully off)
-        alphas = 0.7 + self.twinkle_amplitudes * twinkle_values * 0.3
+        # Map from [-1, 1] to brightness range with more dramatic variation
+        # Range: 0.2 to 1.0 (dim to full brightness)
+        alphas = 0.6 + self.twinkle_amplitudes * twinkle_values * 0.4
+        
+        # Apply global starryness brightness scalar
+        alphas = alphas * self.starryness
         
         # Build instance data - interleave all attributes
         instance_data = np.hstack([
@@ -314,7 +349,6 @@ class TwinklingStarsEffect(ShaderEffect):
             self.colors,  # r, g, b (3 floats)
             alphas[:, np.newaxis]  # alpha (1 float)
         ]).astype(np.float32)
-        
         # Upload instance data
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)

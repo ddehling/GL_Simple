@@ -63,7 +63,8 @@ def main():
                             corners=corners_frame0, frame_id=0)
     scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
-    scheduler.schedule_event(0, 600, shader_stars, num_stars=200, frame_id=0)
+    scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
+
 
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -123,6 +124,7 @@ def main():
             scheduler.state['wind']=np.sin((time.time()) / 12) 
             scheduler.state['fog_strength'] = 0.25 + 0.25 * np.sin(time.time() / 3)
             scheduler.state['firefly_density'] = 0.5*np.sin((time.time()) / 4) +0.5
+            scheduler.state['starryness'] = 0.5*np.sin((time.time()) / 4) +0.5
             scheduler.update()
             
             current_time = time.time()
