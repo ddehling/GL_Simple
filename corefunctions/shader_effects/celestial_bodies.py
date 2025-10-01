@@ -291,6 +291,9 @@ class CelestialBodiesEffect(ShaderEffect):
         # Pre-compute coordinate grids for the viewport
         self._setup_coordinate_grid()
         
+        # NEW: Create textures for angular coordinate grids
+        self._create_coordinate_textures()
+        
     def _setup_coordinate_grid(self):
         """Pre-compute angular coordinates for each pixel in viewport"""
         height, width = self.viewport.height, self.viewport.width
@@ -318,6 +321,32 @@ class CelestialBodiesEffect(ShaderEffect):
         el_top = tl[1] * (1 - X_norm) + tr[1] * X_norm
         el_bottom = bl[1] * (1 - X_norm) + br[1] * X_norm
         self.elevation_grid = el_top * (1 - Y_norm) + el_bottom * Y_norm
+
+    def _create_coordinate_textures(self):
+        """Upload azimuth and elevation grids as textures"""
+        height, width = self.viewport.height, self.viewport.width
+        
+        # Create azimuth texture
+        self.azimuth_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.azimuth_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, 
+                     GL_RED, GL_FLOAT, self.azimuth_grid.astype(np.float32))
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        
+        # Create elevation texture
+        self.elevation_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.elevation_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, width, height, 0,
+                     GL_RED, GL_FLOAT, self.elevation_grid.astype(np.float32))
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        
+        glBindTexture(GL_TEXTURE_2D, 0)
 
     def _inverse_bilinear_map(self, azimuth: float, elevation: float) -> Tuple[float, float, bool]:
         """
@@ -437,43 +466,14 @@ class CelestialBodiesEffect(ShaderEffect):
         #version 310 es
         precision highp float;
         
-        layout(location = 0) in vec2 position;  // Quad vertex position
-        layout(location = 1) in vec3 instance_data;  // x, y, z (screen pos + depth)
-        layout(location = 2) in vec4 color_size;  // r, g, b, radius
-        layout(location = 3) in vec3 body_params;  // corona_size, glow_factor, roughness
+        layout(location = 0) in vec2 position;  // Full-screen quad [-1, 1]
         
-        out vec4 fragColor;
-        out vec2 fragPos;
-        out float fragRadius;
-        out float fragCoronaSize;
-        out float fragGlowFactor;
-        out float fragRoughness;
-        
-        uniform vec2 resolution;
+        out vec2 fragTexCoord;
         
         void main() {
-            // Scale quad by radius (for rendering size)
-            vec2 scaled = position * color_size.a;
-            
-            // Translate to body center
-            vec2 screen_pos = scaled + instance_data.xy;
-            
-            // Convert to clip space
-            vec2 clipPos = (screen_pos / resolution) * 2.0 - 1.0;
-            clipPos.y = -clipPos.y;
-            
-            // Use Z for depth
-            float depth = instance_data.z / 100.0;
-            
-            gl_Position = vec4(clipPos, depth, 1.0);
-            
-            // Pass data to fragment shader
-            fragColor = vec4(color_size.rgb, 1.0);
-            fragPos = scaled;  // In pixel space
-            fragRadius = color_size.a;
-            fragCoronaSize = body_params.x;
-            fragGlowFactor = body_params.y;
-            fragRoughness = body_params.z;
+            gl_Position = vec4(position, 0.0, 1.0);
+            // Convert from [-1, 1] to [0, 1] for texture sampling
+            fragTexCoord = position * 0.5 + 0.5;
         }
         """
 
@@ -482,64 +482,101 @@ class CelestialBodiesEffect(ShaderEffect):
         #version 310 es
         precision highp float;
         
-        in vec4 fragColor;
-        in vec2 fragPos;
-        in float fragRadius;
-        in float fragCoronaSize;
-        in float fragGlowFactor;
-        in float fragRoughness;
-        
+        in vec2 fragTexCoord;
         out vec4 outColor;
         
-        // Simple noise function for surface texture
+        // Coordinate grid textures
+        uniform sampler2D azimuthMap;
+        uniform sampler2D elevationMap;
+        
+        // Body properties
+        uniform vec2 bodyPosition;      // azimuth, elevation in degrees
+        uniform float bodyAngularSize;  // angular radius in degrees
+        uniform vec3 bodyColor;         // RGB color
+        uniform float coronaSize;       // corona multiplier
+        uniform float glowFactor;       // glow intensity
+        uniform float roughness;        // surface roughness
+        uniform float visibility;       // overall visibility
+        uniform float time;             // For animated noise
+        
+        // Simple noise function for surface texture (ORIGINAL)
         float hash(vec2 p) {
             return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
         }
         
+        // Calculate angular distance between two points on sphere
+        float angularDistance(vec2 pos1, vec2 pos2) {
+            // pos1, pos2 are (azimuth, elevation) in degrees
+            // Convert to radians
+            float az1 = radians(pos1.x);
+            float el1 = radians(pos1.y);
+            float az2 = radians(pos2.x);
+            float el2 = radians(pos2.y);
+            
+            // Great circle distance formula
+            float daz = az2 - az1;
+            float a = sin(el1) * sin(el2) + cos(el1) * cos(el2) * cos(daz);
+            a = clamp(a, -1.0, 1.0);
+            
+            // Return angular distance in degrees
+            return degrees(acos(a));
+        }
+        
         void main() {
-            // Distance from center of celestial body (now in pixel space)
-            float dist = length(fragPos);
+            // Look up angular coordinates for this pixel
+            float pixelAzimuth = texture(azimuthMap, fragTexCoord).r;
+            float pixelElevation = texture(elevationMap, fragTexCoord).r;
+            vec2 pixelPos = vec2(pixelAzimuth, pixelElevation);
             
-            // Core body radius (the solid part)
-            float core_radius = fragRadius / fragCoronaSize;
+            // Calculate angular distance to body center
+            float angDist = angularDistance(pixelPos, bodyPosition);
             
-            // Add per-pixel noise for surface texture (only in core)
+            // Core body radius
+            float coreRadius = bodyAngularSize / coronaSize;
+            
+            // Add per-pixel noise for surface texture (only in core) - ORIGINAL APPROACH
             float noise = 0.0;
-            if (dist < core_radius) {
-                noise = (hash(fragPos * 0.1) - 0.5) * fragRoughness;
+            if (angDist < coreRadius) {
+                // Use screen pixel coordinates with time seed
+                vec2 noisePos = gl_FragCoord.xy + vec2(time * 100.0);
+                noise = (hash(noisePos * 0.1) - 0.5) * roughness;
             }
             
-            // Core body with anti-aliasing and noise
-            float core_alpha = smoothstep(core_radius + 0.5, core_radius - 0.5, dist);
+            // Core body with anti-aliasing
+            float fadeWidth = 0.05;  // degrees
+            float coreAlpha = smoothstep(coreRadius + fadeWidth, coreRadius - fadeWidth, angDist);
             
-            // Corona glow (extends to full radius)
-            float corona_alpha = smoothstep(fragRadius + 0.5, fragRadius - 0.5, dist);
-            corona_alpha = corona_alpha * fragGlowFactor * (1.0 - core_alpha);
+            // Corona glow
+            float coronaAlpha = smoothstep(bodyAngularSize + fadeWidth, bodyAngularSize - fadeWidth, angDist);
+            coronaAlpha = coronaAlpha * glowFactor * (1.0 - coreAlpha);
             
             // Combine core and corona
-            float total_alpha = core_alpha + corona_alpha;
+            float totalAlpha = coreAlpha + coronaAlpha;
+            
+            if (totalAlpha < 0.01) discard;
             
             // Apply noise to brightness (only in core)
-            vec3 final_color = fragColor.rgb * (1.0 + noise * core_alpha);
+            vec3 finalColor = bodyColor * (1.0 + noise * coreAlpha);
             
             // Reduce saturation in corona
-            if (core_alpha < 0.5) {
-                float gray = dot(final_color, vec3(0.299, 0.587, 0.114));
-                final_color = mix(vec3(gray), final_color, 0.6);
+            if (coreAlpha < 0.5) {
+                float gray = dot(finalColor, vec3(0.299, 0.587, 0.114));
+                finalColor = mix(vec3(gray), finalColor, 0.6);
             }
             
-            // Apply brightness falloff in corona for more realistic glow
-            if (dist > core_radius) {
-                float corona_falloff = 1.0 - smoothstep(core_radius, fragRadius, dist);
-                final_color = final_color * (0.5 + 0.5 * corona_falloff);
+            // Apply brightness falloff in corona
+            if (angDist > coreRadius) {
+                float coronaFalloff = 1.0 - smoothstep(coreRadius, bodyAngularSize, angDist);
+                finalColor = finalColor * (0.5 + 0.5 * coronaFalloff);
             }
             
-            outColor = vec4(final_color, total_alpha);
-            
-            // Discard fully transparent pixels
-            if (total_alpha < 0.01) discard;
+            // Apply visibility
+            outColor = vec4(finalColor, totalAlpha * visibility);
         }
         """
+
+
+
     
     def compile_shader(self):
         """Compile and link celestial body shaders"""
@@ -564,8 +601,8 @@ class CelestialBodiesEffect(ShaderEffect):
             raise
 
     def setup_buffers(self):
-        """Initialize OpenGL buffers"""
-        # Quad vertices (centered, will be scaled per body)
+        """Initialize OpenGL buffers - now just a full-screen quad"""
+        # Full-screen quad in clip space
         vertices = np.array([
             -1.0, -1.0,
              1.0, -1.0,
@@ -593,11 +630,8 @@ class CelestialBodiesEffect(ShaderEffect):
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
         
-        # Instance buffer (will be updated each frame)
-        self.instance_VBO = glGenBuffers(1)
-        self.VBOs.append(self.instance_VBO)
-        
         glBindVertexArray(0)
+
 
 
     def _get_screen_position(self, azimuth: float, elevation: float, apparent_radius: float = 0) -> Tuple[float, float, bool]:
@@ -630,24 +664,39 @@ class CelestialBodiesEffect(ShaderEffect):
 
 
 
-    def update(self, dt: float, state: Dict):
-        """Update is handled externally by CelestialBody.update()"""
-        pass
-
     def render(self, state: Dict):
         """Render all visible celestial bodies"""
         if not self.enabled or not self.shader:
             return
         
-        # Get visibility from state
         visibility = self.celestial_visibility
         if visibility <= 0.01:
             return
         
-        # Collect visible bodies
-        visible_bodies = []
+        glUseProgram(self.shader)
         
+        # Bind coordinate textures
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self.azimuth_texture)
+        glUniform1i(glGetUniformLocation(self.shader, "azimuthMap"), 0)
+        
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D, self.elevation_texture)
+        glUniform1i(glGetUniformLocation(self.shader, "elevationMap"), 1)
+        
+        # Set time uniform for animated noise
+        current_time = time.time()
+        glUniform1f(glGetUniformLocation(self.shader, "time"), current_time)
+        
+        # Enable blending
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        glBindVertexArray(self.VAO)
+        
+        # Render each body as a full-screen quad
         for body in self.celestial_bodies:
+
             # Get angular position
             pos = body.get_true_position()
             if pos is None:
@@ -655,35 +704,8 @@ class CelestialBodiesEffect(ShaderEffect):
             
             azimuth, elevation = pos
             
-            # Calculate apparent size in pixels (base size scaled by corona)
-            pixel_radius = body.size * body.corona_size
-            
-            # Convert to screen coordinates WITH radius check
-            screen_x, screen_y, is_visible = self._get_screen_position(
-                azimuth, elevation, apparent_radius=pixel_radius
-            )
-            
-            if not is_visible:
-                continue
-            # Calculate apparent size in pixels (base size scaled by corona)
-            pixel_radius = body.size * body.corona_size
-            
-            # Calculate depth for celestial bodies (second furthest objects)
-            # Map distance to z-range: 90-98 (with closer bodies slightly nearer)
-            # Bodies with larger distance values are physically further, so lower z
-            # Normalize to a reasonable range and invert so closer bodies have lower z
-            z_base = 98.0  # Base depth for furthest bodies
-            z_range = 8.0  # Range of depths (90-98)
-            
-            # Normalize distance (assuming distances range from ~0.4 to ~6)
-            # Closer bodies (smaller distance) get slightly lower z values but still far
-            distance_factor = np.clip(body.distance / 10.0, 0.0, 1.0)
-            depth = z_base - (distance_factor * z_range)  # 90 to 98
-            
-            # Convert HSV color to RGB
+            # Convert HSV to RGB
             h, s, v = body.color_h, body.color_s, body.color_v
-
-            # Simple HSV to RGB conversion
             c = v * s
             x = c * (1 - abs((h * 6) % 2 - 1))
             m = v - c
@@ -703,79 +725,40 @@ class CelestialBodiesEffect(ShaderEffect):
             
             r, g, b = r + m, g + m, b + m
             
-            # Apply visibility (but NOT random roughness here!)
-            brightness = visibility
+            # Calculate angular size in degrees
+            # Approximate: assuming pixel size ~= angular size for small angles
+            # You may want to tune this scaling factor
+            pixel_size = body.size/2  # Size in pixels
+            fov_height = abs(self.corners[3][1] - self.corners[0][1])  # Elevation range
+            angular_size = (pixel_size / self.viewport.height) * fov_height
             
-            visible_bodies.append({
-                'position': (screen_x, screen_y, depth),
-                'color': (r * brightness, g * brightness, b * brightness),
-                'radius': pixel_radius,
-                'corona_size': body.corona_size,
-                'glow_factor': body.glow_factor,
-                'roughness': body.roughness  # Pass roughness to shader instead
-            })
-
-        
-        if not visible_bodies:
-            return
-        
-        # Sort by depth (far to near) for proper rendering
-        visible_bodies.sort(key=lambda b: b['position'][2])
-        
-        # Build instance data
-        instance_data = []
-        for body_data in visible_bodies:
-            pos = body_data['position']
-            col = body_data['color']
-            instance_data.extend([
-                pos[0], pos[1], pos[2],  # position + depth
-                col[0], col[1], col[2], body_data['radius'],  # color + radius
-                body_data['corona_size'], body_data['glow_factor'], body_data['roughness']  # body params
-            ])
-        
-        instance_data = np.array(instance_data, dtype=np.float32)
-        
-        instance_data = np.array(instance_data, dtype=np.float32)
-        
-        # Upload to GPU
-        glUseProgram(self.shader)
-        
-        # Update resolution uniform
-        loc = glGetUniformLocation(self.shader, "resolution")
-        if loc != -1:
-            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
-        
-        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
-        
-        glBindVertexArray(self.VAO)
-        
-        # Setup instance attributes
-        # Setup instance attributes
-        stride = 10 * 4  # 10 floats per instance (was 9)
-        
-        # Position (location 1) - vec3
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
-        glEnableVertexAttribArray(1)
-        glVertexAttribDivisor(1, 1)
-        
-        # Color + Radius (location 2) - vec4
-        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
-        glEnableVertexAttribArray(2)
-        glVertexAttribDivisor(2, 1)
-        
-        # Body params (location 3) - vec3 (now includes roughness)
-        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(28))
-        glEnableVertexAttribArray(3)
-        glVertexAttribDivisor(3, 1)
-        
-        # Enable blending for transparency
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
-        # Draw all bodies with instancing
-        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(visible_bodies))
+            # Set uniforms for this body
+            glUniform2f(glGetUniformLocation(self.shader, "bodyPosition"), 
+                       azimuth, elevation)
+            glUniform1f(glGetUniformLocation(self.shader, "bodyAngularSize"), 
+                       angular_size * body.corona_size)
+            glUniform3f(glGetUniformLocation(self.shader, "bodyColor"), 
+                       r * visibility, g * visibility, b * visibility)
+            glUniform1f(glGetUniformLocation(self.shader, "coronaSize"), 
+                       body.corona_size)
+            glUniform1f(glGetUniformLocation(self.shader, "glowFactor"), 
+                       body.glow_factor)
+            glUniform1f(glGetUniformLocation(self.shader, "roughness"), 
+                       body.roughness)
+            glUniform1f(glGetUniformLocation(self.shader, "visibility"), 
+                       visibility)
+            
+            # Draw full-screen quad
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
         
         glDisable(GL_BLEND)
         glBindVertexArray(0)
         glUseProgram(0)
+    
+    def cleanup(self):
+        """Clean up textures in addition to base cleanup"""
+        if hasattr(self, 'azimuth_texture'):
+            glDeleteTextures(1, [self.azimuth_texture])
+        if hasattr(self, 'elevation_texture'):
+            glDeleteTextures(1, [self.elevation_texture])
+        super().cleanup()
