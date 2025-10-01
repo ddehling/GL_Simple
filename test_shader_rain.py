@@ -1,20 +1,45 @@
 import numpy as np
 import time
 from corefunctions.Events import EventScheduler
-from corefunctions.shader_effects import shader_rain  # Clean import!
-from corefunctions.shader_effects import shader_firefly  # Clean import!
-from corefunctions.shader_effects.test_circle import shader_test_circle  # Add this import
+from corefunctions.shader_effects import shader_rain
+from corefunctions.shader_effects import shader_firefly
+from corefunctions.shader_effects.test_circle import shader_test_circle
 from corefunctions.shader_effects.shader_fog import ShaderFog
-
+from corefunctions.shader_effects.celestial_bodies import (
+    shader_celestial_bodies, 
+    CELESTIAL_BODIES
+)
 def main():
     # Create scheduler with shader renderer enabled
     # Make window bigger to see both viewports clearly
     headless = False  # Change to True to disable display
-    
+        # Initialize celestial bodies (they update independently)
     scheduler = EventScheduler(
         use_shader_renderer=True,
         headless=headless
     )
+
+    celestial_bodies = CELESTIAL_BODIES.copy()
+    scheduler.state['celestial_bodies'] = celestial_bodies
+    scheduler.state['celestial_visibility'] = 1.0
+    
+    # Define viewport corners for frame 0 (front-facing view)
+    corners_frame0 = [
+        (-18, 18),  # Top-left
+        (18, 18),   # Top-right
+        (18, 0),    # Bottom-right
+        (-18, 0)    # Bottom-left
+    ]
+    
+    # Define corners for frame 1 (upward-facing view)
+    corners_frame1 = [
+        (-180, 90),  # Top-left
+        (180, 90),   # Top-right
+        (180, 45),   # Bottom-right
+        (-180, 45)   # Bottom-left
+    ]
+    
+
 
     viewport0 = scheduler.shader_renderer.get_viewport(0)
     if viewport0:
@@ -33,6 +58,10 @@ def main():
                                     fog_far=80.0)
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
+    scheduler.schedule_event(0, 60, shader_celestial_bodies, 
+                            corners=corners_frame0, frame_id=0)
+    scheduler.schedule_event(0, 60, shader_celestial_bodies, 
+                            corners=corners_frame1, frame_id=1)
     event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
     event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -83,10 +112,14 @@ def main():
     
     try:
         while time.time() - start_time < 65:  # Run for 65 seconds
+            current_time = time.time()
+            for body in celestial_bodies:
+                body.update(current_time, 0)
+
             scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
             scheduler.state['wind']=np.sin((time.time()) / 12) 
             scheduler.state['fog_strength'] = 0.25 + 0.25 * np.sin(time.time() / 3)
-            scheduler.state['firefly_density'] = np.sin((time.time()) / 4) 
+            scheduler.state['firefly_density'] = 0.5*np.sin((time.time()) / 4) +0.5
             scheduler.update()
             
             current_time = time.time()

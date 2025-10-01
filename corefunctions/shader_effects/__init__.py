@@ -5,6 +5,7 @@ from .base import ShaderEffect
 from .rain import shader_rain, RainEffect
 from .test_circle import shader_test_circle
 from .firefly import shader_firefly, FireflyEffect
+from .celestial_bodies import shader_celestial_bodies, CelestialBodiesEffect
 
 # As you add more effects:
 # from .starfield import shader_starfield, StarfieldEffect
@@ -16,5 +17,6 @@ __all__ = [
     'RainEffect',
     'shader_test_circle',
     'shader_firefly',
+    'shader_celestial_bodies',
     # Add new effects here
 ]
