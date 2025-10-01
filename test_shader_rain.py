@@ -1,20 +1,22 @@
 import numpy as np
 import time
 from corefunctions.Events import EventScheduler
-from corefunctions.shader_effects import shader_rain
-from corefunctions.shader_effects import shader_firefly
-from corefunctions.shader_effects.test_circle import shader_test_circle
-from corefunctions.shader_effects.stars import shader_stars
-from corefunctions.shader_effects.shader_eye import shader_eye
-from corefunctions.shader_effects.shader_fog import ShaderFog
-from corefunctions.shader_effects.forest import shader_forest
-from corefunctions.shader_effects.fog_beings import shader_chromatic_fog_beings
-from corefunctions.shader_effects.leaves import shader_falling_leaves
-from corefunctions.shader_effects.shader_aurora import shader_aurora
+# from corefunctions.shader_effects import shader_rain
+# from corefunctions.shader_effects import shader_firefly
+# from corefunctions.shader_effects.test_circle import shader_test_circle
+# from corefunctions.shader_effects.stars import shader_stars
+# from corefunctions.shader_effects.shader_eye import shader_eye
+# from corefunctions.shader_effects.shader_fog import ShaderFog
+# from corefunctions.shader_effects.forest import shader_forest
+# from corefunctions.shader_effects.fog_beings import shader_chromatic_fog_beings
+# from corefunctions.shader_effects.leaves import shader_falling_leaves
+# from corefunctions.shader_effects.shader_aurora import shader_aurora
+# from corefunctions.shader_effects.shader_lightning import shader_lightning
 from corefunctions.shader_effects.celestial_bodies import (
-    shader_celestial_bodies, 
-    CELESTIAL_BODIES
-)
+     shader_celestial_bodies, 
+     CELESTIAL_BODIES
+ )
+from corefunctions import shader_effects as fx
 
 def main():
     # Create scheduler with shader renderer enabled
@@ -65,9 +67,9 @@ def main():
     #                                 fog_far=80.0)
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
-    scheduler.schedule_event(0, 600, shader_celestial_bodies, 
+    scheduler.schedule_event(0, 600, fx.shader_celestial_bodies, 
                             corners=corners_frame0, frame_id=0)
-    scheduler.schedule_event(0, 600, shader_celestial_bodies, 
+    scheduler.schedule_event(0, 600, fx.shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
     #scheduler.schedule_event(0, 600, shader_stars, num_stars=150, drift_x=1.0, drift_y=0.5, frame_id=0)
     #scheduler.schedule_event(0, 60, shader_eye, frame_id=0)
@@ -86,15 +88,18 @@ def main():
     # event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
     # scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
     #     # Test circle at z=50 (middle depth) - should blend with rain
-    event3=scheduler.schedule_event(0, 60, shader_test_circle, 
-                            x=60, y=30, radius=15, z=15, 
-                            color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
-                           frame_id=0)
-    scheduler.schedule_event(0, 60, shader_aurora, frame_id=0, side="top")
+    # event3=scheduler.schedule_event(0, 60, shader_test_circle, 
+    #                         x=60, y=30, radius=15, z=15, 
+    #                         color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
+    #                        frame_id=0)
+    scheduler.schedule_event(0, 60, fx.shader_aurora, frame_id=0, side="top")
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     # print(f"Events in queue: {len(scheduler.event_queue)}")
-    
+    for i in range(5):
+        delay = i * 0.5
+        scheduler.schedule_event(5 + delay, 1.0, fx.shader_lightning, frame_id=0)
+
     # Add some wind
     scheduler.state['wind'] = 0.5
     
