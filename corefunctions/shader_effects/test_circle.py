@@ -158,6 +158,10 @@ class TestCircleEffect(ShaderEffect):
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         
+        # Enable depth testing
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        
         # Create VAO
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
@@ -186,6 +190,16 @@ class TestCircleEffect(ShaderEffect):
         """Render the circle"""
         if not self.enabled or not self.shader:
             return
+        
+        # Enable blending for transparency
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)  # Standard alpha blending
+        
+        # Enable depth testing AND depth writes
+        # The circle will write to the depth buffer, blocking objects behind it
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)  # Write to depth buffer so we block things behind us
             
         glUseProgram(self.shader)
         
@@ -212,3 +226,6 @@ class TestCircleEffect(ShaderEffect):
         glBindVertexArray(0)
         
         glUseProgram(0)
+        
+        # Disable blending (depth mask already GL_TRUE)
+        glDisable(GL_BLEND)

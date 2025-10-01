@@ -52,7 +52,7 @@ vec4 blur_at_depth(vec2 uv, float depth_factor) {
     
     // 5x5 gaussian kernel (simplified for performance)
     int radius = int(ceil(blur_amount));
-    radius = min(radius, 8); // Limit max radius
+    radius = min(radius, 4); // Limit max radius
     
     for (int x = -radius; x <= radius; x++) {
         for (int y = -radius; y <= radius; y++) {

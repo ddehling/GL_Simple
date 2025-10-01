@@ -2,6 +2,7 @@ import numpy as np
 import time
 from corefunctions.Events import EventScheduler
 from corefunctions.shader_effects import shader_rain  # Clean import!
+from corefunctions.shader_effects import shader_firefly  # Clean import!
 from corefunctions.shader_effects.test_circle import shader_test_circle  # Add this import
 from corefunctions.shader_effects.shader_fog import ShaderFog
 
@@ -14,7 +15,7 @@ def main():
         use_shader_renderer=True,
         headless=headless
     )
-    
+
     viewport0 = scheduler.shader_renderer.get_viewport(0)
     if viewport0:
         fog0 = viewport0.add_effect(ShaderFog, 
@@ -29,6 +30,7 @@ def main():
     event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
     event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
     event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
+    scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
         # Test circle at z=50 (middle depth) - should blend with rain
     event3=scheduler.schedule_event(0, 60, shader_test_circle, 
                            x=60, y=30, radius=15, z=50, 
@@ -76,8 +78,8 @@ def main():
         while time.time() - start_time < 65:  # Run for 65 seconds
             scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
             scheduler.state['wind']=np.sin((time.time()) / 12) 
-            scheduler.state['fog_strength'] = 0.8 + 0.8 * np.sin(time.time() / 3)
-            scheduler.state['fog_strength_1'] = 0.5
+            scheduler.state['fog_strength'] = 0.5 + 0.5 * np.sin(time.time() / 3)
+            scheduler.state['firefly_density'] = np.sin((time.time()) / 4) 
             scheduler.update()
             
             current_time = time.time()
