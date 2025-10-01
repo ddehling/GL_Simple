@@ -11,6 +11,7 @@ from .shader_eye import shader_eye, EyeEffect
 from .forest import shader_forest, ForestEffect
 from .fog_beings import shader_chromatic_fog_beings, ChromaticFogBeingsEffect
 from .leaves import shader_falling_leaves
+from .shader_aurora import shader_aurora, AuroraEffect
 
 # As you add more effects:
 # from .starfield import shader_starfield, StarfieldEffect
@@ -28,5 +29,6 @@ __all__ = [
     'shader_forest',
     'shader_chromatic_fog_beings',
     'shader_falling_leaves',
+    'shader_aurora',
     # Add new effects here
 ]

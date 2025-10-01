@@ -10,6 +10,7 @@ from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.forest import shader_forest
 from corefunctions.shader_effects.fog_beings import shader_chromatic_fog_beings
 from corefunctions.shader_effects.leaves import shader_falling_leaves
+from corefunctions.shader_effects.shader_aurora import shader_aurora
 from corefunctions.shader_effects.celestial_bodies import (
     shader_celestial_bodies, 
     CELESTIAL_BODIES
@@ -77,7 +78,7 @@ def main():
 #     frame_id=0
 # )
     #scheduler.schedule_event(0, 25, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
-    scheduler.schedule_event(0, 60, shader_falling_leaves, density=1.5, frame_id=0)
+    #scheduler.schedule_event(0, 60, shader_falling_leaves, density=1.5, frame_id=0)
 
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -89,7 +90,7 @@ def main():
                             x=60, y=30, radius=15, z=15, 
                             color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
                            frame_id=0)
-    
+    scheduler.schedule_event(0, 60, shader_aurora, frame_id=0, side="top")
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     # print(f"Events in queue: {len(scheduler.event_queue)}")
