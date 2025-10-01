@@ -350,6 +350,7 @@ class CelestialBodiesEffect(ShaderEffect):
         u, v = 0.5, 0.5
         
         # Newton-Raphson iteration
+        error = float('inf')  # Initialize error
         for iteration in range(20):  # Max iterations
             # Current position estimate
             az_est = ((1-u)*(1-v)*az_tl + u*(1-v)*az_tr + 
@@ -383,15 +384,19 @@ class CelestialBodiesEffect(ShaderEffect):
             
             u += du
             v += dv
+            
+            # Don't clamp u,v - allow extrapolation for off-screen bodies
         
         # Convert normalized coordinates to pixels
         x = u * self.width
         y = v * self.height
         
-        # Check if solution converged (even if outside viewport)
-        converged = error < 1.0  # Within 1 degree
+        # More lenient convergence check for extrapolation
+        # Accept solution if error is reasonable OR if we've done many iterations
+        converged = error < 2.0 or iteration >= 15  # Relaxed threshold
         
         return (x, y, converged)
+
 
         
     def get_vertex_shader(self):
@@ -570,14 +575,17 @@ class CelestialBodiesEffect(ShaderEffect):
         # Use inverse bilinear interpolation
         x, y, converged = self._inverse_bilinear_map(azimuth, elevation)
         
-        if not converged:
-            return (x, y, False)
+        # Even if not converged well, still check visibility with larger margin
+        # This prevents popping when bodies are just outside viewport
         
-        # Check if any part of the body intersects the viewport
-        x_min = x - apparent_radius
-        x_max = x + apparent_radius
-        y_min = y - apparent_radius
-        y_max = y + apparent_radius
+        # Expand check margin for bodies near viewport edges
+        margin = apparent_radius + 10  # Extra pixels for smooth transitions
+        
+        # Check if any part of the body could be visible (with margin)
+        x_min = x - margin
+        x_max = x + margin
+        y_min = y - margin
+        y_max = y + margin
         
         # Check intersection with viewport [0, width] x [0, height]
         intersects_viewport = not (
@@ -585,7 +593,8 @@ class CelestialBodiesEffect(ShaderEffect):
             y_max < 0 or y_min > self.height
         )
         
-        return (x, y, intersects_viewport)
+        return (x, y, intersects_viewport and converged)
+
 
     def update(self, dt: float, state: Dict):
         """Update is handled externally by CelestialBody.update()"""

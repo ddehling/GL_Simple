@@ -41,41 +41,41 @@ def main():
     
 
 
-    viewport0 = scheduler.shader_renderer.get_viewport(0)
-    if viewport0:
-        fog0 = viewport0.add_effect(ShaderFog, 
-                                    strength=2.6, 
-                                    color=(0.5, 0.6, 0.8),  # Blue-ish fog
-                                    fog_near=20.0,
-                                    fog_far=80.0)
-        print(f"Added fog to viewport 0")
-    viewport1 = scheduler.shader_renderer.get_viewport(1)
-    if viewport0:
-        fog0 = viewport1.add_effect(ShaderFog, 
-                                    strength=2.6, 
-                                    color=(0.5, 0.6, 0.8),  # Blue-ish fog
-                                    fog_near=20.0,
-                                    fog_far=80.0)
+    # viewport0 = scheduler.shader_renderer.get_viewport(0)
+    # if viewport0:
+    #     fog0 = viewport0.add_effect(ShaderFog, 
+    #                                 strength=2.6, 
+    #                                 color=(0.5, 0.6, 0.8),  # Blue-ish fog
+    #                                 fog_near=20.0,
+    #                                 fog_far=80.0)
+    #     print(f"Added fog to viewport 0")
+    # viewport1 = scheduler.shader_renderer.get_viewport(1)
+    # if viewport0:
+    #     fog0 = viewport1.add_effect(ShaderFog, 
+    #                                 strength=2.6, 
+    #                                 color=(0.5, 0.6, 0.8),  # Blue-ish fog
+    #                                 fog_near=20.0,
+    #                                 fog_far=80.0)
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
-    scheduler.schedule_event(0, 60, shader_celestial_bodies, 
+    scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame0, frame_id=0)
-    scheduler.schedule_event(0, 60, shader_celestial_bodies, 
+    scheduler.schedule_event(0, 600, shader_celestial_bodies, 
                             corners=corners_frame1, frame_id=1)
-    event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
-    event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
-    event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
-    event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
-    scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
-        # Test circle at z=50 (middle depth) - should blend with rain
-    event3=scheduler.schedule_event(0, 60, shader_test_circle, 
-                           x=60, y=30, radius=15, z=50, 
-                           color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
-                           frame_id=0)
+    # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
+    # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
+    # event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
+    # event2 = scheduler.schedule_event(0, 40, shader_rain, intensity=0.8, frame_id=1)
+    # scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
+    #     # Test circle at z=50 (middle depth) - should blend with rain
+    # event3=scheduler.schedule_event(0, 60, shader_test_circle, 
+    #                        x=60, y=30, radius=15, z=50, 
+    #                        color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
+    #                        frame_id=0)
     
-    print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
-    print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
-    print(f"Events in queue: {len(scheduler.event_queue)}")
+    # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
+    # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
+    # print(f"Events in queue: {len(scheduler.event_queue)}")
     
     # Add some wind
     scheduler.state['wind'] = 0.5
@@ -111,7 +111,7 @@ def main():
     print("\nContinuing main loop...")
     
     try:
-        while time.time() - start_time < 65:  # Run for 65 seconds
+        while time.time() - start_time < 650:  # Run for 65 seconds
             current_time = time.time()
             for body in celestial_bodies:
                 body.update(current_time, 0)
