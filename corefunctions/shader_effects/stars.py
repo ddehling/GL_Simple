@@ -81,12 +81,13 @@ class TwinklingStarsEffect(ShaderEffect):
     """GPU-based twinkling stars using instanced rendering"""
     
     def __init__(self, viewport, num_stars: int = 100, twinkle_speed: float = 1.0, 
-                 drift_x: float = 0.0, drift_y: float = 0.0):
+                 drift_x: float = 0.0, drift_y: float = 0.0, depth: float = 99.9):
         super().__init__(viewport)
         self.num_stars = num_stars
         self.twinkle_speed = twinkle_speed
         self.drift_x = drift_x  # Pixels per second
         self.drift_y = drift_y  # Pixels per second
+        self.depth = depth  # Z depth (default far away)
         self.starryness = 1.0  # Global brightness scalar
         self.instance_VBO = None
         self.time = 0.0
@@ -106,11 +107,11 @@ class TwinklingStarsEffect(ShaderEffect):
         """Initialize all star data as numpy arrays"""
         n = self.num_stars
         
-        # Random positions across screen with Z at far depth
+        # Random positions across screen with Z at specified depth
         self.positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, n),
             np.random.uniform(0, self.viewport.height, n),
-            np.full(n, 99.9)  # All stars at far depth
+            np.full(n, self.depth)  # Use configurable depth
         ])
         # Star sizes - mix of small and larger stars
         # 70% small, 20% medium, 10% large
@@ -319,6 +320,10 @@ class TwinklingStarsEffect(ShaderEffect):
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
+        # Enable depth testing for proper Z ordering
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        
         # Enable alpha blending for stars
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -331,12 +336,10 @@ class TwinklingStarsEffect(ShaderEffect):
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
         # Calculate twinkling brightness for each star
-        # Use sine wave with phase offset and frequency variation
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
-        # Map from [-1, 1] to brightness range with more dramatic variation
-        # Range: 0.2 to 1.0 (dim to full brightness)
+        # Map from [-1, 1] to brightness range
         alphas = 0.6 + self.twinkle_amplitudes * twinkle_values * 0.4
         
         # Apply global starryness brightness scalar
@@ -349,6 +352,7 @@ class TwinklingStarsEffect(ShaderEffect):
             self.colors,  # r, g, b (3 floats)
             alphas[:, np.newaxis]  # alpha (1 float)
         ]).astype(np.float32)
+        
         # Upload instance data
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
@@ -356,9 +360,9 @@ class TwinklingStarsEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 8 * 4  # 8 floats * 4 bytes (changed from 7)
+        stride = 8 * 4  # 8 floats * 4 bytes
         
-        # Star position (location 1) - vec3 (changed from vec2)
+        # Star position (location 1) - vec3
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
         glVertexAttribDivisor(1, 1)
@@ -384,5 +388,6 @@ class TwinklingStarsEffect(ShaderEffect):
         glBindVertexArray(0)
         glUseProgram(0)
         
-        # Restore blending state
+        # Restore OpenGL state
         glDisable(GL_BLEND)
+        glDisable(GL_DEPTH_TEST)

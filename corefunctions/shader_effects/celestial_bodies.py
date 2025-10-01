@@ -470,8 +470,14 @@ class CelestialBodiesEffect(ShaderEffect):
         
         out vec2 fragTexCoord;
         
+        uniform float bodyDistance;  // Distance for depth sorting
+        
         void main() {
-            gl_Position = vec4(position, 0.0, 1.0);
+            // Convert distance to normalized depth (0 = near, 1 = far)
+            // Assuming distance range is 0-100 like the eye effect
+            float depth = bodyDistance / 100.0;
+            
+            gl_Position = vec4(position, depth, 1.0);
             // Convert from [-1, 1] to [0, 1] for texture sampling
             fragTexCoord = position * 0.5 + 0.5;
         }
@@ -628,6 +634,10 @@ class CelestialBodiesEffect(ShaderEffect):
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         
+        # Enable depth testing
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        
         # Create VAO
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
@@ -704,7 +714,9 @@ class CelestialBodiesEffect(ShaderEffect):
         current_time = time.time()
         glUniform1f(glGetUniformLocation(self.shader, "time"), current_time)
         
-        # Enable blending
+        # Enable depth testing and blending
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         
@@ -742,8 +754,6 @@ class CelestialBodiesEffect(ShaderEffect):
             r, g, b = r + m, g + m, b + m
             
             # Calculate angular size in degrees
-            # Approximate: assuming pixel size ~= angular size for small angles
-            # You may want to tune this scaling factor
             pixel_size = body.size/2  # Size in pixels
             fov_height = abs(self.corners[3][1] - self.corners[0][1])  # Elevation range
             angular_size = (pixel_size / self.viewport.height) * fov_height
@@ -764,12 +774,18 @@ class CelestialBodiesEffect(ShaderEffect):
             glUniform1f(glGetUniformLocation(self.shader, "visibility"), 
                        visibility)
             
+            # NEW: Set distance uniform for depth sorting
+            glUniform1f(glGetUniformLocation(self.shader, "bodyDistance"), 
+                       body.distance)
+            
             # Draw full-screen quad
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
         
         glDisable(GL_BLEND)
+        glDisable(GL_DEPTH_TEST)
         glBindVertexArray(0)
         glUseProgram(0)
+
     
     def cleanup(self):
         """Clean up textures in addition to base cleanup"""
