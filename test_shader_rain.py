@@ -24,6 +24,13 @@ def main():
                                     fog_near=20.0,
                                     fog_far=80.0)
         print(f"Added fog to viewport 0")
+    viewport1 = scheduler.shader_renderer.get_viewport(1)
+    if viewport0:
+        fog0 = viewport1.add_effect(ShaderFog, 
+                                    strength=2.6, 
+                                    color=(0.5, 0.6, 0.8),  # Blue-ish fog
+                                    fog_near=20.0,
+                                    fog_far=80.0)
     # Schedule shader rain for both frames
     print("Scheduling rain events...")
     event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
@@ -78,7 +85,7 @@ def main():
         while time.time() - start_time < 65:  # Run for 65 seconds
             scheduler.state['rain']=0.5*np.sin((time.time()) / 5) +0.5 # Vary wind over time
             scheduler.state['wind']=np.sin((time.time()) / 12) 
-            scheduler.state['fog_strength'] = 0.5 + 0.5 * np.sin(time.time() / 3)
+            scheduler.state['fog_strength'] = 0.25 + 0.25 * np.sin(time.time() / 3)
             scheduler.state['firefly_density'] = np.sin((time.time()) / 4) 
             scheduler.update()
             

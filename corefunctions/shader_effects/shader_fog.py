@@ -84,7 +84,7 @@ void main() {
     vec4 blurred_color = blur_at_depth(v_texcoord, fog_factor);
     
     // Mix blurred color with fog color based on fog factor
-    vec3 final_color = mix(blurred_color.rgb, u_fog_color, fog_factor * 0.7);
+    vec3 final_color = mix(blurred_color.rgb, u_fog_color, fog_factor * 0.3);
     
     fragColor = vec4(final_color, blurred_color.a);
 }

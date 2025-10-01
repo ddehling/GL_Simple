@@ -323,20 +323,55 @@ class FireflyEffect(ShaderEffect):
             self.colors = self.colors[alive_mask]
             self.base_sizes = self.base_sizes[alive_mask]
 
+    def get_fragment_shader(self):
+        return """
+        #version 310 es
+        precision highp float;
+        
+        in vec4 fragColor;
+        in vec2 fragPos;  // Position within quad (-1 to 1)
+        out vec4 outColor;
+        
+        void main() {
+            // Calculate distance from center of quad
+            float dist = length(fragPos);
+            
+            // Discard fragments outside the circle for cleaner edges
+            if (dist > 1.0) {
+                discard;
+            }
+            
+            // Create bright core with soft glow falloff
+            float core = 1.0 - smoothstep(0.0, 0.3, dist);
+            float glow = 1.0 - smoothstep(0.3, 1.0, dist);
+            
+            // Combine core and glow
+            float intensity = core + glow * 0.6;
+            
+            // Apply brightness from vertex color
+            intensity *= fragColor.a;
+            
+            // Use alpha threshold to control depth writes
+            // Only write depth for bright areas (core), not faint glow
+            // This is done by discarding very faint fragments before depth write
+            if (intensity < 0.1) {
+                discard;
+            }
+            
+            // Output with smooth alpha falloff
+            outColor = vec4(fragColor.rgb, intensity);
+        }
+        """
+
     def render(self, state: Dict):
         """Render all fireflies using instancing"""
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        # Enable blending for transparency
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE)  # Additive blending for glow effect
+        # Render in two passes for proper depth + blending
+        # Pass 1: Render solid cores with depth writes (for occlusion)
+        # Pass 2: Render full glow without depth writes (for blending)
         
-        # Enable depth testing AND depth writes
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LESS)
-        glDepthMask(GL_TRUE)  # Write to depth buffer so we participate in depth sorting
-            
         glUseProgram(self.shader)
         
         # Update resolution uniform
@@ -345,7 +380,6 @@ class FireflyEffect(ShaderEffect):
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
         # Calculate depth-based size scaling (closer = bigger)
-        # Map z from [10, 100] to scale [2.0, 0.5] (near to far)
         depth_range = self.max_depth - self.min_depth
         depth_factors = 2.0 - 1.5 * (self.positions[:, 2] - self.min_depth) / depth_range
         scaled_sizes = self.base_sizes * depth_factors
@@ -353,32 +387,28 @@ class FireflyEffect(ShaderEffect):
         # Calculate brightness based on phase (pulsing effect)
         brightness = 0.8 + 0.2 * np.sin(self.phases)
         brightness *= self.lifetimes  # Fade out as lifetime decreases
-        
-        # Also fade based on depth (distant fireflies are dimmer)
         brightness *= depth_factors * 0.5 + 0.5  # Scale brightness with depth
         
         # Convert HSV colors to RGB (vectorized)
         from skimage import color as skcolor
         
-        # Reshape for skimage
         hsv_colors = self.colors.copy()
-        hsv_colors[:, 2] = brightness  # Apply brightness to value channel
+        hsv_colors[:, 2] = brightness
         
-        # Convert to RGB
         rgb_colors = np.zeros_like(hsv_colors)
         for i in range(len(hsv_colors)):
             rgb = skcolor.hsv2rgb(hsv_colors[i:i+1].reshape(1, 1, 3))
             rgb_colors[i] = rgb.flatten()
         
-        # Sort by depth (far to near) for proper rendering with additive blending
+        # Sort by depth (far to near)
         depth_order = np.argsort(self.positions[:, 2])[::-1]
         
-        # Build instance data (vectorized) with depth sorting
+        # Build instance data
         instance_data = np.hstack([
-            self.positions[depth_order],         # x, y, z (3 floats)
-            scaled_sizes[depth_order, np.newaxis],   # size (1 float)
-            rgb_colors[depth_order],             # r, g, b (3 floats)
-            brightness[depth_order, np.newaxis]  # brightness/alpha (1 float)
+            self.positions[depth_order],
+            scaled_sizes[depth_order, np.newaxis],
+            rgb_colors[depth_order],
+            brightness[depth_order, np.newaxis]
         ]).astype(np.float32)
         
         # Upload instance data
@@ -388,28 +418,39 @@ class FireflyEffect(ShaderEffect):
         glBindVertexArray(self.VAO)
         
         # Setup instance attributes
-        stride = 8 * 4  # 8 floats * 4 bytes
+        stride = 8 * 4
         
-        # Offset (location 1) - vec3
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
         glVertexAttribDivisor(1, 1)
         
-        # Size (location 2) - float
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
         glEnableVertexAttribArray(2)
         glVertexAttribDivisor(2, 1)
         
-        # Color (location 3) - vec4 (rgb + brightness)
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(16))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
         
-        # Draw all fireflies in one call
+        # === PASS 1: Solid core with depth writes (no blending) ===
+        glDisable(GL_BLEND)
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)  # Write depth for cores
+        
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(self.positions))
+        
+        # === PASS 2: Full glow with blending (no depth writes) ===
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)  # Additive blending
+        glDepthFunc(GL_LEQUAL)  # Use LEQUAL to allow same-depth blending
+        glDepthMask(GL_FALSE)  # Don't write depth for glow
+        
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(self.positions))
         
         glBindVertexArray(0)
         glUseProgram(0)
         
-        # Disable blending
+        # Restore state
+        glDepthMask(GL_TRUE)
         glDisable(GL_BLEND)
