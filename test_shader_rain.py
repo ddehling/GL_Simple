@@ -9,10 +9,12 @@ from corefunctions.shader_effects.shader_eye import shader_eye
 from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.forest import shader_forest
 from corefunctions.shader_effects.fog_beings import shader_chromatic_fog_beings
+from corefunctions.shader_effects.leaves import shader_falling_leaves
 from corefunctions.shader_effects.celestial_bodies import (
     shader_celestial_bodies, 
     CELESTIAL_BODIES
 )
+
 def main():
     # Create scheduler with shader renderer enabled
     # Make window bigger to see both viewports clearly
@@ -74,7 +76,9 @@ def main():
 #     density=1.0,
 #     frame_id=0
 # )
-    scheduler.schedule_event(0, 100, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
+    #scheduler.schedule_event(0, 25, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
+    scheduler.schedule_event(0, 60, shader_falling_leaves, density=1.5, frame_id=0)
+
     # event1 = scheduler.schedule_event(0, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(11, 10, shader_rain, intensity=1.5, frame_id=0)
     # event1 = scheduler.schedule_event(5, 10, shader_rain, intensity=1.5, frame_id=0)
