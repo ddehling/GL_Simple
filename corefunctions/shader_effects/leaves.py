@@ -148,6 +148,7 @@ class FallingLeavesEffect(ShaderEffect):
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [r, g, b] in RGB
         self.alphas = np.zeros(0, dtype=np.float32)
         self.lifetimes = np.zeros(0, dtype=np.float32)
+        self.leaf_types = np.zeros(0, dtype=np.int32)  # NEW: leaf shape type
         
     def _spawn_leaves(self, count: int, season: float = 0.625):
         """Spawn new leaves at random positions"""
@@ -172,6 +173,9 @@ class FallingLeavesEffect(ShaderEffect):
         new_alphas = np.random.uniform(0.9, 1.0, count)
         new_lifetimes = np.ones(count)
         
+        # NEW: Assign random leaf types (0-4 for 5 different shapes)
+        new_leaf_types = np.random.randint(0, 5, count)
+        
         # Generate colors based on season
         new_colors = self._generate_leaf_colors(count, season)
         
@@ -186,6 +190,9 @@ class FallingLeavesEffect(ShaderEffect):
         self.colors = np.vstack([self.colors, new_colors]) if len(self.colors) > 0 else new_colors
         self.alphas = np.concatenate([self.alphas, new_alphas]) if len(self.alphas) > 0 else new_alphas
         self.lifetimes = np.concatenate([self.lifetimes, new_lifetimes]) if len(self.lifetimes) > 0 else new_lifetimes
+        self.leaf_types = np.concatenate([self.leaf_types, new_leaf_types]) if len(self.leaf_types) > 0 else new_leaf_types
+
+
     
     def _generate_leaf_colors(self, count: int, season: float) -> np.ndarray:
         """Generate leaf colors based on season (RGB format)"""
@@ -261,13 +268,16 @@ class FallingLeavesEffect(ShaderEffect):
         layout(location = 2) in float size;     // Leaf size
         layout(location = 3) in float rotation; // Leaf rotation
         layout(location = 4) in vec4 color;     // Color (r, g, b, alpha)
+        layout(location = 5) in float leafType; // Leaf shape type
         
         out vec4 fragColor;
         out vec2 fragPos;  // Position within quad (-1 to 1)
+        flat out int fragLeafType;
         uniform vec2 resolution;
         
         void main() {
             fragPos = position;
+            fragLeafType = int(leafType);
             
             // Apply rotation to quad
             float c = cos(rotation);
@@ -291,7 +301,8 @@ class FallingLeavesEffect(ShaderEffect):
             fragColor = color;
         }
         """
-        
+
+
     def get_fragment_shader(self):
         return """
         #version 310 es
@@ -299,47 +310,117 @@ class FallingLeavesEffect(ShaderEffect):
         
         in vec4 fragColor;
         in vec2 fragPos;  // Position within quad (-1 to 1)
+        flat in int fragLeafType;
         out vec4 outColor;
         
+        // Leaf type 0: Oak-style (rounded lobes)
+        float oak_leaf(float nx, float ny) {
+            float dist = abs(ny * 0.5);
+            float width = (1.0 - nx * nx) * 0.5;
+            width *= smoothstep(-0.9, -0.3, nx);
+            width *= smoothstep(0.95, 0.3, nx);
+            
+            // Add lobes
+            float lobe = 0.1 * sin(nx * 12.0) * (1.0 - nx * nx);
+            width += lobe;
+            
+            return step(dist, width);
+        }
+        
+        // Leaf type 1: Maple-style (pointed lobes)
+        float maple_leaf(float nx, float ny) {
+            float angle = atan(ny, nx);
+            float r = length(vec2(nx, ny));
+            
+            // Create 5 pointed lobes
+            float lobes = 0.6 + 0.3 * cos(angle * 2.5);
+            return step(r, lobes * 0.8);
+        }
+        
+        // Leaf type 2: Willow-style (long and narrow)
+        float willow_leaf(float nx, float ny) {
+            float dist = abs(ny * 0.3);  // Very narrow
+            float width = (1.0 - nx * nx * 0.8) * 0.3;
+            width *= smoothstep(-0.95, -0.5, nx);
+            width *= smoothstep(0.98, 0.5, nx);
+            return step(dist, width);
+        }
+        
+        // Leaf type 3: Birch-style (triangular with serrated edge)
+        float birch_leaf(float nx, float ny) {
+            float dist = abs(ny * 0.6);
+            float width = (1.0 - nx) * 0.4;
+            width *= smoothstep(-0.9, -0.2, nx);
+            
+            // Serrated edges
+            float serration = 0.05 * sin(nx * 25.0);
+            width += serration;
+            
+            return step(dist, width);
+        }
+        
+        // Leaf type 4: Aspen-style (circular with small point)
+        float aspen_leaf(float nx, float ny) {
+            float r = length(vec2(nx * 1.2, ny));
+            float width = 0.75;
+            
+            // Add point at tip
+            if (nx > 0.5) {
+                width *= smoothstep(0.95, 0.6, nx);
+            }
+            
+            return step(r, width);
+        }
+        
         void main() {
-            // Normalized coordinates
             float nx = fragPos.x;
             float ny = fragPos.y;
             
-            // Create leaf shape
-            float leaf_factor = ((nx) * (nx) / 1.2) + ((ny) * (ny));
-            float taper = 0.3 * (nx + 0.8);
-            leaf_factor += max(0.0, taper);
+            // Select leaf shape based on type
+            float leaf_mask = 0.0;
+            if (fragLeafType == 0) {
+                leaf_mask = oak_leaf(nx, ny);
+            } else if (fragLeafType == 1) {
+                leaf_mask = maple_leaf(nx, ny);
+            } else if (fragLeafType == 2) {
+                leaf_mask = willow_leaf(nx, ny);
+            } else if (fragLeafType == 3) {
+                leaf_mask = birch_leaf(nx, ny);
+            } else {
+                leaf_mask = aspen_leaf(nx, ny);
+            }
             
-            // Discard pixels outside leaf shape
-            if (leaf_factor > 1.0) {
+            if (leaf_mask < 0.5) {
                 discard;
             }
             
-            // Create main vein
-            float main_vein = step(abs(ny), 0.1 * (1.0 - abs(nx * 0.5)));
+            // Common vein structure
+            float main_vein = smoothstep(0.02, 0.0, abs(ny * 0.5));
             
-            // Create side veins
-            float side_vein = 0.0;
-            float vein_positions[5];
-            vein_positions[0] = 0.1;
-            vein_positions[1] = 0.25;
-            vein_positions[2] = 0.4;
-            vein_positions[3] = 0.55;
-            vein_positions[4] = 0.6;
-            
-            for (int i = 0; i < 5; i++) {
-                float vp = vein_positions[i];
-                side_vein += step(abs(abs(ny) - vp), 0.12) * step(nx, 0.5);
+            float side_veins = 0.0;
+            for (float i = -0.6; i <= 0.6; i += 0.15) {
+                float vx = i;
+                float vein_y = (nx - vx) * 0.4;
+                float vein_dist = abs(ny * 0.5 - vein_y);
+                float vein_fade = smoothstep(0.8, 0.0, abs(nx - vx)) * step(vx, nx);
+                side_veins = max(side_veins, smoothstep(0.008, 0.0, vein_dist) * vein_fade);
             }
             
-            float vein = max(main_vein, side_vein);
+            float veins = max(main_vein, side_veins * 0.5);
             
-            // Darken veins
-            vec3 final_color = fragColor.rgb * (1.0 - vein * 0.3);
+            // Texture variation
+            float color_var = fract(sin(dot(fragPos * 30.0, vec2(12.9898, 78.233))) * 43758.5453);
+            color_var = (color_var - 0.5) * 0.08;
             
-            // Calculate alpha with soft edges
-            float alpha = fragColor.a * (1.0 - 0.3 * leaf_factor);
+            // Soft edge
+            float edge_dist = min(
+                min(1.0 - abs(nx), 1.0 - abs(ny)),
+                leaf_mask
+            );
+            float edge = smoothstep(0.0, 0.2, edge_dist);
+            
+            vec3 final_color = fragColor.rgb * (1.0 - veins * 0.35 + color_var);
+            float alpha = fragColor.a * edge;
             
             outColor = vec4(final_color, alpha);
         }
@@ -448,11 +529,21 @@ class FallingLeavesEffect(ShaderEffect):
         # Decrease lifetimes
         self.lifetimes -= 0.001 * dt * 60
         
-        # Filter out-of-bounds leaves
+        # NEW: Wrap horizontally when leaves exit left or right
+        max_leaf_size = 3.5 * 3.0  # max size * scale factor
+        margin = max_leaf_size + 5
+        
+        # Wrap from right to left
+        wrap_right_mask = self.positions[:, 0] > self.viewport.width + margin
+        self.positions[wrap_right_mask, 0] -= (self.viewport.width + 2 * margin)
+        
+        # Wrap from left to right
+        wrap_left_mask = self.positions[:, 0] < -margin
+        self.positions[wrap_left_mask, 0] += (self.viewport.width + 2 * margin)
+        
+        # Filter out-of-bounds leaves - only remove if below screen or lifetime expired
         valid_mask = (
-            (self.positions[:, 1] < 65) & 
-            (self.positions[:, 0] > -5) & 
-            (self.positions[:, 0] < self.viewport.width + 5) &
+            (self.positions[:, 1] < self.viewport.height + margin) & 
             (self.lifetimes > 0)
         )
         
@@ -467,6 +558,7 @@ class FallingLeavesEffect(ShaderEffect):
             self.colors = self.colors[valid_mask]
             self.alphas = self.alphas[valid_mask]
             self.lifetimes = self.lifetimes[valid_mask]
+            self.leaf_types = self.leaf_types[valid_mask]
 
     def render(self, state: Dict):
         """Render all leaves using instancing"""
