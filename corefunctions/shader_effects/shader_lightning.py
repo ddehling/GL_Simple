@@ -74,12 +74,47 @@ def shader_lightning(state, outstate, side='bottom', intensity=1.0, color='rando
             
             state['bolt_offsets'] = base_offsets
             
-            # Branch parameters
+            # Branch parameters - alternate directions for variety
             num_branches = np.random.randint(3, 7)
             state['branch_positions'] = np.random.uniform(0.2, 0.8, num_branches)
-            state['branch_angles'] = np.random.uniform(-0.8, 0.8, num_branches)
-            state['branch_lengths'] = np.random.uniform(0.1, 0.3, num_branches)
             
+            # Mix of left and right branches - properly calculated for bidirectional spread
+            branch_angles = []
+            for i in range(num_branches):
+                if i % 2 == 0:
+                    # Right side branches (0 to π/2 range, pointing right)
+                    angle = np.random.uniform(-np.pi/6, np.pi/6)
+                else:
+                    # Left side branches (π to 3π/2 range, pointing left) 
+                    angle = np.random.uniform(5*np.pi/6, 7*np.pi/6)
+                branch_angles.append(angle)
+            state['branch_angles'] = np.array(branch_angles)
+            state['branch_lengths'] = np.random.uniform(0.2, 0.5, num_branches)
+            
+            # Sub-branch parameters (branches off of branches)
+            num_sub_branches = np.random.randint(4, 10)
+            state['sub_branch_parent_indices'] = np.random.randint(0, num_branches, num_sub_branches)
+            state['sub_branch_positions'] = np.random.uniform(0.3, 0.8, num_sub_branches)  # Position along parent branch
+            
+            # Sub-branches go opposite direction from parent
+            sub_angles = []
+            for i in range(num_sub_branches):
+                parent_idx = state['sub_branch_parent_indices'][i]
+                parent_angle = branch_angles[parent_idx] if parent_idx < len(branch_angles) else 0
+                
+                # Flip to opposite side: if parent is on right (angle < π/2), go left (add π)
+                # If parent is on left (angle > π/2), go right (subtract π)
+                if parent_angle < np.pi/2:
+                    # Parent goes right, sub-branch goes left
+                    sub_angle = parent_angle + np.pi + np.random.uniform(-np.pi/6, np.pi/6)
+                else:
+                    # Parent goes left, sub-branch goes right
+                    sub_angle = parent_angle - np.pi + np.random.uniform(-np.pi/6, np.pi/6)
+                
+                sub_angles.append(sub_angle)
+            
+            state['sub_branch_angles'] = np.array(sub_angles)
+            state['sub_branch_lengths'] = np.random.uniform(0.1, 0.25, num_sub_branches)
             # Determine color
             color_presets = {
                 'blue': (0.7, 0.85, 1.0),
@@ -145,6 +180,10 @@ def shader_lightning(state, outstate, side='bottom', intensity=1.0, color='rando
         effect.branch_positions = state['branch_positions']
         effect.branch_angles = state['branch_angles']
         effect.branch_lengths = state['branch_lengths']
+        effect.sub_branch_parent_indices = state['sub_branch_parent_indices']
+        effect.sub_branch_positions = state['sub_branch_positions']
+        effect.sub_branch_angles = state['sub_branch_angles']
+        effect.sub_branch_lengths = state['sub_branch_lengths']
         effect.lightning_color = state['lightning_color']
         effect.random_seed = state['random_seed']
         effect.time_factor = elapsed_time
@@ -183,6 +222,10 @@ class LightningEffect(ShaderEffect):
         self.branch_positions = np.array([])
         self.branch_angles = np.array([])
         self.branch_lengths = np.array([])
+        self.sub_branch_parent_indices = np.array([])
+        self.sub_branch_positions = np.array([])
+        self.sub_branch_angles = np.array([])
+        self.sub_branch_lengths = np.array([])
         self.lightning_color = (0.7, 0.85, 1.0)  # Default blue
         self.random_seed = 0.0
         self.time_factor = 0.0
@@ -231,6 +274,11 @@ class LightningEffect(ShaderEffect):
         uniform float branchAngles[8];  // Branch angles
         uniform float branchLengths[8];  // Branch lengths
         uniform int numBranches;
+        uniform int subBranchParentIndices[16];  // Which branch does sub-branch attach to
+        uniform float subBranchPositions[16];  // Position along parent branch (0-1)
+        uniform float subBranchAngles[16];  // Sub-branch angles
+        uniform float subBranchLengths[16];  // Sub-branch lengths
+        uniform int numSubBranches;
         uniform vec3 lightningColor;  // RGB color
         uniform float randomSeed;
         uniform float timeFactor;
@@ -293,7 +341,7 @@ class LightningEffect(ShaderEffect):
         }
         
         // Add branches to the lightning
-        float addBranches(vec2 uv, float mainDist) {
+        float addBranches(vec2 uv, float mainDist, out vec2 branchStarts[8], out vec2 branchEnds[8]) {
             float minDist = mainDist;
             
             for (int i = 0; i < numBranches && i < 8; i++) {
@@ -313,7 +361,38 @@ class LightningEffect(ShaderEffect):
                 vec2 branchDir = vec2(cos(angle), sin(angle)) * length;
                 vec2 endPos = startPos + branchDir;
                 
+                // Store for sub-branches
+                branchStarts[i] = startPos;
+                branchEnds[i] = endPos;
+                
                 // Draw branch
+                float dist = distanceToSegment(uv, startPos, endPos);
+                minDist = min(minDist, dist);
+            }
+            
+            return minDist;
+        }
+        
+        // Add sub-branches (branches off branches)
+        float addSubBranches(vec2 uv, float currentDist, vec2 branchStarts[8], vec2 branchEnds[8]) {
+            float minDist = currentDist;
+            
+            for (int i = 0; i < numSubBranches && i < 16; i++) {
+                int parentIdx = subBranchParentIndices[i];
+                if (parentIdx >= numBranches || parentIdx >= 8) continue;
+                
+                float posAlongParent = subBranchPositions[i];
+                float angle = subBranchAngles[i];
+                float length = subBranchLengths[i];
+                
+                // Get position along parent branch
+                vec2 startPos = mix(branchStarts[parentIdx], branchEnds[parentIdx], posAlongParent);
+                
+                // Calculate sub-branch end position
+                vec2 branchDir = vec2(cos(angle), sin(angle)) * length;
+                vec2 endPos = startPos + branchDir;
+                
+                // Draw sub-branch
                 float dist = distanceToSegment(uv, startPos, endPos);
                 minDist = min(minDist, dist);
             }
@@ -338,8 +417,13 @@ class LightningEffect(ShaderEffect):
             // Calculate distance to lightning path
             float dist = lightningPath(uv, uv.y, uv.x);
             
-            // Add branches
-            dist = addBranches(uv, dist);
+            // Add branches and get their start/end positions
+            vec2 branchStarts[8];
+            vec2 branchEnds[8];
+            dist = addBranches(uv, dist, branchStarts, branchEnds);
+            
+            // Add sub-branches
+            dist = addSubBranches(uv, dist, branchStarts, branchEnds);
             
             // Convert distance to intensity
             float boltThickness = 0.002 * (1.0 + whomp * 0.5);
@@ -359,15 +443,15 @@ class LightningEffect(ShaderEffect):
                 discard;
             }
             
-            // Create color gradient (white core, colored glow)
-            vec3 coreColor = vec3(1.0, 1.0, 1.0);
-            vec3 glowColor = lightningColor;
+            // Create color gradient with more pronounced color
+            vec3 coreColor = mix(vec3(1.0), lightningColor * 1.3, 0.4);  // Less white, more color in core
+            vec3 glowColor = lightningColor * 1.2;  // Boost color saturation
             
             vec3 color = mix(glowColor, coreColor, coreBolt);
-            color = mix(glowColor * 0.5, color, innerGlow);
+            color = mix(glowColor * 0.7, color, innerGlow);  // Increased from 0.5 to 0.7
             
             // Calculate alpha
-            float alpha = max(coreBolt, max(innerGlow * 0.7, outerGlow * 0.3));
+            float alpha = max(coreBolt, max(innerGlow * 0.8, outerGlow * 0.4));  // Increased visibility
             alpha *= intensity * fadeAlpha;
             
             // Add flickering to the glow
@@ -377,6 +461,8 @@ class LightningEffect(ShaderEffect):
             outColor = vec4(color * alpha, alpha);
         }
         """
+
+
     
     def compile_shader(self):
         """Compile and link lightning shaders"""
@@ -524,6 +610,41 @@ class LightningEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "branchLengths")
         if loc != -1:
             glUniform1fv(loc, 8, branch_lengths_padded)
+        
+        # Set sub-branch parameters (pad to size 16)
+        num_sub_branches = len(self.sub_branch_positions)
+        loc = glGetUniformLocation(self.shader, "numSubBranches")
+        if loc != -1:
+            glUniform1i(loc, min(num_sub_branches, 16))
+        
+        # Pad sub-branch arrays to size 16
+        sub_parent_padded = np.zeros(16, dtype=np.int32)
+        sub_pos_padded = np.zeros(16, dtype=np.float32)
+        sub_angles_padded = np.zeros(16, dtype=np.float32)
+        sub_lengths_padded = np.zeros(16, dtype=np.float32)
+        
+        if num_sub_branches > 0:
+            n = min(num_sub_branches, 16)
+            sub_parent_padded[:n] = self.sub_branch_parent_indices[:n].astype(np.int32)
+            sub_pos_padded[:n] = self.sub_branch_positions[:n]
+            sub_angles_padded[:n] = self.sub_branch_angles[:n]
+            sub_lengths_padded[:n] = self.sub_branch_lengths[:n]
+        
+        loc = glGetUniformLocation(self.shader, "subBranchParentIndices")
+        if loc != -1:
+            glUniform1iv(loc, 16, sub_parent_padded)
+        
+        loc = glGetUniformLocation(self.shader, "subBranchPositions")
+        if loc != -1:
+            glUniform1fv(loc, 16, sub_pos_padded)
+        
+        loc = glGetUniformLocation(self.shader, "subBranchAngles")
+        if loc != -1:
+            glUniform1fv(loc, 16, sub_angles_padded)
+        
+        loc = glGetUniformLocation(self.shader, "subBranchLengths")
+        if loc != -1:
+            glUniform1fv(loc, 16, sub_lengths_padded)
         
         # Draw full-screen quad
         glBindVertexArray(self.VAO)
