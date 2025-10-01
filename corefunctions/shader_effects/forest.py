@@ -7,6 +7,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 import random
+import cv2
 from .base import ShaderEffect
 
 # ============================================================================
@@ -23,7 +24,7 @@ def shader_forest(state, outstate, season=0.0, density=0.8):
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        season: Seasonal variation (0=spring, 0.25=summer, 0.5=fall, 0.75=winter)
+        season: Seasonal variation (0-1 continuous, wraps around)
         density: Forest density multiplier (0.5 to 2.0)
     """
     frame_id = state.get('frame_id', 0)
@@ -38,14 +39,17 @@ def shader_forest(state, outstate, season=0.0, density=0.8):
         print(f"WARNING: viewport {frame_id} not found!")
         return
     
+    # Get current season from outstate (can change over time)
+    current_season = outstate.get('season', season)
+    
     # Initialize forest effect on first call
     if state['count'] == 0:
-        print(f"Initializing forest effect for frame {frame_id}")
+        print(f"Initializing forest effect for frame {frame_id}, season={current_season}")
         
         try:
             forest_effect = viewport.add_effect(
                 ForestEffect,
-                season=season,
+                season=current_season,
                 density=density
             )
             state['forest_effect'] = forest_effect
@@ -56,15 +60,10 @@ def shader_forest(state, outstate, season=0.0, density=0.8):
             traceback.print_exc()
             return
     
-    # Update parameters from global state
+    # Update wind from global state
     if 'forest_effect' in state:
         effect = state['forest_effect']
         effect.wind = outstate.get('wind', 0.0)
-        
-        # Update season if it changes
-        new_season = outstate.get('season', season)
-        if abs(new_season - effect.season) > 0.01:
-            effect.update_season(new_season)
     
     # Calculate fade based on duration
     if state.get('duration'):
@@ -107,27 +106,29 @@ class ForestEffect(ShaderEffect):
         self.time = 0.0
         
         # Buffers
-        self.tree_instance_VBO = None
         self.segment_instance_VBO = None
         self.ground_VAO = None
+        self.ground_VBO = None
+        self.ground_EBO = None
         
         # Data arrays
         self.trees = None
-        self.ground_texture = None
+        self.ground_vertices = None
         
         self._generate_forest()
         self._generate_ground()
         
     def _generate_forest(self):
-        """Generate forest tree data"""
+        """Generate forest tree data with weighted seasonal palette selection"""
         width = self.viewport.width
         height = self.viewport.height
         ground_y = height * 5 // 6
         
         num_trees = int((width // 8) * self.density)
         
-        # Color palettes based on season
-        palette = self._get_seasonal_palette()
+        # Get palette weights based on continuous season value
+        palette_weights = self._get_seasonal_weights()
+        palettes = self._get_all_palettes()
         
         trees = []
         for _ in range(num_trees):
@@ -137,7 +138,13 @@ class ForestEffect(ShaderEffect):
             base_width = tree_height * random.uniform(0.6, 0.8)
             num_segments = random.randint(5, 8)
             
-            # Colors from palette
+            # Random depth between 50-55
+            depth = random.uniform(50.0, 55.0)
+            
+            # Choose palette based on seasonal weights (like original code)
+            palette = random.choices(palettes, weights=palette_weights, k=1)[0]
+            
+            # Colors from weighted palette
             trunk_hue = 0.08 + random.random() * 0.04
             trunk_sat = random.uniform(*palette['trunk_sat_range'])
             trunk_val = random.uniform(*palette['trunk_val_range'])
@@ -161,54 +168,153 @@ class ForestEffect(ShaderEffect):
                 'needle_sat': needle_sat,
                 'needle_val': needle_val,
                 'sway_amount': sway_amount,
-                'sway_phase': sway_phase
+                'sway_phase': sway_phase,
+                'depth': depth
             })
         
-        # Sort by depth
-        trees.sort(key=lambda t: t['y'])
+        # Sort by depth (back to front)
+        trees.sort(key=lambda t: t['depth'])
         self.trees = trees
         
-    def _get_seasonal_palette(self):
-        """Get color palette based on season"""
-        palettes = [
-            # Spring (0-0.25)
-            {"hue_range": (0.25, 0.30), "sat_range": (0.7, 0.9), "val_range": (0.4, 0.6),
+    def _get_all_palettes(self):
+        """Get all seasonal color palettes"""
+        return [
+            # Spring/Summer Palettes
+            {"hue_range": (0.25, 0.30), "sat_range": (0.7, 0.9), "val_range": (0.4, 0.6), 
              "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.5)},
-            # Summer (0.25-0.5)
-            {"hue_range": (0.28, 0.35), "sat_range": (0.75, 0.9), "val_range": (0.25, 0.4),
+            {"hue_range": (0.28, 0.35), "sat_range": (0.75, 0.9), "val_range": (0.25, 0.4), 
              "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.5)},
-            # Fall (0.5-0.75)
-            {"hue_range": (0.10, 0.15), "sat_range": (0.8, 0.95), "val_range": (0.5, 0.65),
+            {"hue_range": (0.35, 0.43), "sat_range": (0.7, 0.85), "val_range": (0.3, 0.45), 
+             "trunk_sat_range": (0.45, 0.65), "trunk_val_range": (0.25, 0.4)},
+            {"hue_range": (0.22, 0.28), "sat_range": (0.7, 0.9), "val_range": (0.35, 0.5), 
+             "trunk_sat_range": (0.55, 0.75), "trunk_val_range": (0.3, 0.45)},
+            {"hue_range": (0.30, 0.35), "sat_range": (0.8, 0.95), "val_range": (0.2, 0.3), 
+             "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.25, 0.4)},
+            
+            # Fall Palettes
+            {"hue_range": (0.15, 0.20), "sat_range": (0.8, 0.9), "val_range": (0.45, 0.6), 
              "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.45)},
-            # Winter (0.75-1.0)
-            {"hue_range": (0.3, 0.4), "sat_range": (0.05, 0.4), "val_range": (0.3, 0.5),
+            {"hue_range": (0.10, 0.15), "sat_range": (0.8, 0.95), "val_range": (0.5, 0.65), 
+             "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.45)},
+            {"hue_range": (0.05, 0.10), "sat_range": (0.85, 0.95), "val_range": (0.45, 0.6), 
+             "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.45)},
+            {"hue_range": (0.02, 0.07), "sat_range": (0.85, 0.95), "val_range": (0.4, 0.55), 
+             "trunk_sat_range": (0.5, 0.7), "trunk_val_range": (0.3, 0.45)},
+            
+            # Winter Palettes
+            {"hue_range": (0.35, 0.45), "sat_range": (0.6, 0.8), "val_range": (0.2, 0.35), 
+             "trunk_sat_range": (0.4, 0.6), "trunk_val_range": (0.2, 0.35)},
+            {"hue_range": (0.33, 0.38), "sat_range": (0.7, 0.85), "val_range": (0.1, 0.25), 
+             "trunk_sat_range": (0.4, 0.6), "trunk_val_range": (0.2, 0.3)},
+            {"hue_range": (0.3, 0.4), "sat_range": (0.05, 0.4), "val_range": (0.3, 0.5), 
              "trunk_sat_range": (0.4, 0.6), "trunk_val_range": (0.2, 0.35)},
         ]
-        
-        idx = int(self.season * 4) % 4
-        return palettes[idx]
     
+    def _get_seasonal_weights(self):
+        """Calculate palette weights based on continuous season value (0-1)"""
+        season = self.season % 1.0  # Wrap around
+        
+        # Season centers (matching original code)
+        spring_center = 0.125
+        summer_center = 0.375
+        fall_center = 0.625
+        winter_center = 0.875
+        season_width = 0.25
+        
+        # Helper function for circular distance
+        def circular_distance(a, b):
+            direct_distance = abs(a - b)
+            return min(direct_distance, 1 - direct_distance)
+        
+        # Initialize weights
+        palette_weights = [0] * 12
+        
+        # Spring weights (palette 0)
+        spring_influence = max(0, 1 - circular_distance(season, spring_center) / season_width)
+        palette_weights[0] = 30 * spring_influence
+        
+        # Summer weights (palettes 1-4)
+        summer_influence = max(0, 1 - circular_distance(season, summer_center) / season_width)
+        palette_weights[1] = 20 * summer_influence
+        palette_weights[2] = 15 * summer_influence
+        palette_weights[3] = 15 * summer_influence
+        palette_weights[4] = 10 * summer_influence
+        
+        # Fall weights (palettes 5-8)
+        fall_influence = max(0, 1 - circular_distance(season, fall_center) / season_width)
+        palette_weights[5] = 15 * fall_influence
+        palette_weights[6] = 20 * fall_influence
+        palette_weights[7] = 15 * fall_influence
+        palette_weights[8] = 10 * fall_influence
+        
+        # Winter weights (palettes 9-11)
+        winter_influence = max(0, 1 - circular_distance(season, winter_center) / season_width)
+        palette_weights[9] = 20 * winter_influence
+        palette_weights[10] = 15 * winter_influence
+        palette_weights[11] = 100 * winter_influence
+        
+        # Add baseline to avoid zero probabilities
+        palette_weights = [max(1, w) for w in palette_weights]
+        
+        return palette_weights
+        
     def _generate_ground(self):
-        """Generate ground texture data"""
+        """Generate ground texture as a textured quad"""
         width = self.viewport.width
         height = self.viewport.height
         ground_y = height * 5 // 6
         
-        # Simple ground texture (can be enhanced)
-        self.ground_height = ground_y
+        # Create multi-scale noise for ground texture
+        scale_1 = np.random.uniform(-1, 1, (height//8, width//8))
+        scale_2 = np.random.uniform(-1, 1, (height//4, width//4))
+        scale_3 = np.random.uniform(-1, 1, (height//2, width//2))
         
-    def update_season(self, new_season):
-        """Update season and regenerate forest colors"""
-        self.season = new_season
-        palette = self._get_seasonal_palette()
+        # Resize to full dimensions
+        scale_1 = cv2.resize(scale_1, (width, height))
+        scale_2 = cv2.resize(scale_2, (width, height))
+        scale_3 = cv2.resize(scale_3, (width, height))
         
-        # Update tree colors
-        for tree in self.trees:
-            tree['needle_hue'] = random.uniform(*palette['hue_range'])
-            tree['needle_sat'] = random.uniform(*palette['sat_range'])
-            tree['needle_val'] = random.uniform(*palette['val_range'])
-            tree['trunk_sat'] = random.uniform(*palette['trunk_sat_range'])
-            tree['trunk_val'] = random.uniform(*palette['trunk_val_range'])
+        # Combine scales
+        noise = scale_1 * 0.5 + scale_2 * 0.3 + scale_3 * 0.2
+        noise = (noise - noise.min()) / (noise.max() - noise.min())
+        
+        # Create ground vertices with texture coordinates
+        # Each vertex: [x, y, u, v, hue, sat, val]
+        vertices = []
+        
+        # Sample ground at regular intervals
+        sample_step = max(1, width // 120)  # Adjust resolution
+        
+        for y in range(ground_y, height, sample_step):
+            for x in range(0, width, sample_step):
+                # Position
+                px = float(x)
+                py = float(y)
+                
+                # Texture coordinates (0-1)
+                u = x / width
+                v = (y - ground_y) / (height - ground_y)
+                
+                # Ground color based on noise
+                noise_val = noise[min(y, height-1), min(x, width-1)]
+                
+                # Calculate ground factor for depth shading
+                ground_factor = v
+                
+                # Base ground color (brown)
+                hue = 0.10 + noise_val * 0.05
+                sat = 0.4 + noise_val * 0.2
+                val = 0.3 - ground_factor * 0.1 + noise_val * 0.1
+                
+                # Add green patches
+                if noise_val > 0.7 and y < ground_y + 3:
+                    hue = 0.3 + noise_val * 0.05
+                    sat = 0.5 + noise_val * 0.2
+                
+                vertices.append([px, py, u, v, hue, sat, val])
+        
+        # Convert to numpy array
+        self.ground_vertices = np.array(vertices, dtype=np.float32)
         
     def get_vertex_shader(self):
         return """
@@ -269,6 +375,57 @@ class ForestEffect(ShaderEffect):
             fragColor = vec4(rgb, alpha);
         }
         """
+    
+    def get_ground_vertex_shader(self):
+        """Separate shader for ground rendering"""
+        return """
+        #version 310 es
+        precision highp float;
+        
+        layout(location = 0) in vec2 position;  // x, y
+        layout(location = 1) in vec2 texCoord;  // u, v
+        layout(location = 2) in vec3 color_hsv; // hue, sat, val
+        
+        out vec3 fragColorHSV;
+        
+        uniform vec2 resolution;
+        
+        void main() {
+            // Convert to clip space
+            vec2 clipPos = (position / resolution) * 2.0 - 1.0;
+            clipPos.y = -clipPos.y;
+            
+            // Ground at depth 49
+            float depth = 49.0 / 100.0;
+            gl_Position = vec4(clipPos, depth, 1.0);
+            
+            fragColorHSV = color_hsv;
+        }
+        """
+    
+    def get_ground_fragment_shader(self):
+        """Separate fragment shader for ground"""
+        return """
+        #version 310 es
+        precision highp float;
+        
+        in vec3 fragColorHSV;
+        out vec4 outColor;
+        
+        uniform float fade;
+        
+        // HSV to RGB conversion
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+        
+        void main() {
+            vec3 rgb = hsv2rgb(fragColorHSV);
+            outColor = vec4(rgb, fade);
+        }
+        """
         
     def get_fragment_shader(self):
         return """
@@ -314,6 +471,12 @@ class ForestEffect(ShaderEffect):
             vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
             frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
             shader = shaders.compileProgram(vert, frag)
+            
+            # Compile ground shader
+            ground_vert = shaders.compileShader(self.get_ground_vertex_shader(), GL_VERTEX_SHADER)
+            ground_frag = shaders.compileShader(self.get_ground_fragment_shader(), GL_FRAGMENT_SHADER)
+            self.ground_shader = shaders.compileProgram(ground_vert, ground_frag)
+            
             return shader
         except Exception as e:
             print(f"Shader compilation error: {e}")
@@ -321,7 +484,7 @@ class ForestEffect(ShaderEffect):
 
     def setup_buffers(self):
         """Initialize OpenGL buffers"""
-        # Quad vertices (centered)
+        # Tree quad vertices (centered)
         vertices = np.array([
             -0.5, -0.5,
              0.5, -0.5,
@@ -331,7 +494,7 @@ class ForestEffect(ShaderEffect):
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         
-        # Create VAO
+        # Create VAO for trees
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
         
@@ -354,6 +517,32 @@ class ForestEffect(ShaderEffect):
         self.VBOs.append(self.segment_instance_VBO)
         
         glBindVertexArray(0)
+        
+        # Create VAO for ground
+        self.ground_VAO = glGenVertexArrays(1)
+        glBindVertexArray(self.ground_VAO)
+        
+        # Ground vertex buffer
+        self.ground_VBO = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.ground_VBO)
+        glBufferData(GL_ARRAY_BUFFER, self.ground_vertices.nbytes, self.ground_vertices, GL_STATIC_DRAW)
+        
+        stride = 7 * 4  # 7 floats * 4 bytes
+        
+        # Position (location 0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        glEnableVertexAttribArray(0)
+        
+        # Tex coords (location 1)
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8))
+        glEnableVertexAttribArray(1)
+        
+        # Color HSV (location 2)
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(16))
+        glEnableVertexAttribArray(2)
+        
+        glBindVertexArray(0)
+        
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LESS)
 
@@ -369,7 +558,36 @@ class ForestEffect(ShaderEffect):
         """Render forest using instanced rendering"""
         if not self.enabled or not self.shader:
             return
+        
+        # Render ground first (at depth 49)
+        self._render_ground()
+        
+        # Then render trees (at depth 50-55)
+        self._render_trees()
+    
+    def _render_ground(self):
+        """Render ground plane"""
+        if self.ground_shader is None or self.ground_vertices is None:
+            return
             
+        glUseProgram(self.ground_shader)
+        
+        # Set uniforms
+        loc = glGetUniformLocation(self.ground_shader, "resolution")
+        if loc != -1:
+            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+        
+        loc = glGetUniformLocation(self.ground_shader, "fade")
+        if loc != -1:
+            glUniform1f(loc, self.fade_factor)
+        
+        glBindVertexArray(self.ground_VAO)
+        glDrawArrays(GL_POINTS, 0, len(self.ground_vertices))
+        glBindVertexArray(0)
+        glUseProgram(0)
+    
+    def _render_trees(self):
+        """Render tree segments"""
         glUseProgram(self.shader)
         
         # Set uniforms
@@ -395,9 +613,9 @@ class ForestEffect(ShaderEffect):
         for tree in self.trees:
             trunk_height = tree['height'] * 0.2
             trunk_width = tree['base_width'] * 0.11
+            depth = tree['depth']
             
             # Trunk (segment_type = 0)
-            depth = 50.0  # Mid-depth
             instances.append([
                 tree['x'], tree['y'] - trunk_height/2, depth,  # offset
                 trunk_width, trunk_height,  # size
