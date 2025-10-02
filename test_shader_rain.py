@@ -96,10 +96,7 @@ def main():
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     # print(f"Events in queue: {len(scheduler.event_queue)}")
-    for i in range(5):
-        delay = i * 0.5
-        scheduler.schedule_event(5 + delay, 1.0, fx.shader_lightning, frame_id=0)
-
+    scheduler.schedule_event(0, 60, fx.shader_meteor, frame_id=0, direction="bottom")
     # Add some wind
     scheduler.state['wind'] = 0.5
     
