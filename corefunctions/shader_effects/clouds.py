@@ -59,8 +59,26 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     
     # Update wind and fog from global state
     if 'cloud_effect' in state:
-        state['cloud_effect'].wind = outstate.get('wind', 0) * 50
-        state['cloud_effect'].fog_level = outstate.get('fog_level', 0)
+        effect = state['cloud_effect']
+        effect.wind = outstate.get('wind', 0) * 50
+        effect.fog_level = outstate.get('fog_level', 0)
+        
+        # Calculate fade with 4 second fade in/out
+        fade_duration = 7.0
+        total_duration = state.get('duration', 60)
+        elapsed = state.get('elapsed_time', 0)
+        
+        if elapsed < fade_duration:
+            # Fade in
+            effect.fade_factor = elapsed / fade_duration
+        elif elapsed > (total_duration - fade_duration):
+            # Fade out
+            effect.fade_factor = (total_duration - elapsed) / fade_duration
+        else:
+            # Fully visible
+            effect.fade_factor = 1.0
+        
+        effect.fade_factor = np.clip(effect.fade_factor, 0, 1)
     
     # On close event, clean up
     if state['count'] == -1:
@@ -254,6 +272,7 @@ class CloudEffect(ShaderEffect):
         self.max_clouds = max_clouds
         self.wind = 0.0
         self.fog_level = 0.0
+        self.fade_factor = 0.0  # Start faded out
         
         # Cloud depth
         self.cloud_depth = 40.0
@@ -394,6 +413,7 @@ class CloudEffect(ShaderEffect):
         
         uniform sampler2D cloudTexture;
         uniform float noiseTime;
+        uniform float fadeFactor;
         
         // Simple 2D noise function
         float noise(vec2 p) {
@@ -412,7 +432,8 @@ class CloudEffect(ShaderEffect):
             float edgeFactor = pow(alphaVal, 0.4);
             float noiseImpact = noiseVal * (1.0 - edgeFactor * 0.95);
             
-            float finalAlpha = texColor.a * fragOpacity * noiseImpact;
+            // Apply fade factor for smooth transitions
+            float finalAlpha = texColor.a * fragOpacity * noiseImpact * fadeFactor;
             
             outColor = vec4(texColor.rgb, finalAlpha);
         }
@@ -548,6 +569,10 @@ class CloudEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "noiseTime")
         if loc != -1:
             glUniform1f(loc, self.noise_time)
+        
+        loc = glGetUniformLocation(self.shader, "fadeFactor")
+        if loc != -1:
+            glUniform1f(loc, self.fade_factor)
         
         # Sort by z-index (back to front)
         depth_order = np.argsort(self.z_indices)
