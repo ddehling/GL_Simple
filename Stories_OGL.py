@@ -235,6 +235,7 @@ class EnvironmentalSystem:
         self.scheduler.state["celestial_visibility"] = self.weather_params["celestial_visibility"]
         self.scheduler.state["firefly_density"] = self.weather_params["firefly_density"]
         self.scheduler.state["meteor_rate"] = self.weather_params["meteor_rate"]
+        #print(self.weather_params["meteor_rate"])
         self.scheduler.state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
         self.scheduler.state["sand_density"] = self.weather_params.get("sand_density", 0)
         self.scheduler.state["tree_growth"] = (self.weather_params.get("tree_prob", 0) + 0.25)
@@ -384,7 +385,7 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 20, fx.shader_drifting_clouds,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 50, fx.shader_meteor,frame_id=0,direction='bottom')  # noqa: F405
     last_time = time.time()
     FRAME_TIME = 1 / 50
     first_time = time.time()

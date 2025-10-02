@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_stars(state, outstate, num_stars=100, twinkle_speed=1.0, drift_x=0.0, drift_y=0.0):
+def shader_stars(state, outstate, num_stars=200, twinkle_speed=1.0, drift_x=0.0, drift_y=0.0):
     """
     Shader-based twinkling stars effect compatible with EventScheduler
     
@@ -118,11 +118,11 @@ class TwinklingStarsEffect(ShaderEffect):
         size_types = np.random.random(n)
         self.sizes = np.where(
             size_types < 0.7,
-            np.random.uniform(1.5, 3.0, n),  # Small stars
+            np.random.uniform(0.5, 1.0, n),  # Small stars
             np.where(
                 size_types < 0.9,
-                np.random.uniform(3.0, 5.0, n),  # Medium stars
-                np.random.uniform(5.0, 8.0, n)   # Large stars
+                np.random.uniform(1.0, 2.0, n),  # Medium stars
+                np.random.uniform(2.0, 3.0, n)   # Large stars
             )
         )
         
@@ -136,9 +136,9 @@ class TwinklingStarsEffect(ShaderEffect):
                 color_types[:, np.newaxis] < 0.85,
                 # 25% warm white (slight yellow)
                 np.column_stack([
-                    np.ones(n),
-                    np.random.uniform(0.9, 1.0, n),
-                    np.random.uniform(0.7, 0.9, n)
+                    np.random.uniform(0.6, 1.0, n),
+                    np.random.uniform(0.6, 1.0, n),
+                    np.random.uniform(0.6, 0.9, n)
                 ]),
                 # # 15% cool white (slight blue)
                 # np.column_stack([
@@ -149,9 +149,9 @@ class TwinklingStarsEffect(ShaderEffect):
                 # ,
                 # 15% cool white (slight blue)
                 np.column_stack([
-                    np.random.uniform(0.25, 0.95, n),
-                    np.random.uniform(0.25, 0.95, n),
-                    np.random.uniform(0.25, 0.95, n)
+                    np.random.uniform(0.15, 0.95, n),
+                    np.random.uniform(0.15, 0.95, n),
+                    np.random.uniform(0.15, 0.95, n)
                 ])
             )
         )

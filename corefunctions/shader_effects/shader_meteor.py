@@ -16,7 +16,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_meteor(state, outstate, direction='top-right'):
+def shader_meteor(state, outstate, direction='top'):
     """
     Shader-based meteor shower effect compatible with EventScheduler
     
@@ -96,10 +96,10 @@ def shader_meteor(state, outstate, direction='top-right'):
                 'x': spawn_params['x'],
                 'y': spawn_params['y'],
                 'angle': spawn_params['angle'],
-                'speed': random.uniform(2.0, 4.0),
+                'speed': random.uniform(4.0, 8.0),
                 'size': random.uniform(0.6, 1.5),
                 'trail_length': 120 + random.random() * 60,
-                'life': 1.2,
+                'life': 2,
                 'hue': random.random()  # Random hue (0-1) for color variety
             }
             state['meteors'].append(meteor)
@@ -216,7 +216,7 @@ class MeteorEffect(ShaderEffect):
     
     MAX_METEORS = 16  # Maximum number of meteors the shader can handle
     
-    def __init__(self, viewport, direction='top-right', depth=49.9):
+    def __init__(self, viewport, direction='top', depth=75.9):
         super().__init__(viewport)
         
         # Meteor properties

@@ -118,7 +118,7 @@ class FireflyEffect(ShaderEffect):
             np.ones(count)                         # Value: full brightness
         ])
         
-        new_base_sizes = np.random.uniform(1.0, 3.0, count)
+        new_base_sizes = np.random.uniform(0.5, 1.0, count)
         
         # Concatenate with existing arrays
         self.positions = np.vstack([self.positions, new_positions]) if len(self.positions) > 0 else new_positions

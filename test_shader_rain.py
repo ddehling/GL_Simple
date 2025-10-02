@@ -92,12 +92,12 @@ def main():
     #                         x=60, y=30, radius=15, z=15, 
     #                         color=(1.0, 0.5, 0.0, 1),  # Orange, semi-transparent
     #                        frame_id=0)
-    scheduler.schedule_event(0, 60, fx.shader_aurora, frame_id=0, side="top")
+    #scheduler.schedule_event(0, 60, fx.shader_aurora, frame_id=0, side="top")
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     # print(f"Events in queue: {len(scheduler.event_queue)}")
-    #scheduler.schedule_event(0, 60, fx.shader_meteor, frame_id=0, direction="bottom")
-    scheduler.schedule_event(0, 20, fx.shader_cactus, frame_id=0, intensity=1.0)
+    scheduler.schedule_event(0, 60, fx.shader_meteor, frame_id=0, direction="bottom")
+    #scheduler.schedule_event(0, 20, fx.shader_cactus, frame_id=0, intensity=1.0)
     # Add some wind
     scheduler.state['wind'] = 0.5
     
