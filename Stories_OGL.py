@@ -242,9 +242,9 @@ class EnvironmentalSystem:
     def random_events(self):
         randcheck = np.random.random()
         
-        # if (randcheck < self.cloudyness / 1000):
-        #     if not self.scheduler.state.get("has_clouds", False):
-        #         self.scheduler.schedule_event(0, 100, drifting_clouds, frame_id=0) # noqa: F405
+        if (randcheck < self.cloudyness / 1000):
+            if not self.scheduler.state.get("has_clouds", False):
+                self.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0) # noqa: F405
 
         # if (randcheck < self.weather_params["Weird"] / 10000):
         #     # Choose between different options
@@ -384,7 +384,7 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 60, fx.shader_cactus,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 60, fx.shader_drifting_clouds,frame_id=0)  # noqa: F405
     last_time = time.time()
     FRAME_TIME = 1 / 50
     first_time = time.time()
