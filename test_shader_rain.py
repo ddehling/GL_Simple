@@ -96,7 +96,8 @@ def main():
     # print(f"Event 1 scheduled at {event1.start_time}, current time: {time.time()}")
     # print(f"Event 2 scheduled at {event2.start_time}, current time: {time.time()}")
     # print(f"Events in queue: {len(scheduler.event_queue)}")
-    scheduler.schedule_event(0, 60, fx.shader_meteor, frame_id=0, direction="bottom")
+    #scheduler.schedule_event(0, 60, fx.shader_meteor, frame_id=0, direction="bottom")
+    scheduler.schedule_event(0, 20, fx.shader_cactus, frame_id=0, intensity=1.0)
     # Add some wind
     scheduler.state['wind'] = 0.5
     
