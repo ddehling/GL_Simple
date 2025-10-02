@@ -96,10 +96,11 @@ def shader_meteor(state, outstate, direction='top-right'):
                 'x': spawn_params['x'],
                 'y': spawn_params['y'],
                 'angle': spawn_params['angle'],
-                'speed': random.uniform(2.0, 4.0),  # Increased speed for longer trails
-                'size': random.uniform(0.6, 1.5),  # Larger meteors
-                'trail_length': 120 + random.random() * 60,  # Much longer trails (80-140)
-                'life': 1.2
+                'speed': random.uniform(2.0, 4.0),
+                'size': random.uniform(0.6, 1.5),
+                'trail_length': 120 + random.random() * 60,
+                'life': 1.2,
+                'hue': random.random()  # Random hue (0-1) for color variety
             }
             state['meteors'].append(meteor)
             
@@ -267,12 +268,13 @@ class MeteorEffect(ShaderEffect):
         uniform int meteorCount;
         
         // Meteor data (positions in meteor screen space)
-        uniform vec2 meteorPos[{self.MAX_METEORS}];  // x, y position
+        uniform vec2 meteorPos[{self.MAX_METEORS}];
         uniform float meteorAngle[{self.MAX_METEORS}];
         uniform float meteorSpeed[{self.MAX_METEORS}];
         uniform float meteorSize[{self.MAX_METEORS}];
         uniform float meteorTrailLength[{self.MAX_METEORS}];
         uniform float meteorLife[{self.MAX_METEORS}];
+        uniform float meteorHue[{self.MAX_METEORS}];  // Base hue for each meteor
         
         // Random function for noise
         float random(vec2 st) {{
@@ -301,6 +303,7 @@ class MeteorEffect(ShaderEffect):
                 float size = meteorSize[m];
                 float trailLength = meteorTrailLength[m];
                 float life = meteorLife[m];
+                float baseHue = meteorHue[m];  // Get this meteor's base hue
                 
                 // Calculate trail direction
                 vec2 trailDir = vec2(cos(angle), sin(angle));
@@ -329,28 +332,28 @@ class MeteorEffect(ShaderEffect):
                         float pixelIntensity = intensity * distFactor;
                         
                         // Determine color based on position in trail
-                        bool isCore = i < 3;  // Larger core
+                        bool isCore = i < 3;
                         
                         if (isCore) {{
-                            // Core: bright white/yellow
-                            vec3 coreColor = hsv2rgb(vec3(0.15, 0.3, pixelIntensity * 1.2));
+                            // Core: bright colored center with slight desaturation
+                            vec3 coreColor = hsv2rgb(vec3(baseHue, 0.6, pixelIntensity * 1.2));
                             float coreBrightness = pixelIntensity * 1.2;
                             
-                            // Blend with existing color (brightest wins)
                             if (coreBrightness > maxBrightness) {{
                                 finalColor = coreColor;
                                 finalAlpha = pixelIntensity;
                                 maxBrightness = coreBrightness;
                             }}
                         }} else {{
-                            // Trail: orange/red gradient with more variation
-                            float hueVariation = 0.05 + (1.0 - trailFactor) * 0.1;  // Orange to red
-                            float trailValue =  pixelIntensity * (0.7 + trailFactor * 0.3);
-                            vec3 trailColor = hsv2rgb(vec3(hueVariation, 0.9, trailValue));
+                            // Trail: shift hue slightly based on trail position for variety
+                            float hueShift = (1.0 - trailFactor) * 0.15;  // Shift up to 15% along spectrum
+                            float trailHue = fract(baseHue + hueShift);  // Wrap around at 1.0
+                            float trailSaturation = 0.85 + trailFactor * 0.15;  // More saturated at head
+                            float trailValue = pixelIntensity * (0.7 + trailFactor * 0.3);
+                            vec3 trailColor = hsv2rgb(vec3(trailHue, trailSaturation, trailValue));
                             float trailAlpha = pixelIntensity * 0.99;
                             float trailBrightness = trailValue;
                             
-                            // Blend with existing color (brightest wins)
                             if (trailBrightness > maxBrightness) {{
                                 finalColor = trailColor;
                                 finalAlpha = trailAlpha;
@@ -469,12 +472,14 @@ class MeteorEffect(ShaderEffect):
             glUniform1i(loc, meteor_count)
         
         # Prepare meteor data arrays
+        # Prepare meteor data arrays
         positions = np.zeros((self.MAX_METEORS, 2), dtype=np.float32)
         angles = np.zeros(self.MAX_METEORS, dtype=np.float32)
         speeds = np.zeros(self.MAX_METEORS, dtype=np.float32)
         sizes = np.zeros(self.MAX_METEORS, dtype=np.float32)
         trail_lengths = np.zeros(self.MAX_METEORS, dtype=np.float32)
         lives = np.zeros(self.MAX_METEORS, dtype=np.float32)
+        hues = np.zeros(self.MAX_METEORS, dtype=np.float32)  # Add hue array
         
         # Fill arrays with meteor data
         for i in range(meteor_count):
@@ -485,6 +490,7 @@ class MeteorEffect(ShaderEffect):
             sizes[i] = meteor['size']
             trail_lengths[i] = meteor['trail_length']
             lives[i] = meteor['life']
+            hues[i] = meteor['hue']  # Store hue value
         
         # Set meteor data uniforms
         loc = glGetUniformLocation(self.shader, "meteorPos")
@@ -511,6 +517,10 @@ class MeteorEffect(ShaderEffect):
         if loc != -1:
             glUniform1fv(loc, self.MAX_METEORS, lives)
         
+        loc = glGetUniformLocation(self.shader, "meteorHue")
+        if loc != -1:
+            glUniform1fv(loc, self.MAX_METEORS, hues)
+
         # Draw full-screen quad
         glBindVertexArray(self.VAO)
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
