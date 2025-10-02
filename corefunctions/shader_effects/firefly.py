@@ -74,7 +74,7 @@ def shader_firefly(state, outstate, density=1.0):
 class FireflyEffect(ShaderEffect):
     """GPU-based firefly effect using instanced rendering with vectorized updates"""
     
-    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 200):
+    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 50):
         super().__init__(viewport)
         self.density = density
         self.max_fireflies = max_fireflies
@@ -107,7 +107,7 @@ class FireflyEffect(ShaderEffect):
         
         new_phases = np.random.uniform(0, 2 * np.pi, count)
         new_z_phases = np.random.uniform(0, 2 * np.pi, count)
-        new_speeds = np.random.uniform(0.1, 0.4, count)
+        new_speeds = np.random.uniform(0.025, 0.1, count)
         new_z_speeds = np.random.uniform(0.02, 0.08, count)  # Slower Z movement
         new_lifetimes = np.ones(count)
         
@@ -269,7 +269,7 @@ class FireflyEffect(ShaderEffect):
         
         # Spawn new fireflies based on density
         if len(self.positions) < self.max_fireflies:
-            spawn_probability = self.density * 0.025
+            spawn_probability = self.density * 0.005
             if np.random.random() < spawn_probability:
                 spawn_count = min(5, self.max_fireflies - len(self.positions))
                 self._spawn_fireflies(spawn_count)
@@ -279,7 +279,7 @@ class FireflyEffect(ShaderEffect):
         
         # Get whomp factor for dramatic movement
         whomp = state.get('whomp', 0.0)
-        movement_multiplier = 1.0 + whomp * 12.0
+        movement_multiplier = 1.0 + whomp * 4.0
         
         # Update phases for all fireflies
         self.phases += 0.1 * dt * 60  # Normalize for frame rate

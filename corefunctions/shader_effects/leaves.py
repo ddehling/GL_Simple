@@ -51,7 +51,7 @@ def shader_falling_leaves(state, outstate, density=1.0):
             leaves_effect = viewport.add_effect(
                 FallingLeavesEffect,
                 density=density,
-                max_leaves=100
+                max_leaves=25
             )
             state['leaves_effect'] = leaves_effect
             print(f"✓ Initialized shader falling leaves for frame {frame_id}")

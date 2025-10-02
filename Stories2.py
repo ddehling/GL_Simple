@@ -10,7 +10,6 @@ from sceneutils.strangeevents import *  # noqa: F403
 from sceneutils.cactus import *  # noqa: F403
 from sceneutils.spooky_boots import *  # noqa: F403
 from sceneutils.mountain import *  # noqa: F403
-from sceneutils.event_test import *  # noqa: F403
 from sceneutils.mushrooms import *  # noqa: F403
 from sceneutils.leaves import *  # noqa: F403
 from sceneutils.summer_bloom import *  # noqa: F403

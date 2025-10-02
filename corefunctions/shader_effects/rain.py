@@ -362,7 +362,7 @@ class RainEffect(ShaderEffect):
             self.num_raindrops = target_drops
         
         # Update velocities based on intensity
-        self.velocities = self.base_velocities * (rain_intensity + 0.1)
+        self.velocities = self.base_velocities * (rain_intensity + 0.2)
         
         # Vectorized position updates
         self.positions[:, 1] += self.velocities * dt  # Update y
@@ -384,7 +384,8 @@ class RainEffect(ShaderEffect):
             return
         
         #glClear(GL_DEPTH_BUFFER_BIT)
-            
+        glEnable(GL_DEPTH_TEST) 
+        glDepthFunc(GL_LESS)  
         glUseProgram(self.shader)
         
         # Update resolution uniform

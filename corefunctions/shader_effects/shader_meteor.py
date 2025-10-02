@@ -214,7 +214,7 @@ def _get_spawn_params(direction):
 class MeteorEffect(ShaderEffect):
     """GPU-based meteor shower effect using procedural shader rendering"""
     
-    MAX_METEORS = 32  # Maximum number of meteors the shader can handle
+    MAX_METEORS = 16  # Maximum number of meteors the shader can handle
     
     def __init__(self, viewport, direction='top-right', depth=49.9):
         super().__init__(viewport)

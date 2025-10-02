@@ -41,30 +41,6 @@ def shader_forest(state, outstate, season=0.0, density=0.8):
     
     # Get current season from outstate (can change over time)
     current_season = outstate.get('season', season)
-    
-    # Initialize forest effect on first call
-    if state['count'] == 0:
-        print(f"Initializing forest effect for frame {frame_id}, season={current_season}")
-        
-        try:
-            forest_effect = viewport.add_effect(
-                ForestEffect,
-                season=current_season,
-                density=density
-            )
-            state['forest_effect'] = forest_effect
-            print(f"✓ Initialized shader forest for frame {frame_id}")
-        except Exception as e:
-            print(f"✗ Failed to initialize forest: {e}")
-            import traceback
-            traceback.print_exc()
-            return
-    
-    # Update wind from global state
-    if 'forest_effect' in state:
-        effect = state['forest_effect']
-        effect.wind = outstate.get('wind', 0.0)
-    
     # Calculate fade based on duration
     if state.get('duration'):
         elapsed = state['elapsed_time']
@@ -77,12 +53,39 @@ def shader_forest(state, outstate, season=0.0, density=0.8):
             fade = (duration - elapsed) / fade_duration
         else:
             fade = 1.0
+        fade=max(0.0, min(1.0, fade))
         
-        if 'forest_effect' in state:
-            state['forest_effect'].fade_factor = max(0.0, min(1.0, fade))
+            
+
+    # Initialize forest effect on first call
+    if state['count'] == 0:
+        print(f"Initializing forest effect for frame {frame_id}, season={current_season}")
+        outstate['tree'] = True
+        try:
+            forest_effect = viewport.add_effect(
+                ForestEffect,
+                season=current_season,
+                density=density
+            )
+            forest_effect.fade_factor = fade
+            state['forest_effect'] = forest_effect
+            print(f"✓ Initialized shader forest for frame {frame_id}")
+        except Exception as e:
+            print(f"✗ Failed to initialize forest: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+    
+    # Update wind from global state
+    if 'forest_effect' in state:
+        effect = state['forest_effect']
+        effect.wind = outstate.get('wind', 0.0)
+        state['forest_effect'].fade_factor =fade
+
     
     # Clean up on close
     if state['count'] == -1:
+        outstate['tree'] = False
         if 'forest_effect' in state:
             print(f"Cleaning up forest effect for frame {frame_id}")
             viewport.effects.remove(state['forest_effect'])
@@ -692,7 +695,11 @@ class ForestEffect(ShaderEffect):
         """Render forest using instanced rendering"""
         if not self.enabled or not self.shader:
             return
-        
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    
         # Render ground first (at depth 49)
         self._render_ground()
         
@@ -703,7 +710,14 @@ class ForestEffect(ShaderEffect):
         """Render ground plane"""
         if self.ground_shader is None or self.ground_vertices is None:
             return
-            
+        
+        # Ensure depth testing and writing are enabled
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)  # Allow writing to depth buffer
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
         glUseProgram(self.ground_shader)
         
         # Set uniforms

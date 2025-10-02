@@ -103,6 +103,8 @@ class CactusEffect(ShaderEffect):
         
         # Initialize random state
         self.rng = np.random.RandomState(int(time.time()))
+                # Add depth positioning
+        self.cactus_depth = .45  # Middle depth (0=front, 1=back)
         
         # Wind parameters
         self.wind_direction = self.rng.uniform(0, 2*np.pi)
@@ -203,6 +205,8 @@ class CactusEffect(ShaderEffect):
         uniform float cactusHeight;
         uniform float swayPhase;
         uniform float colorVar;
+        uniform float cactusDepth;  // Base depth position of cactus
+
         
         // Arms
         uniform float leftArmHeight;
@@ -278,16 +282,20 @@ class CactusEffect(ShaderEffect):
             vec2 uv = fragCoord;
             vec2 p = vec2(uv.x, 1.0 - uv.y);
             
-            // Start with transparent
+            // Start with transparent and far depth
             vec4 color = vec4(0.0);
+            float depth = 1.0;  // Far plane
+            bool hasPixel = false;
             
-            // Draw ground
+            // Draw ground (furthest back)
             if (p.y > 0.83) {
                 vec3 groundColor = hsv2rgb(vec3(0.08, 0.5, 0.3));
                 color = vec4(groundColor, fade);
+                depth = 0.95;  // Near back of scene
+                hasPixel = true;
             }
             
-            // Draw decorations
+            // Draw decorations (on ground, slightly forward)
             for (int i = 0; i < numDecorations && i < 10; i++) {
                 vec2 decPos = decorations[i].xy;
                 float decSize = decorations[i].z;
@@ -295,14 +303,20 @@ class CactusEffect(ShaderEffect):
                 
                 float dist = length(p - decPos);
                 if (dist < decSize) {
-                    if (decType < 0.5) {
-                        // Rock
-                        vec3 rockColor = hsv2rgb(vec3(0.0, 0.1, 0.4));
-                        color = vec4(rockColor, fade);
-                    } else {
-                        // Plant
-                        vec3 plantColor = hsv2rgb(vec3(0.3, 0.6, 0.3));
-                        color = vec4(plantColor, fade);
+                    float decorationDepth = 0.9 - (decPos.x * 0.05);  // Vary by x position
+                    
+                    if (decorationDepth < depth) {
+                        if (decType < 0.5) {
+                            // Rock
+                            vec3 rockColor = hsv2rgb(vec3(0.0, 0.1, 0.4));
+                            color = vec4(rockColor, fade);
+                        } else {
+                            // Plant
+                            vec3 plantColor = hsv2rgb(vec3(0.3, 0.6, 0.3));
+                            color = vec4(plantColor, fade);
+                        }
+                        depth = decorationDepth;
+                        hasPixel = true;
                     }
                 }
             }
@@ -310,11 +324,10 @@ class CactusEffect(ShaderEffect):
             // Calculate sway
             float sway = sin(swayPhase) * windStrength * 0.05;
             
-            // Draw cactus body
+            // Draw cactus body (depth varies with height and sway)
             vec2 bodyCenter = cactusPos;
             float height = cactusHeight;
             
-            // Sample points along the body
             for (float i = 0.0; i < 1.0; i += 0.025) {
                 float yOffset = -height * i;
                 float heightRatio = i;
@@ -323,28 +336,34 @@ class CactusEffect(ShaderEffect):
                 vec2 segCenter = vec2(bodyCenter.x + localSway, bodyCenter.y + yOffset);
                 float localWidth = cactusSize * (0.8 + 0.2 * (1.0 - heightRatio));
                 
-                // Calculate distance to segment
                 vec2 diff = p - segCenter;
                 float distSq = (diff.x * diff.x) / (localWidth * localWidth) + 
                               (diff.y * diff.y) / 0.0004;
                 
                 if (distSq < 1.0) {
-                    // Texture
-                    float noise = hash(p * 20.0 + bodyTextureSeed) * 0.08;
-                    float sinPattern = sin(p.x * resolution.x * 0.8 + 123.0) * 0.05;
-                    float cosPattern = cos(p.y * resolution.y * 0.5 + 369.0) * 0.04;
-                    float texture = noise + sinPattern + cosPattern;
+                    // Depth based on height and horizontal position
+                    // Higher parts are further forward, sway affects depth
+                    float bodyDepth = cactusDepth - heightRatio * 0.15 + localSway * 0.1;
                     
-                    vec3 bodyColor = hsv2rgb(vec3(
-                        0.33 + colorVar + texture * 0.1,
-                        0.6 + texture * 0.2,
-                        0.4 + texture * 0.3
-                    ));
-                    color = vec4(bodyColor, fade);
+                    if (bodyDepth < depth) {
+                        float noise = hash(p * 20.0 + bodyTextureSeed) * 0.08;
+                        float sinPattern = sin(p.x * resolution.x * 0.8 + 123.0) * 0.05;
+                        float cosPattern = cos(p.y * resolution.y * 0.5 + 369.0) * 0.04;
+                        float texture = noise + sinPattern + cosPattern;
+                        
+                        vec3 bodyColor = hsv2rgb(vec3(
+                            0.33 + colorVar + texture * 0.1,
+                            0.6 + texture * 0.2,
+                            0.4 + texture * 0.3
+                        ));
+                        color = vec4(bodyColor, fade);
+                        depth = bodyDepth;
+                        hasPixel = true;
+                    }
                 }
             }
             
-            // Draw left arm
+            // Draw left arm (extends outward, so depth varies)
             {
                 float armHeight = leftArmHeight * height;
                 vec2 armBase = vec2(
@@ -352,8 +371,9 @@ class CactusEffect(ShaderEffect):
                     bodyCenter.y - armHeight
                 );
                 float armSway = sin(leftSwayPhase) * windStrength * 0.03;
+                float baseArmDepth = cactusDepth - (armHeight/height) * 0.15;
                 
-                // Horizontal segment
+                // Horizontal segment (extends left, gets further away)
                 for (float t = 0.0; t < 1.0; t += 0.2) {
                     vec2 segPos = vec2(
                         armBase.x - leftArmOut * t + armSway * t,
@@ -366,13 +386,20 @@ class CactusEffect(ShaderEffect):
                                   (diff.y * diff.y) / 0.0004;
                     
                     if (distSq < 1.0) {
-                        float noise = hash(p * 20.0 + leftArmSeed) * 0.08;
-                        vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
-                        color = vec4(armColor, fade);
+                        // Arm extends back as it goes out
+                        float armDepth = baseArmDepth + t * 0.1 + armSway * 0.05;
+                        
+                        if (armDepth < depth) {
+                            float noise = hash(p * 20.0 + leftArmSeed) * 0.08;
+                            vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
+                            color = vec4(armColor, fade);
+                            depth = armDepth;
+                            hasPixel = true;
+                        }
                     }
                 }
                 
-                // Vertical segment
+                // Vertical segment (going up, comes forward)
                 vec2 elbow = vec2(armBase.x - leftArmOut + armSway, armBase.y);
                 for (float t = 0.0; t < 1.0; t += 0.143) {
                     vec2 segPos = vec2(
@@ -386,14 +413,21 @@ class CactusEffect(ShaderEffect):
                                   (diff.y * diff.y) / 0.0004;
                     
                     if (distSq < 1.0) {
-                        float noise = hash(p * 20.0 + leftArmSeed) * 0.08;
-                        vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
-                        color = vec4(armColor, fade);
+                        // Going up brings it forward
+                        float armDepth = baseArmDepth + 0.1 - t * 0.08;
+                        
+                        if (armDepth < depth) {
+                            float noise = hash(p * 20.0 + leftArmSeed) * 0.08;
+                            vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
+                            color = vec4(armColor, fade);
+                            depth = armDepth;
+                            hasPixel = true;
+                        }
                     }
                 }
             }
             
-            // Draw right arm
+            // Draw right arm (similar depth logic)
             {
                 float armHeight = rightArmHeight * height;
                 vec2 armBase = vec2(
@@ -401,6 +435,7 @@ class CactusEffect(ShaderEffect):
                     bodyCenter.y - armHeight
                 );
                 float armSway = sin(rightSwayPhase) * windStrength * 0.03;
+                float baseArmDepth = cactusDepth - (armHeight/height) * 0.15;
                 
                 // Horizontal segment
                 for (float t = 0.0; t < 1.0; t += 0.2) {
@@ -415,9 +450,15 @@ class CactusEffect(ShaderEffect):
                                   (diff.y * diff.y) / 0.0004;
                     
                     if (distSq < 1.0) {
-                        float noise = hash(p * 20.0 + rightArmSeed) * 0.08;
-                        vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
-                        color = vec4(armColor, fade);
+                        float armDepth = baseArmDepth + t * 0.1 + armSway * 0.05;
+                        
+                        if (armDepth < depth) {
+                            float noise = hash(p * 20.0 + rightArmSeed) * 0.08;
+                            vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
+                            color = vec4(armColor, fade);
+                            depth = armDepth;
+                            hasPixel = true;
+                        }
                     }
                 }
                 
@@ -435,30 +476,41 @@ class CactusEffect(ShaderEffect):
                                   (diff.y * diff.y) / 0.0004;
                     
                     if (distSq < 1.0) {
-                        float noise = hash(p * 20.0 + rightArmSeed) * 0.08;
-                        vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
-                        color = vec4(armColor, fade);
+                        float armDepth = baseArmDepth + 0.1 - t * 0.08;
+                        
+                        if (armDepth < depth) {
+                            float noise = hash(p * 20.0 + rightArmSeed) * 0.08;
+                            vec3 armColor = hsv2rgb(vec3(0.33 + colorVar + noise * 0.1, 0.6, 0.4));
+                            color = vec4(armColor, fade);
+                            depth = armDepth;
+                            hasPixel = true;
+                        }
                     }
                 }
             }
             
-            // Draw eye
+            // Draw eye (at front of cactus face)
             vec2 faceCenter = vec2(
                 bodyCenter.x + sway * (eyeY/height) * (eyeY/height),
                 eyeY
             );
+            
+            float faceHeightRatio = eyeY / height;
+            float faceDepth = cactusDepth - faceHeightRatio * 0.15 - 0.05;  // Face is at front
             
             float eyeRadiusX = cactusSize * 1.2 * 0.75;
             float eyeRadiusY = cactusSize * 1.0 * 0.75 * (1.0 - 0.9 * eyeBlinkProgress);
             
             float eyeDist = sdEllipse(p - faceCenter, vec2(eyeRadiusX, eyeRadiusY));
             
-            if (eyeDist < 0.0) {
+            if (eyeDist < 0.0 && faceDepth < depth) {
                 // Eye white
                 vec3 eyeWhite = hsv2rgb(vec3(0.6, 0.5, 0.1));
                 color = vec4(eyeWhite, fade * 0.8);
+                depth = faceDepth;
+                hasPixel = true;
                 
-                // Iris (only if eye is open enough)
+                // Iris (slightly forward)
                 if (eyeBlinkProgress < 0.7) {
                     float irisVisibility = 1.0 - (eyeBlinkProgress / 0.7);
                     
@@ -471,13 +523,16 @@ class CactusEffect(ShaderEffect):
                     float irisDist = length(p - irisCenter);
                     
                     if (irisDist < irisRadius) {
+                        float irisDepth = faceDepth - 0.01;
+                        
                         vec2 irisDir = (p - irisCenter) / irisRadius;
                         float pattern = sin(atan(irisDir.y, irisDir.x) * 8.0) * 0.1 + 
                                       length(irisDir) * 0.2;
                         vec3 irisColor = hsv2rgb(vec3(0.55 + pattern, 0.7, 0.6));
                         color = vec4(irisColor, fade * irisVisibility);
+                        depth = irisDepth;
                         
-                        // Pupil
+                        // Pupil (furthest forward)
                         float pupilSize = 0.6 + sin(time * 1.5) * 0.1;
                         if (pupilBlink > 0.5) pupilSize -= 0.3;
                         pupilSize = clamp(pupilSize, 0.3, 1.0);
@@ -485,9 +540,10 @@ class CactusEffect(ShaderEffect):
                         float pupilRadius = irisRadius * pupilSize * 0.7;
                         if (irisDist < pupilRadius) {
                             color = vec4(0.0, 0.0, 0.0, fade * irisVisibility);
+                            depth = irisDepth - 0.01;
                         }
                         
-                        // Highlight
+                        // Highlight (at surface)
                         if (eyeBlinkProgress < 0.5) {
                             vec2 highlightOffset = vec2(-pupilRadius * 0.5, -pupilRadius * 0.5);
                             vec2 highlightCenter = irisCenter + highlightOffset;
@@ -498,22 +554,35 @@ class CactusEffect(ShaderEffect):
                                 float intensity = 1.0 - (highlightDist / highlightRadius);
                                 intensity *= (1.0 - eyeBlinkProgress / 0.5);
                                 color = vec4(1.0, 1.0, 1.0, fade * intensity);
+                                depth = irisDepth - 0.015;
                             }
                         }
                     }
                 }
             }
             
-            // Eyelid line when blinking
+            // Eyelid line when blinking (at surface)
             if (eyeBlinkProgress > 0.9 && abs(p.y - faceCenter.y) < 0.005) {
                 if (abs(p.x - faceCenter.x) < eyeRadiusX) {
-                    color = vec4(0.0, 0.0, 0.0, fade * 0.8);
+                    if (faceDepth - 0.02 < depth) {
+                        color = vec4(0.0, 0.0, 0.0, fade * 0.8);
+                        depth = faceDepth - 0.02;
+                        hasPixel = true;
+                    }
                 }
+            }
+            
+            // Only write depth if we actually drew something
+            if (hasPixel) {
+                gl_FragDepth = depth;
+            } else {
+                gl_FragDepth = 1.0;  // Far plane for transparent pixels
             }
             
             outColor = color;
         }
         """
+
 
     def compile_shader(self):
         """Compile and link cactus shaders"""
@@ -646,7 +715,12 @@ class CactusEffect(ShaderEffect):
         """Render the cactus using shaders"""
         if not self.enabled or not self.shader:
             return
-            
+        
+        # Enable depth testing
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)
+        
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             
@@ -664,6 +738,12 @@ class CactusEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "fade")
         if loc != -1:
             glUniform1f(loc, self.fade_factor)
+        
+        # Cactus depth
+        loc = glGetUniformLocation(self.shader, "cactusDepth")
+        if loc != -1:
+            glUniform1f(loc, self.cactus_depth)
+
         # Cactus parameters
         loc = glGetUniformLocation(self.shader, "cactusPos")
         if loc != -1:

@@ -78,7 +78,7 @@ void main() {
     // Calculate fog factor based on depth (0 = no fog, 1 = full fog)
     float depth_range = u_fog_far - u_fog_near;
     float fog_factor = clamp((linear_depth - u_fog_near) / depth_range, 0.0, 1.0);
-    fog_factor = fog_factor * u_fog_strength;
+    fog_factor = fog_factor * u_fog_strength* u_fog_strength;
     
     // Apply depth-based blur
     vec4 blurred_color = blur_at_depth(v_texcoord, fog_factor);
@@ -94,7 +94,7 @@ void main() {
 class ShaderFog(ShaderEffect):
     """Post-processing fog effect with depth-based blur"""
     
-    def __init__(self, viewport, strength=0.5, color=(0.7, 0.7, 0.8), 
+    def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8), 
                  fog_near=10.0, fog_far=100.0):
         super().__init__(viewport)
         self.strength = strength
