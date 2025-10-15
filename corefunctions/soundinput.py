@@ -168,9 +168,16 @@ class MicrophoneAnalyzer:
         print("-" * 80 + "\n")
         
         # Audio parameters
-        self.CHUNK = 2048
+        self.CHUNK = 4096  # FFT size for good frequency resolution
+        self.CALLBACK_BLOCKSIZE = 512  # Even smaller blocks for smoother updates (11.6ms at 44.1kHz)
+        self.OVERLAP = self.CHUNK - self.CALLBACK_BLOCKSIZE
         self.CHANNELS = 1
         self.device = device
+        
+        # Audio buffer for overlapping windows
+        self.audio_buffer = np.zeros(self.CHUNK)
+        self.new_data_available = False
+        
         
         # Analysis rate: 40 FPS
         self.FPS = 40
@@ -205,8 +212,9 @@ class MicrophoneAnalyzer:
         self.num_bands = 32
         self.band_history_len = 1000
         
-        # Create logarithmic frequency bands from 10Hz to 22kHz
-        self.band_edges = np.logspace(np.log10(10), np.log10(22000), self.num_bands + 1)
+        # Create logarithmic frequency bands from 20Hz to 20kHz (was 10Hz)
+        # Starting at 20Hz avoids subsonic frequencies that most systems can't capture
+        self.band_edges = np.logspace(np.log10(20), np.log10(20000), self.num_bands + 1)
         self.band_centers = np.sqrt(self.band_edges[:-1] * self.band_edges[1:])
         
         # Create masks for each band
@@ -214,6 +222,16 @@ class MicrophoneAnalyzer:
         for i in range(self.num_bands):
             mask = (self.freq_bins >= self.band_edges[i]) & (self.freq_bins < self.band_edges[i+1])
             self.band_masks.append(mask)
+        
+        # Debug: Print band information to verify coverage
+        print("\nFrequency Band Information:")
+        print(f"FFT bin resolution: {self.RATE/self.CHUNK:.2f} Hz per bin")
+        for i in range(min(5, self.num_bands)):  # Show first 5 bands
+            mask = self.band_masks[i]
+            num_bins = np.sum(mask)
+            print(f"Band {i}: {self.band_edges[i]:.1f}-{self.band_edges[i+1]:.1f} Hz "
+                  f"({num_bins} FFT bins, center: {self.band_centers[i]:.1f} Hz)")
+        print("...\n")
         
         # Storage for band power history (1000 frames x 32 bands)
         self._band_lock = threading.Lock()
@@ -229,79 +247,87 @@ class MicrophoneAnalyzer:
         self.prev_magnitudes = None
 
     def audio_callback(self, indata, frames, time_info, status):
-        self.data_queue.put(indata.copy())
+        # Lock-free write - just shift and append
+        # This is fast enough that we don't need a lock
+        self.audio_buffer = np.roll(self.audio_buffer, -frames)
+        self.audio_buffer[-frames:] = indata[:, 0]
+        self.new_data_available = True
 
     def analyze_audio(self):
         while self.running:
             frame_start = time.time()
             
-            if not self.data_queue.empty():
-                # Get audio data
-                data = self.data_queue.get()[:,0]
-                
-                # Apply window and compute FFT
-                windowed = data * self.window
-                fft = np.fft.rfft(windowed)
-                magnitudes = np.abs(fft)
-
-                try:
-                    self.magnitudes = self.magnitudes * self.max_decay + magnitudes * (1 - self.max_decay)
-                except:  # noqa: E722
-                    self.magnitudes = magnitudes
-
-                # Update spectrum history
-                with self._spectrum_lock:
-                    self.spectrum_history = np.roll(self.spectrum_history, 1, axis=0)
-                    self.spectrum_history[0] = magnitudes/(self.magnitudes+10E-10)
-                
-                # Calculate band powers and update history
-                band_powers = np.zeros(self.num_bands)
-                for i, mask in enumerate(self.band_masks):
-                    if np.any(mask):
-                        band_powers[i] = np.mean(magnitudes[mask] ** 2)  # Power = magnitude squared
-                
-                # Update exponential moving averages if enabled
-                if self.use_exponential:
-                    with self._band_lock:
-                        if self.ema_short is None:
-                            self.ema_short = band_powers.copy()
-                            self.ema_long = band_powers.copy()
-                        else:
-                            self.ema_short = self.ema_alpha_short * band_powers + (1 - self.ema_alpha_short) * self.ema_short
-                            self.ema_long = self.ema_alpha_long * band_powers + (1 - self.ema_alpha_long) * self.ema_long
-                
-                # Calculate spectral flux (better onset detector)
-                if self.prev_magnitudes is not None:
-                    diff = magnitudes - self.prev_magnitudes
-                    spectral_flux = np.sum(np.maximum(diff, 0))  # Only positive changes
-                else:
-                    spectral_flux = 0
-                self.prev_magnitudes = magnitudes.copy()
-                
-                with self._band_lock:
-                    # Roll and update band power history
-                    self.band_power_history = np.roll(self.band_power_history, 1, axis=0)
-                    self.band_power_history[0] = band_powers
-                    
-                    # Use spectral flux for onset detection (better than simple sum)
-                    self.spectral_flux_history = np.roll(self.spectral_flux_history, 1)
-                    self.spectral_flux_history[0] = spectral_flux
-                    
-                    # Also keep the bass energy onset
-                    onset_strength = np.sum(band_powers[2:12])  # Focus on ~40Hz to ~600Hz
-                    self.onset_history = np.roll(self.onset_history, 1)
-                    self.onset_history[0] = onset_strength
-                
-                # Update BPM estimation periodically (every 40 frames = 1 second at 40fps)
-                self.bpm_update_counter += 1
-                if self.bpm_update_counter >= 40:
-                    self._update_bpm_estimate()
-                    self.bpm_update_counter = 0
+            # Always process, even if data hasn't changed much
+            # Make a quick copy without holding a lock
+            data = self.audio_buffer.copy()
             
-            # Maintain 40 FPS
+            # Apply window and compute FFT
+            windowed = data * self.window
+            fft = np.fft.rfft(windowed)
+            magnitudes = np.abs(fft)
+
+            try:
+                self.magnitudes = self.magnitudes * self.max_decay + magnitudes * (1 - self.max_decay)
+            except:  # noqa: E722
+                self.magnitudes = magnitudes
+
+            # Update spectrum history
+            with self._spectrum_lock:
+                self.spectrum_history = np.roll(self.spectrum_history, 1, axis=0)
+                self.spectrum_history[0] = magnitudes/(self.magnitudes+10E-10)
+            
+            # Calculate band powers and update history
+            band_powers = np.zeros(self.num_bands)
+            for i, mask in enumerate(self.band_masks):
+                if np.any(mask):
+                    band_powers[i] = np.sum(magnitudes[mask] ** 2)
+                else:
+                    band_powers[i] = 0
+            
+            # Update exponential moving averages if enabled
+            if self.use_exponential:
+                with self._band_lock:
+                    if self.ema_short is None:
+                        self.ema_short = band_powers.copy()
+                        self.ema_long = band_powers.copy()
+                    else:
+                        self.ema_short = self.ema_alpha_short * band_powers + (1 - self.ema_alpha_short) * self.ema_short
+                        self.ema_long = self.ema_alpha_long * band_powers + (1 - self.ema_alpha_long) * self.ema_long
+            
+            # Calculate spectral flux
+            if self.prev_magnitudes is not None:
+                diff = magnitudes - self.prev_magnitudes
+                spectral_flux = np.sum(np.maximum(diff, 0))
+            else:
+                spectral_flux = 0
+            self.prev_magnitudes = magnitudes.copy()
+            
+            with self._band_lock:
+                # Roll and update band power history
+                self.band_power_history = np.roll(self.band_power_history, 1, axis=0)
+                self.band_power_history[0] = band_powers
+                
+                # Use spectral flux for onset detection
+                self.spectral_flux_history = np.roll(self.spectral_flux_history, 1)
+                self.spectral_flux_history[0] = spectral_flux
+                
+                # Also keep the bass energy onset
+                onset_strength = np.sum(band_powers[2:12])
+                self.onset_history = np.roll(self.onset_history, 1)
+                self.onset_history[0] = onset_strength
+            
+            # Update BPM estimation periodically
+            self.bpm_update_counter += 1
+            if self.bpm_update_counter >= 40:
+                self._update_bpm_estimate()
+                self.bpm_update_counter = 0
+            
+            # Maintain precise 40 FPS timing
             elapsed = time.time() - frame_start
             sleep_time = max(0, self.frame_time - elapsed)
-            time.sleep(sleep_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
 
     def _update_bpm_estimate(self):
         """Estimate BPM using improved onset detection and autocorrelation with peak finding"""
@@ -497,7 +523,7 @@ class MicrophoneAnalyzer:
         self.stream = sd.InputStream(
             channels=self.CHANNELS,
             samplerate=self.RATE,
-            blocksize=self.CHUNK,
+            blocksize=self.CALLBACK_BLOCKSIZE,  # Changed from CHUNK
             callback=self.audio_callback,
             device=self.device
         )
