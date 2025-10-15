@@ -14,9 +14,13 @@ from corefunctions import shader_effects as fx
 
 class EnvironmentalSystem:
     def __init__(self, scheduler):
+        frame_dimensions = [
+            (120, 60),   # Frame 0 (primary/main display)
+            (300, 32),   # Frame 1 (secondary display)
+        ]
         self.scheduler = EventScheduler(
         use_shader_renderer=True,
-        headless=False
+        headless=False,frames=frame_dimensions
     )
         self.current_weather = WeatherState.CLEAR
         self.target_weather = WeatherState.CLEAR
@@ -291,7 +295,7 @@ class EnvironmentalSystem:
 
         # Random meteor events
         if randcheck < self.weather_params["meteor_rate"] / 800:
-            self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
+            self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0,direction='bottom') # noqa: F405
             #self.scheduler.schedule_event(0, 25, secondary_meteor_shower, frame_id=1) # noqa: F405
 
         # Dancing cactus events
@@ -384,7 +388,7 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.transition_to_weather(WeatherState.SPOOKY)
     env_system.scheduler.schedule_event(0, 50, fx.shader_meteor,frame_id=0,direction='bottom')  # noqa: F405
     last_time = time.time()
     FRAME_TIME = 1 / 50
