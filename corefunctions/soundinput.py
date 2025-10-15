@@ -76,7 +76,22 @@ def find_device_by_name(name_fragment):
     return None, None
 
 class MicrophoneAnalyzer:
-    def __init__(self, device=None, device_name=None, use_loopback=False):
+    def __init__(self, device=None, device_name=None, use_loopback=False,
+                 avg_window_short=20, avg_window_long=100,
+                 use_exponential=False, ema_alpha_short=0.05, ema_alpha_long=0.01):
+        """
+        Initialize the microphone analyzer
+        
+        Args:
+            device: Device ID to use (None for default)
+            device_name: Name fragment to search for device
+            use_loopback: Try to find loopback/stereo mix device
+            avg_window_short: Number of frames for short-term average (default 20 = 0.5s at 40fps)
+            avg_window_long: Number of frames for long-term average (default 100 = 2.5s at 40fps)
+            use_exponential: Use exponential moving average instead of simple mean
+            ema_alpha_short: Alpha for short-term EMA (higher = faster response, 0-1)
+            ema_alpha_long: Alpha for long-term EMA (lower = slower response, 0-1)
+        """
         # Print device information
         devices = list_audio_devices()
         
@@ -130,6 +145,25 @@ class MicrophoneAnalyzer:
                     continue
             else:
                 raise Exception("Could not find a supported sample rate for this device")
+        
+        # Averaging parameters
+        self.avg_window_short = avg_window_short
+        self.avg_window_long = avg_window_long
+        self.use_exponential = use_exponential
+        self.ema_alpha_short = ema_alpha_short
+        self.ema_alpha_long = ema_alpha_long
+        
+        # Initialize EMA accumulators if using exponential averaging
+        if self.use_exponential:
+            self.ema_short = None  # Will initialize on first frame
+            self.ema_long = None
+            print(f"Using Exponential Moving Average:")
+            print(f"  Short-term alpha: {ema_alpha_short} (~{1/ema_alpha_short:.0f} frame time constant)")
+            print(f"  Long-term alpha: {ema_alpha_long} (~{1/ema_alpha_long:.0f} frame time constant)")
+        else:
+            print(f"Using Simple Mean Average:")
+            print(f"  Short-term window: {avg_window_short} frames ({avg_window_short/40:.2f}s)")
+            print(f"  Long-term window: {avg_window_long} frames ({avg_window_long/40:.2f}s)")
         
         print("-" * 80 + "\n")
         
@@ -225,6 +259,16 @@ class MicrophoneAnalyzer:
                 for i, mask in enumerate(self.band_masks):
                     if np.any(mask):
                         band_powers[i] = np.mean(magnitudes[mask] ** 2)  # Power = magnitude squared
+                
+                # Update exponential moving averages if enabled
+                if self.use_exponential:
+                    with self._band_lock:
+                        if self.ema_short is None:
+                            self.ema_short = band_powers.copy()
+                            self.ema_long = band_powers.copy()
+                        else:
+                            self.ema_short = self.ema_alpha_short * band_powers + (1 - self.ema_alpha_short) * self.ema_short
+                            self.ema_long = self.ema_alpha_long * band_powers + (1 - self.ema_alpha_long) * self.ema_long
                 
                 # Calculate spectral flux (better onset detector)
                 if self.prev_magnitudes is not None:
@@ -375,38 +419,55 @@ class MicrophoneAnalyzer:
         Returns:
             dict: {
                 'raw_bands': 2D array (1000 x 32) - Raw power in each frequency band
-                'norm_20': 2D array (1000 x 32) - Normalized to mean of last 20 frames
-                'norm_100': 2D array (1000 x 32) - Normalized to mean of last 100 frames
+                'norm_short': 2D array (1000 x 32) - Normalized to short-term average
+                'norm_long': 2D array (1000 x 32) - Normalized to long-term average
                 'band_centers': 1D array (32) - Center frequency of each band (Hz)
                 'band_edges': 1D array (33) - Edge frequencies of bands (Hz)
                 'bpm': float - Estimated beats per minute
                 'bpm_confidence': float - Confidence in BPM estimate (0-1)
                 'timestamp': float - Current time
+                'averaging_method': str - 'exponential' or 'mean'
             }
         """
         with self._band_lock:
             raw = self.band_power_history.copy()
             
-            # Calculate normalized versions
-            # Norm 20: normalize to mean of last 20 points
-            mean_20 = np.mean(raw[:20], axis=0, keepdims=True)
-            mean_20 = np.where(mean_20 < 1e-10, 1e-10, mean_20)  # Avoid division by zero
-            norm_20 = raw / mean_20
+            if self.use_exponential:
+                # Use exponential moving averages
+                if self.ema_short is not None and self.ema_long is not None:
+                    mean_short = self.ema_short.copy()
+                    mean_long = self.ema_long.copy()
+                else:
+                    # Fallback if EMAs not initialized yet
+                    mean_short = np.mean(raw[:max(1, self.avg_window_short)], axis=0)
+                    mean_long = np.mean(raw[:max(1, self.avg_window_long)], axis=0)
+            else:
+                # Use simple mean over window
+                mean_short = np.mean(raw[:self.avg_window_short], axis=0, keepdims=True)
+                mean_long = np.mean(raw[:self.avg_window_long], axis=0, keepdims=True)
             
-            # Norm 100: normalize to mean of last 100 points
-            mean_100 = np.mean(raw[:100], axis=0, keepdims=True)
-            mean_100 = np.where(mean_100 < 1e-10, 1e-10, mean_100)
-            norm_100 = raw / mean_100
+            # Ensure no division by zero
+            if self.use_exponential:
+                mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
+                mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
+                norm_short = raw / mean_short[np.newaxis, :]
+                norm_long = raw / mean_long[np.newaxis, :]
+            else:
+                mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
+                mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
+                norm_short = raw / mean_short
+                norm_long = raw / mean_long
             
             return {
                 'raw_bands': raw,
-                'norm_20': norm_20,
-                'norm_100': norm_100,
+                'norm_short': norm_short,
+                'norm_long': norm_long,
                 'band_centers': self.band_centers.copy(),
                 'band_edges': self.band_edges.copy(),
                 'bpm': self.last_bpm,
                 'bpm_confidence': self.bpm_confidence,
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'averaging_method': 'exponential' if self.use_exponential else 'mean'
             }
 
     
@@ -415,17 +476,17 @@ class MicrophoneAnalyzer:
         Get just the current frame's band values
         
         Args:
-            normalize: 'none', '20', or '100' for different normalizations
+            normalize: 'none', 'short', or 'long' for different normalizations
             
         Returns:
             1D array of 32 band values
         """
         data = self.get_extended_analysis()
         
-        if normalize == '20':
-            return data['norm_20'][0]
-        elif normalize == '100':
-            return data['norm_100'][0]
+        if normalize == 'short':
+            return data['norm_short'][0]
+        elif normalize == 'long':
+            return data['norm_long'][0]
         else:
             return data['raw_bands'][0]
 
@@ -462,8 +523,8 @@ class SpectrogramPlotter:
         gs = self.fig.add_gridspec(4, 1, height_ratios=[3, 3, 3, 1], hspace=0.3)
         
         self.ax_raw = self.fig.add_subplot(gs[0])
-        self.ax_norm20 = self.fig.add_subplot(gs[1])
-        self.ax_norm100 = self.fig.add_subplot(gs[2])
+        self.ax_norm_short = self.fig.add_subplot(gs[1])
+        self.ax_norm_long = self.fig.add_subplot(gs[2])
         self.ax_info = self.fig.add_subplot(gs[3])
         
         # Get initial data
@@ -487,9 +548,17 @@ class SpectrogramPlotter:
         self.ax_raw.set_title('Raw Band Power')
         plt.colorbar(self.img_raw, ax=self.ax_raw, label='Power')
         
-        # Initialize norm 20 plot
-        self.img_norm20 = self.ax_norm20.imshow(
-            analysis['norm_20'][:display_frames].T,
+        # Initialize short-term normalized plot
+        avg_method = "EMA" if analyzer.use_exponential else "Mean"
+        if analyzer.use_exponential:
+            short_time = 1 / (analyzer.ema_alpha_short * analyzer.FPS)
+            short_label = f"τ≈{short_time:.2f}s"
+        else:
+            short_time = analyzer.avg_window_short / analyzer.FPS
+            short_label = f"{short_time:.1f}s"
+        
+        self.img_norm_short = self.ax_norm_short.imshow(
+            analysis['norm_short'][:display_frames].T,
             aspect='auto',
             origin='lower',
             interpolation='nearest',
@@ -497,13 +566,20 @@ class SpectrogramPlotter:
             cmap='viridis',
             vmin=0, vmax=2
         )
-        self.ax_norm20.set_ylabel('Band Index')
-        self.ax_norm20.set_title('Normalized to Last 20 Frames (0.5s)')
-        plt.colorbar(self.img_norm20, ax=self.ax_norm20, label='Relative Power')
+        self.ax_norm_short.set_ylabel('Band Index')
+        self.ax_norm_short.set_title(f'Short-term Normalized ({avg_method}, {short_label})')
+        plt.colorbar(self.img_norm_short, ax=self.ax_norm_short, label='Relative Power')
         
-        # Initialize norm 100 plot
-        self.img_norm100 = self.ax_norm100.imshow(
-            analysis['norm_100'][:display_frames].T,
+        # Initialize long-term normalized plot
+        if analyzer.use_exponential:
+            long_time = 1 / (analyzer.ema_alpha_long * analyzer.FPS)
+            long_label = f"τ≈{long_time:.2f}s"
+        else:
+            long_time = analyzer.avg_window_long / analyzer.FPS
+            long_label = f"{long_time:.1f}s"
+        
+        self.img_norm_long = self.ax_norm_long.imshow(
+            analysis['norm_long'][:display_frames].T,
             aspect='auto',
             origin='lower',
             interpolation='nearest',
@@ -511,10 +587,10 @@ class SpectrogramPlotter:
             cmap='plasma',
             vmin=0, vmax=2
         )
-        self.ax_norm100.set_xlabel('Time (seconds ago)')
-        self.ax_norm100.set_ylabel('Band Index')
-        self.ax_norm100.set_title('Normalized to Last 100 Frames (2.5s)')
-        plt.colorbar(self.img_norm100, ax=self.ax_norm100, label='Relative Power')
+        self.ax_norm_long.set_xlabel('Time (seconds ago)')
+        self.ax_norm_long.set_ylabel('Band Index')
+        self.ax_norm_long.set_title(f'Long-term Normalized ({avg_method}, {long_label})')
+        plt.colorbar(self.img_norm_long, ax=self.ax_norm_long, label='Relative Power')
         
         # Setup info display
         self.ax_info.axis('off')
@@ -531,7 +607,7 @@ class SpectrogramPlotter:
         freq_ticks = [0, 7, 15, 23, 31]
         freq_labels = [f"{self.analyzer.band_centers[i]:.0f} Hz" for i in freq_ticks]
         
-        for ax in [self.ax_raw, self.ax_norm20, self.ax_norm100]:
+        for ax in [self.ax_raw, self.ax_norm_short, self.ax_norm_long]:
             ax.set_yticks(freq_ticks)
             ax.set_yticklabels(freq_labels)
             ax.grid(True, alpha=0.2)
@@ -546,8 +622,8 @@ class SpectrogramPlotter:
         
         # Update images
         self.img_raw.set_array(analysis['raw_bands'][:display_frames].T)
-        self.img_norm20.set_array(analysis['norm_20'][:display_frames].T)
-        self.img_norm100.set_array(analysis['norm_100'][:display_frames].T)
+        self.img_norm_short.set_array(analysis['norm_short'][:display_frames].T)
+        self.img_norm_long.set_array(analysis['norm_long'][:display_frames].T)
         
         # Update color limits for raw data adaptively
         raw_95 = np.percentile(analysis['raw_bands'][:display_frames], 95)
@@ -576,9 +652,7 @@ class SpectrogramPlotter:
         )
         self.info_text.set_text(info_str)
         
-        return self.img_raw, self.img_norm20, self.img_norm100, self.info_text
-
-
+        return self.img_raw, self.img_norm_short, self.img_norm_long, self.info_text
 
     def start(self):
         self.ani = FuncAnimation(
@@ -596,13 +670,27 @@ if __name__ == "__main__":
     print("Use Ctrl+C to stop\n")
     
     # Choose your audio source:
-    # Option 1: Use loopback (system audio output)
-    #analyzer = MicrophoneAnalyzer(use_loopback=False)
     
-    # Option 2: Use a specific microphone
-    analyzer = MicrophoneAnalyzer(device_name="HD Pro Webcam C920")
+    # Option 1: Use exponential averaging with fast/slow response
+    analyzer = MicrophoneAnalyzer(
+        device_name="HD Pro Webcam C920",
+        use_exponential=True,
+        ema_alpha_short=0.1,  # Fast response (10 frames ~= 0.25s)
+        ema_alpha_long=0.02   # Slow response (50 frames ~= 1.25s)
+    )
     
-    # Option 3: Use default input device
+    # Option 2: Use mean averaging with custom windows
+    # analyzer = MicrophoneAnalyzer(
+    #     device_name="HD Pro Webcam C920",
+    #     use_exponential=False,
+    #     avg_window_short=40,   # 1 second
+    #     avg_window_long=200    # 5 seconds
+    # )
+    
+    # Option 3: Use loopback (system audio output)
+    # analyzer = MicrophoneAnalyzer(use_loopback=True)
+    
+    # Option 4: Use default input device with default settings
     # analyzer = MicrophoneAnalyzer()
     
     analyzer.start()
