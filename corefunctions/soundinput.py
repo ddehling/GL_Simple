@@ -217,21 +217,50 @@ class MicrophoneAnalyzer:
         self.band_edges = np.logspace(np.log10(20), np.log10(20000), self.num_bands + 1)
         self.band_centers = np.sqrt(self.band_edges[:-1] * self.band_edges[1:])
         
-        # Create masks for each band
+        # Extended analysis features
+        self.num_bands = 32
+        self.band_history_len = 1000
+        
+        # Create logarithmic frequency bands from 40Hz to 16kHz (more practical range)
+        # This avoids subsonic frequencies and ultrasonic noise
+        self.band_edges = np.logspace(np.log10(40), np.log10(16000), self.num_bands + 1)
+        self.band_centers = np.sqrt(self.band_edges[:-1] * self.band_edges[1:])
+        
+        # Create masks for each band, ensuring we skip DC component (bin 0)
         self.band_masks = []
         for i in range(self.num_bands):
             mask = (self.freq_bins >= self.band_edges[i]) & (self.freq_bins < self.band_edges[i+1])
+            # Ensure we have at least one bin per band
+            if not np.any(mask):
+                # If band is too narrow, expand it slightly
+                mask = (self.freq_bins >= self.band_edges[i] * 0.9) & (self.freq_bins < self.band_edges[i+1] * 1.1)
             self.band_masks.append(mask)
         
         # Debug: Print band information to verify coverage
         print("\nFrequency Band Information:")
         print(f"FFT bin resolution: {self.RATE/self.CHUNK:.2f} Hz per bin")
+        print(f"Usable frequency range: {self.RATE/self.CHUNK:.1f} Hz to {self.RATE/2:.1f} Hz")
         for i in range(min(5, self.num_bands)):  # Show first 5 bands
             mask = self.band_masks[i]
             num_bins = np.sum(mask)
+            if num_bins > 0:
+                bin_range = f"{self.freq_bins[mask][0]:.1f}-{self.freq_bins[mask][-1]:.1f} Hz"
+            else:
+                bin_range = "NO BINS"
             print(f"Band {i}: {self.band_edges[i]:.1f}-{self.band_edges[i+1]:.1f} Hz "
-                  f"({num_bins} FFT bins, center: {self.band_centers[i]:.1f} Hz)")
-        print("...\n")
+                  f"({num_bins} bins, actual: {bin_range}, center: {self.band_centers[i]:.1f} Hz)")
+        print("...")
+        # Show last 3 bands to check high frequency
+        for i in range(max(0, self.num_bands-3), self.num_bands):
+            mask = self.band_masks[i]
+            num_bins = np.sum(mask)
+            if num_bins > 0:
+                bin_range = f"{self.freq_bins[mask][0]:.1f}-{self.freq_bins[mask][-1]:.1f} Hz"
+            else:
+                bin_range = "NO BINS"
+            print(f"Band {i}: {self.band_edges[i]:.1f}-{self.band_edges[i+1]:.1f} Hz "
+                  f"({num_bins} bins, actual: {bin_range}, center: {self.band_centers[i]:.1f} Hz)")
+        print()
         
         # Storage for band power history (1000 frames x 32 bands)
         self._band_lock = threading.Lock()
@@ -265,7 +294,9 @@ class MicrophoneAnalyzer:
             windowed = data * self.window
             fft = np.fft.rfft(windowed)
             magnitudes = np.abs(fft)
-
+            
+            # Skip DC component (bin 0) to avoid DC offset issues
+            magnitudes[0] = 0
             try:
                 self.magnitudes = self.magnitudes * self.max_decay + magnitudes * (1 - self.max_decay)
             except:  # noqa: E722
@@ -276,13 +307,23 @@ class MicrophoneAnalyzer:
                 self.spectrum_history = np.roll(self.spectrum_history, 1, axis=0)
                 self.spectrum_history[0] = magnitudes/(self.magnitudes+10E-10)
             
-            # Calculate band powers and update history
+            # Calculate band powers and update history with better noise handling
             band_powers = np.zeros(self.num_bands)
             for i, mask in enumerate(self.band_masks):
                 if np.any(mask):
-                    band_powers[i] = np.sum(magnitudes[mask] ** 2)
+                    # Use RMS instead of sum for better consistency across band widths
+                    band_powers[i] = np.sqrt(np.mean(magnitudes[mask] ** 2))
                 else:
                     band_powers[i] = 0
+            
+            # Apply smoothing to reduce noise in individual bands
+            # This helps especially with high-frequency bands
+            if not hasattr(self, '_prev_band_powers'):
+                self._prev_band_powers = band_powers.copy()
+            else:
+                # Light smoothing (85% new, 15% old)
+                band_powers = 0.95 * band_powers + 0.05 * self._prev_band_powers
+                self._prev_band_powers = band_powers.copy()
             
             # Update exponential moving averages if enabled
             if self.use_exponential:

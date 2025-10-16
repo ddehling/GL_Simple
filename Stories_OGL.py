@@ -388,8 +388,8 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.SPOOKY)
-    env_system.scheduler.schedule_event(0, 50, fx.shader_meteor,frame_id=0,direction='bottom')  # noqa: F405
+    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.scheduler.schedule_event(0, 50, fx.shader_cactus,frame_id=0)  # noqa: F405
     last_time = time.time()
     FRAME_TIME = 1 / 50
     first_time = time.time()

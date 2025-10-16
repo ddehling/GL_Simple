@@ -610,6 +610,10 @@ class CactusEffect(ShaderEffect):
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         
+        # Enable depth testing
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LESS)
+
         # Create VAO
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
@@ -852,4 +856,5 @@ class CactusEffect(ShaderEffect):
         glUseProgram(0)
         
         # Disable blending after rendering
+        glDepthMask(GL_TRUE)
         glDisable(GL_BLEND)
