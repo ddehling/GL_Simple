@@ -260,12 +260,18 @@ class EventScheduler:
         # Clear window
         self.shader_renderer.clear_window()
         
-        frames = []
-        
+        # STEP 1: Clear and render ALL viewports first
         for viewport in self.shader_renderer.viewports:
             viewport.clear()
             viewport.update(dt, self.state)
             viewport.render(self.state)
+        
+        # STEP 2: CRITICAL - Ensure ALL rendering completes before reading ANY frames
+        self.shader_renderer.sync_gpu()
+        
+        # STEP 3: Now safely read all frames
+        frames = []
+        for viewport in self.shader_renderer.viewports:
             frames.append(viewport.get_frame())
         
         return frames

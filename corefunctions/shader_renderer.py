@@ -145,6 +145,11 @@ class ShaderRenderer:
         if self.window:
             glfw.destroy_window(self.window)
         glfw.terminate()
+        
+    def sync_gpu(self):
+        """Wait for all GPU operations to complete"""
+        glfw.make_context_current(self.window)
+        glFinish()
 
 
 class ShaderViewport:
@@ -284,6 +289,9 @@ class ShaderViewport:
             if effect.enabled:
                 effect.render(state)
         
+        # CRITICAL: Ensure rendering is complete before unbinding
+        glFlush()  # Submit all commands
+        
         # Only render to window if not in headless mode
         if not self.headless:
             glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -293,19 +301,22 @@ class ShaderViewport:
             for effect in self.effects:
                 if effect.enabled:
                     effect.render(state)
-    
+
     def get_frame(self) -> np.ndarray:
         """Read framebuffer into numpy array for LED output"""
         glfw.make_context_current(self.glfw_window)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
+        
+        # No need for glFinish() here since it's called before reading frames
         pixels = glReadPixels(0, 0, self.width, self.height, 
-                             GL_RGBA, GL_UNSIGNED_BYTE)
+                            GL_RGBA, GL_UNSIGNED_BYTE)
         frame = np.frombuffer(pixels, dtype=np.uint8).reshape(
             self.height, self.width, 4)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         
-        # Flip Y axis (OpenGL convention)
-        return np.flip(frame, axis=0)
+        # Flip Y axis and drop alpha
+        frame = np.flip(frame, axis=0)
+        return frame[:, :, :3]
     
     def cleanup(self):
         """Clean up resources"""
@@ -318,5 +329,4 @@ class ShaderViewport:
             glDeleteTextures([self.color_texture])
         if self.depth_texture:
             glDeleteTextures([self.depth_texture])
-
 
