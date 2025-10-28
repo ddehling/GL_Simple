@@ -8,24 +8,19 @@ from corefunctions.shader_effects.base import ShaderEffect
 IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
 class ShaderRenderer:
-    """GPU-based renderer with visible OpenGL window and multiple viewports"""
+    """GPU-based renderer with visible OpenGL window (single viewport only)"""
     def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
-        self.padding = padding
         self.headless = headless
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
         
-        # Calculate window size based on viewport dimensions
-        total_width = sum(w for w, h in frame_dimensions)
-        max_height = max(h for w, h in frame_dimensions)
+        # Use only the first frame dimension for window size
+        self.window_width, self.window_height = frame_dimensions[0]
         
-        self.window_width = total_width + padding * (self.num_frames + 1)
-        self.window_height = max_height + padding * 2
-        
-        print(f"Calculated window size: {self.window_width}x{self.window_height} (native viewport size)")
+        print(f"Window size: {self.window_width}x{self.window_height} (viewport 0 native size)")
         
         self.init_glfw()
         self.create_window()
@@ -79,24 +74,26 @@ class ShaderRenderer:
             
         width, height = self.frame_dimensions[frame_id]
         
-        # No scaling - use native dimensions for display
-        display_width = width
-        display_height = height
-        
-        # Calculate x position (accumulate previous widths)
-        x_offset = self.padding
-        for i in range(frame_id):
-            prev_width, _ = self.frame_dimensions[i]
-            x_offset += prev_width + self.padding
-        
-        # Center vertically
-        y_offset = (self.window_height - display_height) // 2
+        # Only viewport 0 is displayed in the window
+        if frame_id == 0:
+            display_width = self.window_width
+            display_height = self.window_height
+            x_offset = 0
+            y_offset = 0
+        else:
+            # Other viewports are offscreen only
+            display_width = 0
+            display_height = 0
+            x_offset = 0
+            y_offset = 0
         
         if not self.headless:
             print(f"Creating viewport {frame_id}:")
             print(f"  Framebuffer (LED): {width}x{height}")
-            print(f"  Display: {display_width}x{display_height} at ({x_offset}, {y_offset})")
-            print(f"  Scale factor: 1.0 (native)")
+            if frame_id == 0:
+                print(f"  Display: {display_width}x{display_height} (full window)")
+            else:
+                print(f"  Display: offscreen only")
         else:
             print(f"Creating viewport {frame_id}: {width}x{height} (headless)")
         
@@ -163,16 +160,16 @@ class ShaderViewport:
         self.height = height
         self.window_x = window_x  # Position in window
         self.window_y = window_y
-        self.display_width = display_width  # Display size in window (scaled)
+        self.display_width = display_width  # Display size in window (0 for offscreen only)
         self.display_height = display_height
         self.glfw_window = glfw_window
-        self.headless = headless  # Add headless flag
+        self.headless = headless
         self.effects = []
         
         # Framebuffer for LED output (separate from window rendering)
         self.fbo = None
         self.color_texture = None
-        self.depth_texture = None  # Changed from depth_renderbuffer
+        self.depth_texture = None
         
         
     def init_glfw(self):
@@ -212,7 +209,7 @@ class ShaderViewport:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         
-        # Create depth texture (changed from renderbuffer so effects can read it)
+        # Create depth texture
         self.depth_texture = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, self.depth_texture)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, 
@@ -259,15 +256,15 @@ class ShaderViewport:
         glViewport(0, 0, self.width, self.height)
         glScissor(0, 0, self.width, self.height)
         glClearColor(0.0, 0.0, 0.0, 0.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)  # Clear depth too
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         
-        # Clear window viewport region
-        if not self.headless:
+        # Clear window viewport region (only for frame 0 and if not headless)
+        if not self.headless and self.display_width > 0:
             glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
             glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
             glClearColor(0.0, 0.0, 0.0, 1.0)
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)  # Clear depth too
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
     
     def update(self, dt: float, state: Dict):
@@ -290,10 +287,10 @@ class ShaderViewport:
                 effect.render(state)
         
         # CRITICAL: Ensure rendering is complete before unbinding
-        glFlush()  # Submit all commands
+        glFlush()
         
-        # Only render to window if not in headless mode
-        if not self.headless:
+        # Only render to window if not headless and this is viewport 0
+        if not self.headless and self.display_width > 0:
             glBindFramebuffer(GL_FRAMEBUFFER, 0)
             glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
             glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
@@ -307,7 +304,6 @@ class ShaderViewport:
         glfw.make_context_current(self.glfw_window)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         
-        # No need for glFinish() here since it's called before reading frames
         pixels = glReadPixels(0, 0, self.width, self.height, 
                             GL_RGBA, GL_UNSIGNED_BYTE)
         frame = np.frombuffer(pixels, dtype=np.uint8).reshape(
@@ -329,4 +325,3 @@ class ShaderViewport:
             glDeleteTextures([self.color_texture])
         if self.depth_texture:
             glDeleteTextures([self.depth_texture])
-
