@@ -52,13 +52,16 @@ class SACNPixelSender:
         """
         height, width, _ = source_array.shape
         
+        # Prepare all universe data first (before sending anything)
+        universe_updates = []
+        
         for receiver, universes in zip(self.receivers, self.receiver_universes):
             # Vectorized extraction of pixel data
             x_coords = np.clip(receiver['addressing_array'][:, 0], 0, height - 1)
             y_coords = np.clip(receiver['addressing_array'][:, 1], 0, width - 1)
             receiver_data = source_array[x_coords, y_coords]
 
-            # Send data in 170-pixel chunks
+            # Prepare data in 170-pixel chunks
             for i, universe in enumerate(universes):
                 start = i * 170
                 end = min(start + 170, receiver['pixel_count'])
@@ -66,7 +69,12 @@ class SACNPixelSender:
                 # Pad the last universe if necessary
                 if universe_data.size < 510:
                     universe_data = np.pad(universe_data, (0, 510 - universe_data.size), 'constant')
-                self.sender[universe].dmx_data = universe_data.tobytes()
+                
+                universe_updates.append((universe, universe_data.tobytes()))
+        
+        # Now send all universes atomically
+        for universe, data in universe_updates:
+            self.sender[universe].dmx_data = data
 
     def close(self):
         """
