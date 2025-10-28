@@ -296,6 +296,8 @@ class EventScheduler:
             else:
                 frame_rgb = frame
             
+            #frame = self._generate_test_pattern(frame.shape[0], frame.shape[1], pattern_type=0)/4
+
             # Apply gamma correction
             frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
             frame_corrected = frame_corrected.astype(np.uint8)
@@ -304,14 +306,84 @@ class EventScheduler:
             if i < len(self.state['screens']) and self.state['screens'][i] is not None:
                 try:
                     # sACN expects BGR order
-                    self.state['screens'][i].send(frame_corrected[:, :, [2, 1, 0]])
+                    self.state['screens'][i].send(frame_corrected[:, :, [0, 1, 2]])
                 except OSError as e:
                     print(f"Network error while sending sACN data to display {i}: {e}")
         
         # Swap OpenGL buffers if using shader renderer
         if self.use_shader_renderer:
             self.shader_renderer.swap_buffers()
-    
+
+    def _generate_test_pattern(self, height, width, pattern_type=0):
+        """
+        Generate test patterns for debugging
+        
+        Args:
+            height: Frame height in pixels
+            width: Frame width in pixels
+            pattern_type: Which pattern to generate
+                0: Color bars (RGBCMYW)
+                1: Gradient (left to right)
+                2: Checkerboard
+                3: Solid red
+                4: Solid green
+                5: Solid blue
+                6: Solid white
+        """
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        if pattern_type == 0:  # Color bars
+            bar_width = width // 7
+            # Red, Green, Blue, Cyan, Magenta, Yellow, White
+            colors = [
+                [255, 0, 0],    # Red
+                [0, 255, 0],    # Green
+                [0, 0, 255],    # Blue
+                [0, 255, 255],  # Cyan
+                [255, 0, 255],  # Magenta
+                [255, 255, 0],  # Yellow
+                [255, 255, 255] # White
+            ]
+            for i, color in enumerate(colors):
+                x_start = i * bar_width
+                x_end = min((i + 1) * bar_width, width)
+                frame[:, x_start:x_end] = color
+                
+        elif pattern_type == 1:  # Horizontal gradient (left to right)
+            gradient = np.linspace(0, 255, width, dtype=np.uint8)
+            frame[:, :, 0] = gradient  # Red channel
+            frame[:, :, 1] = gradient  # Green channel
+            frame[:, :, 2] = gradient  # Blue channel
+            
+        elif pattern_type == 2:  # Checkerboard
+            checker_size = 8
+            for y in range(height):
+                for x in range(width):
+                    if ((x // checker_size) + (y // checker_size)) % 2 == 0:
+                        frame[y, x] = [255, 255, 255]
+                        
+        elif pattern_type == 3:  # Solid red
+            frame[:, :] = [255, 0, 0]
+            
+        elif pattern_type == 4:  # Solid green
+            frame[:, :] = [0, 255, 0]
+            
+        elif pattern_type == 5:  # Solid blue
+            frame[:, :] = [0, 0, 255]
+            
+        elif pattern_type == 6:  # Solid white
+            frame[:, :] = [255, 255, 255]
+            
+        else:  # Default: diagonal gradient
+            for y in range(height):
+                for x in range(width):
+                    value = int((x + y) / (width + height) * 255)
+                    frame[y, x] = [value, value, value]
+        
+        return frame
+
+
+
     def cleanup(self):
         """Clean up all resources"""
         print("Cleaning up EventScheduler...")

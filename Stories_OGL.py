@@ -391,7 +391,7 @@ if __name__ == "__main__":
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 50, fx.shader_cactus,frame_id=0)  # noqa: F405
     last_time = time.time()
-    FRAME_TIME = 1 / 50
+    FRAME_TIME = 1 / 40
     first_time = time.time()
     frame_count = 0
     try:

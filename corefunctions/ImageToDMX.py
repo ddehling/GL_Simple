@@ -9,6 +9,9 @@ class SACNPixelSender:
         """
         self.receivers = receivers
         self.sender = sACNsender()
+        
+        # Enable manual flush for synchronized sending
+        self.sender.manual_flush = True
         self.sender.start()
 
         # Set up universes for each receiver
@@ -53,8 +56,6 @@ class SACNPixelSender:
         height, width, _ = source_array.shape
         
         # Prepare all universe data first (before sending anything)
-        universe_updates = []
-        
         for receiver, universes in zip(self.receivers, self.receiver_universes):
             # Vectorized extraction of pixel data
             x_coords = np.clip(receiver['addressing_array'][:, 0], 0, height - 1)
@@ -70,11 +71,11 @@ class SACNPixelSender:
                 if universe_data.size < 510:
                     universe_data = np.pad(universe_data, (0, 510 - universe_data.size), 'constant')
                 
-                universe_updates.append((universe, universe_data.tobytes()))
+                # Assign data without auto-sending
+                self.sender[universe].dmx_data = universe_data.tobytes()
         
-        # Now send all universes atomically
-        for universe, data in universe_updates:
-            self.sender[universe].dmx_data = data
+        # Now flush all universes at once
+        self.sender.flush()
 
     def close(self):
         """
