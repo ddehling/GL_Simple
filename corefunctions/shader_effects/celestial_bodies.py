@@ -54,7 +54,7 @@ class CelestialBody:
 
     def update(self, current_time: float, whomp: float = 0):
         """Update orbital position (works in RADIANS)"""
-        speed = 2.5
+        speed = 1
         delta_time = current_time - self.last_update
         self.angle += self.orbital_speed * delta_time * speed
         self.angle %= 2 * math.pi  # Keep angle in [0, 2π]
