@@ -300,15 +300,15 @@ class EnvironmentalSystem:
 
         # Dancing cactus events
         randcheck = np.random.random()
-        if randcheck < (self.weather_params["Weird"] / 5000 + self.weather_params["spookyness"] / 4000 + 1 / 20000):
-            if not self.scheduler.state.get("has_cactus", False):
-                # Define all possible cactus types and their corresponding functions
-                #cactus_types = [dancing_cactuses, dancing_joshua, dancing_prickly_pear, dancing_barrel_cactus]  # noqa: F405
-                cactus_types = [fx.shader_cactus, fx.shader_cactus, fx.shader_cactus, fx.shader_cactus]  # noqa: F405
-                weights = [1 * (1 + self.weather_params["spookyness"]), 1, 1, 1]  # Equal probability for each
-                weights = weights / np.sum(weights)
-                selected_cactus = np.random.choice(cactus_types, p=weights)
-                self.scheduler.schedule_event(0, 100, selected_cactus, frame_id=0)
+        # if randcheck < (self.weather_params["Weird"] / 5000 + self.weather_params["spookyness"] / 4000 + 1 / 20000):
+        #     if not self.scheduler.state.get("has_cactus", False):
+        #         # Define all possible cactus types and their corresponding functions
+        #         #cactus_types = [dancing_cactuses, dancing_joshua, dancing_prickly_pear, dancing_barrel_cactus]  # noqa: F405
+        #         cactus_types = [fx.shader_cactus, fx.shader_cactus, fx.shader_cactus, fx.shader_cactus]  # noqa: F405
+        #         weights = [1 * (1 + self.weather_params["spookyness"]), 1, 1, 1]  # Equal probability for each
+        #         weights = weights / np.sum(weights)
+        #         selected_cactus = np.random.choice(cactus_types, p=weights)
+        #         self.scheduler.schedule_event(0, 100, selected_cactus, frame_id=0)
 
         # if randcheck < (self.weather_params["mountain"] / 1500):
         #     if not self.scheduler.state.get("has_mountain", False):
@@ -389,7 +389,7 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 50, fx.shader_cactus,frame_id=0)  # noqa: F405
+    #env_system.scheduler.schedule_event(0, 50, fx.shader_cactus,frame_id=0)  # noqa: F405
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()

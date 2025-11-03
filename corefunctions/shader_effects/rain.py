@@ -365,8 +365,8 @@ class RainEffect(ShaderEffect):
         self.velocities = self.base_velocities * (rain_intensity + 0.2)
         
         # Vectorized position updates
-        self.positions[:, 1] += self.velocities * dt  # Update y
-        self.positions[:, 0] += self.wind * 50 * dt  # Update x (wind)
+        self.positions[:, 1] += self.velocities * dt/2  # Update y
+        self.positions[:, 0] += self.wind * 50 * dt/2  # Update x (wind)
         
         # Horizontal wrapping
         left_mask = self.positions[:, 0] < -10
