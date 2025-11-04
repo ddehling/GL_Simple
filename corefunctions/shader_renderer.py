@@ -52,7 +52,9 @@ class ShaderRenderer:
             
         glfw.make_context_current(self.window)
         
-        # OpenGL setup
+        # OpenGL setup for transparent-only rendering
+        glEnable(GL_DEPTH_TEST)
+        glDepthMask(GL_FALSE)  # Disable depth writes for transparent objects
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_SCISSOR_TEST)
@@ -251,6 +253,9 @@ class ShaderViewport:
         """Clear the viewport in both window and framebuffer"""
         glfw.make_context_current(self.glfw_window)
         
+        # Temporarily enable depth writes to clear depth buffer
+        glDepthMask(GL_TRUE)
+        
         # Clear framebuffer (including depth!)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)
@@ -265,6 +270,9 @@ class ShaderViewport:
             glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
             glClearColor(0.0, 0.0, 0.0, 1.0)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        
+        # Restore depth mask to disabled for transparent rendering
+        glDepthMask(GL_FALSE)
 
     
     def update(self, dt: float, state: Dict):
@@ -289,6 +297,16 @@ class ShaderViewport:
         # CRITICAL: Ensure rendering is complete before unbinding
         glFlush()
         
+        # Only render to window if not headless and this is viewport 0
+        if not self.headless and self.display_width > 0:
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
+            glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
+            
+            for effect in self.effects:
+                if effect.enabled:
+                    effect.render(state)
+
         # Only render to window if not headless and this is viewport 0
         if not self.headless and self.display_width > 0:
             glBindFramebuffer(GL_FRAMEBUFFER, 0)
