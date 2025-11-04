@@ -3,7 +3,6 @@ import heapq
 import numpy as np
 import corefunctions.soundtestthreaded as sound
 import corefunctions.ImageToDMX as imdmx
-import corefunctions.newrender as sr
 from corefunctions.shader_renderer import ShaderRenderer
 import threading
 import queue
@@ -84,7 +83,7 @@ class EventScheduler:
             # Create shader renderer - window size calculated automatically
             self.shader_renderer = ShaderRenderer(
                 frame_dimensions=frame_dimensions,
-                padding=20,
+                
                 headless=headless
             )
             
@@ -100,18 +99,8 @@ class EventScheduler:
             self.state['render'] = [None] * len(frame_dimensions)
             print(f"✓ {mode_str} shader renderer initialized")
         else:
-            print("Initializing CPU renderer...")
-            # Initialize renderer with multiple frames
-            self.renderer = sr.ImageRenderer(
-                frame_dimensions=frame_dimensions,
-                enable_lighting=True
-            )
-            
-            # Create array of scenes for each frame
-            self.state['render'] = []
-            for frame_id in range(len(frame_dimensions)):
-                self.state['render'].append(sr.Scene(self.renderer, frame_id=frame_id))
-            print("✓ CPU renderer initialized")
+            print("no CPU renderer...")
+
         
         self.state['last_time'] = time.time()
         self.state['soundengine'] = sound.ThreadedAudioEngine()

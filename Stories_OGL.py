@@ -63,18 +63,18 @@ class EnvironmentalSystem:
     ]
     
 
-        self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
-        self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
-        self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
-                            corners=corners_frame0, frame_id=0)
+        # self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
+        # self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
+        # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
+        #                     corners=corners_frame0, frame_id=0)
         self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
-        viewport0 = self.scheduler.shader_renderer.get_viewport(0)
-        if viewport0:
-            fog0 = viewport0.add_effect(ShaderFog, 
-                                        strength=2.6, 
-                                        color=(0.5, 0.6, 0.8),  # Blue-ish fog
-                                        fog_near=20.0,
-                                        fog_far=80.0)
+        # viewport0 = self.scheduler.shader_renderer.get_viewport(0)
+        # if viewport0:
+        #     fog0 = viewport0.add_effect(ShaderFog, 
+        #                                 strength=2.6, 
+        #                                 color=(0.5, 0.6, 0.8),  # Blue-ish fog
+        #                                 fog_near=20.0,
+        #                                 fog_far=80.0)
 
         # Schedule world rendering events for each frame, keeping the original function names
         #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
@@ -130,20 +130,20 @@ class EnvironmentalSystem:
         #     sound_path = (Path("media") / Path("sounds") / "45. Buzzer - 'Space Alarm' Warning.flac")
         #     self.scheduler.state["soundengine"].schedule_event(sound_path, time.time(), 20)
 
-        if new_weather == WeatherState.HEAVY_FOG:
-            self.scheduler.schedule_event(0, 80, fx.shader_chromatic_fog_beings, frame_id=0) # noqa: F405
+        # if new_weather == WeatherState.HEAVY_FOG:
+        #     self.scheduler.schedule_event(0, 80, fx.shader_chromatic_fog_beings, frame_id=0) # noqa: F405
 
-        # if new_weather == WeatherState.MUSHROOM:
-        #     if not self.scheduler.state.get("has_mushrooms", False):
-        #         self.scheduler.schedule_event(0, 100, growing_mushrooms, frame_id=0) # noqa: F405
-        #         if self.scheduler.state.get("has_clouds", False):
-        #             self.scheduler.state["has_clouds"] = True
-        #             self.scheduler.schedule_event(70, 40, drifting_clouds, frame_id=0) # noqa: F405
+        # # if new_weather == WeatherState.MUSHROOM:
+        # #     if not self.scheduler.state.get("has_mushrooms", False):
+        # #         self.scheduler.schedule_event(0, 100, growing_mushrooms, frame_id=0) # noqa: F405
+        # #         if self.scheduler.state.get("has_clouds", False):
+        # #             self.scheduler.state["has_clouds"] = True
+        # #             self.scheduler.schedule_event(70, 40, drifting_clouds, frame_id=0) # noqa: F405
 
-        if new_weather == WeatherState.FALLING_LEAVES:
-            if not self.scheduler.state.get("has_leaves", False):
-                self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves, frame_id=0) # noqa: F405
-                #self.scheduler.schedule_event(0, 60, secondary_falling_leaves, frame_id=1) # noqa: F405
+        # if new_weather == WeatherState.FALLING_LEAVES:
+        #     if not self.scheduler.state.get("has_leaves", False):
+        #         self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves, frame_id=0) # noqa: F405
+        #         #self.scheduler.schedule_event(0, 60, secondary_falling_leaves, frame_id=1) # noqa: F405
 
         # if new_weather == WeatherState.SUMMER_BLOOM:
         #     self.scheduler.schedule_event(0, 90, bioluminescent_wildflowers, frame_id=0) # noqa: F405
@@ -375,7 +375,7 @@ class EnvironmentalSystem:
         self.send_variables()
         
         # Random events
-        self.random_events()
+        # self.random_events()
         self.random_state_change()
         
         # Update the scheduler
