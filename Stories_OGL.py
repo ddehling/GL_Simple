@@ -67,7 +67,7 @@ class EnvironmentalSystem:
         # self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
         # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
-        self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
+        #self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
         # viewport0 = self.scheduler.shader_renderer.get_viewport(0)
         # if viewport0:
         #     fog0 = viewport0.add_effect(ShaderFog, 
@@ -389,9 +389,10 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    #env_system.scheduler.schedule_event(0, 50, fx.shader_cactus,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 40
+    FRAME_TIME = 1 / 60
     first_time = time.time()
     frame_count = 0
     try:
