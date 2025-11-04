@@ -68,11 +68,7 @@ class EventScheduler:
         self.active_events = []
         self.state = {}
         
-        # Define dimensions for multiple frames
-        # frame_dimensions = [
-        #     (120, 60),   # Frame 0 (primary/main display)
-        #     (300, 32),   # Frame 1 (secondary display)
-        # ]
+
         frame_dimensions = frames
         # Determine which renderer to use
         self.use_shader_renderer = use_shader_renderer
