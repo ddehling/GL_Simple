@@ -52,9 +52,9 @@ class ShaderRenderer:
             
         glfw.make_context_current(self.window)
         
-        # OpenGL setup for transparent-only rendering
+        # OpenGL setup for depth-based rendering
         glEnable(GL_DEPTH_TEST)
-        glDepthMask(GL_FALSE)  # Disable depth writes for transparent objects
+        glDepthMask(GL_TRUE)  # ENABLE depth writes for proper occlusion
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_SCISSOR_TEST)
@@ -253,7 +253,7 @@ class ShaderViewport:
         """Clear the viewport in both window and framebuffer"""
         glfw.make_context_current(self.glfw_window)
         
-        # Temporarily enable depth writes to clear depth buffer
+        # Enable depth writes for clearing
         glDepthMask(GL_TRUE)
         
         # Clear framebuffer (including depth!)
@@ -271,8 +271,6 @@ class ShaderViewport:
             glClearColor(0.0, 0.0, 0.0, 1.0)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         
-        # Restore depth mask to disabled for transparent rendering
-        glDepthMask(GL_FALSE)
 
     
     def update(self, dt: float, state: Dict):
