@@ -81,6 +81,7 @@ class RainEffect(ShaderEffect):
         super().__init__(viewport)
         self.num_raindrops = num_raindrops
         self.base_num_raindrops = num_raindrops
+        self.target_raindrops = num_raindrops  # NEW: track target separately
         self.wind = wind
         self.instance_VBO = None
         
@@ -130,33 +131,115 @@ class RainEffect(ShaderEffect):
         ])
         
     def _reset_raindrops(self, mask):
-        """Reset raindrops that are off-screen (vectorized)"""
+        """Reset raindrops that are off-screen OR remove them if over target (vectorized)"""
         n_reset = np.sum(mask)
         if n_reset == 0:
             return
+        
+        # Check if we're over the target and need to remove some drops
+        current_count = len(self.positions)
+        if current_count > self.target_raindrops:
+            # Remove drops instead of resetting them
+            n_to_remove = min(n_reset, current_count - self.target_raindrops)
             
-        # Reset positions
-        self.positions[mask, 0] = np.random.uniform(0, self.viewport.width, n_reset)  # x
-        self.positions[mask, 1] = -10  # y (top of screen)
-        self.positions[mask, 2] = np.random.uniform(0, 100, n_reset)  # z
+            # Get indices of drops to reset
+            reset_indices = np.where(mask)[0]
+            
+            # Remove the first n_to_remove drops
+            remove_indices = reset_indices[:n_to_remove]
+            keep_mask = np.ones(current_count, dtype=bool)
+            keep_mask[remove_indices] = False
+            
+            self.positions = self.positions[keep_mask]
+            self.velocities = self.velocities[keep_mask]
+            self.base_velocities = self.base_velocities[keep_mask]
+            self.dimensions = self.dimensions[keep_mask]
+            self.alphas = self.alphas[keep_mask]
+            self.colors = self.colors[keep_mask]
+            
+            # Update the mask for remaining resets
+            if n_to_remove < n_reset:
+                # Some drops still need to be reset
+                remaining_reset_indices = reset_indices[n_to_remove:]
+                # Adjust indices after removal
+                for i, old_idx in enumerate(remaining_reset_indices):
+                    # Count how many indices before this one were removed
+                    adjustment = np.sum(remove_indices < old_idx)
+                    remaining_reset_indices[i] = old_idx - adjustment
+                
+                # Create new mask for the adjusted array
+                new_mask = np.zeros(len(self.positions), dtype=bool)
+                new_mask[remaining_reset_indices] = True
+                mask = new_mask
+                n_reset = n_reset - n_to_remove
+            else:
+                # All drops were removed, nothing to reset
+                return
         
-        # Reset velocities
-        self.velocities[mask] = np.random.uniform(100, 300, n_reset)
-        self.base_velocities[mask] = self.velocities[mask]
+        # Reset remaining drops normally
+        if n_reset > 0:
+            # Reset positions
+            self.positions[mask, 0] = np.random.uniform(0, self.viewport.width, n_reset)  # x
+            self.positions[mask, 1] = -10  # y (top of screen)
+            self.positions[mask, 2] = np.random.uniform(0, 100, n_reset)  # z
+            
+            # Reset velocities
+            self.velocities[mask] = np.random.uniform(100, 300, n_reset)
+            self.base_velocities[mask] = self.velocities[mask]
+            
+            # Recalculate dimensions and alpha based on new depth
+            depth_factors = self.positions[mask, 2] / 100.0
+            base_widths = np.random.uniform(1.0, 2.0, n_reset)
+            base_lengths = np.random.uniform(10, 20, n_reset)
+            
+            self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)
+            self.dimensions[mask, 1] = base_lengths * (0.3 + 0.7 * depth_factors)
+            self.alphas[mask] = 0.2 + 0.6 * depth_factors
+            
+            # Reset colors
+            self.colors[mask, 0] = np.random.uniform(0.3, 0.7, n_reset)
+            self.colors[mask, 1] = np.random.uniform(0.7, 0.9, n_reset)
+            self.colors[mask, 2] = 1.0
+
+    def _add_raindrops(self, n_new):
+        """Add new raindrops when intensity increases"""
+        if n_new <= 0:
+            return
+            
+        new_positions = np.column_stack([
+            np.random.uniform(0, self.viewport.width, n_new),
+            np.random.uniform(0, self.viewport.height, n_new),
+            np.random.uniform(0, 100, n_new)
+        ])
         
-        # Recalculate dimensions and alpha based on new depth
-        depth_factors = self.positions[mask, 2] / 100.0
-        base_widths = np.random.uniform(1.0, 2.0, n_reset)
-        base_lengths = np.random.uniform(10, 20, n_reset)
+        new_velocities = np.random.uniform(100, 300, n_new)
         
-        self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)
-        self.dimensions[mask, 1] = base_lengths * (0.3 + 0.7 * depth_factors)
-        self.alphas[mask] = 0.2 + 0.6 * depth_factors
+        depth_factors = 1-new_positions[:, 2] / 100.0
+        base_widths = np.random.uniform(1.0, 2.0, n_new)*2
+        base_lengths = np.random.uniform(10, 20, n_new)*2
         
-        # Reset colors
-        self.colors[mask, 0] = np.random.uniform(0.3, 0.7, n_reset)
-        self.colors[mask, 1] = np.random.uniform(0.7, 0.9, n_reset)
-        self.colors[mask, 2] = 1.0
+        new_dimensions = np.column_stack([
+            base_widths * (0.3 + 0.7 * depth_factors),
+            base_lengths * (0.3 + 0.7 * depth_factors)
+        ])
+        
+        new_alphas = 0.2 + 0.6 * depth_factors
+        
+        new_colors = np.column_stack([
+            np.random.uniform(0.3, 0.7, n_new),
+            np.random.uniform(0.7, 0.9, n_new),
+            np.ones(n_new)
+        ])
+        
+        # Concatenate
+        self.positions = np.vstack([self.positions, new_positions])
+        self.velocities = np.concatenate([self.velocities, new_velocities])
+        self.base_velocities = np.concatenate([self.base_velocities, new_velocities])
+        self.dimensions = np.vstack([self.dimensions, new_dimensions])
+        self.alphas = np.concatenate([self.alphas, new_alphas])
+        self.colors = np.vstack([self.colors, new_colors])
+
+
         
     def _resize_raindrop_arrays(self, new_size):
         """Resize raindrop arrays when intensity changes"""
@@ -328,12 +411,13 @@ class RainEffect(ShaderEffect):
         rain_intensity = state.get('rain', 1.0)
         
         # Calculate target number of drops
-        target_drops = int(self.base_num_raindrops * rain_intensity)
+        self.target_raindrops = int(self.base_num_raindrops * rain_intensity)
         
-        # Resize arrays if needed
-        if target_drops != len(self.positions):
-            self._resize_raindrop_arrays(target_drops)
-            self.num_raindrops = target_drops
+        # Only add drops immediately if we need more
+        current_drops = len(self.positions)
+        if self.target_raindrops > current_drops:
+            n_to_add = self.target_raindrops - current_drops
+            self._add_raindrops(n_to_add)
         
         # Update velocities based on intensity
         self.velocities = self.base_velocities * (rain_intensity + 0.2)
@@ -348,9 +432,13 @@ class RainEffect(ShaderEffect):
         self.positions[left_mask, 0] = self.viewport.width + 10
         self.positions[right_mask, 0] = -10
         
-        # Reset drops that went off bottom
+        # Reset drops that went off bottom (or remove them if over target)
         bottom_mask = self.positions[:, 1] > self.viewport.height + 10
         self._reset_raindrops(bottom_mask)
+        
+        # Update num_raindrops to reflect current count
+        self.num_raindrops = len(self.positions)
+
 
     def render(self, state: Dict):
         """Render all raindrops using instancing (back-to-front sorted for transparency)"""
