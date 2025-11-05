@@ -1,0 +1,16 @@
+glfw
+librosa
+matplotlib
+numba
+numpy
+opencv_contrib_python
+opencv_python
+psutil
+pyglm
+PyOpenGL
+sacn
+scipy
+skimage
+sounddevice
+soundfile
+zeroconf
