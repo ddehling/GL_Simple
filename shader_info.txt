@@ -1,0 +1,211 @@
+# Shader Creation Guide: Depth + Alpha Blending System
+
+## Overview
+
+The shader renderer uses **simultaneous depth testing and alpha blending** to create a proper 3D layering system where transparent objects correctly occlude each other based on depth.
+
+## Global OpenGL State (Always Active)
+
+Set once in create_window() - NEVER toggle in individual shaders:
+- glEnable(GL_DEPTH_TEST)           # Depth testing always on
+- glDepthMask(GL_TRUE)              # Allow depth writes
+- glEnable(GL_BLEND)                # Alpha blending always on
+- glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)  # Standard alpha blend
+
+This means: Every fragment is depth-tested AND alpha-blended. The GPU checks "is this in front?" (depth test) then "how transparent is it?" (alpha blend).
+
+## Depth Buffer Setup
+
+Each viewport has:
+- Color texture (RGBA) for final image
+- Depth texture (GL_DEPTH_COMPONENT16) for z-ordering
+- Both cleared every frame: glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+## Required Shader Structure
+
+### Vertex Shader Requirements
+
+You MUST output proper depth values to gl_Position.z:
+
+```glsl
+#version 310 es
+precision highp float;
+
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec3 offset;    // x, y, z (your depth coordinate)
+
+uniform vec2 resolution;
+
+void main() {
+    vec2 pos = position * scale + offset.xy;
+    vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y;  // Flip Y for screen coords
+    
+        // CRITICAL: Map your z-coordinate where z=0 is near, z=100 is far
+    float depth = offset.z / 100.0;  // Standard range: z = 0-100
+    depth = clamp(depth, 0.0, 1.0);
+    
+    gl_Position = vec4(clipPos, depth, 1.0);
+}
+```
+
+### Fragment Shader Requirements
+
+You MUST output RGBA with meaningful alpha:
+
+```glsl
+#version 310 es
+precision highp float;
+
+out vec4 outColor;
+
+void main() {
+    vec3 color = vec3(1.0, 0.5, 0.0);
+    float alpha = 0.7;
+    outColor = vec4(color, alpha);
+}
+```
+
+## Standard Depth Coordinate System
+
+z = 0     → Very near → depth = 0.0 → Drawn last (in front)
+z = 50    → Mid depth → depth = 0.5 → Middle
+z = 100   → Far away  → depth = 1.0 → Drawn first (behind)
+
+Mapping formula: depth = z / 100.0 where z ∈ [0, 100]
+
+## How It Works
+
+1. Rendering Order: Effects render in order added to viewport.effects
+2. Fragment Processing: For each fragment:
+   - GPU checks: "Is this fragment's depth closer than what's in the depth buffer?"
+   - If YES: Continue to alpha blend
+   - If NO: Discard fragment (it's behind something)
+3. Alpha Blending: Surviving fragments blend with existing color using alpha
+4. Depth Write: Opaque or semi-transparent fragments update the depth buffer
+
+## What You Get
+
+✅ Objects at different depths correctly occlude each other
+✅ Transparency works naturally (alpha blending)
+✅ No sorting needed (GPU handles it via depth buffer)
+✅ Rain drops can be in front of AND behind circles depending on z-value
+
+## Horizontal Wrapping Requirement
+
+**All shaders MUST be continuous across the left/right boundary.**
+
+For LED displays that wrap horizontally (like cylindrical installations), objects must appear seamless when crossing screen edges.
+
+### Implementation:
+
+1. **Wrap Margin**: Define a margin (e.g., 50 pixels) from each edge
+2. **Detect Edge Objects**: Identify objects within wrap_margin of left or right edge
+3. **Duplicate Objects**: Create temporary duplicates on the opposite side
+4. **Render Both**: Draw both original and duplicate in same render call
+
+### Example (from rain.py):
+
+```python
+self.wrap_margin = 50  # Should be larger than largest object size
+
+# In render():
+left_edge_mask = self.positions[:, 0] < self.wrap_margin
+right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
+
+# Objects near left edge need duplicates on right
+if np.any(left_edge_mask):
+    left_indices = np.where(left_edge_mask)[0]
+    duplicate_pos = self.positions[left_indices].copy()
+    duplicate_pos[:, 0] += self.viewport.width  # Shift to right side
+    # Add to render list
+
+# Objects near right edge need duplicates on left
+if np.any(right_edge_mask):
+    right_indices = np.where(right_edge_mask)[0]
+    duplicate_pos = self.positions[right_indices].copy()
+    duplicate_pos[:, 0] -= self.viewport.width  # Shift to left side
+    # Add to render list
+
+# Render all: originals + duplicates in one draw call
+```
+
+### Key Points:
+
+✅ Wrap margin should exceed your largest object size
+✅ Duplicates share ALL attributes (color, depth, size, etc.)
+✅ Only X position is modified for duplicates
+✅ Render originals and duplicates together for efficiency
+✅ No gaps or pop-in at screen edges
+
+## What NOT To Do
+
+❌ Never call glEnable(GL_DEPTH_TEST) or glDisable(GL_DEPTH_TEST) in your shader
+❌ Never call glDepthMask(GL_FALSE) unless you specifically want no depth writes
+❌ Never omit the depth value in gl_Position.z
+❌ Never use projection matrices that conflict with the 0-1 depth range
+❌ Never allow objects to disappear at screen edges (breaks wrapping continuity)
+
+## Example: Creating a New Effect
+
+```python
+class MyEffect(ShaderEffect):
+    def get_vertex_shader(self):
+        return """
+        #version 310 es
+        precision highp float;
+        
+        layout(location = 0) in vec2 position;
+        layout(location = 1) in vec3 offset;  // x, y, z
+        
+        uniform vec2 resolution;
+        
+        void main() {
+            vec2 pos = position + offset.xy;
+            vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
+            clipPos.y = -clipPos.y;
+            
+            // Standard depth mapping
+            float depth = offset.z / 100.0;
+            
+            gl_Position = vec4(clipPos, depth, 1.0);
+        }
+        """
+    
+    def get_fragment_shader(self):
+        return """
+        #version 310 es
+        precision highp float;
+        
+        out vec4 outColor;
+        
+        void main() {
+            // Your effect here
+            outColor = vec4(1.0, 0.5, 0.0, 0.8);  // Orange, 80% opaque
+        }
+        """
+    
+    def render(self, state):
+        # NO depth test toggling!
+        glUseProgram(self.shader)
+        # ... render your geometry ...
+        glUseProgram(0)
+```
+
+## Summary
+
+The renderer maintains global depth testing + alpha blending state. Your shader just needs to:
+1. Write correct depth to gl_Position.z (z=0 near/depth=0.0, z=100 far/depth=1.0)
+2. Output RGBA with proper alpha in fragment shader
+3. Never touch depth test or blend state
+4. Implement horizontal wrapping by duplicating edge objects
+
+That's it! The system handles 3D ordering automatically. 🎯
+
+## Additional Notes
+
+- The renderer uses OpenGL ES 3.1 for compatibility with Raspberry Pi
+- All shaders must use #version 310 es and precision highp float
+- Viewports have separate framebuffers for LED output at native resolution
+- Window display (viewport 0 only) can be different size from framebuffer
+- Effects are rendered twice: once to framebuffer (LED), once to window (if not headless)

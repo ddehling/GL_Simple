@@ -81,17 +81,18 @@ class RainEffect(ShaderEffect):
         super().__init__(viewport)
         self.num_raindrops = num_raindrops
         self.base_num_raindrops = num_raindrops
-        self.target_raindrops = num_raindrops  # NEW: track target separately
+        self.target_raindrops = num_raindrops
         self.wind = wind
         self.instance_VBO = None
+        self.wrap_margin = 50  # NEW: Distance from edge to create duplicates (should be > max drop length)
         
         # Vectorized raindrop data (all stored as numpy arrays)
-        self.positions = None  # [x, y, z] - shape (N, 3)
-        self.velocities = None  # [speed] - shape (N,)
-        self.base_velocities = None  # Original speeds for intensity scaling
-        self.dimensions = None  # [width, length] - shape (N, 2)
-        self.alphas = None  # [alpha] - shape (N,)
-        self.colors = None  # [r, g, b] - shape (N, 3)
+        self.positions = None
+        self.velocities = None
+        self.base_velocities = None
+        self.dimensions = None
+        self.alphas = None
+        self.colors = None
         
         self._initialize_raindrops()
         
@@ -110,8 +111,8 @@ class RainEffect(ShaderEffect):
         self.velocities = np.random.uniform(100, 300, n)
         self.base_velocities = self.velocities.copy()
         
-        # Dimensions based on depth
-        depth_factors = self.positions[:, 2] / 100.0  # 0.0 (far) to 1.0 (near)
+                # Dimensions based on depth (z=0 is near/large, z=100 is far/small)
+        depth_factors = 1.0 - (self.positions[:, 2] / 100.0)  # 1.0 (near) to 0.0 (far)
         base_widths = np.random.uniform(1.0, 2.0, n)
         base_lengths = np.random.uniform(10, 20, n)
         
@@ -187,8 +188,8 @@ class RainEffect(ShaderEffect):
             self.velocities[mask] = np.random.uniform(100, 300, n_reset)
             self.base_velocities[mask] = self.velocities[mask]
             
-            # Recalculate dimensions and alpha based on new depth
-            depth_factors = self.positions[mask, 2] / 100.0
+                        # Recalculate dimensions and alpha based on new depth (z=0 near, z=100 far)
+            depth_factors = 1.0 - (self.positions[mask, 2] / 100.0)
             base_widths = np.random.uniform(1.0, 2.0, n_reset)
             base_lengths = np.random.uniform(10, 20, n_reset)
             
@@ -214,9 +215,9 @@ class RainEffect(ShaderEffect):
         
         new_velocities = np.random.uniform(100, 300, n_new)
         
-        depth_factors = 1-new_positions[:, 2] / 100.0
-        base_widths = np.random.uniform(1.0, 2.0, n_new)*2
-        base_lengths = np.random.uniform(10, 20, n_new)*2
+        depth_factors = 1.0 - (new_positions[:, 2] / 100.0)
+        base_widths = np.random.uniform(1.0, 2.0, n_new)
+        base_lengths = np.random.uniform(10, 20, n_new)
         
         new_dimensions = np.column_stack([
             base_widths * (0.3 + 0.7 * depth_factors),
@@ -257,9 +258,9 @@ class RainEffect(ShaderEffect):
             
             new_velocities = np.random.uniform(100, 300, n_new)
             
-            depth_factors = 1-new_positions[:, 2] / 100.0
-            base_widths = np.random.uniform(1.0, 2.0, n_new)*2
-            base_lengths = np.random.uniform(10, 20, n_new)*2
+            depth_factors = 1.0 - (new_positions[:, 2] / 100.0)
+            base_widths = np.random.uniform(1.0, 2.0, n_new)
+            base_lengths = np.random.uniform(10, 20, n_new)
             
             new_dimensions = np.column_stack([
                 base_widths * (0.3 + 0.7 * depth_factors),
@@ -426,11 +427,11 @@ class RainEffect(ShaderEffect):
         self.positions[:, 1] += self.velocities * dt / 2
         self.positions[:, 0] += self.wind * 50 * dt / 2
         
-        # Horizontal wrapping
-        left_mask = self.positions[:, 0] < -10
-        right_mask = self.positions[:, 0] > self.viewport.width + 10
-        self.positions[left_mask, 0] = self.viewport.width + 10
-        self.positions[right_mask, 0] = -10
+        # Horizontal wrapping - immediate, no gaps
+        left_mask = self.positions[:, 0] < 0
+        right_mask = self.positions[:, 0] >= self.viewport.width
+        self.positions[left_mask, 0] += self.viewport.width
+        self.positions[right_mask, 0] -= self.viewport.width
         
         # Reset drops that went off bottom (or remove them if over target)
         bottom_mask = self.positions[:, 1] > self.viewport.height + 10
@@ -439,15 +440,60 @@ class RainEffect(ShaderEffect):
         # Update num_raindrops to reflect current count
         self.num_raindrops = len(self.positions)
 
-
     def render(self, state: Dict):
-        """Render all raindrops using instancing (back-to-front sorted for transparency)"""
+        """Render all raindrops with seamless wrapping using duplicates"""
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        # Sort raindrops back-to-front (far to near) for proper alpha blending
-        # Far objects (high Z) render first, near objects (low Z) render last
-        sort_indices = np.argsort(-self.positions[:, 2])  # Negative for descending order
+        # Identify drops near boundaries that need duplicates
+        left_edge_mask = self.positions[:, 0] < self.wrap_margin
+        right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
+        
+        # Create duplicate positions for seamless wrapping
+        duplicate_positions_left = []
+        duplicate_indices_left = []
+        duplicate_positions_right = []
+        duplicate_indices_right = []
+        
+        if np.any(left_edge_mask):
+            # Drops near left edge need duplicates on the right
+            left_indices = np.where(left_edge_mask)[0]
+            duplicate_pos = self.positions[left_indices].copy()
+            duplicate_pos[:, 0] += self.viewport.width  # Shift to right side
+            duplicate_positions_right.append(duplicate_pos)
+            duplicate_indices_right.append(left_indices)
+        
+        if np.any(right_edge_mask):
+            # Drops near right edge need duplicates on the left
+            right_indices = np.where(right_edge_mask)[0]
+            duplicate_pos = self.positions[right_indices].copy()
+            duplicate_pos[:, 0] -= self.viewport.width  # Shift to left side
+            duplicate_positions_left.append(duplicate_pos)
+            duplicate_indices_left.append(right_indices)
+        
+        # Combine primary drops with duplicates
+        all_positions = [self.positions]
+        all_indices = [np.arange(len(self.positions))]
+        
+        if duplicate_positions_right:
+            all_positions.extend(duplicate_positions_right)
+            all_indices.extend(duplicate_indices_right)
+        
+        if duplicate_positions_left:
+            all_positions.extend(duplicate_positions_left)
+            all_indices.extend(duplicate_indices_left)
+        
+        combined_positions = np.vstack(all_positions)
+        combined_indices = np.concatenate(all_indices)
+        
+        # Get attributes for all drops (primary + duplicates reference the same attributes)
+        combined_velocities = self.velocities[combined_indices]
+        combined_dimensions = self.dimensions[combined_indices]
+        combined_alphas = self.alphas[combined_indices]
+        combined_colors = self.colors[combined_indices]
+        
+        # Sort back-to-front for proper alpha blending
+        sort_indices = np.argsort(-combined_positions[:, 2])
         
         glUseProgram(self.shader)
         
@@ -458,17 +504,17 @@ class RainEffect(ShaderEffect):
         
         # Calculate rotations based on wind
         horizontal_velocity = self.wind * 50
-        vertical_velocity = self.velocities
+        vertical_velocity = combined_velocities
         velocity_angle = np.arctan2(horizontal_velocity, vertical_velocity)
         base_rotation = np.pi
         rotations = (base_rotation - velocity_angle).astype(np.float32)
         
         # Build instance data (sorted back-to-front)
         instance_data = np.hstack([
-            self.positions[sort_indices],  # x, y, z (3 floats)
-            self.dimensions[sort_indices],  # width, length (2 floats)
-            self.colors[sort_indices],  # r, g, b (3 floats)
-            self.alphas[sort_indices, np.newaxis],  # alpha (1 float)
+            combined_positions[sort_indices],  # x, y, z (3 floats)
+            combined_dimensions[sort_indices],  # width, length (2 floats)
+            combined_colors[sort_indices],  # r, g, b (3 floats)
+            combined_alphas[sort_indices, np.newaxis],  # alpha (1 float)
             rotations[sort_indices, np.newaxis]  # rotation (1 float)
         ]).astype(np.float32)
         
@@ -501,8 +547,9 @@ class RainEffect(ShaderEffect):
         glEnableVertexAttribArray(4)
         glVertexAttribDivisor(4, 1)
         
-        # Draw all drops in one call
-        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, self.num_raindrops)
+        # Draw all drops (primary + duplicates) in one call
+        total_drops = len(combined_positions)
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, total_drops)
         
         glBindVertexArray(0)
         glUseProgram(0)
