@@ -8,6 +8,91 @@ from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+
+class CircularBuffer:
+    """
+    Fast circular buffer for storing time-series data
+    Replaces expensive np.roll operations with index manipulation
+    """
+    def __init__(self, shape, dtype=np.float64):
+        """
+        Initialize circular buffer
+        
+        Args:
+            shape: Shape of buffer. If tuple, creates 2D buffer (history_len, feature_dim)
+                   If int, creates 1D buffer (history_len,)
+            dtype: Data type for the buffer
+        """
+        if isinstance(shape, int):
+            shape = (shape,)
+        
+        self.buffer = np.zeros(shape, dtype=dtype)
+        self.max_len = shape[0]
+        self.write_idx = 0
+        self.filled = 0
+        self._lock = threading.Lock()
+    
+    def append(self, data):
+        """
+        Add new data to the buffer (most recent)
+        Thread-safe operation
+        
+        Args:
+            data: New data to add (should match buffer shape except first dimension)
+        """
+        with self._lock:
+            self.buffer[self.write_idx] = data
+            self.write_idx = (self.write_idx + 1) % self.max_len
+            self.filled = min(self.filled + 1, self.max_len)
+    
+    def get_ordered(self, n=None):
+        """
+        Get data in chronological order (most recent first)
+        Thread-safe operation
+        
+        Args:
+            n: Number of most recent items to return (None = all available)
+            
+        Returns:
+            Array with most recent data at index 0
+        """
+        with self._lock:
+            if self.filled == 0:
+                return np.array([])
+            
+            n = min(n or self.filled, self.filled)
+            
+            if self.filled < self.max_len:
+                # Buffer not full yet, return in reverse order
+                return self.buffer[:self.filled][::-1][:n]
+            
+            # Buffer is full, need to reorder
+            # Most recent item is at write_idx - 1
+            indices = [(self.write_idx - 1 - i) % self.max_len for i in range(n)]
+            return self.buffer[indices]
+    
+    def get_latest(self):
+        """
+        Get the most recent item
+        Thread-safe operation
+        
+        Returns:
+            Most recently added data item
+        """
+        with self._lock:
+            if self.filled == 0:
+                return None
+            idx = (self.write_idx - 1) % self.max_len
+            return self.buffer[idx].copy()
+    
+    def __len__(self):
+        """Return number of items currently in buffer"""
+        return self.filled
+    
+    def is_full(self):
+        """Check if buffer is full"""
+        return self.filled >= self.max_len
+
 def find_loopback_device():
     """Find a loopback device (system audio output) on Windows"""
     devices = sd.query_devices()
@@ -74,6 +159,7 @@ def find_device_by_name(name_fragment):
             if name_fragment in device['name'].lower():
                 return i, device
     return None, None
+
 
 class MicrophoneAnalyzer:
     def __init__(self, device=None, device_name=None, use_loopback=False,
@@ -184,7 +270,6 @@ class MicrophoneAnalyzer:
         self.frame_time = 1.0 / self.FPS
 
         # Analysis storage and threading
-        self.data_queue = Queue()
         self.running = False
         self.analysis_thread = None
         self.stream = None
@@ -199,23 +284,14 @@ class MicrophoneAnalyzer:
         self.freq_bins = np.fft.rfftfreq(self.CHUNK, 1/self.RATE)
         self.bass_mask = (self.freq_bins >= self.bass_range[0]) & (self.freq_bins <= self.bass_range[1])
         
-        # Store spectrum history (5 seconds at 40Hz = 200 frames)
+        # Store spectrum history using circular buffer (5 seconds at 40Hz = 200 frames)
         self.history_len = 200
         self._spectrum_lock = threading.Lock()
-        self.spectrum_history = np.zeros((self.history_len, len(self.freq_bins)))
+        self.spectrum_history = CircularBuffer((self.history_len, len(self.freq_bins)))
         
         # Maximum tracking for normalization
         self.max_magnitude = 1e-10
         self.max_decay = 0.999
-        
-        # Extended analysis features
-        self.num_bands = 32
-        self.band_history_len = 1000
-        
-        # Create logarithmic frequency bands from 20Hz to 20kHz (was 10Hz)
-        # Starting at 20Hz avoids subsonic frequencies that most systems can't capture
-        self.band_edges = np.logspace(np.log10(20), np.log10(20000), self.num_bands + 1)
-        self.band_centers = np.sqrt(self.band_edges[:-1] * self.band_edges[1:])
         
         # Extended analysis features
         self.num_bands = 32
@@ -262,14 +338,14 @@ class MicrophoneAnalyzer:
                   f"({num_bins} bins, actual: {bin_range}, center: {self.band_centers[i]:.1f} Hz)")
         print()
         
-        # Storage for band power history (1000 frames x 32 bands)
+        # Storage for band power history using circular buffers (1000 frames x 32 bands)
         self._band_lock = threading.Lock()
-        self.band_power_history = np.zeros((self.band_history_len, self.num_bands))
+        self.band_power_history = CircularBuffer((self.band_history_len, self.num_bands))
         
         # BPM detection parameters
         self.bpm_range = (60, 300)  # Typical electronic music range
-        self.onset_history = np.zeros(self.band_history_len)
-        self.spectral_flux_history = np.zeros(self.band_history_len)
+        self.onset_history = CircularBuffer(self.band_history_len)
+        self.spectral_flux_history = CircularBuffer(self.band_history_len)
         self.last_bpm = 120.0
         self.bpm_confidence = 0.0
         self.bpm_update_counter = 0
@@ -299,13 +375,13 @@ class MicrophoneAnalyzer:
             magnitudes[0] = 0
             try:
                 self.magnitudes = self.magnitudes * self.max_decay + magnitudes * (1 - self.max_decay)
-            except:  # noqa: E722
-                self.magnitudes = magnitudes
+            except AttributeError:
+                # First frame - initialize magnitudes
+                self.magnitudes = magnitudes.copy()
 
-            # Update spectrum history
-            with self._spectrum_lock:
-                self.spectrum_history = np.roll(self.spectrum_history, 1, axis=0)
-                self.spectrum_history[0] = magnitudes/(self.magnitudes+10E-10)
+            # Update spectrum history using circular buffer
+            normalized_magnitudes = magnitudes / (self.magnitudes + 10E-10)
+            self.spectrum_history.append(normalized_magnitudes)
             
             # Calculate band powers and update history with better noise handling
             band_powers = np.zeros(self.num_bands)
@@ -321,7 +397,7 @@ class MicrophoneAnalyzer:
             if not hasattr(self, '_prev_band_powers'):
                 self._prev_band_powers = band_powers.copy()
             else:
-                # Light smoothing (85% new, 15% old)
+                # Light smoothing (95% new, 5% old)
                 band_powers = 0.95 * band_powers + 0.05 * self._prev_band_powers
                 self._prev_band_powers = band_powers.copy()
             
@@ -343,19 +419,13 @@ class MicrophoneAnalyzer:
                 spectral_flux = 0
             self.prev_magnitudes = magnitudes.copy()
             
-            with self._band_lock:
-                # Roll and update band power history
-                self.band_power_history = np.roll(self.band_power_history, 1, axis=0)
-                self.band_power_history[0] = band_powers
-                
-                # Use spectral flux for onset detection
-                self.spectral_flux_history = np.roll(self.spectral_flux_history, 1)
-                self.spectral_flux_history[0] = spectral_flux
-                
-                # Also keep the bass energy onset
-                onset_strength = np.sum(band_powers[2:12])
-                self.onset_history = np.roll(self.onset_history, 1)
-                self.onset_history[0] = onset_strength
+            # Update circular buffers
+            self.band_power_history.append(band_powers)
+            self.spectral_flux_history.append(spectral_flux)
+            
+            # Bass energy onset
+            onset_strength = np.sum(band_powers[2:12])
+            self.onset_history.append(onset_strength)
             
             # Update BPM estimation periodically
             self.bpm_update_counter += 1
@@ -372,112 +442,116 @@ class MicrophoneAnalyzer:
 
     def _update_bpm_estimate(self):
         """Estimate BPM using improved onset detection and autocorrelation with peak finding"""
-        with self._band_lock:
-            # Use last 600 frames for BPM detection (15 seconds at 40fps)
-            analysis_length = min(600, len(self.spectral_flux_history))
-            onset_data = self.spectral_flux_history[:analysis_length].copy()
+        # Use last 600 frames for BPM detection (15 seconds at 40fps)
+        analysis_length = min(600, len(self.spectral_flux_history))
+        onset_data = self.spectral_flux_history.get_ordered(analysis_length)
+        
+        if len(onset_data) < 100:  # Not enough data yet
+            return
+        
+        # Normalize and remove DC component
+        onset_data = onset_data - np.mean(onset_data)
+        
+        if np.std(onset_data) < 1e-6:  # No significant audio
+            self.bpm_confidence = 0.0
+            return
+        
+        onset_data = onset_data / np.std(onset_data)
+        
+        # Apply envelope following to smooth onset function
+        onset_envelope = np.copy(onset_data)
+        for i in range(1, len(onset_envelope)):
+            if onset_envelope[i] < onset_envelope[i-1]:
+                onset_envelope[i] = onset_envelope[i-1] * 0.95 + onset_envelope[i] * 0.05
+        
+        # Compute autocorrelation
+        autocorr = np.correlate(onset_envelope, onset_envelope, mode='full')
+        autocorr = autocorr[len(autocorr)//2:]  # Keep only positive lags
+        
+        # Normalize autocorrelation
+        if autocorr[0] > 0:
+            autocorr = autocorr / autocorr[0]
+        
+        # Convert frame indices to BPM range
+        min_lag = int(self.FPS * 60 / self.bpm_range[1])  # Frames for max BPM (300)
+        max_lag = int(self.FPS * 60 / self.bpm_range[0])  # Frames for min BPM (60)
+        
+        if max_lag >= len(autocorr):
+            max_lag = len(autocorr) - 1
+        
+        if min_lag >= max_lag:
+            return
+        
+        # Find peaks in the autocorrelation
+        valid_autocorr = autocorr[min_lag:max_lag]
+        
+        # Find peaks with minimum prominence
+        peaks, properties = find_peaks(valid_autocorr, prominence=0.1, distance=5)
+        
+        if len(peaks) == 0:
+            # No clear peaks, fall back to maximum
+            peak_idx = np.argmax(valid_autocorr) + min_lag
+            confidence = valid_autocorr[np.argmax(valid_autocorr)]
+        else:
+            # Get the most prominent peak
+            peak_prominences = properties['prominences']
+            best_peak = peaks[np.argmax(peak_prominences)]
+            peak_idx = best_peak + min_lag
+            confidence = valid_autocorr[best_peak]
+        
+        estimated_bpm = 60 * self.FPS / peak_idx
+        
+        # Check for half/double tempo ambiguity
+        # If we have a strong peak at half or double tempo, use that instead
+        half_tempo_lag = peak_idx * 2
+        double_tempo_lag = peak_idx // 2
+        
+        if double_tempo_lag >= min_lag and double_tempo_lag < max_lag:
+            if autocorr[double_tempo_lag] > confidence * 0.9:
+                peak_idx = double_tempo_lag
+                estimated_bpm = 60 * self.FPS / peak_idx
+                confidence = autocorr[double_tempo_lag]
+        
+        if half_tempo_lag < max_lag:
+            if autocorr[half_tempo_lag] > confidence * 0.9:
+                peak_idx = half_tempo_lag
+                estimated_bpm = 60 * self.FPS / peak_idx
+                confidence = autocorr[half_tempo_lag]
+        
+        # Update confidence
+        self.bpm_confidence = confidence
+        
+        # Only update if confidence is reasonable
+        if confidence > 0.2:
+            # Smooth BPM estimate more aggressively when confidence is low
+            smoothing = 0.85 if confidence < 0.4 else 0.7
+            self.last_bpm = smoothing * self.last_bpm + (1 - smoothing) * estimated_bpm
             
-            if len(onset_data) < 100:  # Not enough data yet
-                return
-            
-            # Normalize and remove DC component
-            onset_data = onset_data - np.mean(onset_data)
-            
-            if np.std(onset_data) < 1e-6:  # No significant audio
-                self.bpm_confidence = 0.0
-                return
-            
-            onset_data = onset_data / np.std(onset_data)
-            
-            # Apply envelope following to smooth onset function
-            onset_envelope = np.copy(onset_data)
-            for i in range(1, len(onset_envelope)):
-                if onset_envelope[i] < onset_envelope[i-1]:
-                    onset_envelope[i] = onset_envelope[i-1] * 0.95 + onset_envelope[i] * 0.05
-            
-            # Compute autocorrelation
-            autocorr = np.correlate(onset_envelope, onset_envelope, mode='full')
-            autocorr = autocorr[len(autocorr)//2:]  # Keep only positive lags
-            
-            # Normalize autocorrelation
-            if autocorr[0] > 0:
-                autocorr = autocorr / autocorr[0]
-            
-            # Convert frame indices to BPM range
-            min_lag = int(self.FPS * 60 / self.bpm_range[1])  # Frames for max BPM (180)
-            max_lag = int(self.FPS * 60 / self.bpm_range[0])  # Frames for min BPM (60)
-            
-            if max_lag >= len(autocorr):
-                max_lag = len(autocorr) - 1
-            
-            if min_lag >= max_lag:
-                return
-            
-            # Find peaks in the autocorrelation
-            valid_autocorr = autocorr[min_lag:max_lag]
-            
-            # Find peaks with minimum prominence
-            peaks, properties = find_peaks(valid_autocorr, prominence=0.1, distance=5)
-            
-            if len(peaks) == 0:
-                # No clear peaks, fall back to maximum
-                peak_idx = np.argmax(valid_autocorr) + min_lag
-                confidence = valid_autocorr[np.argmax(valid_autocorr)]
-            else:
-                # Get the most prominent peak
-                peak_prominences = properties['prominences']
-                best_peak = peaks[np.argmax(peak_prominences)]
-                peak_idx = best_peak + min_lag
-                confidence = valid_autocorr[best_peak]
-            
-            estimated_bpm = 60 * self.FPS / peak_idx
-            
-            # Check for half/double tempo ambiguity
-            # If we have a strong peak at half or double tempo, use that instead
-            half_tempo_lag = peak_idx * 2
-            double_tempo_lag = peak_idx // 2
-            
-            if double_tempo_lag >= min_lag and double_tempo_lag < max_lag:
-                if autocorr[double_tempo_lag] > confidence * 0.9:
-                    peak_idx = double_tempo_lag
-                    estimated_bpm = 60 * self.FPS / peak_idx
-                    confidence = autocorr[double_tempo_lag]
-            
-            if half_tempo_lag < max_lag:
-                if autocorr[half_tempo_lag] > confidence * 0.9:
-                    peak_idx = half_tempo_lag
-                    estimated_bpm = 60 * self.FPS / peak_idx
-                    confidence = autocorr[half_tempo_lag]
-            
-            # Update confidence
-            self.bpm_confidence = confidence
-            
-            # Only update if confidence is reasonable
-            if confidence > 0.2:
-                # Smooth BPM estimate more aggressively when confidence is low
-                smoothing = 0.85 if confidence < 0.4 else 0.7
-                self.last_bpm = smoothing * self.last_bpm + (1 - smoothing) * estimated_bpm
-                
-                # Snap to common BPM values if close
-                common_bpms = [120, 128, 140, 150, 160, 174]
-                for common_bpm in common_bpms:
-                    if abs(self.last_bpm - common_bpm) < 2:
-                        self.last_bpm = common_bpm
-                        break
+            # Snap to common BPM values if close
+            common_bpms = [120, 128, 140, 150, 160, 174]
+            for common_bpm in common_bpms:
+                if abs(self.last_bpm - common_bpm) < 2:
+                    self.last_bpm = common_bpm
+                    break
 
     def get_spectrum_history(self):
-        with self._spectrum_lock:
-            return self.freq_bins.copy(), self.spectrum_history.copy()
+        """Get spectrum history (most recent first)"""
+        history = self.spectrum_history.get_ordered()
+        return self.freq_bins.copy(), history
 
     def get_sound(self):
         """Get the current spectrum analysis"""
-        with self._spectrum_lock:
-            return self.spectrum_history[0][2:6].sum()
+        latest = self.spectrum_history.get_latest()
+        if latest is not None:
+            return latest[2:6].sum()
+        return 0
 
     def get_all_sound(self):
         """Get the current spectrum analysis"""
-        with self._spectrum_lock:
-            return self.spectrum_history[0][2:31].mean()
+        latest = self.spectrum_history.get_latest()
+        if latest is not None:
+            return latest[2:31].mean()
+        return 0
 
     def get_extended_analysis(self):
         """
@@ -496,39 +570,14 @@ class MicrophoneAnalyzer:
                 'averaging_method': str - 'exponential' or 'mean'
             }
         """
-        with self._band_lock:
-            raw = self.band_power_history.copy()
-            
-            if self.use_exponential:
-                # Use exponential moving averages
-                if self.ema_short is not None and self.ema_long is not None:
-                    mean_short = self.ema_short.copy()
-                    mean_long = self.ema_long.copy()
-                else:
-                    # Fallback if EMAs not initialized yet
-                    mean_short = np.mean(raw[:max(1, self.avg_window_short)], axis=0)
-                    mean_long = np.mean(raw[:max(1, self.avg_window_long)], axis=0)
-            else:
-                # Use simple mean over window
-                mean_short = np.mean(raw[:self.avg_window_short], axis=0, keepdims=True)
-                mean_long = np.mean(raw[:self.avg_window_long], axis=0, keepdims=True)
-            
-            # Ensure no division by zero
-            if self.use_exponential:
-                mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
-                mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
-                norm_short = raw / mean_short[np.newaxis, :]
-                norm_long = raw / mean_long[np.newaxis, :]
-            else:
-                mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
-                mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
-                norm_short = raw / mean_short
-                norm_long = raw / mean_long
-            
+        raw = self.band_power_history.get_ordered()
+        
+        if len(raw) == 0:
+            # Return empty data if buffer is empty
             return {
-                'raw_bands': raw,
-                'norm_short': norm_short,
-                'norm_long': norm_long,
+                'raw_bands': np.zeros((1, self.num_bands)),
+                'norm_short': np.zeros((1, self.num_bands)),
+                'norm_long': np.zeros((1, self.num_bands)),
                 'band_centers': self.band_centers.copy(),
                 'band_edges': self.band_edges.copy(),
                 'bpm': self.last_bpm,
@@ -536,6 +585,49 @@ class MicrophoneAnalyzer:
                 'timestamp': time.time(),
                 'averaging_method': 'exponential' if self.use_exponential else 'mean'
             }
+        
+        if self.use_exponential:
+            # Use exponential moving averages
+            with self._band_lock:
+                if self.ema_short is not None and self.ema_long is not None:
+                    mean_short = self.ema_short.copy()
+                    mean_long = self.ema_long.copy()
+                else:
+                    # Fallback if EMAs not initialized yet
+                    window_short = min(self.avg_window_short, len(raw))
+                    window_long = min(self.avg_window_long, len(raw))
+                    mean_short = np.mean(raw[:window_short], axis=0)
+                    mean_long = np.mean(raw[:window_long], axis=0)
+        else:
+            # Use simple mean over window
+            window_short = min(self.avg_window_short, len(raw))
+            window_long = min(self.avg_window_long, len(raw))
+            mean_short = np.mean(raw[:window_short], axis=0, keepdims=True)
+            mean_long = np.mean(raw[:window_long], axis=0, keepdims=True)
+        
+        # Ensure no division by zero
+        if self.use_exponential:
+            mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
+            mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
+            norm_short = raw / mean_short[np.newaxis, :]
+            norm_long = raw / mean_long[np.newaxis, :]
+        else:
+            mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
+            mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
+            norm_short = raw / mean_short
+            norm_long = raw / mean_long
+        
+        return {
+            'raw_bands': raw,
+            'norm_short': norm_short,
+            'norm_long': norm_long,
+            'band_centers': self.band_centers.copy(),
+            'band_edges': self.band_edges.copy(),
+            'bpm': self.last_bpm,
+            'bpm_confidence': self.bpm_confidence,
+            'timestamp': time.time(),
+            'averaging_method': 'exponential' if self.use_exponential else 'mean'
+        }
 
     
     def get_current_bands(self, normalize='none'):
@@ -564,7 +656,7 @@ class MicrophoneAnalyzer:
         self.stream = sd.InputStream(
             channels=self.CHANNELS,
             samplerate=self.RATE,
-            blocksize=self.CALLBACK_BLOCKSIZE,  # Changed from CHUNK
+            blocksize=self.CALLBACK_BLOCKSIZE,
             callback=self.audio_callback,
             device=self.device
         )
