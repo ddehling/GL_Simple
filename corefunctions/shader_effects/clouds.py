@@ -47,7 +47,7 @@ def shader_drifting_clouds(state, outstate, density=1.0):
             cloud_effect = viewport.add_effect(
                 CloudEffect,
                 density=density,
-                max_clouds=8
+                max_clouds=20
             )
             state['cloud_effect'] = cloud_effect
             print(f"✓ Initialized shader clouds for frame {frame_id}")
@@ -57,11 +57,12 @@ def shader_drifting_clouds(state, outstate, density=1.0):
             traceback.print_exc()
             return
     
-    # Update wind and fog from global state
+        # Update wind, fog, and cloudyness from global state
     if 'cloud_effect' in state:
         effect = state['cloud_effect']
         effect.wind = outstate.get('wind', 0) * 50
         effect.fog_level = outstate.get('fog_level', 0)
+        effect.cloudyness = outstate.get('cloudyness', 0.5)  # 0.0 to 1.0
         
         # Calculate fade with 4 second fade in/out
         fade_duration = 7.0
@@ -273,6 +274,7 @@ class CloudEffect(ShaderEffect):
         self.wind = 0.0
         self.fog_level = 0.0
         self.fade_factor = 0.0  # Start faded out
+        self.cloudyness = 0.5  # Cloudyness factor (0.0 to 1.0)
         
                 # Cloud depth
         self.cloud_depth = 40.0
@@ -308,8 +310,8 @@ class CloudEffect(ShaderEffect):
     def _spawn_cloud(self):
         """Spawn a single new cloud"""
         # Generate smaller cloud texture
-        width = np.random.randint(30, 60)
-        height = np.random.randint(15, 30)
+        width = np.random.randint(30, 80)
+        height = np.random.randint(15, 60)
         cloud_img = CloudTextureGenerator.generate_cloud(width, height)
         
         # Upload texture to GPU
@@ -332,8 +334,8 @@ class CloudEffect(ShaderEffect):
         start_y = np.random.uniform(0, self.viewport.height)
         new_position = np.array([[start_x, start_y]], dtype=np.float32)
         
-                # Movement parameters - slower speed
-        new_speed = np.array([np.random.uniform(1.5, 3.5)], dtype=np.float32)
+                                # Movement parameters - much slower speed
+        new_speed = np.array([np.random.uniform(0.5, 1.5)], dtype=np.float32)
         new_base_opacity = np.array([np.random.uniform(0.5, 0.9)], dtype=np.float32)
         
         # Always start at zero opacity and fade in naturally
@@ -508,15 +510,14 @@ class CloudEffect(ShaderEffect):
         
         glBindVertexArray(0)
         
-        # Spawn initial clouds
-        for _ in range(self.max_clouds):
-            self._spawn_cloud()
+                # Don't spawn initial clouds - they will be added dynamically based on cloudyness
+        # This allows smooth fade-in from zero clouds
         
         self.start_time = 0.0
 
     def update(self, dt: float, state: Dict):
         """Update cloud positions and properties"""
-        if not self.enabled or len(self.positions) == 0:
+        if not self.enabled:
             return
         
         # Update noise time
@@ -526,7 +527,52 @@ class CloudEffect(ShaderEffect):
         # Global wave for coordinated motion
         global_wave_y = np.sin(self.start_time * 0.05) * 0.3 + np.sin(self.start_time * 0.13) * 0.1
         
-                                # Update lifetime for all clouds
+        # Dynamic cloud count based on cloudyness (0.0 to 1.0)
+        # cloudyness=0.0 -> 0 clouds, cloudyness=1.0 -> max_clouds
+        target_cloud_count = int(np.clip(self.cloudyness, 0, 1) * self.max_clouds)
+        current_active_clouds = np.sum(~self.is_fading_out) if len(self.is_fading_out) > 0 else 0
+        
+        # Add clouds if we're below target (smooth spawn with fade-in)
+        if current_active_clouds < target_cloud_count:
+            # Spawn rate: one cloud every 2-4 seconds when below target
+            spawn_chance = dt * 0.3  # ~30% chance per second
+            if np.random.random() < spawn_chance:
+                self._spawn_cloud()
+                print(f"Spawned cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds+1}/{target_cloud_count})")
+        
+        # Remove clouds if we're above target (smooth fade-out)
+        elif current_active_clouds > target_cloud_count:
+            # Find clouds that aren't already fading out and mark one for removal
+            active_indices = np.where(~self.is_fading_out)[0]
+            if len(active_indices) > 0:
+                # Prioritize clouds that are older and in safe middle zone for fading
+                removal_candidate = None
+                for idx in active_indices:
+                    tex_idx = self.texture_indices[idx]
+                    cloud_width = self.cloud_textures[tex_idx][0] * self.sizes[idx]
+                    cloud_x = self.positions[idx, 0]
+                    
+                    middle_safe_zone_left = self.wrap_margin + cloud_width
+                    middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_width
+                    is_in_middle = (cloud_x > middle_safe_zone_left and 
+                                   cloud_x < middle_safe_zone_right)
+                    
+                    if is_in_middle and self.lifetime[idx] > 3.0:  # At least 3 seconds old
+                        removal_candidate = idx
+                        break
+                
+                # If no ideal candidate in middle, just pick the oldest
+                if removal_candidate is None:
+                    removal_candidate = active_indices[np.argmax(self.lifetime[active_indices])]
+                
+                self.is_fading_out[removal_candidate] = True
+                print(f"Fading out cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds-1}/{target_cloud_count})")
+        
+        # If no clouds exist yet, don't process the rest
+        if len(self.positions) == 0:
+            return
+        
+        # Update lifetime for all clouds
         self.lifetime += dt
         
         # Smooth opacity transitions
@@ -537,8 +583,8 @@ class CloudEffect(ShaderEffect):
         
         mask = np.abs(opacity_diff) > 0.01
         if np.any(mask):
-            # Faster fade-out for removing clouds
-            transition_speed = np.where(self.is_fading_out, 1.5, 0.8)
+            # Slow fade-in (3-4 seconds), faster fade-out (2-3 seconds) for smooth transitions
+            transition_speed = np.where(self.is_fading_out, 0.4, 0.3)  # Slower transitions
             self.current_opacities += opacity_diff * transition_speed * dt
             self.current_opacities = np.clip(self.current_opacities, 0, 1)
         
@@ -586,27 +632,58 @@ class CloudEffect(ShaderEffect):
                            not has_duplicate_on_left and 
                            not has_duplicate_on_right)
             
-            min_lifetime = 30.0  # Minimum 30 seconds before removal
+            min_lifetime = 30.0  # Minimum 30 seconds before natural removal
             
             if not self.is_fading_out[i]:
-                # Only start fade-out when cloud is IN THE MIDDLE (visible)
+                # Natural lifecycle: fade-out when old and in middle (visible)
                 # This ensures fade happens where user can see it naturally
                 # and wrapping at edges is ALWAYS seamless
+                # NOTE: Cloudyness-based removal is handled separately above
                 if self.lifetime[i] > min_lifetime and is_in_middle:
                     # Start fading out (visible in middle of screen)
                     self.is_fading_out[i] = True
             else:
-                # Already fading out - check if fully faded and can be recycled
+                # Already fading out - check if fully faded and can be removed
                 if self.current_opacities[i] < 0.01:
-                    # Cloud has faded to invisible - safe to recycle
-                    # Recycle to off-screen left to start new cycle
-                    self.positions[i, 0] = -cloud_width * 1.5
-                    self.positions[i, 1] = np.random.uniform(0, self.viewport.height)
-                    self.sizes[i] = np.random.uniform(0.5, 0.9)
-                    self.base_opacities[i] = np.random.uniform(0.5, 0.9)
-                    self.current_opacities[i] = 0.0
-                    self.is_fading_out[i] = False
-                    self.lifetime[i] = 0.0
+                    # Cloud has faded to invisible - REMOVE IT (don't recycle)
+                    # This allows dynamic cloud count adjustment
+                    # Mark for deletion by setting lifetime to negative
+                    self.lifetime[i] = -1.0
+        
+        # Remove clouds marked for deletion (those with lifetime < 0)
+        if len(self.lifetime) > 0:
+            keep_mask = self.lifetime >= 0
+            if not np.all(keep_mask):
+                num_removed = np.sum(~keep_mask)
+                # Remove from all arrays
+                self.positions = self.positions[keep_mask]
+                self.speeds = self.speeds[keep_mask]
+                self.base_opacities = self.base_opacities[keep_mask]
+                self.current_opacities = self.current_opacities[keep_mask]
+                self.sizes = self.sizes[keep_mask]
+                self.z_indices = self.z_indices[keep_mask]
+                self.turbulence_phases = self.turbulence_phases[keep_mask]
+                self.turbulence_speeds = self.turbulence_speeds[keep_mask]
+                self.turbulence_amounts = self.turbulence_amounts[keep_mask]
+                self.subpixel_offsets = self.subpixel_offsets[keep_mask]
+                self.noise_offsets = self.noise_offsets[keep_mask]
+                
+                # For texture indices, also clean up unused textures
+                removed_tex_indices = self.texture_indices[~keep_mask]
+                self.texture_indices = self.texture_indices[keep_mask]
+                
+                # Delete GPU textures that are no longer used by any cloud
+                for tex_idx in removed_tex_indices:
+                    if tex_idx not in self.texture_indices:
+                        if tex_idx < len(self.texture_ids):
+                            glDeleteTextures(1, [self.texture_ids[tex_idx]])
+                            # Mark as deleted (set to 0)
+                            self.texture_ids[tex_idx] = 0
+                
+                self.is_fading_out = self.is_fading_out[keep_mask]
+                self.lifetime = self.lifetime[keep_mask]
+                
+                print(f"Removed {num_removed} fully faded cloud(s)")
 
     def render(self, state: Dict):
         """Render all clouds with seamless wrapping using duplicates (vectorized)"""
@@ -628,19 +705,19 @@ class CloudEffect(ShaderEffect):
         right_edge_mask = (actual_positions[:, 0] + cloud_widths) > (self.viewport.width - self.wrap_margin)
         
         # DEBUG: Print wrapping info
-        if np.any(left_edge_mask) or np.any(right_edge_mask):
-            print(f"\n=== CLOUD WRAPPING DEBUG ===")
-            print(f"Viewport width: {self.viewport.width}, Wrap margin: {self.wrap_margin}")
-            print(f"Left edge triggers: {np.sum(left_edge_mask)}")
-            print(f"Right edge triggers: {np.sum(right_edge_mask)}")
-            if np.any(left_edge_mask):
-                left_idx = np.where(left_edge_mask)[0]
-                for idx in left_idx:
-                    print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, width={cloud_widths[idx]:.1f} (LEFT EDGE)")
-            if np.any(right_edge_mask):
-                right_idx = np.where(right_edge_mask)[0]
-                for idx in right_idx:
-                    print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, right_edge={actual_positions[idx, 0] + cloud_widths[idx]:.1f}, width={cloud_widths[idx]:.1f} (RIGHT EDGE)")
+        # if np.any(left_edge_mask) or np.any(right_edge_mask):
+        #     print(f"\n=== CLOUD WRAPPING DEBUG ===")
+        #     print(f"Viewport width: {self.viewport.width}, Wrap margin: {self.wrap_margin}")
+        #     print(f"Left edge triggers: {np.sum(left_edge_mask)}")
+        #     print(f"Right edge triggers: {np.sum(right_edge_mask)}")
+        #     if np.any(left_edge_mask):
+        #         left_idx = np.where(left_edge_mask)[0]
+        #         for idx in left_idx:
+        #             print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, width={cloud_widths[idx]:.1f} (LEFT EDGE)")
+        #     if np.any(right_edge_mask):
+        #         right_idx = np.where(right_edge_mask)[0]
+        #         for idx in right_idx:
+        #             print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, right_edge={actual_positions[idx, 0] + cloud_widths[idx]:.1f}, width={cloud_widths[idx]:.1f} (RIGHT EDGE)")
         
         # Create duplicate positions for seamless wrapping
         duplicate_positions_left = []
@@ -705,6 +782,10 @@ class CloudEffect(ShaderEffect):
         
         glBindVertexArray(self.VAO)
         
+        # Disable depth writes for proper alpha blending
+        # Clouds should blend with each other, not block each other
+        glDepthMask(GL_FALSE)
+        
         # Render each cloud (sorted back-to-front)
         # Note: Unlike rain which uses single instanced call, clouds need per-texture rendering
         for sort_idx in sort_indices:
@@ -752,8 +833,11 @@ class CloudEffect(ShaderEffect):
             if loc != -1:
                 glUniform1i(loc, 0)
             
-            # Draw this cloud
+                        # Draw this cloud
             glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, 1)
+        
+        # Re-enable depth writes for other effects
+        glDepthMask(GL_TRUE)
         
         glBindVertexArray(0)
         glUseProgram(0)
