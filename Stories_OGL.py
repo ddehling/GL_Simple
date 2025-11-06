@@ -230,7 +230,7 @@ class EnvironmentalSystem:
         self.scheduler.state["season"] = self.season
         self.scheduler.state["rain"] = self.weather_params["rain_rate"]
         self.scheduler.state["starryness"] = self.weather_params["starryness"]
-        
+        self.scheduler.state["sound"] = self.analyzer.get_extended_analysis()
         # # Set fog for each frame
         # self.scheduler.set_fog(0, fog, tuple(self.weather_params["fog_color"]), dir_scale=(1.0, 1.0))
         # self.scheduler.set_fog(1, fog + self.cloudyness / 2, tuple(self.weather_params["fog_color"]), dir_scale=(1.0, 0.0))

@@ -441,10 +441,9 @@ class MicrophoneAnalyzer:
                 'raw_bands': 2D array (1000 x 32) - Raw power in each frequency band
                 'norm_short': 2D array (1000 x 32) - Normalized to short-term average
                 'norm_long': 2D array (1000 x 32) - Normalized to long-term average
+                'norm_long_relu': 2D array (1000 x 32) - ReLU(norm_long - 1), highlights above-average activity
                 'band_centers': 1D array (32) - Center frequency of each band (Hz)
                 'band_edges': 1D array (33) - Edge frequencies of bands (Hz)
-                'bpm': float - Estimated beats per minute
-                'bpm_confidence': float - Confidence in BPM estimate (0-1)
                 'timestamp': float - Current time
                 'averaging_method': str - 'exponential' or 'mean'
             }
@@ -454,9 +453,10 @@ class MicrophoneAnalyzer:
         if len(raw) == 0:
             # Return empty data if buffer is empty
             return {
-                                'raw_bands': np.zeros((1, self.num_bands)),
+                'raw_bands': np.zeros((1, self.num_bands)),
                 'norm_short': np.zeros((1, self.num_bands)),
                 'norm_long': np.zeros((1, self.num_bands)),
+                'norm_long_relu': np.zeros((1, self.num_bands)),
                 'band_centers': self.band_centers.copy(),
                 'band_edges': self.band_edges.copy(),
                 'timestamp': time.time(),
@@ -482,7 +482,7 @@ class MicrophoneAnalyzer:
             mean_short = np.mean(raw[:window_short], axis=0, keepdims=True)
             mean_long = np.mean(raw[:window_long], axis=0, keepdims=True)
         
-        # Ensure no division by zero
+                # Ensure no division by zero
         if self.use_exponential:
             mean_short = np.where(mean_short < 1e-10, 1e-10, mean_short)
             mean_long = np.where(mean_long < 1e-10, 1e-10, mean_long)
@@ -494,10 +494,14 @@ class MicrophoneAnalyzer:
             norm_short = raw / mean_short
             norm_long = raw / mean_long
         
+        # Calculate ReLU(norm_long - 1) - highlights when bands are above long-term average
+        norm_long_relu = np.maximum(0, norm_long - 1)
+        
         return {
-                        'raw_bands': raw,
+            'raw_bands': raw,
             'norm_short': norm_short,
             'norm_long': norm_long,
+            'norm_long_relu': norm_long_relu,
             'band_centers': self.band_centers.copy(),
             'band_edges': self.band_edges.copy(),
             'timestamp': time.time(),
