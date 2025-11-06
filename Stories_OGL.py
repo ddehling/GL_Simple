@@ -64,10 +64,10 @@ class EnvironmentalSystem:
     
 
         # self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
-        # self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
+        self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
         # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
-        #self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
+        self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
         viewport0 = self.scheduler.shader_renderer.get_viewport(0)
         if viewport0:
             fog0 = viewport0.add_effect(ShaderFog, 
@@ -316,7 +316,7 @@ class EnvironmentalSystem:
                 
     def random_state_change(self):
         randcheck = np.random.random()
-        if (randcheck < (1 / 400) * self.weather_params["Switch_rate"]) and (self.progress >= 0.99):  # 0.1% chance each frame
+        if (randcheck < (1 / 800) * self.weather_params["Switch_rate"]) and (self.progress >= 0.99):  # 0.1% chance each frame
             self.progress = 0
             current_preset = self.weather_presets[self.current_weather]
             possible_states = [WeatherState(state) for state in current_preset["possible_transitions"]]
@@ -388,9 +388,8 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.transition_to_weather(WeatherState.SPOOKY)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
     env_system.scheduler.schedule_event(10, 20, fx.shader_audio_curve, frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
