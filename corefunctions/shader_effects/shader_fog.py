@@ -1,5 +1,7 @@
 import numpy as np
 from OpenGL.GL import *
+from OpenGL.GL import shaders
+from typing import Dict
 from .base import ShaderEffect
 
 # Vertex shader for fullscreen quad
@@ -69,6 +71,12 @@ vec4 blur_at_depth(vec2 uv, float depth_factor) {
 }
 
 void main() {
+    // Early exit if fog strength is effectively zero
+    if (u_fog_strength < 0.001) {
+        fragColor = texture(u_color_texture, v_texcoord);
+        return;
+    }
+    
     // Sample depth
     float depth = texture(u_depth_texture, v_texcoord).r;
     
@@ -78,7 +86,7 @@ void main() {
     // Calculate fog factor based on depth (0 = no fog, 1 = full fog)
     float depth_range = u_fog_far - u_fog_near;
     float fog_factor = clamp((linear_depth - u_fog_near) / depth_range, 0.0, 1.0);
-    fog_factor = fog_factor * u_fog_strength* u_fog_strength;
+    fog_factor = fog_factor * u_fog_strength * u_fog_strength;
     
     // Apply depth-based blur
     vec4 blurred_color = blur_at_depth(v_texcoord, fog_factor);
@@ -91,67 +99,154 @@ void main() {
 """
 
 
+def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8), 
+               fog_near=10.0, fog_far=100.0):
+    """
+    Depth-based fog post-processing effect compatible with EventScheduler
+    
+    Creates atmospheric fog with depth-based blur. Distant objects appear
+    foggy and blurred, while near objects remain clear.
+    
+    Usage:
+        scheduler.schedule_event(0, 60, shader_fog, strength=0.5, frame_id=0)
+    
+    Args:
+        state: Event state dict (contains start_time, elapsed_time, count, frame_id)
+        outstate: Global state dict (from EventScheduler)
+        strength: Fog intensity (0.0 = no fog, 1.0 = full fog)
+        color: RGB tuple for fog color (default light blue-gray)
+        fog_near: Distance where fog starts
+        fog_far: Distance where fog reaches maximum
+    """
+    frame_id = state.get('frame_id', 0)
+    shader_renderer = outstate.get('shader_renderer')
+    
+    if shader_renderer is None:
+        print("WARNING: shader_renderer not found in state!")
+        return
+    
+    viewport = shader_renderer.get_viewport(frame_id)
+    if viewport is None:
+        print(f"WARNING: viewport {frame_id} not found!")
+        return
+    
+        # Initialize on first call
+    if state['count'] == 0:
+        print(f"Initializing fog effect for frame {frame_id}")
+        
+        try:
+            effect = viewport.add_effect(
+                ShaderFog,
+                strength=strength,
+                color=color,
+                fog_near=fog_near,
+                fog_far=fog_far
+            )
+            effect._managed_by_wrapper = True  # Mark as managed by wrapper
+            state['effect'] = effect
+            print(f"✓ Initialized shader fog for frame {frame_id} (strength={strength})")
+        except Exception as e:
+            print(f"✗ Failed to initialize fog: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+    
+                        # Update fog parameters from global state (optional dynamic control)
+    if 'effect' in state:
+        # Allow dynamic fog strength control from outstate
+        if 'fog_strength' in outstate:
+            state['effect'].base_strength = outstate['fog_strength']
+        
+        # Allow dynamic fog color control from outstate
+        if 'fog_color' in outstate:
+            state['effect'].fog_color = outstate['fog_color']
+        
+        # Calculate current_strength based on fade (if duration specified)
+        if state.get('duration') is not None:
+            elapsed_time = state['elapsed_time']
+            total_duration = state['duration']
+            fade_duration = 2.0  # Fade in/out over 2 seconds
+            
+            # Calculate fade factor (0.0 to 1.0)
+            if elapsed_time < fade_duration:
+                # Fade in during first N seconds
+                fade_factor = elapsed_time / fade_duration
+            elif elapsed_time > (total_duration - fade_duration):
+                # Fade out during last N seconds
+                fade_factor = (total_duration - elapsed_time) / fade_duration
+            else:
+                # Full strength in the middle
+                fade_factor = 1.0
+            
+            # Apply fade to base strength parameter
+            state['effect'].current_strength = state['effect'].base_strength * np.clip(fade_factor, 0, 1)
+        else:
+            # No fade if duration not specified - use base_strength directly
+            state['effect'].current_strength = state['effect'].base_strength
+    
+    # Cleanup on close
+    if state['count'] == -1:
+        if 'effect' in state:
+            print(f"Cleaning up fog effect for frame {frame_id}")
+            viewport.effects.remove(state['effect'])
+            state['effect'].cleanup()
+            print(f"✓ Cleaned up shader fog for frame {frame_id}")
+
+
 class ShaderFog(ShaderEffect):
     """Post-processing fog effect with depth-based blur"""
     
     def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8), 
                  fog_near=10.0, fog_far=100.0):
         super().__init__(viewport)
-        self.strength = strength
+        self.base_strength = strength  # Base strength set at initialization
+        self.current_strength = strength  # Current strength (affected by fade)
         self.fog_color = color
         self.fog_near = fog_near
         self.fog_far = fog_far
         
-        # OpenGL resources
-        self.program = None
-        self.vao = None
-        self.vbo = None
-        # No need for separ
-
-    def create_program(self, vertex_src, fragment_src):
-        """Compile and link shader program"""
-        # Compile vertex shader
-        vertex_shader = glCreateShader(GL_VERTEX_SHADER)
-        glShaderSource(vertex_shader, vertex_src)
-        glCompileShader(vertex_shader)
-        
-        # Check vertex shader compilation
-        if not glGetShaderiv(vertex_shader, GL_COMPILE_STATUS):
-            error = glGetShaderInfoLog(vertex_shader).decode()
-            raise RuntimeError(f"Vertex shader compilation failed:\n{error}")
-        
-        # Compile fragment shader
-        fragment_shader = glCreateShader(GL_FRAGMENT_SHADER)
-        glShaderSource(fragment_shader, fragment_src)
-        glCompileShader(fragment_shader)
-        
-        # Check fragment shader compilation
-        if not glGetShaderiv(fragment_shader, GL_COMPILE_STATUS):
-            error = glGetShaderInfoLog(fragment_shader).decode()
-            raise RuntimeError(f"Fragment shader compilation failed:\n{error}")
-        
-        # Link program
-        program = glCreateProgram()
-        glAttachShader(program, vertex_shader)
-        glAttachShader(program, fragment_shader)
-        glLinkProgram(program)
-        
-        # Check program linking
-        if not glGetProgramiv(program, GL_LINK_STATUS):
-            error = glGetProgramInfoLog(program).decode()
-            raise RuntimeError(f"Program linking failed:\n{error}")
-        
-        # Clean up shaders (they're linked into the program now)
-        glDeleteShader(vertex_shader)
-        glDeleteShader(fragment_shader)
-        
-        return program
+        # OpenGL resources (initialized in setup_buffers)
+        self.VAO = None
+        self.VBO = None
     
+    @property
+    def strength(self):
+        """Getter for strength (for backward compatibility)"""
+        return self.current_strength
+    
+    @strength.setter
+    def strength(self, value):
+        """Setter for strength - updates base_strength"""
+        self.base_strength = value
+        # Note: current_strength is updated by the event wrapper based on fade
+        # If no wrapper is used, this ensures current_strength matches
+        if not hasattr(self, '_managed_by_wrapper'):
+            self.current_strength = value
 
-    def init(self):
-        """Initialize shader program and geometry"""
-        self.program = self.create_program(VERTEX_SHADER, FRAGMENT_SHADER)
+    def compile_shader(self):
+        """Compile and link shaders - REQUIRED METHOD"""
+        vertex_shader = self.get_vertex_shader()
+        fragment_shader = self.get_fragment_shader()
         
+        try:
+            vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
+            frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
+            shader_program = shaders.compileProgram(vert, frag)
+            return shader_program
+        except Exception as e:
+            print(f"ShaderFog compilation error: {e}")
+            raise
+    
+    def get_vertex_shader(self):
+        """Return vertex shader source"""
+        return VERTEX_SHADER
+    
+    def get_fragment_shader(self):
+        """Return fragment shader source"""
+        return FRAGMENT_SHADER
+    
+    def setup_buffers(self):
+        """Initialize OpenGL buffers - Called automatically after shader compilation"""
         # Create fullscreen quad
         vertices = np.array([
             -1, -1,
@@ -160,71 +255,71 @@ class ShaderFog(ShaderEffect):
              1,  1,
         ], dtype=np.float32)
         
-        self.vao = glGenVertexArrays(1)
-        glBindVertexArray(self.vao)
+        self.VAO = glGenVertexArrays(1)
+        glBindVertexArray(self.VAO)
         
-        self.vbo = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
+        self.VBO = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.VBO)
         glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
         
-        pos_loc = glGetAttribLocation(self.program, "position")
+        pos_loc = glGetAttribLocation(self.shader, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 2, GL_FLOAT, GL_FALSE, 0, None)
         
         glBindVertexArray(0)
-        
-        # Create depth texture
-        self.depth_texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16,
-                     self.viewport.width, self.viewport.height,
-                     0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, None)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
     
-    def update(self, dt, state):
-        """Update fog parameters from state"""
-        # Allow dynamic control from state dict
-        if f'fog_strength_{self.viewport.frame_id}' in state:
-            self.strength = state[f'fog_strength_{self.viewport.frame_id}']
-        elif 'fog_strength' in state:
-            self.strength = state['fog_strength']
+    def update(self, dt: float, state: Dict):
+        """Update fog parameters each frame"""
+        if not self.enabled:
+            return
         
-        if f'fog_color_{self.viewport.frame_id}' in state:
-            self.fog_color = state[f'fog_color_{self.viewport.frame_id}']
-        elif 'fog_color' in state:
-            self.fog_color = state['fog_color']
+        # If not managed by wrapper, check state dict for dynamic updates
+        # This allows real-time control without using the event wrapper
+        if not hasattr(self, '_managed_by_wrapper') or not self._managed_by_wrapper:
+            if 'fog_strength' in state:
+                self.base_strength = state['fog_strength']
+                self.current_strength = state['fog_strength']
+            
+            if 'fog_color' in state:
+                self.fog_color = state['fog_color']
     
-    def render(self, state):
+    def render(self, state: Dict):
         """Apply fog as post-processing effect"""
-        # Disable depth testing for post-process
-        glDisable(GL_DEPTH_TEST)
+        if not self.enabled:
+            return
         
-        glUseProgram(self.program)
-        glBindVertexArray(self.vao)
+        # Skip rendering entirely if fog strength is effectively zero
+        # This prevents any GPU processing when fog is disabled
+        if self.current_strength < 0.001:
+            return
+        
+        # Post-process exception: Use GL_ALWAYS to render on top without toggling depth test
+        glDepthFunc(GL_ALWAYS)  # Always pass depth test (render in front)
+        glDepthMask(GL_FALSE)   # Don't write to depth buffer
+        
+        glUseProgram(self.shader)
+        glBindVertexArray(self.VAO)
         
         # Bind color texture
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, self.viewport.color_texture)
-        glUniform1i(glGetUniformLocation(self.program, "u_color_texture"), 0)
+        glUniform1i(glGetUniformLocation(self.shader, "u_color_texture"), 0)
         
         # Bind depth texture from viewport
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D, self.viewport.depth_texture)
-        glUniform1i(glGetUniformLocation(self.program, "u_depth_texture"), 1)
+        glUniform1i(glGetUniformLocation(self.shader, "u_depth_texture"), 1)
         
-        # Set uniforms
-        glUniform3f(glGetUniformLocation(self.program, "u_fog_color"),
+        # Set uniforms - use current_strength which includes fade
+        glUniform3f(glGetUniformLocation(self.shader, "u_fog_color"),
                    self.fog_color[0], self.fog_color[1], self.fog_color[2])
-        glUniform1f(glGetUniformLocation(self.program, "u_fog_strength"),
-                   self.strength)
-        glUniform1f(glGetUniformLocation(self.program, "u_fog_near"),
+        glUniform1f(glGetUniformLocation(self.shader, "u_fog_strength"),
+                   self.current_strength)
+        glUniform1f(glGetUniformLocation(self.shader, "u_fog_near"),
                    self.fog_near)
-        glUniform1f(glGetUniformLocation(self.program, "u_fog_far"),
+        glUniform1f(glGetUniformLocation(self.shader, "u_fog_far"),
                    self.fog_far)
-        glUniform2f(glGetUniformLocation(self.program, "u_resolution"),
+        glUniform2f(glGetUniformLocation(self.shader, "u_resolution"),
                    float(self.viewport.width), float(self.viewport.height))
         
         # Draw fullscreen quad
@@ -233,14 +328,15 @@ class ShaderFog(ShaderEffect):
         glBindVertexArray(0)
         glUseProgram(0)
         
-        # Re-enable depth testing
-        glEnable(GL_DEPTH_TEST)
+        # Restore default depth state
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)
     
     def cleanup(self):
         """Clean up resources"""
-        if self.vao:
-            glDeleteVertexArrays(1, [self.vao])
-        if self.vbo:
-            glDeleteBuffers(1, [self.vbo])
-        if self.program:
-            glDeleteProgram(self.program)
+        if self.VAO:
+            glDeleteVertexArrays(1, [self.VAO])
+        if self.VBO:
+            glDeleteBuffers(1, [self.VBO])
+        if self.shader:
+            glDeleteProgram(self.shader)

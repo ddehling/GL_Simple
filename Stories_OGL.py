@@ -15,7 +15,7 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (256, 300),   # Frame 0 (primary/main display)
+            (128, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -68,13 +68,13 @@ class EnvironmentalSystem:
         # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
         #self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
-        # viewport0 = self.scheduler.shader_renderer.get_viewport(0)
-        # if viewport0:
-        #     fog0 = viewport0.add_effect(ShaderFog, 
-        #                                 strength=2.6, 
-        #                                 color=(0.5, 0.6, 0.8),  # Blue-ish fog
-        #                                 fog_near=20.0,
-        #                                 fog_far=80.0)
+        viewport0 = self.scheduler.shader_renderer.get_viewport(0)
+        if viewport0:
+            fog0 = viewport0.add_effect(ShaderFog, 
+                                        strength=0.0, 
+                                        color=(0.5, 0.6, 0.8),  # Blue-ish fog
+                                        fog_near=20.0,
+                                        fog_far=80.0)
 
         # Schedule world rendering events for each frame, keeping the original function names
         #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
@@ -391,7 +391,7 @@ if __name__ == "__main__":
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
     env_system.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
-    env_system.scheduler.schedule_event(0, 999999999, fx.shader_gameoflife, frame_id=0)
+    env_system.scheduler.schedule_event(10, 20, fx.shader_audio_curve, frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()
@@ -410,7 +410,7 @@ if __name__ == "__main__":
             if frame_count % 50 == 0:  # Print FPS every second
                 actual_fps = 1.0 / (elapsed + sleep_time)
                 #um_effects = sum(len(vp.effects) for vp in scheduler.shader_renderer.viewports)
-                print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
+                #print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
             
             last_time = current_time
             # Print stats if needed
