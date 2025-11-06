@@ -1,5 +1,24 @@
 # Shader Creation Guide: Depth + Alpha Blending System
 
+## Required Imports
+
+All shader effect files must include these imports at the top:
+
+```python
+import numpy as np
+from OpenGL.GL import *
+from OpenGL.GL import shaders
+from typing import Dict
+from .base import ShaderEffect
+```
+
+**What each import provides:**
+- `numpy` - Array operations, vectorized math, efficient data handling
+- `OpenGL.GL` - All OpenGL functions (glGenBuffers, glBindBuffer, etc.)
+- `OpenGL.GL.shaders` - Shader compilation utilities (compileShader, compileProgram)
+- `typing.Dict` - Type hints for state dictionaries
+- `.base.ShaderEffect` - Base class all effects must inherit from
+
 ## Overview
 
 The shader renderer uses **simultaneous depth testing and alpha blending** to create a proper 3D layering system where transparent objects correctly occlude each other based on depth.
@@ -146,10 +165,338 @@ if np.any(right_edge_mask):
 ❌ Never use projection matrices that conflict with the 0-1 depth range
 ❌ Never allow objects to disappear at screen edges (breaks wrapping continuity)
 
-## Example: Creating a New Effect
+## Event System Integration
+
+**All shader effects should include an event wrapper function for use with EventScheduler.**
+
+This allows effects to be scheduled, started, stopped, and cleaned up automatically.
+
+### Event Wrapper Function Pattern:
+
+```python
+def shader_myeffect(state, outstate, param1=default1, param2=default2):
+    """
+    Shader-based effect compatible with EventScheduler
+    
+    Usage:
+        scheduler.schedule_event(0, 60, shader_myeffect, param1=value, frame_id=0)
+    
+    Args:
+        state: Event state dict (contains start_time, elapsed_time, count, frame_id)
+        outstate: Global state dict (from EventScheduler)
+        param1: Your custom parameter
+        param2: Your custom parameter
+    """
+    # 1. Get viewport from renderer
+    frame_id = state.get('frame_id', 0)
+    shader_renderer = outstate.get('shader_renderer')
+    
+    if shader_renderer is None:
+        print("WARNING: shader_renderer not found in state!")
+        return
+    
+    viewport = shader_renderer.get_viewport(frame_id)
+    if viewport is None:
+        print(f"WARNING: viewport {frame_id} not found!")
+        return
+    
+    # 2. Initialize effect on first call (count == 0)
+    if state['count'] == 0:
+        print(f"Initializing myeffect for frame {frame_id}")
+        
+        try:
+            effect = viewport.add_effect(
+                MyEffect,
+                param1=param1,
+                param2=param2
+            )
+            state['effect'] = effect
+            print(f"✓ Initialized shader myeffect for frame {frame_id}")
+        except Exception as e:
+            print(f"✗ Failed to initialize myeffect: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+    
+    # 3. (Optional) Update effect from global state
+    if 'effect' in state:
+        state['effect'].some_param = outstate.get('some_global_param', param1)
+    
+    # 4. Cleanup on close event (count == -1)
+    if state['count'] == -1:
+        if 'effect' in state:
+            print(f"Cleaning up myeffect for frame {frame_id}")
+            viewport.effects.remove(state['effect'])
+            state['effect'].cleanup()
+            print(f"✓ Cleaned up shader myeffect for frame {frame_id}")
+```
+
+### Event Wrapper Requirements:
+
+✅ **Function signature**: `def shader_name(state, outstate, **custom_params)`
+✅ **Initialize on first call**: Check `state['count'] == 0`
+✅ **Store effect in state**: `state['effect'] = effect` for later access
+✅ **Handle cleanup**: Check `state['count'] == -1` and call `cleanup()`
+✅ **Error handling**: Wrap initialization in try/except with traceback
+✅ **Logging**: Print initialization and cleanup messages
+✅ **Global state updates**: Optionally read from `outstate` for dynamic parameters
+
+### Key Points:
+
+- `state` is per-event, persists across calls
+- `outstate` is global, shared across all events
+- `state['count']` tracks event lifecycle: 0 (init), N>0 (running), -1 (cleanup)
+- `state['elapsed_time']` provides time since event started (in seconds)
+- `state['duration']` provides total event duration (if scheduled with duration)
+- `frame_id` identifies which viewport to use
+- Effect remains active between calls (updates/renders automatically)
+- Always remove from `viewport.effects` and call `cleanup()` on close
+
+### Fade In/Out Pattern:
+
+For smooth transitions, implement fade in/out based on `elapsed_time`:
+
+```python
+def shader_myeffect(state, outstate, param1=1.0):
+    # ... initialization code ...
+    
+    # Update fade factor every frame (after initialization)
+    if 'effect' in state:
+        elapsed_time = state['elapsed_time']
+        total_duration = state.get('duration', 60)  # Default 60s if not set
+        fade_duration = 10.0  # Fade in/out over 10 seconds
+        
+        # Calculate fade factor (0.0 to 1.0)
+        if elapsed_time < fade_duration:
+            # Fade in during first N seconds
+            fade_factor = elapsed_time / fade_duration
+        elif elapsed_time > (total_duration - fade_duration):
+            # Fade out during last N seconds
+            fade_factor = (total_duration - elapsed_time) / fade_duration
+        else:
+            # Full opacity in the middle
+            fade_factor = 1.0
+        
+        # Update effect's fade factor (clip to 0-1 range)
+        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
+    
+    # ... cleanup code ...
+```
+
+**In your effect class:**
 
 ```python
 class MyEffect(ShaderEffect):
+    def __init__(self, viewport, param1: float = 1.0):
+        super().__init__(viewport)
+        self.fade_factor = 0.0  # Start fully transparent
+        # ... rest of init ...
+    
+    def render(self, state: Dict):
+        glUseProgram(self.shader)
+        
+        # Pass fade factor to shader
+        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
+        if fade_loc != -1:
+            glUniform1f(fade_loc, self.fade_factor)
+        
+        # ... rest of render ...
+```
+
+**In your fragment shader:**
+
+```glsl
+uniform float fadeAlpha;
+
+void main() {
+    vec3 color = vec3(1.0, 0.5, 0.0);
+    float alpha = 0.8;
+    
+    // Apply fade factor to final alpha
+    alpha *= fadeAlpha;
+    
+    outColor = vec4(color, alpha);
+}
+```
+
+**Benefits:**
+- ✅ Smooth fade in at start (no sudden appearance)
+- ✅ Smooth fade out at end (no sudden disappearance)
+- ✅ Automatically uses event duration from scheduler
+- ✅ Adjustable fade duration (independent of total duration)
+- ✅ Works with any effect type
+
+## Shader Effect Initialization Flow
+
+**CRITICAL: Understanding the initialization sequence**
+
+The shader system has a specific initialization order that MUST be followed:
+
+```
+1. __init__(viewport, **params)    # Your constructor - set parameters, initialize data
+2. add_effect() creates effect     # Called by viewport.add_effect(EffectClass, **params)
+3. effect.init()                   # Called automatically by add_effect()
+   ├─> compile_shader()            # YOU MUST IMPLEMENT THIS
+   └─> setup_buffers()             # Called after shader is compiled
+```
+
+### Key Rules:
+
+✅ **DO** initialize data structures in `__init__`
+✅ **DO** implement `compile_shader()` method to compile vertex/fragment shaders
+✅ **DO** implement `setup_buffers()` to create VAO/VBO/EBO (called after shader compiles)
+❌ **DON'T** call `setup_buffers()` in `__init__` (shader doesn't exist yet!)
+❌ **DON'T** call `init()` yourself (add_effect() does this automatically)
+❌ **DON'T** try to use `self.shader` before `init()` is called
+
+### The compile_shader() Method
+
+Every shader effect MUST implement this method:
+
+```python
+def compile_shader(self):
+    """Compile and link shaders"""
+    vertex_shader = self.get_vertex_shader()
+    fragment_shader = self.get_fragment_shader()
+    
+    try:
+        vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
+        frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
+        shader = shaders.compileProgram(vert, frag)
+        return shader
+    except Exception as e:
+        print(f"Shader compilation error: {e}")
+        raise
+```
+
+This method is called by the base class's `init()` and must return the compiled shader program.
+
+## Complete Shader Effect Template
+
+Here's a complete template for creating a new shader effect:
+
+```python
+"""
+My custom shader effect - description
+"""
+import numpy as np
+from OpenGL.GL import *
+from OpenGL.GL import shaders
+from typing import Dict
+from .base import ShaderEffect
+
+# ============================================================================
+# Event Wrapper Function - Integrates with EventScheduler
+# ============================================================================
+
+def shader_myeffect(state, outstate, param1=1.0, param2=0.0):
+    """
+    Shader-based effect compatible with EventScheduler
+    
+    Usage:
+        scheduler.schedule_event(0, 60, shader_myeffect, param1=1.5, frame_id=0)
+    
+    Args:
+        state: Event state dict
+        outstate: Global state dict
+        param1: Custom parameter
+        param2: Custom parameter
+    """
+    frame_id = state.get('frame_id', 0)
+    shader_renderer = outstate.get('shader_renderer')
+    
+    if shader_renderer is None:
+        print("WARNING: shader_renderer not found in state!")
+        return
+    
+    viewport = shader_renderer.get_viewport(frame_id)
+    if viewport is None:
+        print(f"WARNING: viewport {frame_id} not found!")
+        return
+    
+    # Initialize on first call
+    if state['count'] == 0:
+        print(f"Initializing myeffect for frame {frame_id}")
+        
+        try:
+            effect = viewport.add_effect(
+                MyEffect,
+                param1=param1,
+                param2=param2
+            )
+            state['effect'] = effect
+            print(f"✓ Initialized shader myeffect for frame {frame_id}")
+        except Exception as e:
+            print(f"✗ Failed to initialize myeffect: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+    
+        # Update from global state (optional)
+    if 'effect' in state:
+        state['effect'].param1 = outstate.get('global_param', param1)
+        
+        # Optional: Implement fade in/out
+        elapsed_time = state['elapsed_time']
+        total_duration = state.get('duration', 60)
+        fade_duration = 10.0  # Adjust as needed
+        
+        if elapsed_time < fade_duration:
+            fade_factor = elapsed_time / fade_duration
+        elif elapsed_time > (total_duration - fade_duration):
+            fade_factor = (total_duration - elapsed_time) / fade_duration
+        else:
+            fade_factor = 1.0
+        
+        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
+    
+    # Cleanup on close
+    if state['count'] == -1:
+        if 'effect' in state:
+            print(f"Cleaning up myeffect for frame {frame_id}")
+            viewport.effects.remove(state['effect'])
+            state['effect'].cleanup()
+            print(f"✓ Cleaned up shader myeffect for frame {frame_id}")
+
+
+# ============================================================================
+# Rendering Class
+# ============================================================================
+
+class MyEffect(ShaderEffect):
+    """Description of effect"""
+    
+        def __init__(self, viewport, param1: float = 1.0, param2: float = 0.0):
+        super().__init__(viewport)
+        self.param1 = param1
+        self.param2 = param2
+        self.instance_VBO = None
+        self.fade_factor = 0.0  # For fade in/out (optional)
+        
+        # Initialize your data (numpy arrays, counters, etc.)
+        self._initialize_data()
+        
+        # NOTE: Do NOT call setup_buffers() here!
+        # It will be called automatically by init() after shader compilation
+    
+    def _initialize_data(self):
+        """Initialize effect data as numpy arrays"""
+        # Your initialization here (positions, colors, velocities, etc.)
+        pass
+    
+    def compile_shader(self):
+        """Compile and link shaders - REQUIRED METHOD"""
+        vertex_shader = self.get_vertex_shader()
+        fragment_shader = self.get_fragment_shader()
+        
+        try:
+            vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
+            frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
+            shader = shaders.compileProgram(vert, frag)
+            return shader
+        except Exception as e:
+            print(f"{self.__class__.__name__} shader compilation error: {e}")
+            raise
     def get_vertex_shader(self):
         return """
         #version 310 es
@@ -185,22 +532,73 @@ class MyEffect(ShaderEffect):
         }
         """
     
-    def render(self, state):
+        def render(self, state):
         # NO depth test toggling!
         glUseProgram(self.shader)
         # ... render your geometry ...
         glUseProgram(0)
+    
+        def setup_buffers(self):
+        """Initialize OpenGL buffers - Called automatically after shader compilation"""
+        # Create VAO
+        self.VAO = glGenVertexArrays(1)
+        glBindVertexArray(self.VAO)
+        
+        # Create VBOs and set up vertex attributes
+        # Example:
+        # self.position_VBO = glGenBuffers(1)
+        # glBindBuffer(GL_ARRAY_BUFFER, self.position_VBO)
+        # glBufferData(GL_ARRAY_BUFFER, data.nbytes, data, GL_STATIC_DRAW)
+        # glEnableVertexAttribArray(0)
+        # glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        
+        # Create EBO if using indexed rendering
+        # self.EBO = glGenBuffers(1)
+        # glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
+        # glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
+        
+        glBindVertexArray(0)
+    
+    def update(self, dt: float, state: Dict):
+        """Update effect state each frame"""
+        if not self.enabled:
+            return
+        # Your update logic here
+        pass
 ```
+
+## Auto-Discovery and Imports
+
+The shader effects package uses automatic discovery. When you create a new shader file:
+
+✅ Name shader wrapper functions with `shader_` prefix: `shader_myeffect`
+✅ Name effect classes with `Effect` suffix: `MyEffect`
+✅ Both will be automatically imported by `__init__.py`
+✅ No need to manually edit `__init__.py`!
+
+The auto-discovery system:
+```python
+# In __init__.py (already implemented):
+# - Scans all .py files in shader_effects/
+# - Imports functions starting with 'shader_'
+# - Imports classes ending with 'Effect'
+# - Makes them available globally
+```
+
+This means you just create `myeffect.py` with `shader_myeffect()` and `MyEffect` class,
+and they're immediately available to the rest of the system!
 
 ## Summary
 
 The renderer maintains global depth testing + alpha blending state. Your shader just needs to:
-1. Write correct depth to gl_Position.z (z=0 near/depth=0.0, z=100 far/depth=1.0)
-2. Output RGBA with proper alpha in fragment shader
-3. Never touch depth test or blend state
-4. Implement horizontal wrapping by duplicating edge objects
+1. Implement `compile_shader()` method (required!)
+2. Write correct depth to gl_Position.z (z=0 near/depth=0.0, z=100 far/depth=1.0)
+3. Output RGBA with proper alpha in fragment shader
+4. Never call `setup_buffers()` in `__init__` (init() does this after compilation)
+5. Never touch depth test or blend state
+6. Implement horizontal wrapping by duplicating edge objects
 
-That's it! The system handles 3D ordering automatically. 🎯
+That's it! The system handles initialization, shader compilation, and 3D ordering automatically. 🎯
 
 ## Additional Notes
 
