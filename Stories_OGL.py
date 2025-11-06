@@ -391,7 +391,7 @@ if __name__ == "__main__":
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
     env_system.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
-    env_system.scheduler.schedule_event(0, 999999999, fx.shader_sphere, frame_id=0)
+    env_system.scheduler.schedule_event(0, 999999999, fx.shader_gameoflife, frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()
