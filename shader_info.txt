@@ -157,13 +157,73 @@ if np.any(right_edge_mask):
 ✅ Render originals and duplicates together for efficiency
 ✅ No gaps or pop-in at screen edges
 
+## Post-Processing Effects Exception
+
+**Post-processing effects** are special: they render AFTER all 3D geometry and apply screen-space effects (blur, fog, color grading, etc.).
+
+### What Makes Them Different:
+
+✅ Render a fullscreen quad covering the entire screen
+✅ Read from framebuffer textures (color and/or depth)
+✅ Don't participate in 3D depth ordering
+✅ Run as final pass in the render pipeline
+
+### Depth Handling for Post-Process:
+
+**Option 1: Use glDepthFunc (Recommended)**
+
+```python
+def render(self, state: Dict):
+    # Post-process exception: Always pass depth test without toggling
+    glDepthFunc(GL_ALWAYS)  # Always pass depth test (render in front)
+    glDepthMask(GL_FALSE)   # Don't write to depth buffer
+    
+    glUseProgram(self.shader)
+    # ... render fullscreen quad ...
+    glUseProgram(0)
+    
+    # Restore default state
+    glDepthFunc(GL_LESS)
+    glDepthMask(GL_TRUE)
+```
+
+**Option 2: Toggle depth test (Legacy)**
+
+```python
+def render(self, state: Dict):
+    glDisable(GL_DEPTH_TEST)  # Allowed for post-process only
+    
+    glUseProgram(self.shader)
+    # ... render fullscreen quad ...
+    glUseProgram(0)
+    
+    glEnable(GL_DEPTH_TEST)  # Re-enable for next frame
+```
+
+### Post-Process Examples:
+
+- **ShaderFog**: Depth-based atmospheric fog with blur
+- **ShaderBloom**: Glow effect for bright areas
+- **ShaderColorGrade**: Color correction and tone mapping
+- **ShaderVignette**: Darkening at screen edges
+
+### Important:
+
+✅ Post-process effects CAN modify depth state
+✅ They MUST restore state after rendering
+✅ They run AFTER all 3D geometry is complete
+❌ They should NOT write to the depth buffer
+❌ They should NOT occlude 3D objects
+
 ## What NOT To Do
 
-❌ Never call glEnable(GL_DEPTH_TEST) or glDisable(GL_DEPTH_TEST) in your shader
-❌ Never call glDepthMask(GL_FALSE) unless you specifically want no depth writes
-❌ Never omit the depth value in gl_Position.z
+❌ Never call glEnable/Disable(GL_DEPTH_TEST) in **3D geometry shaders**
+❌ Never call glDepthMask(GL_FALSE) in 3D shaders (prevents proper occlusion)
+❌ Never omit the depth value in gl_Position.z for 3D objects
 ❌ Never use projection matrices that conflict with the 0-1 depth range
 ❌ Never allow objects to disappear at screen edges (breaks wrapping continuity)
+
+**Exception**: Post-processing effects (rendering fullscreen quads after all geometry) may modify depth state as shown above.
 
 ## Event System Integration
 
@@ -847,10 +907,23 @@ class MyEffect(ShaderEffect):
         }
         """
     
-        def render(self, state):
-        # NO depth test toggling!
+            def render(self, state: Dict):
+        """Render effect geometry"""
+        if not self.enabled:
+            return
+        
+        # NO depth test toggling for 3D geometry!
         glUseProgram(self.shader)
-        # ... render your geometry ...
+        glBindVertexArray(self.VAO)
+        
+        # Set uniforms
+        res_loc = glGetUniformLocation(self.shader, "resolution")
+        glUniform2f(res_loc, self.viewport.width, self.viewport.height)
+        
+        # Draw your geometry
+        # glDrawArrays(...) or glDrawElements(...)
+        
+        glBindVertexArray(0)
         glUseProgram(0)
     
         def setup_buffers(self):
