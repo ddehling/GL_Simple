@@ -446,7 +446,7 @@ class RainEffect(ShaderEffect):
         
         glBindVertexArray(0)
     
-    def update_audio_bands(self, audio_bands, sensitivity=1.5):
+    def update_audio_bands(self, audio_bands, sensitivity=0.5):
         """Update audio band energies from event wrapper"""
         if audio_bands is not None and len(audio_bands) == 16:
             self.audio_bands = audio_bands

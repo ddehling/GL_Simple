@@ -11,23 +11,29 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_stars(state, outstate, num_stars=200, twinkle_speed=1.0, drift_x=0.0, drift_y=0.0):
+def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0, drift_y=0.0, audio_sensitivity=1.5):
     """
     Shader-based twinkling stars effect compatible with EventScheduler
     
+    Stars twinkle based on audio input using norm_long_relu bands 0-15.
+    Each star is assigned to one of 16 frequency bands and reacts to that band.
+    
     Usage:
-        scheduler.schedule_event(0, 60, shader_stars, num_stars=150, drift_x=5.0, drift_y=-2.0, frame_id=0)
+        scheduler.schedule_event(0, 60, shader_stars, num_stars=150, drift_x=5.0, 
+                                drift_y=-2.0, audio_sensitivity=2.0, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
         num_stars: Number of stars to render
-        twinkle_speed: Speed multiplier for twinkling animation
-        drift_x: Horizontal drift speed (pixels per second)
-        drift_y: Vertical drift speed (pixels per second)
+        twinkle_speed: Speed multiplier for base twinkling animation
+                drift_x: Horizontal drift base speed (default 1.0, stars will move 0.1-0.5 px/s)
+        drift_y: Vertical drift speed (pixels per second, default 0.0)
+        audio_sensitivity: Multiplier for audio reactivity (0 = no audio, higher = more reactive)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
+    audio_data = outstate.get('sound')
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
@@ -48,22 +54,30 @@ def shader_stars(state, outstate, num_stars=200, twinkle_speed=1.0, drift_x=0.0,
                 num_stars=num_stars,
                 twinkle_speed=twinkle_speed,
                 drift_x=drift_x,
-                drift_y=drift_y
+                drift_y=drift_y,
+                audio_sensitivity=audio_sensitivity
             )
             state['stars_effect'] = stars_effect
-            print(f"✓ Initialized shader stars for frame {frame_id}")
+            print(f"✓ Initialized shader stars for frame {frame_id} (depth: 99.99, audio bands: 0-15)")
         except Exception as e:
             print(f"✗ Failed to initialize stars: {e}")
             import traceback
             traceback.print_exc()
             return
     
-    # Update parameters from global state
+    # Update parameters from global state and audio data
     if 'stars_effect' in state:
         state['stars_effect'].twinkle_speed = outstate.get('twinkle_speed', twinkle_speed)
         state['stars_effect'].drift_x = outstate.get('drift_x', drift_x)
         state['stars_effect'].drift_y = outstate.get('drift_y', drift_y)
         state['stars_effect'].starryness = outstate.get('starryness', 1.0)
+        state['stars_effect'].audio_sensitivity = outstate.get('audio_sensitivity', audio_sensitivity)
+        
+        # Update audio bands for twinkling (if audio data available)
+        if audio_data is not None:
+            # Get norm_long_relu bands 0-15 (current frame)
+            audio_bands = audio_data['norm_long_relu'][0][0:16]  # Shape: (16,)
+            state['stars_effect'].audio_bands = audio_bands
     # On close event, clean up
     if state['count'] == -1:
         if 'stars_effect' in state:
@@ -78,24 +92,35 @@ def shader_stars(state, outstate, num_stars=200, twinkle_speed=1.0, drift_x=0.0,
 # ============================================================================
 
 class TwinklingStarsEffect(ShaderEffect):
-    """GPU-based twinkling stars using instanced rendering"""
+    """GPU-based twinkling stars using instanced rendering with audio reactivity
+    
+    Stars are placed at depth z=99.99 (far back in the scene).
+    Each star is assigned to one of 16 audio bands (0-15) and twinkles
+    based on the energy in that band using norm_long_relu.
+    """
     
     def __init__(self, viewport, num_stars: int = 100, twinkle_speed: float = 1.0, 
-                 drift_x: float = 0.0, drift_y: float = 0.0, depth: float = 99.9):
+                 drift_x: float = 0.0, drift_y: float = 0.0, depth: float = 99.99, 
+                 audio_sensitivity: float = 1.5):
         super().__init__(viewport)
         self.num_stars = num_stars
         self.twinkle_speed = twinkle_speed
         self.drift_x = drift_x  # Pixels per second
         self.drift_y = drift_y  # Pixels per second
-        self.depth = depth  # Z depth (default far away)
+        self.depth = depth  # Z depth (default 99.99 = far back)
         self.starryness = 1.0  # Global brightness scalar
+        self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
         self.instance_VBO = None
         self.time = 0.0
+        
+        # Audio reactivity
+        self.audio_bands = np.zeros(16, dtype=np.float32)  # Current audio energy for bands 0-15
         
         # Vectorized star data
         self.positions = None  # [x, y, z] - shape (N, 3)
         self.sizes = None  # Base sizes - shape (N,)
         self.colors = None  # [r, g, b] - shape (N, 3)
+        self.audio_band_indices = None  # Which audio band (0-15) each star reacts to - shape (N,)
         self.twinkle_phases = None  # Phase offset for each star - shape (N,)
         self.twinkle_frequencies = None  # How fast each star twinkles - shape (N,)
         self.twinkle_amplitudes = None  # How much each star twinkles - shape (N,)
@@ -156,13 +181,17 @@ class TwinklingStarsEffect(ShaderEffect):
             )
         )
         
+                # Audio band assignment - each star assigned to one of 16 bands
+        self.audio_band_indices = np.random.randint(0, 16, n)
+        
         # Twinkling parameters - each star has unique behavior
         self.twinkle_phases = np.random.uniform(0, 2 * np.pi, n)
         self.twinkle_frequencies = np.random.uniform(0.5, 2.0, n)
         self.twinkle_amplitudes = np.random.uniform(0.3, 0.7, n)
         
-        # Drift speed multipliers - each star drifts at slightly different speed
-        self.drift_multipliers = np.random.uniform(0.5, 1.5, n)
+                # Drift speed multipliers - random speed between 0.1 to 0.5 pixels per second
+        # When combined with drift_x=1.0, gives individual speeds of 0.1-0.5 px/s
+        self.drift_multipliers = np.random.uniform(0.1, 0.5, n)
         
     def get_vertex_shader(self):
         return """
@@ -281,10 +310,6 @@ class TwinklingStarsEffect(ShaderEffect):
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
         glEnableVertexAttribArray(0)
         
-        # Enable depth test for proper Z ordering
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LESS)
-
         # Element buffer
         self.EBO = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
@@ -304,15 +329,17 @@ class TwinklingStarsEffect(ShaderEffect):
         # Update time for twinkling
         self.time += dt * self.twinkle_speed
         
-        # Update positions for drift with individual multipliers
-        if self.drift_x != 0.0 or self.drift_y != 0.0:
-            # Apply drift to x and y with individual star multipliers
-            self.positions[:, 0] += self.drift_x * dt * self.drift_multipliers
+        # Apply horizontal drift with individual star speeds (0.1-0.5 px/s)
+        # Stars move left to right and wrap around
+        self.positions[:, 0] += self.drift_x * dt * self.drift_multipliers
+        
+        # Apply vertical drift if specified
+        if self.drift_y != 0.0:
             self.positions[:, 1] += self.drift_y * dt * self.drift_multipliers
-            
-            # Wrap around screen edges using modulo
-            self.positions[:, 0] = self.positions[:, 0] % self.viewport.width
-            self.positions[:, 1] = self.positions[:, 1] % self.viewport.height
+        
+        # Wrap around screen edges using modulo
+        self.positions[:, 0] = self.positions[:, 0] % self.viewport.width
+        self.positions[:, 1] = self.positions[:, 1] % self.viewport.height
 
 
     def render(self, state: Dict):
@@ -320,14 +347,7 @@ class TwinklingStarsEffect(ShaderEffect):
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        # Enable depth testing for proper Z ordering
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LESS)
-        
-        # Enable alpha blending for stars
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
+        # NO depth test or blend toggling - these are set globally!
         glUseProgram(self.shader)
         
         # Update resolution uniform
@@ -335,15 +355,26 @@ class TwinklingStarsEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Calculate twinkling brightness for each star
+                # Calculate base twinkling brightness for each star
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
         # Map from [-1, 1] to brightness range
-        alphas = 0.6 + self.twinkle_amplitudes * twinkle_values * 0.4
+        base_alphas = 0.6 + self.twinkle_amplitudes * twinkle_values * 0.4
+        
+        # Add audio reactivity - get audio energy for each star's assigned band
+        audio_modulation = self.audio_bands[self.audio_band_indices] * self.audio_sensitivity
+        # Clamp audio contribution to reasonable range (0 to 0.4 additional brightness)
+        audio_modulation = np.clip(audio_modulation, 0, 0.4)
+        
+        # Combine base twinkling with audio reactivity
+        alphas = base_alphas + audio_modulation
         
         # Apply global starryness brightness scalar
         alphas = alphas * self.starryness
+        
+        # Clamp final alpha to valid range
+        alphas = np.clip(alphas, 0, 1)
         
         # Build instance data - interleave all attributes
         instance_data = np.hstack([
@@ -382,12 +413,8 @@ class TwinklingStarsEffect(ShaderEffect):
         glEnableVertexAttribArray(4)
         glVertexAttribDivisor(4, 1)
         
-        # Draw all stars in one call
+                # Draw all stars in one call
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, self.num_stars)
         
         glBindVertexArray(0)
         glUseProgram(0)
-        
-        # Restore OpenGL state
-        glDisable(GL_BLEND)
-        glDisable(GL_DEPTH_TEST)
