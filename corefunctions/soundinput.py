@@ -338,32 +338,9 @@ class MicrophoneAnalyzer:
                   f"({num_bins} bins, actual: {bin_range}, center: {self.band_centers[i]:.1f} Hz)")
         print()
         
-        # Storage for band power history using circular buffers (1000 frames x 32 bands)
+                # Storage for band power history using circular buffers (1000 frames x 32 bands)
         self._band_lock = threading.Lock()
         self.band_power_history = CircularBuffer((self.band_history_len, self.num_bands))
-        
-        # BPM detection parameters (enhanced)
-        self.bpm_range = (60, 300)
-        self.onset_history = CircularBuffer(self.band_history_len)
-        self.spectral_flux_history = CircularBuffer(self.band_history_len)
-        self.bass_onset_history = CircularBuffer(self.band_history_len)
-        self.mid_energy_history = CircularBuffer(self.band_history_len)
-        self.last_bpm = 120.0
-        self.bpm_confidence = 0.0
-        self.bpm_update_counter = 0
-        self.prev_magnitudes = None
-        
-        # Tempo tracking (NEW)
-        self.tempo_belief = 120.0
-        self.tempo_variance = 100.0
-        self.tempo_history = CircularBuffer(100)
-        self.beat_phase = 0.0
-        self.last_beat_time = time.time()
-        
-        # Tempo locking (NEW)
-        self.tempo_locked = False
-        self.tempo_lock_strength = 0.0  # 0-1, how confident we are in lock
-        self.frames_at_current_tempo = 0  # How long we've been stable
 
     def audio_callback(self, indata, frames, time_info, status):
         # Lock-free write - just shift and append
@@ -415,7 +392,7 @@ class MicrophoneAnalyzer:
                 band_powers = 0.95 * band_powers + 0.05 * self._prev_band_powers
                 self._prev_band_powers = band_powers.copy()
             
-            # Update exponential moving averages if enabled
+                        # Update exponential moving averages if enabled
             if self.use_exponential:
                 with self._band_lock:
                     if self.ema_short is None:
@@ -425,39 +402,8 @@ class MicrophoneAnalyzer:
                         self.ema_short = self.ema_alpha_short * band_powers + (1 - self.ema_alpha_short) * self.ema_short
                         self.ema_long = self.ema_alpha_long * band_powers + (1 - self.ema_alpha_long) * self.ema_long
             
-            # Calculate spectral flux
-            if self.prev_magnitudes is not None:
-                diff = magnitudes - self.prev_magnitudes
-                spectral_flux = np.sum(np.maximum(diff, 0))
-            else:
-                spectral_flux = 0
-            self.prev_magnitudes = magnitudes.copy()
-            
             # Update circular buffers
             self.band_power_history.append(band_powers)
-            self.spectral_flux_history.append(spectral_flux)
-            
-            # NEW: Calculate different onset types
-            # Bass onset (sub-bass to low-mid, bands 0-8, roughly 40-250 Hz)
-            bass_onset = np.sum(band_powers[0:8])
-            self.bass_onset_history.append(bass_onset)
-            
-            # Mid-range energy (bands 8-16, roughly 250-1000 Hz)
-            mid_energy = np.sum(band_powers[8:16])
-            self.mid_energy_history.append(mid_energy)
-            
-            # General onset strength (broader range)
-            onset_strength = np.sum(band_powers[2:12])
-            self.onset_history.append(onset_strength)
-            
-            # Update BPM estimation periodically
-            self.bpm_update_counter += 1
-            if self.bpm_update_counter >= 40:
-                self._update_bpm_estimate()
-                self.bpm_update_counter = 0
-            
-            # Update beat phase tracking
-            self._update_beat_phase(frame_start)
             
             # Maintain precise 40 FPS timing
             elapsed = time.time() - frame_start
@@ -466,443 +412,6 @@ class MicrophoneAnalyzer:
                 time.sleep(sleep_time)
 
 
-
-    def _update_beat_phase(self, current_time):
-        """Track the current phase within a beat cycle"""
-        if self.tempo_belief > 0:
-            beat_duration = 60.0 / self.tempo_belief
-            time_since_beat = current_time - self.last_beat_time
-            self.beat_phase = (time_since_beat % beat_duration) / beat_duration
-            
-            # Reset if we've passed a beat
-            if time_since_beat >= beat_duration:
-                self.last_beat_time = current_time
-
-    def _compute_onset_strength_function(self, onset_data):
-        """Compute normalized onset strength with envelope following"""
-        if len(onset_data) < 10:
-            return None
-        
-        # Remove DC component
-        onset_data = onset_data - np.mean(onset_data)
-        
-        if np.std(onset_data) < 1e-6:
-            return None
-        
-        # Normalize
-        onset_data = onset_data / np.std(onset_data)
-        
-        # Apply envelope following to smooth onset function
-        onset_envelope = np.copy(onset_data)
-        for i in range(1, len(onset_envelope)):
-            if onset_envelope[i] < onset_envelope[i-1]:
-                onset_envelope[i] = onset_envelope[i-1] * 0.95 + onset_envelope[i] * 0.05
-        
-        return onset_envelope
-
-    def _autocorrelation_analysis(self, signal_data):
-        """
-        Perform autocorrelation analysis and return candidate tempos with scores
-        
-        Returns:
-            List of (tempo, score, lag) tuples sorted by score
-        """
-        if signal_data is None or len(signal_data) < 100:
-            return []
-        
-        # Compute autocorrelation
-        autocorr = np.correlate(signal_data, signal_data, mode='full')
-        autocorr = autocorr[len(autocorr)//2:]
-        
-        # Normalize
-        if autocorr[0] > 0:
-            autocorr = autocorr / autocorr[0]
-        else:
-            return []
-        
-        # Convert frame indices to BPM range
-        min_lag = max(2, int(self.FPS * 60 / self.bpm_range[1]))
-        max_lag = min(len(autocorr) - 1, int(self.FPS * 60 / self.bpm_range[0]))
-        
-        if min_lag >= max_lag:
-            return []
-        
-        valid_autocorr = autocorr[min_lag:max_lag]
-        
-        # Find peaks with minimum prominence
-        peaks, properties = find_peaks(valid_autocorr, prominence=0.08, distance=3)
-        
-        if len(peaks) == 0:
-            # Fallback to maximum
-            peak_idx = np.argmax(valid_autocorr)
-            lag = peak_idx + min_lag
-            bpm = 60 * self.FPS / lag
-            score = valid_autocorr[peak_idx]
-            return [(bpm, score, lag)]
-        
-        # Convert all peaks to BPM and store with lags
-        peak_bpms = []
-        for i, peak in enumerate(peaks):
-            lag = peak + min_lag
-            bpm = 60 * self.FPS / lag
-            peak_bpms.append((bpm, valid_autocorr[peak], lag, properties['prominences'][i]))
-        
-        # OCTAVE ERROR DETECTION AND CORRECTION
-        # Check for octave relationships among peaks
-        corrected_candidates = []
-        used_peaks = set()
-        
-        for i, (bpm, score, lag, prominence) in enumerate(peak_bpms):
-            if i in used_peaks:
-                continue
-            
-            # Look for octave-related peaks (2x, 0.5x)
-            octave_group = [(bpm, score, lag, prominence, i)]
-            
-            for j, (other_bpm, other_score, other_lag, other_prom) in enumerate(peak_bpms):
-                if i == j or j in used_peaks:
-                    continue
-                
-                ratio = bpm / other_bpm
-                
-                # Check for 2:1 or 1:2 relationship
-                if 1.9 < ratio < 2.1:  # This peak is ~2x the other
-                    octave_group.append((other_bpm, other_score, other_lag, other_prom, j))
-                    used_peaks.add(j)
-                elif 0.48 < ratio < 0.52:  # This peak is ~0.5x the other
-                    octave_group.append((other_bpm, other_score, other_lag, other_prom, j))
-                    used_peaks.add(j)
-            
-            # If we found octave-related peaks, choose the best one
-            if len(octave_group) > 1:
-                # Score each candidate in the octave group
-                best_candidate = None
-                best_total_score = -1
-                
-                for candidate_bpm, candidate_score, candidate_lag, candidate_prom, idx in octave_group:
-                    # Preference for "sweet spot" BPM range (80-180 BPM for most music)
-                    if 80 <= candidate_bpm <= 180:
-                        range_bonus = 0.3
-                    elif 60 <= candidate_bpm < 80 or 180 < candidate_bpm <= 200:
-                        range_bonus = 0.1
-                    else:
-                        range_bonus = -0.1
-                    
-                    # Prefer the slower tempo if both are strong (usually more accurate)
-                    # But not if it's too slow
-                    if candidate_bpm < 70:
-                        tempo_preference = -0.2
-                    elif candidate_bpm < 100:
-                        tempo_preference = 0.1
-                    else:
-                        tempo_preference = 0.0
-                    
-                    total = candidate_score + range_bonus + tempo_preference
-                    
-                    if total > best_total_score:
-                        best_total_score = total
-                        best_candidate = (candidate_bpm, candidate_score, candidate_lag, candidate_prom)
-                
-                # Use the best from the octave group
-                bpm, score, lag, prominence = best_candidate
-                used_peaks.add(i)
-            
-            # Score this peak
-            base_score = score
-            
-            # Bonus for peak sharpness
-            sharpness_bonus = prominence * 0.5
-            
-            # STRONGER bonus for sweet spot BPM range
-            if 90 <= bpm <= 180:
-                range_bonus = 0.4
-            elif 80 <= bpm < 90 or 180 < bpm <= 200:
-                range_bonus = 0.2
-            elif 70 <= bpm < 80 or 200 < bpm <= 220:
-                range_bonus = 0.0
-            else:
-                range_bonus = -0.3  # Penalize unusual tempos
-            
-            # Bonus for being near our current tempo belief (if not too far off)
-            tempo_diff = abs(bpm - self.tempo_belief)
-            if self.tempo_locked:
-                # When locked, check if this might be an octave error of our belief
-                belief_ratio = bpm / self.tempo_belief
-                if 1.9 < belief_ratio < 2.1 or 0.48 < belief_ratio < 0.52:
-                    # This is an octave of our locked tempo - penalize
-                    tracking_bonus = -0.5 * self.tempo_lock_strength
-                elif tempo_diff < 2:
-                    tracking_bonus = 0.8 * self.tempo_lock_strength
-                elif tempo_diff < 5:
-                    tracking_bonus = 0.4 * self.tempo_lock_strength
-                elif tempo_diff < 10:
-                    tracking_bonus = 0.1 * self.tempo_lock_strength
-                else:
-                    tracking_bonus = -0.2 * self.tempo_lock_strength
-            else:
-                if tempo_diff < 5:
-                    tracking_bonus = 0.3
-                elif tempo_diff < 10:
-                    tracking_bonus = 0.15
-                else:
-                    tracking_bonus = 0
-            
-            # Bonus for common tempos
-            common_bpms = [120, 128, 140, 150, 160, 174]
-            common_bonus = 0
-            for common_bpm in common_bpms:
-                if abs(bpm - common_bpm) < 2:
-                    common_bonus = 0.15
-                    break
-            
-            total_score = base_score + sharpness_bonus + range_bonus + tracking_bonus + common_bonus
-            corrected_candidates.append((bpm, total_score, lag))
-        
-        # Sort by score
-        corrected_candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        # FINAL OCTAVE CHECK on top candidate
-        if len(corrected_candidates) > 1:
-            best_bpm = corrected_candidates[0][0]
-            
-            # Check if second-best is an octave relationship
-            for other_bpm, other_score, other_lag in corrected_candidates[1:4]:
-                ratio = best_bpm / other_bpm
-                
-                # If we chose the faster tempo but slower is close in score, reconsider
-                if 1.9 < ratio < 2.1:  # Best is 2x another strong candidate
-                    score_diff = corrected_candidates[0][1] - other_score
-                    if score_diff < 0.3:  # Scores are close
-                        # Prefer the slower tempo
-                        print(f"Octave correction: Choosing {other_bpm:.1f} over {best_bpm:.1f}")
-                        corrected_candidates[0], corrected_candidates[1] = corrected_candidates[1], corrected_candidates[0]
-                        break
-        
-        return corrected_candidates
-
-
-    def _update_bpm_estimate(self):
-        """Enhanced BPM estimation using multiple methods"""
-        # Use longer analysis window for more stability
-        analysis_length = min(800, len(self.spectral_flux_history))
-        
-        if analysis_length < 100:
-            return
-        
-        # Get data from different onset detection methods
-        bass_data = self.bass_onset_history.get_ordered(analysis_length)
-        mid_data = self.mid_energy_history.get_ordered(analysis_length)
-        flux_data = self.spectral_flux_history.get_ordered(analysis_length)
-        
-        # Compute onset strength functions
-        bass_osf = self._compute_onset_strength_function(bass_data)
-        mid_osf = self._compute_onset_strength_function(mid_data)
-        flux_osf = self._compute_onset_strength_function(flux_data)
-        
-        # Analyze each method
-        all_candidates = []
-        method_best_scores = {}
-        
-        if bass_osf is not None:
-            bass_candidates = self._autocorrelation_analysis(bass_osf)
-            all_candidates.extend([(bpm, score * 1.2, 'bass') for bpm, score, _ in bass_candidates[:3]])
-            if len(bass_candidates) > 0:
-                method_best_scores['bass'] = bass_candidates[0][1]
-        
-        if mid_osf is not None:
-            mid_candidates = self._autocorrelation_analysis(mid_osf)
-            all_candidates.extend([(bpm, score * 1.0, 'mid') for bpm, score, _ in mid_candidates[:3]])
-            if len(mid_candidates) > 0:
-                method_best_scores['mid'] = mid_candidates[0][1]
-        
-        if flux_osf is not None:
-            flux_candidates = self._autocorrelation_analysis(flux_osf)
-            all_candidates.extend([(bpm, score * 0.9, 'flux') for bpm, score, _ in flux_candidates[:3]])
-            if len(flux_candidates) > 0:
-                method_best_scores['flux'] = flux_candidates[0][1]
-        
-        if len(all_candidates) == 0:
-            self.bpm_confidence = 0.0
-            return
-        
-        # Sort all candidates by score
-        all_candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        # Find consensus among top candidates
-        tempo_clusters = {}
-        for bpm, score, method in all_candidates[:10]:
-            found_cluster = False
-            for cluster_bpm in list(tempo_clusters.keys()):
-                if abs(bpm - cluster_bpm) < 3:
-                    tempo_clusters[cluster_bpm].append((bpm, score, method))
-                    found_cluster = True
-                    break
-            
-            if not found_cluster:
-                tempo_clusters[bpm] = [(bpm, score, method)]
-        
-        # Score clusters
-        cluster_scores = {}
-        cluster_methods = {}
-        for cluster_bpm, members in tempo_clusters.items():
-            avg_bpm = np.mean([bpm for bpm, _, _ in members])
-            total_score = sum([score for _, score, _ in members])
-            unique_methods = set([method for _, _, method in members])
-            cluster_methods[avg_bpm] = unique_methods
-            consensus_bonus = len(unique_methods) * 0.3
-            
-            cluster_scores[avg_bpm] = total_score + consensus_bonus
-        
-        best_bpm = max(cluster_scores.keys(), key=lambda k: cluster_scores[k])
-        best_cluster_score = cluster_scores[best_bpm]
-        contributing_methods = cluster_methods[best_bpm]
-        
-        # IMPROVED CONFIDENCE CALCULATION
-        raw_scores = [method_best_scores[m] for m in contributing_methods if m in method_best_scores]
-        if len(raw_scores) > 0:
-            avg_raw_score = np.mean(raw_scores)
-            base_confidence = np.clip((avg_raw_score - 0.2) / 0.6, 0, 1)
-        else:
-            base_confidence = 0.3
-        
-        method_agreement = len(contributing_methods) / 3.0
-        
-        # Check if detected tempo is consistently different from current belief
-        tempo_diff = abs(best_bpm - self.tempo_belief)
-        
-        # If detection strongly disagrees with lock, consider breaking lock
-        if self.tempo_locked and tempo_diff > 5:
-            # Check if this disagreement is consistent
-            if not hasattr(self, '_disagreement_counter'):
-                self._disagreement_counter = 0
-            
-            self._disagreement_counter += 1
-            
-            # After 5 consecutive disagreements, break the lock
-            if self._disagreement_counter > 5:
-                print(f"Breaking tempo lock: detected {best_bpm:.1f} vs locked {self.tempo_belief:.1f}")
-                self.tempo_locked = False
-                self.tempo_lock_strength = 0.0
-                self._disagreement_counter = 0
-                self.frames_at_current_tempo = 0
-        else:
-            if hasattr(self, '_disagreement_counter'):
-                self._disagreement_counter = max(0, self._disagreement_counter - 1)
-        
-        # Check tempo stability
-        tempo_stability = 1.0
-        if len(self.tempo_history) >= 20:
-            recent_tempos = self.tempo_history.get_ordered(20)
-            tempo_std = np.std(recent_tempos)
-            if tempo_std < 1.0:
-                tempo_stability = 1.0
-                self.frames_at_current_tempo += 1
-            elif tempo_std < 2.0:
-                tempo_stability = 0.9
-            elif tempo_std < 3.0:
-                tempo_stability = 0.7
-                self.frames_at_current_tempo = 0
-            else:
-                tempo_stability = 0.4
-                self.frames_at_current_tempo = 0
-        
-        # How close to current belief?
-        if tempo_diff < 2:
-            tempo_consistency = 1.0
-        elif tempo_diff < 5:
-            tempo_consistency = 0.85
-        elif tempo_diff < 10:
-            tempo_consistency = 0.6
-        else:
-            tempo_consistency = 0.3
-        
-        uncertainty_factor = np.clip(1.0 - (self.tempo_variance / 100.0), 0.3, 1.0)
-        
-        # Combine factors
-        confidence = (
-            base_confidence ** 0.4 *
-            method_agreement ** 0.2 *
-            tempo_stability ** 0.25 *
-            tempo_consistency ** 0.1 *
-            uncertainty_factor ** 0.05
-        )
-        
-        confidence = min(0.95, confidence)
-        
-        # Update tempo lock status (less aggressive)
-        if self.frames_at_current_tempo > 20 and tempo_stability > 0.85 and base_confidence > 0.6:
-            self.tempo_locked = True
-            self.tempo_lock_strength = min(0.7, self.tempo_lock_strength + 0.05)  # Max 0.7 instead of 1.0
-        elif tempo_stability < 0.6:
-            self.tempo_lock_strength = max(0.0, self.tempo_lock_strength - 0.1)
-            if self.tempo_lock_strength < 0.3:
-                self.tempo_locked = False
-        
-        # Update with less sticky behavior
-        if confidence > 0.2:
-            innovation = best_bpm - self.tempo_belief
-            
-            # Reduced lock resistance
-            if self.tempo_locked:
-                kalman_gain = 0.15 * (1 - self.tempo_lock_strength * 0.5)  # More responsive
-            else:
-                kalman_gain = (self.tempo_variance * confidence) / (self.tempo_variance * confidence + 10)
-            
-            self.tempo_belief = self.tempo_belief + kalman_gain * innovation
-            self.tempo_variance = (1 - kalman_gain * confidence) * self.tempo_variance + 0.5
-            self.tempo_variance = np.clip(self.tempo_variance, 1.0, 100.0)
-            
-            # Less aggressive smoothing
-            if self.tempo_locked:
-                smoothing = 0.85  # Reduced from 0.95
-            elif confidence > 0.6:
-                smoothing = 0.75  # Reduced from 0.85
-            elif confidence > 0.4:
-                smoothing = 0.80  # Reduced from 0.90
-            else:
-                smoothing = 0.85  # Reduced from 0.93
-            
-            self.last_bpm = smoothing * self.last_bpm + (1 - smoothing) * self.tempo_belief
-            
-            # Less aggressive snapping - only when VERY stable and close
-            if self.tempo_locked and tempo_stability > 0.9 and self.frames_at_current_tempo > 30:
-                common_bpms = [120, 128, 140, 150, 160, 174]
-                for common_bpm in common_bpms:
-                    if abs(self.last_bpm - common_bpm) < 1.0:  # Tighter tolerance
-                        self.last_bpm = common_bpm
-                        self.tempo_belief = common_bpm
-                        break
-            
-            self.tempo_history.append(self.last_bpm)
-        else:
-            self.tempo_variance = min(100.0, self.tempo_variance * 1.05)
-        
-        self.bpm_confidence = confidence
-
-
-    def get_beat_info(self):
-        """
-        Get current beat tracking information
-        
-        Returns:
-            dict: {
-                'bpm': Current BPM estimate,
-                'confidence': Confidence in BPM (0-1),
-                'phase': Current beat phase (0-1),
-                'tempo_variance': Uncertainty in tempo,
-                'time_to_next_beat': Seconds until next beat
-            }
-        """
-        beat_duration = 60.0 / self.tempo_belief if self.tempo_belief > 0 else 0
-        time_to_next = beat_duration * (1.0 - self.beat_phase) if beat_duration > 0 else 0
-        
-        return {
-            'bpm': self.last_bpm,
-            'confidence': self.bpm_confidence,
-            'phase': self.beat_phase,
-            'tempo_variance': self.tempo_variance,
-            'time_to_next_beat': time_to_next
-        }
 
     def get_spectrum_history(self):
         """Get spectrum history (most recent first)"""
@@ -945,13 +454,11 @@ class MicrophoneAnalyzer:
         if len(raw) == 0:
             # Return empty data if buffer is empty
             return {
-                'raw_bands': np.zeros((1, self.num_bands)),
+                                'raw_bands': np.zeros((1, self.num_bands)),
                 'norm_short': np.zeros((1, self.num_bands)),
                 'norm_long': np.zeros((1, self.num_bands)),
                 'band_centers': self.band_centers.copy(),
                 'band_edges': self.band_edges.copy(),
-                'bpm': self.last_bpm,
-                'bpm_confidence': self.bpm_confidence,
                 'timestamp': time.time(),
                 'averaging_method': 'exponential' if self.use_exponential else 'mean'
             }
@@ -988,13 +495,11 @@ class MicrophoneAnalyzer:
             norm_long = raw / mean_long
         
         return {
-            'raw_bands': raw,
+                        'raw_bands': raw,
             'norm_short': norm_short,
             'norm_long': norm_long,
             'band_centers': self.band_centers.copy(),
             'band_edges': self.band_edges.copy(),
-            'bpm': self.last_bpm,
-            'bpm_confidence': self.bpm_confidence,
             'timestamp': time.time(),
             'averaging_method': 'exponential' if self.use_exponential else 'mean'
         }
@@ -1159,23 +664,13 @@ class SpectrogramPlotter:
         if raw_95 > 0:
             self.img_raw.set_clim(0, raw_95)
         
-        # Update info text with confidence
+                # Update info text
         current_bands = analysis['raw_bands'][0]
         total_power = np.sum(current_bands)
         max_band = np.argmax(current_bands)
         max_freq = self.analyzer.band_centers[max_band]
         
-        # Color code BPM by confidence
-        confidence = analysis['bpm_confidence']
-        if confidence > 0.5:
-            conf_str = "HIGH"
-        elif confidence > 0.3:
-            conf_str = "MED"
-        else:
-            conf_str = "LOW"
-        
         info_str = (
-            f"BPM: {analysis['bpm']:.1f} (conf: {confidence})  |  "
             f"Total Power: {total_power:.2e}  |  "
             f"Peak Band: {max_band} ({max_freq:.0f} Hz)"
         )
