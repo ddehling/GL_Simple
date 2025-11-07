@@ -283,9 +283,10 @@ class CloudEffect(ShaderEffect):
         # Max cloud width = 60px * max scale (0.9) = 54px
         self.wrap_margin = 60.0  # Should be >= max possible cloud width
         
-                # Vectorized cloud data
+                        # Vectorized cloud data
         self.positions = np.zeros((0, 2), dtype=np.float32)  # [x, y]
         self.speeds = np.zeros(0, dtype=np.float32)
+        self.wind_sensitivity = np.zeros(0, dtype=np.float32)  # How much each cloud responds to wind
         self.base_opacities = np.zeros(0, dtype=np.float32)
         self.current_opacities = np.zeros(0, dtype=np.float32)
         self.sizes = np.zeros(0, dtype=np.float32)
@@ -334,16 +335,31 @@ class CloudEffect(ShaderEffect):
         start_y = np.random.uniform(0, self.viewport.height)
         new_position = np.array([[start_x, start_y]], dtype=np.float32)
         
-                                # Movement parameters - much slower speed
-        new_speed = np.array([np.random.uniform(0.5, 1.5)], dtype=np.float32)
+                                                        # Movement parameters - varied speeds for visual interest
+        # Use exponential distribution for more variety: some very slow, some faster
+        speed_type = np.random.random()
+        if speed_type < 0.3:  # 30% very slow clouds
+            new_speed = np.array([np.random.uniform(0.2, 0.8)], dtype=np.float32)
+        elif speed_type < 0.7:  # 40% medium speed clouds
+            new_speed = np.array([np.random.uniform(0.8, 2.0)], dtype=np.float32)
+        else:  # 30% faster clouds
+            new_speed = np.array([np.random.uniform(2.0, 4.0)], dtype=np.float32)
+        
         new_base_opacity = np.array([np.random.uniform(0.5, 0.9)], dtype=np.float32)
         
         # Always start at zero opacity and fade in naturally
         # This prevents sudden appearance when spawning
         new_current_opacity = np.array([0.0], dtype=np.float32)
         
-        # Smaller size scaling
+        # Smaller size scaling (MUST be before wind_sensitivity calculation)
         new_size = np.array([np.random.uniform(0.5, 0.9)], dtype=np.float32)
+        
+        # Wind sensitivity: how much this cloud is affected by wind
+        # Higher altitude clouds (higher y) are MORE affected by wind
+        # Smaller/lighter clouds are MORE affected by wind
+        altitude_factor = 0.3 + (start_y / self.viewport.height) * 0.7  # 0.3 to 1.0
+        size_factor = 1.5 - new_size[0]  # Inverse of size (smaller = more sensitive)
+        new_wind_sensitivity = np.array([altitude_factor * size_factor * np.random.uniform(0.5, 1.5)], dtype=np.float32)
         new_z_index = np.array([start_y + np.random.uniform(-5, 5)], dtype=np.float32)
         
         # Turbulence
@@ -361,9 +377,10 @@ class CloudEffect(ShaderEffect):
         new_is_fading = np.array([False], dtype=bool)
         new_lifetime = np.array([0.0], dtype=np.float32)
         
-        # Concatenate
+                # Concatenate
         self.positions = np.vstack([self.positions, new_position]) if len(self.positions) > 0 else new_position
         self.speeds = np.concatenate([self.speeds, new_speed]) if len(self.speeds) > 0 else new_speed
+        self.wind_sensitivity = np.concatenate([self.wind_sensitivity, new_wind_sensitivity]) if len(self.wind_sensitivity) > 0 else new_wind_sensitivity
         self.base_opacities = np.concatenate([self.base_opacities, new_base_opacity]) if len(self.base_opacities) > 0 else new_base_opacity
         self.current_opacities = np.concatenate([self.current_opacities, new_current_opacity]) if len(self.current_opacities) > 0 else new_current_opacity
         self.sizes = np.concatenate([self.sizes, new_size]) if len(self.sizes) > 0 else new_size
@@ -595,8 +612,10 @@ class CloudEffect(ShaderEffect):
         self.subpixel_offsets[:, 0] = (self.subpixel_offsets[:, 0] + self.speeds * dt) % 1.0
         self.subpixel_offsets[:, 1] = (self.subpixel_offsets[:, 1] + dt * 0.1) % 1.0
         
-                # Update positions
-        self.positions[:, 0] += (self.speeds + self.wind) * dt
+                        # Update positions with per-cloud wind sensitivity
+        # Each cloud responds differently to wind based on altitude and size
+        wind_effect = self.wind * self.wind_sensitivity
+        self.positions[:, 0] += (self.speeds + wind_effect) * dt
         self.positions[:, 1] += global_wave_y * dt
         
         # Horizontal wrapping - immediate, no gaps (same as rain effect)
@@ -655,9 +674,10 @@ class CloudEffect(ShaderEffect):
             keep_mask = self.lifetime >= 0
             if not np.all(keep_mask):
                 num_removed = np.sum(~keep_mask)
-                # Remove from all arrays
+                                # Remove from all arrays
                 self.positions = self.positions[keep_mask]
                 self.speeds = self.speeds[keep_mask]
+                self.wind_sensitivity = self.wind_sensitivity[keep_mask]
                 self.base_opacities = self.base_opacities[keep_mask]
                 self.current_opacities = self.current_opacities[keep_mask]
                 self.sizes = self.sizes[keep_mask]
