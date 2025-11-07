@@ -63,7 +63,7 @@ class EnvironmentalSystem:
     ]
     
 
-        # self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
+        self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
         self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
         # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
@@ -388,7 +388,7 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.SPOOKY)
+    env_system.transition_to_weather(WeatherState.FOGGY)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
     env_system.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0)
     last_time = time.time()
