@@ -124,6 +124,50 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
 class FireflyEffect(ShaderEffect):
     """GPU-based firefly effect using instanced rendering with vectorized updates"""
     
+    @staticmethod
+    def _hsv_to_rgb_vectorized(hsv):
+        """Fast vectorized HSV to RGB conversion (no loop!)
+        
+        Args:
+            hsv: numpy array of shape (N, 3) with values in range [0, 1]
+        
+        Returns:
+            rgb: numpy array of shape (N, 3) with values in range [0, 1]
+        """
+        h, s, v = hsv[:, 0], hsv[:, 1], hsv[:, 2]
+        
+        # Calculate intermediate values
+        h6 = h * 6.0
+        i = np.floor(h6).astype(int)
+        f = h6 - i
+        
+        p = v * (1.0 - s)
+        q = v * (1.0 - s * f)
+        t = v * (1.0 - s * (1.0 - f))
+        
+        # Initialize RGB array
+        rgb = np.zeros_like(hsv)
+        
+        # Use modulo to handle wrapping (i % 6)
+        i = i % 6
+        
+        # Assign RGB values based on hue sector
+        mask0 = (i == 0)
+        mask1 = (i == 1)
+        mask2 = (i == 2)
+        mask3 = (i == 3)
+        mask4 = (i == 4)
+        mask5 = (i == 5)
+        
+        rgb[mask0] = np.column_stack([v[mask0], t[mask0], p[mask0]])
+        rgb[mask1] = np.column_stack([q[mask1], v[mask1], p[mask1]])
+        rgb[mask2] = np.column_stack([p[mask2], v[mask2], t[mask2]])
+        rgb[mask3] = np.column_stack([p[mask3], q[mask3], v[mask3]])
+        rgb[mask4] = np.column_stack([t[mask4], p[mask4], v[mask4]])
+        rgb[mask5] = np.column_stack([v[mask5], p[mask5], q[mask5]])
+        
+        return rgb
+    
     def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, audio_sensitivity: float = 1.0):
         super().__init__(viewport)
         self.density = density
@@ -153,6 +197,11 @@ class FireflyEffect(ShaderEffect):
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [h, s, v] in HSV
         self.base_sizes = np.zeros(0, dtype=np.float32)  # Base size (before depth scaling)
         self.audio_bands = np.zeros(0, dtype=np.int32)  # Which frequency band each firefly responds to (0=bass, 1=mid, 2=high)
+        
+        # Performance optimizations
+        self.max_wrapping_instances = max_fireflies * 3  # Max originals + left wrap + right wrap
+        self.instance_buffer_size = self.max_wrapping_instances * 8 * 4  # 8 floats per instance
+        self.instance_data_cache = np.zeros((self.max_wrapping_instances, 8), dtype=np.float32)
         
         # Spawn initial fireflies immediately
         initial_count = int(max_fireflies * 0.6)  # Start with 60% of max
@@ -332,9 +381,11 @@ class FireflyEffect(ShaderEffect):
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
         
-        # Instance buffer (will be updated each frame)
+        # Instance buffer (pre-allocate with max size)
         self.instance_VBO = glGenBuffers(1)
         self.VBOs.append(self.instance_VBO)
+        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+        glBufferData(GL_ARRAY_BUFFER, self.instance_buffer_size, None, GL_DYNAMIC_DRAW)
         
         glBindVertexArray(0)
 
@@ -454,9 +505,7 @@ class FireflyEffect(ShaderEffect):
         brightness *= self.lifetimes  # Fade out as lifetime decreases
         brightness *= depth_factors * 0.4 + 0.6  # Scale brightness with depth
         
-                # Convert HSV colors to RGB (vectorized) with audio modulation
-        from skimage import color as skcolor
-        
+                        # Convert HSV colors to RGB (fully vectorized) with audio modulation
         hsv_colors = self.colors.copy()
         hsv_colors[:, 2] = brightness
         
@@ -472,67 +521,57 @@ class FireflyEffect(ShaderEffect):
         audio_saturation_boost = audio_energies * 0.1  # Up to 10% more saturated
         hsv_colors[:, 1] = np.clip(hsv_colors[:, 1] + audio_saturation_boost, 0.0, 1.0)
         
-        rgb_colors = np.zeros_like(hsv_colors)
-        for i in range(len(hsv_colors)):
-            rgb = skcolor.hsv2rgb(hsv_colors[i:i+1].reshape(1, 1, 3))
-            rgb_colors[i] = rgb.flatten()
+        # OPTIMIZED: Vectorized HSV to RGB conversion (no loop!)
+        rgb_colors = self._hsv_to_rgb_vectorized(hsv_colors)
         
-        # ============================================================
-        # Horizontal Wrapping: Duplicate fireflies at screen edges
+                # ============================================================
+        # OPTIMIZED: Horizontal Wrapping with pre-allocated arrays
         # ============================================================
         
         # Identify fireflies near left and right edges
         left_edge_mask = self.positions[:, 0] < self.wrap_margin
         right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
         
-        # Start with original fireflies
-        all_positions = [self.positions]
-        all_sizes = [scaled_sizes]
-        all_colors = [rgb_colors]
-        all_brightness = [brightness]
+        num_originals = len(self.positions)
+        num_left = np.sum(left_edge_mask)
+        num_right = np.sum(right_edge_mask)
+        total_instances = num_originals + num_left + num_right
         
-        # Duplicate fireflies near left edge to right side
-        if np.any(left_edge_mask):
+        # Use cached array for instance data (avoid allocation)
+        idx = 0
+        
+        # Copy original fireflies
+        self.instance_data_cache[idx:idx+num_originals, 0:3] = self.positions
+        self.instance_data_cache[idx:idx+num_originals, 3] = scaled_sizes
+        self.instance_data_cache[idx:idx+num_originals, 4:7] = rgb_colors
+        self.instance_data_cache[idx:idx+num_originals, 7] = brightness
+        idx += num_originals
+        
+        # Add left edge wrapping duplicates
+        if num_left > 0:
             left_indices = np.where(left_edge_mask)[0]
-            duplicate_pos = self.positions[left_indices].copy()
-            duplicate_pos[:, 0] += self.viewport.width  # Shift to right
-            
-            all_positions.append(duplicate_pos)
-            all_sizes.append(scaled_sizes[left_indices])
-            all_colors.append(rgb_colors[left_indices])
-            all_brightness.append(brightness[left_indices])
+            self.instance_data_cache[idx:idx+num_left, 0:3] = self.positions[left_indices]
+            self.instance_data_cache[idx:idx+num_left, 0] += self.viewport.width  # Shift X
+            self.instance_data_cache[idx:idx+num_left, 3] = scaled_sizes[left_indices]
+            self.instance_data_cache[idx:idx+num_left, 4:7] = rgb_colors[left_indices]
+            self.instance_data_cache[idx:idx+num_left, 7] = brightness[left_indices]
+            idx += num_left
         
-        # Duplicate fireflies near right edge to left side
-        if np.any(right_edge_mask):
+        # Add right edge wrapping duplicates
+        if num_right > 0:
             right_indices = np.where(right_edge_mask)[0]
-            duplicate_pos = self.positions[right_indices].copy()
-            duplicate_pos[:, 0] -= self.viewport.width  # Shift to left
-            
-            all_positions.append(duplicate_pos)
-            all_sizes.append(scaled_sizes[right_indices])
-            all_colors.append(rgb_colors[right_indices])
-            all_brightness.append(brightness[right_indices])
+            self.instance_data_cache[idx:idx+num_right, 0:3] = self.positions[right_indices]
+            self.instance_data_cache[idx:idx+num_right, 0] -= self.viewport.width  # Shift X
+            self.instance_data_cache[idx:idx+num_right, 3] = scaled_sizes[right_indices]
+            self.instance_data_cache[idx:idx+num_right, 4:7] = rgb_colors[right_indices]
+            self.instance_data_cache[idx:idx+num_right, 7] = brightness[right_indices]
         
-        # Combine all fireflies (originals + duplicates)
-        combined_positions = np.vstack(all_positions)
-        combined_sizes = np.concatenate(all_sizes)
-        combined_colors = np.vstack(all_colors)
-        combined_brightness = np.concatenate(all_brightness)
+        # Get view of actual data to upload
+        instance_data = self.instance_data_cache[:total_instances]
         
-        # Sort by depth (far to near) for proper depth ordering
-        depth_order = np.argsort(combined_positions[:, 2])[::-1]
-        
-        # Build instance data with wrapping duplicates
-        instance_data = np.hstack([
-            combined_positions[depth_order],
-            combined_sizes[depth_order, np.newaxis],
-            combined_colors[depth_order],
-            combined_brightness[depth_order, np.newaxis]
-        ]).astype(np.float32)
-        
-        # Upload instance data
+        # OPTIMIZED: Use glBufferSubData instead of glBufferData (no reallocation)
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, instance_data.nbytes, instance_data)
         
         glBindVertexArray(self.VAO)
         
@@ -560,8 +599,8 @@ class FireflyEffect(ShaderEffect):
         # They still READ from depth buffer (for occlusion by objects in front)
         glDepthMask(GL_FALSE)
         
-        # Draw all fireflies (originals + wrapped duplicates) in one call
-        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(combined_positions))
+                # Draw all fireflies (originals + wrapped duplicates) in one call
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, total_instances)
         
         # Restore depth writes for next effect
         glDepthMask(GL_TRUE)

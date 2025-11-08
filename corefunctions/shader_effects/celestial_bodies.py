@@ -52,7 +52,7 @@ class CelestialBody:
         self.last_update = time.time()
         self.angle = np.random.random() * 2 * math.pi  # Internal angle in RADIANS random start
 
-    def update(self, current_time: float, whomp: float = 0):
+    def update(self, current_time: float):
         """Update orbital position (works in RADIANS)"""
         speed = 1
         delta_time = current_time - self.last_update

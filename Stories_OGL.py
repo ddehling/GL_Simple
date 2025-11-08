@@ -15,7 +15,7 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
+            (256, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -61,13 +61,13 @@ class EnvironmentalSystem:
         (180, 80),   # Bottom-right
         (-0, 80)   # Bottom-left
     ]
-    
-
-        self.scheduler.schedule_event(0, 999999999, fx.shader_firefly,frame_id=0)
-        self.scheduler.schedule_event(0, 999999999, fx.shader_stars,frame_id=0)
-        # self.scheduler.schedule_event(0, 999999999, fx.shader_celestial_bodies, 
+        sim_forever=999999999
+        self.scheduler.schedule_event(0, sim_forever, fx.shader_drifting_clouds, frame_id=0)
+        self.scheduler.schedule_event(0, sim_forever, fx.shader_firefly,frame_id=0)
+        self.scheduler.schedule_event(0, sim_forever, fx.shader_stars,frame_id=0)
+        # self.scheduler.schedule_event(0, sim_forever, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
-        self.scheduler.schedule_event(0, 999999999, fx.shader_rain, frame_id=0)
+        self.scheduler.schedule_event(0, sim_forever, fx.shader_rain, frame_id=0)
         viewport0 = self.scheduler.shader_renderer.get_viewport(0)
         if viewport0:
             fog0 = viewport0.add_effect(ShaderFog, 
@@ -143,7 +143,7 @@ class EnvironmentalSystem:
         # if new_weather == WeatherState.FALLING_LEAVES:
         #     if not self.scheduler.state.get("has_leaves", False):
         #         self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves, frame_id=0) # noqa: F405
-        #         #self.scheduler.schedule_event(0, 60, secondary_falling_leaves, frame_id=1) # noqa: F405
+
 
         # if new_weather == WeatherState.SUMMER_BLOOM:
         #     self.scheduler.schedule_event(0, 90, bioluminescent_wildflowers, frame_id=0) # noqa: F405
@@ -185,13 +185,13 @@ class EnvironmentalSystem:
         
         return multiplier
 
-    def get_whomp(self):
-        thresh = 1.0
-        maxsound = 6
-        # loud = self.analyzer.get_sound()
-        loud = self.analyzer.get_all_sound()
-        swloud = (loud > thresh) * 1
-        self.whomp = swloud * (np.clip(loud, 0, maxsound) - thresh) / (maxsound - thresh)
+    # def get_whomp(self):
+    #     thresh = 1.0
+    #     maxsound = 6
+    #     # loud = self.analyzer.get_sound()
+    #     loud = self.analyzer.get_all_sound()
+    #     swloud = (loud > thresh) * 1
+    #     self.whomp = swloud * (np.clip(loud, 0, maxsound) - thresh) / (maxsound - thresh)
 
     def transition_update(self):
         # self.progress = 1.0
@@ -225,8 +225,8 @@ class EnvironmentalSystem:
         # Set variables in scheduler state
         self.scheduler.state["fog_strength"] = fog
         self.scheduler.state["fog_color"] = self.weather_params["fog_color"]
-        self.scheduler.state["whomp"] = self.whomp
-        self.scheduler.state["wind"] =self.weather_params["wind_speed"] * (1 - 0.5 * np.cos(np.pi * 2 * (self.season - 0.125)))  # noqa: F405
+        #self.scheduler.state["whomp"] = self.whomp
+        self.scheduler.state["wind"] =self.weather_params["wind_speed"] * ( np.cos(np.pi * 2 * (self.season - 0.125)))  # noqa: F405
         self.scheduler.state["season"] = self.season
         self.scheduler.state["rain"] = self.weather_params["rain_rate"]
         self.scheduler.state["starryness"] = self.weather_params["starryness"]
@@ -247,9 +247,9 @@ class EnvironmentalSystem:
     def random_events(self):
         randcheck = np.random.random()
         
-        if (randcheck < self.cloudyness / 1000):
-            if not self.scheduler.state.get("has_clouds", False):
-                self.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0) # noqa: F405
+        # if (randcheck < self.cloudyness / 1000):
+        #     if not self.scheduler.state.get("has_clouds", False):
+        #         self.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0) # noqa: F405
 
         # if (randcheck < self.weather_params["Weird"] / 10000):
         #     # Choose between different options
@@ -356,7 +356,7 @@ class EnvironmentalSystem:
 
     def update(self):
         """Update the environmental system - should be called each frame"""
-        self.get_whomp()
+        #self.get_whomp()
         self.current_time = time.time()
        
         # OSC handling
@@ -369,7 +369,7 @@ class EnvironmentalSystem:
 
         # Update celestial bodies
         for body in self.celestial_bodies:
-            body.update(self.current_time, self.whomp)
+            body.update(self.current_time)
             
         # Apply current parameters to scheduler state
         self.send_variables()
@@ -390,7 +390,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.FOGGY)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0)
+    env_system.scheduler.schedule_event(0, 500, fx.shader_audio_curve,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()
@@ -409,7 +409,7 @@ if __name__ == "__main__":
             if frame_count % 50 == 0:  # Print FPS every second
                 actual_fps = 1.0 / (elapsed + sleep_time)
                 #um_effects = sum(len(vp.effects) for vp in scheduler.shader_renderer.viewports)
-                #print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
+                print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
             
             last_time = current_time
             # Print stats if needed
