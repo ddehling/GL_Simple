@@ -390,7 +390,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.FOGGY)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 500, fx.shader_audio_curve,frame_id=0)
+    env_system.scheduler.schedule_event(0, 500, fx.shader_falling_leaves,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()
