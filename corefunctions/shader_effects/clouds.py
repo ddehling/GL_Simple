@@ -41,7 +41,7 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     # Initialize cloud effect on first call
     if state['count'] == 0:
         outstate['has_clouds'] = True
-        print(f"Initializing cloud effect for frame {frame_id}")
+        #print(f"Initializing cloud effect for frame {frame_id}")
         
         try:
             cloud_effect = viewport.add_effect(
@@ -50,7 +50,7 @@ def shader_drifting_clouds(state, outstate, density=1.0):
                 max_clouds=20
             )
             state['cloud_effect'] = cloud_effect
-            print(f"✓ Initialized shader clouds for frame {frame_id}")
+            #print(f"✓ Initialized shader clouds for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize clouds: {e}")
             import traceback
@@ -85,10 +85,10 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     if state['count'] == -1:
         outstate['has_clouds'] = False
         if 'cloud_effect' in state:
-            print(f"Cleaning up cloud effect for frame {frame_id}")
+            #print(f"Cleaning up cloud effect for frame {frame_id}")
             viewport.effects.remove(state['cloud_effect'])
             state['cloud_effect'].cleanup()
-            print(f"✓ Cleaned up shader clouds for frame {frame_id}")
+            #print(f"✓ Cleaned up shader clouds for frame {frame_id}")
 
 
 # ============================================================================
@@ -555,7 +555,7 @@ class CloudEffect(ShaderEffect):
             spawn_chance = dt * 0.3  # ~30% chance per second
             if np.random.random() < spawn_chance:
                 self._spawn_cloud()
-                print(f"Spawned cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds+1}/{target_cloud_count})")
+                #print(f"Spawned cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds+1}/{target_cloud_count})")
         
         # Remove clouds if we're above target (smooth fade-out)
         elif current_active_clouds > target_cloud_count:
@@ -583,7 +583,7 @@ class CloudEffect(ShaderEffect):
                     removal_candidate = active_indices[np.argmax(self.lifetime[active_indices])]
                 
                 self.is_fading_out[removal_candidate] = True
-                print(f"Fading out cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds-1}/{target_cloud_count})")
+                #print(f"Fading out cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds-1}/{target_cloud_count})")
         
         # If no clouds exist yet, don't process the rest
         if len(self.positions) == 0:
@@ -703,7 +703,7 @@ class CloudEffect(ShaderEffect):
                 self.is_fading_out = self.is_fading_out[keep_mask]
                 self.lifetime = self.lifetime[keep_mask]
                 
-                print(f"Removed {num_removed} fully faded cloud(s)")
+                #print(f"Removed {num_removed} fully faded cloud(s)")
 
     def render(self, state: Dict):
         """Render all clouds with seamless wrapping using duplicates (vectorized)"""
@@ -724,21 +724,7 @@ class CloudEffect(ShaderEffect):
         # For right edge: check if cloud's RIGHT edge (position + width) is approaching right boundary
         right_edge_mask = (actual_positions[:, 0] + cloud_widths) > (self.viewport.width - self.wrap_margin)
         
-        # DEBUG: Print wrapping info
-        # if np.any(left_edge_mask) or np.any(right_edge_mask):
-        #     print(f"\n=== CLOUD WRAPPING DEBUG ===")
-        #     print(f"Viewport width: {self.viewport.width}, Wrap margin: {self.wrap_margin}")
-        #     print(f"Left edge triggers: {np.sum(left_edge_mask)}")
-        #     print(f"Right edge triggers: {np.sum(right_edge_mask)}")
-        #     if np.any(left_edge_mask):
-        #         left_idx = np.where(left_edge_mask)[0]
-        #         for idx in left_idx:
-        #             print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, width={cloud_widths[idx]:.1f} (LEFT EDGE)")
-        #     if np.any(right_edge_mask):
-        #         right_idx = np.where(right_edge_mask)[0]
-        #         for idx in right_idx:
-        #             print(f"  Cloud {idx}: x={actual_positions[idx, 0]:.1f}, right_edge={actual_positions[idx, 0] + cloud_widths[idx]:.1f}, width={cloud_widths[idx]:.1f} (RIGHT EDGE)")
-        
+
         # Create duplicate positions for seamless wrapping
         duplicate_positions_left = []
         duplicate_indices_left = []

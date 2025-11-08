@@ -121,8 +121,20 @@ class AudioCurveEffect(ShaderEffect):
         self.baseline_phase = 0.0  # Phase offset for animation
         self.baseline_speed = 2  # Speed of baseline animation
         
+        # Performance optimization: pre-allocate geometry arrays
+        self.line_thickness = 3.0
+        self._preallocate_geometry_arrays()
+        
         self._initialize_data()
     
+    def _preallocate_geometry_arrays(self):
+        """Pre-allocate arrays for vectorized geometry building"""
+        # Maximum number of segments (including wrap-around)
+        max_segments = self.trail_length * self.num_points
+        
+        # Pre-allocate vertex array (6 vertices per segment, 6 floats per vertex)
+        self.vertex_buffer = np.zeros((max_segments, 6, 6), dtype=np.float32)
+        
     def _initialize_data(self):
         """Initialize curve geometry"""
         # Create base curve points (x positions evenly distributed)
@@ -136,10 +148,6 @@ class AudioCurveEffect(ShaderEffect):
         
         # Initialize y positions at baseline
         self.y_positions = self.baseline_y.copy()
-        
-        # Quad vertices for thick line segments (2 triangles per segment)
-        # We'll build this dynamically in update_buffers
-        self.line_thickness = 3.0
     
     def _calculate_baseline(self):
         """Calculate oscillating baseline curve"""
@@ -297,85 +305,178 @@ class AudioCurveEffect(ShaderEffect):
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 6 * 4, ctypes.c_void_p(5 * 4))
         
         glBindVertexArray(0)
+        
+        # Cache uniform locations for faster access
+        self.uniform_resolution = glGetUniformLocation(self.shader, "resolution")
+        self.uniform_depth = glGetUniformLocation(self.shader, "depth")
+        self.uniform_fade = glGetUniformLocation(self.shader, "fadeAlpha")
     
     def _build_curve_geometry(self):
-        """Build thick line geometry from curve history"""
+        """Build thick line geometry from curve history - FULLY VECTORIZED"""
         if len(self.curve_history) == 0:
             return np.array([], dtype=np.float32), 0
         
-        vertices = []
+        num_curves = len(self.curve_history)
+        num_segments = self.num_points - 1
+        offset = self.line_thickness / 2.0
         
-        # Render each curve in history (oldest to newest for proper blending)
-        for history_idx, y_positions in enumerate(self.curve_history):
-            # Calculate alpha based on age (older = more transparent)
-            age_factor = history_idx / max(len(self.curve_history) - 1, 1)
-            alpha = age_factor  # 0 (oldest) to 1 (newest)
-            
-            # Get color for this curve
-            color = self.color_history[history_idx]
-            
-            # Build thick line segments
-            for i in range(len(self.x_positions) - 1):
-                x1, y1 = self.x_positions[i], y_positions[i]
-                x2, y2 = self.x_positions[i + 1], y_positions[i + 1]
-                
-                # Calculate perpendicular offset for thickness
-                dx = x2 - x1
-                dy = y2 - y1
-                length = np.sqrt(dx*dx + dy*dy)
-                
-                if length > 0:
-                    # Perpendicular unit vector
-                    px = -dy / length
-                    py = dx / length
-                    
-                    # Offset by half thickness
-                    offset = self.line_thickness / 2
-                    
-                    # Four corners of the quad (x, y, r, g, b, alpha)
-                    p1 = [x1 + px * offset, y1 + py * offset, color[0], color[1], color[2], alpha]
-                    p2 = [x1 - px * offset, y1 - py * offset, color[0], color[1], color[2], alpha]
-                    p3 = [x2 + px * offset, y2 + py * offset, color[0], color[1], color[2], alpha]
-                    p4 = [x2 - px * offset, y2 - py * offset, color[0], color[1], color[2], alpha]
-                    
-                    # Two triangles for the quad
-                    vertices.extend([p1, p2, p3])
-                    vertices.extend([p2, p4, p3])
+        # Stack all curves into arrays - Shape: (num_curves, num_points)
+        all_y_positions = np.array(self.curve_history, dtype=np.float32)
+        all_colors = np.array(self.color_history, dtype=np.float32)  # Shape: (num_curves, 3)
         
-        # Handle wrapping: draw wrap-around segment
-        if len(self.curve_history) > 0:
-            for history_idx, y_positions in enumerate(self.curve_history):
-                age_factor = history_idx / max(len(self.curve_history) - 1, 1)
-                alpha = age_factor
-                
-                # Get color for this curve
-                color = self.color_history[history_idx]
-                
-                # Connect last point to first point (wrapping)
-                x1, y1 = self.x_positions[-1], y_positions[-1]
-                x2, y2 = self.x_positions[0] + self.viewport.width, y_positions[0]  # Wrap
-                
-                dx = x2 - x1
-                dy = y2 - y1
-                length = np.sqrt(dx*dx + dy*dy)
-                
-                if length > 0:
-                    px = -dy / length
-                    py = dx / length
-                    offset = self.line_thickness / 2
-                    
-                    p1 = [x1 + px * offset, y1 + py * offset, color[0], color[1], color[2], alpha]
-                    p2 = [x1 - px * offset, y1 - py * offset, color[0], color[1], color[2], alpha]
-                    p3 = [x2 + px * offset, y2 + py * offset, color[0], color[1], color[2], alpha]
-                    p4 = [x2 - px * offset, y2 - py * offset, color[0], color[1], color[2], alpha]
-                    
-                    vertices.extend([p1, p2, p3])
-                    vertices.extend([p2, p4, p3])
+        # Calculate alpha values for each curve (age-based fade)
+        if num_curves > 1:
+            alphas = np.linspace(0, 1, num_curves, dtype=np.float32)
+        else:
+            alphas = np.array([1.0], dtype=np.float32)
         
-        vertex_array = np.array(vertices, dtype=np.float32)
-        vertex_count = len(vertices)
+        # ==== FULLY VECTORIZED: Process ALL curves at once ====
         
-        return vertex_array, vertex_count
+        # Broadcast x positions for all curves - Shape: (num_curves, num_segments)
+        x1 = np.broadcast_to(self.x_positions[:-1], (num_curves, num_segments))
+        x2 = np.broadcast_to(self.x_positions[1:], (num_curves, num_segments))
+        
+        # Y positions for all curves - Shape: (num_curves, num_segments)
+        y1 = all_y_positions[:, :-1]
+        y2 = all_y_positions[:, 1:]
+        
+        # Calculate perpendicular vectors for ALL segments in ALL curves at once
+        dx = x2 - x1
+        dy = y2 - y1
+        lengths = np.sqrt(dx*dx + dy*dy)
+        
+        # Avoid division by zero
+        lengths = np.where(lengths > 0.001, lengths, 1.0)
+        
+        # Perpendicular unit vectors - Shape: (num_curves, num_segments)
+        px = -dy / lengths
+        py = dx / lengths
+        
+        # Calculate quad corners for ALL segments at once
+        p1_x = x1 + px * offset
+        p1_y = y1 + py * offset
+        p2_x = x1 - px * offset
+        p2_y = y1 - py * offset
+        p3_x = x2 + px * offset
+        p3_y = y2 + py * offset
+        p4_x = x2 - px * offset
+        p4_y = y2 - py * offset
+        
+        # Broadcast colors and alphas to match segment dimensions
+        # Shape: (num_curves, num_segments, 3)
+        colors_broadcast = all_colors[:, np.newaxis, :].repeat(num_segments, axis=1)
+        # Shape: (num_curves, num_segments, 1)
+        alphas_broadcast = alphas[:, np.newaxis, np.newaxis].repeat(num_segments, axis=1)
+        
+        # Build vertex data for all segments: (num_curves, num_segments, 6 vertices, 6 floats)
+        # We need: [x, y, r, g, b, a] for each vertex
+        
+        # Create array for 6 vertices per segment: (num_curves, num_segments, 6, 6)
+        vertices = np.zeros((num_curves, num_segments, 6, 6), dtype=np.float32)
+        
+        # Triangle 1: p1, p2, p3
+        vertices[:, :, 0, 0] = p1_x  # p1 x
+        vertices[:, :, 0, 1] = p1_y  # p1 y
+        vertices[:, :, 0, 2:5] = colors_broadcast  # p1 rgb
+        vertices[:, :, 0, 5] = alphas_broadcast.squeeze(-1)  # p1 alpha
+        
+        vertices[:, :, 1, 0] = p2_x  # p2 x
+        vertices[:, :, 1, 1] = p2_y  # p2 y
+        vertices[:, :, 1, 2:5] = colors_broadcast  # p2 rgb
+        vertices[:, :, 1, 5] = alphas_broadcast.squeeze(-1)  # p2 alpha
+        
+        vertices[:, :, 2, 0] = p3_x  # p3 x
+        vertices[:, :, 2, 1] = p3_y  # p3 y
+        vertices[:, :, 2, 2:5] = colors_broadcast  # p3 rgb
+        vertices[:, :, 2, 5] = alphas_broadcast.squeeze(-1)  # p3 alpha
+        
+        # Triangle 2: p2, p4, p3
+        vertices[:, :, 3, 0] = p2_x  # p2 x
+        vertices[:, :, 3, 1] = p2_y  # p2 y
+        vertices[:, :, 3, 2:5] = colors_broadcast  # p2 rgb
+        vertices[:, :, 3, 5] = alphas_broadcast.squeeze(-1)  # p2 alpha
+        
+        vertices[:, :, 4, 0] = p4_x  # p4 x
+        vertices[:, :, 4, 1] = p4_y  # p4 y
+        vertices[:, :, 4, 2:5] = colors_broadcast  # p4 rgb
+        vertices[:, :, 4, 5] = alphas_broadcast.squeeze(-1)  # p4 alpha
+        
+        vertices[:, :, 5, 0] = p3_x  # p3 x
+        vertices[:, :, 5, 1] = p3_y  # p3 y
+        vertices[:, :, 5, 2:5] = colors_broadcast  # p3 rgb
+        vertices[:, :, 5, 5] = alphas_broadcast.squeeze(-1)  # p3 alpha
+        
+        # ==== Add wrap-around segments (vectorized) ====
+        
+        # Wrap coordinates for all curves at once
+        x1_wrap = np.full(num_curves, self.x_positions[-1], dtype=np.float32)
+        y1_wrap = all_y_positions[:, -1]
+        x2_wrap = np.full(num_curves, self.x_positions[0] + self.viewport.width, dtype=np.float32)
+        y2_wrap = all_y_positions[:, 0]
+        
+        # Calculate perpendiculars for wrap segments
+        dx_wrap = x2_wrap - x1_wrap
+        dy_wrap = y2_wrap - y1_wrap
+        length_wrap = np.sqrt(dx_wrap*dx_wrap + dy_wrap*dy_wrap)
+        length_wrap = np.where(length_wrap > 0.001, length_wrap, 1.0)
+        
+        px_wrap = -dy_wrap / length_wrap
+        py_wrap = dx_wrap / length_wrap
+        
+        # Wrap segment corners
+        p1_x_wrap = x1_wrap + px_wrap * offset
+        p1_y_wrap = y1_wrap + py_wrap * offset
+        p2_x_wrap = x1_wrap - px_wrap * offset
+        p2_y_wrap = y1_wrap - py_wrap * offset
+        p3_x_wrap = x2_wrap + px_wrap * offset
+        p3_y_wrap = y2_wrap + py_wrap * offset
+        p4_x_wrap = x2_wrap - px_wrap * offset
+        p4_y_wrap = y2_wrap - py_wrap * offset
+        
+        # Create wrap vertices: (num_curves, 6, 6)
+        wrap_vertices = np.zeros((num_curves, 6, 6), dtype=np.float32)
+        
+        # Triangle 1
+        wrap_vertices[:, 0, 0] = p1_x_wrap
+        wrap_vertices[:, 0, 1] = p1_y_wrap
+        wrap_vertices[:, 0, 2:5] = all_colors
+        wrap_vertices[:, 0, 5] = alphas
+        
+        wrap_vertices[:, 1, 0] = p2_x_wrap
+        wrap_vertices[:, 1, 1] = p2_y_wrap
+        wrap_vertices[:, 1, 2:5] = all_colors
+        wrap_vertices[:, 1, 5] = alphas
+        
+        wrap_vertices[:, 2, 0] = p3_x_wrap
+        wrap_vertices[:, 2, 1] = p3_y_wrap
+        wrap_vertices[:, 2, 2:5] = all_colors
+        wrap_vertices[:, 2, 5] = alphas
+        
+        # Triangle 2
+        wrap_vertices[:, 3, 0] = p2_x_wrap
+        wrap_vertices[:, 3, 1] = p2_y_wrap
+        wrap_vertices[:, 3, 2:5] = all_colors
+        wrap_vertices[:, 3, 5] = alphas
+        
+        wrap_vertices[:, 4, 0] = p4_x_wrap
+        wrap_vertices[:, 4, 1] = p4_y_wrap
+        wrap_vertices[:, 4, 2:5] = all_colors
+        wrap_vertices[:, 4, 5] = alphas
+        
+        wrap_vertices[:, 5, 0] = p3_x_wrap
+        wrap_vertices[:, 5, 1] = p3_y_wrap
+        wrap_vertices[:, 5, 2:5] = all_colors
+        wrap_vertices[:, 5, 5] = alphas
+        
+        # Reshape and concatenate: (num_curves * num_segments * 6, 6) + (num_curves * 6, 6)
+        main_vertices = vertices.reshape(-1, 6)
+        wrap_vertices_flat = wrap_vertices.reshape(-1, 6)
+        
+        # Combine main segments and wrap segments
+        all_vertices = np.vstack([main_vertices, wrap_vertices_flat])
+        total_vertices = len(all_vertices)
+        
+        return all_vertices, total_vertices
     
     def render(self, state: Dict):
         """Render the audio curve with trail"""
@@ -395,15 +496,10 @@ class AudioCurveEffect(ShaderEffect):
         glBindBuffer(GL_ARRAY_BUFFER, self.VBO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, vertex_data.nbytes, vertex_data)
         
-        # Set uniforms
-        res_loc = glGetUniformLocation(self.shader, "resolution")
-        glUniform2f(res_loc, self.viewport.width, self.viewport.height)
-        
-        depth_loc = glGetUniformLocation(self.shader, "depth")
-        glUniform1f(depth_loc, self.depth)
-        
-        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
-        glUniform1f(fade_loc, self.fade_factor)
+        # Set uniforms (using cached locations)
+        glUniform2f(self.uniform_resolution, self.viewport.width, self.viewport.height)
+        glUniform1f(self.uniform_depth, self.depth)
+        glUniform1f(self.uniform_fade, self.fade_factor)
         
         # Draw the curve
         glDrawArrays(GL_TRIANGLES, 0, vertex_count)
