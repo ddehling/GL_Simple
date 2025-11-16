@@ -453,7 +453,7 @@ class RainEffect(ShaderEffect):
             self.audio_sensitivity = sensitivity
 
     def update(self, dt: float, state: Dict):
-        """Update raindrop positions (vectorized)"""
+        """Update raindrop positions (fully vectorized)"""
         if not self.enabled:
             return
         
@@ -469,13 +469,13 @@ class RainEffect(ShaderEffect):
             n_to_add = self.target_raindrops - current_drops
             self._add_raindrops(n_to_add)
         
-                # Update velocities based on intensity AND audio
+        # Update velocities based on intensity AND audio
         # Base velocity from rain_intensity
         self.velocities = self.base_velocities * (rain_intensity + 0.2)
         
-                        # Audio modulation: each drop's speed, size, and color affected by its assigned audio band
+        # Audio modulation: FULLY VECTORIZED
         if len(self.audio_bands) == 16 and len(self.band_indices) > 0:
-            # Get audio energy for each raindrop's band
+            # Get audio energy for each raindrop's band - vectorized lookup
             audio_energies = self.audio_bands[self.band_indices]
             
             # Speed modulation: Clamp to reasonable range (1.0 to 3.0x speed)
@@ -486,41 +486,37 @@ class RainEffect(ShaderEffect):
             self.audio_speed_multipliers = audio_multipliers
             
             # Size modulation: Make drops slightly bigger when their band is active
-            # Use vectorized operations for efficiency
             size_multipliers = 1.0 + np.clip(audio_energies * self.audio_sensitivity * 0.4, 0, 0.8)
             self.dimensions[:, 0] = self.base_dimensions[:, 0] * size_multipliers  # Width
             self.dimensions[:, 1] = self.base_dimensions[:, 1] * size_multipliers  # Length
             
-            # Color modulation: MUCH more dramatic color shifts
-            # Vectorized color computation for better performance
+            # Color modulation: FULLY VECTORIZED - No more loops!
             audio_clamped = np.clip(audio_energies * self.audio_sensitivity, 0, 2.5)
             
-            # Create color gradient based on frequency band and audio energy
-            # Low bands (0-5) = Red/Orange when active
-            # Mid bands (6-10) = Green/Cyan when active  
-            # High bands (11-15) = Blue/Magenta when active
-            for i in range(len(self.colors)):
-                band_idx = self.band_indices[i]
-                energy = audio_clamped[i]
-                base_color = self.base_colors[i]
-                
-                # Determine color based on frequency band
-                if band_idx < 6:  # Bass - shift to red/orange
-                    target_color = np.array([1.0, 0.3, 0.1])  # Bright orange-red
-                elif band_idx < 11:  # Mids - shift to cyan/green
-                    target_color = np.array([0.1, 1.0, 0.5])  # Bright cyan
-                else:  # Highs - shift to magenta/white
-                    target_color = np.array([1.0, 0.2, 1.0])  # Bright magenta
-                
-                # Strong mix factor for dramatic effect (up to 90% target color)
-                mix_factor = np.clip(energy * 0.9, 0, 0.9)
-                self.colors[i] = base_color * (1 - mix_factor) + target_color * mix_factor
+            # Create target color arrays based on frequency bands (vectorized)
+            target_colors = np.zeros_like(self.colors)
+            
+            # Bass bands (0-5) - Red/Orange
+            bass_mask = self.band_indices < 6
+            target_colors[bass_mask] = [1.0, 0.3, 0.1]  # Bright orange-red
+            
+            # Mid bands (6-10) - Cyan/Green  
+            mid_mask = (self.band_indices >= 6) & (self.band_indices < 11)
+            target_colors[mid_mask] = [0.1, 1.0, 0.5]  # Bright cyan
+            
+            # High bands (11-15) - Magenta/White
+            high_mask = self.band_indices >= 11
+            target_colors[high_mask] = [1.0, 0.2, 1.0]  # Bright magenta
+            
+            # Vectorized color mixing (up to 90% target color)
+            mix_factors = np.clip(audio_clamped * 0.9, 0, 0.9)[:, np.newaxis]  # Reshape for broadcasting
+            self.colors = self.base_colors * (1 - mix_factors) + target_colors * mix_factors
         
         # Vectorized position updates
         self.positions[:, 1] += self.velocities * dt / 2
         self.positions[:, 0] += self.wind * 50 * dt / 2
         
-        # Horizontal wrapping - immediate, no gaps
+        # Horizontal wrapping - vectorized, immediate, no gaps
         left_mask = self.positions[:, 0] < 0
         right_mask = self.positions[:, 0] >= self.viewport.width
         self.positions[left_mask, 0] += self.viewport.width
