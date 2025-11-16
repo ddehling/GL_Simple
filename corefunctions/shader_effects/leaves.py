@@ -586,20 +586,24 @@ class FallingLeavesEffect(ShaderEffect):
         # This is different from rendering duplicates - this handles leaves that are fully off-screen
         off_screen_margin = self.wrap_margin * 2
         
-        # Wrap from right to left (leaf completely off right side)
-        wrap_right_mask = self.positions[:, 0] > self.viewport.width + off_screen_margin
-        self.positions[wrap_right_mask, 0] -= (self.viewport.width + off_screen_margin * 2)
+        wrap_left_mask = self.positions[:, 0] < -self.wrap_margin
+        if np.any(wrap_left_mask):
+            self.positions[wrap_left_mask, 0] += self.viewport.width
         
-        # Wrap from left to right (leaf completely off left side)
-        wrap_left_mask = self.positions[:, 0] < -off_screen_margin
-        self.positions[wrap_left_mask, 0] += (self.viewport.width + off_screen_margin * 2)
+        # Teleport leaves that have moved completely off the right side  
+        # Original at x = width + 60, duplicate was at x = (width + 60) - width = 60
+        # Teleport original to where duplicate was: x = 60
+        wrap_right_mask = self.positions[:, 0] > self.viewport.width + self.wrap_margin  
+        if np.any(wrap_right_mask):
+            self.positions[wrap_right_mask, 0] -= self.viewport.width
         
         # Filter out-of-bounds leaves - only remove if below screen or lifetime expired
+        # NO horizontal filtering - wrapping handles horizontal bounds
         valid_mask = (
-            (self.positions[:, 1] < self.viewport.height + off_screen_margin) & 
+            (self.positions[:, 1] < self.viewport.height + 100) &
             (self.lifetimes > 0)
         )
-                
+        
         if not np.all(valid_mask):
             self.positions = self.positions[valid_mask]
             self.velocities = self.velocities[valid_mask]
@@ -612,7 +616,7 @@ class FallingLeavesEffect(ShaderEffect):
             self.alphas = self.alphas[valid_mask]
             self.lifetimes = self.lifetimes[valid_mask]
             self.leaf_types = self.leaf_types[valid_mask]
-            self.distances = self.distances[valid_mask]  # NEW: Filter distances too
+            self.distances = self.distances[valid_mask]
 
     def render(self, state: Dict):
         """Render all leaves using instancing with horizontal wrapping"""
