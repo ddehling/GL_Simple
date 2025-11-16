@@ -131,8 +131,15 @@ class AudioBallsEffect(ShaderEffect):
         self.smoothed_energies = np.zeros(self.num_balls, dtype=np.float32)  # Smoothed energy for slower reaction
         self.energy_smoothing = 0.15  # Smoothing factor (lower = slower reaction)
         
-        # Surface animation state
+                # Surface animation state
         self.surface_time = 0.0
+        
+        # Base y positions for sinusoidal height variation
+        self.base_y_positions = np.zeros(self.num_balls, dtype=np.float32)
+        # Sinusoidal frequency for each ball (Hz) - varies from 1.0 to 3.0
+        self.wave_frequencies = np.linspace(1.0, 3.0, self.num_balls, dtype=np.float32)
+        # Height variation amplitude in pixels
+        self.wave_amplitude = 30.0
         
         # Lightning state
         self.active_lightning = []  # List of (ball_i, ball_j, intensity, age) tuples
@@ -156,6 +163,9 @@ class AudioBallsEffect(ShaderEffect):
         self.positions[:, 0] = x_positions
         self.positions[:, 1] = y_positions
         self.positions[:, 2] = 50  # Mid-depth
+        
+        # Store base y positions for sinusoidal animation
+        self.base_y_positions[:] = y_positions
         
         # Vectorized speed generation
         self.speeds[:] = np.random.uniform(10, 30, size=self.num_balls)
@@ -282,142 +292,239 @@ class AudioBallsEffect(ShaderEffect):
         self.positions[:, 2] = 50 - smoothed * 20  # Range 30-50
     
     def _update_lightning(self, dt: float):
-        """Update lightning state and generate new arcs (optimized)"""
-        # Decay existing lightning and filter in one pass
-        updated_lightning = []
-        for ball_i, ball_j, intensity, age in self.active_lightning:
-            new_intensity = intensity * 0.8
-            new_age = age + dt
-            # Keep lightning if intensity > 0.05 and age < 0.5
-            if new_intensity > 0.05 and new_age < 0.5:
-                updated_lightning.append((ball_i, ball_j, new_intensity, new_age))
-        self.active_lightning = updated_lightning
+        """Update lightning state and generate new arcs (fully vectorized)"""
+        # Vectorized decay of existing lightning
+        if self.active_lightning:
+            # Convert to numpy arrays for vectorized operations
+            lightning_array = np.array(self.active_lightning, dtype=object)
+            indices_i = np.array([x[0] for x in self.active_lightning], dtype=np.int32)
+            indices_j = np.array([x[1] for x in self.active_lightning], dtype=np.int32)
+            intensities = np.array([x[2] for x in self.active_lightning], dtype=np.float32)
+            ages = np.array([x[3] for x in self.active_lightning], dtype=np.float32)
+            
+            # Vectorized decay and age update
+            new_intensities = intensities * 0.8
+            new_ages = ages + dt
+            
+            # Filter: keep only if intensity > 0.05 and age < 0.5
+            keep_mask = (new_intensities > 0.05) & (new_ages < 0.5)
+            
+            # Rebuild list from filtered arrays
+            self.active_lightning = [
+                (int(indices_i[i]), int(indices_j[i]), float(new_intensities[i]), float(new_ages[i]))
+                for i in np.where(keep_mask)[0]
+            ]
         
-        # Check for new lightning between nearby high-energy balls (vectorized distance)
+        # Generate new lightning using fully vectorized approach
         high_energy_mask = self.energies >= self.lightning_threshold
         high_energy_indices = np.where(high_energy_mask)[0]
         
-        for i in high_energy_indices:
-            # Find nearby balls with high energy using vectorized distance calc
-            j_indices = np.arange(i + 1, self.num_balls)
-            high_j = j_indices[self.energies[j_indices] >= self.lightning_threshold]
-            
-            if len(high_j) == 0:
-                continue
-            
-            # Vectorized distance calculation
-            dx = self.positions[high_j, 0] - self.positions[i, 0]
-            dy = self.positions[high_j, 1] - self.positions[i, 1]
-            distances = np.sqrt(dx*dx + dy*dy)
-            
-            # Find nearby balls (within 200 pixels or adjacent)
-            adjacent_mask = np.abs(high_j - i) == 1
-            nearby_mask = (distances < 200) | adjacent_mask
-            nearby_j = high_j[nearby_mask]
-            
-            # Randomly create lightning to a nearby ball
-            if len(nearby_j) > 0 and np.random.random() < self.lightning_probability:
-                j = nearby_j[np.random.randint(len(nearby_j))]
-                intensity = np.clip(self.energies[i] * self.energies[j], 0, 1)
-                
-                # Check if this lightning already exists
-                exists = any((a == i and b == j) or (a == j and b == i) 
-                           for a, b, _, _ in self.active_lightning)
-                
-                if not exists:
-                    self.active_lightning.append((i, j, intensity, 0))
+        if len(high_energy_indices) < 2:
+            return  # Need at least 2 high-energy balls
+        
+        # Create all pairwise combinations efficiently
+        # Use broadcasting to compute all distances at once
+        pos_high = self.positions[high_energy_indices]  # Shape: (n_high, 3)
+        energies_high = self.energies[high_energy_indices]  # Shape: (n_high,)
+        
+        # Compute pairwise distances using broadcasting
+        # pos_high[:, np.newaxis, :] has shape (n_high, 1, 3)
+        # pos_high[np.newaxis, :, :] has shape (1, n_high, 3)
+        diff = pos_high[:, np.newaxis, :2] - pos_high[np.newaxis, :, :2]  # Shape: (n_high, n_high, 2)
+        distances = np.sqrt(np.sum(diff**2, axis=2))  # Shape: (n_high, n_high)
+        
+        # Create index differences for adjacency check
+        idx_diff = high_energy_indices[:, np.newaxis] - high_energy_indices[np.newaxis, :]  # Shape: (n_high, n_high)
+        
+        # Find valid pairs: upper triangle (i < j), nearby (distance < 200 or adjacent)
+        upper_triangle_mask = np.triu(np.ones_like(distances, dtype=bool), k=1)
+        adjacent_mask = np.abs(idx_diff) == 1
+        nearby_mask = (distances < 200) | adjacent_mask
+        valid_pairs_mask = upper_triangle_mask & nearby_mask
+        
+        # Get indices of valid pairs
+        valid_i_idx, valid_j_idx = np.where(valid_pairs_mask)
+        
+        if len(valid_i_idx) == 0:
+            return  # No valid pairs
+        
+        # Randomly select pairs for lightning based on probability
+        rand_vals = np.random.random(len(valid_i_idx))
+        selected_mask = rand_vals < self.lightning_probability
+        selected_i_idx = valid_i_idx[selected_mask]
+        selected_j_idx = valid_j_idx[selected_mask]
+        
+        if len(selected_i_idx) == 0:
+            return  # No pairs selected
+        
+        # Convert back to original ball indices
+        selected_i = high_energy_indices[selected_i_idx]
+        selected_j = high_energy_indices[selected_j_idx]
+        
+        # Compute intensities for selected pairs (vectorized)
+        selected_intensities = np.clip(
+            self.energies[selected_i] * self.energies[selected_j],
+            0, 1
+        )
+        
+        # Filter out pairs that already exist in active_lightning
+        # Create a set of existing pairs for O(1) lookup
+        if self.active_lightning:
+            existing_pairs = set()
+            for a, b, _, _ in self.active_lightning:
+                existing_pairs.add((min(a, b), max(a, b)))
+        else:
+            existing_pairs = set()
+        
+        # Add new lightning that doesn't already exist
+        for i, j, intensity in zip(selected_i, selected_j, selected_intensities):
+            pair = (min(i, j), max(i, j))
+            if pair not in existing_pairs:
+                self.active_lightning.append((int(i), int(j), float(intensity), 0.0))
+                existing_pairs.add(pair)  # Prevent duplicates within same frame
     
-    def _add_ball_segment(self, vertices, offsets, colors, alphas, sphere_radii, ball_id, energy,
-                          pos, size, color, alpha, angle1, angle2, x_offset=0.0):
-        """Helper: Add a single triangle segment for a ball
+    def _generate_ball_vertices_vectorized(self, pos, size, color, alpha, ball_id, segments, x_offset=0.0):
+        """Generate all vertices for a single ball using vectorized operations
         
         Args:
+            pos: Ball position (x, y, z)
+            size: Ball radius
+            color: Ball color (r, g, b)
+            alpha: Ball alpha
+            ball_id: Ball identifier
+            segments: Number of segments in the circle
             x_offset: Horizontal offset for seamless wrapping
+        
+        Returns:
+            Tuple of (vertices, offsets, colors, alphas, sphere_radii) as numpy arrays
         """
+        # Pre-compute all angles (vectorized)
+        seg_indices = np.arange(segments, dtype=np.float32)
+        angles1 = (seg_indices / segments) * 2 * np.pi
+        angles2 = ((seg_indices + 1) / segments) * 2 * np.pi
+        
+        # Compute cos and sin for all angles at once
+        cos1 = np.cos(angles1)
+        sin1 = np.sin(angles1)
+        cos2 = np.cos(angles2)
+        sin2 = np.sin(angles2)
+        
+        # Adjusted position for offset
         adjusted_pos = pos.copy()
         adjusted_pos[0] += x_offset
         
-        # Center vertex
-        vertices.append([pos[0] + x_offset, pos[1]])
-        offsets.append(adjusted_pos)
-        colors.append(color)
-        alphas.append(alpha)
-        sphere_radii.append(0.0)
+        # Each segment creates 3 vertices (center, perimeter1, perimeter2)
+        n_vertices = segments * 3
         
-        # Perimeter vertex 1
-        x1 = pos[0] + x_offset + size * np.cos(angle1)
-        y1 = pos[1] + size * np.sin(angle1)
-        vertices.append([x1, y1])
-        offsets.append(adjusted_pos)
-        colors.append(color)
-        alphas.append(alpha)
-        sphere_radii.append(1.0 + (ball_id / 100.0))
+        # Pre-allocate arrays
+        vertices = np.zeros((n_vertices, 2), dtype=np.float32)
+        offsets = np.zeros((n_vertices, 3), dtype=np.float32)
+        colors_arr = np.zeros((n_vertices, 3), dtype=np.float32)
+        alphas_arr = np.zeros(n_vertices, dtype=np.float32)
+        sphere_radii = np.zeros(n_vertices, dtype=np.float32)
         
-        # Perimeter vertex 2
-        x2 = pos[0] + x_offset + size * np.cos(angle2)
-        y2 = pos[1] + size * np.sin(angle2)
-        vertices.append([x2, y2])
-        offsets.append(adjusted_pos)
-        colors.append(color)
-        alphas.append(alpha)
-        sphere_radii.append(1.0 + (ball_id / 100.0))
+        # Fill arrays using advanced indexing
+        # Center vertices (every 3rd vertex starting at 0)
+        vertices[0::3, 0] = pos[0] + x_offset
+        vertices[0::3, 1] = pos[1]
+        offsets[0::3] = adjusted_pos
+        colors_arr[0::3] = color
+        alphas_arr[0::3] = alpha
+        sphere_radii[0::3] = 0.0
+        
+        # Perimeter vertex 1 (every 3rd vertex starting at 1)
+        vertices[1::3, 0] = pos[0] + x_offset + size * cos1
+        vertices[1::3, 1] = pos[1] + size * sin1
+        offsets[1::3] = adjusted_pos
+        colors_arr[1::3] = color
+        alphas_arr[1::3] = alpha
+        sphere_radii[1::3] = 1.0 + (ball_id / 100.0)
+        
+        # Perimeter vertex 2 (every 3rd vertex starting at 2)
+        vertices[2::3, 0] = pos[0] + x_offset + size * cos2
+        vertices[2::3, 1] = pos[1] + size * sin2
+        offsets[2::3] = adjusted_pos
+        colors_arr[2::3] = color
+        alphas_arr[2::3] = alpha
+        sphere_radii[2::3] = 1.0 + (ball_id / 100.0)
+        
+        return vertices, offsets, colors_arr, alphas_arr, sphere_radii
     
     def _build_ball_geometry(self):
-        """Build geometry for all balls as spheres with seamless wrapping"""
-        vertices = []
-        offsets = []
-        colors = []
-        alphas = []
-        sphere_radii = []
-        
-        # Create a circular mesh for each ball
+        """Build geometry for all balls as spheres with seamless wrapping (vectorized)"""
         segments = 24
+        
+        # Calculate alphas for all balls at once (vectorized)
+        ball_alphas = self.alphas * self.fade_factor
+        
+        # Determine wrapping requirements for all balls (vectorized)
+        left_edge_mask = self.positions[:, 0] < self.wrap_margin
+        right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
+        
+        # Count total number of ball instances (original + wrapped duplicates)
+        wrap_counts = np.ones(self.num_balls, dtype=np.int32)
+        wrap_counts += left_edge_mask.astype(np.int32)
+        wrap_counts += right_edge_mask.astype(np.int32)
+        total_instances = np.sum(wrap_counts)
+        
+        # Pre-allocate arrays for all vertices
+        vertices_per_ball = segments * 3
+        total_vertices = total_instances * vertices_per_ball
+        
+        all_vertices = np.zeros((total_vertices, 2), dtype=np.float32)
+        all_offsets = np.zeros((total_vertices, 3), dtype=np.float32)
+        all_colors = np.zeros((total_vertices, 3), dtype=np.float32)
+        all_alphas = np.zeros(total_vertices, dtype=np.float32)
+        all_sphere_radii = np.zeros(total_vertices, dtype=np.float32)
+        
+        # Fill arrays by processing each ball
+        vertex_offset = 0
+        
         for i in range(self.num_balls):
-            # Get ball properties
             pos = self.positions[i]
             size = self.sizes[i]
             color = self.colors[i]
-            alpha = self.alphas[i] * self.fade_factor
-            energy = self.smoothed_energies[i]
+            alpha = ball_alphas[i]
             
-            # Determine which positions to render (for seamless wrapping)
-            render_x_offsets = [0.0]  # Always render original
+            # Determine x_offsets for this ball
+            x_offsets = [0.0]  # Always render original
+            if left_edge_mask[i]:
+                x_offsets.append(self.viewport.width)
+            if right_edge_mask[i]:
+                x_offsets.append(-self.viewport.width)
             
-            # Check if ball is near left edge
-            if pos[0] < self.wrap_margin:
-                # Create duplicate on right side
-                render_x_offsets.append(self.viewport.width)
-            
-            # Check if ball is near right edge
-            if pos[0] > (self.viewport.width - self.wrap_margin):
-                # Create duplicate on left side
-                render_x_offsets.append(-self.viewport.width)
-            
-            # Generate sphere vertices for each position
-            for x_offset in render_x_offsets:
-                for seg in range(segments):
-                    angle1 = (seg / segments) * 2 * np.pi
-                    angle2 = ((seg + 1) / segments) * 2 * np.pi
-                    
-                    self._add_ball_segment(vertices, offsets, colors, alphas, sphere_radii,
-                                          i, energy,
-                                          pos, size, color, alpha, angle1, angle2, x_offset)
+            # Generate vertices for each wrapped instance of this ball
+            for x_offset in x_offsets:
+                verts, offs, cols, alphs, radii = self._generate_ball_vertices_vectorized(
+                    pos, size, color, alpha, i, segments, x_offset
+                )
+                
+                # Copy into pre-allocated arrays
+                end_offset = vertex_offset + vertices_per_ball
+                all_vertices[vertex_offset:end_offset] = verts
+                all_offsets[vertex_offset:end_offset] = offs
+                all_colors[vertex_offset:end_offset] = cols
+                all_alphas[vertex_offset:end_offset] = alphs
+                all_sphere_radii[vertex_offset:end_offset] = radii
+                
+                vertex_offset = end_offset
         
-        if not vertices:
+        if total_vertices == 0:
             return None, 0
         
+        # Combine into final vertex data using column_stack (single operation)
         vertex_data = np.column_stack([
-            np.array(vertices, dtype=np.float32),
-            np.array(offsets, dtype=np.float32),
-            np.array(colors, dtype=np.float32),
-            np.array(alphas, dtype=np.float32),
-            np.array(sphere_radii, dtype=np.float32)
+            all_vertices,
+            all_offsets,
+            all_colors,
+            all_alphas,
+            all_sphere_radii
         ]).astype(np.float32)
         
-        return vertex_data, len(vertices)
+        return vertex_data, total_vertices
     
     def _lightning_color_from_indices(self, i, j, intensity):
-        """Generate varied lightning color based on ball indices and intensity"""
+        """Generate varied lightning color based on ball indices and intensity (scalar version)"""
         # Use ball indices to determine base hue
         hue = ((i + j) / (self.num_balls * 2)) % 1.0
         
@@ -429,70 +536,174 @@ class AudioBallsEffect(ShaderEffect):
         
         return rgb.astype(np.float32)
     
+    def _lightning_color_from_indices_vectorized(self, indices_i, indices_j, intensities):
+        """Generate varied lightning colors based on ball indices and intensities (vectorized)
+        
+        Args:
+            indices_i: Array of first ball indices
+            indices_j: Array of second ball indices
+            intensities: Array of intensity values
+        
+        Returns:
+            Array of shape (n, 3) with RGB values
+        """
+        # Vectorized hue calculation
+        hues = ((indices_i + indices_j) / (self.num_balls * 2)) % 1.0
+        
+        # Vectorized saturation values
+        saturations = 0.6 + 0.4 * intensities
+        
+        # Convert HSV to RGB for all lightning bolts
+        # Vectorized HSV conversion
+        h = hues % 1.0
+        i = (h * 6.0).astype(np.int32)
+        f = h * 6.0 - i
+        
+        # Broadcast saturations for vectorized operations
+        s = saturations
+        v = 1.0
+        
+        p = v * (1.0 - s)
+        q = v * (1.0 - f * s)
+        t = v * (1.0 - (1.0 - f) * s)
+        
+        i = i % 6
+        n = len(h)
+        
+        # Vectorized RGB selection
+        rgb = np.zeros((n, 3), dtype=np.float32)
+        
+        mask0 = i == 0
+        mask1 = i == 1
+        mask2 = i == 2
+        mask3 = i == 3
+        mask4 = i == 4
+        mask5 = i == 5
+        
+        rgb[mask0, 0] = v
+        rgb[mask0, 1] = t[mask0]
+        rgb[mask0, 2] = p[mask0]
+        
+        rgb[mask1, 0] = q[mask1]
+        rgb[mask1, 1] = v
+        rgb[mask1, 2] = p[mask1]
+        
+        rgb[mask2, 0] = p[mask2]
+        rgb[mask2, 1] = v
+        rgb[mask2, 2] = t[mask2]
+        
+        rgb[mask3, 0] = p[mask3]
+        rgb[mask3, 1] = q[mask3]
+        rgb[mask3, 2] = v
+        
+        rgb[mask4, 0] = t[mask4]
+        rgb[mask4, 1] = p[mask4]
+        rgb[mask4, 2] = v
+        
+        rgb[mask5, 0] = v
+        rgb[mask5, 1] = p[mask5]
+        rgb[mask5, 2] = q[mask5]
+        
+        # Vectorized blend towards white based on intensity
+        white = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        blend_factor = (intensities * 0.3)[:, np.newaxis]
+        rgb = rgb * (1.0 - blend_factor) + white * blend_factor
+        
+        return rgb
+    
     def _build_lightning_geometry(self):
-        """Build geometry for all active lightning bolts with seamless wrapping"""
+        """Build geometry for all active lightning bolts with seamless wrapping (vectorized)"""
         if not self.active_lightning:
             return None, 0
         
-        vertices = []
-        offsets1 = []
-        colors = []
-        alphas = []
+        n_bolts = len(self.active_lightning)
         
-        for ball_i, ball_j, intensity, age in self.active_lightning:
-            p1 = self.positions[ball_i]
-            p2 = self.positions[ball_j]
-            
-            # Determine wrapped positions for lightning (use shortest path)
-            p1_wrapped = p1.copy()
-            p2_wrapped = p2.copy()
-            
-            # Handle horizontal wrapping: use shortest path
-            dx = p2[0] - p1[0]
-            if abs(dx) > self.viewport.width / 2:
-                if dx > 0:
-                    # p2 is far right; wrap p1 to right
-                    p1_wrapped[0] += self.viewport.width
-                else:
-                    # p2 is far left; wrap p1 to left
-                    p1_wrapped[0] -= self.viewport.width
-            
-            # Add jagged path between balls
-            mid_x = (p1_wrapped[0] + p2_wrapped[0]) / 2 + np.random.uniform(-10, 10)
-            mid_y = (p1_wrapped[1] + p2_wrapped[1]) / 2 + np.random.uniform(-10, 10)
-            mid_z = (p1_wrapped[2] + p2_wrapped[2]) / 2
-            
-            # Generate varied lightning color based on ball indices
-            lightning_color = self._lightning_color_from_indices(ball_i, ball_j, intensity)
-            
-            # Segment 1: p1 to mid
-            vertices.append(np.array([p1_wrapped[0], p1_wrapped[1]], dtype=np.float32))
-            vertices.append(np.array([mid_x, mid_y], dtype=np.float32))
-            offsets1.append(p1_wrapped)
-            offsets1.append(np.array([mid_x, mid_y, mid_z], dtype=np.float32))
-            colors.append(lightning_color)
-            colors.append(lightning_color)
-            alphas.append(intensity * 0.8)
-            alphas.append(intensity * 0.8)
-            
-            # Segment 2: mid to p2
-            vertices.append(np.array([mid_x, mid_y], dtype=np.float32))
-            vertices.append(np.array([p2_wrapped[0], p2_wrapped[1]], dtype=np.float32))
-            offsets1.append(np.array([mid_x, mid_y, mid_z], dtype=np.float32))
-            offsets1.append(p2_wrapped)
-            colors.append(lightning_color)
-            colors.append(lightning_color)
-            alphas.append(intensity * 0.8)
-            alphas.append(intensity * 0.8)
+        # Extract all lightning data into arrays
+        indices_i = np.array([x[0] for x in self.active_lightning], dtype=np.int32)
+        indices_j = np.array([x[1] for x in self.active_lightning], dtype=np.int32)
+        intensities = np.array([x[2] for x in self.active_lightning], dtype=np.float32)
+        ages = np.array([x[3] for x in self.active_lightning], dtype=np.float32)
         
+        # Vectorized position extraction
+        p1_positions = self.positions[indices_i]  # Shape: (n_bolts, 3)
+        p2_positions = self.positions[indices_j]  # Shape: (n_bolts, 3)
+        
+        # Vectorized wrapping calculation
+        p1_wrapped = p1_positions.copy()
+        p2_wrapped = p2_positions.copy()
+        
+        # Handle horizontal wrapping: use shortest path (vectorized)
+        dx = p2_positions[:, 0] - p1_positions[:, 0]
+        wrap_threshold = self.viewport.width / 2
+        
+        # Wrap p1 to right where p2 is far right
+        wrap_right_mask = (np.abs(dx) > wrap_threshold) & (dx > 0)
+        p1_wrapped[wrap_right_mask, 0] += self.viewport.width
+        
+        # Wrap p1 to left where p2 is far left
+        wrap_left_mask = (np.abs(dx) > wrap_threshold) & (dx < 0)
+        p1_wrapped[wrap_left_mask, 0] -= self.viewport.width
+        
+        # Vectorized midpoint calculation with random jitter
+        mid_jitter = np.random.uniform(-10, 10, size=(n_bolts, 2)).astype(np.float32)
+        mid_xy = (p1_wrapped[:, :2] + p2_wrapped[:, :2]) / 2 + mid_jitter  # Shape: (n_bolts, 2)
+        mid_z = (p1_wrapped[:, 2] + p2_wrapped[:, 2]) / 2  # Shape: (n_bolts,)
+        mid_positions = np.column_stack([mid_xy, mid_z])  # Shape: (n_bolts, 3)
+        
+        # Vectorized color generation
+        lightning_colors = self._lightning_color_from_indices_vectorized(
+            indices_i, indices_j, intensities
+        )  # Shape: (n_bolts, 3)
+        
+        # Vectorized alpha calculation
+        lightning_alphas = intensities * 0.8  # Shape: (n_bolts,)
+        
+        # Build vertex data efficiently using NumPy operations
+        # Each lightning bolt has 2 segments, each segment has 2 vertices = 4 vertices per bolt
+        n_vertices = n_bolts * 4
+        
+        # Pre-allocate arrays
+        vertices = np.zeros((n_vertices, 2), dtype=np.float32)
+        offsets = np.zeros((n_vertices, 3), dtype=np.float32)
+        colors = np.zeros((n_vertices, 3), dtype=np.float32)
+        alphas = np.zeros(n_vertices, dtype=np.float32)
+        
+        # Use advanced indexing to fill arrays efficiently
+        # Segment 1: p1 to mid (vertices 0, 1 for each bolt)
+        vertices[0::4] = p1_wrapped[:, :2]  # p1 start
+        vertices[1::4] = mid_xy  # mid end
+        
+        offsets[0::4] = p1_wrapped  # p1 offset
+        offsets[1::4] = mid_positions  # mid offset
+        
+        colors[0::4] = lightning_colors
+        colors[1::4] = lightning_colors
+        
+        alphas[0::4] = lightning_alphas
+        alphas[1::4] = lightning_alphas
+        
+        # Segment 2: mid to p2 (vertices 2, 3 for each bolt)
+        vertices[2::4] = mid_xy  # mid start
+        vertices[3::4] = p2_wrapped[:, :2]  # p2 end
+        
+        offsets[2::4] = mid_positions  # mid offset
+        offsets[3::4] = p2_wrapped  # p2 offset
+        
+        colors[2::4] = lightning_colors
+        colors[3::4] = lightning_colors
+        
+        alphas[2::4] = lightning_alphas
+        alphas[3::4] = lightning_alphas
+        
+        # Combine into final vertex data
         vertex_data = np.column_stack([
-            np.array(vertices, dtype=np.float32),
-            np.array(offsets1, dtype=np.float32),
-            np.array(colors, dtype=np.float32),
-            np.array(alphas, dtype=np.float32)
+            vertices,
+            offsets,
+            colors,
+            alphas
         ]).astype(np.float32)
         
-        return vertex_data, len(vertices)
+        return vertex_data, n_vertices
     
     def compile_shader(self):
         """Compile and link shaders"""
@@ -718,6 +929,12 @@ class AudioBallsEffect(ShaderEffect):
             self.positions[:, 0] + self.viewport.width,
             self.positions[:, 0]
         )
+        
+        # Apply sinusoidal height variation to each ball (vectorized)
+        # Each ball oscillates at a different frequency
+        time_scaled = 2 * np.pi * self.wave_frequencies * self.surface_time/10
+        y_offsets = self.wave_amplitude * np.sin(time_scaled)
+        self.positions[:, 1] = self.base_y_positions + y_offsets
         
         # Update lightning
         self._update_lightning(dt)
