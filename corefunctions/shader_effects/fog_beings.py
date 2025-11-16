@@ -13,17 +13,19 @@ import time
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_chromatic_fog_beings(state, outstate, num_beings=4):
+def shader_chromatic_fog_beings(state, outstate, num_beings=4, depth_layer=50.0):
     """
-    Shader-based chromatic fog beings effect compatible with EventScheduler
+        Shader-based chromatic fog beings effect compatible with EventScheduler
     
     Usage:
-        scheduler.schedule_event(0, 60, shader_chromatic_fog_beings, num_beings=5, frame_id=0)
+        scheduler.schedule_event(0, 60, shader_chromatic_fog_beings, num_beings=5, 
+                                depth_layer=50.0, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        num_beings: Number of fog beings to spawn (3-6 recommended)
+        num_beings: Number of fog beings to spawn (1-6, default 4)
+        depth_layer: Depth layer for beings (0=near, 100=far, default 50.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -44,11 +46,12 @@ def shader_chromatic_fog_beings(state, outstate, num_beings=4):
         try:
             fog_effect = viewport.add_effect(
                 ChromaticFogBeingsEffect,
-                num_beings=num_beings
+                num_beings=num_beings,
+                depth_layer=depth_layer
             )
             state['fog_effect'] = fog_effect
             state['start_time'] = time.time()
-            print(f"✓ Initialized {num_beings} fog beings for frame {frame_id}")
+            print(f"✓ Initialized {num_beings} fog beings at depth {depth_layer} for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize fog beings: {e}")
             import traceback
@@ -114,10 +117,13 @@ class Being:
         self.tentacle_params = []
         
         for _ in range(self.tentacles):
-            self.tentacle_params.append({
+                        self.tentacle_params.append({
                 'angle': np.random.uniform(0, 2 * np.pi),
-                'length': np.random.uniform(10,20),  # Much longer tentacles
-                'wave_rate': np.random.uniform(0.5, 2.0),
+                'angle_velocity': np.random.uniform(-0.08, 0.08),  # Slower, smoother rotation
+                'rotation_phase': np.random.uniform(0, 2 * np.pi),  # For organic oscillation
+                'rotation_rate': np.random.uniform(0.15, 0.3),  # Slower oscillation
+                'length': np.random.uniform(10, 20),  # Much longer tentacles
+                'wave_rate': np.random.uniform(0.3, 1.0),  # Slower wave motion
                 'wave_phase': np.random.uniform(0, 2 * np.pi)
             })
         
@@ -128,16 +134,69 @@ class Being:
 class ChromaticFogBeingsEffect(ShaderEffect):
     """GPU-based chromatic fog beings using metaball rendering"""
     
-    def __init__(self, viewport, num_beings: int = 4):
+    def __init__(self, viewport, num_beings: int = 4, depth_layer: float = 50.0):
         super().__init__(viewport)
-        self.num_beings = np.clip(num_beings, 1, 4)
-        self.beings: List[Being] = []
+        self.num_beings = np.clip(num_beings, 1, 6)
+        self.beings: List[Being] = []  # Keep for compatibility with render method
         self.fade_factor = 0.0
         self.next_communication = time.time() + np.random.uniform(3, 8)
+        self.depth_layer = depth_layer  # Depth in range 0-100
         
-        # Spawn beings
-        for _ in range(self.num_beings):
-            self.beings.append(Being(viewport.width, viewport.height))
+        # Wrap margin for horizontal wrapping
+        self.wrap_margin = 60.0  # Should be larger than max being size + tentacle length
+        
+        # === VECTORIZED DATA STORAGE ===
+        # Positions and velocities (N, 2)
+        self.positions = np.random.uniform([20, 15], [viewport.width - 20, viewport.height - 15], 
+                                          (self.num_beings, 2)).astype(np.float32)
+        self.velocities = np.random.uniform(-0.5, 0.5, (self.num_beings, 2)).astype(np.float32)
+        
+        # Sizes and appearance
+        self.sizes = np.random.uniform(3, 6, self.num_beings).astype(np.float32)
+        self.base_hues = np.random.uniform(0, 1, self.num_beings).astype(np.float32)
+        self.hue_drift_rates = np.random.uniform(0.05, 0.2, self.num_beings).astype(np.float32)
+        self.hue_drift_phases = np.random.uniform(0, 2*np.pi, self.num_beings).astype(np.float32)
+        
+        # Shape properties
+        self.shape_complexities = np.random.uniform(2, 5, self.num_beings).astype(np.float32)
+        self.shape_phases = np.random.uniform(0, 2*np.pi, self.num_beings).astype(np.float32)
+        self.shape_evolution_rates = np.random.uniform(0.1, 0.3, self.num_beings).astype(np.float32)
+        
+        # Behavior properties
+        self.target_behaviors = np.random.randint(0, 3, self.num_beings).astype(np.int32)
+        self.target_entities = np.full(self.num_beings, -1, dtype=np.int32)  # -1 means no target
+        self.last_behavior_changes = np.full(self.num_beings, time.time(), dtype=np.float64)
+        self.behavior_durations = np.random.uniform(5, 15, self.num_beings).astype(np.float32)
+        
+        # Tentacle data - store as list of arrays since count varies
+        self.max_tentacles = 6
+        self.tentacle_counts = np.random.randint(2, 5, self.num_beings).astype(np.int32)
+        self.tentacle_angles = []
+        self.tentacle_velocities = []
+        self.tentacle_rotation_phases = []
+        self.tentacle_rotation_rates = []
+        self.tentacle_lengths = []
+        self.tentacle_wave_rates = []
+        self.tentacle_wave_phases = []
+        
+        for i in range(self.num_beings):
+            n = self.tentacle_counts[i]
+            self.tentacle_angles.append(np.random.uniform(0, 2*np.pi, n).astype(np.float32))
+            self.tentacle_velocities.append(np.random.uniform(-0.08, 0.08, n).astype(np.float32))
+            self.tentacle_rotation_phases.append(np.random.uniform(0, 2*np.pi, n).astype(np.float32))
+            self.tentacle_rotation_rates.append(np.random.uniform(0.15, 0.3, n).astype(np.float32))
+            self.tentacle_lengths.append(np.random.uniform(10, 20, n).astype(np.float32))
+            self.tentacle_wave_rates.append(np.random.uniform(0.3, 1.0, n).astype(np.float32))
+            self.tentacle_wave_phases.append(np.random.uniform(0, 2*np.pi, n).astype(np.float32))
+        
+        # Communication pulses - store as list since pulses come and go
+        self.color_pulses = [[] for _ in range(self.num_beings)]
+        
+        # Spawn beings (for render compatibility - will sync from arrays)
+        for i in range(self.num_beings):
+            being = Being(viewport.width, viewport.height)
+            self.beings.append(being)
+            self._sync_being_from_arrays(i)
         
         # Uniforms buffer
         self.instance_VBO = None
@@ -150,12 +209,20 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         // Fullscreen quad vertices
         layout(location = 0) in vec2 position;
         
+        uniform float depthValue;  // Depth layer for this effect
+        
         out vec2 fragCoord;
         
         void main() {
             // Convert from [-1, 1] to screen coordinates
             fragCoord = position;
-            gl_Position = vec4(position, 0.0, 1.0);
+            
+            // Set depth for proper 3D layering
+            // depthValue is in range 0-100, map to 0.0-1.0
+            float depth = depthValue / 100.0;
+            depth = clamp(depth, 0.0, 1.0);
+            
+            gl_Position = vec4(position, depth, 1.0);
         }
         """
     
@@ -168,9 +235,10 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         in vec2 fragCoord;
         out vec4 outColor;
         
-        uniform vec2 resolution;
+                uniform vec2 resolution;
         uniform float time;
         uniform float fadeAlpha;
+        uniform float wrapWidth;  // Viewport width for wrapping
         
         // Being data (max 6 beings)
         uniform int numBeings;
@@ -195,16 +263,51 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
         }
         
-        // Metaball density function
+                // Metaball density function with horizontal wrapping
         float metaball(vec2 pos, vec2 center, float size) {
-            float dist = length(pos - center);
+            // Calculate distance with wrapping on X axis
+            float dx = pos.x - center.x;
+            
+            // Check if wrapped distance is shorter
+            float wrapped_dx_left = dx + wrapWidth;
+            float wrapped_dx_right = dx - wrapWidth;
+            
+            // Use shortest distance
+            if (abs(wrapped_dx_left) < abs(dx)) {
+                dx = wrapped_dx_left;
+            } else if (abs(wrapped_dx_right) < abs(dx)) {
+                dx = wrapped_dx_right;
+            }
+            
+            float dy = pos.y - center.y;
+            float dist = sqrt(dx * dx + dy * dy);
+            
             return exp(-dist * dist / (2.0 * size * size));
         }
         
-        // Distance from point to line segment
+                // Distance from point to line segment with horizontal wrapping
         float distanceToSegment(vec2 p, vec2 a, vec2 b) {
-            vec2 pa = p - a;
-            vec2 ba = b - a;
+            // Apply wrapping to segment endpoints relative to point
+            vec2 a_wrapped = a;
+            vec2 b_wrapped = b;
+            
+            // Wrap endpoints if they're far from point
+            float dx_a = p.x - a.x;
+            if (abs(dx_a + wrapWidth) < abs(dx_a)) {
+                a_wrapped.x += wrapWidth;
+            } else if (abs(dx_a - wrapWidth) < abs(dx_a)) {
+                a_wrapped.x -= wrapWidth;
+            }
+            
+            float dx_b = p.x - b.x;
+            if (abs(dx_b + wrapWidth) < abs(dx_b)) {
+                b_wrapped.x += wrapWidth;
+            } else if (abs(dx_b - wrapWidth) < abs(dx_b)) {
+                b_wrapped.x -= wrapWidth;
+            }
+            
+            vec2 pa = p - a_wrapped;
+            vec2 ba = b_wrapped - a_wrapped;
             float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
             return length(pa - ba * h);
         }
@@ -269,14 +372,86 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 float complexity = beingComplexities[i];
                 float phase = beingPhases[i];
                 
-                // Calculate distance from center for brightness gradient
-                float distFromCenter = length(screenPos - center);
+                                // Calculate wrapped distance from center for brightness gradient
+                float dx = screenPos.x - center.x;
+                float wrapped_dx_left = dx + wrapWidth;
+                float wrapped_dx_right = dx - wrapWidth;
+                
+                if (abs(wrapped_dx_left) < abs(dx)) {
+                    dx = wrapped_dx_left;
+                } else if (abs(wrapped_dx_right) < abs(dx)) {
+                    dx = wrapped_dx_right;
+                }
+                
+                float dy = screenPos.y - center.y;
+                float distFromCenter = sqrt(dx * dx + dy * dy);
                 float normalizedDist = distFromCenter / (size * 2.5);  // Normalize to being size
                 
-                // Base density
+                                                                // === DIFFUSE GLOW LAYER ===
+                // Build glow density that encompasses the entire being shape
+                float glowSize = size * 2.5;  // Glow extends beyond main body
+                float glowDensity = metaball(screenPos, center, glowSize);
+                
+                // Add glow for lobes to create organic halo
+                int glowNLobes = int(complexity);
+                float glowOffsetFactor = size * 0.7;
+                float lobeGlowSize = size * 2.0;
+                
+                for (int j = 0; j < glowNLobes && j < 5; j++) {
+                    float glowAngle = phase + float(j) * 6.28318 / complexity;
+                    vec2 glowLobePos = center + vec2(cos(glowAngle), sin(glowAngle)) * glowOffsetFactor;
+                    glowDensity += 0.5 * metaball(screenPos, glowLobePos, lobeGlowSize);
+                }
+                
+                // Add glow for tentacles to complete the organic halo
+                int glowTentacleCount = beingTentacleCounts[i];
+                int glowTentacleBaseIdx = i * 6;
+                
+                for (int t = 0; t < glowTentacleCount && t < 6; t++) {
+                    vec4 glowTentacle = tentacleData[glowTentacleBaseIdx + t];
+                    float glowBaseAngle = glowTentacle.x;
+                    float glowLength = glowTentacle.y;
+                    float glowWaveRate = glowTentacle.z;
+                    float glowWavePhase = glowTentacle.w;
+                    
+                    // Sample tentacle positions for glow
+                    int glowSamples = 4;  // Fewer samples for performance
+                    for (int s = 0; s < glowSamples; s++) {
+                        float glowRatio = float(s) / float(glowSamples - 1);
+                        float glowSegmentLength = glowLength * glowRatio;
+                        
+                        float glowWaveOffset = glowRatio * 2.0;
+                        float glowWaveFactor = sin(time * glowWaveRate + glowWavePhase + glowWaveOffset * 3.14159);
+                        float glowUndulation = glowRatio * sin(time * 0.3) * 0.3;
+                        float glowTentacleAngle = glowBaseAngle + glowUndulation + glowWaveFactor * 0.8;
+                        
+                        vec2 tentaclePos = center + vec2(cos(glowTentacleAngle), sin(glowTentacleAngle)) * glowSegmentLength;
+                        float tentacleGlowSize = size * 1.5 * (1.0 - glowRatio * 0.5);  // Taper
+                        glowDensity += 0.3 * metaball(screenPos, tentaclePos, tentacleGlowSize);
+                    }
+                }
+                
+                // Normalize and render glow
+                if (glowDensity > 0.01) {
+                    float glowNormalizedDensity = min(glowDensity * 0.8, 1.0);
+                    float glowSaturation = 0.7 - glowNormalizedDensity * 0.3;
+                    float glowValue = 0.25 + glowNormalizedDensity * 0.4;
+                    float glowAlpha = glowNormalizedDensity * 0.35;  // Visible glow
+                    
+                    vec3 glowColor = hsv2rgb(vec3(hue, glowSaturation, glowValue));
+                    
+                    // Blend glow into accumulated color
+                    float newGlowAlpha = glowAlpha + accumulatedAlpha * (1.0 - glowAlpha);
+                    if (newGlowAlpha > 0.0) {
+                        accumulatedColor = (glowColor * glowAlpha + accumulatedColor * accumulatedAlpha * (1.0 - glowAlpha)) / newGlowAlpha;
+                        accumulatedAlpha = newGlowAlpha;
+                    }
+                }
+                
+                // Base density (main body)
                 float density = metaball(screenPos, center, size);
                 
-                // Add lobes for organic shape
+                                // Add lobes for organic shape (uses metaball with wrapping)
                 int nLobes = int(complexity);
                 float offsetFactor = size * 0.7;
                 float lobeSize = size * 0.6;
@@ -318,8 +493,21 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                     float pulseDuration = pulse.y;
                     float pulseRadius = pulse.z;
                     
-                    if (pulseAge < pulseDuration) {
-                        float dist = length(screenPos - center);
+                                        if (pulseAge < pulseDuration) {
+                        // Calculate wrapped distance for pulses
+                        float dx = screenPos.x - center.x;
+                        float wrapped_dx_left = dx + wrapWidth;
+                        float wrapped_dx_right = dx - wrapWidth;
+                        
+                        if (abs(wrapped_dx_left) < abs(dx)) {
+                            dx = wrapped_dx_left;
+                        } else if (abs(wrapped_dx_right) < abs(dx)) {
+                            dx = wrapped_dx_right;
+                        }
+                        
+                        float dy = screenPos.y - center.y;
+                        float dist = sqrt(dx * dx + dy * dy);
+                        
                         float ringWidth = size * 0.5;
                         float ringInner = pulseRadius - ringWidth * 0.5;
                         float ringOuter = pulseRadius + ringWidth * 0.5;
@@ -417,129 +605,215 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         
         glBindVertexArray(0)
     
+    def _sync_being_from_arrays(self, i: int):
+        """Sync a Being object from vectorized arrays"""
+        being = self.beings[i]
+        being.position = self.positions[i].copy()
+        being.velocity = self.velocities[i].copy()
+        being.size = float(self.sizes[i])
+        being.base_hue = float(self.base_hues[i])
+        being.hue_drift_rate = float(self.hue_drift_rates[i])
+        being.hue_drift_phase = float(self.hue_drift_phases[i])
+        being.shape_complexity = float(self.shape_complexities[i])
+        being.shape_phase = float(self.shape_phases[i])
+        being.shape_evolution_rate = float(self.shape_evolution_rates[i])
+        being.target_behavior = int(self.target_behaviors[i])
+        being.last_behavior_change = float(self.last_behavior_changes[i])
+        being.behavior_duration = float(self.behavior_durations[i])
+        
+        # Sync tentacles
+        being.tentacles = int(self.tentacle_counts[i])
+        being.tentacle_params = []
+        for j in range(being.tentacles):
+            being.tentacle_params.append({
+                'angle': float(self.tentacle_angles[i][j]),
+                'angle_velocity': float(self.tentacle_velocities[i][j]),
+                'rotation_phase': float(self.tentacle_rotation_phases[i][j]),
+                'rotation_rate': float(self.tentacle_rotation_rates[i][j]),
+                'length': float(self.tentacle_lengths[i][j]),
+                'wave_rate': float(self.tentacle_wave_rates[i][j]),
+                'wave_phase': float(self.tentacle_wave_phases[i][j])
+            })
+        
+        being.color_pulses = self.color_pulses[i]
+    
+    def _sync_all_beings(self):
+        """Sync all Being objects from vectorized arrays"""
+        for i in range(self.num_beings):
+            self._sync_being_from_arrays(i)
+    
     def update(self, dt: float, state: Dict):
-        """Update being positions and behaviors"""
+        """Update being positions and behaviors - VECTORIZED"""
         if not self.enabled:
             return
         
         current_time = time.time()
         
-        # Update each being
-        for being in self.beings:
-            # Update behavior if needed
-            if current_time - being.last_behavior_change > being.behavior_duration:
-                being.target_behavior = np.random.randint(0, 3)
-                being.behavior_duration = np.random.uniform(5, 15)
-                being.last_behavior_change = current_time
-                
-                if being.target_behavior == 1 and len(self.beings) > 1:
-                    potential_targets = [b for b in self.beings if b is not being]
-                    being.target_entity = np.random.choice(potential_targets)
+        # === VECTORIZED BEHAVIOR UPDATES ===
+        # Check which beings need behavior change
+        time_since_change = current_time - self.last_behavior_changes
+        needs_change = time_since_change > self.behavior_durations
+        
+        if np.any(needs_change):
+            change_indices = np.where(needs_change)[0]
+            self.target_behaviors[change_indices] = np.random.randint(0, 3, len(change_indices))
+            self.behavior_durations[change_indices] = np.random.uniform(5, 15, len(change_indices))
+            self.last_behavior_changes[change_indices] = current_time
+            
+            # Assign targets for seek behavior
+            for idx in change_indices:
+                if self.target_behaviors[idx] == 1 and self.num_beings > 1:
+                    # Choose a different being as target
+                    potential_targets = [j for j in range(self.num_beings) if j != idx]
+                    self.target_entities[idx] = np.random.choice(potential_targets)
                 else:
-                    being.target_entity = None
+                    self.target_entities[idx] = -1
+        
+        # === WANDER BEHAVIOR (0) ===
+        wander_mask = self.target_behaviors == 0
+        if np.any(wander_mask):
+            # Random chance to change direction
+            change_dir = np.random.random(self.num_beings) < 0.02
+            wander_change = wander_mask & change_dir
             
-            # Apply behavior
-            if being.target_behavior == 0:  # Wander
-                if np.random.random() < 0.02:
-                    angle = np.random.uniform(0, 2 * np.pi)
-                    speed = np.linalg.norm(being.velocity) or np.random.uniform(0.5, 1.5)
-                    being.velocity = np.array([np.cos(angle), np.sin(angle)]) * speed
-            
-            elif being.target_behavior == 1 and being.target_entity:  # Seek
-                direction = being.target_entity.position - being.position
+            if np.any(wander_change):
+                change_indices = np.where(wander_change)[0]
+                angles = np.random.uniform(0, 2*np.pi, len(change_indices))
+                speeds = np.linalg.norm(self.velocities[change_indices], axis=1)
+                speeds = np.where(speeds > 0, speeds, np.random.uniform(0.5, 1.5, len(change_indices)))
+                
+                self.velocities[change_indices, 0] = np.cos(angles) * speeds
+                self.velocities[change_indices, 1] = np.sin(angles) * speeds
+        
+        # === SEEK BEHAVIOR (1) ===
+        seek_mask = (self.target_behaviors == 1) & (self.target_entities >= 0)
+        if np.any(seek_mask):
+            seek_indices = np.where(seek_mask)[0]
+            for idx in seek_indices:
+                target_idx = self.target_entities[idx]
+                direction = self.positions[target_idx] - self.positions[idx]
                 distance = np.linalg.norm(direction)
                 
                 if distance > 0.1:
                     direction = direction / distance
                     target_velocity = direction * np.random.uniform(0.5, 1.5)
-                    being.velocity += (target_velocity - being.velocity) * 0.1
+                    self.velocities[idx] += (target_velocity - self.velocities[idx]) * 0.1
                     
-                    speed = np.linalg.norm(being.velocity)
+                    speed = np.linalg.norm(self.velocities[idx])
                     if speed > 2.0:
-                        being.velocity = being.velocity / speed * 2.0
+                        self.velocities[idx] = self.velocities[idx] / speed * 2.0
+        
+        # === MIMIC BEHAVIOR (2) ===
+        mimic_mask = self.target_behaviors == 2
+        if np.any(mimic_mask):
+            self.shape_complexities[mimic_mask] = 3 + np.sin(current_time * 0.2) * 2
+        
+        # === VECTORIZED POSITION UPDATES ===
+        self.positions += self.velocities * dt
+        
+        # === VECTORIZED BOUNDARY CHECKS ===
+        padding = 10
+        
+        # Horizontal wrapping
+        self.positions[:, 0] = np.where(self.positions[:, 0] < 0,
+                                       self.positions[:, 0] + self.viewport.width,
+                                       self.positions[:, 0])
+        self.positions[:, 0] = np.where(self.positions[:, 0] > self.viewport.width,
+                                       self.positions[:, 0] - self.viewport.width,
+                                       self.positions[:, 0])
+        
+        # Vertical boundaries with bounce
+        # Bottom boundary
+        bottom_hit = self.positions[:, 1] < padding
+        self.positions[bottom_hit, 1] = padding
+        self.velocities[bottom_hit, 1] = np.abs(self.velocities[bottom_hit, 1]) * 0.8
+        
+        # Top boundary
+        top_hit = self.positions[:, 1] > self.viewport.height - padding
+        self.positions[top_hit, 1] = self.viewport.height - padding
+        self.velocities[top_hit, 1] = -np.abs(self.velocities[top_hit, 1]) * 0.8
+        
+        # === VECTORIZED APPEARANCE UPDATES ===
+        self.shape_phases += self.shape_evolution_rates * dt
+        self.hue_drift_phases += self.hue_drift_rates * dt
+        
+        # === VECTORIZED TENTACLE UPDATES ===
+        for i in range(self.num_beings):
+            n = self.tentacle_counts[i]
+            if n == 0:
+                continue
             
-            elif being.target_behavior == 2:  # Mimic
-                being.shape_complexity = 3 + np.sin(current_time * 0.2) * 2
+            # Smooth base rotation using velocity
+            self.tentacle_angles[i] += self.tentacle_velocities[i] * dt
             
-            # Update position
-            being.position += being.velocity * dt
+            # Add organic oscillation
+            oscillation = np.sin(current_time * self.tentacle_rotation_rates[i] + 
+                               self.tentacle_rotation_phases[i])
+            self.tentacle_angles[i] += oscillation * 0.05 * dt
             
-            # Boundary checks
-            padding = 10
-            if being.position[0] < padding:
-                being.position[0] = padding
-                being.velocity[0] = abs(being.velocity[0]) * 0.8
-            elif being.position[0] > self.viewport.width - padding:
-                being.position[0] = self.viewport.width - padding
-                being.velocity[0] = -abs(being.velocity[0]) * 0.8
+            # Keep angle in 0-2π range
+            self.tentacle_angles[i] = self.tentacle_angles[i] % (2 * np.pi)
             
-            if being.position[1] < padding:
-                being.position[1] = padding
-                being.velocity[1] = abs(being.velocity[1]) * 0.8
-            elif being.position[1] > self.viewport.height - padding:
-                being.position[1] = self.viewport.height - padding
-                being.velocity[1] = -abs(being.velocity[1]) * 0.8
+            # Occasionally adjust rotation velocity smoothly
+            adjust_vel = np.random.random(n) < 0.003
+            if np.any(adjust_vel):
+                target_velocities = np.random.uniform(-0.08, 0.08, n)
+                self.tentacle_velocities[i] += (target_velocities - self.tentacle_velocities[i]) * 0.05 * adjust_vel
             
-            # Update appearance
-            being.shape_phase += being.shape_evolution_rate * dt
-            being.hue_drift_phase += being.hue_drift_rate * dt
+            # Occasionally adjust wave parameters
+            adjust_wave = np.random.random(n) < 0.008
+            if np.any(adjust_wave):
+                target_wave_rates = np.random.uniform(0.3, 1.0, n)
+                self.tentacle_wave_rates[i] += (target_wave_rates - self.tentacle_wave_rates[i]) * 0.03 * adjust_wave
+                self.tentacle_wave_rates[i] = np.clip(self.tentacle_wave_rates[i], 0.2, 1.5)
             
-            # Update tentacle angles - make them rotate slowly around the body
-            for tentacle in being.tentacle_params:
-                # Slowly rotate the base angle
-                tentacle['angle'] += np.random.uniform(-0.05, 0.05) * dt
-                
-                # Add some organic drift to the rotation
-                tentacle['angle'] += np.sin(current_time * 0.3 + tentacle['wave_phase']) * 0.2 * dt
-                
-                # Keep angle in 0-2π range
-                tentacle['angle'] = tentacle['angle'] % (2 * np.pi)
-                
-                # Occasionally adjust wave parameters for variety
-                if np.random.random() < 0.01:
-                    tentacle['wave_rate'] += np.random.uniform(-0.1, 0.1)
-                    tentacle['wave_rate'] = np.clip(tentacle['wave_rate'], 0.3, 2.5)
-                
-                # Occasionally adjust length slightly
-                if np.random.random() < 0.005:
-                    tentacle['length'] += np.random.uniform(-2, 2)
-                    tentacle['length'] = np.clip(tentacle['length'], 10, 40)
-            
-            # Update pulses
+            # Occasionally adjust length
+            adjust_len = np.random.random(n) < 0.004
+            if np.any(adjust_len):
+                target_lengths = np.random.uniform(12, 25, n)
+                self.tentacle_lengths[i] += (target_lengths - self.tentacle_lengths[i]) * 0.02 * adjust_len
+        
+        # === UPDATE PULSES ===
+        for i in range(self.num_beings):
             remaining_pulses = []
-            for pulse in being.color_pulses:
+            for pulse in self.color_pulses[i]:
                 pulse['age'] += dt
                 if pulse['age'] < pulse['duration']:
                     remaining_pulses.append(pulse)
-            being.color_pulses = remaining_pulses
+            self.color_pulses[i] = remaining_pulses
         
-        # Check for communication events
-        if current_time >= self.next_communication and len(self.beings) > 1:
-            sender, receiver = np.random.choice(self.beings, 2, replace=False)
+        # === CHECK FOR COMMUNICATION EVENTS ===
+        if current_time >= self.next_communication and self.num_beings > 1:
+            sender_idx, receiver_idx = np.random.choice(self.num_beings, 2, replace=False)
             
             pulse = {
                 'age': 0.0,
                 'duration': np.random.uniform(1.0, 3.0),
-                'hue': sender.base_hue
+                'hue': float(self.base_hues[sender_idx])
             }
-            sender.color_pulses.append(pulse)
+            self.color_pulses[sender_idx].append(pulse)
             
             self.next_communication = current_time + np.random.uniform(3, 8)
             
             if np.random.random() < 0.3:
-                receiver.target_behavior = np.random.randint(0, 3)
-                receiver.target_entity = sender
-                receiver.last_behavior_change = current_time
-
+                self.target_behaviors[receiver_idx] = np.random.randint(0, 3)
+                self.target_entities[receiver_idx] = sender_idx
+                self.last_behavior_changes[receiver_idx] = current_time
+        
+        # Sync Being objects for rendering
+        self._sync_all_beings()
     
+
     def render(self, state: Dict):
         """Render fog beings using shader"""
         if not self.enabled or not self.shader:
             return
         
+        # No depth state modifications - use global state
+        # Depth test and alpha blending are always enabled
         glUseProgram(self.shader)
         
-        # Set uniforms
+                # Set uniforms
         loc = glGetUniformLocation(self.shader, "resolution")
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
@@ -551,6 +825,14 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "fadeAlpha")
         if loc != -1:
             glUniform1f(loc, self.fade_factor)
+        
+        loc = glGetUniformLocation(self.shader, "depthValue")
+        if loc != -1:
+            glUniform1f(loc, self.depth_layer)
+        
+        loc = glGetUniformLocation(self.shader, "wrapWidth")
+        if loc != -1:
+            glUniform1f(loc, float(self.viewport.width))
         
         loc = glGetUniformLocation(self.shader, "numBeings")
         if loc != -1:
@@ -633,15 +915,11 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         if loc != -1:
             glUniform4fv(loc, 12, pulse_data.flatten())
         
-        # Render fullscreen quad
+                # Render fullscreen quad
         glBindVertexArray(self.VAO)
         
-        # Enable blending
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
+        # Blending is already enabled globally - no need to toggle
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
         
         glBindVertexArray(0)
         glUseProgram(0)
-        glDisable(GL_BLEND)
