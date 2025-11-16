@@ -142,27 +142,32 @@ class AudioBallsEffect(ShaderEffect):
         # NOTE: Do NOT call setup_buffers() here!
     
     def _initialize_balls(self):
-        """Initialize ball positions and properties"""
-        for i in range(self.num_balls):
-            # Horizontal position distributed across screen
-            x = (i / (self.num_balls - 1)) * self.viewport.width if self.num_balls > 1 else self.viewport.width / 2
-            
-            # Vertical positions - each ball at a unique height
-            # Distribute evenly from top to bottom with padding
-            y = (i / (self.num_balls - 1)) * (self.viewport.height - 60) + 30 if self.num_balls > 1 else self.viewport.height / 2
-            
-            z = 50  # Mid-depth
-            
-            self.positions[i] = [x, y, z]
-            self.speeds[i] = np.random.uniform(10, 30)  # pixels/second (slower)
-            
-            # Color based on frequency (hue from band index)
-            band_idx = i * self.band_step
-            hue = (band_idx / 32.0) % 1.0
-            self.colors[i] = self._hsv_to_rgb(hue, s=0.8, v=1.0)
+        """Initialize ball positions and properties (vectorized)"""
+        # Vectorized position calculation
+        indices = np.arange(self.num_balls, dtype=np.float32)
+        
+        if self.num_balls > 1:
+            x_positions = (indices / (self.num_balls - 1)) * self.viewport.width
+            y_positions = (indices / (self.num_balls - 1)) * (self.viewport.height - 60) + 30
+        else:
+            x_positions = np.full(self.num_balls, self.viewport.width / 2, dtype=np.float32)
+            y_positions = np.full(self.num_balls, self.viewport.height / 2, dtype=np.float32)
+        
+        self.positions[:, 0] = x_positions
+        self.positions[:, 1] = y_positions
+        self.positions[:, 2] = 50  # Mid-depth
+        
+        # Vectorized speed generation
+        self.speeds[:] = np.random.uniform(10, 30, size=self.num_balls)
+        
+        # Vectorized color generation from hue
+        band_indices = (indices * self.band_step).astype(np.int32)
+        band_indices = np.minimum(band_indices, 31)
+        hues = (band_indices / 32.0) % 1.0
+        self.colors[:] = self._hsv_to_rgb_vectorized(hues, s=0.8, v=1.0)
     
     def _hsv_to_rgb(self, h, s=1.0, v=1.0):
-        """Convert HSV to RGB (h in 0-1 range)"""
+        """Convert HSV to RGB (h in 0-1 range, scalar version)"""
         h = h % 1.0
         i = int(h * 6.0)
         f = h * 6.0 - i
@@ -184,70 +189,135 @@ class AudioBallsEffect(ShaderEffect):
         else:
             return np.array([v, p, q], dtype=np.float32)
     
+    def _hsv_to_rgb_vectorized(self, h, s=1.0, v=1.0):
+        """Convert HSV to RGB (vectorized for arrays)
+        
+        Args:
+            h: Array of hues in 0-1 range
+            s: Saturation (scalar)
+            v: Value (scalar)
+        
+        Returns:
+            Array of shape (n, 3) with RGB values
+        """
+        h = np.asarray(h, dtype=np.float32) % 1.0
+        i = np.asarray(h * 6.0, dtype=np.int32)
+        f = h * 6.0 - i
+        
+        p = v * (1.0 - s)
+        q = v * (1.0 - f * s)
+        t = v * (1.0 - (1.0 - f) * s)
+        
+        i = i % 6
+        n = len(h)
+        
+        # Vectorized RGB selection based on hue sector
+        rgb = np.zeros((n, 3), dtype=np.float32)
+        
+        mask0 = i == 0
+        mask1 = i == 1
+        mask2 = i == 2
+        mask3 = i == 3
+        mask4 = i == 4
+        mask5 = i == 5
+        
+        # Element-wise assignment with proper broadcasting of scalars
+        rgb[mask0, 0] = v
+        rgb[mask0, 1] = t[mask0]
+        rgb[mask0, 2] = p
+        
+        rgb[mask1, 0] = q[mask1]
+        rgb[mask1, 1] = v
+        rgb[mask1, 2] = p
+        
+        rgb[mask2, 0] = p
+        rgb[mask2, 1] = v
+        rgb[mask2, 2] = t[mask2]
+        
+        rgb[mask3, 0] = p
+        rgb[mask3, 1] = q[mask3]
+        rgb[mask3, 2] = v
+        
+        rgb[mask4, 0] = t[mask4]
+        rgb[mask4, 1] = p
+        rgb[mask4, 2] = v
+        
+        rgb[mask5, 0] = v
+        rgb[mask5, 1] = p
+        rgb[mask5, 2] = q[mask5]
+        
+        return rgb
+    
     def update_from_audio(self, bands: np.ndarray):
-        """Update balls from audio frequency bands
+        """Update balls from audio frequency bands (vectorized)
         
         Args:
             bands: Array of shape (32,) with normalized frequency data
         """
-        for i in range(self.num_balls):
-            band_idx = min(i * self.band_step, 31)
-            energy = bands[band_idx]
-            self.energies[i] = energy
-            
-            # Smooth the energy for slower reaction
-            self.smoothed_energies[i] = (
-                self.smoothed_energies[i] * (1.0 - self.energy_smoothing) +
-                energy * self.energy_smoothing
-            )
-            
-            # Use smoothed energy for visual updates
-            smoothed = self.smoothed_energies[i]
-            
-            # Size increases with energy (reduced sensitivity)
-            self.sizes[i] = self.base_size * (1.0 + smoothed * self.sensitivity * 0.3)
-            
-            # Alpha increases with energy (more transparent)
-            self.alphas[i] = 0.3 + 0.5 * np.clip(smoothed, 0, 1)
-            
-            # Depth varies with energy (higher energy = closer/lower z value)
-            self.positions[i, 2] = 50 - smoothed * 20  # Range 30-50
+        # Vectorized band index selection
+        band_indices = np.minimum(
+            (np.arange(self.num_balls) * self.band_step).astype(np.int32),
+            31
+        )
+        
+        # Extract energies from bands for all balls at once
+        self.energies[:] = bands[band_indices]
+        
+        # Vectorized energy smoothing
+        self.smoothed_energies[:] = (
+            self.smoothed_energies * (1.0 - self.energy_smoothing) +
+            self.energies * self.energy_smoothing
+        )
+        
+        # Vectorized visual updates using smoothed energy
+        smoothed = self.smoothed_energies
+        
+        # Size increases with energy
+        self.sizes[:] = self.base_size * (1.0 + smoothed * self.sensitivity * 0.3)
+        
+        # Alpha increases with energy
+        self.alphas[:] = 0.3 + 0.5 * np.clip(smoothed, 0, 1)
+        
+        # Depth varies with energy
+        self.positions[:, 2] = 50 - smoothed * 20  # Range 30-50
     
     def _update_lightning(self, dt: float):
-        """Update lightning state and generate new arcs"""
-        # Decay existing lightning
-        for i, (ball_i, ball_j, intensity, age) in enumerate(self.active_lightning):
-            self.active_lightning[i] = (ball_i, ball_j, intensity * 0.8, age + dt)
+        """Update lightning state and generate new arcs (optimized)"""
+        # Decay existing lightning and filter in one pass
+        updated_lightning = []
+        for ball_i, ball_j, intensity, age in self.active_lightning:
+            new_intensity = intensity * 0.8
+            new_age = age + dt
+            # Keep lightning if intensity > 0.05 and age < 0.5
+            if new_intensity > 0.05 and new_age < 0.5:
+                updated_lightning.append((ball_i, ball_j, new_intensity, new_age))
+        self.active_lightning = updated_lightning
         
-        # Remove old lightning
-        self.active_lightning = [
-            (i, j, intensity, age) for i, j, intensity, age in self.active_lightning
-            if intensity > 0.05 and age < 0.5
-        ]
+        # Check for new lightning between nearby high-energy balls (vectorized distance)
+        high_energy_mask = self.energies >= self.lightning_threshold
+        high_energy_indices = np.where(high_energy_mask)[0]
         
-        # Check for new lightning between nearby high-energy balls
-        for i in range(self.num_balls):
-            if self.energies[i] < self.lightning_threshold:
+        for i in high_energy_indices:
+            # Find nearby balls with high energy using vectorized distance calc
+            j_indices = np.arange(i + 1, self.num_balls)
+            high_j = j_indices[self.energies[j_indices] >= self.lightning_threshold]
+            
+            if len(high_j) == 0:
                 continue
             
-            # Find nearby balls with high energy
-            nearby = []
-            for j in range(i + 1, self.num_balls):
-                if self.energies[j] < self.lightning_threshold:
-                    continue
-                
-                # Distance between balls
-                dx = self.positions[j, 0] - self.positions[i, 0]
-                dy = self.positions[j, 1] - self.positions[i, 1]
-                dist = np.sqrt(dx*dx + dy*dy)
-                
-                # Consider "nearby" if within 200 pixels or adjacent balls
-                if dist < 200 or abs(i - j) == 1:
-                    nearby.append((j, dist))
+            # Vectorized distance calculation
+            dx = self.positions[high_j, 0] - self.positions[i, 0]
+            dy = self.positions[high_j, 1] - self.positions[i, 1]
+            distances = np.sqrt(dx*dx + dy*dy)
             
-            # Randomly create lightning to nearby balls
-            if nearby and np.random.random() < self.lightning_probability:
-                j, _ = nearby[np.random.randint(len(nearby))]
+            # Find nearby balls (within 200 pixels or adjacent)
+            adjacent_mask = np.abs(high_j - i) == 1
+            nearby_mask = (distances < 200) | adjacent_mask
+            nearby_j = high_j[nearby_mask]
+            
+            # Randomly create lightning to a nearby ball
+            if len(nearby_j) > 0 and np.random.random() < self.lightning_probability:
+                j = nearby_j[np.random.randint(len(nearby_j))]
                 intensity = np.clip(self.energies[i] * self.energies[j], 0, 1)
                 
                 # Check if this lightning already exists
@@ -627,22 +697,27 @@ class AudioBallsEffect(ShaderEffect):
         glUseProgram(0)
     
     def update(self, dt: float, state: Dict):
-        """Update effect state each frame"""
+        """Update effect state each frame (vectorized)"""
         if not self.enabled:
             return
         
         # Update surface animation time
         self.surface_time += dt
         
-        # Move balls left to right
-        for i in range(self.num_balls):
-            self.positions[i, 0] += self.speeds[i] * dt
-            
-            # Wrap around horizontally
-            if self.positions[i, 0] > self.viewport.width:
-                self.positions[i, 0] -= self.viewport.width
-            elif self.positions[i, 0] < 0:
-                self.positions[i, 0] += self.viewport.width
+        # Vectorized ball movement with wrapping
+        self.positions[:, 0] += self.speeds * dt
+        
+        # Vectorized wrapping with modulo
+        self.positions[:, 0] = np.where(
+            self.positions[:, 0] > self.viewport.width,
+            self.positions[:, 0] - self.viewport.width,
+            self.positions[:, 0]
+        )
+        self.positions[:, 0] = np.where(
+            self.positions[:, 0] < 0,
+            self.positions[:, 0] + self.viewport.width,
+            self.positions[:, 0]
+        )
         
         # Update lightning
         self._update_lightning(dt)
