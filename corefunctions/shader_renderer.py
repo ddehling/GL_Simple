@@ -280,40 +280,27 @@ class ShaderViewport:
                 effect.update(dt, state)
     
     def render(self, state: Dict):
-        """Render effects to framebuffer (and optionally to window)"""
-        glfw.make_context_current(self.glfw_window)
-        
-        # Always render to framebuffer (for LED output at actual resolution)
+        # 1. Render effects ONCE to framebuffer (LED resolution)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        glViewport(0, 0, self.width, self.height)
-        glScissor(0, 0, self.width, self.height)
-        
         for effect in self.effects:
             if effect.enabled:
                 effect.render(state)
         
-        # CRITICAL: Ensure rendering is complete before unbinding
-        glFlush()
-        
-        # Only render to window if not headless and this is viewport 0
+        # 2. Copy/blit framebuffer to window (if visible)
         if not self.headless and self.display_width > 0:
-            glBindFramebuffer(GL_FRAMEBUFFER, 0)
-            glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
-            glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
-            
-            for effect in self.effects:
-                if effect.enabled:
-                    effect.render(state)
+            self._blit_framebuffer_to_window()
 
-        # Only render to window if not headless and this is viewport 0
-        if not self.headless and self.display_width > 0:
-            glBindFramebuffer(GL_FRAMEBUFFER, 0)
-            glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
-            glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
-            
-            for effect in self.effects:
-                if effect.enabled:
-                    effect.render(state)
+    def _blit_framebuffer_to_window(self):
+        """Copy framebuffer contents to window with proper scaling"""
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
+        glBlitFramebuffer(
+            0, 0, self.width, self.height,           # Source
+            self.window_x, self.window_y, 
+            self.window_x + self.display_width, 
+            self.window_y + self.display_height,     # Destination  
+            GL_COLOR_BUFFER_BIT, GL_LINEAR           # Copy color with scaling
+        )
 
     def get_frame(self) -> np.ndarray:
         """Read framebuffer into numpy array for LED output"""
