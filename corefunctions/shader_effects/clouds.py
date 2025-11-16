@@ -533,7 +533,7 @@ class CloudEffect(ShaderEffect):
         self.start_time = 0.0
 
     def update(self, dt: float, state: Dict):
-        """Update cloud positions and properties"""
+        """Update cloud positions and properties (fully vectorized)"""
         if not self.enabled:
             return
         
@@ -545,136 +545,122 @@ class CloudEffect(ShaderEffect):
         global_wave_y = np.sin(self.start_time * 0.05) * 0.3 + np.sin(self.start_time * 0.13) * 0.1
         
         # Dynamic cloud count based on cloudyness (0.0 to 1.0)
-        # cloudyness=0.0 -> 0 clouds, cloudyness=1.0 -> max_clouds
         target_cloud_count = int(np.clip(self.cloudyness, 0, 1) * self.max_clouds)
         current_active_clouds = np.sum(~self.is_fading_out) if len(self.is_fading_out) > 0 else 0
         
-        # Add clouds if we're below target (smooth spawn with fade-in)
+        # Add clouds if we're below target
         if current_active_clouds < target_cloud_count:
-            # Spawn rate: one cloud every 2-4 seconds when below target
             spawn_chance = dt * 0.3  # ~30% chance per second
             if np.random.random() < spawn_chance:
                 self._spawn_cloud()
-                #print(f"Spawned cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds+1}/{target_cloud_count})")
         
-        # Remove clouds if we're above target (smooth fade-out)
+        # Remove clouds if we're above target
         elif current_active_clouds > target_cloud_count:
-            # Find clouds that aren't already fading out and mark one for removal
             active_indices = np.where(~self.is_fading_out)[0]
             if len(active_indices) > 0:
-                # Prioritize clouds that are older and in safe middle zone for fading
-                removal_candidate = None
-                for idx in active_indices:
-                    tex_idx = self.texture_indices[idx]
-                    cloud_width = self.cloud_textures[tex_idx][0] * self.sizes[idx]
-                    cloud_x = self.positions[idx, 0]
-                    
-                    middle_safe_zone_left = self.wrap_margin + cloud_width
-                    middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_width
-                    is_in_middle = (cloud_x > middle_safe_zone_left and 
-                                   cloud_x < middle_safe_zone_right)
-                    
-                    if is_in_middle and self.lifetime[idx] > 3.0:  # At least 3 seconds old
-                        removal_candidate = idx
-                        break
+                # Vectorized candidate selection
+                tex_indices = self.texture_indices[active_indices]
+                cloud_widths = np.array([self.cloud_textures[idx][0] * self.sizes[i] 
+                                    for i, idx in zip(active_indices, tex_indices)])
+                cloud_x_positions = self.positions[active_indices, 0]
                 
-                # If no ideal candidate in middle, just pick the oldest
-                if removal_candidate is None:
+                middle_safe_zone_left = self.wrap_margin + cloud_widths
+                middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_widths
+                is_in_middle = ((cloud_x_positions > middle_safe_zone_left) & 
+                            (cloud_x_positions < middle_safe_zone_right))
+                is_old_enough = self.lifetime[active_indices] > 3.0
+                
+                good_candidates = active_indices[is_in_middle & is_old_enough]
+                
+                if len(good_candidates) > 0:
+                    removal_candidate = good_candidates[np.argmax(self.lifetime[good_candidates])]
+                else:
                     removal_candidate = active_indices[np.argmax(self.lifetime[active_indices])]
                 
                 self.is_fading_out[removal_candidate] = True
-                #print(f"Fading out cloud (cloudyness={self.cloudyness:.2f}, active={current_active_clouds-1}/{target_cloud_count})")
         
         # If no clouds exist yet, don't process the rest
         if len(self.positions) == 0:
             return
         
-        # Update lifetime for all clouds
+        # Update lifetime for all clouds (vectorized)
         self.lifetime += dt
         
-        # Smooth opacity transitions
-        # For clouds fading out, force opacity to zero
-        # For normal clouds, fade toward base opacity
+        # Smooth opacity transitions (vectorized)
         target_opacities = np.where(self.is_fading_out, 0.0, self.base_opacities)
         opacity_diff = target_opacities - self.current_opacities
         
         mask = np.abs(opacity_diff) > 0.01
         if np.any(mask):
-            # Slow fade-in (3-4 seconds), faster fade-out (2-3 seconds) for smooth transitions
-            transition_speed = np.where(self.is_fading_out, 0.4, 0.3)  # Slower transitions
+            transition_speed = np.where(self.is_fading_out, 0.4, 0.3)
             self.current_opacities += opacity_diff * transition_speed * dt
             self.current_opacities = np.clip(self.current_opacities, 0, 1)
         
-        # Update turbulence
+        # Update turbulence (vectorized)
         self.turbulence_phases += self.turbulence_speeds * dt
         
-        # Update subpixel offsets
+        # Update subpixel offsets (vectorized)
         self.subpixel_offsets[:, 0] = (self.subpixel_offsets[:, 0] + self.speeds * dt) % 1.0
         self.subpixel_offsets[:, 1] = (self.subpixel_offsets[:, 1] + dt * 0.1) % 1.0
         
-                        # Update positions with per-cloud wind sensitivity
-        # Each cloud responds differently to wind based on altitude and size
+        # Update positions with per-cloud wind sensitivity (vectorized)
         wind_effect = self.wind * self.wind_sensitivity
         self.positions[:, 0] += (self.speeds + wind_effect) * dt
         self.positions[:, 1] += global_wave_y * dt
         
-        # Horizontal wrapping - immediate, no gaps (same as rain effect)
+        # Horizontal wrapping (vectorized)
         left_mask = self.positions[:, 0] < 0
         right_mask = self.positions[:, 0] >= self.viewport.width
         self.positions[left_mask, 0] += self.viewport.width
         self.positions[right_mask, 0] -= self.viewport.width
         
-        # Clamp vertical position to viewport height
+        # Clamp vertical position (vectorized)
         self.positions[:, 1] = np.clip(self.positions[:, 1], 0, self.viewport.height)
         
-        # Update z-indices based on y position
+        # Update z-indices (vectorized)
         self.z_indices = self.positions[:, 1] * 0.3 + np.sin(self.turbulence_phases[:, 2]) * 3
         
-                                                                # Manage cloud lifecycle: fade-out and recycling
-        for i in range(len(self.positions)):
-            tex_idx = self.texture_indices[i]
-            cloud_width = self.cloud_textures[tex_idx][0] * self.sizes[i]
-            cloud_x = self.positions[i, 0]
-            
-                        # Check if cloud has any wrapped duplicates being rendered
-            # Duplicate on left: rendered when cloud's left edge is near/past right edge
-            has_duplicate_on_left = (cloud_x > self.viewport.width - self.wrap_margin)
-            # Duplicate on right: rendered when cloud is near left edge  
-            has_duplicate_on_right = (cloud_x < self.wrap_margin)
-            
-            # Cloud is in the MIDDLE of screen (safe zone for fading)
-            # Not near edges, no duplicates being rendered
-            middle_safe_zone_left = self.wrap_margin + cloud_width
-            middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_width
-            is_in_middle = (cloud_x > middle_safe_zone_left and 
-                           cloud_x < middle_safe_zone_right and
-                           not has_duplicate_on_left and 
-                           not has_duplicate_on_right)
-            
-            min_lifetime = 30.0  # Minimum 30 seconds before natural removal
-            
-            if not self.is_fading_out[i]:
-                # Natural lifecycle: fade-out when old and in middle (visible)
-                # This ensures fade happens where user can see it naturally
-                # and wrapping at edges is ALWAYS seamless
-                # NOTE: Cloudyness-based removal is handled separately above
-                if self.lifetime[i] > min_lifetime and is_in_middle:
-                    # Start fading out (visible in middle of screen)
-                    self.is_fading_out[i] = True
-            else:
-                # Already fading out - check if fully faded and can be removed
-                if self.current_opacities[i] < 0.01:
-                    # Cloud has faded to invisible - REMOVE IT (don't recycle)
-                    # This allows dynamic cloud count adjustment
-                    # Mark for deletion by setting lifetime to negative
-                    self.lifetime[i] = -1.0
+        # VECTORIZED LIFECYCLE MANAGEMENT
+        # Calculate cloud properties for all clouds at once
+        tex_indices = self.texture_indices
+        cloud_widths = np.array([self.cloud_textures[idx][0] * self.sizes[i] 
+                            for i, idx in enumerate(tex_indices)], dtype=np.float32)
+        cloud_x_positions = self.positions[:, 0]
         
-        # Remove clouds marked for deletion (those with lifetime < 0)
+        # Check for duplicates being rendered (vectorized)
+        has_duplicate_on_left = cloud_x_positions > (self.viewport.width - self.wrap_margin)
+        has_duplicate_on_right = cloud_x_positions < self.wrap_margin
+        
+        # Calculate middle safe zone for all clouds (vectorized)
+        middle_safe_zone_left = self.wrap_margin + cloud_widths
+        middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_widths
+        is_in_middle = ((cloud_x_positions > middle_safe_zone_left) & 
+                    (cloud_x_positions < middle_safe_zone_right) &
+                    ~has_duplicate_on_left & 
+                    ~has_duplicate_on_right)
+        
+        min_lifetime = 30.0
+        
+        # Natural lifecycle: start fading clouds that are old and in middle (vectorized)
+        should_start_fading = (~self.is_fading_out & 
+                            (self.lifetime > min_lifetime) & 
+                            is_in_middle)
+        
+        if np.any(should_start_fading):
+            self.is_fading_out[should_start_fading] = True
+        
+        # Mark fully faded clouds for removal (vectorized)
+        should_remove = self.is_fading_out & (self.current_opacities < 0.01)
+        if np.any(should_remove):
+            self.lifetime[should_remove] = -1.0  # Mark for deletion
+        
+        # Remove clouds marked for deletion (vectorized)
         if len(self.lifetime) > 0:
             keep_mask = self.lifetime >= 0
             if not np.all(keep_mask):
                 num_removed = np.sum(~keep_mask)
-                                # Remove from all arrays
+                
+                # Remove from all arrays (vectorized)
                 self.positions = self.positions[keep_mask]
                 self.speeds = self.speeds[keep_mask]
                 self.wind_sensitivity = self.wind_sensitivity[keep_mask]
@@ -688,22 +674,20 @@ class CloudEffect(ShaderEffect):
                 self.subpixel_offsets = self.subpixel_offsets[keep_mask]
                 self.noise_offsets = self.noise_offsets[keep_mask]
                 
-                # For texture indices, also clean up unused textures
+                # Clean up texture resources for removed clouds
                 removed_tex_indices = self.texture_indices[~keep_mask]
                 self.texture_indices = self.texture_indices[keep_mask]
                 
-                # Delete GPU textures that are no longer used by any cloud
-                for tex_idx in removed_tex_indices:
+                # Delete GPU textures that are no longer used by any cloud (vectorized)
+                unique_removed = np.unique(removed_tex_indices)
+                for tex_idx in unique_removed:
                     if tex_idx not in self.texture_indices:
                         if tex_idx < len(self.texture_ids):
                             glDeleteTextures(1, [self.texture_ids[tex_idx]])
-                            # Mark as deleted (set to 0)
                             self.texture_ids[tex_idx] = 0
                 
                 self.is_fading_out = self.is_fading_out[keep_mask]
                 self.lifetime = self.lifetime[keep_mask]
-                
-                #print(f"Removed {num_removed} fully faded cloud(s)")
 
     def render(self, state: Dict):
         """Render all clouds with seamless wrapping using duplicates (vectorized)"""
