@@ -235,7 +235,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         in vec2 fragCoord;
         out vec4 outColor;
         
-                uniform vec2 resolution;
+        uniform vec2 resolution;
         uniform float time;
         uniform float fadeAlpha;
         uniform float wrapWidth;  // Viewport width for wrapping
@@ -250,11 +250,11 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         
         // Tentacle data (max 6 tentacles per being)
         uniform int beingTentacleCounts[6];
-        uniform vec4 tentacleData[36];  // [angle, length, wave_rate, wave_phase] * 6 beings * 6 tentacles
+        uniform vec4 tentacleData[36];
         
         // Pulse data (max 2 pulses per being)
         uniform int beingPulseCounts[6];
-        uniform vec4 pulseData[12];  // [age, duration, radius, hue] * 6 beings * 2 pulses
+        uniform vec4 pulseData[12];
         
         // HSV to RGB conversion
         vec3 hsv2rgb(vec3 c) {
@@ -263,105 +263,66 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
         }
         
-                // Metaball density function with horizontal wrapping
-        float metaball(vec2 pos, vec2 center, float size) {
-            // Calculate distance with wrapping on X axis
-            float dx = pos.x - center.x;
-            
-            // Check if wrapped distance is shorter
-            float wrapped_dx_left = dx + wrapWidth;
-            float wrapped_dx_right = dx - wrapWidth;
-            
-            // Use shortest distance
-            if (abs(wrapped_dx_left) < abs(dx)) {
-                dx = wrapped_dx_left;
-            } else if (abs(wrapped_dx_right) < abs(dx)) {
-                dx = wrapped_dx_right;
-            }
-            
+        // Get wrapped distance for X axis
+        float getWrappedDx(float dx) {
+            float wrapped_left = dx + wrapWidth;
+            float wrapped_right = dx - wrapWidth;
+            if (abs(wrapped_left) < abs(dx)) return wrapped_left;
+            if (abs(wrapped_right) < abs(dx)) return wrapped_right;
+            return dx;
+        }
+        
+        // Metaball density function with horizontal wrapping - OPTIMIZED
+        float metaball(vec2 pos, vec2 center, float sizeInv) {
+            float dx = getWrappedDx(pos.x - center.x);
             float dy = pos.y - center.y;
-            float dist = sqrt(dx * dx + dy * dy);
-            
-            return exp(-dist * dist / (2.0 * size * size));
+            float distSq = dx * dx + dy * dy;
+            return exp(-distSq * sizeInv);
         }
         
-                // Distance from point to line segment with horizontal wrapping
-        float distanceToSegment(vec2 p, vec2 a, vec2 b) {
-            // Apply wrapping to segment endpoints relative to point
-            vec2 a_wrapped = a;
-            vec2 b_wrapped = b;
-            
-            // Wrap endpoints if they're far from point
-            float dx_a = p.x - a.x;
-            if (abs(dx_a + wrapWidth) < abs(dx_a)) {
-                a_wrapped.x += wrapWidth;
-            } else if (abs(dx_a - wrapWidth) < abs(dx_a)) {
-                a_wrapped.x -= wrapWidth;
-            }
-            
-            float dx_b = p.x - b.x;
-            if (abs(dx_b + wrapWidth) < abs(dx_b)) {
-                b_wrapped.x += wrapWidth;
-            } else if (abs(dx_b - wrapWidth) < abs(dx_b)) {
-                b_wrapped.x -= wrapWidth;
-            }
-            
-            vec2 pa = p - a_wrapped;
-            vec2 ba = b_wrapped - a_wrapped;
-            float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-            return length(pa - ba * h);
-        }
-        
-        // Smooth tentacle rendering using line segments
+        // Simplified tentacle rendering with fewer samples
         float renderTentacle(vec2 screenPos, vec2 center, float baseAngle, float length, 
                             float waveRate, float wavePhase, float baseSize) {
             if (length < 1.0) return 0.0;
             
             float density = 0.0;
-            int segments = min(int(length * 0.8), 16);  // Scale segments with length
+            float baseSizeInv = 1.0 / (2.0 * baseSize * baseSize);
+            int segments = min(int(length * 0.5), 10);  // Reduced from 16 to 10
             
             vec2 prevPos = center;
+            float invSegments = 1.0 / float(segments);
             
-            for (int s = 0; s <= segments; s++) {
-                float ratio = float(s) / float(segments);
+            for (int s = 1; s <= segments; s++) {
+                float ratio = float(s) * invSegments;
                 float segmentLength = length * ratio;
                 
-                // Create smooth wave motion along tentacle
-                float waveOffset = ratio * 2.0;  // Wave travels along tentacle
-                float waveFactor = sin(time * waveRate + wavePhase + waveOffset * 3.14159);
-                float undulation = ratio * sin(time * 0.3) * 0.3;
-                float angle = baseAngle + undulation + waveFactor * 0.8;
+                // Simplified wave motion
+                float waveFactor = sin(time * waveRate + wavePhase + ratio * 3.14159);
+                float angle = baseAngle + waveFactor * 0.8;
                 
                 vec2 segmentPos = center + vec2(cos(angle), sin(angle)) * segmentLength;
                 
-                // Draw line segment from previous position to current
-                if (s > 0) {
-                    float dist = distanceToSegment(screenPos, prevPos, segmentPos);
-                    
-                    // Gradual taper - thicker base, thinner tip
-                    float taperFactor = 1.0 - ratio * 0.6;
-                    float segmentSize = baseSize * taperFactor;
-                    
-                    // Create soft falloff for tentacle thickness
-                    float segmentDensity = exp(-dist * dist / (2.0 * segmentSize * segmentSize));
-                    
-                    // Add extra brightness to base segments
-                    float baseBrightness = 1.0 + (1.0 - ratio) * 0.3;
-                    density += segmentDensity * baseBrightness * 0.8;
-                }
+                // Fast distance to segment approximation
+                vec2 relPos = screenPos - (prevPos + segmentPos) * 0.5;
+                float dx = getWrappedDx(relPos.x);
+                float dist = length(vec2(dx, relPos.y));
+                
+                float taperFactor = 1.0 - ratio * 0.6;
+                float segmentSizeInv = baseSizeInv / (taperFactor * taperFactor);
+                float segmentDensity = exp(-dist * dist * segmentSizeInv);
+                segmentDensity *= (1.0 + (1.0 - ratio) * 0.3) * 0.8;
+                density += segmentDensity;
                 
                 prevPos = segmentPos;
             }
             
-            return density;
+            return min(density, 1.0);
         }
         
-        void main() {
+                void main() {
             // Convert fragCoord from [-1, 1] to screen space [0, resolution]
             vec2 screenPos = (fragCoord + 1.0) * 0.5 * resolution;
             
-            // Accumulate density from all beings
-            float totalDensity = 0.0;
             vec3 accumulatedColor = vec3(0.0);
             float accumulatedAlpha = 0.0;
             
@@ -372,75 +333,88 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 float complexity = beingComplexities[i];
                 float phase = beingPhases[i];
                 
-                                // Calculate wrapped distance from center for brightness gradient
-                float dx = screenPos.x - center.x;
-                float wrapped_dx_left = dx + wrapWidth;
-                float wrapped_dx_right = dx - wrapWidth;
-                
-                if (abs(wrapped_dx_left) < abs(dx)) {
-                    dx = wrapped_dx_left;
-                } else if (abs(wrapped_dx_right) < abs(dx)) {
-                    dx = wrapped_dx_right;
-                }
-                
+                // === COMPUTE WRAPPED DISTANCE ONCE ===
+                float dx = getWrappedDx(screenPos.x - center.x);
                 float dy = screenPos.y - center.y;
-                float distFromCenter = sqrt(dx * dx + dy * dy);
-                float normalizedDist = distFromCenter / (size * 2.5);  // Normalize to being size
+                float distFromCenter = length(vec2(dx, dy));
+                float normalizedDist = distFromCenter / (size * 2.5);
+                float sizeInv = 1.0 / (2.0 * size * size);
                 
-                                                                // === DIFFUSE GLOW LAYER ===
-                // Build glow density that encompasses the entire being shape
-                float glowSize = size * 2.5;  // Glow extends beyond main body
-                float glowDensity = metaball(screenPos, center, glowSize);
+                                // === GLOW LAYER (Optimized) ===
+                float glowSize = size * 2.5;
+                float glowSizeInv = 1.0 / (2.0 * glowSize * glowSize);
+                float glowDensity = metaball(screenPos, center, glowSizeInv);
                 
-                // Add glow for lobes to create organic halo
-                int glowNLobes = int(complexity);
+                // === MAIN BODY LAYER ===
+                float density = metaball(screenPos, center, sizeInv);
+                
+                // Add lobes (single pass for both glow and body)
+                int nLobes = min(int(complexity), 5);
                 float glowOffsetFactor = size * 0.7;
-                float lobeGlowSize = size * 2.0;
+                float glowLobeSize = size * 2.0;
+                float glowLobeSizeInv = 1.0 / (2.0 * glowLobeSize * glowLobeSize);
                 
-                for (int j = 0; j < glowNLobes && j < 5; j++) {
+                for (int j = 0; j < nLobes; j++) {
                     float glowAngle = phase + float(j) * 6.28318 / complexity;
                     vec2 glowLobePos = center + vec2(cos(glowAngle), sin(glowAngle)) * glowOffsetFactor;
-                    glowDensity += 0.5 * metaball(screenPos, glowLobePos, lobeGlowSize);
+                    float dx_glow = getWrappedDx(screenPos.x - glowLobePos.x);
+                    float dy_glow = screenPos.y - glowLobePos.y;
+                    float distSq_glow = dx_glow * dx_glow + dy_glow * dy_glow;
+                    glowDensity += 0.5 * exp(-distSq_glow * glowLobeSizeInv);
                 }
                 
-                // Add glow for tentacles to complete the organic halo
-                int glowTentacleCount = beingTentacleCounts[i];
-                int glowTentacleBaseIdx = i * 6;
+                float offsetFactor = size * 0.7;
+                float lobeSize = size * 0.6;
+                float lobeSizeInv = 1.0 / (2.0 * lobeSize * lobeSize);
                 
-                for (int t = 0; t < glowTentacleCount && t < 6; t++) {
-                    vec4 glowTentacle = tentacleData[glowTentacleBaseIdx + t];
-                    float glowBaseAngle = glowTentacle.x;
-                    float glowLength = glowTentacle.y;
-                    float glowWaveRate = glowTentacle.z;
-                    float glowWavePhase = glowTentacle.w;
+                for (int j = 0; j < nLobes; j++) {
+                    float angle = phase + float(j) * 6.28318 / complexity;
+                    vec2 lobePos = center + vec2(cos(angle), sin(angle)) * offsetFactor;
                     
-                    // Sample tentacle positions for glow
-                    int glowSamples = 4;  // Fewer samples for performance
-                    for (int s = 0; s < glowSamples; s++) {
-                        float glowRatio = float(s) / float(glowSamples - 1);
-                        float glowSegmentLength = glowLength * glowRatio;
-                        
-                        float glowWaveOffset = glowRatio * 2.0;
-                        float glowWaveFactor = sin(time * glowWaveRate + glowWavePhase + glowWaveOffset * 3.14159);
-                        float glowUndulation = glowRatio * sin(time * 0.3) * 0.3;
-                        float glowTentacleAngle = glowBaseAngle + glowUndulation + glowWaveFactor * 0.8;
-                        
-                        vec2 tentaclePos = center + vec2(cos(glowTentacleAngle), sin(glowTentacleAngle)) * glowSegmentLength;
-                        float tentacleGlowSize = size * 1.5 * (1.0 - glowRatio * 0.5);  // Taper
-                        glowDensity += 0.3 * metaball(screenPos, tentaclePos, tentacleGlowSize);
+                    // Main body lobes
+                    float dx_lobe = getWrappedDx(screenPos.x - lobePos.x);
+                    float dy_lobe = screenPos.y - lobePos.y;
+                    float distSq = dx_lobe * dx_lobe + dy_lobe * dy_lobe;
+                    density += 0.7 * exp(-distSq * lobeSizeInv);
+                }
+                
+                // Add tentacles
+                int tentacleCount = min(beingTentacleCounts[i], 6);
+                int tentacleBaseIdx = i * 6;
+                float tentacleSize = size * 0.7;
+                
+                for (int t = 0; t < tentacleCount; t++) {
+                    vec4 tentacle = tentacleData[tentacleBaseIdx + t];
+                    float tentacleDensity = renderTentacle(
+                        screenPos, center, tentacle.x, tentacle.y, 
+                        tentacle.z, tentacle.w, tentacleSize
+                    );
+                                        density += tentacleDensity;
+                }
+                
+                                for (int t = 0; t < tentacleCount && t < 6; t++) {
+                    vec4 tent = tentacleData[tentacleBaseIdx + t];
+                    for (int s = 0; s < 3; s++) {
+                        float ratio = float(s) * 0.5;
+                        if (tent.y * ratio < 0.1) continue;
+                        float waveFactor = sin(time * tent.z + tent.w + ratio * 3.14159);
+                        float angle = tent.x + waveFactor * 0.8;
+                        vec2 tentaclePos = center + vec2(cos(angle), sin(angle)) * (tent.y * ratio);
+                        float tentacleGlowSize = size * 1.5 * (1.0 - ratio * 0.5);
+                        float tentacleGlowSizeInv = 1.0 / (2.0 * tentacleGlowSize * tentacleGlowSize);
+                        float dx_tent = getWrappedDx(screenPos.x - tentaclePos.x);
+                        float dy_tent = screenPos.y - tentaclePos.y;
+                        float distSq_tent = dx_tent * dx_tent + dy_tent * dy_tent;
+                        glowDensity += 0.3 * exp(-distSq_tent * tentacleGlowSizeInv);
                     }
                 }
                 
-                // Normalize and render glow
                 if (glowDensity > 0.01) {
                     float glowNormalizedDensity = min(glowDensity * 0.8, 1.0);
                     float glowSaturation = 0.7 - glowNormalizedDensity * 0.3;
                     float glowValue = 0.25 + glowNormalizedDensity * 0.4;
-                    float glowAlpha = glowNormalizedDensity * 0.35;  // Visible glow
-                    
+                    float glowAlpha = glowNormalizedDensity * 0.35;
                     vec3 glowColor = hsv2rgb(vec3(hue, glowSaturation, glowValue));
-                    
-                    // Blend glow into accumulated color
                     float newGlowAlpha = glowAlpha + accumulatedAlpha * (1.0 - glowAlpha);
                     if (newGlowAlpha > 0.0) {
                         accumulatedColor = (glowColor * glowAlpha + accumulatedColor * accumulatedAlpha * (1.0 - glowAlpha)) / newGlowAlpha;
@@ -448,100 +422,39 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                     }
                 }
                 
-                // Base density (main body)
-                float density = metaball(screenPos, center, size);
-                
-                                // Add lobes for organic shape (uses metaball with wrapping)
-                int nLobes = int(complexity);
-                float offsetFactor = size * 0.7;
-                float lobeSize = size * 0.6;
-                
-                for (int j = 0; j < nLobes && j < 5; j++) {
-                    float angle = phase + float(j) * 6.28318 / complexity;
-                    vec2 lobePos = center + vec2(cos(angle), sin(angle)) * offsetFactor;
-                    density += 0.7 * metaball(screenPos, lobePos, lobeSize);
-                }
-                
-                // Add tentacles using improved line segment rendering
-                int tentacleCount = beingTentacleCounts[i];
-                int tentacleBaseIdx = i * 6;
-                
-                for (int t = 0; t < tentacleCount && t < 6; t++) {
-                    vec4 tentacle = tentacleData[tentacleBaseIdx + t];
-                    float baseAngle = tentacle.x;
-                    float length = tentacle.y;
-                    float waveRate = tentacle.z;
-                    float wavePhase = tentacle.w;
-                    
-                    // Thicker tentacles - use 70% of body size for base thickness
-                    float tentacleSize = size * 0.7;
-                    float tentacleDensity = renderTentacle(
-                        screenPos, center, baseAngle, length, 
-                        waveRate, wavePhase, tentacleSize
-                    );
-                    
-                    density += tentacleDensity;
-                }
-                
-                // Add communication pulses
-                int pulseCount = beingPulseCounts[i];
+                // === SIMPLIFIED PULSE RENDERING ===
+                int pulseCount = min(beingPulseCounts[i], 2);
                 int pulseBaseIdx = i * 2;
                 
-                for (int p = 0; p < pulseCount && p < 2; p++) {
+                for (int p = 0; p < pulseCount; p++) {
                     vec4 pulse = pulseData[pulseBaseIdx + p];
-                    float pulseAge = pulse.x;
-                    float pulseDuration = pulse.y;
-                    float pulseRadius = pulse.z;
+                    float pulseDist = length(vec2(dx, dy)) - pulse.z;
+                    float ringWidth = size * 0.3;
+                    float ringFactor = 1.0 - abs(pulseDist) / ringWidth;
                     
-                                        if (pulseAge < pulseDuration) {
-                        // Calculate wrapped distance for pulses
-                        float dx = screenPos.x - center.x;
-                        float wrapped_dx_left = dx + wrapWidth;
-                        float wrapped_dx_right = dx - wrapWidth;
-                        
-                        if (abs(wrapped_dx_left) < abs(dx)) {
-                            dx = wrapped_dx_left;
-                        } else if (abs(wrapped_dx_right) < abs(dx)) {
-                            dx = wrapped_dx_right;
-                        }
-                        
-                        float dy = screenPos.y - center.y;
-                        float dist = sqrt(dx * dx + dy * dy);
-                        
-                        float ringWidth = size * 0.5;
-                        float ringInner = pulseRadius - ringWidth * 0.5;
-                        float ringOuter = pulseRadius + ringWidth * 0.5;
-                        
-                        if (dist >= ringInner && dist <= ringOuter) {
-                            float normalizedDist = (dist - ringInner) / ringWidth;
-                            float pulseProgress = pulseAge / pulseDuration;
-                            float ringIntensity = sin(normalizedDist * 3.14159) * (1.0 - pulseProgress);
-                            density += ringIntensity * 0.3;
-                        }
+                    if (ringFactor > 0.0) {
+                        float pulseProgress = pulse.x / pulse.y;
+                        float intensity = ringFactor * (1.0 - pulseProgress) * 0.3;
+                        density += intensity;
                     }
                 }
                 
-                // Normalize density for this being
+                // === RENDER IF VISIBLE ===
                 if (density > 0.05) {
                     float normalizedDensity = min(density, 1.0);
                     
-                    // Create radial brightness gradient - brighter in center, darker at edges
+                    // Radial brightness gradient
                     float brightnessGradient = 1.0 - smoothstep(0.0, 1.0, normalizedDist);
-                    brightnessGradient = pow(brightnessGradient, 0.7);  // Adjust falloff curve
+                    brightnessGradient = pow(brightnessGradient, 0.7);
                     
-                    // Calculate color with radial brightness
                     float saturation = 0.9 - normalizedDensity * 0.3;
-                    float baseValue = 0.2 + normalizedDensity * 0.6;
-                    
-                    // Add radial brightness boost (brighter in center)
-                    float value = baseValue + brightnessGradient * 0.5;
+                    float value = 0.2 + normalizedDensity * 0.6 + brightnessGradient * 0.5;
                     value = clamp(value, 0.0, 1.0);
                     
                     float alpha = normalizedDensity * 0.4;
-                    
                     vec3 color = hsv2rgb(vec3(hue, saturation, value));
                     
-                    // Alpha blend with accumulated color
+                    // Alpha blend
                     float newAlpha = alpha + accumulatedAlpha * (1.0 - alpha);
                     if (newAlpha > 0.0) {
                         accumulatedColor = (color * alpha + accumulatedColor * accumulatedAlpha * (1.0 - alpha)) / newAlpha;
@@ -550,10 +463,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 }
             }
             
-            // Apply fade factor
             accumulatedAlpha *= fadeAlpha;
-            
-            // Output final color
             outColor = vec4(accumulatedColor, accumulatedAlpha);
         }
         """
