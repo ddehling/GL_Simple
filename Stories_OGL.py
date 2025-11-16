@@ -390,7 +390,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
-    #env_system.scheduler.schedule_event(0, 500, fx.shader_chromatic_fog_beings,frame_id=0)
+    env_system.scheduler.schedule_event(0, 500, fx.shader_audio_balls,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()
