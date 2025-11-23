@@ -51,6 +51,22 @@ def shader_meteor(state, outstate):
             state['start_time'] = time.time()
             state['meteors'] = []
             
+            # Create initial batch of meteors spread across the screen
+            vp_width = viewport.width
+            vp_height = viewport.height
+            for i in range(10):
+                meteor = {
+                    'x': random.uniform(vp_width * 0.67, vp_width * 1.17),
+                    'y': random.uniform(vp_height * 1, vp_height * 1.33),
+                    'angle': math.radians(random.uniform(-70, -110)),
+                    'speed': random.uniform(4.0, 8.0),
+                    'size': random.uniform(0.6, 1.5),
+                    'trail_length': vp_width + random.random() * vp_height,
+                    'life': 3,
+                    'hue': random.random()
+                }
+                state['meteors'].append(meteor)
+            
             print(f"✓ Initialized shader meteor for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize meteor: {e}")
@@ -77,13 +93,13 @@ def shader_meteor(state, outstate):
         fade_factor = np.clip(fade_factor, 0, 1)
         
         # Generate new meteors based on meteor_rate
-        meteor_rate = outstate.get('meteor_rate', 1) / 2
+        meteor_rate = outstate.get('meteor_rate', 1) / 100
         if random.random() < meteor_rate:
             # Get viewport dimensions
             vp_width = viewport.width
             vp_height = viewport.height
             
-            # Spawn from top-right, moving down-left diagonally
+            # Spawn from top moving down
             meteor = {
                 'x': random.uniform(vp_width * 0.67, vp_width * 1.17),  # 80-140 scaled to viewport
                 'y': random.uniform(vp_height * 1, vp_height * 1.33),  # -20-20 scaled to viewport
@@ -119,9 +135,9 @@ def shader_meteor(state, outstate):
             meteor['life'] -= 0.015  # Slower fade for longer trails
             
             # Keep meteor if still alive and on screen (expanded bounds for longer trails)
-            if (meteor['life'] > 0 and 
-                meteor['y'] > -vp_height * 1.33 and meteor['y'] < vp_height * 2.33 and 
-                meteor['x'] > -vp_width * 0.67 and meteor['x'] < vp_width * 1.67):
+            if meteor['life'] > 0: #and 
+                #meteor['y'] > -vp_height * 1.33 and meteor['y'] < vp_height * 2.33 and 
+                #meteor['x'] > -vp_width * 0.67 and meteor['x'] < vp_width * 1.67):
                 new_meteors.append(meteor)
         
         state['meteors'] = new_meteors
@@ -438,7 +454,7 @@ class MeteorEffect(ShaderEffect):
             trail_lengths[i] = meteor['trail_length']
             lives[i] = meteor['life']
             hues[i] = meteor['hue']  # Store hue value
-        
+       
         # Set meteor data uniforms
         loc = glGetUniformLocation(self.shader, "meteorPos")
         if loc != -1:
