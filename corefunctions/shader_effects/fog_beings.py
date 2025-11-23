@@ -281,20 +281,20 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         }
         
         // Simplified tentacle rendering with fewer samples
-        float renderTentacle(vec2 screenPos, vec2 center, float baseAngle, float length, 
+        float renderTentacle(vec2 screenPos, vec2 center, float baseAngle, float tentacleLength, 
                             float waveRate, float wavePhase, float baseSize) {
-            if (length < 1.0) return 0.0;
+            if (tentacleLength < 1.0) return 0.0;
             
             float density = 0.0;
             float baseSizeInv = 1.0 / (2.0 * baseSize * baseSize);
-            int segments = min(int(length * 0.5), 10);  // Reduced from 16 to 10
+            int segments = min(int(tentacleLength * 0.5), 10);  // Reduced from 16 to 10
             
             vec2 prevPos = center;
             float invSegments = 1.0 / float(segments);
             
             for (int s = 1; s <= segments; s++) {
                 float ratio = float(s) * invSegments;
-                float segmentLength = length * ratio;
+                float segmentLength = tentacleLength * ratio;
                 
                 // Simplified wave motion
                 float waveFactor = sin(time * waveRate + wavePhase + ratio * 3.14159);
@@ -378,7 +378,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                     density += 0.7 * exp(-distSq * lobeSizeInv);
                 }
                 
-                // Add tentacles
+                // Add tentacles to main body
                 int tentacleCount = min(beingTentacleCounts[i], 6);
                 int tentacleBaseIdx = i * 6;
                 float tentacleSize = size * 0.7;
@@ -389,17 +389,15 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                         screenPos, center, tentacle.x, tentacle.y, 
                         tentacle.z, tentacle.w, tentacleSize
                     );
-                                        density += tentacleDensity;
-                }
-                
-                                for (int t = 0; t < tentacleCount && t < 6; t++) {
-                    vec4 tent = tentacleData[tentacleBaseIdx + t];
+                    density += tentacleDensity;
+                    
+                    // Add tentacle glow samples
                     for (int s = 0; s < 3; s++) {
                         float ratio = float(s) * 0.5;
-                        if (tent.y * ratio < 0.1) continue;
-                        float waveFactor = sin(time * tent.z + tent.w + ratio * 3.14159);
-                        float angle = tent.x + waveFactor * 0.8;
-                        vec2 tentaclePos = center + vec2(cos(angle), sin(angle)) * (tent.y * ratio);
+                        if (tentacle.y * ratio < 0.1) continue;
+                        float waveFactor = sin(time * tentacle.z + tentacle.w + ratio * 3.14159);
+                        float angle = tentacle.x + waveFactor * 0.8;
+                        vec2 tentaclePos = center + vec2(cos(angle), sin(angle)) * (tentacle.y * ratio);
                         float tentacleGlowSize = size * 1.5 * (1.0 - ratio * 0.5);
                         float tentacleGlowSizeInv = 1.0 / (2.0 * tentacleGlowSize * tentacleGlowSize);
                         float dx_tent = getWrappedDx(screenPos.x - tentaclePos.x);
