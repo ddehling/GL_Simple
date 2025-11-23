@@ -1,40 +1,32 @@
-"""
-Meteor Shower effect - shader-based implementation
+"""Meteor Shower effect - shader-based implementation
 Converts the CPU-based meteor shower effect to GPU rendering using OpenGL shaders
 """
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
+from .base import ShaderEffect
 import time
 import random
 import math
 from pathlib import Path
-from corefunctions.shader_effects.base import ShaderEffect
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_meteor(state, outstate, direction='top'):
+def shader_meteor(state, outstate):
     """
     Shader-based meteor shower effect compatible with EventScheduler
     
+    Meteors move diagonally from top-right to bottom-left.
+    
     Usage:
-        scheduler.schedule_event(0, 60, shader_meteor, frame_id=0, direction='top-right')
+        scheduler.schedule_event(0, 60, shader_meteor, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        direction: Direction meteors come from:
-            'top-right' (default) - diagonal from top-right
-            'top-left' - diagonal from top-left  
-            'bottom-right' - diagonal from bottom-right
-            'bottom-left' - diagonal from bottom-left
-            'top' - straight down
-            'bottom' - straight up
-            'left' - straight right
-            'right' - straight left
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
@@ -51,14 +43,13 @@ def shader_meteor(state, outstate, direction='top'):
     
     # Initialize meteor effect on first call
     if state['count'] == 0:
-        print(f"Initializing shader meteor effect for frame {frame_id} (direction: {direction})")
+        print(f"Initializing shader meteor effect for frame {frame_id}")
         
         try:
-            meteor_effect = viewport.add_effect(MeteorEffect, direction=direction)
+            meteor_effect = viewport.add_effect(MeteorEffect)
             state['meteor_effect'] = meteor_effect
             state['start_time'] = time.time()
             state['meteors'] = []
-            state['direction'] = direction
             
             print(f"✓ Initialized shader meteor for frame {frame_id}")
         except Exception as e:
@@ -88,17 +79,18 @@ def shader_meteor(state, outstate, direction='top'):
         # Generate new meteors based on meteor_rate
         meteor_rate = outstate.get('meteor_rate', 1) / 2
         if random.random() < meteor_rate:
-            # Get spawn parameters based on direction
-            spawn_params = _get_spawn_params(state['direction'])
+            # Get viewport dimensions
+            vp_width = viewport.width
+            vp_height = viewport.height
             
-            # Create new meteor with direction-based parameters
+            # Spawn from top-right, moving down-left diagonally
             meteor = {
-                'x': spawn_params['x'],
-                'y': spawn_params['y'],
-                'angle': spawn_params['angle'],
+                'x': random.uniform(vp_width * 0.67, vp_width * 1.17),  # 80-140 scaled to viewport
+                'y': random.uniform(vp_height * -0.33, vp_height * 0.33),  # -20-20 scaled to viewport
+                'angle': math.radians(random.uniform(200, 250)),  # Down-left diagonal
                 'speed': random.uniform(4.0, 8.0),
                 'size': random.uniform(0.6, 1.5),
-                'trail_length': 120 + random.random() * 60,
+                'trail_length': vp_width + random.random() * vp_height,  # Scale trail to viewport
                 'life': 2,
                 'hue': random.random()  # Random hue (0-1) for color variety
             }
@@ -117,6 +109,9 @@ def shader_meteor(state, outstate, direction='top'):
         
         # Update meteor positions
         new_meteors = []
+        vp_width = viewport.width
+        vp_height = viewport.height
+        
         for meteor in state['meteors']:
             # Update position
             meteor['x'] += math.cos(meteor['angle']) * meteor['speed']
@@ -124,7 +119,9 @@ def shader_meteor(state, outstate, direction='top'):
             meteor['life'] -= 0.015  # Slower fade for longer trails
             
             # Keep meteor if still alive and on screen (expanded bounds for longer trails)
-            if meteor['life'] > 0 and meteor['y'] > -80 and meteor['y'] < 140 and meteor['x'] > -80 and meteor['x'] < 200:
+            if (meteor['life'] > 0 and 
+                meteor['y'] > -vp_height * 1.33 and meteor['y'] < vp_height * 2.33 and 
+                meteor['x'] > -vp_width * 0.67 and meteor['x'] < vp_width * 1.67):
                 new_meteors.append(meteor)
         
         state['meteors'] = new_meteors
@@ -143,91 +140,32 @@ def shader_meteor(state, outstate, direction='top'):
             print(f"✓ Cleaned up shader meteor for frame {frame_id}")
 
 
-def _get_spawn_params(direction):
-    """
-    Get spawn position and angle based on direction
-    Returns dict with 'x', 'y', 'angle' keys
-    """
-    params = {}
-    
-    if direction == 'top-right':
-        # Spawn from top-right, moving down-left
-        params['x'] = random.uniform(80, 140)
-        params['y'] = random.uniform(-20, 20)
-        params['angle'] = math.radians(random.uniform(200, 250))  # Down-left diagonal
-        
-    elif direction == 'top-left':
-        # Spawn from top-left, moving down-right
-        params['x'] = random.uniform(-20, 40)
-        params['y'] = random.uniform(-20, 20)
-        params['angle'] = math.radians(random.uniform(290, 340))  # Down-right diagonal
-        
-    elif direction == 'bottom-right':
-        # Spawn from bottom-right, moving up-left
-        params['x'] = random.uniform(80, 140)
-        params['y'] = random.uniform(40, 80)
-        params['angle'] = math.radians(random.uniform(110, 160))  # Up-left diagonal
-        
-    elif direction == 'bottom-left':
-        # Spawn from bottom-left, moving up-right
-        params['x'] = random.uniform(-20, 40)
-        params['y'] = random.uniform(40, 80)
-        params['angle'] = math.radians(random.uniform(20, 70))  # Up-right diagonal
-        
-    elif direction == 'top':
-        # Spawn from top, moving straight down
-        params['x'] = random.uniform(0, 120)
-        params['y'] = random.uniform(-20, 0)
-        params['angle'] = math.radians(random.uniform(85, 95))  # Straight down (90°)
-        
-    elif direction == 'bottom':
-        # Spawn from bottom, moving straight up
-        params['x'] = random.uniform(0, 120)
-        params['y'] = random.uniform(60, 80)
-        params['angle'] = math.radians(random.uniform(265, 275))  # Straight up (270°)
-        
-    elif direction == 'left':
-        # Spawn from left, moving straight right
-        params['x'] = random.uniform(-20, 0)
-        params['y'] = random.uniform(0, 60)
-        params['angle'] = math.radians(random.uniform(-5, 5))  # Straight right (0°)
-        
-    elif direction == 'right':
-        # Spawn from right, moving straight left
-        params['x'] = random.uniform(120, 140)
-        params['y'] = random.uniform(0, 60)
-        params['angle'] = math.radians(random.uniform(175, 185))  # Straight left (180°)
-        
-    else:
-        # Default to top-right
-        params['x'] = random.uniform(80, 140)
-        params['y'] = random.uniform(-20, 20)
-        params['angle'] = math.radians(random.uniform(200, 250))
-    
-    return params
-
-
 # ============================================================================
 # Rendering Class
 # ============================================================================
 
 class MeteorEffect(ShaderEffect):
-    """GPU-based meteor shower effect using procedural shader rendering"""
+    """GPU-based meteor shower effect using procedural shader rendering
+    
+    Renders meteors as a full-screen post-processing pass at z=75.9 (mid-depth).
+    Meteors are drawn procedurally in the fragment shader, allowing unlimited
+    meteor count while keeping the effect lightweight.
+    
+    Depth System:
+        - z = 75.9 → depth = 0.759 → Mid-depth layer (between near objects and far background)
+        - Participates in global depth testing and alpha blending
+        - No state toggling per shader_info.txt requirements
+    """
     
     MAX_METEORS = 16  # Maximum number of meteors the shader can handle
     
-    def __init__(self, viewport, direction='top', depth=75.9):
+    def __init__(self, viewport, depth=75.9):
         super().__init__(viewport)
         
         # Meteor properties
-        self.direction = direction
-        self.depth = depth  # Z depth (same as aurora)
+        self.depth = depth  # Z depth: 0=near, 100=far (standard range per shader_info.txt)
         self.fade_factor = 0.0
         self.meteors = []
-        
-        # Screen dimensions (matching meteor_window size)
-        self.screen_width = 120.0
-        self.screen_height = 60.0
         
         # Start time
         self.start_time = time.time()
@@ -245,7 +183,8 @@ class MeteorEffect(ShaderEffect):
         
         void main() {
             // Normalize depth to 0-1 range (0 = near, 1 = far)
-            float depth = meteorDepth / 100.0;
+            // Standard mapping: z = 0-100 where 0 is near, 100 is far
+            float depth = clamp(meteorDepth / 100.0, 0.0, 1.0);
             
             gl_Position = vec4(position, depth, 1.0);
             
@@ -391,7 +330,11 @@ class MeteorEffect(ShaderEffect):
             raise
 
     def setup_buffers(self):
-        """Initialize OpenGL buffers for full-screen quad"""
+        """Initialize OpenGL buffers for full-screen quad
+        
+        Note: This is a post-processing effect that renders a full-screen quad.
+        Per shader_info.txt, depth testing is globally enabled and should NOT be toggled.
+        """
         # Full-screen quad in clip space
         vertices = np.array([
             -1.0, -1.0,  # Bottom left
@@ -402,9 +345,8 @@ class MeteorEffect(ShaderEffect):
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         
-        # Enable depth testing
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LESS)
+        # NO depth test toggling - global state is always active per shader_info.txt
+        # Depth testing and alpha blending are set globally in create_window()
         
         # Create VAO
         self.VAO = glGenVertexArrays(1)
@@ -435,7 +377,12 @@ class MeteorEffect(ShaderEffect):
         pass
 
     def render(self, state: Dict):
-        """Render the meteors using shader"""
+        """Render the meteors using shader
+        
+        Note: Per shader_info.txt, global OpenGL state (depth test + alpha blend) is always active.
+        This effect participates in depth ordering at z=75.9 (mid-depth layer).
+        NO depth test or blend state toggling is performed.
+        """
         if not self.enabled or not self.shader:
             return
         
@@ -443,8 +390,8 @@ class MeteorEffect(ShaderEffect):
         if not self.meteors or len(self.meteors) == 0:
             return
         
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # NO blend state toggling - global state handles this per shader_info.txt
+        # glEnable(GL_BLEND) and glBlendFunc are set globally in create_window()
         
         glUseProgram(self.shader)
         
@@ -455,7 +402,7 @@ class MeteorEffect(ShaderEffect):
         
         loc = glGetUniformLocation(self.shader, "screenSize")
         if loc != -1:
-            glUniform2f(loc, self.screen_width, self.screen_height)
+            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
         loc = glGetUniformLocation(self.shader, "meteorDepth")
         if loc != -1:
@@ -527,4 +474,4 @@ class MeteorEffect(ShaderEffect):
         glBindVertexArray(0)
         
         glUseProgram(0)
-        glDisable(GL_BLEND)
+        # NO state cleanup - global state is maintained per shader_info.txt
