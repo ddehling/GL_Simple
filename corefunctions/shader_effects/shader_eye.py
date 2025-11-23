@@ -13,7 +13,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_eye(state, outstate, num_eyes=3, scale=0.15):
+def shader_eye(state, outstate, num_eyes=6, scale=0.075):
     """
     Shader-based eye effect compatible with EventScheduler
     
@@ -23,8 +23,8 @@ def shader_eye(state, outstate, num_eyes=3, scale=0.15):
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        num_eyes: Number of eyes to render (default 3)
-        scale: Size of each eye (default 0.15)
+        num_eyes: Number of eyes to render (default 6)
+        scale: Size of each eye (default 0.075)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
@@ -91,7 +91,7 @@ def shader_eye(state, outstate, num_eyes=3, scale=0.15):
 class EyeEffect(ShaderEffect):
     """GPU-based eye effect using instanced rendering"""
     
-    def __init__(self, viewport, num_eyes=3, scale=0.15):
+    def __init__(self, viewport, num_eyes=6, scale=0.075):
         super().__init__(viewport)
         
         # Eye properties
@@ -169,6 +169,11 @@ class EyeEffect(ShaderEffect):
         # Iris movement intervals (different per eye)
         self.iris_movement_intervals = np.random.uniform(2, 5, n)
         
+        # Blink state (per eye)
+        self.blink_amounts = np.zeros(n)  # 0 = open, 1 = closed
+        self.next_blink_times = np.zeros(n) + self.start_time + np.random.uniform(2, 8, n)
+        self.blink_speeds = np.random.uniform(8, 12, n)  # Blinks per second (speed)
+        
     def get_vertex_shader(self):
         return """
         #version 310 es
@@ -180,10 +185,12 @@ class EyeEffect(ShaderEffect):
         layout(location = 3) in vec2 irisOffset; // Iris movement (instance)
         layout(location = 4) in float pupilSize; // Pupil size (instance)
         layout(location = 5) in float rotation; // Rotation angle (instance)
+        layout(location = 6) in float blinkAmount; // Blink state 0-1 (instance)
         
         out vec2 fragCoord;  // Pass to fragment shader
         out vec2 fragIrisOffset;
         out float fragPupilSize;
+        out float fragBlinkAmount;
         
         uniform vec2 resolution;
         uniform float globalScale;  // Global scale multiplier
@@ -220,6 +227,7 @@ class EyeEffect(ShaderEffect):
             fragCoord = position;  // Quad space (-1 to 1)
             fragIrisOffset = irisOffset;
             fragPupilSize = pupilSize;
+            fragBlinkAmount = blinkAmount;
         }
         """
         
@@ -231,6 +239,7 @@ class EyeEffect(ShaderEffect):
         in vec2 fragCoord;  // Quad space (-1 to 1)
         in vec2 fragIrisOffset;
         in float fragPupilSize;
+        in float fragBlinkAmount;
         
         out vec4 outColor;
         
@@ -248,9 +257,13 @@ class EyeEffect(ShaderEffect):
             // UV in quad space (already -1 to 1 from vertex shader)
             vec2 uv = fragCoord;
             
+            // Apply blink effect - squash vertically
+            float blinkSquash = 1.0 - (fragBlinkAmount * 0.95);  // Squash to 5% height when fully closed
+            uv.y /= blinkSquash;
+            
             // Eye dimensions (ellipse) - smaller white part
-            float eyeWidth = 1.2;
-            float eyeHeight = 0.8;
+            float eyeWidth = 1.0;
+            float eyeHeight = 0.7;
             
             // Distance from center (normalized to ellipse)
             float dist = length(vec2(uv.x / eyeWidth, uv.y / eyeHeight));
@@ -260,9 +273,9 @@ class EyeEffect(ShaderEffect):
                 discard;
             }
             
-            // Sclera (white of eye)
+            // Sclera (white of eye) - reduced opacity
             vec3 color = vec3(0.95, 0.95, 0.98);
-            float alpha = fadeAlpha * 0.15;
+            float alpha = fadeAlpha * 0.5;
             
             // Calculate distortion based on horizontal position
             float h_stretch = 1.0;
@@ -340,12 +353,12 @@ class EyeEffect(ShaderEffect):
     def setup_buffers(self):
         """Initialize OpenGL buffers for instanced eye rendering"""
         # Base quad vertices (centered at origin, wider to accommodate ellipse)
-        # Eye ellipse is 1.2 wide x 0.8 tall, so make quad 1.2 wide
+        # Eye ellipse is 1.0 wide x 0.7 tall, so make quad 1.0 wide
         vertices = np.array([
-            -1.2, -0.8,  # Bottom left
-             1.2, -0.8,  # Bottom right
-             1.2,  0.8,  # Top right
-            -1.2,  0.8   # Top left
+            -1.0, -0.7,  # Bottom left
+             1.0, -0.7,  # Bottom right
+             1.0,  0.7,  # Top right
+            -1.0,  0.7   # Top left
         ], dtype=np.float32)
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
@@ -368,13 +381,13 @@ class EyeEffect(ShaderEffect):
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         self.VBOs.append(self.instance_VBO)
         
-        # Allocate instance buffer (positions, scales, iris offsets, pupil sizes, rotation)
-        # Layout: vec3 offset, float scale, vec2 irisOffset, float pupilSize, float rotation = 8 floats per instance
-        instance_data = np.zeros((self.num_eyes, 8), dtype=np.float32)
+        # Allocate instance buffer (positions, scales, iris offsets, pupil sizes, rotation, blink)
+        # Layout: vec3 offset, float scale, vec2 irisOffset, float pupilSize, float rotation, float blink = 9 floats per instance
+        instance_data = np.zeros((self.num_eyes, 9), dtype=np.float32)
         glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
         
         # Setup instance attributes
-        stride = 8 * 4  # 8 floats * 4 bytes
+        stride = 9 * 4  # 9 floats * 4 bytes
         
         # Offset (vec3) - location 1
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -401,6 +414,11 @@ class EyeEffect(ShaderEffect):
         glEnableVertexAttribArray(5)
         glVertexAttribDivisor(5, 1)
         
+        # Blink amount (float) - location 6
+        glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
+        glEnableVertexAttribArray(6)
+        glVertexAttribDivisor(6, 1)
+        
         # Element buffer
         self.EBO = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
@@ -424,6 +442,38 @@ class EyeEffect(ShaderEffect):
         self.scale_phases += self.scale_speeds * dt
         pulse_factors = 1.0 + 0.15 * np.sin(self.scale_phases)  # Pulse between 0.85x and 1.15x
         self.scales = self.base_scales * pulse_factors
+        
+        # Update blinks (independent per eye)
+        needs_blink = current_time >= self.next_blink_times
+        
+        if np.any(needs_blink):
+            # Schedule next blink (random interval between 3-10 seconds)
+            self.next_blink_times[needs_blink] = current_time + np.random.uniform(3, 10, np.sum(needs_blink))
+        
+        # Start new blinks
+        self.blink_amounts[needs_blink] = 0.01  # Start closing
+        
+        # Animate blink open/close
+        currently_blinking = self.blink_amounts > 0
+        
+        # Continue existing blinks
+        if np.any(currently_blinking):
+            # Calculate blink deltas for all eyes
+            blink_deltas = self.blink_speeds * dt
+            
+            # Eyes closing (0 to 1)
+            closing_mask = currently_blinking & (self.blink_amounts < 1.0)
+            if np.any(closing_mask):
+                self.blink_amounts[closing_mask] += blink_deltas[closing_mask]
+                self.blink_amounts[closing_mask] = np.minimum(self.blink_amounts[closing_mask], 1.0)
+            
+            # Eyes opening (1 to 0)
+            opening_mask = currently_blinking & (self.blink_amounts >= 1.0)
+            if np.any(opening_mask):
+                self.blink_amounts[opening_mask] += blink_deltas[opening_mask]
+                # When blink completes (reaches 2.0), reset to 0
+                completed = self.blink_amounts >= 2.0
+                self.blink_amounts[completed] = 0.0
         
         # Position movement (independent per eye)
         time_since_position_change = current_time - self.last_position_change_times
@@ -568,14 +618,22 @@ class EyeEffect(ShaderEffect):
         combined_iris_offsets = self.iris_offsets[combined_indices]
         combined_pupil_sizes = self.pupil_sizes[combined_indices]
         combined_rotations = self.rotations[combined_indices]
+        combined_blink_amounts = self.blink_amounts[combined_indices]
         
-        # Build instance data: positions (3), scale (1), iris offset (2), pupil size (1), rotation (1) = 8 floats
+        # Calculate smooth blink curve (0->1->0 from linear 0->2)
+        smooth_blink_amounts = np.where(combined_blink_amounts <= 1.0,
+                                        combined_blink_amounts,  # First half: 0 to 1
+                                        2.0 - combined_blink_amounts)  # Second half: 1 to 0
+        smooth_blink_amounts = np.clip(smooth_blink_amounts, 0.0, 1.0)
+        
+        # Build instance data: positions (3), scale (1), iris offset (2), pupil size (1), rotation (1), blink (1) = 9 floats
         instance_data = np.column_stack([
             combined_positions,  # x, y, z (3 floats)
             combined_scales,  # scale (1 float)
             combined_iris_offsets,  # iris x, y (2 floats)
             combined_pupil_sizes,  # pupil size (1 float)
-            combined_rotations  # rotation (1 float)
+            combined_rotations,  # rotation (1 float)
+            smooth_blink_amounts  # blink amount (1 float)
         ]).astype(np.float32)
         
         # Update instance buffer
