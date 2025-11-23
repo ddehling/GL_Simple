@@ -629,64 +629,66 @@ class CloudEffectGPU(ShaderEffect):
             if np.random.random() < spawn_chance:
                 self._spawn_cloud_gpu()
         
-        # Update physics on CPU for active clouds
+        # Update physics on CPU for active clouds using vectorized operations
         active_mask = self.cpu_cloud_data[:, 9] >= 0
         if not np.any(active_mask):
             return
         
-        active_indices = np.where(active_mask)[0]
+        # Get all active clouds at once
+        active_clouds = self.cpu_cloud_data[active_mask]
         
-        for idx in active_indices:
-            cloud = self.cpu_cloud_data[idx]
-            
-            # Update lifetime
-            cloud[9] += dt
-            
-            # Update turbulence phases
-            cloud[11:14] += cloud[14:17] * dt
-            
-            # Calculate global wave
-            global_wave_y = np.sin(self.global_time * 0.05) * 0.3 + np.sin(self.global_time * 0.13) * 0.1
-            
-            # Update position with wind and turbulence
-            wind_effect = self.wind * cloud[5]  # wind_sens
-            cloud[0] += (cloud[4] + wind_effect) * dt  # position.x
-            cloud[1] += global_wave_y * dt  # position.y
-            
-            # Horizontal wrapping
-            if cloud[0] < 0.0:
-                cloud[0] += self.viewport.width
-            elif cloud[0] >= self.viewport.width:
-                cloud[0] -= self.viewport.width
-            
-            # Clamp vertical
-            cloud[1] = np.clip(cloud[1], 0, self.viewport.height)
-            
-            # Smooth opacity transitions
-            target_opacity = 0.0 if cloud[10] > 0.5 else cloud[6]  # is_fading, base_opacity
-            opacity_diff = target_opacity - cloud[7]
-            
-            if abs(opacity_diff) > 0.01:
-                transition_speed = 0.4 if cloud[10] > 0.5 else 0.3
-                cloud[7] += opacity_diff * transition_speed * dt
-                cloud[7] = np.clip(cloud[7], 0, 1)
-            
-            # Mark for removal if fully faded
-            if cloud[10] > 0.5 and cloud[7] < 0.01:
-                cloud[9] = -1.0  # Mark inactive
-                self.num_clouds -= 1
-                continue
-            
-            # Natural lifecycle: start fading after 30 seconds if in middle
-            wrap_margin = 60.0
-            cloud_width_scaled = cloud[2] * cloud[8]  # width * scale
-            middle_left = wrap_margin + cloud_width_scaled
-            middle_right = self.viewport.width - wrap_margin - cloud_width_scaled
-            
-            in_middle = (cloud[0] > middle_left and cloud[0] < middle_right)
-            
-            if cloud[9] > 30.0 and in_middle and cloud[10] < 0.5:
-                cloud[10] = 1.0  # Start fading
+        # Update lifetime (vectorized)
+        active_clouds[:, 9] += dt
+        
+        # Update turbulence phases (vectorized)
+        active_clouds[:, 11:14] += active_clouds[:, 14:17] * dt
+        
+        # Calculate global wave (scalar, same for all clouds)
+        global_wave_y = np.sin(self.global_time * 0.05) * 0.3 + np.sin(self.global_time * 0.13) * 0.1
+        
+        # Update position with wind and turbulence (vectorized)
+        wind_effect = self.wind * active_clouds[:, 5]  # wind_sens
+        active_clouds[:, 0] += (active_clouds[:, 4] + wind_effect) * dt  # position.x
+        active_clouds[:, 1] += global_wave_y * dt  # position.y
+        
+        # Horizontal wrapping (vectorized)
+        wrap_left = active_clouds[:, 0] < 0.0
+        active_clouds[wrap_left, 0] += self.viewport.width
+        wrap_right = active_clouds[:, 0] >= self.viewport.width
+        active_clouds[wrap_right, 0] -= self.viewport.width
+        
+        # Clamp vertical (vectorized)
+        active_clouds[:, 1] = np.clip(active_clouds[:, 1], 0, self.viewport.height)
+        
+        # Smooth opacity transitions (vectorized)
+        is_fading = active_clouds[:, 10] > 0.5
+        target_opacity = np.where(is_fading, 0.0, active_clouds[:, 6])  # base_opacity or 0
+        opacity_diff = target_opacity - active_clouds[:, 7]
+        
+        # Update opacity where diff is significant
+        needs_update = np.abs(opacity_diff) > 0.01
+        transition_speed = np.where(is_fading, 0.4, 0.3)
+        active_clouds[needs_update, 7] += opacity_diff[needs_update] * transition_speed[needs_update] * dt
+        active_clouds[:, 7] = np.clip(active_clouds[:, 7], 0, 1)
+        
+        # Mark for removal if fully faded (vectorized)
+        fully_faded = (active_clouds[:, 10] > 0.5) & (active_clouds[:, 7] < 0.01)
+        active_clouds[fully_faded, 9] = -1.0  # Mark inactive
+        removed_count = np.sum(fully_faded)
+        self.num_clouds -= removed_count
+        
+        # Natural lifecycle: start fading after 30 seconds if in middle (vectorized)
+        wrap_margin = 60.0
+        cloud_width_scaled = active_clouds[:, 2] * active_clouds[:, 8]  # width * scale
+        middle_left = wrap_margin + cloud_width_scaled
+        middle_right = self.viewport.width - wrap_margin - cloud_width_scaled
+        
+        in_middle = (active_clouds[:, 0] > middle_left) & (active_clouds[:, 0] < middle_right)
+        should_fade = (active_clouds[:, 9] > 30.0) & in_middle & (active_clouds[:, 10] < 0.5)
+        active_clouds[should_fade, 10] = 1.0  # Start fading
+        
+        # Write back active clouds to main array
+        self.cpu_cloud_data[active_mask] = active_clouds
         
         # Upload updated data back to GPU SSBO for rendering
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
