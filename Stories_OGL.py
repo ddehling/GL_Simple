@@ -238,7 +238,7 @@ class EnvironmentalSystem:
         self.scheduler.state["celestial_bodies"] = self.celestial_bodies
         self.scheduler.state["celestial_visibility"] = self.weather_params["celestial_visibility"]
         self.scheduler.state["firefly_density"] = self.weather_params["firefly_density"]
-        self.scheduler.state["meteor_rate"] = 1#self.weather_params["meteor_rate"]
+        self.scheduler.state["meteor_rate"] = self.weather_params["meteor_rate"]
         #print(self.weather_params["meteor_rate"])
         self.scheduler.state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
         self.scheduler.state["sand_density"] = self.weather_params.get("sand_density", 0)
@@ -294,9 +294,9 @@ class EnvironmentalSystem:
         #     self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
 
         # # Random meteor events
-        # if randcheck < self.weather_params["meteor_rate"] / 800:
-        #     self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0,direction='bottom') # noqa: F405
-        #     #self.scheduler.schedule_event(0, 25, secondary_meteor_shower, frame_id=1) # noqa: F405
+        if randcheck < self.weather_params["meteor_rate"] / 800:
+            self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
+            #self.scheduler.schedule_event(0, 25, secondary_meteor_shower, frame_id=1) # noqa: F405
 
         # Dancing cactus events
         randcheck = np.random.random()
@@ -388,9 +388,9 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.transition_to_weather(WeatherState.HEAVY_FOG)
     env_system.scheduler.schedule_event(0, 500, fx.shader_test_circles,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
+    #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
     first_time = time.time()

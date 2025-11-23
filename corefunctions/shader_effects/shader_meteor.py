@@ -82,7 +82,7 @@ def shader_meteor(state, outstate):
         
         # Calculate fade factor
         fade_in_duration = 1
-        fade_out_start = total_duration * 0.8
+        fade_out_start = 3
         
         if elapsed_time < fade_in_duration:
             fade_factor = elapsed_time / fade_in_duration
@@ -114,7 +114,8 @@ def shader_meteor(state, outstate):
             
             # Add whoosh sound occasionally
             if random.random() < 0.1:
-                sound_path = Path('sounds')
+                parent_path = Path(__file__).parent.parent.parent
+                sound_path = parent_path / 'media' / 'sounds'
                 whoosh_path = sound_path / 'Whoosh By 04.wav'
                 if 'soundengine' in outstate and whoosh_path.exists():
                     outstate['soundengine'].schedule_event(
@@ -221,6 +222,7 @@ class MeteorEffect(ShaderEffect):
         uniform vec2 screenSize;  // Meteor screen dimensions (120x60)
         uniform float fadeAlpha;
         uniform int meteorCount;
+        uniform float viewportWidth;  // For wrapping calculations
         
         // Meteor data (positions in meteor screen space)
         uniform vec2 meteorPos[{self.MAX_METEORS}];
@@ -251,9 +253,8 @@ class MeteorEffect(ShaderEffect):
             float finalAlpha = 0.0;
             float maxBrightness = 0.0;
             
-            // Check each meteor
+            // Check each meteor at three wrap positions (center, left-wrapped, right-wrapped)
             for (int m = 0; m < meteorCount && m < {self.MAX_METEORS}; m++) {{
-                vec2 mPos = meteorPos[m];
                 float angle = meteorAngle[m];
                 float size = meteorSize[m];
                 float trailLength = meteorTrailLength[m];
@@ -263,15 +264,20 @@ class MeteorEffect(ShaderEffect):
                 // Calculate trail direction
                 vec2 trailDir = vec2(cos(angle), sin(angle));
                 
-                // Check multiple points along the trail (longer trails need more samples)
-                int maxTrailPoints = int(trailLength);
-                for (int i = 0; i < maxTrailPoints && i < 200; i++) {{
-                    // Trail point position
-                    vec2 trailPos = mPos - trailDir * float(i) * 0.4;  // Reduced spacing for smoother trails
+                // Check meteor at three wrap positions: center, left-wrapped, right-wrapped
+                for (int wrapOffset = -1; wrapOffset <= 1; wrapOffset++) {{
+                    vec2 mPos = meteorPos[m];
+                    mPos.x += float(wrapOffset) * viewportWidth;
                     
-                    // Distance from current pixel to trail point
-                    vec2 diff = meteorScreenPos - trailPos;
-                    float dist = length(diff);
+                    // Check multiple points along the trail (longer trails need more samples)
+                    int maxTrailPoints = int(trailLength);
+                    for (int i = 0; i < maxTrailPoints && i < 200; i++) {{
+                        // Trail point position
+                        vec2 trailPos = mPos - trailDir * float(i) * 0.4;  // Reduced spacing for smoother trails
+                        
+                        // Distance from current pixel to trail point
+                        vec2 diff = meteorScreenPos - trailPos;
+                        float dist = length(diff);
                     
                     // Calculate trail intensity falloff
                     float trailFactor = 1.0 - float(i) / trailLength;
@@ -316,6 +322,7 @@ class MeteorEffect(ShaderEffect):
                             }}
                         }}
                     }}
+                }}
                 }}
             }}
             
@@ -419,6 +426,10 @@ class MeteorEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "screenSize")
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+        
+        loc = glGetUniformLocation(self.shader, "viewportWidth")
+        if loc != -1:
+            glUniform1f(loc, float(self.viewport.width))
         
         loc = glGetUniformLocation(self.shader, "meteorDepth")
         if loc != -1:
