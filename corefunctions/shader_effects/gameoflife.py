@@ -18,10 +18,16 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_gameoflife(state, outstate, cell_size=10, update_rate=5, 
-                      initial_density=0.3, depth=50.0):
+def shader_gameoflife(state, outstate, cell_size=3, update_rate=10, 
+                      initial_density=0.4, depth=20.0, 
+                      audio_reactive=True, bass_spawn_sensitivity=2.0):
     """
     Conway's Game of Life shader effect compatible with EventScheduler
+    
+    Audio Reactivity:
+    - Bass hits spawn new cells (creates bursts of life)
+    - Mid frequencies modulate color intensity (adds energy to visuals)
+    - High frequencies speed up evolution (accelerates patterns on cymbals)
     
     Usage:
         scheduler.schedule_event(0, 60, shader_gameoflife, 
@@ -30,13 +36,16 @@ def shader_gameoflife(state, outstate, cell_size=10, update_rate=5,
     Args:
         state: Event state dict
         outstate: Global state dict
-        cell_size: Size of each cell in pixels (default: 10)
+        cell_size: Size of each cell in pixels (default: 5)
         update_rate: Frames between updates (default: 5)
-        initial_density: Initial probability of live cells (default: 0.3)
-        depth: Z-depth for rendering (default: 50.0)
+        initial_density: Initial probability of live cells (default: 0.4)
+        depth: Z-depth for rendering (default: 20.0, lower=closer)
+        audio_reactive: Enable audio reactivity (default: True)
+        bass_spawn_sensitivity: How sensitive bass spawning is (default: 2.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
+    audio_data = outstate.get('sound')
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
@@ -49,7 +58,7 @@ def shader_gameoflife(state, outstate, cell_size=10, update_rate=5,
     
     # Initialize on first call
     if state['count'] == 0:
-        print(f"Initializing Game of Life for frame {frame_id}")
+        print(f"Initializing Audio-Reactive Game of Life for frame {frame_id}")
         
         try:
             effect = viewport.add_effect(
@@ -60,6 +69,8 @@ def shader_gameoflife(state, outstate, cell_size=10, update_rate=5,
                 depth=depth
             )
             state['effect'] = effect
+            state['bass_spawn_sensitivity'] = bass_spawn_sensitivity
+            state['audio_reactive'] = audio_reactive
             print(f"✓ Initialized shader gameoflife for frame {frame_id}")
             print(f"  Grid: {effect.grid_width}x{effect.grid_height} cells")
             print(f"  Cell size: {cell_size}px, Update rate: {update_rate} frames")
@@ -68,6 +79,48 @@ def shader_gameoflife(state, outstate, cell_size=10, update_rate=5,
             import traceback
             traceback.print_exc()
             return
+    
+    # Update effect from audio data
+    if 'effect' in state and state.get('audio_reactive', False) and audio_data is not None:
+        # Get current normalized bands (use short-term for beat response)
+        bands = audio_data['norm_short'][0]
+        
+        # Bass energy (40-300 Hz) - triggers cell spawning
+        bass_energy = np.mean(bands[0:8])
+        
+        # Mid energy (300-2000 Hz) - modulates color intensity
+        mid_energy = np.mean(bands[8:20])
+        
+        # High energy (2000-16000 Hz) - speeds up evolution
+        high_energy = np.mean(bands[20:32])
+        
+        # Update effect parameters
+        state['effect'].audio_bass = bass_energy * state['bass_spawn_sensitivity']
+        state['effect'].audio_mid = mid_energy
+        state['effect'].audio_high = high_energy
+        
+        # Initialize previous values
+        if 'prev_bass' not in state:
+            state['prev_bass'] = bass_energy
+        if 'prev_mid' not in state:
+            state['prev_mid'] = mid_energy
+        if 'prev_high' not in state:
+            state['prev_high'] = high_energy
+        
+        # Spawn cells on strong bass transients
+        bass_delta = bass_energy - state['prev_bass']
+        if bass_delta > 0.3:  # Bass hit threshold
+            state['effect'].trigger_bass_spawn()
+        
+        # Roll grid on high frequency hits
+        high_delta = high_energy - state['prev_high']
+        
+        if abs(high_delta) > 0.1:  # Use absolute value, trigger on any significant change
+            state['effect'].trigger_x_roll()
+        
+        state['prev_bass'] = bass_energy
+        state['prev_mid'] = mid_energy
+        state['prev_high'] = high_energy
     
     # Cleanup on close
     if state['count'] == -1:
@@ -86,13 +139,25 @@ class GameOfLifeEffect(ShaderEffect):
     """Conway's Game of Life cellular automaton"""
     
     def __init__(self, viewport, cell_size: int = 10, update_rate: int = 5,
-                 initial_density: float = 0.3, depth: float = 50.0):
+                 initial_density: float = 0.4, depth: float = 20.0):
         super().__init__(viewport)
         self.cell_size = cell_size
-        self.update_rate = update_rate  # Frames between updates
+        self.base_update_rate = update_rate  # Base frames between updates
+        self.update_rate = update_rate
         self.initial_density = initial_density
         self.depth = depth
         self.frame_counter = 0
+        
+        # Audio reactivity parameters
+        self.audio_bass = 0.0
+        self.audio_mid = 0.0
+        self.audio_high = 0.0
+        self.bass_spawn_pending = False
+        self.x_roll_pending = False
+        self.x_roll_amount = 0  # Cells to roll left
+        
+        # Horizontal wrapping margin (should be larger than cell_size)
+        self.wrap_margin = max(50, cell_size * 2)
         
         # Calculate grid dimensions
         self.grid_width = (viewport.width + cell_size - 1) // cell_size
@@ -112,11 +177,25 @@ class GameOfLifeEffect(ShaderEffect):
         self.grid = np.random.random((self.grid_height, self.grid_width)) < self.initial_density
         self.grid = self.grid.astype(np.int32)
         
-        # Cell ages for color coding
-        self.cell_ages = np.zeros((self.grid_height, self.grid_width), dtype=np.float32)
+        # Cell ages for color coding - initialize live cells to age 1
+        self.cell_ages = self.grid.astype(np.float32)
         
         # Working buffer for next generation
         self.next_grid = np.zeros_like(self.grid)
+        
+        # Debug: Report initialization
+        live_count = np.sum(self.grid > 0)
+        print(f"Game of Life initialized: {live_count} live cells out of {self.grid_width * self.grid_height}")
+    
+    def trigger_bass_spawn(self):
+        """Trigger spawning of new cells on bass hit"""
+        self.bass_spawn_pending = True
+    
+    def trigger_x_roll(self):
+        """Trigger horizontal scrolling left of grid on mid frequency hit"""
+        self.x_roll_pending = True
+        # Roll amount based on mid energy: 1-3 cells for subtle effect
+        self.x_roll_amount = int(1 + self.audio_mid)
     
     def compile_shader(self):
         """Compile and link shaders - REQUIRED METHOD"""
@@ -147,8 +226,10 @@ class GameOfLifeEffect(ShaderEffect):
         uniform vec2 resolution;
         uniform float cell_size;
         uniform float depth;
+        uniform float audio_mid;  // Mid frequency energy for color boost
         
         out float v_age;
+        out float v_audio_mid;
         
         void main() {
             // Scale quad to cell size and position it
@@ -164,6 +245,7 @@ class GameOfLifeEffect(ShaderEffect):
             
             gl_Position = vec4(clipPos, depth_normalized, 1.0);
             v_age = cell_age;
+            v_audio_mid = audio_mid;
         }
         """
     
@@ -173,16 +255,59 @@ class GameOfLifeEffect(ShaderEffect):
         precision highp float;
         
         in float v_age;
+        in float v_audio_mid;
         out vec4 outColor;
         
         void main() {
-            // Color based on cell age
-            // Young cells: bright cyan -> older cells: deep blue
-            vec3 young_color = vec3(0.0, 1.0, 1.0);    // Cyan
-            vec3 old_color = vec3(0.0, 0.3, 0.8);      // Deep blue
+            // Color based on cell age with multiple life stages
+            // Newborn (0-3): Bright cyan
+            // Young (3-8): Green
+            // Adult (8-15): Yellow
+            // Mature (15-25): Orange
+            // Elder (25-40): Red
+            // Ancient (40+): Deep purple
             
-            float age_factor = clamp(v_age / 10.0, 0.0, 1.0);
-            vec3 color = mix(young_color, old_color, age_factor);
+            vec3 color;
+            float age = v_age;
+            
+            if (age < 3.0) {
+                // Newborn: cyan
+                color = vec3(0.0, 1.0, 1.0);
+            } else if (age < 8.0) {
+                // Young: cyan -> green
+                float t = (age - 3.0) / 5.0;
+                vec3 cyan = vec3(0.0, 1.0, 1.0);
+                vec3 green = vec3(0.0, 1.0, 0.3);
+                color = mix(cyan, green, t);
+            } else if (age < 15.0) {
+                // Adult: green -> yellow
+                float t = (age - 8.0) / 7.0;
+                vec3 green = vec3(0.0, 1.0, 0.3);
+                vec3 yellow = vec3(1.0, 1.0, 0.0);
+                color = mix(green, yellow, t);
+            } else if (age < 25.0) {
+                // Mature: yellow -> orange
+                float t = (age - 15.0) / 10.0;
+                vec3 yellow = vec3(1.0, 1.0, 0.0);
+                vec3 orange = vec3(1.0, 0.5, 0.0);
+                color = mix(yellow, orange, t);
+            } else if (age < 40.0) {
+                // Elder: orange -> red
+                float t = (age - 25.0) / 15.0;
+                vec3 orange = vec3(1.0, 0.5, 0.0);
+                vec3 red = vec3(1.0, 0.0, 0.0);
+                color = mix(orange, red, t);
+            } else {
+                // Ancient: red -> deep purple
+                float t = clamp((age - 40.0) / 20.0, 0.0, 1.0);
+                vec3 red = vec3(1.0, 0.0, 0.0);
+                vec3 purple = vec3(0.5, 0.0, 0.8);
+                color = mix(red, purple, t);
+            }
+            
+            // Audio reactivity: boost color intensity with mid frequencies
+            float audio_boost = 1.0 + v_audio_mid * 0.5;  // Up to 1.5x brighter
+            color *= audio_boost;
             
             // Fully opaque cells
             outColor = vec4(color, 1.0);
@@ -236,9 +361,14 @@ class GameOfLifeEffect(ShaderEffect):
         glBindVertexArray(0)
     
     def update(self, dt: float, state: Dict):
-        """Update Game of Life state each frame"""
+        """Update Game of Life state each frame (audio-reactive)"""
         if not self.enabled:
             return
+        
+        # Audio-reactive update rate: high frequencies speed up evolution
+        # Range: base_update_rate when quiet, down to 1 frame on loud highs
+        high_factor = np.clip(self.audio_high, 0, 2)  # 0-2x multiplier
+        self.update_rate = max(1, int(self.base_update_rate * (1.0 - high_factor * 0.7)))
         
         self.frame_counter += 1
         
@@ -246,26 +376,37 @@ class GameOfLifeEffect(ShaderEffect):
         if self.frame_counter >= self.update_rate:
             self.frame_counter = 0
             self._update_game_state()
+        
+        # Handle mid-triggered X-axis roll (left) - do AFTER game state update
+        if self.x_roll_pending:
+            self._roll_grid_x()
+            self.x_roll_pending = False
+        
+        # Handle bass-triggered cell spawning - do AFTER roll
+        if self.bass_spawn_pending:
+            self._spawn_bass_cells()
+            self.bass_spawn_pending = False
     
     def _update_game_state(self):
-        """Apply Conway's Game of Life rules with wrapping"""
-        # Count live neighbors for each cell (with wrapping)
-        neighbors = np.zeros_like(self.grid)
+        """Apply Conway's Game of Life rules with wrapping (vectorized)"""
+        # Count live neighbors for each cell (with wrapping) - fully vectorized
+        alive = (self.grid > 0).astype(np.int32)
         
-        for dy in [-1, 0, 1]:
-            for dx in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                
-                # Shift grid with wrapping
-                shifted = np.roll(np.roll(self.grid, dy, axis=0), dx, axis=1)
-                neighbors += (shifted > 0).astype(np.int32)
+        # Sum all 8 neighbors using rolled arrays
+        neighbors = (
+            np.roll(alive, (-1, -1), axis=(0, 1)) +  # top-left
+            np.roll(alive, (-1, 0), axis=(0, 1)) +   # top
+            np.roll(alive, (-1, 1), axis=(0, 1)) +   # top-right
+            np.roll(alive, (0, -1), axis=(0, 1)) +   # left
+            np.roll(alive, (0, 1), axis=(0, 1)) +    # right
+            np.roll(alive, (1, -1), axis=(0, 1)) +   # bottom-left
+            np.roll(alive, (1, 0), axis=(0, 1)) +    # bottom
+            np.roll(alive, (1, 1), axis=(0, 1))      # bottom-right
+        )
         
         # Apply Conway's rules
         # Birth: dead cell with exactly 3 neighbors becomes alive
         # Survival: live cell with 2-3 neighbors survives
-        # Death: all other cases
-        
         birth = (self.grid == 0) & (neighbors == 3)
         survival = (self.grid > 0) & ((neighbors == 2) | (neighbors == 3))
         
@@ -273,15 +414,82 @@ class GameOfLifeEffect(ShaderEffect):
         self.next_grid[birth] = 1
         self.next_grid[survival] = self.grid[survival] + 1  # Increment age
         
+        # Occasionally add random cells to prevent stagnation (1% chance per update)
+        if np.random.random() < 0.01:
+            num_new_cells = np.random.randint(3, 8)  # Add 3-7 random cells
+            for _ in range(num_new_cells):
+                row = np.random.randint(0, self.grid_height)
+                col = np.random.randint(0, self.grid_width)
+                if self.next_grid[row, col] == 0:  # Only spawn in dead cells
+                    self.next_grid[row, col] = 1
+        
         # Swap buffers
         self.grid, self.next_grid = self.next_grid, self.grid
         
-        # Update cell ages
-        self.cell_ages[self.grid > 0] = self.grid[self.grid > 0].astype(np.float32)
-        self.cell_ages[self.grid == 0] = 0.0
+        # Update cell ages (vectorized)
+        self.cell_ages = self.grid.astype(np.float32)
+    
+    def _spawn_bass_cells(self):
+        """Spawn new cells adjacent to existing live cells in response to bass hit"""
+        # Find all live cells
+        live_rows, live_cols = np.where(self.grid > 0)
+        
+        if len(live_rows) == 0:
+            # No live cells to spawn near, spawn randomly instead
+            num_cells = int(5 + self.audio_bass * 10)
+            num_cells = min(num_cells, 30)
+            for _ in range(num_cells):
+                row = np.random.randint(0, self.grid_height)
+                col = np.random.randint(0, self.grid_width)
+                if self.grid[row, col] == 0:
+                    self.grid[row, col] = 1
+                    self.cell_ages[row, col] = 1.0
+            return
+        
+        # Spawn cells adjacent to existing live cells
+        num_cells = int(5 + self.audio_bass * 10)
+        num_cells = min(num_cells, 30)
+        
+        spawned = 0
+        max_attempts = num_cells * 3  # Prevent infinite loops
+        attempts = 0
+        
+        while spawned < num_cells and attempts < max_attempts:
+            attempts += 1
+            
+            # Pick a random live cell
+            idx = np.random.randint(0, len(live_rows))
+            center_row = live_rows[idx]
+            center_col = live_cols[idx]
+            
+            # Pick a random adjacent cell (8 neighbors)
+            dr = np.random.randint(-1, 2)  # -1, 0, or 1
+            dc = np.random.randint(-1, 2)
+            
+            if dr == 0 and dc == 0:
+                continue  # Skip the center cell
+            
+            # Apply wrapping
+            new_row = (center_row + dr) % self.grid_height
+            new_col = (center_col + dc) % self.grid_width
+            
+            # Spawn in dead cells only
+            if self.grid[new_row, new_col] == 0:
+                self.grid[new_row, new_col] = 1
+                self.cell_ages[new_row, new_col] = 1.0
+                spawned += 1
+    
+    def _roll_grid_x(self):
+        """Roll the grid horizontally to the left"""
+        # Roll left (negative shift on axis 1 = columns)
+        roll_amount = -self.x_roll_amount
+        
+        # Apply roll to both grid and ages - wraps naturally
+        self.grid = np.roll(self.grid, roll_amount, axis=1)
+        self.cell_ages = np.roll(self.cell_ages, roll_amount, axis=1)
     
     def render(self, state: Dict):
-        """Render live cells"""
+        """Render live cells with horizontal wrapping"""
         if not self.enabled:
             return
         
@@ -289,16 +497,39 @@ class GameOfLifeEffect(ShaderEffect):
         live_rows, live_cols = np.where(self.grid > 0)
         
         if len(live_rows) == 0:
-            # No live cells, optionally reseed
-            if np.random.random() < 0.01:  # 1% chance per frame to reseed
-                self._initialize_data()
+            # No live cells, reseed immediately
+            print("Game of Life: All cells died, reseeding...")
+            self._initialize_data()
             return
         
         # Build instance data: [x, y, age] for each live cell
-        instance_data = np.zeros((len(live_rows), 3), dtype=np.float32)
-        instance_data[:, 0] = live_cols * self.cell_size  # X position
-        instance_data[:, 1] = live_rows * self.cell_size  # Y position
-        instance_data[:, 2] = self.cell_ages[live_rows, live_cols]  # Age
+        positions = np.column_stack([
+            live_cols * self.cell_size,  # X position
+            live_rows * self.cell_size,  # Y position
+            self.cell_ages[live_rows, live_cols]  # Age
+        ]).astype(np.float32)
+        
+        # Horizontal wrapping: detect cells near edges
+        left_edge_mask = positions[:, 0] < self.wrap_margin
+        right_edge_mask = positions[:, 0] > (self.viewport.width - self.wrap_margin)
+        
+        # Collect all positions to render (originals + duplicates)
+        all_positions = [positions]
+        
+        # Cells near left edge need duplicates on right
+        if np.any(left_edge_mask):
+            left_duplicates = positions[left_edge_mask].copy()
+            left_duplicates[:, 0] += self.viewport.width  # Shift to right side
+            all_positions.append(left_duplicates)
+        
+        # Cells near right edge need duplicates on left
+        if np.any(right_edge_mask):
+            right_duplicates = positions[right_edge_mask].copy()
+            right_duplicates[:, 0] -= self.viewport.width  # Shift to left side
+            all_positions.append(right_duplicates)
+        
+        # Combine all positions (originals + wrapped duplicates)
+        instance_data = np.vstack(all_positions)
         
         # Update instance buffer
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
@@ -318,8 +549,11 @@ class GameOfLifeEffect(ShaderEffect):
         depth_loc = glGetUniformLocation(self.shader, "depth")
         glUniform1f(depth_loc, self.depth)
         
-        # Draw instanced
-        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(live_rows))
+        audio_mid_loc = glGetUniformLocation(self.shader, "audio_mid")
+        glUniform1f(audio_mid_loc, self.audio_mid)
+        
+        # Draw instanced (includes wrapped duplicates)
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(instance_data))
         
         glBindVertexArray(0)
         glUseProgram(0)
