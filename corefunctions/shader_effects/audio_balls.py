@@ -456,6 +456,8 @@ class AudioBallsEffect(ShaderEffect):
         
         uniform vec2 resolution;
         uniform float time;
+        uniform float viewportWidth;
+        uniform float wrapMargin;
         
         out vec3 vColor;
         out float vAlpha;
@@ -463,16 +465,39 @@ class AudioBallsEffect(ShaderEffect):
         out float vBallId;
         
         void main() {
+            // GPU handles wrapping - render up to 3 instances per ball
+            // gl_InstanceID / 3 = ball index, gl_InstanceID % 3 = wrap instance (0=center, 1=left, 2=right)
+            int ballIndex = gl_InstanceID / 3;
+            int wrapInstance = gl_InstanceID - (ballIndex * 3);
+            
+            vec3 pos = ballPosition;
+            
+            // Apply wrapping offset based on wrap instance
+            if (wrapInstance == 1) {
+                // Left wrap: only render if near right edge
+                if (pos.x < viewportWidth - wrapMargin) {
+                    gl_Position = vec4(0.0, 0.0, -10.0, 1.0); // Cull by placing behind far plane
+                    return;
+                }
+                pos.x -= viewportWidth;
+            } else if (wrapInstance == 2) {
+                // Right wrap: only render if near left edge
+                if (pos.x > wrapMargin) {
+                    gl_Position = vec4(0.0, 0.0, -10.0, 1.0); // Cull by placing behind far plane
+                    return;
+                }
+                pos.x += viewportWidth;
+            }
+            
             // Calculate world position of this vertex
-            // No wrapping needed - CPU already handles wrapped instances
-            vec2 worldPos = ballPosition.xy + quadVertex * ballSize;
+            vec2 worldPos = pos.xy + quadVertex * ballSize;
             
             // Convert to clip space
             vec2 clipPos = (worldPos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
             
             // Depth from z coordinate (0-100 range mapped to 0-1)
-            float depth = ballPosition.z / 100.0;
+            float depth = pos.z / 100.0;
             depth = clamp(depth, 0.0, 1.0);
             
             gl_Position = vec4(clipPos, depth, 1.0);
@@ -555,16 +580,63 @@ class AudioBallsEffect(ShaderEffect):
         #version 310 es
         precision highp float;
         
-        layout(location = 0) in vec3 position;  // x, y, z
-        layout(location = 1) in vec3 color;
-        layout(location = 2) in float alpha;
+        // Per-instance attributes for lightning bolts
+        layout(location = 0) in vec3 p1Position;  // Start point
+        layout(location = 1) in vec3 p2Position;  // End point
+        layout(location = 2) in vec3 color;
+        layout(location = 3) in float alpha;
         
         uniform vec2 resolution;
+        uniform float viewportWidth;
+        uniform float time;
         
         out vec3 vColor;
         out float vAlpha;
         
+        // Simple hash function for pseudo-random jitter
+        float hash(float n) {
+            return fract(sin(n * 12.9898) * 43758.5453123);
+        }
+        
         void main() {
+            // Each bolt has 4 vertices (2 line segments): p1->mid, mid->p2
+            // gl_InstanceID = bolt index, gl_VertexID % 4 determines which vertex
+            int vertexInBolt = gl_VertexID % 4;
+            
+            vec3 p1 = p1Position;
+            vec3 p2 = p2Position;
+            
+            // Handle wrapping for lightning that crosses screen edge
+            float dx = p2.x - p1.x;
+            float wrapThreshold = viewportWidth * 0.5;
+            
+            if (abs(dx) > wrapThreshold) {
+                if (dx > 0.0) {
+                    p1.x += viewportWidth;
+                } else {
+                    p1.x -= viewportWidth;
+                }
+            }
+            
+            // Calculate midpoint with jitter (GPU-based randomness)
+            float seed = float(gl_InstanceID) + time * 0.1;
+            float jitterX = (hash(seed) - 0.5) * 20.0;
+            float jitterY = (hash(seed + 1.0) - 0.5) * 20.0;
+            
+            vec3 mid = (p1 + p2) * 0.5;
+            mid.xy += vec2(jitterX, jitterY);
+            
+            // Select position based on vertex index
+            vec3 position;
+            if (vertexInBolt == 0 || vertexInBolt == 1) {
+                // First line segment
+                position = (vertexInBolt == 0) ? p1 : mid;
+            } else {
+                // Second line segment
+                position = (vertexInBolt == 2) ? mid : p2;
+            }
+            
+            // Convert to clip space
             vec2 clipPos = (position.xy / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
             
@@ -619,65 +691,77 @@ class AudioBallsEffect(ShaderEffect):
         # Instance VBO (per-ball data: position, size, color, alpha, id)
         self.instance_VBO = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        # Allocate space: position(3) + size(1) + color(3) + alpha(1) + id(1) = 9 floats per instance
-        max_instances = self.num_balls * 3  # Allow for wrapping (original + 2 wrapped copies)
-        glBufferData(GL_ARRAY_BUFFER, max_instances * 9 * 4, None, GL_DYNAMIC_DRAW)
+        # Allocate space: position(3) + size(1) + color(3) + alpha(1) + id(1) = 9 floats per ball
+        # We only store data for num_balls, but draw num_balls * 3 instances
+        glBufferData(GL_ARRAY_BUFFER, self.num_balls * 9 * 4, None, GL_DYNAMIC_DRAW)
         
         # Set up instance attributes
+        # Divisor = 3 means attribute advances every 3 instances (each ball spawns 3 wrap instances)
         stride = 9 * 4  # 9 floats
         
         # Ball position (vec3)
         glEnableVertexAttribArray(1)
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
-        glVertexAttribDivisor(1, 1)  # Advance per instance
+        glVertexAttribDivisor(1, 3)  # Advance every 3 instances (center, left, right)
         
         # Ball size (float)
         glEnableVertexAttribArray(2)
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(3 * 4))
-        glVertexAttribDivisor(2, 1)
+        glVertexAttribDivisor(2, 3)
         
         # Ball color (vec3)
         glEnableVertexAttribArray(3)
         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(4 * 4))
-        glVertexAttribDivisor(3, 1)
+        glVertexAttribDivisor(3, 3)
         
         # Ball alpha (float)
         glEnableVertexAttribArray(4)
         glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(7 * 4))
-        glVertexAttribDivisor(4, 1)
+        glVertexAttribDivisor(4, 3)
         
         # Ball ID (float)
         glEnableVertexAttribArray(5)
         glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8 * 4))
-        glVertexAttribDivisor(5, 1)
+        glVertexAttribDivisor(5, 3)
         
         glBindVertexArray(0)
         
-        # Lightning VAO (line rendering)
+        # Lightning VAO (instanced rendering per bolt)
         self.lightning_VAO = glGenVertexArrays(1)
         glBindVertexArray(self.lightning_VAO)
         
         self.lightning_VBO = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.lightning_VBO)
-        # Lightning vertices: position.xyz(3) + color.rgb(3) + alpha(1) = 7 floats per vertex
-        glBufferData(GL_ARRAY_BUFFER, 1000 * 7 * 4, None, GL_DYNAMIC_DRAW)
+        # Lightning instance data: p1.xyz(3) + p2.xyz(3) + color.rgb(3) + alpha(1) = 10 floats per instance
+        max_lightning = 100  # Max simultaneous lightning bolts
+        glBufferData(GL_ARRAY_BUFFER, max_lightning * 10 * 4, None, GL_DYNAMIC_DRAW)
         
-        # Position (x, y, z)
+        stride = 10 * 4  # 10 floats
+        
+        # P1 Position (vec3)
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * 4, ctypes.c_void_p(0))
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        glVertexAttribDivisor(0, 1)  # Advance per instance
         
-        # Color (r, g, b)
+        # P2 Position (vec3)
         glEnableVertexAttribArray(1)
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 7 * 4, ctypes.c_void_p(3 * 4))
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(3 * 4))
+        glVertexAttribDivisor(1, 1)
         
-        # Alpha
+        # Color (vec3)
         glEnableVertexAttribArray(2)
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 7 * 4, ctypes.c_void_p(6 * 4))
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(6 * 4))
+        glVertexAttribDivisor(2, 1)
+        
+        # Alpha (float)
+        glEnableVertexAttribArray(3)
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(9 * 4))
+        glVertexAttribDivisor(3, 1)
         
         glBindVertexArray(0)
     
     def render(self, state: Dict):
-        """Render balls using instanced rendering"""
+        """Render balls using instanced rendering - all math on GPU"""
         if not self.enabled or self.shader is None:
             return
         
@@ -695,135 +779,65 @@ class AudioBallsEffect(ShaderEffect):
         if viewport_width_loc != -1:
             glUniform1f(viewport_width_loc, self.viewport.width)
         
-        # Prepare instance data for balls (fully vectorized)
+        wrap_margin_loc = glGetUniformLocation(self.shader, "wrapMargin")
+        if wrap_margin_loc != -1:
+            glUniform1f(wrap_margin_loc, self.wrap_margin)
+        
+        # Prepare instance data for balls (minimal CPU work - just alpha multiplication)
         ball_alphas = self.alphas * self.fade_factor
         
-        # Vectorized wrapping detection
-        left_edge_mask = self.positions[:, 0] < self.wrap_margin
-        right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
+        # Pack instance data directly - no wrapping logic on CPU
+        # Build array row by row: each row is [pos.x, pos.y, pos.z, size, col.r, col.g, col.b, alpha, id]
+        instance_data = np.zeros((self.num_balls, 9), dtype=np.float32)
+        instance_data[:, 0:3] = self.positions      # xyz
+        instance_data[:, 3] = self.sizes             # size
+        instance_data[:, 4:7] = self.colors          # rgb
+        instance_data[:, 7] = ball_alphas            # alpha
+        instance_data[:, 8] = self.ball_ids          # id
         
-        # Count instances needed
-        n_originals = self.num_balls
-        n_left_wraps = np.sum(left_edge_mask)
-        n_right_wraps = np.sum(right_edge_mask)
-        total_instances = n_originals + n_left_wraps + n_right_wraps
+        # Flatten and convert to bytes to avoid PyOpenGL array handling issues
+        instance_bytes = instance_data.flatten().tobytes()
         
-        # Pre-allocate instance array
-        instance_data = np.zeros((total_instances, 9), dtype=np.float32)
+        # Upload instance data - use glBufferData instead of glBufferSubData to avoid PyOpenGL caching issues
+        glBindVertexArray(self.VAO)
+        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+        glBufferData(GL_ARRAY_BUFFER, len(instance_bytes), instance_bytes, GL_DYNAMIC_DRAW)
         
-        # Fill original instances (vectorized)
-        instance_data[:n_originals, 0:3] = self.positions  # position xyz
-        instance_data[:n_originals, 3] = self.sizes  # size
-        instance_data[:n_originals, 4:7] = self.colors  # color rgb
-        instance_data[:n_originals, 7] = ball_alphas  # alpha
-        instance_data[:n_originals, 8] = self.ball_ids  # id
+        # Draw instanced - GPU renders 3 instances per ball (center, left wrap, right wrap)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, self.num_balls * 3)
+        glBindVertexArray(0)
         
-        # Add wrapped instances (vectorized)
-        offset = n_originals
-        if n_left_wraps > 0:
-            left_indices = np.where(left_edge_mask)[0]
-            instance_data[offset:offset+n_left_wraps, 0:3] = self.positions[left_indices]
-            instance_data[offset:offset+n_left_wraps, 0] += self.viewport.width  # Wrap x to right
-            instance_data[offset:offset+n_left_wraps, 3] = self.sizes[left_indices]
-            instance_data[offset:offset+n_left_wraps, 4:7] = self.colors[left_indices]
-            instance_data[offset:offset+n_left_wraps, 7] = ball_alphas[left_indices]
-            instance_data[offset:offset+n_left_wraps, 8] = self.ball_ids[left_indices]
-            offset += n_left_wraps
-        
-        if n_right_wraps > 0:
-            right_indices = np.where(right_edge_mask)[0]
-            instance_data[offset:offset+n_right_wraps, 0:3] = self.positions[right_indices]
-            instance_data[offset:offset+n_right_wraps, 0] -= self.viewport.width  # Wrap x to left
-            instance_data[offset:offset+n_right_wraps, 3] = self.sizes[right_indices]
-            instance_data[offset:offset+n_right_wraps, 4:7] = self.colors[right_indices]
-            instance_data[offset:offset+n_right_wraps, 7] = ball_alphas[right_indices]
-            instance_data[offset:offset+n_right_wraps, 8] = self.ball_ids[right_indices]
-        
-        if total_instances > 0:
-            instance_data = instance_data.flatten()
-            
-            # Upload instance data
-            glBindVertexArray(self.VAO)
-            glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-            glBufferSubData(GL_ARRAY_BUFFER, 0, instance_data.nbytes, instance_data)
-            
-            # Draw instanced quads
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, total_instances)
-            glBindVertexArray(0)
-        
-        # Render lightning
+        # Render lightning with GPU-based geometry generation
         lightning_data = self._prepare_lightning_instances()
         if lightning_data is not None and len(lightning_data) > 0:
-            # Switch to lightning shader
             glUseProgram(self.lightning_shader)
             
             res_loc = glGetUniformLocation(self.lightning_shader, "resolution")
             glUniform2f(res_loc, self.viewport.width, self.viewport.height)
             
-            # Build line geometry from lightning data (vectorized)
+            viewport_width_loc = glGetUniformLocation(self.lightning_shader, "viewportWidth")
+            if viewport_width_loc != -1:
+                glUniform1f(viewport_width_loc, self.viewport.width)
+            
+            time_loc = glGetUniformLocation(self.lightning_shader, "time")
+            if time_loc != -1:
+                glUniform1f(time_loc, self.surface_time)
+            
+            # Pack instance data: p1.xyz + p2.xyz + color.rgb + alpha = 10 floats per bolt
+            instance_bytes = lightning_data.flatten().tobytes()
+            
+            glBindVertexArray(self.lightning_VAO)
+            glBindBuffer(GL_ARRAY_BUFFER, self.lightning_VBO)
+            glBufferData(GL_ARRAY_BUFFER, len(instance_bytes), instance_bytes, GL_DYNAMIC_DRAW)
+            
+            # Draw instanced lines - GPU generates 4 vertices per bolt (2 line segments)
             n_bolts = len(lightning_data)
+            old_line_width = glGetFloatv(GL_LINE_WIDTH)
+            glLineWidth(self.lightning_line_thickness)
+            glDrawArraysInstanced(GL_LINES, 0, 4, n_bolts)
+            glLineWidth(old_line_width)
             
-            # Extract components (vectorized)
-            p1_positions = lightning_data[:, 0:3]
-            p2_positions = lightning_data[:, 3:6]
-            colors = lightning_data[:, 6:9]
-            alphas = lightning_data[:, 9]
-            
-            # Handle wrapping (vectorized)
-            dx = p2_positions[:, 0] - p1_positions[:, 0]
-            wrap_threshold = self.viewport.width / 2
-            
-            p1_wrapped = p1_positions.copy()
-            p2_wrapped = p2_positions.copy()
-            
-            # Vectorized wrapping logic
-            wrap_right_mask = (np.abs(dx) > wrap_threshold) & (dx > 0)
-            wrap_left_mask = (np.abs(dx) > wrap_threshold) & (dx < 0)
-            p1_wrapped[wrap_right_mask, 0] += self.viewport.width
-            p1_wrapped[wrap_left_mask, 0] -= self.viewport.width
-            
-            # Calculate midpoints with jitter (vectorized)
-            jitter = np.random.uniform(-10, 10, size=(n_bolts, 2)).astype(np.float32)
-            mid_xy = (p1_wrapped[:, :2] + p2_wrapped[:, :2]) / 2 + jitter
-            mid_z = (p1_wrapped[:, 2] + p2_wrapped[:, 2]) / 2
-            mid_positions = np.column_stack([mid_xy, mid_z])
-            
-            # Build vertex data: 4 vertices per bolt (p1->mid, mid->p2)
-            # Format: position.xyz(3) + color.rgb(3) + alpha(1) = 7 floats per vertex
-            n_vertices = n_bolts * 4
-            vertex_data = np.zeros((n_vertices, 7), dtype=np.float32)
-            
-            # First vertex of each pair (p1 and mid)
-            vertex_data[0::4, 0:3] = p1_wrapped  # p1 position
-            vertex_data[0::4, 3:6] = colors  # color
-            vertex_data[0::4, 6] = alphas  # alpha
-            
-            vertex_data[1::4, 0:3] = mid_positions  # mid position
-            vertex_data[1::4, 3:6] = colors  # color
-            vertex_data[1::4, 6] = alphas  # alpha
-            
-            # Second vertex of each pair (mid and p2)
-            vertex_data[2::4, 0:3] = mid_positions  # mid position
-            vertex_data[2::4, 3:6] = colors  # color
-            vertex_data[2::4, 6] = alphas  # alpha
-            
-            vertex_data[3::4, 0:3] = p2_wrapped  # p2 position
-            vertex_data[3::4, 3:6] = colors  # color
-            vertex_data[3::4, 6] = alphas  # alpha
-            
-            if n_vertices > 0:
-                vertex_data = vertex_data.flatten()
-                
-                glBindVertexArray(self.lightning_VAO)
-                glBindBuffer(GL_ARRAY_BUFFER, self.lightning_VBO)
-                glBufferSubData(GL_ARRAY_BUFFER, 0, vertex_data.nbytes, vertex_data)
-                
-                old_line_width = glGetFloatv(GL_LINE_WIDTH)
-                glLineWidth(self.lightning_line_thickness)
-                glDrawArrays(GL_LINES, 0, n_vertices)
-                glLineWidth(old_line_width)
-                
-                glBindVertexArray(0)
+            glBindVertexArray(0)
         
         glUseProgram(0)
     
