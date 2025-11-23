@@ -65,7 +65,7 @@ def shader_meteor(state, outstate):
         total_duration = state.get('duration', 30)
         
         # Calculate fade factor
-        fade_in_duration = total_duration * 0.2
+        fade_in_duration = 1
         fade_out_start = total_duration * 0.8
         
         if elapsed_time < fade_in_duration:
@@ -86,12 +86,12 @@ def shader_meteor(state, outstate):
             # Spawn from top-right, moving down-left diagonally
             meteor = {
                 'x': random.uniform(vp_width * 0.67, vp_width * 1.17),  # 80-140 scaled to viewport
-                'y': random.uniform(vp_height * -0.33, vp_height * 0.33),  # -20-20 scaled to viewport
-                'angle': math.radians(random.uniform(200, 250)),  # Down-left diagonal
+                'y': random.uniform(vp_height * 1, vp_height * 1.33),  # -20-20 scaled to viewport
+                'angle': math.radians(random.uniform(-70, -110)),  # Down-left diagonal
                 'speed': random.uniform(4.0, 8.0),
                 'size': random.uniform(0.6, 1.5),
                 'trail_length': vp_width + random.random() * vp_height,  # Scale trail to viewport
-                'life': 2,
+                'life': 3,
                 'hue': random.random()  # Random hue (0-1) for color variety
             }
             state['meteors'].append(meteor)
