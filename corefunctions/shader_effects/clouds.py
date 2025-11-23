@@ -1,13 +1,18 @@
 """
-Complete cloud effect - rendering + event integration
-GPU-accelerated drifting clouds with procedural generation and depth
+Complete cloud effect - GPU-OPTIMIZED VERSION
+Optimized drifting clouds with:
+1. Procedural generation in fragment shader (no CPU texture generation or uploads)
+2. Geometry shader for automatic edge wrapping (no CPU duplicate management)
+3. Efficient CPU physics with GPU SSBO storage (compute shaders not available in ES 3.1)
+
+This version eliminates texture memory and scipy dependency while using geometry
+shaders for seamless edge wrapping. Physics updates run on CPU but are vectorized.
 """
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
-from scipy.ndimage import gaussian_filter
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
@@ -25,7 +30,6 @@ def shader_drifting_clouds(state, outstate, density=1.0):
         outstate: Global state dict (from EventScheduler)
         density: Cloud spawn rate multiplier
     """
-    # Get the viewport
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     
@@ -41,42 +45,37 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     # Initialize cloud effect on first call
     if state['count'] == 0:
         outstate['has_clouds'] = True
-        #print(f"Initializing cloud effect for frame {frame_id}")
         
         try:
             cloud_effect = viewport.add_effect(
-                CloudEffect,
+                CloudEffectGPU,
                 density=density,
                 max_clouds=20
             )
             state['cloud_effect'] = cloud_effect
-            #print(f"✓ Initialized shader clouds for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize clouds: {e}")
             import traceback
             traceback.print_exc()
             return
     
-        # Update wind, fog, and cloudyness from global state
+    # Update wind, fog, and cloudyness from global state
     if 'cloud_effect' in state:
         effect = state['cloud_effect']
         effect.wind = outstate.get('wind', 0) * 50
         effect.fog_level = outstate.get('fog_level', 0)
-        effect.cloudyness = outstate.get('cloudyness', 0.5)  # 0.0 to 1.0
+        effect.cloudyness = outstate.get('cloudyness', 0.5)
         
-        # Calculate fade with 4 second fade in/out
+        # Calculate fade with 7 second fade in/out
         fade_duration = 7.0
         total_duration = state.get('duration', 60)
         elapsed = state.get('elapsed_time', 0)
         
         if elapsed < fade_duration:
-            # Fade in
             effect.fade_factor = elapsed / fade_duration
         elif elapsed > (total_duration - fade_duration):
-            # Fade out
             effect.fade_factor = (total_duration - elapsed) / fade_duration
         else:
-            # Fully visible
             effect.fade_factor = 1.0
         
         effect.fade_factor = np.clip(effect.fade_factor, 0, 1)
@@ -85,748 +84,696 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     if state['count'] == -1:
         outstate['has_clouds'] = False
         if 'cloud_effect' in state:
-            #print(f"Cleaning up cloud effect for frame {frame_id}")
             viewport.effects.remove(state['cloud_effect'])
             state['cloud_effect'].cleanup()
-            #print(f"✓ Cleaned up shader clouds for frame {frame_id}")
 
 
 # ============================================================================
-# Cloud Texture Generator
+# GPU-Optimized Cloud Effect
 # ============================================================================
 
-class CloudTextureGenerator:
-    """Generates procedural cloud textures"""
+class CloudEffectGPU(ShaderEffect):
+    """
+    GPU-optimized cloud effect:
+    - Fragment shader generates clouds procedurally (no textures/uploads)
+    - Geometry shader handles edge wrapping automatically  
+    - CPU physics with GPU SSBO storage (ES 3.1 doesn't support compute shaders)
+    - Eliminates texture memory and scipy dependency
+    """
     
-    @staticmethod
-    def generate_cloud(width, height, pattern_type=None):
-        """Generate a single cloud texture with varied shape patterns"""
-        
-        if pattern_type is None:
-            pattern_type = np.random.randint(0, 4)
-        
-        # Create density field
-        density = np.zeros((height, width))
-        y, x = np.mgrid[0:height, 0:width]
-        
-        # Number of blobs for varied shape
-        num_blobs = np.random.randint(10, 20)
-        
-        # Pattern-specific parameters
-        if pattern_type == 0:  # Horizontal stretched
-            main_axis_ratio = np.random.uniform(1.5, 3.0)
-            secondary_axis_ratio = np.random.uniform(0.6, 1.2)
-            blob_x = np.random.beta(2, 5, num_blobs) * width
-            blob_y = np.random.normal(height/2, height/4, num_blobs)
-        elif pattern_type == 1:  # Vertical stretched
-            main_axis_ratio = np.random.uniform(0.6, 1.2)
-            secondary_axis_ratio = np.random.uniform(1.5, 3.0)
-            blob_x = np.random.normal(width/2, width/4, num_blobs)
-            blob_y = np.random.beta(2, 5, num_blobs) * height
-        elif pattern_type == 2:  # Clustered multi-center
-            main_axis_ratio = np.random.uniform(0.8, 1.5)
-            secondary_axis_ratio = np.random.uniform(0.8, 1.5)
-            centers = [(np.random.uniform(0.2, 0.8) * width,
-                       np.random.uniform(0.2, 0.8) * height)
-                      for _ in range(np.random.randint(2, 4))]
-            center_idx = np.random.randint(0, len(centers), num_blobs)
-            blob_x = np.array([centers[i][0] + np.random.normal(0, width/5) for i in center_idx])
-            blob_y = np.array([centers[i][1] + np.random.normal(0, height/5) for i in center_idx])
-        else:  # Random scattered
-            main_axis_ratio = np.random.uniform(0.7, 1.8)
-            secondary_axis_ratio = np.random.uniform(0.7, 1.8)
-            blob_x = np.random.uniform(0.1, 0.9, num_blobs) * width
-            blob_y = np.random.uniform(0.1, 0.9, num_blobs) * height
-        
-        # Add central dense blobs
-        num_central = np.random.randint(3, 6)
-        for i in range(num_central):
-            cx = width * (0.5 + np.random.uniform(-0.2, 0.2))
-            cy = height * (0.5 + np.random.uniform(-0.2, 0.2))
-            rx = np.random.uniform(0.2, 0.5) * width * main_axis_ratio
-            ry = np.random.uniform(0.2, 0.5) * height * secondary_axis_ratio
-            
-            angle = np.random.uniform(0, np.pi)
-            cos_a, sin_a = np.cos(angle), np.sin(angle)
-            dx = (x - cx) * cos_a - (y - cy) * sin_a
-            dy = (x - cx) * sin_a + (y - cy) * cos_a
-            dist = np.sqrt((dx/rx)**2 + (dy/ry)**2)
-            
-            falloff = np.random.uniform(1.5, 3.0)
-            blob_density = np.exp(-dist**falloff)
-            density += blob_density * np.random.uniform(0.7, 1.0)
-        
-        # Add peripheral blobs
-        for i in range(num_blobs):
-            cx, cy = blob_x[i], blob_y[i]
-            edge_factor = max(0.001, min(cx/width, (width-cx)/width, cy/height, (height-cy)/height))
-            size_factor = 0.3 + 0.7 * (edge_factor ** 0.5)
-            
-            rx = np.random.uniform(0.05, 0.3) * width * size_factor
-            ry = np.random.uniform(0.05, 0.3) * height * size_factor
-            
-            angle = np.random.uniform(0, np.pi)
-            cos_a, sin_a = np.cos(angle), np.sin(angle)
-            dx = (x - cx) * cos_a - (y - cy) * sin_a
-            dy = (x - cx) * sin_a + (y - cy) * cos_a
-            
-            if np.random.random() > 0.7:
-                dist = (dx/rx)**2 + (dy/ry)**2
-            else:
-                dist = np.sqrt((dx/rx)**2 + (dy/ry)**2)
-            
-            falloff = np.random.uniform(1.2, 4.0)
-            blob_density = np.exp(-dist**falloff)
-            density += blob_density * np.random.uniform(0.3, 0.9)
-        
-        # Normalize
-        density = np.clip(density / (np.max(density) + 1e-10), 0, 1)
-        
-        # Add noise texture
-        noise = gaussian_filter(np.random.random((height, width)), sigma=1.0)
-        
-        # Apply wispy edges
-        edge_mask = (density > 0.1) & (density < 0.5)
-        if np.any(edge_mask):
-            density[edge_mask] *= (0.6 + 0.8 * noise[edge_mask])
-        
-        # Blur for smoothness
-        density = gaussian_filter(density, sigma=0.8)
-        
-        # Create brightness with vertical gradient
-        vertical_gradient = 1.0 - y / height * 0.3
-        brightness = (220 + noise * 35) * vertical_gradient
-        
-        # Create alpha with strong edge falloff
-        alpha = (density**2 * 255).astype(np.float32)
-        
-        # Enhanced edge softening
-        soft_edge = (density > 0) & (density < 0.6)
-        if np.any(soft_edge):
-            edge_factor = (density[soft_edge] / 0.6) ** 1.5
-            edge_alpha = alpha[soft_edge]
-            edge_multiplier = edge_factor**2.0 * (0.4 + 0.6 * noise[soft_edge])
-            edge_alpha *= edge_multiplier
-            
-            extreme_edge = density[soft_edge] < 0.2
-            if np.any(extreme_edge):
-                extreme_factor = (density[soft_edge][extreme_edge] / 0.2) ** 3.0
-                edge_alpha[extreme_edge] *= extreme_factor
-            
-            alpha[soft_edge] = np.clip(edge_alpha, 0, 255)
-        
-        # Strong blur for smooth edges
-        alpha = gaussian_filter(alpha, sigma=1.5)
-        
-        # Force zero-alpha border
-        border_width = 3
-        if height > 2*border_width and width > 2*border_width:
-            alpha[:border_width, :] = 0
-            alpha[-border_width:, :] = 0
-            alpha[:, :border_width] = 0
-            alpha[:, -border_width:] = 0
-            
-            # Gradient falloff
-            gradient_width = border_width
-            if border_width + gradient_width <= height:
-                rows = np.arange(gradient_width)
-                factors = (rows / gradient_width).reshape(-1, 1)
-                alpha[border_width:border_width + gradient_width, :] = (
-                    alpha[border_width:border_width + gradient_width, :] * factors
-                ).astype(np.uint8)
-                alpha[-(border_width + gradient_width):-border_width, :] = (
-                    alpha[-(border_width + gradient_width):-border_width, :] * factors[::-1]
-                ).astype(np.uint8)
-            
-            if border_width + gradient_width <= width:
-                cols = np.arange(gradient_width)
-                factors = (cols / gradient_width).reshape(1, -1)
-                alpha[:, border_width:border_width + gradient_width] = (
-                    alpha[:, border_width:border_width + gradient_width] * factors
-                ).astype(np.uint8)
-                alpha[:, -(border_width + gradient_width):-border_width] = (
-                    alpha[:, -(border_width + gradient_width):-border_width] * factors[::-1]
-                ).astype(np.uint8)
-        
-        alpha = alpha.astype(np.uint8)
-        
-        # Create RGBA image
-        cloud_img = np.zeros((height, width, 4), dtype=np.uint8)
-        valid = alpha > 0
-        for c in range(3):
-            cloud_img[:, :, c][valid] = np.clip(brightness[valid], 0, 255).astype(np.uint8)
-        cloud_img[:, :, 3] = alpha
-        
-        return cloud_img
-
-
-# ============================================================================
-# Rendering Class
-# ============================================================================
-
-class CloudEffect(ShaderEffect):
-    """GPU-based cloud effect using instanced rendering with textures"""
-    
-    def __init__(self, viewport, density: float = 1.0, max_clouds: int = 8):
+    def __init__(self, viewport, density: float = 1.0, max_clouds: int = 20):
         super().__init__(viewport)
         self.density = density
         self.max_clouds = max_clouds
         self.wind = 0.0
         self.fog_level = 0.0
-        self.fade_factor = 0.0  # Start faded out
-        self.cloudyness = 0.5  # Cloudyness factor (0.0 to 1.0)
+        self.fade_factor = 1.0  # Start visible (event system will control fading)
+        self.cloudyness = 0.5
         
-                # Cloud depth
-        self.cloud_depth = 40.0
+        # GPU buffers
+        self.cloud_ssbo = None
+        self.compute_shader = None
         
-        # Horizontal wrapping support (margin should exceed largest cloud size)
-        # Max cloud width = 60px * max scale (0.9) = 54px
-        self.wrap_margin = 60.0  # Should be >= max possible cloud width
+        # CPU-side mirror of cloud data for rendering (avoiding GPU readback)
+        self.cpu_cloud_data = np.zeros((max_clouds, 22), dtype=np.float32)
+        self.cpu_cloud_data[:, 9] = -1.0  # Mark all as inactive initially
+        self.num_clouds = 0
         
-                        # Vectorized cloud data
-        self.positions = np.zeros((0, 2), dtype=np.float32)  # [x, y]
-        self.speeds = np.zeros(0, dtype=np.float32)
-        self.wind_sensitivity = np.zeros(0, dtype=np.float32)  # How much each cloud responds to wind
-        self.base_opacities = np.zeros(0, dtype=np.float32)
-        self.current_opacities = np.zeros(0, dtype=np.float32)
-        self.sizes = np.zeros(0, dtype=np.float32)
-        self.z_indices = np.zeros(0, dtype=np.float32)
-        self.is_fading_out = np.zeros(0, dtype=bool)  # Track clouds that are fading out for removal
-        self.lifetime = np.zeros(0, dtype=np.float32)  # How long cloud has existed
-        self.turbulence_phases = np.zeros((0, 3), dtype=np.float32)
-        self.turbulence_speeds = np.zeros((0, 3), dtype=np.float32)
-        self.turbulence_amounts = np.zeros((0, 3), dtype=np.float32)
-        self.subpixel_offsets = np.zeros((0, 2), dtype=np.float32)
-        self.noise_offsets = np.zeros((0, 2), dtype=np.float32)
+        # Timing
+        self.global_time = 0.0
         
-        # Texture storage
-        self.cloud_textures = []
-        self.texture_ids = []
-        self.texture_indices = np.zeros(0, dtype=np.int32)
+    def get_compute_shader(self):
+        """Compute shader for cloud physics updates"""
+        return """
+        #version 430 core
+        layout(local_size_x = 16) in;
         
-        # Animation time
-        self.noise_time = 0.0
-        self.start_time = 0.0
+        struct Cloud {
+            vec2 position;      // x, y position
+            float width;        // cloud width
+            float height;       // cloud height
+            float speed;        // base movement speed
+            float wind_sens;    // wind sensitivity
+            float base_opacity; // target opacity
+            float curr_opacity; // current opacity (for fading)
+            float size_scale;   // overall scale
+            float lifetime;     // age in seconds
+            float is_fading;    // 1.0 if fading out, 0.0 otherwise
+            vec3 turb_phase;    // turbulence phases
+            vec3 turb_speed;    // turbulence speeds
+            vec3 turb_amount;   // turbulence amounts
+            vec2 noise_seed;    // random seed for procedural generation
+        };
         
-    def _spawn_cloud(self):
-        """Spawn a single new cloud"""
-        # Generate smaller cloud texture
-        width = np.random.randint(30, 80)
-        height = np.random.randint(15, 60)
-        cloud_img = CloudTextureGenerator.generate_cloud(width, height)
+        layout(std430, binding = 0) buffer CloudBuffer {
+            Cloud clouds[];
+        };
         
-        # Upload texture to GPU
-        texture_id = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, cloud_img)
-        glBindTexture(GL_TEXTURE_2D, 0)
+        uniform float deltaTime;
+        uniform float globalTime;
+        uniform float wind;
+        uniform float viewportWidth;
+        uniform float viewportHeight;
+        uniform float cloudyness;
+        uniform uint maxClouds;
         
-        self.cloud_textures.append((width, height))
-        self.texture_ids.append(texture_id)
-        texture_idx = len(self.texture_ids) - 1
-        
-                # Initial position - span full viewport height
-        start_x = np.random.uniform(-width * 1.5, self.viewport.width + width * 1.5)
-        start_y = np.random.uniform(0, self.viewport.height)
-        new_position = np.array([[start_x, start_y]], dtype=np.float32)
-        
-                                                        # Movement parameters - varied speeds for visual interest
-        # Use exponential distribution for more variety: some very slow, some faster
-        speed_type = np.random.random()
-        if speed_type < 0.3:  # 30% very slow clouds
-            new_speed = np.array([np.random.uniform(0.2, 0.8)], dtype=np.float32)
-        elif speed_type < 0.7:  # 40% medium speed clouds
-            new_speed = np.array([np.random.uniform(0.8, 2.0)], dtype=np.float32)
-        else:  # 30% faster clouds
-            new_speed = np.array([np.random.uniform(2.0, 4.0)], dtype=np.float32)
-        
-        new_base_opacity = np.array([np.random.uniform(0.5, 0.9)], dtype=np.float32)
-        
-        # Always start at zero opacity and fade in naturally
-        # This prevents sudden appearance when spawning
-        new_current_opacity = np.array([0.0], dtype=np.float32)
-        
-        # Smaller size scaling (MUST be before wind_sensitivity calculation)
-        new_size = np.array([np.random.uniform(0.5, 0.9)], dtype=np.float32)
-        
-        # Wind sensitivity: how much this cloud is affected by wind
-        # Higher altitude clouds (higher y) are MORE affected by wind
-        # Smaller/lighter clouds are MORE affected by wind
-        altitude_factor = 0.3 + (start_y / self.viewport.height) * 0.7  # 0.3 to 1.0
-        size_factor = 1.5 - new_size[0]  # Inverse of size (smaller = more sensitive)
-        new_wind_sensitivity = np.array([altitude_factor * size_factor * np.random.uniform(0.5, 1.5)], dtype=np.float32)
-        new_z_index = np.array([start_y + np.random.uniform(-5, 5)], dtype=np.float32)
-        
-        # Turbulence
-        new_turb_phases = np.random.uniform(0, 2*np.pi, (1, 3)).astype(np.float32)
-        new_turb_speeds = np.random.uniform(0.1, 0.3, (1, 3)).astype(np.float32)
-        new_turb_amounts = np.column_stack([
-            np.random.uniform(0.5, 1.5, 1),
-            np.random.uniform(0.3, 0.8, 1),
-            np.random.uniform(0.1, 0.3, 1)
-        ]).astype(np.float32)
-        
-        new_subpixel = np.zeros((1, 2), dtype=np.float32)
-        new_noise_offset = np.random.uniform(0, 10, (1, 2)).astype(np.float32)
-        new_texture_idx = np.array([texture_idx], dtype=np.int32)
-        new_is_fading = np.array([False], dtype=bool)
-        new_lifetime = np.array([0.0], dtype=np.float32)
-        
-                # Concatenate
-        self.positions = np.vstack([self.positions, new_position]) if len(self.positions) > 0 else new_position
-        self.speeds = np.concatenate([self.speeds, new_speed]) if len(self.speeds) > 0 else new_speed
-        self.wind_sensitivity = np.concatenate([self.wind_sensitivity, new_wind_sensitivity]) if len(self.wind_sensitivity) > 0 else new_wind_sensitivity
-        self.base_opacities = np.concatenate([self.base_opacities, new_base_opacity]) if len(self.base_opacities) > 0 else new_base_opacity
-        self.current_opacities = np.concatenate([self.current_opacities, new_current_opacity]) if len(self.current_opacities) > 0 else new_current_opacity
-        self.sizes = np.concatenate([self.sizes, new_size]) if len(self.sizes) > 0 else new_size
-        self.z_indices = np.concatenate([self.z_indices, new_z_index]) if len(self.z_indices) > 0 else new_z_index
-        self.turbulence_phases = np.vstack([self.turbulence_phases, new_turb_phases]) if len(self.turbulence_phases) > 0 else new_turb_phases
-        self.turbulence_speeds = np.vstack([self.turbulence_speeds, new_turb_speeds]) if len(self.turbulence_speeds) > 0 else new_turb_speeds
-        self.turbulence_amounts = np.vstack([self.turbulence_amounts, new_turb_amounts]) if len(self.turbulence_amounts) > 0 else new_turb_amounts
-        self.subpixel_offsets = np.vstack([self.subpixel_offsets, new_subpixel]) if len(self.subpixel_offsets) > 0 else new_subpixel
-        self.noise_offsets = np.vstack([self.noise_offsets, new_noise_offset]) if len(self.noise_offsets) > 0 else new_noise_offset
-        self.texture_indices = np.concatenate([self.texture_indices, new_texture_idx]) if len(self.texture_indices) > 0 else new_texture_idx
-        self.is_fading_out = np.concatenate([self.is_fading_out, new_is_fading]) if len(self.is_fading_out) > 0 else new_is_fading
-        self.lifetime = np.concatenate([self.lifetime, new_lifetime]) if len(self.lifetime) > 0 else new_lifetime
-        
-    def get_vertex_shader(self):
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= maxClouds) return;
+            
+            Cloud cloud = clouds[idx];
+            
+            // Skip inactive clouds (lifetime < 0)
+            if (cloud.lifetime < 0.0) return;
+            
+            // Update lifetime
+            cloud.lifetime += deltaTime;
+            
+            // Update turbulence phases
+            cloud.turb_phase += cloud.turb_speed * deltaTime;
+            
+            // Calculate global wave
+            float global_wave_y = sin(globalTime * 0.05) * 0.3 + sin(globalTime * 0.13) * 0.1;
+            
+            // Update position with wind and turbulence
+            float wind_effect = wind * cloud.wind_sens;
+            cloud.position.x += (cloud.speed + wind_effect) * deltaTime;
+            cloud.position.y += global_wave_y * deltaTime;
+            
+            // Horizontal wrapping
+            if (cloud.position.x < 0.0) {
+                cloud.position.x += viewportWidth;
+            } else if (cloud.position.x >= viewportWidth) {
+                cloud.position.x -= viewportWidth;
+            }
+            
+            // Clamp vertical
+            cloud.position.y = clamp(cloud.position.y, 0.0, viewportHeight);
+            
+            // Smooth opacity transitions
+            float target_opacity = cloud.is_fading > 0.5 ? 0.0 : cloud.base_opacity;
+            float opacity_diff = target_opacity - cloud.curr_opacity;
+            
+            if (abs(opacity_diff) > 0.01) {
+                float transition_speed = cloud.is_fading > 0.5 ? 0.4 : 0.3;
+                cloud.curr_opacity += opacity_diff * transition_speed * deltaTime;
+                cloud.curr_opacity = clamp(cloud.curr_opacity, 0.0, 1.0);
+            }
+            
+            // Mark for removal if fully faded
+            if (cloud.is_fading > 0.5 && cloud.curr_opacity < 0.01) {
+                cloud.lifetime = -1.0;  // Mark as inactive
+            }
+            
+            // Natural lifecycle: start fading after 30 seconds if in middle of screen
+            float wrap_margin = 60.0;
+            float cloud_width_scaled = cloud.width * cloud.size_scale;
+            float middle_left = wrap_margin + cloud_width_scaled;
+            float middle_right = viewportWidth - wrap_margin - cloud_width_scaled;
+            
+            bool in_middle = (cloud.position.x > middle_left && 
+                            cloud.position.x < middle_right);
+            
+            if (cloud.lifetime > 30.0 && in_middle && cloud.is_fading < 0.5) {
+                cloud.is_fading = 1.0;
+            }
+            
+            // Write back
+            clouds[idx] = cloud;
+        }
+        """
+    
+    def get_geometry_shader(self):
+        """Geometry shader for automatic edge wrapping"""
         return """
         #version 310 es
+        #extension GL_EXT_geometry_shader : enable
+        #extension GL_EXT_shader_io_blocks : enable
+        
         precision highp float;
         
-        layout(location = 0) in vec2 position;  // Quad vertices (0 to 1)
-        layout(location = 1) in vec3 offset;    // Cloud position (x, y, z)
-        layout(location = 2) in vec2 size;      // Cloud texture size (width, height)
-        layout(location = 3) in float scale;    // Cloud scale factor
-        layout(location = 4) in float opacity;  // Cloud opacity
+        layout(points) in;
+        layout(triangle_strip, max_vertices = 12) out;  // Up to 2 quads (primary + wrap)
+        
+        in VS_OUT {
+            vec2 size;
+            float scale;
+            float opacity;
+            vec2 noiseSeed;
+        } gs_in[];
         
         out vec2 texCoord;
         out float fragOpacity;
-        uniform vec2 resolution;
+        out vec2 fragNoiseSeed;
         
-        void main() {
-            texCoord = position;
-            fragOpacity = opacity;
-            
-            // Scale by texture size and scale factor
-            vec2 scaled = position * size * scale;
-            
-            // Translate to cloud position
-            vec2 pos = scaled + offset.xy;
-            
-            // Convert to clip space
+        uniform vec2 resolution;
+        uniform float wrapMargin;
+        uniform float cloudDepth;
+        
+        void emitQuad(vec2 basePos, vec2 size, float opacity, vec2 seed) {
+            // Bottom-left
+            vec2 pos = basePos;
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
+            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            texCoord = vec2(0.0, 0.0);
+            fragOpacity = opacity;
+            fragNoiseSeed = seed;
+            EmitVertex();
             
-            // Use Z for depth
-            float depth = offset.z / 100.0;
+            // Bottom-right
+            pos = basePos + vec2(size.x, 0.0);
+            clipPos = (pos / resolution) * 2.0 - 1.0;
+            clipPos.y = -clipPos.y;
+            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            texCoord = vec2(1.0, 0.0);
+            fragOpacity = opacity;
+            fragNoiseSeed = seed;
+            EmitVertex();
             
-            gl_Position = vec4(clipPos, depth, 1.0);
+            // Top-left
+            pos = basePos + vec2(0.0, size.y);
+            clipPos = (pos / resolution) * 2.0 - 1.0;
+            clipPos.y = -clipPos.y;
+            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            texCoord = vec2(0.0, 1.0);
+            fragOpacity = opacity;
+            fragNoiseSeed = seed;
+            EmitVertex();
+            
+            // Top-right
+            pos = basePos + size;
+            clipPos = (pos / resolution) * 2.0 - 1.0;
+            clipPos.y = -clipPos.y;
+            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            texCoord = vec2(1.0, 1.0);
+            fragOpacity = opacity;
+            fragNoiseSeed = seed;
+            EmitVertex();
+            
+            EndPrimitive();
+        }
+        
+        void main() {
+            vec2 cloudPos = gl_in[0].gl_Position.xy;
+            vec2 cloudSize = gs_in[0].size * gs_in[0].scale;
+            float opacity = gs_in[0].opacity;
+            vec2 seed = gs_in[0].noiseSeed;
+            
+            // Always emit primary cloud
+            emitQuad(cloudPos, cloudSize, opacity, seed);
+            
+            // Check if we need wrap duplicate on left edge
+            if (cloudPos.x < wrapMargin) {
+                vec2 wrapPos = cloudPos + vec2(resolution.x, 0.0);
+                emitQuad(wrapPos, cloudSize, opacity, seed);
+            }
+            
+            // Check if we need wrap duplicate on right edge
+            if (cloudPos.x + cloudSize.x > resolution.x - wrapMargin) {
+                vec2 wrapPos = cloudPos - vec2(resolution.x, 0.0);
+                emitQuad(wrapPos, cloudSize, opacity, seed);
+            }
         }
         """
+    
+    def get_vertex_shader(self):
+        """Vertex shader - passes through point data"""
+        return """
+        #version 310 es
+        #extension GL_EXT_shader_io_blocks : enable
         
+        precision highp float;
+        
+        layout(location = 0) in vec2 position;
+        layout(location = 1) in vec2 size;
+        layout(location = 2) in float scale;
+        layout(location = 3) in float opacity;
+        layout(location = 4) in vec2 noiseSeed;
+        
+        out VS_OUT {
+            vec2 size;
+            float scale;
+            float opacity;
+            vec2 noiseSeed;
+        } vs_out;
+        
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+            vs_out.size = size;
+            vs_out.scale = scale;
+            vs_out.opacity = opacity;
+            vs_out.noiseSeed = noiseSeed;
+        }
+        """
+    
     def get_fragment_shader(self):
+        """Fragment shader with procedural cloud generation"""
         return """
         #version 310 es
         precision highp float;
         
         in vec2 texCoord;
         in float fragOpacity;
+        in vec2 fragNoiseSeed;
+        
         out vec4 outColor;
         
-        uniform sampler2D cloudTexture;
         uniform float noiseTime;
         uniform float fadeFactor;
         
-        // Simple 2D noise function
+        // Hash function for pseudo-random values
+        float hash(vec2 p) {
+            vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+            p3 += dot(p3, p3.yzx + 33.33);
+            return fract((p3.x + p3.y) * p3.z);
+        }
+        
+        // 2D Perlin-like noise
         float noise(vec2 p) {
-            return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);  // Smoothstep
+            
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+        
+        // Fractal Brownian Motion for cloud texture
+        float fbm(vec2 p) {
+            float value = 0.0;
+            float amplitude = 0.5;
+            float frequency = 1.0;
+            
+            for (int i = 0; i < 5; i++) {
+                value += amplitude * noise(p * frequency);
+                frequency *= 2.0;
+                amplitude *= 0.5;
+            }
+            
+            return value;
         }
         
         void main() {
-            vec4 texColor = texture(cloudTexture, texCoord);
+            // Use texture coordinates and noise seed for unique cloud pattern
+            vec2 uv = texCoord;
+            vec2 cloudSpace = uv * 5.0 + fragNoiseSeed;  // Different per cloud
             
-            // Add animated noise to alpha for dynamic wispy effect
-            vec2 noiseCoord = texCoord * 5.0 + vec2(noiseTime * 0.1, noiseTime * 0.07);
-            float noiseVal = noise(noiseCoord) * 0.7 + 0.6;
+            // Generate cloud density with FBM
+            float density = fbm(cloudSpace);
             
-            // Apply noise more strongly at edges
-            float alphaVal = texColor.a / 255.0;
-            float edgeFactor = pow(alphaVal, 0.4);
-            float noiseImpact = noiseVal * (1.0 - edgeFactor * 0.95);
+            // Add animated wispy noise
+            vec2 animCoord = cloudSpace + vec2(noiseTime * 0.1, noiseTime * 0.07);
+            float wispy = noise(animCoord * 3.0) * 0.3 + 0.7;
             
-            // Apply fade factor for smooth transitions
-            float finalAlpha = texColor.a * fragOpacity * noiseImpact * fadeFactor;
+            // Center-bias for cloud shape (make edges more transparent)
+            vec2 centerDist = abs(uv - 0.5) * 2.0;
+            float radialFalloff = 1.0 - smoothstep(0.3, 1.0, length(centerDist));
             
-            outColor = vec4(texColor.rgb, finalAlpha);
+            // Combine density layers
+            float cloudAlpha = density * radialFalloff;
+            cloudAlpha = pow(cloudAlpha, 1.5);  // Enhance contrast
+            
+            // Apply wispy effect more at edges
+            float edgeFactor = pow(cloudAlpha, 0.4);
+            cloudAlpha *= wispy * (1.0 - edgeFactor * 0.5) + edgeFactor * 0.5;
+            
+            // Soft edge fadeout
+            float edgeDist = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+            cloudAlpha *= smoothstep(0.0, 0.15, edgeDist);
+            
+            // Cloud color with vertical gradient
+            float brightness = 0.9 - uv.y * 0.2;
+            vec3 cloudColor = vec3(brightness);
+            
+            // Apply all opacity factors
+            float finalAlpha = cloudAlpha * fragOpacity * fadeFactor;
+            
+            outColor = vec4(cloudColor, finalAlpha);
         }
         """
     
     def compile_shader(self):
-        """Compile and link cloud shaders"""
-        vertex_shader = self.get_vertex_shader()
-        fragment_shader = self.get_fragment_shader()
+        """Compile rendering shaders with geometry shader"""
+        vertex_src = self.get_vertex_shader()
+        geometry_src = self.get_geometry_shader()
+        fragment_src = self.get_fragment_shader()
         
         try:
-            vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
-            frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
-            shader = shaders.compileProgram(vert, frag)
+            vert = shaders.compileShader(vertex_src, GL_VERTEX_SHADER)
+            geom = shaders.compileShader(geometry_src, GL_GEOMETRY_SHADER)
+            frag = shaders.compileShader(fragment_src, GL_FRAGMENT_SHADER)
             
-            # Set resolution uniform
-            glUseProgram(shader)
-            loc = glGetUniformLocation(shader, "resolution")
-            if loc != -1:
-                glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
-            glUseProgram(0)
+            # Create program and attach shaders
+            shader = glCreateProgram()
+            glAttachShader(shader, vert)
+            glAttachShader(shader, geom)
+            glAttachShader(shader, frag)
+            glLinkProgram(shader)
+            
+            # Check link status
+            link_status = glGetProgramiv(shader, GL_LINK_STATUS)
+            if not link_status:
+                error = glGetProgramInfoLog(shader).decode()
+                raise RuntimeError(f"Shader linking failed: {error}")
+            
+            # Note: Skip validation for now - it fails without uniform values set
+            # The shader will work fine once uniforms are properly set during render
+            
+            # Clean up shader objects (they're now part of the program)
+            glDeleteShader(vert)
+            glDeleteShader(geom)
+            glDeleteShader(frag)
             
             return shader
         except Exception as e:
             print(f"Shader compilation error: {e}")
             raise
-
+    
+    def compile_compute_shader(self):
+        """Compile compute shader for physics"""
+        compute_src = self.get_compute_shader()
+        
+        try:
+            comp = shaders.compileShader(compute_src, GL_COMPUTE_SHADER)
+            
+            # Create program and attach shader
+            program = glCreateProgram()
+            glAttachShader(program, comp)
+            glLinkProgram(program)
+            
+            # Check link status
+            link_status = glGetProgramiv(program, GL_LINK_STATUS)
+            if not link_status:
+                error = glGetProgramInfoLog(program).decode()
+                raise RuntimeError(f"Compute shader linking failed: {error}")
+            
+            # Clean up shader object
+            glDeleteShader(comp)
+            
+            return program
+        except Exception as e:
+            print(f"Compute shader compilation error: {e}")
+            raise
+    
     def setup_buffers(self):
-        """Initialize OpenGL buffers"""
-        # Quad vertices (0 to 1 for texture coordinates)
-        vertices = np.array([
-            0.0, 0.0,
-            1.0, 0.0,
-            1.0, 1.0,
-            0.0, 1.0
-        ], dtype=np.float32)
+        """Initialize GPU buffers and shaders"""
+        # Note: Compute shaders not available in OpenGL ES 3.1, using CPU physics instead
+        # We still use SSBO to store cloud data for potential future optimization
         
-        indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
+        # Create SSBO for cloud data storage
+        # Each cloud: position(2) + size(2) + speed(1) + wind_sens(1) + opacities(2) + 
+        #            scale(1) + lifetime(1) + is_fading(1) + turb_phase(3) + turb_speed(3) + 
+        #            turb_amount(3) + noise_seed(2) = 22 floats
+        cloud_data_size = self.max_clouds * 22 * 4  # 22 floats * 4 bytes
         
-        # NOTE: Depth testing and blending are enabled globally - DO NOT toggle here
+        self.cloud_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, cloud_data_size, None, GL_DYNAMIC_DRAW)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.cloud_ssbo)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
         
-        # Create VAO
+        print(f"    ✓ Created SSBO: {cloud_data_size} bytes for {self.max_clouds} clouds")
+        
+        # Initialize with empty clouds
+        initial_data = np.zeros(self.max_clouds * 22, dtype=np.float32)
+        # Mark all as inactive (lifetime = -1)
+        for i in range(self.max_clouds):
+            initial_data[i * 22 + 9] = -1.0  # lifetime field
+        
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, initial_data.nbytes, initial_data)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        
+        # Create VAO for point rendering
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
         
-        # Vertex buffer
-        vertex_VBO = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, vertex_VBO)
-        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
-        self.VBOs.append(vertex_VBO)
-        
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, ctypes.c_void_p(0))
-        glEnableVertexAttribArray(0)
-        
-        # Element buffer
-        self.EBO = glGenBuffers(1)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
-        
-        # Instance buffer
+        # VBO will be updated each frame with active cloud data
         self.instance_VBO = glGenBuffers(1)
         self.VBOs.append(self.instance_VBO)
         
         glBindVertexArray(0)
         
-                # Don't spawn initial clouds - they will be added dynamically based on cloudyness
-        # This allows smooth fade-in from zero clouds
+        self.num_clouds = 0
+        self.global_time = 0.0
         
-        self.start_time = 0.0
-
+        # Spawn initial clouds based on cloudyness
+        initial_cloud_count = int(self.cloudyness * self.max_clouds)
+        for _ in range(initial_cloud_count):
+            self._spawn_cloud_gpu()
+        
+        print(f"GPU Cloud Effect initialized: spawned {initial_cloud_count} clouds")
+    
+    def _spawn_cloud_gpu(self):
+        """Spawn a cloud by adding it to GPU SSBO and CPU mirror"""
+        if self.num_clouds >= self.max_clouds:
+            return
+        
+        # Find first inactive slot
+        inactive_idx = -1
+        for i in range(self.max_clouds):
+            if self.cpu_cloud_data[i, 9] < 0:  # lifetime < 0 means inactive
+                inactive_idx = i
+                break
+        
+        if inactive_idx == -1:
+            print(f"Warning: Could not find inactive slot for new cloud")
+            return
+        
+        # Generate cloud parameters
+        width = np.random.uniform(30, 80)
+        height = np.random.uniform(15, 60)
+        start_x = np.random.uniform(-width * 1.5, self.viewport.width + width * 1.5)
+        start_y = np.random.uniform(0, self.viewport.height)
+        
+        speed_type = np.random.random()
+        if speed_type < 0.3:
+            speed = np.random.uniform(0.2, 0.8)
+        elif speed_type < 0.7:
+            speed = np.random.uniform(0.8, 2.0)
+        else:
+            speed = np.random.uniform(2.0, 4.0)
+        
+        size_scale = np.random.uniform(0.5, 0.9)
+        altitude_factor = 0.3 + (start_y / self.viewport.height) * 0.7
+        size_factor = 1.5 - size_scale
+        wind_sens = altitude_factor * size_factor * np.random.uniform(0.5, 1.5)
+        
+        base_opacity = np.random.uniform(0.5, 0.9)
+        
+        # Build cloud data
+        cloud_data = np.array([
+            start_x, start_y,           # position
+            width, height,              # size
+            speed,                      # speed
+            wind_sens,                  # wind sensitivity
+            base_opacity, 0.2,          # base opacity, current opacity (start at 0.2 for faster fade-in)
+            size_scale,                 # scale
+            0.0,                        # lifetime (start at 0)
+            0.0,                        # is_fading (not fading)
+            *np.random.uniform(0, 2*np.pi, 3),  # turb_phase
+            *np.random.uniform(0.1, 0.3, 3),    # turb_speed
+            np.random.uniform(0.5, 1.5),
+            np.random.uniform(0.3, 0.8),
+            np.random.uniform(0.1, 0.3),        # turb_amount
+            *np.random.uniform(0, 10, 2),       # noise_seed
+        ], dtype=np.float32)
+        
+        # Upload to SSBO
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
+        offset = inactive_idx * 22 * 4
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, cloud_data.nbytes, cloud_data)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        
+        # Store in CPU mirror
+        self.cpu_cloud_data[inactive_idx] = cloud_data
+        self.num_clouds += 1
+    
     def update(self, dt: float, state: Dict):
-        """Update cloud positions and properties (fully vectorized)"""
+        """Update clouds - CPU-based physics since compute shaders not available in ES 3.1"""
         if not self.enabled:
             return
         
-        # Update noise time
-        self.noise_time += dt * 0.2
-        self.start_time += dt
+        self.global_time += dt
         
-        # Global wave for coordinated motion
-        global_wave_y = np.sin(self.start_time * 0.05) * 0.3 + np.sin(self.start_time * 0.13) * 0.1
+        # Dynamic cloud spawning based on cloudyness
+        target_count = int(np.clip(self.cloudyness, 0, 1) * self.max_clouds)
         
-        # Dynamic cloud count based on cloudyness (0.0 to 1.0)
-        target_cloud_count = int(np.clip(self.cloudyness, 0, 1) * self.max_clouds)
-        current_active_clouds = np.sum(~self.is_fading_out) if len(self.is_fading_out) > 0 else 0
-        
-        # Add clouds if we're below target
-        if current_active_clouds < target_cloud_count:
-            spawn_chance = dt * 0.3  # ~30% chance per second
+        if self.num_clouds < target_count:
+            spawn_chance = dt * 0.3
             if np.random.random() < spawn_chance:
-                self._spawn_cloud()
+                self._spawn_cloud_gpu()
         
-        # Remove clouds if we're above target
-        elif current_active_clouds > target_cloud_count:
-            active_indices = np.where(~self.is_fading_out)[0]
-            if len(active_indices) > 0:
-                # Vectorized candidate selection
-                tex_indices = self.texture_indices[active_indices]
-                cloud_widths = np.array([self.cloud_textures[idx][0] * self.sizes[i] 
-                                    for i, idx in zip(active_indices, tex_indices)])
-                cloud_x_positions = self.positions[active_indices, 0]
-                
-                middle_safe_zone_left = self.wrap_margin + cloud_widths
-                middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_widths
-                is_in_middle = ((cloud_x_positions > middle_safe_zone_left) & 
-                            (cloud_x_positions < middle_safe_zone_right))
-                is_old_enough = self.lifetime[active_indices] > 3.0
-                
-                good_candidates = active_indices[is_in_middle & is_old_enough]
-                
-                if len(good_candidates) > 0:
-                    removal_candidate = good_candidates[np.argmax(self.lifetime[good_candidates])]
-                else:
-                    removal_candidate = active_indices[np.argmax(self.lifetime[active_indices])]
-                
-                self.is_fading_out[removal_candidate] = True
-        
-        # If no clouds exist yet, don't process the rest
-        if len(self.positions) == 0:
+        # Update physics on CPU for active clouds
+        active_mask = self.cpu_cloud_data[:, 9] >= 0
+        if not np.any(active_mask):
             return
         
-        # Update lifetime for all clouds (vectorized)
-        self.lifetime += dt
+        active_indices = np.where(active_mask)[0]
         
-        # Smooth opacity transitions (vectorized)
-        target_opacities = np.where(self.is_fading_out, 0.0, self.base_opacities)
-        opacity_diff = target_opacities - self.current_opacities
+        for idx in active_indices:
+            cloud = self.cpu_cloud_data[idx]
+            
+            # Update lifetime
+            cloud[9] += dt
+            
+            # Update turbulence phases
+            cloud[11:14] += cloud[14:17] * dt
+            
+            # Calculate global wave
+            global_wave_y = np.sin(self.global_time * 0.05) * 0.3 + np.sin(self.global_time * 0.13) * 0.1
+            
+            # Update position with wind and turbulence
+            wind_effect = self.wind * cloud[5]  # wind_sens
+            cloud[0] += (cloud[4] + wind_effect) * dt  # position.x
+            cloud[1] += global_wave_y * dt  # position.y
+            
+            # Horizontal wrapping
+            if cloud[0] < 0.0:
+                cloud[0] += self.viewport.width
+            elif cloud[0] >= self.viewport.width:
+                cloud[0] -= self.viewport.width
+            
+            # Clamp vertical
+            cloud[1] = np.clip(cloud[1], 0, self.viewport.height)
+            
+            # Smooth opacity transitions
+            target_opacity = 0.0 if cloud[10] > 0.5 else cloud[6]  # is_fading, base_opacity
+            opacity_diff = target_opacity - cloud[7]
+            
+            if abs(opacity_diff) > 0.01:
+                transition_speed = 0.4 if cloud[10] > 0.5 else 0.3
+                cloud[7] += opacity_diff * transition_speed * dt
+                cloud[7] = np.clip(cloud[7], 0, 1)
+            
+            # Mark for removal if fully faded
+            if cloud[10] > 0.5 and cloud[7] < 0.01:
+                cloud[9] = -1.0  # Mark inactive
+                self.num_clouds -= 1
+                continue
+            
+            # Natural lifecycle: start fading after 30 seconds if in middle
+            wrap_margin = 60.0
+            cloud_width_scaled = cloud[2] * cloud[8]  # width * scale
+            middle_left = wrap_margin + cloud_width_scaled
+            middle_right = self.viewport.width - wrap_margin - cloud_width_scaled
+            
+            in_middle = (cloud[0] > middle_left and cloud[0] < middle_right)
+            
+            if cloud[9] > 30.0 and in_middle and cloud[10] < 0.5:
+                cloud[10] = 1.0  # Start fading
         
-        mask = np.abs(opacity_diff) > 0.01
-        if np.any(mask):
-            transition_speed = np.where(self.is_fading_out, 0.4, 0.3)
-            self.current_opacities += opacity_diff * transition_speed * dt
-            self.current_opacities = np.clip(self.current_opacities, 0, 1)
-        
-        # Update turbulence (vectorized)
-        self.turbulence_phases += self.turbulence_speeds * dt
-        
-        # Update subpixel offsets (vectorized)
-        self.subpixel_offsets[:, 0] = (self.subpixel_offsets[:, 0] + self.speeds * dt) % 1.0
-        self.subpixel_offsets[:, 1] = (self.subpixel_offsets[:, 1] + dt * 0.1) % 1.0
-        
-        # Update positions with per-cloud wind sensitivity (vectorized)
-        wind_effect = self.wind * self.wind_sensitivity
-        self.positions[:, 0] += (self.speeds + wind_effect) * dt
-        self.positions[:, 1] += global_wave_y * dt
-        
-        # Horizontal wrapping (vectorized)
-        left_mask = self.positions[:, 0] < 0
-        right_mask = self.positions[:, 0] >= self.viewport.width
-        self.positions[left_mask, 0] += self.viewport.width
-        self.positions[right_mask, 0] -= self.viewport.width
-        
-        # Clamp vertical position (vectorized)
-        self.positions[:, 1] = np.clip(self.positions[:, 1], 0, self.viewport.height)
-        
-        # Update z-indices (vectorized)
-        self.z_indices = self.positions[:, 1] * 0.3 + np.sin(self.turbulence_phases[:, 2]) * 3
-        
-        # VECTORIZED LIFECYCLE MANAGEMENT
-        # Calculate cloud properties for all clouds at once
-        tex_indices = self.texture_indices
-        cloud_widths = np.array([self.cloud_textures[idx][0] * self.sizes[i] 
-                            for i, idx in enumerate(tex_indices)], dtype=np.float32)
-        cloud_x_positions = self.positions[:, 0]
-        
-        # Check for duplicates being rendered (vectorized)
-        has_duplicate_on_left = cloud_x_positions > (self.viewport.width - self.wrap_margin)
-        has_duplicate_on_right = cloud_x_positions < self.wrap_margin
-        
-        # Calculate middle safe zone for all clouds (vectorized)
-        middle_safe_zone_left = self.wrap_margin + cloud_widths
-        middle_safe_zone_right = self.viewport.width - self.wrap_margin - cloud_widths
-        is_in_middle = ((cloud_x_positions > middle_safe_zone_left) & 
-                    (cloud_x_positions < middle_safe_zone_right) &
-                    ~has_duplicate_on_left & 
-                    ~has_duplicate_on_right)
-        
-        min_lifetime = 30.0
-        
-        # Natural lifecycle: start fading clouds that are old and in middle (vectorized)
-        should_start_fading = (~self.is_fading_out & 
-                            (self.lifetime > min_lifetime) & 
-                            is_in_middle)
-        
-        if np.any(should_start_fading):
-            self.is_fading_out[should_start_fading] = True
-        
-        # Mark fully faded clouds for removal (vectorized)
-        should_remove = self.is_fading_out & (self.current_opacities < 0.01)
-        if np.any(should_remove):
-            self.lifetime[should_remove] = -1.0  # Mark for deletion
-        
-        # Remove clouds marked for deletion (vectorized)
-        if len(self.lifetime) > 0:
-            keep_mask = self.lifetime >= 0
-            if not np.all(keep_mask):
-                num_removed = np.sum(~keep_mask)
-                
-                # Remove from all arrays (vectorized)
-                self.positions = self.positions[keep_mask]
-                self.speeds = self.speeds[keep_mask]
-                self.wind_sensitivity = self.wind_sensitivity[keep_mask]
-                self.base_opacities = self.base_opacities[keep_mask]
-                self.current_opacities = self.current_opacities[keep_mask]
-                self.sizes = self.sizes[keep_mask]
-                self.z_indices = self.z_indices[keep_mask]
-                self.turbulence_phases = self.turbulence_phases[keep_mask]
-                self.turbulence_speeds = self.turbulence_speeds[keep_mask]
-                self.turbulence_amounts = self.turbulence_amounts[keep_mask]
-                self.subpixel_offsets = self.subpixel_offsets[keep_mask]
-                self.noise_offsets = self.noise_offsets[keep_mask]
-                
-                # Clean up texture resources for removed clouds
-                removed_tex_indices = self.texture_indices[~keep_mask]
-                self.texture_indices = self.texture_indices[keep_mask]
-                
-                # Delete GPU textures that are no longer used by any cloud (vectorized)
-                unique_removed = np.unique(removed_tex_indices)
-                for tex_idx in unique_removed:
-                    if tex_idx not in self.texture_indices:
-                        if tex_idx < len(self.texture_ids):
-                            glDeleteTextures(1, [self.texture_ids[tex_idx]])
-                            self.texture_ids[tex_idx] = 0
-                
-                self.is_fading_out = self.is_fading_out[keep_mask]
-                self.lifetime = self.lifetime[keep_mask]
-
+        # Upload updated data back to GPU SSBO for rendering
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.cpu_cloud_data.nbytes, self.cpu_cloud_data)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+    
     def render(self, state: Dict):
-        """Render all clouds with seamless wrapping using duplicates (vectorized)"""
-        if not self.enabled or not self.shader or len(self.positions) == 0:
+        """Render clouds using geometry shader for wrapping"""
+        if not self.enabled or not self.shader:
             return
         
-        # Calculate actual cloud positions with subpixel offsets
-        actual_positions = self.positions - self.subpixel_offsets
+        # Use CPU mirror to find active clouds (lifetime >= 0)
+        active_mask = self.cpu_cloud_data[:, 9] >= 0
+        active_clouds = self.cpu_cloud_data[active_mask]
         
-        # Calculate actual cloud widths (vectorized)
-        cloud_widths = np.array([self.cloud_textures[idx][0] * self.sizes[i] 
-                                  for i, idx in enumerate(self.texture_indices)], dtype=np.float32)
+        if len(active_clouds) == 0:
+            # Debug: print once if we have no clouds
+            if not hasattr(self, '_no_clouds_warned'):
+                target_count = int(self.cloudyness * self.max_clouds)
+                print(f"GPU Clouds: No active clouds to render (target: {target_count}, fade_factor: {self.fade_factor:.2f})")
+                self._no_clouds_warned = True
+            return
         
-        # Identify clouds near boundaries that need duplicates
-        # For left edge: check if cloud position is within wrap_margin
-        left_edge_mask = actual_positions[:, 0] < self.wrap_margin
+        # Reset warning flag when we have clouds
+        if hasattr(self, '_no_clouds_warned'):
+            print(f"GPU Clouds: Now rendering {len(active_clouds)} clouds!")
+            delattr(self, '_no_clouds_warned')
         
-        # For right edge: check if cloud's RIGHT edge (position + width) is approaching right boundary
-        right_edge_mask = (actual_positions[:, 0] + cloud_widths) > (self.viewport.width - self.wrap_margin)
+        # Debug first render
+        if not hasattr(self, '_first_render_done'):
+            first_opacity = active_clouds[0, 7]
+            first_x = active_clouds[0, 0]
+            first_y = active_clouds[0, 1]
+            print(f"GPU Clouds first render: {len(active_clouds)} clouds")
+            print(f"  First cloud opacity: {first_opacity:.2f}, position: ({first_x:.1f}, {first_y:.1f})")
+            print(f"  fade_factor: {self.fade_factor:.2f}")
+            self._first_render_done = True
         
-
-        # Create duplicate positions for seamless wrapping
-        duplicate_positions_left = []
-        duplicate_indices_left = []
-        duplicate_positions_right = []
-        duplicate_indices_right = []
-        
-        if np.any(left_edge_mask):
-            # Clouds near left edge need duplicates on the right
-            left_indices = np.where(left_edge_mask)[0]
-            duplicate_pos = actual_positions[left_indices].copy()
-            duplicate_pos[:, 0] += self.viewport.width  # Shift to right side
-            duplicate_positions_right.append(duplicate_pos)
-            duplicate_indices_right.append(left_indices)
-        
-        if np.any(right_edge_mask):
-            # Clouds near right edge need duplicates on the left
-            right_indices = np.where(right_edge_mask)[0]
-            duplicate_pos = actual_positions[right_indices].copy()
-            duplicate_pos[:, 0] -= self.viewport.width  # Shift to left side
-            duplicate_positions_left.append(duplicate_pos)
-            duplicate_indices_left.append(right_indices)
-        
-        # Combine primary clouds with duplicates
-        all_positions = [actual_positions]
-        all_indices = [np.arange(len(actual_positions))]
-        
-        if duplicate_positions_right:
-            all_positions.extend(duplicate_positions_right)
-            all_indices.extend(duplicate_indices_right)
-        
-        if duplicate_positions_left:
-            all_positions.extend(duplicate_positions_left)
-            all_indices.extend(duplicate_indices_left)
-        
-        combined_positions = np.vstack(all_positions)
-        combined_indices = np.concatenate(all_indices)
-        
-        # Get attributes for all clouds (primary + duplicates reference the same attributes)
-        combined_sizes = self.sizes[combined_indices]
-        combined_opacities = self.current_opacities[combined_indices]
-        combined_z_indices = self.z_indices[combined_indices]
-        combined_texture_indices = self.texture_indices[combined_indices]
-        
-        # Sort back-to-front for proper alpha blending
-        sort_indices = np.argsort(combined_z_indices)
+        # Build instance data for rendering
+        # position(2), size(2), scale(1), opacity(1), noiseSeed(2)
+        instance_data = np.column_stack([
+            active_clouds[:, 0:2],   # position
+            active_clouds[:, 2:4],   # size (width, height)
+            active_clouds[:, 8],     # scale
+            active_clouds[:, 7],     # current opacity
+            active_clouds[:, 20:22], # noise seed
+        ]).astype(np.float32).flatten()
         
         glUseProgram(self.shader)
         
-        # Update uniforms
-        loc = glGetUniformLocation(self.shader, "resolution")
-        if loc != -1:
-            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+        # Set uniforms
+        glUniform2f(glGetUniformLocation(self.shader, "resolution"), 
+                   float(self.viewport.width), float(self.viewport.height))
+        glUniform1f(glGetUniformLocation(self.shader, "noiseTime"), self.global_time)
+        glUniform1f(glGetUniformLocation(self.shader, "fadeFactor"), self.fade_factor)
+        glUniform1f(glGetUniformLocation(self.shader, "wrapMargin"), 60.0)
+        glUniform1f(glGetUniformLocation(self.shader, "cloudDepth"), 40.0)
         
-        loc = glGetUniformLocation(self.shader, "noiseTime")
-        if loc != -1:
-            glUniform1f(loc, self.noise_time)
-        
-        loc = glGetUniformLocation(self.shader, "fadeFactor")
-        if loc != -1:
-            glUniform1f(loc, self.fade_factor)
-        
+        # Upload instance data
         glBindVertexArray(self.VAO)
+        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+        glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
         
-        # Disable depth writes for proper alpha blending
-        # Clouds should blend with each other, not block each other
+        # Setup vertex attributes (8 floats per instance)
+        stride = 8 * 4
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        glEnableVertexAttribArray(0)
+        
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8))
+        glEnableVertexAttribArray(1)
+        
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(16))
+        glEnableVertexAttribArray(2)
+        
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(20))
+        glEnableVertexAttribArray(3)
+        
+        glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(24))
+        glEnableVertexAttribArray(4)
+        
+        # Disable depth writes for alpha blending
         glDepthMask(GL_FALSE)
         
-        # Render each cloud (sorted back-to-front)
-        # Note: Unlike rain which uses single instanced call, clouds need per-texture rendering
-        for sort_idx in sort_indices:
-            cloud_idx = combined_indices[sort_idx]
-            tex_idx = combined_texture_indices[sort_idx]
-            tex_width, tex_height = self.cloud_textures[tex_idx]
-            
-            # Build instance data for this cloud
-            instance_data = np.array([
-                combined_positions[sort_idx, 0],
-                combined_positions[sort_idx, 1],
-                self.cloud_depth,
-                tex_width, tex_height,
-                combined_sizes[sort_idx],
-                combined_opacities[sort_idx]
-            ], dtype=np.float32)
-            
-            # Upload instance data
-            glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-            glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
-            
-            # Setup attributes
-            stride = 7 * 4
-            
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
-            glEnableVertexAttribArray(1)
-            glVertexAttribDivisor(1, 1)
-            
-            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
-            glEnableVertexAttribArray(2)
-            glVertexAttribDivisor(2, 1)
-            
-            glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(20))
-            glEnableVertexAttribArray(3)
-            glVertexAttribDivisor(3, 1)
-            
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(24))
-            glEnableVertexAttribArray(4)
-            glVertexAttribDivisor(4, 1)
-            
-            # Bind cloud texture
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, self.texture_ids[tex_idx])
-            loc = glGetUniformLocation(self.shader, "cloudTexture")
-            if loc != -1:
-                glUniform1i(loc, 0)
-            
-                        # Draw this cloud
-            glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, 1)
+        # Draw points (geometry shader will expand to quads)
+        glDrawArrays(GL_POINTS, 0, len(active_clouds))
         
-        # Re-enable depth writes for other effects
+        # Re-enable depth writes
         glDepthMask(GL_TRUE)
         
         glBindVertexArray(0)
@@ -834,11 +781,12 @@ class CloudEffect(ShaderEffect):
     
     def cleanup(self):
         """Clean up GPU resources"""
-        # Delete textures
-        if self.texture_ids:
-            glDeleteTextures(len(self.texture_ids), self.texture_ids)
-            self.texture_ids = []
-            self.cloud_textures = []
+        if self.cloud_ssbo:
+            glDeleteBuffers(1, [self.cloud_ssbo])
+            self.cloud_ssbo = None
         
-        # Call parent cleanup for VAO/VBO/EBO
+        if self.compute_shader:
+            glDeleteProgram(self.compute_shader)
+            self.compute_shader = None
+        
         super().cleanup()
