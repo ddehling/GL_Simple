@@ -7,7 +7,7 @@ from OpenGL.GL import shaders
 import time
 from typing import Dict
 from .base import ShaderEffect
-
+from pathlib import Path
 
 class LightningEffect(ShaderEffect):
     """
@@ -463,7 +463,18 @@ def shader_lightning(state, outstate, bolt_interval=2.0, bolt_duration=0.3,
     
     if state['count'] == 0:
         print(f"Initializing lightning effect for frame {frame_id}")
-        
+        spath=np.random.choice(['Thunder Clap Loud.wav','loud-thunder-192165.mp3','thunder-307513.mp3','peals-of-thunder-191992.mp3'])
+
+
+
+        parent_path = Path(__file__).parent.parent.parent
+        sound_path = parent_path / 'media' / 'sounds'
+        boom_path = sound_path / spath
+        outstate['soundengine'].schedule_event(
+                boom_path,
+                time.time(),
+                4
+            )
         try:
             effect = viewport.add_effect(
                 LightningEffect,
