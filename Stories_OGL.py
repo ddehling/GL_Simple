@@ -275,12 +275,9 @@ class EnvironmentalSystem:
         #     self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
         #     #self.scheduler.schedule_event(0, 50, secondary_Aurora, frame_id=1) # noqa: F405
 
-        # if randcheck < (1 + np.clip(self.whomp, 0, 2)) * self.weather_params["lightning_probability"] / 250:
-        #     # Choose between primary and secondary lightning
-        #     if np.random.random() < 0.5:
-        #         self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
-        #     # else:
-        #     #     self.scheduler.schedule_event(0, 10, secondary_lightning, frame_id=1) # noqa: F405
+        if randcheck < self.weather_params["lightning_probability"] / 500:
+            self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
+
                 
         randcheck = np.random.random()
 
@@ -389,7 +386,7 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.CLEAR)
-    env_system.scheduler.schedule_event(0, 50, fx.shader_sunrise,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(5, 1, fx.shader_lightning,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
