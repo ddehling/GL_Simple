@@ -195,7 +195,7 @@ class GameOfLifeEffect(ShaderEffect):
         """Trigger horizontal scrolling left of grid on mid frequency hit"""
         self.x_roll_pending = True
         # Roll amount based on mid energy: 1-3 cells for subtle effect
-        self.x_roll_amount = int(1 + self.audio_mid)
+        self.x_roll_amount = int(1 + self.audio_mid/2)
     
     def compile_shader(self):
         """Compile and link shaders - REQUIRED METHOD"""

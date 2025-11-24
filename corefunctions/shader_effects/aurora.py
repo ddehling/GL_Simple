@@ -11,23 +11,29 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=1.0):
+def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=1.0,
+                  bass_sensitivity=0.5, mid_sensitivity=0.3, high_sensitivity=0.2):
     """
     Shader-based aurora effect compatible with EventScheduler
     
     Creates flowing northern lights at the top of the screen with animated
-    waves and color gradients.
+    waves and color gradients. Responds to audio with height pulsing (bass),
+    brightness changes (mids), and speed modulation (highs).
     
     Usage:
-        scheduler.schedule_event(0, 60, shader_aurora, height=250, depth=50, frame_id=0)
+        scheduler.schedule_event(0, 60, shader_aurora, height=250, depth=50, 
+                               bass_sensitivity=0.8, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        height: Height of aurora effect in pixels (default: 200)
+        height: Base height of aurora effect in pixels (default: 200)
         depth: Z-depth of aurora (0=near, 100=far, default: 50)
-        intensity: Brightness multiplier (default: 1.0)
-        speed: Animation speed multiplier (default: 1.0)
+        intensity: Base brightness multiplier (default: 1.0)
+        speed: Base animation speed multiplier (default: 1.0)
+        bass_sensitivity: How much bass frequencies affect height (default: 0.5)
+        mid_sensitivity: How much mid frequencies affect brightness (default: 0.3)
+        high_sensitivity: How much high frequencies affect speed (default: 0.2)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -51,7 +57,10 @@ def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=
                 height=height,
                 depth=depth,
                 intensity=intensity,
-                speed=speed
+                speed=speed,
+                bass_sensitivity=bass_sensitivity,
+                mid_sensitivity=mid_sensitivity,
+                high_sensitivity=high_sensitivity
             )
             state['effect'] = effect
             print(f"✓ Initialized shader aurora for frame {frame_id}")
@@ -61,10 +70,47 @@ def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=
             traceback.print_exc()
             return
     
-    # Update from global state (optional)
+    # Update from audio data and global state
     if 'effect' in state:
-        state['effect'].intensity = outstate.get('aurora_intensity', intensity)
-        state['effect'].speed = outstate.get('aurora_speed', speed)
+        audio_data = outstate.get('sound')
+        
+        # Process audio data if available
+        if audio_data is not None:
+            # Get current normalized bands (use short-term for beat response)
+            bands = audio_data['norm_short'][0]  # Shape: (32,)
+            
+            # Extract frequency ranges
+            bass_energy = np.mean(bands[0:8])      # Bass: 40-300 Hz
+            mid_energy = np.mean(bands[8:20])      # Mids: 300-2000 Hz
+            high_energy = np.mean(bands[20:32])    # Highs: 2000-16000 Hz
+            
+            # Apply audio modulation to effect parameters
+            state['effect'].audio_bass = bass_energy * bass_sensitivity
+            state['effect'].audio_mid = mid_energy * mid_sensitivity
+            state['effect'].audio_high = high_energy * high_sensitivity
+        else:
+            # No audio - zero out audio modulation
+            state['effect'].audio_bass = 0.0
+            state['effect'].audio_mid = 0.0
+            state['effect'].audio_high = 0.0
+        
+        # Update from global state (optional)
+        state['effect'].base_intensity = outstate.get('aurora_intensity', intensity)
+        state['effect'].base_speed = outstate.get('aurora_speed', speed)
+        
+        # Implement fade in/out
+        elapsed_time = state['elapsed_time']
+        total_duration = state.get('duration', 60)
+        fade_duration = 2.0
+        
+        if elapsed_time < fade_duration:
+            fade_factor = elapsed_time / fade_duration
+        elif elapsed_time > (total_duration - fade_duration):
+            fade_factor = (total_duration - elapsed_time) / fade_duration
+        else:
+            fade_factor = 1.0
+        
+        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
     
     # Cleanup on close
     if state['count'] == -1:
@@ -88,13 +134,26 @@ class Aurora(ShaderEffect):
     """
     
     def __init__(self, viewport, height: float = 200, depth: float = 50.0, 
-                 intensity: float = 1.0, speed: float = 1.0):
+                 intensity: float = 1.0, speed: float = 1.0,
+                 bass_sensitivity: float = 0.5, mid_sensitivity: float = 0.3,
+                 high_sensitivity: float = 0.2):
         super().__init__(viewport)
         self.height = height
         self.depth = depth
-        self.intensity = intensity
-        self.speed = speed
+        self.base_intensity = intensity
+        self.base_speed = speed
         self.time = 0.0
+        self.fade_factor = 0.0
+        
+        # Audio sensitivity parameters
+        self.bass_sensitivity = bass_sensitivity
+        self.mid_sensitivity = mid_sensitivity
+        self.high_sensitivity = high_sensitivity
+        
+        # Audio modulation values (updated from wrapper)
+        self.audio_bass = 0.0
+        self.audio_mid = 0.0
+        self.audio_high = 0.0
         
         # Buffer objects
         self.VAO = None
@@ -163,6 +222,7 @@ class Aurora(ShaderEffect):
         uniform float time;
         uniform float height;
         uniform float speed;
+        uniform float audioBass;  // Bass energy for height modulation
         
         out vec2 vTexCoord;
         out float vWave;
@@ -179,7 +239,9 @@ class Aurora(ShaderEffect):
             float wave2 = sin(normX * 6.28318 * 3.0 - time * speed * 0.7) * 0.2;
             float wave3 = sin(normX * 6.28318 * 1.5 + time * speed * 0.3) * 0.25;
             
-            float totalWave = (wave1 + wave2 + wave3) * normY * 30.0;
+            // Modulate wave amplitude with bass - more bass = bigger waves
+            float bassModulation = 1.0 + audioBass * 2.0;
+            float totalWave = (wave1 + wave2 + wave3) * normY * 30.0 * bassModulation;
             pos.y += totalWave;
             
             // Convert to clip space
@@ -209,19 +271,22 @@ class Aurora(ShaderEffect):
         uniform float time;
         uniform float intensity;
         uniform float speed;
+        uniform float fadeAlpha;
+        uniform float audioMid;   // Mid energy for brightness
+        uniform float audioHigh;  // High energy for speed/shimmer
         
         out vec4 outColor;
         
         // Aurora color palette
-        vec3 getAuroraColor(float t, float wave) {
+        vec3 getAuroraColor(float t, float wave, float audioModulation) {
             // Blend between aurora colors: green, blue, purple, pink
             vec3 color1 = vec3(0.0, 1.0, 0.4);    // Bright green
             vec3 color2 = vec3(0.0, 0.8, 1.0);    // Cyan
             vec3 color3 = vec3(0.5, 0.0, 1.0);    // Purple
             vec3 color4 = vec3(1.0, 0.2, 0.8);    // Pink
             
-            // Animate color shifts
-            float colorShift = sin(time * speed * 0.2 + t * 3.14159) * 0.5 + 0.5;
+            // Animate color shifts - high frequencies speed up the shift
+            float colorShift = sin(time * speed * (0.2 + audioModulation * 0.3) + t * 3.14159) * 0.5 + 0.5;
             float waveInfluence = wave * 0.3;
             
             vec3 color;
@@ -250,15 +315,17 @@ class Aurora(ShaderEffect):
             float verticalFade = 1.0 - y;
             verticalFade = pow(verticalFade, 0.7);
             
-            // Add shimmer effect
-            float shimmer = sin(x * 20.0 + time * speed * 2.0) * 
+            // Add shimmer effect - enhanced by high frequencies
+            float shimmerSpeed = 1.0 + audioHigh * 2.0;
+            float shimmer = sin(x * 20.0 + time * speed * 2.0 * shimmerSpeed) * 
                           sin(y * 15.0 - time * speed * 1.5) * 0.1 + 0.9;
             
-            // Get aurora color
-            vec3 color = getAuroraColor(x * 2.0 + time * speed * 0.1, vWave);
+            // Get aurora color with high-frequency modulation
+            vec3 color = getAuroraColor(x * 2.0 + time * speed * 0.1, vWave, audioHigh);
             
-            // Combine effects
-            float brightness = bands * verticalFade * shimmer * intensity;
+            // Combine effects - mid frequencies boost brightness
+            float audioBrightness = 1.0 + audioMid * 1.5;
+            float brightness = bands * verticalFade * shimmer * intensity * audioBrightness;
             
             // Add subtle glow at edges of bands
             float edgeGlow = smoothstep(0.3, 0.7, bands) * (1.0 - smoothstep(0.7, 1.0, bands));
@@ -267,6 +334,9 @@ class Aurora(ShaderEffect):
             // Calculate alpha - more transparent at bottom
             float alpha = verticalFade * bands * 0.7;
             alpha = clamp(alpha, 0.0, 0.85);
+            
+            // Apply fade in/out
+            alpha *= fadeAlpha;
             
             outColor = vec4(color * brightness, alpha);
         }
@@ -323,10 +393,23 @@ class Aurora(ShaderEffect):
         glUniform1f(height_loc, self.height)
         
         intensity_loc = glGetUniformLocation(self.shader, "intensity")
-        glUniform1f(intensity_loc, self.intensity)
+        glUniform1f(intensity_loc, self.base_intensity)
         
         speed_loc = glGetUniformLocation(self.shader, "speed")
-        glUniform1f(speed_loc, self.speed)
+        glUniform1f(speed_loc, self.base_speed)
+        
+        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
+        glUniform1f(fade_loc, self.fade_factor)
+        
+        # Set audio modulation uniforms
+        bass_loc = glGetUniformLocation(self.shader, "audioBass")
+        glUniform1f(bass_loc, self.audio_bass)
+        
+        mid_loc = glGetUniformLocation(self.shader, "audioMid")
+        glUniform1f(mid_loc, self.audio_mid)
+        
+        high_loc = glGetUniformLocation(self.shader, "audioHigh")
+        glUniform1f(high_loc, self.audio_high)
         
         # Render mesh
         glBindVertexArray(self.VAO)

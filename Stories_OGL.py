@@ -140,9 +140,9 @@ class EnvironmentalSystem:
         # #             self.scheduler.state["has_clouds"] = True
         # #             self.scheduler.schedule_event(70, 40, drifting_clouds, frame_id=0) # noqa: F405
 
-        # if new_weather == WeatherState.FALLING_LEAVES:
-        #     if not self.scheduler.state.get("has_leaves", False):
-        #         self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves, frame_id=0) # noqa: F405
+        if new_weather == WeatherState.FALLING_LEAVES:
+            if not self.scheduler.state.get("has_leaves", False):
+                self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves, frame_id=0) # noqa: F405
 
 
         # if new_weather == WeatherState.SUMMER_BLOOM:
@@ -247,20 +247,27 @@ class EnvironmentalSystem:
     def random_events(self):
         randcheck = np.random.random()
         
-        # if (randcheck < self.cloudyness / 1000):
-        #     if not self.scheduler.state.get("has_clouds", False):
-        #         self.scheduler.schedule_event(0, 100, fx.shader_drifting_clouds, frame_id=0) # noqa: F405
+        # Seasonal random event - 1/10000 chance
+        if randcheck < 1/10000:
+            # Determine closest season (0=winter, 0.25=spring, 0.5=summer, 0.75=fall)
+            season_distances = [
+                abs(self.season - 0.0) if abs(self.season - 0.0) <= 0.5 else 1.0 - abs(self.season - 0.0),  # Winter
+                abs(self.season - 0.25),  # Spring
+                abs(self.season - 0.5),   # Summer
+                abs(self.season - 0.75)   # Fall
+            ]
+            closest_season = season_distances.index(min(season_distances))
+            
+            # Schedule event based on season
+            if closest_season == 0:  # Winter
+                self.scheduler.schedule_event(0, 40, fx.shader_audio_balls, frame_id=0)
+            elif closest_season == 1:  # Spring
+                self.scheduler.schedule_event(0, 40, fx.shader_audio_curve, frame_id=0)
+            elif closest_season == 2:  # Summer
+                self.scheduler.schedule_event(0, 40, fx.shader_sunrise, frame_id=0)
+            elif closest_season == 3:  # Fall
+                self.scheduler.schedule_event(0, 40, fx.shader_gameoflife, frame_id=0)
 
-        # if (randcheck < self.weather_params["Weird"] / 10000):
-        #     # Choose between different options
-        #     sw = np.random.randint(0, 9)
-        #     if sw < 8:
-        #         self.scheduler.schedule_event(0, 40, psychedelic_spiral, frame_id=0) # noqa: F405
-        #         self.scheduler.schedule_event(0, 40, secondary_psychedelic_spiral, frame_id=1) # noqa: F405
-        #     elif sw == 9:
-        #         self.scheduler.schedule_event(0, 60, fluid_pond, frame_id=0) # noqa: F405
-        #     elif sw == 8:
-        #         self.scheduler.schedule_event(0, 60, colorful_conway, frame_id=0) # noqa: F405
 
         # if (randcheck < self.weather_params["tree_prob"] / 400) & (not self.scheduler.state["tree"]):
         #     # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
@@ -271,8 +278,8 @@ class EnvironmentalSystem:
         #     self.scheduler.schedule_event(0, 10, Awooo_Wolf_Howl, frame_id=0) # noqa: F405
 
         # # Giant auroras in the sky
-        # if randcheck < self.weather_params["Aurora_probability"] / 1000:
-        #     self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
+        if randcheck < self.weather_params["Aurora_probability"] / 1000:
+            self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
         #     #self.scheduler.schedule_event(0, 50, secondary_Aurora, frame_id=1) # noqa: F405
 
         if randcheck < self.weather_params["lightning_probability"] / 500:
@@ -287,29 +294,16 @@ class EnvironmentalSystem:
         #     self.scheduler.schedule_event(0, 45, secondary_sandstorm, frame_id=1) # noqa: F405
 
         # # Spooky giant eye
-        # if randcheck < self.weather_params["spookyness"] / 800:
-        #     self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
+        if randcheck < self.weather_params["spookyness"] / 800:
+            self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
 
         # # Random meteor events
         if randcheck < self.weather_params["meteor_rate"] / 800:
             self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
-            #self.scheduler.schedule_event(0, 25, secondary_meteor_shower, frame_id=1) # noqa: F405
+
 
         # Dancing cactus events
         randcheck = np.random.random()
-        # if randcheck < (self.weather_params["Weird"] / 5000 + self.weather_params["spookyness"] / 4000 + 1 / 20000):
-        #     if not self.scheduler.state.get("has_cactus", False):
-        #         # Define all possible cactus types and their corresponding functions
-        #         #cactus_types = [dancing_cactuses, dancing_joshua, dancing_prickly_pear, dancing_barrel_cactus]  # noqa: F405
-        #         cactus_types = [fx.shader_cactus, fx.shader_cactus, fx.shader_cactus, fx.shader_cactus]  # noqa: F405
-        #         weights = [1 * (1 + self.weather_params["spookyness"]), 1, 1, 1]  # Equal probability for each
-        #         weights = weights / np.sum(weights)
-        #         selected_cactus = np.random.choice(cactus_types, p=weights)
-        #         self.scheduler.schedule_event(0, 100, selected_cactus, frame_id=0)
-
-        # if randcheck < (self.weather_params["mountain"] / 1500):
-        #     if not self.scheduler.state.get("has_mountain", False):
-        #         self.scheduler.schedule_event(0, 180, mountain_scene, frame_id=0) # noqa: F405
                 
     def random_state_change(self):
         randcheck = np.random.random()
@@ -385,8 +379,8 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.CLEAR)
-    env_system.scheduler.schedule_event(5, 1, fx.shader_lightning,frame_id=0)  # noqa: F405
+    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.scheduler.schedule_event(0, 30, fx.shader_aurora,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 60
