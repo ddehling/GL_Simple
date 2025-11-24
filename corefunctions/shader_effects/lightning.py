@@ -49,6 +49,7 @@ class LightningEffect(ShaderEffect):
         # Active bolts storage
         self.bolts = []  # List of dicts with bolt data
         self.last_spawn_time = time.time()
+        self.first_bolt_spawned = False  # Track if initial bolt has been spawned
         
         # NOTE: Do NOT call setup_buffers() here!
         # It will be called automatically by init() after shader compilation
@@ -218,6 +219,12 @@ class LightningEffect(ShaderEffect):
     def update_bolts(self):
         """Update bolt states and remove expired ones"""
         current_time = time.time()
+        
+        # Spawn first bolt immediately on first update
+        if not self.first_bolt_spawned:
+            self.spawn_bolt()
+            self.first_bolt_spawned = True
+            self.last_spawn_time = current_time
         
         # Remove expired bolts
         self.bolts = [

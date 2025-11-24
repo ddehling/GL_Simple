@@ -385,6 +385,7 @@ class RainEffect(ShaderEffect):
 
         void main() {
             float fade = 1.0 - vertPos.y;
+            // Use standard alpha blending so background shows through transparent areas
             outColor = vec4(fragColor.rgb, fragColor.a * fade);
         }
         """

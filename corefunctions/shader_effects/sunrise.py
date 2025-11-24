@@ -436,6 +436,12 @@ class SunriseEffect(ShaderEffect):
             }
             
             alpha *= fadeAlpha;
+            
+            // Set alpha to 0 for very low intensities to prevent black artifacts
+            if (totalMask < 0.02) {
+                alpha = 0.0;
+            }
+            
             outColor = vec4(color, alpha);
         }
         """
