@@ -15,7 +15,7 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (256, 300),   # Frame 0 (primary/main display)
+            (128, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
