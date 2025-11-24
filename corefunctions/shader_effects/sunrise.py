@@ -226,10 +226,13 @@ class SunriseEffect(ShaderEffect):
             vec2 uv = (fragCoord + 1.0) * 0.5;  // 0 to 1
             vec2 pixel = uv * resolution;
             
+            // Scale sun based on width - sun+halo+tentacles should be ~50% of total width
+            float targetTotalWidth = resolution.x * 0.5;
+            float haloRadius = targetTotalWidth * 0.5;  // Halo is 50% of total (full diameter)
+            float sunRadius = haloRadius * 0.35;  // Sun is 35% of halo radius
+            
             // Sun becomes a flat gradient at the top when fully risen
-            float sunHeight = resolution.y * 0.15 + 20.0;  // Added 20 pixels
-            float sunRadius = resolution.y * 0.15;  // Keep original for circular sun
-            float haloRadius = resolution.y * 0.6;  // Max extent of glow/tentacles
+            float sunHeight = sunRadius + 20.0;  // Added 20 pixels
             float blueGradientHeight = 150.0;  // Blue to black gradient below sun colors (tripled)
             float totalGradientHeight = sunHeight + blueGradientHeight;
             
@@ -274,9 +277,16 @@ class SunriseEffect(ShaderEffect):
                 float topEdge = 0.0;
                 float bottomEdge = currentGradientHeight;
                 
+                // Fade distance at the leading edge (in pixels)
+                float fadeDistance = 50.0;
+                
                 if (pixel.y < bottomEdge) {
-                    // Always set sunMask for continuous gradient
-                    sunMask = 1.0;  // Full intensity throughout gradient
+                    // Calculate fade at the leading edge
+                    float distFromEdge = bottomEdge - pixel.y;
+                    float edgeFade = smoothstep(0.0, fadeDistance, distFromEdge);
+                    
+                    // Set sunMask with edge fade
+                    sunMask = edgeFade;
                     distToSun = pixel.y;
                 }
                 
@@ -291,8 +301,8 @@ class SunriseEffect(ShaderEffect):
             // Add smooth radial falloff for pure radial gradient around sun
             float radialGlow = 0.0;
             if (isFlat < 0.5) {
-                // Create radial glow extending from sun
-                radialGlow = smoothstep(resolution.y * 0.6, sunRadius, distToSun);
+                // Create radial glow extending from sun - constrained to haloRadius
+                radialGlow = smoothstep(haloRadius, sunRadius, distToSun);
             }
             
             // Tentacles - flowing extensions like fog beings
@@ -308,7 +318,7 @@ class SunriseEffect(ShaderEffect):
                     
                     // Distance along this tentacle direction
                     float tentacleDist = distToSun - sunRadius;
-                    float maxTentacleLength = resolution.y * 0.5;
+                    float maxTentacleLength = haloRadius - sunRadius;  // Tentacles extend to halo edge
                     
                     if (tentacleDist < maxTentacleLength) {
                         // Calculate angular distance from this tentacle's centerline
@@ -360,8 +370,8 @@ class SunriseEffect(ShaderEffect):
                     distFactor = pixel.y / totalGradientHeight;
                     distFactor = clamp(distFactor, 0.0, 1.0);
                 } else {
-                    // Use radial distance for circular sun
-                    distFactor = distToSun / (resolution.y * 0.5);
+                    // Use radial distance for circular sun - normalized to haloRadius
+                    distFactor = distToSun / haloRadius;
                 }
                 
                 distFactor = clamp(distFactor, 0.0, 1.0);
@@ -398,7 +408,7 @@ class SunriseEffect(ShaderEffect):
                 color += vec3(highIntensity * 0.15);
                 
                 // Apply color intensity
-                color *= colorIntensity;
+                color *= colorIntensity*0.5;
                 
                 // Apply mask
                 color *= totalMask;
