@@ -108,7 +108,7 @@ class Being:
         self.shape_phase = np.random.uniform(0, 2 * np.pi)
         self.shape_evolution_rate = np.random.uniform(0.1, 0.3)
         
-        self.target_behavior = np.random.randint(0, 3)  # 0=wander, 1=seek, 2=mimic
+        self.target_behavior = np.random.randint(0, 4)  # 0=wander, 1=seek, 2=mimic, 3=avoid
         self.target_entity = None
         self.last_behavior_change = time.time()
         self.behavior_duration = np.random.uniform(5, 15)
@@ -128,6 +128,7 @@ class Being:
             })
         
         self.color_pulses = []  # Active communication pulses
+        self.blorps = []  # Active blorps (balls sent to other beings)
 
 
 
@@ -163,7 +164,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         self.shape_evolution_rates = np.random.uniform(0.1, 0.3, self.num_beings).astype(np.float32)
         
         # Behavior properties
-        self.target_behaviors = np.random.randint(0, 3, self.num_beings).astype(np.int32)
+        self.target_behaviors = np.random.randint(0, 4, self.num_beings).astype(np.int32)  # 0=wander, 1=seek, 2=mimic, 3=avoid
         self.target_entities = np.full(self.num_beings, -1, dtype=np.int32)  # -1 means no target
         self.last_behavior_changes = np.full(self.num_beings, time.time(), dtype=np.float64)
         self.behavior_durations = np.random.uniform(5, 15, self.num_beings).astype(np.float32)
@@ -191,6 +192,10 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         
         # Communication pulses - store as list since pulses come and go
         self.color_pulses = [[] for _ in range(self.num_beings)]
+        
+        # Blorps (balls sent between beings)
+        self.blorps = [[] for _ in range(self.num_beings)]
+        self.next_blorp_time = time.time() + np.random.uniform(4, 10)
         
         # Spawn beings (for render compatibility - will sync from arrays)
         for i in range(self.num_beings):
@@ -255,6 +260,11 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         // Pulse data (max 2 pulses per being)
         uniform int beingPulseCounts[6];
         uniform vec4 pulseData[12];
+        
+        // Blorp data (max 2 blorps per being)
+        uniform int beingBlorpCounts[6];
+        uniform vec4 blorpPositions[12];  // x, y, size, alpha
+        uniform vec4 blorpColors[12];     // hue, saturation, value, unused
         
         // HSV to RGB conversion
         vec3 hsv2rgb(vec3 c) {
@@ -461,6 +471,37 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                 }
             }
             
+            // === RENDER BLORPS ===
+            for (int i = 0; i < numBeings; i++) {
+                int blorpCount = min(beingBlorpCounts[i], 2);
+                int blorpBaseIdx = i * 2;
+                
+                for (int b = 0; b < blorpCount; b++) {
+                    vec4 blorpPos = blorpPositions[blorpBaseIdx + b];
+                    vec4 blorpCol = blorpColors[blorpBaseIdx + b];
+                    
+                    if (blorpPos.w > 0.01) {  // Check alpha
+                        float dx = getWrappedDx(screenPos.x - blorpPos.x);
+                        float dy = screenPos.y - blorpPos.y;
+                        float dist = length(vec2(dx, dy));
+                        
+                        if (dist < blorpPos.z * 2.0) {
+                            float density = 1.0 - smoothstep(0.0, blorpPos.z, dist);
+                            density = pow(density, 2.0);  // Sharper falloff
+                            
+                            vec3 blorpColor = hsv2rgb(vec3(blorpCol.x, blorpCol.y, blorpCol.z));
+                            float blorpAlpha = density * blorpPos.w * 0.6;
+                            
+                            float newAlpha = blorpAlpha + accumulatedAlpha * (1.0 - blorpAlpha);
+                            if (newAlpha > 0.0) {
+                                accumulatedColor = (blorpColor * blorpAlpha + accumulatedColor * accumulatedAlpha * (1.0 - blorpAlpha)) / newAlpha;
+                                accumulatedAlpha = newAlpha;
+                            }
+                        }
+                    }
+                }
+            }
+            
             accumulatedAlpha *= fadeAlpha;
             outColor = vec4(accumulatedColor, accumulatedAlpha);
         }
@@ -544,6 +585,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             })
         
         being.color_pulses = self.color_pulses[i]
+        being.blorps = self.blorps[i]
     
     def _sync_all_beings(self):
         """Sync all Being objects from vectorized arrays"""
@@ -564,13 +606,13 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         
         if np.any(needs_change):
             change_indices = np.where(needs_change)[0]
-            self.target_behaviors[change_indices] = np.random.randint(0, 3, len(change_indices))
+            self.target_behaviors[change_indices] = np.random.randint(0, 4, len(change_indices))
             self.behavior_durations[change_indices] = np.random.uniform(5, 15, len(change_indices))
             self.last_behavior_changes[change_indices] = current_time
             
-            # Assign targets for seek behavior
+            # Assign targets for seek and avoid behaviors
             for idx in change_indices:
-                if self.target_behaviors[idx] == 1 and self.num_beings > 1:
+                if self.target_behaviors[idx] in [1, 3] and self.num_beings > 1:  # seek or avoid
                     # Choose a different being as target
                     potential_targets = [j for j in range(self.num_beings) if j != idx]
                     self.target_entities[idx] = np.random.choice(potential_targets)
@@ -615,6 +657,35 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         mimic_mask = self.target_behaviors == 2
         if np.any(mimic_mask):
             self.shape_complexities[mimic_mask] = 3 + np.sin(current_time * 0.2) * 2
+        
+        # === AVOID BEHAVIOR (3) ===
+        avoid_mask = (self.target_behaviors == 3) & (self.target_entities >= 0)
+        if np.any(avoid_mask):
+            avoid_indices = np.where(avoid_mask)[0]
+            for idx in avoid_indices:
+                target_idx = self.target_entities[idx]
+                
+                # Calculate wrapped distance
+                dx = self.positions[idx, 0] - self.positions[target_idx, 0]
+                # Check for wrapped distance
+                if abs(dx - self.viewport.width) < abs(dx):
+                    dx = dx - self.viewport.width
+                elif abs(dx + self.viewport.width) < abs(dx):
+                    dx = dx + self.viewport.width
+                
+                dy = self.positions[idx, 1] - self.positions[target_idx, 1]
+                direction = np.array([dx, dy])
+                distance = np.linalg.norm(direction)
+                
+                if distance > 0.1:
+                    direction = direction / distance
+                    # Move away from target
+                    away_velocity = direction * np.random.uniform(0.7, 2.0)
+                    self.velocities[idx] += (away_velocity - self.velocities[idx]) * 0.15
+                    
+                    speed = np.linalg.norm(self.velocities[idx])
+                    if speed > 2.5:
+                        self.velocities[idx] = self.velocities[idx] / speed * 2.5
         
         # === VECTORIZED POSITION UPDATES ===
         self.positions += self.velocities * dt
@@ -690,6 +761,15 @@ class ChromaticFogBeingsEffect(ShaderEffect):
                     remaining_pulses.append(pulse)
             self.color_pulses[i] = remaining_pulses
         
+        # === UPDATE BLORPS ===
+        for i in range(self.num_beings):
+            remaining_blorps = []
+            for blorp in self.blorps[i]:
+                blorp['age'] += dt
+                if blorp['age'] < blorp['total_duration']:
+                    remaining_blorps.append(blorp)
+            self.blorps[i] = remaining_blorps
+        
         # === CHECK FOR COMMUNICATION EVENTS ===
         if current_time >= self.next_communication and self.num_beings > 1:
             sender_idx, receiver_idx = np.random.choice(self.num_beings, 2, replace=False)
@@ -704,9 +784,39 @@ class ChromaticFogBeingsEffect(ShaderEffect):
             self.next_communication = current_time + np.random.uniform(3, 8)
             
             if np.random.random() < 0.3:
-                self.target_behaviors[receiver_idx] = np.random.randint(0, 3)
+                self.target_behaviors[receiver_idx] = np.random.randint(0, 4)
                 self.target_entities[receiver_idx] = sender_idx
                 self.last_behavior_changes[receiver_idx] = current_time
+        
+        # === CHECK FOR BLORP EVENTS ===
+        if current_time >= self.next_blorp_time and self.num_beings > 1:
+            sender_idx, receiver_idx = np.random.choice(self.num_beings, 2, replace=False)
+            
+            # Calculate wrapped distance for blorp travel time
+            dx = self.positions[receiver_idx, 0] - self.positions[sender_idx, 0]
+            if abs(dx - self.viewport.width) < abs(dx):
+                dx = dx - self.viewport.width
+            elif abs(dx + self.viewport.width) < abs(dx):
+                dx = dx + self.viewport.width
+            dy = self.positions[receiver_idx, 1] - self.positions[sender_idx, 1]
+            distance = np.sqrt(dx * dx + dy * dy)
+            
+            travel_time = max(distance / 50.0, 0.5)  # 50 pixels/second base speed
+            fade_time = 0.3  # Fade in/out duration
+            
+            blorp = {
+                'age': 0.0,
+                'fade_time': fade_time,
+                'travel_time': travel_time,
+                'total_duration': fade_time * 2 + travel_time,
+                'start_pos': self.positions[sender_idx].copy(),
+                'target_idx': receiver_idx,
+                'hue': float(self.base_hues[sender_idx]),
+                'size': np.random.uniform(2.0, 4.0)
+            }
+            self.blorps[sender_idx].append(blorp)
+            
+            self.next_blorp_time = current_time + np.random.uniform(4, 10)
         
         # Sync Being objects for rendering
         self._sync_all_beings()
@@ -822,6 +932,82 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         loc = glGetUniformLocation(self.shader, "pulseData")
         if loc != -1:
             glUniform4fv(loc, 12, pulse_data.flatten())
+        
+        # Upload blorp data
+        blorp_counts = np.array([len(b.blorps) for b in self.beings], dtype=np.int32)
+        blorp_positions = np.zeros((12, 4), dtype=np.float32)
+        blorp_colors = np.zeros((12, 4), dtype=np.float32)
+        
+        for i, being in enumerate(self.beings):
+            for j, blorp in enumerate(being.blorps[:2]):
+                idx = i * 2 + j
+                age = blorp['age']
+                fade_time = blorp['fade_time']
+                travel_time = blorp['travel_time']
+                total_duration = blorp['total_duration']
+                
+                # Calculate alpha based on fade in/out
+                if age < fade_time:
+                    alpha = age / fade_time
+                elif age > fade_time + travel_time:
+                    alpha = (total_duration - age) / fade_time
+                else:
+                    alpha = 1.0
+                alpha = np.clip(alpha, 0, 1)
+                
+                # Calculate position (interpolate from start to target)
+                if age < fade_time:
+                    progress = 0.0
+                elif age > fade_time + travel_time:
+                    progress = 1.0
+                else:
+                    progress = (age - fade_time) / travel_time
+                
+                start_pos = blorp['start_pos']
+                target_idx = blorp['target_idx']
+                target_pos = self.beings[target_idx].position
+                
+                # Handle wrapped interpolation
+                dx = target_pos[0] - start_pos[0]
+                if abs(dx - self.viewport.width) < abs(dx):
+                    dx = dx - self.viewport.width
+                elif abs(dx + self.viewport.width) < abs(dx):
+                    dx = dx + self.viewport.width
+                
+                current_x = start_pos[0] + dx * progress
+                # Wrap current position
+                if current_x < 0:
+                    current_x += self.viewport.width
+                elif current_x > self.viewport.width:
+                    current_x -= self.viewport.width
+                
+                current_y = start_pos[1] + (target_pos[1] - start_pos[1]) * progress
+                
+                blorp_positions[idx] = [
+                    current_x,
+                    current_y,
+                    blorp['size'],
+                    alpha
+                ]
+                
+                blorp_colors[idx] = [
+                    blorp['hue'],
+                    0.9,  # High saturation
+                    0.8,  # Bright
+                    0.0   # Unused
+                ]
+        
+        loc = glGetUniformLocation(self.shader, "beingBlorpCounts")
+        if loc != -1:
+            glUniform1iv(loc, len(self.beings), blorp_counts)
+        
+        loc = glGetUniformLocation(self.shader, "blorpPositions")
+        if loc != -1:
+            glUniform4fv(loc, 12, blorp_positions.flatten())
+        
+        loc = glGetUniformLocation(self.shader, "blorpColors")
+        if loc != -1:
+            glUniform4fv(loc, 12, blorp_colors.flatten())
         
                 # Render fullscreen quad
         glBindVertexArray(self.VAO)
