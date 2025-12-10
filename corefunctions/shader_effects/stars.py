@@ -152,32 +152,25 @@ class TwinklingStarsEffect(ShaderEffect):
             )
         )
         
-        # Colors - mostly white with slight tints
+        # Colors - mostly white with more saturated tints
         color_types = np.random.random(n)
         self.colors = np.where(
-            color_types[:, np.newaxis] < 0.6,
-            # 60% pure white
+            color_types[:, np.newaxis] < 0.4,
+            # 40% pure white
             np.column_stack([np.ones(n), np.ones(n), np.ones(n)]),
             np.where(
-                color_types[:, np.newaxis] < 0.85,
-                # 25% warm white (slight yellow)
+                color_types[:, np.newaxis] < 0.7,
+                # 30% warm colors (yellows, oranges, reds)
                 np.column_stack([
-                    np.random.uniform(0.6, 1.0, n),
-                    np.random.uniform(0.6, 1.0, n),
-                    np.random.uniform(0.6, 0.9, n)
+                    np.random.uniform(0.8, 1.0, n),
+                    np.random.uniform(0.4, 0.9, n),
+                    np.random.uniform(0.2, 0.6, n)
                 ]),
-                # # 15% cool white (slight blue)
-                # np.column_stack([
-                #     np.random.uniform(0.8, 0.95, n),
-                #     np.random.uniform(0.85, 0.95, n),
-                #     np.ones(n)
-                # ])
-                # ,
-                # 15% cool white (slight blue)
+                # 30% cool/vivid colors (blues, purples, teals, greens)
                 np.column_stack([
-                    np.random.uniform(0.15, 0.95, n),
-                    np.random.uniform(0.15, 0.95, n),
-                    np.random.uniform(0.15, 0.95, n)
+                    np.random.uniform(0.2, 0.8, n),
+                    np.random.uniform(0.3, 0.9, n),
+                    np.random.uniform(0.6, 1.0, n)
                 ])
             )
         )

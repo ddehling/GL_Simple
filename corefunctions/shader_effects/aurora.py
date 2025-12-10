@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=1.0,
+def shader_aurora(state, outstate, height_ratio=0.75, depth=75.0, intensity=1.0, speed=1.0,
                   bass_sensitivity=0.5, mid_sensitivity=0.3, high_sensitivity=0.2):
     """
     Shader-based aurora effect compatible with EventScheduler
@@ -21,14 +21,14 @@ def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=
     brightness changes (mids), and speed modulation (highs).
     
     Usage:
-        scheduler.schedule_event(0, 60, shader_aurora, height=250, depth=50, 
+        scheduler.schedule_event(0, 60, shader_aurora, height_ratio=0.3, depth=75, 
                                bass_sensitivity=0.8, frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
-        height: Base height of aurora effect in pixels (default: 200)
-        depth: Z-depth of aurora (0=near, 100=far, default: 50)
+        height_ratio: Height of aurora as proportion of viewport height (0.0-1.0, default: 0.25)
+        depth: Z-depth of aurora (0=near, 100=far, default: 75)
         intensity: Base brightness multiplier (default: 1.0)
         speed: Base animation speed multiplier (default: 1.0)
         bass_sensitivity: How much bass frequencies affect height (default: 0.5)
@@ -54,7 +54,7 @@ def shader_aurora(state, outstate, height=200, depth=50.0, intensity=1.0, speed=
         try:
             effect = viewport.add_effect(
                 Aurora,
-                height=height,
+                height_ratio=height_ratio,
                 depth=depth,
                 intensity=intensity,
                 speed=speed,
@@ -133,12 +133,13 @@ class Aurora(ShaderEffect):
     layered sine waves with varying frequencies and amplitudes.
     """
     
-    def __init__(self, viewport, height: float = 200, depth: float = 50.0, 
+    def __init__(self, viewport, height_ratio: float = 0.75, depth: float = 75.0, 
                  intensity: float = 1.0, speed: float = 1.0,
                  bass_sensitivity: float = 0.5, mid_sensitivity: float = 0.3,
                  high_sensitivity: float = 0.2):
         super().__init__(viewport)
-        self.height = height
+        self.height_ratio = height_ratio
+        self.height = int(viewport.height * height_ratio)  # Calculate actual pixel height
         self.depth = depth
         self.base_intensity = intensity
         self.base_speed = speed
@@ -366,6 +367,11 @@ class Aurora(ShaderEffect):
             // Vertical gradient - brighter at top, fade toward bottom
             float verticalFade = 1.0 - y;
             verticalFade = pow(verticalFade, 0.7);
+            
+            // Add soft edge falloff at the bottom to prevent sharp edges on short viewports
+            // This creates a smooth transition in the bottom 30% of the aurora
+            float edgeFalloff = smoothstep(1.0, 0.7, y);
+            verticalFade *= edgeFalloff;
             
             // Add shimmer effect - enhanced by high frequencies
             float shimmerSpeed = 1.0 + audioHigh * 2.0;

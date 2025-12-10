@@ -166,6 +166,14 @@ class EventScheduler:
 
     def schedule_event(self, delay, duration, action, *args, **kwargs):
         """Schedule an event with optional frame_id"""
+        # Check if an event with the same action is already running OR queued
+        if any(event.action == action for event in self.active_events) or \
+           any(event.action == action for event in self.event_queue):
+            # Skip scheduling this event - an instance is already running or queued
+            action_name = action.__name__ if hasattr(action, '__name__') else str(action)
+            print(f"Skipping duplicate event: {action_name} (already running or queued)")
+            return None
+        
         event_time = time.time() + delay
         
         # Extract special kwargs

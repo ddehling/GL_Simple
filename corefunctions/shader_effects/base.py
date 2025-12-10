@@ -12,6 +12,7 @@ class ShaderEffect:
         self.VAO = None
         self.VBOs = []
         self.EBO = None
+        self.render_priority = 0  # Higher priority renders later (post-processing = 1000)
         
     def init(self):
         """Initialize shader and buffers"""

@@ -15,12 +15,12 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (120, 300),   # Frame 0 (primary/main display)
+            (120, 60),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
         use_shader_renderer=True,
-        headless=False,frames=frame_dimensions, magnification=2
+        headless=False,frames=frame_dimensions, magnification=6
     )
         self.current_weather = WeatherState.CLEAR
         self.target_weather = WeatherState.CLEAR
@@ -68,13 +68,15 @@ class EnvironmentalSystem:
         # self.scheduler.schedule_event(0, sim_forever, fx.shader_celestial_bodies, 
         #                     corners=corners_frame0, frame_id=0)
         self.scheduler.schedule_event(0, sim_forever, fx.shader_rain, frame_id=0)
-        viewport0 = self.scheduler.shader_renderer.get_viewport(0)
-        if viewport0:
-            fog0 = viewport0.add_effect(ShaderFog, 
-                                        strength=0.0, 
-                                        color=(0.5, 0.6, 0.8),  # Blue-ish fog
-                                        fog_near=20.0,
-                                        fog_far=80.0)
+        
+        # Schedule fog LAST so it renders after all other effects (post-processing)
+        # Initial values will be overridden by weather system
+        self.scheduler.schedule_event(0, sim_forever, fx.shader_fog, 
+                                      strength=0.0, 
+                                      color=(0.7, 0.7, 0.8),
+                                      fog_near=20.0,
+                                      fog_far=80.0,
+                                      frame_id=0)
 
         # Schedule world rendering events for each frame, keeping the original function names
         #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
@@ -219,7 +221,7 @@ class EnvironmentalSystem:
 
     def send_variables(self):
         self.season = (time.time() / 1800) % 1
-        fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
+        fog = 1#np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
         self.cloudyness = (1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3
         self.scheduler.state["cloudyness"] = self.cloudyness
         # Set variables in scheduler state
@@ -379,8 +381,9 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.FALLING_LEAVES)
+    env_system.transition_to_weather(WeatherState.SPOOKY)
     env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
+    #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 30
@@ -400,7 +403,7 @@ if __name__ == "__main__":
             if frame_count % 50 == 0:  # Print FPS every second
                 actual_fps = 1.0 / (elapsed + sleep_time)
                 #um_effects = sum(len(vp.effects) for vp in scheduler.shader_renderer.viewports)
-                print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
+                #print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
             
             last_time = current_time
             # Print stats if needed

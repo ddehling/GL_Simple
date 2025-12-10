@@ -280,17 +280,20 @@ class ShaderViewport:
 
     
     def update(self, dt: float, state: Dict):
-        """Update all effects"""
-        for effect in self.effects:
+        """Update all effects (sorted by priority)"""
+        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
+        for effect in sorted_effects:
             if effect.enabled:
                 effect.update(dt, state)
     
     def render(self, state: Dict):
         # 1. Render effects ONCE to framebuffer (LED resolution)
+        # Sort by render_priority so post-processing effects render last
+        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)  # Set viewport to framebuffer size
         glScissor(0, 0, self.width, self.height)
-        for effect in self.effects:
+        for effect in sorted_effects:
             if effect.enabled:
                 effect.render(state)
         
