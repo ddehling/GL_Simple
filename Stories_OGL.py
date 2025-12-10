@@ -221,7 +221,7 @@ class EnvironmentalSystem:
 
     def send_variables(self):
         self.season = (time.time() / 1800) % 1
-        fog = 1#np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
+        fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
         self.cloudyness = (1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3
         self.scheduler.state["cloudyness"] = self.cloudyness
         # Set variables in scheduler state
@@ -381,7 +381,7 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.SPOOKY)
+    env_system.transition_to_weather(WeatherState.HEAVY_FOG)
     env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
