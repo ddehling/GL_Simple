@@ -232,7 +232,7 @@ class FireflyEffect(ShaderEffect):
             np.ones(count)                         # Value: full brightness
         ])
         
-        new_base_sizes = np.random.uniform(3.0, 6.0, count)  # Firefly size
+        new_base_sizes = np.random.uniform(1.0, 2.0, count)  # Firefly size
         
         # Assign each firefly to a frequency band (0=bass, 1=mid, 2=high)
         new_audio_bands = np.random.randint(0, 3, count)

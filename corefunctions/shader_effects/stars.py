@@ -110,6 +110,7 @@ class TwinklingStarsEffect(ShaderEffect):
         self.depth = depth  # Z depth (default 99.99 = far back)
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
+        self.min_brightness = 0.5  # Minimum brightness for stars (0.0 to 1.0)
         self.instance_VBO = None
         self.time = 0.0
         
@@ -359,22 +360,25 @@ class TwinklingStarsEffect(ShaderEffect):
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
-        # Map from [-1, 1] to brightness range
-        base_alphas = 0.6 + self.twinkle_amplitudes * twinkle_values * 0.4
+        # Map from [-1, 1] to brightness range (min_brightness to 0.9)
+        # This gives a gentle twinkle while staying mostly bright
+        brightness_range = 0.9 - self.min_brightness
+        base_alphas = self.min_brightness + self.twinkle_amplitudes * (twinkle_values * 0.5 + 0.5) * brightness_range
         
         # Add audio reactivity - get audio energy for each star's assigned band
         audio_modulation = self.audio_bands[self.audio_band_indices] * self.audio_sensitivity
-        # Clamp audio contribution to reasonable range (0 to 0.4 additional brightness)
-        audio_modulation = np.clip(audio_modulation, 0, 0.4)
+        # Scale audio to push from base brightness up to full brightness
+        # This gives more visible audio response
+        audio_contribution = audio_modulation * 0.5
         
         # Combine base twinkling with audio reactivity
-        alphas = base_alphas + audio_modulation
+        alphas = base_alphas + audio_contribution
         
         # Apply global starryness brightness scalar
         alphas = alphas * self.starryness
         
-        # Clamp final alpha to valid range
-        alphas = np.clip(alphas, 0, 1)
+        # Clamp to valid range (min_brightness to 1.0)
+        alphas = np.clip(alphas, self.min_brightness, 1.0)
         
         # Build instance data - interleave all attributes
         instance_data = np.hstack([
