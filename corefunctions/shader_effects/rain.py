@@ -531,15 +531,14 @@ class RainEffect(ShaderEffect):
             mix_factors = np.clip(audio_clamped * 0.4, 0, 0.4)[:, np.newaxis]  # Reshape for broadcasting
             self.colors = self.base_colors * (1 - mix_factors) + target_colors * mix_factors
             
-            # Apply audio speed boost to BOTH horizontal and vertical movement (trajectory acceleration)
-            horizontal_velocity = base_horizontal_velocity * audio_multipliers
+            # Audio affects only vertical speed, not horizontal direction
+            self.audio_speed_multipliers = audio_multipliers
         else:
             self.audio_speed_multipliers = None
-            horizontal_velocity = base_horizontal_velocity
         
-        # Vectorized position updates - audio now affects both horizontal and vertical
+        # Vectorized position updates - audio affects only vertical velocity
         self.positions[:, 1] += self.velocities * dt / 2
-        self.positions[:, 0] += horizontal_velocity * dt / 2
+        self.positions[:, 0] += base_horizontal_velocity * dt / 2
         
         # Horizontal wrapping - vectorized, immediate, no gaps
         left_mask = self.positions[:, 0] < 0
