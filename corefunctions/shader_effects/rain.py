@@ -384,9 +384,23 @@ class RainEffect(ShaderEffect):
         out vec4 outColor;
 
         void main() {
+            // Gradient from bottom (0) to top (1) of raindrop
             float fade = 1.0 - vertPos.y;
-            // Use standard alpha blending so background shows through transparent areas
-            outColor = vec4(fragColor.rgb, fragColor.a * fade);
+            
+            // Apply fade to alpha only
+            float finalAlpha = fragColor.a * fade;
+            
+            // Discard fully transparent fragments to avoid depth buffer issues
+            if (finalAlpha < 0.01) {
+                discard;
+            }
+            
+            // Brighten RGB as alpha decreases to prevent dark appearance
+            // This compensates for the alpha blending at very low alpha values
+            float brightnessBoost = mix(1.0, 1.5, 1.0 - fade);
+            vec3 finalColor = fragColor.rgb * brightnessBoost;
+            
+            outColor = vec4(finalColor, finalAlpha);
         }
         """
     
@@ -474,6 +488,9 @@ class RainEffect(ShaderEffect):
         # Base velocity from rain_intensity
         self.velocities = self.base_velocities * (rain_intensity + 0.2)
         
+        # Calculate base horizontal velocity from wind
+        base_horizontal_velocity = self.wind * 50
+        
         # Audio modulation: FULLY VECTORIZED
         if len(self.audio_bands) == 16 and len(self.band_indices) > 0:
             # Get audio energy for each raindrop's band - vectorized lookup
@@ -483,7 +500,7 @@ class RainEffect(ShaderEffect):
             audio_multipliers = np.clip(audio_energies * self.audio_sensitivity, 0, 2.0) + 1.0
             self.velocities *= audio_multipliers
             
-            # Store audio multipliers for angle correction in render
+            # Store audio multipliers for later use in render (no longer needed for angle correction)
             self.audio_speed_multipliers = audio_multipliers
             
             # Size modulation: Make drops slightly bigger when their band is active
@@ -495,27 +512,34 @@ class RainEffect(ShaderEffect):
             audio_clamped = np.clip(audio_energies * self.audio_sensitivity, 0, 2.5)
             
             # Create target color arrays based on frequency bands (vectorized)
+            # Keep colors mostly in blue spectrum with subtle shifts
             target_colors = np.zeros_like(self.colors)
             
-            # Bass bands (0-5) - Red/Orange
+            # Bass bands (0-5) - Deep blue with slight purple
             bass_mask = self.band_indices < 6
-            target_colors[bass_mask] = [1.0, 0.3, 0.1]  # Bright orange-red
+            target_colors[bass_mask] = [0.4, 0.5, 1.0]  # Purple-blue
             
-            # Mid bands (6-10) - Cyan/Green  
+            # Mid bands (6-10) - Cyan/Teal  
             mid_mask = (self.band_indices >= 6) & (self.band_indices < 11)
-            target_colors[mid_mask] = [0.1, 1.0, 0.5]  # Bright cyan
+            target_colors[mid_mask] = [0.2, 0.8, 0.9]  # Cyan-teal
             
-            # High bands (11-15) - Magenta/White
+            # High bands (11-15) - Bright cyan-white
             high_mask = self.band_indices >= 11
-            target_colors[high_mask] = [1.0, 0.2, 1.0]  # Bright magenta
+            target_colors[high_mask] = [0.5, 0.9, 1.0]  # Bright cyan
             
-            # Vectorized color mixing (up to 90% target color)
-            mix_factors = np.clip(audio_clamped * 0.9, 0, 0.9)[:, np.newaxis]  # Reshape for broadcasting
+            # Vectorized color mixing (reduced to 40% target color for subtlety)
+            mix_factors = np.clip(audio_clamped * 0.4, 0, 0.4)[:, np.newaxis]  # Reshape for broadcasting
             self.colors = self.base_colors * (1 - mix_factors) + target_colors * mix_factors
+            
+            # Apply audio speed boost to BOTH horizontal and vertical movement (trajectory acceleration)
+            horizontal_velocity = base_horizontal_velocity * audio_multipliers
+        else:
+            self.audio_speed_multipliers = None
+            horizontal_velocity = base_horizontal_velocity
         
-        # Vectorized position updates
+        # Vectorized position updates - audio now affects both horizontal and vertical
         self.positions[:, 1] += self.velocities * dt / 2
-        self.positions[:, 0] += self.wind * 50 * dt / 2
+        self.positions[:, 0] += horizontal_velocity * dt / 2
         
         # Horizontal wrapping - vectorized, immediate, no gaps
         left_mask = self.positions[:, 0] < 0
@@ -592,20 +616,10 @@ class RainEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-                # Calculate rotations based on wind AND audio speed modulation
-        # Key fix: Scale horizontal velocity by audio multiplier to maintain constant angle
+        # Calculate rotations based on wind (angle is already correct since both components scale together)
         base_horizontal_velocity = self.wind * 50
-        
-        # Get audio multipliers for combined drops (includes duplicates)
-        if self.audio_speed_multipliers is not None and len(self.audio_speed_multipliers) > 0:
-            combined_audio_multipliers = self.audio_speed_multipliers[combined_indices]
-            # Scale horizontal velocity proportionally to vertical velocity change
-            horizontal_velocity = base_horizontal_velocity * combined_audio_multipliers
-        else:
-            horizontal_velocity = base_horizontal_velocity
-        
         vertical_velocity = combined_velocities
-        velocity_angle = np.arctan2(horizontal_velocity, vertical_velocity)
+        velocity_angle = np.arctan2(base_horizontal_velocity, vertical_velocity)
         base_rotation = np.pi
         rotations = (base_rotation - velocity_angle).astype(np.float32)
         
