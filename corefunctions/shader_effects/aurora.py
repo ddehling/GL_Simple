@@ -155,6 +155,14 @@ class Aurora(ShaderEffect):
         self.audio_mid = 0.0
         self.audio_high = 0.0
         
+        # Smoothed audio values for stable modulation (with decay)
+        self.audio_bass_smooth = 0.0
+        self.audio_mid_smooth = 0.0
+        self.audio_high_smooth = 0.0
+        
+        # Color flow offset - only moves forward, never backward
+        self.color_flow_offset = 0.0
+        
         # Buffer objects
         self.VAO = None
         self.position_VBO = None
@@ -223,9 +231,12 @@ class Aurora(ShaderEffect):
         uniform float height;
         uniform float speed;
         uniform float audioBass;  // Bass energy for height modulation
+        uniform float colorFlowOffset;  // Monotonically increasing color flow
         
         out vec2 vTexCoord;
         out float vWave;
+        out float vCurtainDepth;
+        out float vColorFlow;
         
         void main() {
             vec2 pos = position;
@@ -234,14 +245,23 @@ class Aurora(ShaderEffect):
             float normY = pos.y / height;  // 0 at top, 1 at bottom
             float normX = pos.x / resolution.x;
             
-            // Create flowing wave pattern
+            // Create flowing wave pattern with multiple layers
             float wave1 = sin(normX * 6.28318 * 2.0 + time * speed * 0.5) * 0.3;
             float wave2 = sin(normX * 6.28318 * 3.0 - time * speed * 0.7) * 0.2;
             float wave3 = sin(normX * 6.28318 * 1.5 + time * speed * 0.3) * 0.25;
             
+            // Add curtain-like vertical waves that flow down
+            float curtainWave1 = sin(normX * 6.28318 * 8.0 + normY * 12.0 - time * speed * 1.2) * 0.15;
+            float curtainWave2 = sin(normX * 6.28318 * 5.0 - normY * 8.0 + time * speed * 0.8) * 0.12;
+            
+            // Create rippling effect that gives depth perception
+            float ripple = sin(normX * 6.28318 * 10.0 + time * speed) * 
+                          cos(normY * 6.28318 * 2.0 - time * speed * 0.5) * 0.08;
+            
             // Modulate wave amplitude with bass - more bass = bigger waves
             float bassModulation = 1.0 + audioBass * 2.0;
-            float totalWave = (wave1 + wave2 + wave3) * normY * 30.0 * bassModulation;
+            float totalWave = (wave1 + wave2 + wave3 + curtainWave1 + curtainWave2 + ripple) 
+                             * normY * 30.0 * bassModulation;
             pos.y += totalWave;
             
             // Convert to clip space
@@ -257,6 +277,9 @@ class Aurora(ShaderEffect):
             // Pass data to fragment shader
             vTexCoord = vec2(normX, normY);
             vWave = (wave1 + wave2 + wave3) * 0.5 + 0.5;  // Normalize to 0-1
+            vCurtainDepth = (curtainWave1 + curtainWave2) * 0.5 + 0.5;
+            // Color flows downward - subtract normY so colors advance as y increases
+            vColorFlow = colorFlowOffset - normY * 2.0;
         }
         """
     
@@ -267,6 +290,8 @@ class Aurora(ShaderEffect):
         
         in vec2 vTexCoord;
         in float vWave;
+        in float vCurtainDepth;
+        in float vColorFlow;
         
         uniform float time;
         uniform float intensity;
@@ -278,19 +303,19 @@ class Aurora(ShaderEffect):
         out vec4 outColor;
         
         // Aurora color palette
-        vec3 getAuroraColor(float t, float wave, float audioModulation) {
+        vec3 getAuroraColor(float flowPosition, float wave) {
             // Blend between aurora colors: green, blue, purple, pink
             vec3 color1 = vec3(0.0, 1.0, 0.4);    // Bright green
             vec3 color2 = vec3(0.0, 0.8, 1.0);    // Cyan
             vec3 color3 = vec3(0.5, 0.0, 1.0);    // Purple
             vec3 color4 = vec3(1.0, 0.2, 0.8);    // Pink
             
-            // Animate color shifts - high frequencies speed up the shift
-            float colorShift = sin(time * speed * (0.2 + audioModulation * 0.3) + t * 3.14159) * 0.5 + 0.5;
+            // Add wave influence to flow position
             float waveInfluence = wave * 0.3;
             
             // Seamless cyclic blending through all 4 colors
-            float blendPos = fract(t + colorShift + waveInfluence) * 4.0;
+            // flowPosition only increases, so colors only flow forward
+            float blendPos = fract(flowPosition + waveInfluence) * 4.0;
             
             vec3 color;
             if (blendPos < 1.0) {
@@ -311,9 +336,32 @@ class Aurora(ShaderEffect):
             float x = vTexCoord.x;
             float y = vTexCoord.y;
             
-            // Create flowing bands
-            float bands = sin(x * 6.28318 * 4.0 + time * speed * 0.8 + vWave * 2.0) * 0.5 + 0.5;
-            bands = pow(bands, 1.5);
+            // Create multiple overlapping band layers for depth
+            // Use mod to ensure seamless wrapping
+            float xWrapped = mod(x, 1.0);
+            float bands1 = sin(xWrapped * 6.28318 * 4.0 + time * speed * 0.8 + vWave * 2.0) * 0.5 + 0.5;
+            float bands2 = sin(xWrapped * 6.28318 * 6.0 - time * speed * 0.5 + y * 3.0) * 0.5 + 0.5;
+            float bands3 = sin(xWrapped * 6.28318 * 3.0 + time * speed * 0.3 - y * 2.0) * 0.5 + 0.5;
+            
+            // Combine bands with different weights for layered effect
+            float bands = (bands1 * 0.5 + bands2 * 0.3 + bands3 * 0.2);
+            bands = pow(bands, 1.3);
+            
+            // Add vertical curtain structures
+            float curtainPattern = sin(xWrapped * 6.28318 * 12.0 + y * 8.0 - time * speed) * 
+                                  sin(xWrapped * 6.28318 * 7.0 - y * 5.0 + time * speed * 0.7);
+            curtainPattern = curtainPattern * 0.5 + 0.5;
+            curtainPattern = smoothstep(0.3, 0.7, curtainPattern);
+            
+            // Create ray-like structures emanating downward
+            float rays = 0.0;
+            for (float i = 0.0; i < 5.0; i += 1.0) {
+                float offset = i * 0.2 + time * speed * 0.1;
+                float rayX = fract(xWrapped * 3.0 + offset);
+                float rayIntensity = exp(-20.0 * pow(rayX - 0.5, 2.0));
+                rays += rayIntensity * (1.0 - y * 0.7);
+            }
+            rays *= 0.3;
             
             // Vertical gradient - brighter at top, fade toward bottom
             float verticalFade = 1.0 - y;
@@ -321,22 +369,32 @@ class Aurora(ShaderEffect):
             
             // Add shimmer effect - enhanced by high frequencies
             float shimmerSpeed = 1.0 + audioHigh * 2.0;
-            float shimmer = sin(x * 20.0 + time * speed * 2.0 * shimmerSpeed) * 
+            float shimmer = sin(xWrapped * 20.0 + time * speed * 2.0 * shimmerSpeed) * 
                           sin(y * 15.0 - time * speed * 1.5) * 0.1 + 0.9;
             
-            // Get aurora color with high-frequency modulation
-            vec3 color = getAuroraColor(x * 2.0 + time * speed * 0.1, vWave, audioHigh);
+            // Create spatial variation in color across the aurora
+            float colorVariation = sin(xWrapped * 6.28318 * 2.5) * 0.2;
+            
+            // Get aurora color - flows downward only via vColorFlow
+            vec3 color = getAuroraColor(vColorFlow + xWrapped * 0.5 + colorVariation, 
+                                       vWave * 0.7 + vCurtainDepth * 0.3);
+            
+            // Combine all structural elements
+            float structure = bands * (0.7 + curtainPattern * 0.3) + rays;
             
             // Combine effects - mid frequencies boost brightness
             float audioBrightness = 1.0 + audioMid * 1.5;
-            float brightness = bands * verticalFade * shimmer * intensity * audioBrightness;
+            float brightness = structure * verticalFade * shimmer * intensity * audioBrightness;
             
             // Add subtle glow at edges of bands
             float edgeGlow = smoothstep(0.3, 0.7, bands) * (1.0 - smoothstep(0.7, 1.0, bands));
             brightness += edgeGlow * 0.3;
             
-            // Calculate alpha - more transparent at bottom
-            float alpha = verticalFade * bands * 0.7;
+            // Add depth-based brightness variation (curtain depth affects intensity)
+            brightness *= (0.8 + vCurtainDepth * 0.4);
+            
+            // Calculate alpha with more variation
+            float alpha = verticalFade * structure * 0.7;
             alpha = clamp(alpha, 0.0, 0.85);
             
             // Apply fade in/out
@@ -375,6 +433,34 @@ class Aurora(ShaderEffect):
         
         # Update animation time
         self.time += dt
+        
+        # Smooth audio values with exponential decay (prevents flickering)
+        # Attack time: 0.05s, Decay time: 0.3s
+        attack_factor = 1.0 - np.exp(-dt / 0.05)
+        decay_factor = 1.0 - np.exp(-dt / 0.3)
+        
+        # Bass: quick attack, medium decay
+        if self.audio_bass > self.audio_bass_smooth:
+            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * attack_factor
+        else:
+            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * decay_factor
+        
+        # Mid: quick attack, medium decay
+        if self.audio_mid > self.audio_mid_smooth:
+            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * attack_factor
+        else:
+            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * decay_factor
+        
+        # High: quick attack, slower decay (for smoother color shifts)
+        high_decay_factor = 1.0 - np.exp(-dt / 0.5)
+        if self.audio_high > self.audio_high_smooth:
+            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * attack_factor
+        else:
+            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * high_decay_factor
+        
+        # Update color flow offset - always moves forward, speed affected by audio
+        flow_speed = self.base_speed * (1.0 + self.audio_high_smooth * 0.5)
+        self.color_flow_offset += dt * flow_speed * 0.15
     
     def render(self, state: Dict):
         """Render the aurora effect"""
@@ -405,15 +491,19 @@ class Aurora(ShaderEffect):
         fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
         glUniform1f(fade_loc, self.fade_factor)
         
-        # Set audio modulation uniforms
+        # Set audio modulation uniforms (using smoothed values)
         bass_loc = glGetUniformLocation(self.shader, "audioBass")
-        glUniform1f(bass_loc, self.audio_bass)
+        glUniform1f(bass_loc, self.audio_bass_smooth)
         
         mid_loc = glGetUniformLocation(self.shader, "audioMid")
-        glUniform1f(mid_loc, self.audio_mid)
+        glUniform1f(mid_loc, self.audio_mid_smooth)
         
         high_loc = glGetUniformLocation(self.shader, "audioHigh")
-        glUniform1f(high_loc, self.audio_high)
+        glUniform1f(high_loc, self.audio_high_smooth)
+        
+        # Set color flow offset (monotonically increasing)
+        color_flow_loc = glGetUniformLocation(self.shader, "colorFlowOffset")
+        glUniform1f(color_flow_loc, self.color_flow_offset)
         
         # Render mesh
         glBindVertexArray(self.VAO)
