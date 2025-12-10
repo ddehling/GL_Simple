@@ -122,6 +122,21 @@ def shader_gameoflife(state, outstate, cell_size=3, update_rate=10,
         state['prev_mid'] = mid_energy
         state['prev_high'] = high_energy
     
+    # Implement fade in/out
+    if 'effect' in state:
+        elapsed_time = state['elapsed_time']
+        total_duration = state.get('duration', 60)
+        fade_duration = 2.0
+        
+        if elapsed_time < fade_duration:
+            fade_factor = elapsed_time / fade_duration
+        elif elapsed_time > (total_duration - fade_duration):
+            fade_factor = (total_duration - elapsed_time) / fade_duration
+        else:
+            fade_factor = 1.0
+        
+        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
+    
     # Cleanup on close
     if state['count'] == -1:
         if 'effect' in state:
@@ -155,6 +170,7 @@ class GameOfLifeEffect(ShaderEffect):
         self.bass_spawn_pending = False
         self.x_roll_pending = False
         self.x_roll_amount = 0  # Cells to roll left
+        self.fade_factor = 0.0  # Fade in/out factor (0.0 to 1.0)
         
         # Horizontal wrapping margin (should be larger than cell_size)
         self.wrap_margin = max(50, cell_size * 2)
@@ -256,6 +272,7 @@ class GameOfLifeEffect(ShaderEffect):
         
         in float v_age;
         in float v_audio_mid;
+        uniform float fadeAlpha;
         out vec4 outColor;
         
         void main() {
@@ -309,8 +326,10 @@ class GameOfLifeEffect(ShaderEffect):
             float audio_boost = 1.0 + v_audio_mid * 0.5;  // Up to 1.5x brighter
             color *= audio_boost;
             
-            // Fully opaque cells
-            outColor = vec4(color, 1.0);
+            // Apply fade in/out
+            float alpha = fadeAlpha;
+            
+            outColor = vec4(color, alpha);
         }
         """
     
@@ -551,6 +570,9 @@ class GameOfLifeEffect(ShaderEffect):
         
         audio_mid_loc = glGetUniformLocation(self.shader, "audio_mid")
         glUniform1f(audio_mid_loc, self.audio_mid)
+        
+        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
+        glUniform1f(fade_loc, self.fade_factor)
         
         # Draw instanced (includes wrapped duplicates)
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(instance_data))

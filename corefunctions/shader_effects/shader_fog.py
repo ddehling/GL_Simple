@@ -40,34 +40,34 @@ float linearize_depth(float depth) {
     return (2.0 * near * far) / (far + near - z * (far - near));
 }
 
-// Gaussian blur based on depth
-vec4 blur_at_depth(vec2 uv, float depth_factor) {
+// Simple blur implementation - multi-pass for stronger effect
+vec4 apply_blur(vec2 uv, float strength) {
     vec2 texel_size = 1.0 / u_resolution;
-    float blur_amount = depth_factor * 8.0; // Max blur radius
     
-    if (blur_amount < 0.5) {
-        return texture(u_color_texture, uv);
+    // Apply blur multiple times for much stronger effect
+    vec4 result = texture(u_color_texture, uv);
+    
+    // First pass - wider radius
+    for (float i = 0.0; i < 3.0; i += 1.0) {
+        vec4 pass_result = vec4(0.0);
+        float radius = (i + 1.0) * strength;
+        
+        pass_result += texture(u_color_texture, uv + vec2(-1.0, -1.0) * texel_size * radius) * 0.0625;
+        pass_result += texture(u_color_texture, uv + vec2(0.0, -1.0) * texel_size * radius) * 0.125;
+        pass_result += texture(u_color_texture, uv + vec2(1.0, -1.0) * texel_size * radius) * 0.0625;
+        
+        pass_result += texture(u_color_texture, uv + vec2(-1.0, 0.0) * texel_size * radius) * 0.125;
+        pass_result += texture(u_color_texture, uv) * 0.25;
+        pass_result += texture(u_color_texture, uv + vec2(1.0, 0.0) * texel_size * radius) * 0.125;
+        
+        pass_result += texture(u_color_texture, uv + vec2(-1.0, 1.0) * texel_size * radius) * 0.0625;
+        pass_result += texture(u_color_texture, uv + vec2(0.0, 1.0) * texel_size * radius) * 0.125;
+        pass_result += texture(u_color_texture, uv + vec2(1.0, 1.0) * texel_size * radius) * 0.0625;
+        
+        result = mix(result, pass_result, 0.5);
     }
     
-    vec4 result = vec4(0.0);
-    float total_weight = 0.0;
-    
-    // 5x5 gaussian kernel (simplified for performance)
-    int radius = int(ceil(blur_amount));
-    radius = min(radius, 4); // Limit max radius
-    
-    for (int x = -radius; x <= radius; x++) {
-        for (int y = -radius; y <= radius; y++) {
-            vec2 offset = vec2(float(x), float(y)) * texel_size;
-            float dist = length(vec2(float(x), float(y)));
-            float weight = exp(-dist * dist / (2.0 * blur_amount * blur_amount));
-            
-            result += texture(u_color_texture, uv + offset) * weight;
-            total_weight += weight;
-        }
-    }
-    
-    return result / total_weight;
+    return result;
 }
 
 void main() {
@@ -86,13 +86,31 @@ void main() {
     // Calculate fog factor based on depth (0 = no fog, 1 = full fog)
     float depth_range = u_fog_far - u_fog_near;
     float fog_factor = clamp((linear_depth - u_fog_near) / depth_range, 0.0, 1.0);
-    fog_factor = fog_factor * u_fog_strength * u_fog_strength;
     
-    // Apply depth-based blur
-    vec4 blurred_color = blur_at_depth(v_texcoord, fog_factor);
+    // Apply fog strength
+    fog_factor = fog_factor * u_fog_strength;
     
-    // Mix blurred color with fog color based on fog factor
-    vec3 final_color = mix(blurred_color.rgb, u_fog_color, fog_factor * 0.3);
+    // Proper box blur with enough samples for smooth result
+    vec2 texel_size = 1.0 / u_resolution;
+    vec4 blurred_color = vec4(0.0);
+    float total_samples = 0.0;
+    
+    // Sample in a 7x7 grid for smooth blur
+    float radius = 15.0; // Blur radius in pixels
+    for (float x = -3.0; x <= 3.0; x += 1.0) {
+        for (float y = -3.0; y <= 3.0; y += 1.0) {
+            vec2 offset = vec2(x, y) * radius * texel_size;
+            blurred_color += texture(u_color_texture, v_texcoord + offset);
+            total_samples += 1.0;
+        }
+    }
+    blurred_color /= total_samples;
+    
+    // Mix fog color with proper clamping
+    float base_mix = clamp(u_fog_strength * 1.2, 0.0, 1.0);
+    vec3 base_tint = mix(blurred_color.rgb, u_fog_color, base_mix);
+    float depth_mix = clamp(fog_factor * 1.5, 0.0, 1.0);
+    vec3 final_color = mix(base_tint, u_fog_color, depth_mix);
     
     fragColor = vec4(final_color, blurred_color.a);
 }
@@ -199,6 +217,7 @@ class ShaderFog(ShaderEffect):
     def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8), 
                  fog_near=10.0, fog_far=100.0):
         super().__init__(viewport)
+        self.render_priority = 1000  # Post-processing: render LAST
         self.base_strength = strength  # Base strength set at initialization
         self.current_strength = strength  # Current strength (affected by fade)
         self.fog_color = color
@@ -208,6 +227,8 @@ class ShaderFog(ShaderEffect):
         # OpenGL resources (initialized in setup_buffers)
         self.VAO = None
         self.VBO = None
+        self.temp_texture = None  # Temporary texture for post-processing
+        self.temp_fbo = None  # Temporary framebuffer for copying
     
     @property
     def strength(self):
@@ -267,6 +288,29 @@ class ShaderFog(ShaderEffect):
         glVertexAttribPointer(pos_loc, 2, GL_FLOAT, GL_FALSE, 0, None)
         
         glBindVertexArray(0)
+        
+        # Create temporary texture for post-processing
+        self.temp_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.temp_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.viewport.width, self.viewport.height,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        
+        # Create temporary framebuffer
+        self.temp_fbo = glGenFramebuffers(1)
+        glBindFramebuffer(GL_FRAMEBUFFER, self.temp_fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_TEXTURE_2D, self.temp_texture, 0)
+        
+        status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
+        if status != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError(f"Fog temp framebuffer incomplete: {status}")
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        print(f"    ✓ Fog temp framebuffer created")
     
     def update(self, dt: float, state: Dict):
         """Update fog parameters each frame"""
@@ -289,20 +333,30 @@ class ShaderFog(ShaderEffect):
             return
         
         # Skip rendering entirely if fog strength is effectively zero
-        # This prevents any GPU processing when fog is disabled
         if self.current_strength < 0.001:
             return
         
-        # Post-process exception: Use GL_ALWAYS to render on top without toggling depth test
-        glDepthFunc(GL_ALWAYS)  # Always pass depth test (render in front)
-        glDepthMask(GL_FALSE)   # Don't write to depth buffer
+        # Copy framebuffer to temp texture PROPERLY
+        # First bind the temp texture
+        glBindTexture(GL_TEXTURE_2D, self.temp_texture)
+        # Then bind the source framebuffer for reading  
+        glBindFramebuffer(GL_FRAMEBUFFER, self.viewport.fbo)
+        # Copy from framebuffer's color attachment to temp texture
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
+                           self.viewport.width, self.viewport.height)
+        
+        # Now render fog back to the framebuffer
+        glBindFramebuffer(GL_FRAMEBUFFER, self.viewport.fbo)
+        
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         
         glUseProgram(self.shader)
         glBindVertexArray(self.VAO)
         
-        # Bind color texture
+        # Bind the temp texture we just copied to
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self.viewport.color_texture)
+        glBindTexture(GL_TEXTURE_2D, self.temp_texture)
         glUniform1i(glGetUniformLocation(self.shader, "u_color_texture"), 0)
         
         # Bind depth texture from viewport
@@ -310,7 +364,7 @@ class ShaderFog(ShaderEffect):
         glBindTexture(GL_TEXTURE_2D, self.viewport.depth_texture)
         glUniform1i(glGetUniformLocation(self.shader, "u_depth_texture"), 1)
         
-        # Set uniforms - use current_strength which includes fade
+        # Set uniforms
         glUniform3f(glGetUniformLocation(self.shader, "u_fog_color"),
                    self.fog_color[0], self.fog_color[1], self.fog_color[2])
         glUniform1f(glGetUniformLocation(self.shader, "u_fog_strength"),
@@ -328,7 +382,6 @@ class ShaderFog(ShaderEffect):
         glBindVertexArray(0)
         glUseProgram(0)
         
-        # Restore default depth state
         glDepthFunc(GL_LESS)
         glDepthMask(GL_TRUE)
     
@@ -338,5 +391,9 @@ class ShaderFog(ShaderEffect):
             glDeleteVertexArrays(1, [self.VAO])
         if self.VBO:
             glDeleteBuffers(1, [self.VBO])
+        if self.temp_texture:
+            glDeleteTextures(1, [self.temp_texture])
+        if self.temp_fbo:
+            glDeleteFramebuffers(1, [self.temp_fbo])
         if self.shader:
             glDeleteProgram(self.shader)
