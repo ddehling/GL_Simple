@@ -57,7 +57,7 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
             leaves_effect = viewport.add_effect(
                 FallingLeavesEffect,
                 density=density,
-                max_leaves=100  # Increased from 25 to 100 for more leaves
+                max_leaves=30  # Gentle amount of leaves
             )
             state['leaves_effect'] = leaves_effect
             state['smoothed_bass'] = 0.0  # For audio smoothing
@@ -183,8 +183,8 @@ class FallingLeavesEffect(ShaderEffect):
         ])
         
         new_velocities = np.column_stack([
-            np.random.uniform(-0.5, 0.5, count),
-            np.random.uniform(1.0, 2.0, count)
+            np.zeros(count),  # No initial horizontal velocity (wind will control this)
+            np.random.uniform(15.0, 25.0, count)  # Natural fall speed (pixels per second)
         ])
         
         # NEW: Generate random distances (depth) between 5 and 25
@@ -195,9 +195,9 @@ class FallingLeavesEffect(ShaderEffect):
         new_sizes = base_sizes * (5.0 / new_distances)  # Scale by distance
         
         new_rotations = np.random.uniform(0, 2 * np.pi, count)
-        new_rotation_speeds = np.random.uniform(-0.5, 0.5, count)  # Reduced from -1.0 to 1.0
+        new_rotation_speeds = np.random.uniform(-0.3, 0.3, count)  # Slower, more natural rotation
         new_flutter_phases = np.random.uniform(0, 2 * np.pi, count)
-        new_flutter_amplitudes = np.random.uniform(0.5, 1.2, count)
+        new_flutter_amplitudes = np.random.uniform(0.3, 0.8, count)  # Reduced amplitude for gentler movement
         
         # Adjust alpha based on distance (farther = more transparent)
         base_alphas = np.random.uniform(0.9, 1.0, count)
@@ -537,17 +537,16 @@ class FallingLeavesEffect(ShaderEffect):
         fall_distance = min(abs(season - 0.625), 1 - abs(season - 0.625))
         fall_factor = 1 - 1.9 * fall_distance
         
-                        # Audio-reactive spawn rate (EXTREMELY DRAMATIC)
-        # Base rate increased + influenced by bass energy + burst effect
-        audio_spawn_multiplier = 1.0 + self.audio_bass * 2.0 + self.bass_burst * 8.0
+        # Gentle spawn rate with subtle audio influence
+        audio_spawn_multiplier = 1.0 + self.audio_bass * 0.3 + self.bass_burst * 0.5
         
-        # Spawn new leaves (more aggressive spawning)
+        # Spawn new leaves gently
         if len(self.positions) < self.max_leaves:
-            leaf_rate = (0.5 + 0.3 * abs(wind) + 0.4 * whomp) * self.density * fall_factor * audio_spawn_multiplier
+            leaf_rate = 0.02 * self.density * fall_factor * audio_spawn_multiplier  # Much lower base rate
             if np.random.random() < leaf_rate:
-                # Spawn more leaves at once, especially on bass hits (EXTREME BURST)
+                # Spawn 1-2 leaves at a time (occasionally 3 on bass hit)
                 spawn_count = min(
-                    np.random.randint(4, 10) + int(self.bass_burst * 8),  # Massive burst on bass hit
+                    1 + int(np.random.random() < 0.3) + int(self.bass_burst > 1.0),
                     self.max_leaves - len(self.positions)
                 )
                 if spawn_count > 0:
@@ -559,25 +558,25 @@ class FallingLeavesEffect(ShaderEffect):
         if len(self.positions) == 0:
             return
         
-                        # Audio-reactive flutter phase (mids affect speed EXTREMELY)
-        flutter_speed = 0.1 * (1.0 + self.audio_mid * 3.0)  # Very reactive to mids
-        self.flutter_phases += flutter_speed * dt * 60
+        # Wind-driven horizontal movement (smooth, no flutter)
+        wind_force = wind * 0.5
+        self.velocities[:, 0] = wind_force
         
-        # Calculate flutter effect (enhanced by audio EXTREMELY)
-        flutter_intensity = 1.0 + self.audio_mid * 2.5  # Huge flutter on mids
-        flutter_x = np.sin(self.flutter_phases) * self.flutter_amplitudes * flutter_intensity
+        # Audio subtly affects fall rate (bass makes them fall slightly faster/slower)
+        audio_fall_modifier = 1.0 + (self.audio_bass - 0.5) * 0.1  # Subtle ±10% variation
         
-        # Update velocities
-        movement_multiplier = 1.0 + whomp * 12.0
-        self.velocities[:, 0] = flutter_x + wind * 5
+        # Update positions (apply audio modifier directly, don't modify velocities)
+        movement_multiplier = 1.0 + whomp * 0.5  # Much gentler whomp effect
+        self.positions[:, 0] += self.velocities[:, 0] * dt * movement_multiplier
+        self.positions[:, 1] += self.velocities[:, 1] * dt * movement_multiplier * audio_fall_modifier
+        self.positions[:, 1] *= (1.0 - whomp * 0.1 * dt)
         
-        # Update positions
-        self.positions += self.velocities * dt * 5 * movement_multiplier
-        self.positions[:, 1] *= (1.0 - whomp * 1.5 * dt * 5)
-        
-                                # Audio-reactive rotations (mids + highs affect rotation speed, balanced for visibility)
-        rotation_speed_mult = 1.0 + self.audio_mid * 1.2 + self.audio_high * 0.8
+        # Natural rotation (subtle audio influence)
+        rotation_speed_mult = 1.0 + self.audio_mid * 0.2  # Very subtle influence
         self.rotations += self.rotation_speeds * dt * 2 * rotation_speed_mult
+        
+        # Update flutter phases for subtle brightness variation later
+        self.flutter_phases += 0.02 * dt * 60  # Slow phase for brightness variation
         
                 # Decrease lifetimes more slowly (leaves last longer)
         self.lifetimes -= 0.0002 * dt * 60  # 5x slower decay (was 0.001)
@@ -681,12 +680,21 @@ class FallingLeavesEffect(ShaderEffect):
             render_leaf_types = np.concatenate([render_leaf_types, self.leaf_types[right_indices]])
             render_distances = np.concatenate([render_distances, self.distances[right_indices]])
         
+        # Audio subtly affects brightness and color
+        audio_brightness = 1.0 + self.audio_high * 0.15  # Subtle brightness boost from highs
+        audio_color_shift = self.audio_mid * 0.08  # Subtle color warmth from mids
+        
+        # Apply audio effects to colors
+        adjusted_colors = render_colors.copy()
+        adjusted_colors *= audio_brightness  # Brighten
+        adjusted_colors[:, 0] = np.clip(adjusted_colors[:, 0] + audio_color_shift, 0, 1)  # Add warmth (red)
+        
         # Build instance data with all attributes including duplicates
         instance_data = np.hstack([
             render_positions,                                      # 2 floats: x, y
             render_sizes[:, np.newaxis],                          # 1 float: size
             render_rotations[:, np.newaxis],                      # 1 float: rotation
-            render_colors,                                        # 3 floats: r, g, b
+            adjusted_colors,                                      # 3 floats: r, g, b (audio-adjusted)
             render_alphas[:, np.newaxis],                         # 1 float: alpha
             render_leaf_types[:, np.newaxis].astype(np.float32),  # 1 float: leafType
             render_distances[:, np.newaxis]                       # 1 float: distance (depth)

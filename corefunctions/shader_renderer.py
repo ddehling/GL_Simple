@@ -9,18 +9,24 @@ IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
 class ShaderRenderer:
     """GPU-based renderer with visible OpenGL window (single viewport only)"""
-    def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False):
+    def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False, magnification=1):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
         self.headless = headless
+        self.magnification = max(1, int(magnification))  # Ensure integer >= 1
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
         
-        # Use only the first frame dimension for window size
-        self.window_width, self.window_height = frame_dimensions[0]
+        # Use only the first frame dimension for window size, scaled by magnification
+        base_width, base_height = frame_dimensions[0]
+        self.window_width = base_width * self.magnification
+        self.window_height = base_height * self.magnification
         
-        print(f"Window size: {self.window_width}x{self.window_height} (viewport 0 native size)")
+        if self.magnification > 1:
+            print(f"Window size: {self.window_width}x{self.window_height} ({self.magnification}x magnification of {base_width}x{base_height})")
+        else:
+            print(f"Window size: {self.window_width}x{self.window_height} (viewport 0 native size)")
         
         self.init_glfw()
         self.create_window()
@@ -282,6 +288,8 @@ class ShaderViewport:
     def render(self, state: Dict):
         # 1. Render effects ONCE to framebuffer (LED resolution)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
+        glViewport(0, 0, self.width, self.height)  # Set viewport to framebuffer size
+        glScissor(0, 0, self.width, self.height)
         for effect in self.effects:
             if effect.enabled:
                 effect.render(state)
@@ -292,15 +300,24 @@ class ShaderViewport:
 
     def _blit_framebuffer_to_window(self):
         """Copy framebuffer contents to window with proper scaling"""
+        # Disable scissor test for blit operation
+        glDisable(GL_SCISSOR_TEST)
+        
         glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
+        
+        # Set viewport for the destination (window)
+        glViewport(0, 0, self.display_width, self.display_height)
+        
+        # Blit the entire framebuffer to the entire window
         glBlitFramebuffer(
-            0, 0, self.width, self.height,           # Source
-            self.window_x, self.window_y, 
-            self.window_x + self.display_width, 
-            self.window_y + self.display_height,     # Destination  
-            GL_COLOR_BUFFER_BIT, GL_LINEAR           # Copy color with scaling
+            0, 0, self.width, self.height,           # Source (framebuffer)
+            0, 0, self.display_width, self.display_height,  # Destination (window)
+            GL_COLOR_BUFFER_BIT, GL_NEAREST          # Use NEAREST for pixelated scaling
         )
+        
+        # Re-enable scissor test
+        glEnable(GL_SCISSOR_TEST)
 
     def get_frame(self) -> np.ndarray:
         """Read framebuffer into numpy array for LED output"""

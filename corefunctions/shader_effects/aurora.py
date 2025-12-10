@@ -289,15 +289,19 @@ class Aurora(ShaderEffect):
             float colorShift = sin(time * speed * (0.2 + audioModulation * 0.3) + t * 3.14159) * 0.5 + 0.5;
             float waveInfluence = wave * 0.3;
             
-            vec3 color;
-            float blendPos = mod(t + colorShift + waveInfluence, 1.0) * 3.0;
+            // Seamless cyclic blending through all 4 colors
+            float blendPos = fract(t + colorShift + waveInfluence) * 4.0;
             
+            vec3 color;
             if (blendPos < 1.0) {
                 color = mix(color1, color2, blendPos);
             } else if (blendPos < 2.0) {
                 color = mix(color2, color3, blendPos - 1.0);
-            } else {
+            } else if (blendPos < 3.0) {
                 color = mix(color3, color4, blendPos - 2.0);
+            } else {
+                // Smooth transition back to color1 to complete the cycle
+                color = mix(color4, color1, blendPos - 3.0);
             }
             
             return color;

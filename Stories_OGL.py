@@ -15,12 +15,12 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
+            (120, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
         use_shader_renderer=True,
-        headless=False,frames=frame_dimensions
+        headless=False,frames=frame_dimensions, magnification=2
     )
         self.current_weather = WeatherState.CLEAR
         self.target_weather = WeatherState.CLEAR
@@ -379,11 +379,11 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.transition_to_weather(WeatherState.FALLING_LEAVES)
     env_system.scheduler.schedule_event(0, 30, fx.shader_aurora,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 60
+    FRAME_TIME = 1 / 30
     first_time = time.time()
     frame_count = 0
     try:

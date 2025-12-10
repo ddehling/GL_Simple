@@ -63,7 +63,7 @@ class TimedEvent:
 
 
 class EventScheduler:
-    def __init__(self, use_shader_renderer=False, headless=False,frames=[(100,100)]):
+    def __init__(self, use_shader_renderer=False, headless=False,frames=[(100,100)], magnification=1):
         self.event_queue = []
         self.active_events = []
         self.state = {}
@@ -79,8 +79,8 @@ class EventScheduler:
             # Create shader renderer - window size calculated automatically
             self.shader_renderer = ShaderRenderer(
                 frame_dimensions=frame_dimensions,
-                
-                headless=headless
+                headless=headless,
+                magnification=magnification
             )
             
             # Create viewports for each frame
