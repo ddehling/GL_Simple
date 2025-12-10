@@ -115,7 +115,7 @@ class CloudEffectGPU(ShaderEffect):
         self.compute_shader = None
         
         # CPU-side mirror of cloud data for rendering (avoiding GPU readback)
-        self.cpu_cloud_data = np.zeros((max_clouds, 22), dtype=np.float32)
+        self.cpu_cloud_data = np.zeros((max_clouds, 23), dtype=np.float32)
         self.cpu_cloud_data[:, 9] = -1.0  # Mark all as inactive initially
         self.num_clouds = 0
         
@@ -240,6 +240,7 @@ class CloudEffectGPU(ShaderEffect):
             float scale;
             float opacity;
             vec2 noiseSeed;
+            float depth;
         } gs_in[];
         
         out vec2 texCoord;
@@ -248,14 +249,13 @@ class CloudEffectGPU(ShaderEffect):
         
         uniform vec2 resolution;
         uniform float wrapMargin;
-        uniform float cloudDepth;
         
-        void emitQuad(vec2 basePos, vec2 size, float opacity, vec2 seed) {
+        void emitQuad(vec2 basePos, vec2 size, float opacity, vec2 seed, float depth) {
             // Bottom-left
             vec2 pos = basePos;
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
-            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            gl_Position = vec4(clipPos, depth / 100.0, 1.0);
             texCoord = vec2(0.0, 0.0);
             fragOpacity = opacity;
             fragNoiseSeed = seed;
@@ -265,7 +265,7 @@ class CloudEffectGPU(ShaderEffect):
             pos = basePos + vec2(size.x, 0.0);
             clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
-            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            gl_Position = vec4(clipPos, depth / 100.0, 1.0);
             texCoord = vec2(1.0, 0.0);
             fragOpacity = opacity;
             fragNoiseSeed = seed;
@@ -275,7 +275,7 @@ class CloudEffectGPU(ShaderEffect):
             pos = basePos + vec2(0.0, size.y);
             clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
-            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            gl_Position = vec4(clipPos, depth / 100.0, 1.0);
             texCoord = vec2(0.0, 1.0);
             fragOpacity = opacity;
             fragNoiseSeed = seed;
@@ -285,7 +285,7 @@ class CloudEffectGPU(ShaderEffect):
             pos = basePos + size;
             clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
-            gl_Position = vec4(clipPos, cloudDepth / 100.0, 1.0);
+            gl_Position = vec4(clipPos, depth / 100.0, 1.0);
             texCoord = vec2(1.0, 1.0);
             fragOpacity = opacity;
             fragNoiseSeed = seed;
@@ -299,20 +299,21 @@ class CloudEffectGPU(ShaderEffect):
             vec2 cloudSize = gs_in[0].size * gs_in[0].scale;
             float opacity = gs_in[0].opacity;
             vec2 seed = gs_in[0].noiseSeed;
+            float depth = gs_in[0].depth;
             
             // Always emit primary cloud
-            emitQuad(cloudPos, cloudSize, opacity, seed);
+            emitQuad(cloudPos, cloudSize, opacity, seed, depth);
             
             // Check if we need wrap duplicate on left edge
             if (cloudPos.x < wrapMargin) {
                 vec2 wrapPos = cloudPos + vec2(resolution.x, 0.0);
-                emitQuad(wrapPos, cloudSize, opacity, seed);
+                emitQuad(wrapPos, cloudSize, opacity, seed, depth);
             }
             
             // Check if we need wrap duplicate on right edge
             if (cloudPos.x + cloudSize.x > resolution.x - wrapMargin) {
                 vec2 wrapPos = cloudPos - vec2(resolution.x, 0.0);
-                emitQuad(wrapPos, cloudSize, opacity, seed);
+                emitQuad(wrapPos, cloudSize, opacity, seed, depth);
             }
         }
         """
@@ -330,12 +331,14 @@ class CloudEffectGPU(ShaderEffect):
         layout(location = 2) in float scale;
         layout(location = 3) in float opacity;
         layout(location = 4) in vec2 noiseSeed;
+        layout(location = 5) in float depth;
         
         out VS_OUT {
             vec2 size;
             float scale;
             float opacity;
             vec2 noiseSeed;
+            float depth;
         } vs_out;
         
         void main() {
@@ -344,6 +347,7 @@ class CloudEffectGPU(ShaderEffect):
             vs_out.scale = scale;
             vs_out.opacity = opacity;
             vs_out.noiseSeed = noiseSeed;
+            vs_out.depth = depth;
         }
         """
     
@@ -508,8 +512,8 @@ class CloudEffectGPU(ShaderEffect):
         # Create SSBO for cloud data storage
         # Each cloud: position(2) + size(2) + speed(1) + wind_sens(1) + opacities(2) + 
         #            scale(1) + lifetime(1) + is_fading(1) + turb_phase(3) + turb_speed(3) + 
-        #            turb_amount(3) + noise_seed(2) = 22 floats
-        cloud_data_size = self.max_clouds * 22 * 4  # 22 floats * 4 bytes
+        #            turb_amount(3) + noise_seed(2) + depth(1) = 23 floats
+        cloud_data_size = self.max_clouds * 23 * 4  # 23 floats * 4 bytes
         
         self.cloud_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
@@ -520,10 +524,10 @@ class CloudEffectGPU(ShaderEffect):
         print(f"    ✓ Created SSBO: {cloud_data_size} bytes for {self.max_clouds} clouds")
         
         # Initialize with empty clouds
-        initial_data = np.zeros(self.max_clouds * 22, dtype=np.float32)
+        initial_data = np.zeros(self.max_clouds * 23, dtype=np.float32)
         # Mark all as inactive (lifetime = -1)
         for i in range(self.max_clouds):
-            initial_data[i * 22 + 9] = -1.0  # lifetime field
+            initial_data[i * 23 + 9] = -1.0  # lifetime field
         
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, initial_data.nbytes, initial_data)
@@ -570,6 +574,7 @@ class CloudEffectGPU(ShaderEffect):
         height = np.random.uniform(15, 60)
         start_x = np.random.uniform(-width * 1.5, self.viewport.width + width * 1.5)
         start_y = np.random.uniform(0, self.viewport.height)
+        depth = np.random.uniform(20, 80)
         
         speed_type = np.random.random()
         if speed_type < 0.3:
@@ -584,7 +589,7 @@ class CloudEffectGPU(ShaderEffect):
         size_factor = 1.5 - size_scale
         wind_sens = altitude_factor * size_factor * np.random.uniform(0.5, 1.5)
         
-        base_opacity = np.random.uniform(0.5, 0.9)
+        base_opacity = np.random.uniform(0.7, 1.0)
         
         # Build cloud data
         cloud_data = np.array([
@@ -602,6 +607,7 @@ class CloudEffectGPU(ShaderEffect):
             np.random.uniform(0.3, 0.8),
             np.random.uniform(0.1, 0.3),        # turb_amount
             *np.random.uniform(0, 10, 2),       # noise_seed
+            depth,                      # depth
         ], dtype=np.float32)
         
         # Upload to SSBO
@@ -728,13 +734,14 @@ class CloudEffectGPU(ShaderEffect):
             self._first_render_done = True
         
         # Build instance data for rendering
-        # position(2), size(2), scale(1), opacity(1), noiseSeed(2)
+        # position(2), size(2), scale(1), opacity(1), noiseSeed(2), depth(1)
         instance_data = np.column_stack([
             active_clouds[:, 0:2],   # position
             active_clouds[:, 2:4],   # size (width, height)
             active_clouds[:, 8],     # scale
             active_clouds[:, 7],     # current opacity
             active_clouds[:, 20:22], # noise seed
+            active_clouds[:, 22],    # depth
         ]).astype(np.float32).flatten()
         
         glUseProgram(self.shader)
@@ -745,15 +752,14 @@ class CloudEffectGPU(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "noiseTime"), self.global_time)
         glUniform1f(glGetUniformLocation(self.shader, "fadeFactor"), self.fade_factor)
         glUniform1f(glGetUniformLocation(self.shader, "wrapMargin"), 60.0)
-        glUniform1f(glGetUniformLocation(self.shader, "cloudDepth"), 40.0)
         
         # Upload instance data
         glBindVertexArray(self.VAO)
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
         
-        # Setup vertex attributes (8 floats per instance)
-        stride = 8 * 4
+        # Setup vertex attributes (9 floats per instance)
+        stride = 9 * 4
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(0)
         
@@ -768,6 +774,9 @@ class CloudEffectGPU(ShaderEffect):
         
         glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(24))
         glEnableVertexAttribArray(4)
+        
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
+        glEnableVertexAttribArray(5)
         
         # Disable depth writes for alpha blending
         glDepthMask(GL_FALSE)
