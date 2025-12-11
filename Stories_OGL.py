@@ -30,7 +30,7 @@ class EnvironmentalSystem:
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
         self.analyzer.start()
         #self.specdat = np.zeros([513, 1000])
-        
+        self.scale = 1.0
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
         # sort celestial bodies by distance, farthest first
@@ -144,7 +144,7 @@ class EnvironmentalSystem:
 
         if new_weather == WeatherState.FALLING_LEAVES:
             if not self.scheduler.state.get("has_leaves", False):
-                self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves,squish_top_width=0.1, frame_id=0) # noqa: F405
+                self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves,squish_top_width=self.scale, frame_id=0) # noqa: F405
 
 
         # if new_weather == WeatherState.SUMMER_BLOOM:
@@ -262,18 +262,18 @@ class EnvironmentalSystem:
             
             # Schedule event based on season
             if closest_season == 0:  # Winter
-                self.scheduler.schedule_event(0, 40, fx.shader_audio_balls,squish_top_width=0.1, frame_id=0)
+                self.scheduler.schedule_event(0, 40, fx.shader_audio_balls,squish_top_width=self.scale, frame_id=0)
             elif closest_season == 1:  # Spring
                 self.scheduler.schedule_event(0, 40, fx.shader_audio_curve, frame_id=0)
             elif closest_season == 2:  # Summer
-                self.scheduler.schedule_event(0, 40, fx.shader_sunrise, squish_top_width=10,frame_id=0)
+                self.scheduler.schedule_event(0, 40, fx.shader_sunrise, squish_top_width=1/self.scale,frame_id=0)
             elif closest_season == 3:  # Fall
                 self.scheduler.schedule_event(0, 40, fx.shader_gameoflife, frame_id=0)
 
 
         if (randcheck < self.weather_params["tree_prob"] / 2000):
             # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
-            self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=0.1, frame_id=0) # noqa: F405
+            self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=self.scale, frame_id=0) # noqa: F405
         
         # Wolf howl
         # if (randcheck < (self.weather_params["Wolfy"] + self.weather_params["spookyness"] / 10) / 2000):
@@ -297,7 +297,7 @@ class EnvironmentalSystem:
 
         # # Spooky giant eye
         if randcheck < self.weather_params["spookyness"] / 800:
-            self.scheduler.schedule_event(0, 30, fx.shader_eye, squish_top_width=0.1,frame_id=0) # noqa: F405
+            self.scheduler.schedule_event(0, 30, fx.shader_eye, squish_top_width=self.scale,frame_id=0) # noqa: F405
 
         # # Random meteor events
         if randcheck < self.weather_params["meteor_rate"] / 800:
@@ -383,7 +383,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.FIREFLY)
     #env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 40, fx.shader_falling_leaves,squish_top_width=0.1,frame_id=0)
+    env_system.scheduler.schedule_event(0, 40, fx.shader_fractal_fog,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
