@@ -151,6 +151,29 @@ def make_indicesHS(filename):
                 indices.append([sublist[0], sublist[1]-sublist[2]-1-m])   
     return np.array(indices).astype(int)
 
+def make_indicesVS(filename):
+    in_list=np.loadtxt(filename, delimiter=',').tolist()
+    indices = []
+    for sublist in in_list:       
+        if sublist[2]>0:
+            for m in range(int(sublist[2])):
+                indices.append([m+sublist[1], sublist[0]])
+        else:
+            for m in range(int(-sublist[2])):
+                indices.append([sublist[1]-sublist[2]-1-m, sublist[0]])   
+    return np.array(indices).astype(int)
+
+def make_indices_V_rect_alternate(width, height):
+    indices = []
+    for x in range(width):
+        if x % 2 == 0:
+            for y in range(height):
+                indices.append([y, x])
+        else:
+            for y in range(height-1, -1, -1):
+                indices.append([y, x])
+    return np.array(indices).astype(int)
+
 def main():
     receivers = [
         {
