@@ -86,9 +86,9 @@ def shader_fractal_fog(state, outstate, depth=50.0, intensity=1.0, speed=1.0,
             high_energy = np.mean(bands[20:32])    # Highs: 2000-16000 Hz
             
             # Apply audio modulation to effect parameters
-            state['effect'].audio_bass = bass_energy * bass_sensitivity
-            state['effect'].audio_mid = mid_energy * mid_sensitivity
-            state['effect'].audio_high = high_energy * high_sensitivity
+            state['effect'].audio_bass = bass_energy
+            state['effect'].audio_mid = mid_energy
+            state['effect'].audio_high = high_energy
         else:
             # No audio - zero out audio modulation
             state['effect'].audio_bass = 0.0
@@ -223,11 +223,41 @@ class FractalFogEffect(ShaderEffect):
         uniform float speed;
         uniform float intensity;
         uniform float fadeAlpha;
+        uniform float audioBass;
+        uniform float audioHigh;
         
         in vec2 fragCoord;
         out vec4 outColor;
         
         #define T (iTime * speed)
+        
+        // Color shift based on audio and time
+        vec3 getAudioColor(float t, float bassLevel, float highLevel) {
+            // Base color cycles through spectrum over time
+            float hue = fract(t * 0.05 + bassLevel * 0.3);
+            
+            // High frequencies add color variation
+            hue += highLevel * 0.2;
+            
+            // Convert HSV to RGB (increased saturation and value for wider range)
+            float h6 = hue * 6.0;
+            float x = 1.0 - abs(mod(h6, 2.0) - 1.0);
+            vec3 rgb;
+            
+            if (h6 < 1.0) rgb = vec3(1.0, x, 0.0);
+            else if (h6 < 2.0) rgb = vec3(x, 1.0, 0.0);
+            else if (h6 < 3.0) rgb = vec3(0.0, 1.0, x);
+            else if (h6 < 4.0) rgb = vec3(0.0, x, 1.0);
+            else if (h6 < 5.0) rgb = vec3(x, 0.0, 1.0);
+            else rgb = vec3(1.0, 0.0, x);
+            
+            // Increase saturation and brightness for wider color range
+            float saturation = 0.75;  // Increased from 0.4
+            float brightness = 0.85;  // Increased from 0.5
+            vec3 gray = vec3(0.5);
+            
+            return mix(gray, rgb, saturation) * brightness;
+        }
         
         // Rotation macro - exactly as in original
         #define r(v,t) { float a = (t)*T; float c=cos(a); float s=sin(a); v*=mat2(c,s,-s,c); }
@@ -295,7 +325,8 @@ class FractalFogEffect(ShaderEffect):
             d = p;
             p.z += 10.0;
             
-            vec4 bg = vec4(0.0, 0.2, 0.0, 0.0);
+            // Dark background (no tint)
+            vec4 bg = vec4(0.0, 0.0, 0.0, 0.0);
             f = bg;
             
             float x1, x2, x = 1e9;
@@ -308,12 +339,71 @@ class FractalFogEffect(ShaderEffect):
                 r(t.xy, u.x);
                 r(t.xz, u.y);
                 
-                // Distortion exactly as original
-                t.xyz += sfbm3(t.xyz / 2.0 + vec3(0.5 * T, 0.0, 0.0)) * (0.6 + 8.0 * (0.5 - 0.5 * cos(T / 16.0)));
+                // Audio-reactive distortion: bass increases base amount, highs add variation
+                float distortion_amount = 0.6 + 8.0 * (0.5 - 0.5 * cos(T / 16.0));
+                distortion_amount *= (1.0 + audioBass * 0.3);  // Reduced bass influence
+                distortion_amount += audioHigh * 0.8;  // Reduced high influence
                 
-                // Color from procedural texture (replacing iChannel0)
+                t.xyz += sfbm3(t.xyz / 2.0 + vec3(0.5 * T, 0.0, 0.0)) * distortion_amount;
+                
+                // Color from procedural texture with spatial color variation
                 float fbm_val = fbm(t.xyz * 0.3);
-                c = vec4(vec3(5.0 * fbm_val), 1.0);
+                
+                // Create discrete color domains using floor() for sharp boundaries
+                // This gives each "blob" of fog a consistent color rather than gradients
+                
+                // Domain ID based on quantized position (creates distinct regions)
+                vec3 domainPos = floor(t.xyz * 0.3);  // Quantize space into cells
+                float domainID = fbm(domainPos);  // Each cell gets a unique ID
+                
+                // Domain 1: Large blobs - warm colors, bass reactive
+                float domain1ID = floor(fbm(floor(t.xyz * 0.15)) * 5.0);
+                vec3 domain1Color = getAudioColor(
+                    domain1ID + T * 0.1, 
+                    audioBass * 2.0, 
+                    0.1
+                );
+                
+                // Domain 2: Medium blobs - cool colors, high reactive
+                float domain2ID = floor(fbm(floor(t.xyz * 0.25 + vec3(100.0, 50.0, 25.0))) * 5.0);
+                vec3 domain2Color = getAudioColor(
+                    domain2ID + T * 0.15,
+                    0.1,
+                    audioHigh * 2.0
+                );
+                
+                // Domain 3: Small blobs - varied colors, mixed reactive
+                float domain3ID = floor(fbm(floor(t.xyz * 0.4 + vec3(200.0, 100.0, 50.0))) * 5.0);
+                vec3 domain3Color = getAudioColor(
+                    domain3ID + T * 0.2,
+                    audioBass * 0.8,
+                    audioHigh * 0.8
+                );
+                
+                // Domain 4: Depth layers - slow shifting
+                float domain4ID = floor(length(floor(t.xyz * 0.2)) * 0.5);
+                vec3 domain4Color = getAudioColor(
+                    domain4ID + T * 0.05,
+                    audioBass * 0.5,
+                    audioHigh * 0.5
+                );
+                
+                // Use noise to select which domain controls each blob
+                float selector = fbm(floor(t.xyz * 0.2));
+                vec3 fogColor;
+                
+                if (selector < 0.25) {
+                    fogColor = domain1Color;
+                } else if (selector < 0.5) {
+                    fogColor = domain2Color;
+                } else if (selector < 0.75) {
+                    fogColor = domain3Color;
+                } else {
+                    fogColor = domain4Color;
+                }
+                
+                // Apply brightness
+                c = vec4(fogColor * (1.5 * fbm_val), 1.0);
                 
                 x = abs(mod(length(t.xyz), 1.0) - 0.5);
                 x1 = length(t.xyz) - 7.0;
@@ -336,11 +426,11 @@ class FractalFogEffect(ShaderEffect):
             mainImage(col, uv);
             
             // Apply intensity and fade
-            col.rgb *= intensity;
+            col.rgb *= intensity * 2.0;
             
-            // Alpha from brightness
+            // Alpha from brightness (increased for better visibility)
             float brightness = col.r + col.g + col.b;
-            col.a = clamp(brightness * 0.4, 0.0, 0.9) * fadeAlpha;
+            col.a = clamp(brightness * 2.5, 0.0, 1.0) * fadeAlpha;
             
             outColor = col;
         }
@@ -368,9 +458,9 @@ class FractalFogEffect(ShaderEffect):
         
         self.time += dt
         
-        # Smooth audio values with exponential decay
-        attack_factor = 1.0 - np.exp(-dt / 0.05)
-        decay_factor = 1.0 - np.exp(-dt / 0.3)
+        # Smooth audio values with exponential decay (slower for less reactive)
+        attack_factor = 1.0 - np.exp(-dt / 0.15)
+        decay_factor = 1.0 - np.exp(-dt / 0.5)
         
         # Bass: affects density
         if self.audio_bass > self.audio_bass_smooth:
@@ -378,13 +468,13 @@ class FractalFogEffect(ShaderEffect):
         else:
             self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * decay_factor
         
-        # Mid: affects rotation
+        # Mid: affects rotation speed
         if self.audio_mid > self.audio_mid_smooth:
             self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * attack_factor
         else:
             self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * decay_factor
         
-        # High: affects distortion
+        # High: affects distortion amount
         if self.audio_high > self.audio_high_smooth:
             self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * attack_factor
         else:
@@ -407,11 +497,22 @@ class FractalFogEffect(ShaderEffect):
         depth_loc = glGetUniformLocation(self.shader, "depth")
         glUniform1f(depth_loc, self.depth)
         
+        # Modulate speed with mid frequencies (reduced sensitivity)
+        speed_mod = self.base_speed * (1.0 + self.audio_mid_smooth * self.mid_sensitivity * 0.3)
         speed_loc = glGetUniformLocation(self.shader, "speed")
-        glUniform1f(speed_loc, self.base_speed)
+        glUniform1f(speed_loc, speed_mod)
         
+        # Modulate intensity with bass (reduced sensitivity)
+        intensity_mod = self.base_intensity * (1.0 + self.audio_bass_smooth * self.bass_sensitivity * 0.2)
         intensity_loc = glGetUniformLocation(self.shader, "intensity")
-        glUniform1f(intensity_loc, self.base_intensity)
+        glUniform1f(intensity_loc, intensity_mod)
+        
+        # Pass audio values to shader for distortion (reduced)
+        audio_bass_loc = glGetUniformLocation(self.shader, "audioBass")
+        glUniform1f(audio_bass_loc, self.audio_bass_smooth * self.bass_sensitivity * 0.25)
+        
+        audio_high_loc = glGetUniformLocation(self.shader, "audioHigh")
+        glUniform1f(audio_high_loc, self.audio_high_smooth * self.high_sensitivity * 0.25)
         
         fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
         glUniform1f(fade_loc, self.fade_factor)
