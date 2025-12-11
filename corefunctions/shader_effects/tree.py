@@ -322,38 +322,41 @@ class TreeEffect(ShaderEffect):
         spring_factor = max(0, 1 - spring_distance * 4)
         fall_factor = max(0, 1 - fall_distance * 4)
         
-        if spring_factor > 0.5:
-            # Green leaves in spring
+        if spring_factor > 0.5 or fall_factor < 0.3:
+            # Green leaves in spring/summer (most of the year except deep fall)
             h = np.random.uniform(0.25, 0.35)
             s = np.random.uniform(0.7, 0.9)
             v = np.random.uniform(0.3, 0.5)
         else:
-            # Fall color distribution
+            # Fall color distribution (only when fall_factor >= 0.3)
             color_rand = np.random.random()
             
-            red_proportion = 0.1 + 0.3 * fall_factor
+            # Increase green proportion even in fall
+            green_proportion = 0.5 - 0.3 * fall_factor  # 50% green when fall starts, 20% at peak fall
+            
+            red_proportion = 0.05 + 0.2 * fall_factor  # Less red overall
             if color_rand < red_proportion:
                 # Red
                 h = np.random.uniform(0.00, 0.05)
                 s = np.random.uniform(0.8, 0.95)
                 v = np.random.uniform(0.4, 0.6)
-            elif color_rand < red_proportion + (0.1 + 0.2 * fall_factor):
+            elif color_rand < red_proportion + (0.05 + 0.15 * fall_factor):
                 # Orange
                 h = np.random.uniform(0.05, 0.10)
                 s = np.random.uniform(0.85, 0.95)
                 v = np.random.uniform(0.45, 0.65)
-            elif color_rand < red_proportion + (0.3 + 0.3 * fall_factor):
+            elif color_rand < red_proportion + (0.1 + 0.2 * fall_factor):
                 # Yellow
                 h = np.random.uniform(0.10, 0.15)
                 s = np.random.uniform(0.8, 0.9)
                 v = np.random.uniform(0.5, 0.7)
-            elif color_rand < red_proportion + (0.35 + 0.45 * fall_factor):
+            elif color_rand < red_proportion + (0.15 + 0.25 * fall_factor):
                 # Brown
                 h = np.random.uniform(0.07, 0.12)
                 s = np.random.uniform(0.6, 0.8)
                 v = np.random.uniform(0.3, 0.4)
             else:
-                # Green
+                # Green (majority of leaves even in fall)
                 h = np.random.uniform(0.25, 0.35)
                 s = np.random.uniform(0.7, 0.9)
                 v = np.random.uniform(0.3, 0.5)
