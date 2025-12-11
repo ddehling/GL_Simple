@@ -383,7 +383,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.FIREFLY)
     #env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 60, fx.shader_noise_isovalues,frame_id=0)
+    env_system.scheduler.schedule_event(0, 60, fx.shader_tunnel_raymarch,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
