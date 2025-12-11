@@ -13,7 +13,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_eye(state, outstate, num_eyes=6, scale=0.075):
+def shader_eye(state, outstate, num_eyes=6, scale=0.175, squish_top_width=1.0):
     """
     Shader-based eye effect compatible with EventScheduler
     
@@ -25,6 +25,7 @@ def shader_eye(state, outstate, num_eyes=6, scale=0.075):
         outstate: Global state dict (from EventScheduler)
         num_eyes: Number of eyes to render (default 6)
         scale: Size of each eye (default 0.075)
+        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
@@ -44,7 +45,7 @@ def shader_eye(state, outstate, num_eyes=6, scale=0.075):
         print(f"Initializing shader eye effect for frame {frame_id} with {num_eyes} eyes")
         
         try:
-            eye_effect = viewport.add_effect(EyeEffect, num_eyes=num_eyes, scale=scale)
+            eye_effect = viewport.add_effect(EyeEffect, num_eyes=num_eyes, scale=scale, squish_top_width=squish_top_width)
             state['eye_effect'] = eye_effect
             state['start_time'] = time.time()
             print(f"✓ Initialized shader eye for frame {frame_id}")
@@ -91,12 +92,14 @@ def shader_eye(state, outstate, num_eyes=6, scale=0.075):
 class EyeEffect(ShaderEffect):
     """GPU-based eye effect using instanced rendering"""
     
-    def __init__(self, viewport, num_eyes=6, scale=0.075):
+    def __init__(self, viewport, num_eyes=6, scale=0.075, squish_top_width=1.0):
         super().__init__(viewport)
         
         # Eye properties
         self.num_eyes = num_eyes
         self.scale = scale  # Size multiplier for all eyes
+        self.squish_top_width = squish_top_width
+        self.viewport_height = viewport.height  # Store for squish calculation
         self.fade_factor = 0.0
         self.instance_VBO = None
         self.wrap_margin = 200  # Distance from edge to create duplicates (larger for eye size)
@@ -106,6 +109,7 @@ class EyeEffect(ShaderEffect):
         self.scales = None  # Individual scale multipliers
         self.pupil_sizes = None  # Individual pupil sizes
         self.iris_offsets = None  # x, y iris movement offsets
+        self.squish_factors = None  # Horizontal width multipliers based on y position
         
         # Movement parameters (shared by all eyes)
         self.movement_interval = 3.0
@@ -149,6 +153,10 @@ class EyeEffect(ShaderEffect):
         self.rotations = np.random.uniform(0, 2 * np.pi, n)
         self.rotation_speeds = np.random.uniform(-0.2, 0.2, n)  # rad/sec
         
+        # Calculate squish factors based on y position (bottom = 1.0, top = squish_top_width)
+        y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
+        self.squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+        
         # Depth movement (z-axis)
         self.target_depths = self.positions[:, 2].copy()
         self.depth_speeds = np.random.uniform(5, 15, n)  # pixels/sec
@@ -186,6 +194,7 @@ class EyeEffect(ShaderEffect):
         layout(location = 4) in float pupilSize; // Pupil size (instance)
         layout(location = 5) in float rotation; // Rotation angle (instance)
         layout(location = 6) in float blinkAmount; // Blink state 0-1 (instance)
+        layout(location = 7) in float squishFactor; // Horizontal width multiplier (instance)
         
         out vec2 fragCoord;  // Pass to fragment shader
         out vec2 fragIrisOffset;
@@ -207,8 +216,11 @@ class EyeEffect(ShaderEffect):
                 position.x * sinR + position.y * cosR
             );
             
-            // Scale the rotated quad vertices
-            vec2 scaledPos = rotatedPos * eyeSize;
+            // Scale the rotated quad vertices with squish applied to horizontal
+            vec2 scaledPos = vec2(
+                rotatedPos.x * eyeSize * squishFactor,
+                rotatedPos.y * eyeSize
+            );
             
             // Position in screen space (pixels)
             vec2 screenPos = scaledPos + offset.xy;
@@ -381,13 +393,13 @@ class EyeEffect(ShaderEffect):
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         self.VBOs.append(self.instance_VBO)
         
-        # Allocate instance buffer (positions, scales, iris offsets, pupil sizes, rotation, blink)
-        # Layout: vec3 offset, float scale, vec2 irisOffset, float pupilSize, float rotation, float blink = 9 floats per instance
-        instance_data = np.zeros((self.num_eyes, 9), dtype=np.float32)
+        # Allocate instance buffer (positions, scales, iris offsets, pupil sizes, rotation, blink, squish)
+        # Layout: vec3 offset, float scale, vec2 irisOffset, float pupilSize, float rotation, float blink, float squish = 10 floats per instance
+        instance_data = np.zeros((self.num_eyes, 10), dtype=np.float32)
         glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
         
         # Setup instance attributes
-        stride = 9 * 4  # 9 floats * 4 bytes
+        stride = 10 * 4  # 10 floats * 4 bytes
         
         # Offset (vec3) - location 1
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -418,6 +430,11 @@ class EyeEffect(ShaderEffect):
         glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
         glEnableVertexAttribArray(6)
         glVertexAttribDivisor(6, 1)
+        
+        # Squish factor (float) - location 7
+        glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
+        glEnableVertexAttribArray(7)
+        glVertexAttribDivisor(7, 1)
         
         # Element buffer
         self.EBO = glGenBuffers(1)
@@ -498,6 +515,10 @@ class EyeEffect(ShaderEffect):
             move_amounts = np.minimum(position_distances[position_moving_mask], self.position_speeds[position_moving_mask] * dt)
             directions = position_deltas[position_moving_mask] / position_distances[position_moving_mask, np.newaxis]
             self.positions[position_moving_mask] += directions * move_amounts[:, np.newaxis]
+            
+            # Update squish factors for eyes that moved vertically
+            y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
+            self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
         
         # Depth movement (independent per eye)
         time_since_depth_change = current_time - self.last_depth_change_times
@@ -619,6 +640,7 @@ class EyeEffect(ShaderEffect):
         combined_pupil_sizes = self.pupil_sizes[combined_indices]
         combined_rotations = self.rotations[combined_indices]
         combined_blink_amounts = self.blink_amounts[combined_indices]
+        combined_squish_factors = self.squish_factors[combined_indices]
         
         # Calculate smooth blink curve (0->1->0 from linear 0->2)
         smooth_blink_amounts = np.where(combined_blink_amounts <= 1.0,
@@ -626,14 +648,15 @@ class EyeEffect(ShaderEffect):
                                         2.0 - combined_blink_amounts)  # Second half: 1 to 0
         smooth_blink_amounts = np.clip(smooth_blink_amounts, 0.0, 1.0)
         
-        # Build instance data: positions (3), scale (1), iris offset (2), pupil size (1), rotation (1), blink (1) = 9 floats
+        # Build instance data: positions (3), scale (1), iris offset (2), pupil size (1), rotation (1), blink (1), squish (1) = 10 floats
         instance_data = np.column_stack([
             combined_positions,  # x, y, z (3 floats)
             combined_scales,  # scale (1 float)
             combined_iris_offsets,  # iris x, y (2 floats)
             combined_pupil_sizes,  # pupil size (1 float)
             combined_rotations,  # rotation (1 float)
-            smooth_blink_amounts  # blink amount (1 float)
+            smooth_blink_amounts,  # blink amount (1 float)
+            combined_squish_factors  # squish factor (1 float)
         ]).astype(np.float32)
         
         # Update instance buffer

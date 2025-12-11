@@ -19,7 +19,7 @@ sys.path.insert(0, str(ParentPath))
 # ============================================================================
 
 def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0, 
-                bass_sensitivity=2.0, mid_sensitivity=3.0):
+                bass_sensitivity=2.0, mid_sensitivity=3.0, squish_top_width=1.0):
     """
     Shader-based tree effect compatible with EventScheduler
     
@@ -34,6 +34,7 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0,
         fade_duration: Duration of fade in/out in seconds (default 5.0)
         bass_sensitivity: How much bass affects leaf movement (default 2.0)
         mid_sensitivity: How much mids affect leaf sway (default 3.0)
+        squish_top_width: Horizontal width multiplier at top of tree (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -56,7 +57,8 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0,
             tree_effect = viewport.add_effect(
                 TreeEffect,
                 x_position=x_position,
-                scale=scale
+                scale=scale,
+                squish_top_width=squish_top_width
             )
             state['tree_effect'] = tree_effect
             print(f"✓ Initialized shader tree for frame {frame_id}")
@@ -128,10 +130,11 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0,
 class TreeEffect(ShaderEffect):
     """GPU-based tree with procedural branches and leaves"""
     
-    def __init__(self, viewport, x_position: float = 0.5, scale: float = 1.0):
+    def __init__(self, viewport, x_position: float = 0.5, scale: float = 1.0, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.x_position = x_position
         self.scale = scale
+        self.squish_top_width = squish_top_width
         self.season = 0.625  # Fall by default
         self.fade_factor = 0.0
         self.sway_time = 0.0  # For animation
@@ -157,7 +160,7 @@ class TreeEffect(ShaderEffect):
         # Storage for all branches (start_x, start_y, end_x, end_y, start_width, end_width, depth, growth_start)
         self.branches = []
         
-        # Storage for all leaves (x, y, size, rotation, color_r, color_g, color_b, leaf_type, depth)
+        # Storage for all leaves (x, y, size, rotation, color_r, color_g, color_b, leaf_type, depth, growth_start, squish_factor)
         self.leaves = []
         
         # Generate multiple main branches from bottom
@@ -282,11 +285,23 @@ class TreeEffect(ShaderEffect):
             leaf_x = start_x + (end_x - start_x) * t
             leaf_y = start_y + (end_y - start_y) * t
             
+            # Calculate squish factor based on vertical position (bottom = 1.0, top = squish_top_width)
+            # Trees grow from bottom (y = viewport.height) to top (y = 0)
+            # y_normalized: 0 at bottom, 1 at top
+            y_normalized = (self.viewport.height - leaf_y) / self.viewport.height
+            squish_factor = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+            
             # Offset perpendicular to branch (both sides)
             branch_angle = np.arctan2(end_y - start_y, end_x - start_x)
             offset_dist = np.random.uniform(-6, 6) * self.scale
-            leaf_x += np.cos(branch_angle + np.pi/2) * offset_dist
-            leaf_y += np.sin(branch_angle + np.pi/2) * offset_dist
+            
+            # Apply squish to the horizontal component of the offset
+            perpendicular_angle = branch_angle + np.pi/2
+            offset_x = np.cos(perpendicular_angle) * offset_dist * squish_factor
+            offset_y = np.sin(perpendicular_angle) * offset_dist
+            
+            leaf_x += offset_x
+            leaf_y += offset_y
             
             # Leaf properties - smaller leaves
             leaf_size = np.random.uniform(1.5, 3.0) * self.scale
@@ -303,10 +318,10 @@ class TreeEffect(ShaderEffect):
             # Generate leaf color based on season
             color = self._generate_leaf_color()
             
-            # Add leaf (x, y, size, rotation, r, g, b, leaf_type, depth, growth_start)
+            # Add leaf (x, y, size, rotation, r, g, b, leaf_type, depth, growth_start, squish_factor)
             self.leaves.append([
                 leaf_x, leaf_y, leaf_size, leaf_rotation,
-                color[0], color[1], color[2], leaf_type, leaf_z, leaf_growth_start
+                color[0], color[1], color[2], leaf_type, leaf_z, leaf_growth_start, squish_factor
             ])
     
     def _generate_leaf_color(self):
@@ -468,6 +483,7 @@ class TreeEffect(ShaderEffect):
         layout(location = 5) in float leafType; // Leaf shape type
         layout(location = 6) in float distance; // Depth value
         layout(location = 7) in float growthStart; // When leaf starts growing
+        layout(location = 8) in float squishFactor; // Horizontal width multiplier
         
         out vec4 fragColor;
         out vec2 fragPos;
@@ -518,7 +534,11 @@ class TreeEffect(ShaderEffect):
             // Scale by leaf size with growth animation and audio reactivity
             // High frequencies make leaves pulse slightly
             float audioPulse = 1.0 + audioHigh * 0.15 * sin(swayPhase * 4.0);
-            vec2 scaled = rotated * size * 3.0 * leafGrowth * audioPulse;
+            // Apply squish factor to horizontal (x) scaling only
+            vec2 scaled = vec2(
+                rotated.x * size * 3.0 * leafGrowth * audioPulse * squishFactor,
+                rotated.y * size * 3.0 * leafGrowth * audioPulse
+            );
             
             // Translate to leaf position (with sway)
             vec2 pos = scaled + swayed_offset;
@@ -922,8 +942,8 @@ class TreeEffect(ShaderEffect):
             
             glBindVertexArray(self.leaf_VAO)
             
-            # Setup leaf instance attributes (10 floats per instance)
-            stride = 10 * 4
+            # Setup leaf instance attributes (11 floats per instance: x, y, size, rotation, r, g, b, type, depth, growth_start, squish_factor)
+            stride = 11 * 4
             
             # Attribute 1: offset (x, y)
             glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -959,6 +979,11 @@ class TreeEffect(ShaderEffect):
             glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
             glEnableVertexAttribArray(7)
             glVertexAttribDivisor(7, 1)
+            
+            # Attribute 8: squishFactor
+            glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(40))
+            glEnableVertexAttribArray(8)
+            glVertexAttribDivisor(8, 1)
             
             # Draw leaves
             glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(render_leaves))
