@@ -271,9 +271,9 @@ class EnvironmentalSystem:
                 self.scheduler.schedule_event(0, 40, fx.shader_gameoflife, frame_id=0)
 
 
-        # if (randcheck < self.weather_params["tree_prob"] / 400) & (not self.scheduler.state["tree"]):
-        #     # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
-        #     self.scheduler.schedule_event(0, 100, fx.shader_forest, frame_id=0) # noqa: F405
+        if (randcheck < self.weather_params["tree_prob"] / 400):
+            # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
+            self.scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0) # noqa: F405
         
         # Wolf howl
         # if (randcheck < (self.weather_params["Wolfy"] + self.weather_params["spookyness"] / 10) / 2000):
@@ -383,7 +383,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 30, fx.shader_tentacle,frame_id=0)
+    #env_system.scheduler.schedule_event(0, 60, fx.shader_tree,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()

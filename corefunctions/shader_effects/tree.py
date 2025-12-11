@@ -18,7 +18,8 @@ sys.path.insert(0, str(ParentPath))
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0):
+def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0, 
+                bass_sensitivity=2.0, mid_sensitivity=3.0):
     """
     Shader-based tree effect compatible with EventScheduler
     
@@ -31,9 +32,12 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0):
         x_position: Horizontal position (0-1, where 0.5 is center)
         scale: Tree size multiplier (default 1.0)
         fade_duration: Duration of fade in/out in seconds (default 5.0)
+        bass_sensitivity: How much bass affects leaf movement (default 2.0)
+        mid_sensitivity: How much mids affect leaf sway (default 3.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
+    audio_data = outstate.get('sound')
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
@@ -67,6 +71,32 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0):
         # Get season from global state
         season = outstate.get('season', 0.625)
         state['tree_effect'].season = season
+        
+        # Audio reactivity - update every frame if audio data available
+        if audio_data is not None:
+            # Use short-term normalized bands for reactive response
+            bands = audio_data['norm_short'][0]
+            
+            # Extract frequency ranges
+            bass_energy = np.mean(bands[0:8])       # Bass: 40-300 Hz
+            mid_energy = np.mean(bands[8:20])       # Mids: 300-2000 Hz
+            high_energy = np.mean(bands[20:32])     # Highs: 2000-16000 Hz
+            
+            # Smooth audio values for less jittery response
+            if 'smoothed_bass' not in state:
+                state['smoothed_bass'] = 0.0
+                state['smoothed_mid'] = 0.0
+                state['smoothed_high'] = 0.0
+            
+            smoothing = 0.2
+            state['smoothed_bass'] = smoothing * bass_energy + (1 - smoothing) * state['smoothed_bass']
+            state['smoothed_mid'] = smoothing * mid_energy + (1 - smoothing) * state['smoothed_mid']
+            state['smoothed_high'] = smoothing * high_energy + (1 - smoothing) * state['smoothed_high']
+            
+            # Apply sensitivity multipliers and update effect
+            state['tree_effect'].audio_bass = np.clip(state['smoothed_bass'] * bass_sensitivity, 0, 5)
+            state['tree_effect'].audio_mid = np.clip(state['smoothed_mid'] * mid_sensitivity, 0, 5)
+            state['tree_effect'].audio_high = np.clip(state['smoothed_high'] * 2.0, 0, 3)
         
         # Update fade factor based on elapsed time
         elapsed_time = state['elapsed_time']
@@ -106,7 +136,12 @@ class TreeEffect(ShaderEffect):
         self.fade_factor = 0.0
         self.sway_time = 0.0  # For animation
         self.growth_time = 0.0  # For growth animation
-        self.growth_duration = 15.0  # Seconds to fully grow
+        self.growth_duration = 75.0  # Seconds to fully grow (5x slower)
+        
+        # Audio reactivity parameters
+        self.audio_bass = 0.0
+        self.audio_mid = 0.0
+        self.audio_high = 0.0
         
         self.branch_VBO = None
         self.leaf_VBO = None
@@ -177,7 +212,7 @@ class TreeEffect(ShaderEffect):
         
         # Add leaves along all branches starting from the base
         if depth >= 0:  # Add leaves to all branches including main ones
-            self._add_leaves_to_branch(start_x, start_y, end_x, end_y, z_depth)
+            self._add_leaves_to_branch(start_x, start_y, end_x, end_y, z_depth, growth_start)
         
         # Stop if we've reached max depth
         if depth >= max_depth:
@@ -219,9 +254,11 @@ class TreeEffect(ShaderEffect):
             sub_z_depth = z_depth + np.random.uniform(-5, 5)
             sub_z_depth = np.clip(sub_z_depth, 5, 95)
             
-            # Growth timing - sub-branches grow after their parent
-            # Each depth level adds delay
-            sub_growth_start = growth_start + (depth + 1) * 0.8 + np.random.uniform(0, 0.3)
+            # Growth timing - sub-branches grow after parent reaches the branch point
+            # Parent takes 10s to grow, so branch point at position 't' is reached at: growth_start + t * 10s
+            parent_reaches_branch_point = growth_start + t * 10.0
+            # Add small random delay after parent reaches this point
+            sub_growth_start = parent_reaches_branch_point + np.random.uniform(0, 1.0)
             
             # Recurse
             self._generate_branch(
@@ -235,8 +272,8 @@ class TreeEffect(ShaderEffect):
                 sub_growth_start
             )
     
-    def _add_leaves_to_branch(self, start_x, start_y, end_x, end_y, z_depth):
-        """Add leaves along a branch"""
+    def _add_leaves_to_branch(self, start_x, start_y, end_x, end_y, z_depth, growth_start):
+        """Add leaves along a branch - leaves appear after branch is grown"""
         num_leaves = np.random.randint(3, 7)  # Fewer leaves with more spacing
         
         for i in range(num_leaves):
@@ -256,6 +293,9 @@ class TreeEffect(ShaderEffect):
             leaf_rotation = np.random.uniform(0, 2 * np.pi)
             leaf_type = np.random.randint(0, 5)
             
+            # Leaves appear after branch finishes growing (+ small random delay)
+            leaf_growth_start = growth_start + 10.0 + np.random.uniform(0, 2.5)
+            
             # Depth varies around branch depth (leaves slightly in front of branches)
             leaf_z = z_depth + np.random.uniform(-5, -2)
             leaf_z = np.clip(leaf_z, 5, 95)
@@ -263,10 +303,10 @@ class TreeEffect(ShaderEffect):
             # Generate leaf color based on season
             color = self._generate_leaf_color()
             
-            # Add leaf (x, y, size, rotation, r, g, b, leaf_type, depth)
+            # Add leaf (x, y, size, rotation, r, g, b, leaf_type, depth, growth_start)
             self.leaves.append([
                 leaf_x, leaf_y, leaf_size, leaf_rotation,
-                color[0], color[1], color[2], leaf_type, leaf_z
+                color[0], color[1], color[2], leaf_type, leaf_z, leaf_growth_start
             ])
     
     def _generate_leaf_color(self):
@@ -349,7 +389,7 @@ class TreeEffect(ShaderEffect):
             float growth_start = data2.w;
             
             // Calculate growth factor (0 to 1)
-            float growth_duration = 2.0;  // Each branch takes 2 seconds to grow
+            float growth_duration = 10.0;  // Each branch takes 10 seconds to grow (5x slower)
             growthFactor = clamp((growthTime - growth_start) / growth_duration, 0.0, 1.0);
             
             // If not grown yet, don't render
@@ -424,26 +464,47 @@ class TreeEffect(ShaderEffect):
         layout(location = 4) in vec3 color;     // Color (r, g, b)
         layout(location = 5) in float leafType; // Leaf shape type
         layout(location = 6) in float distance; // Depth value
+        layout(location = 7) in float growthStart; // When leaf starts growing
         
         out vec4 fragColor;
         out vec2 fragPos;
         flat out int fragLeafType;
+        out float leafGrowth;
         uniform vec2 resolution;
         uniform float fadeAlpha;
         uniform float swayTime;
+        uniform float growthTime;
+        uniform float audioBass;
+        uniform float audioMid;
+        uniform float audioHigh;
         
         void main() {
             fragPos = position;
             fragLeafType = int(leafType);
             
-            // Apply swaying motion
-            float swayPhase = swayTime * 0.5 + offset.x * 0.01;
-            float swayAmount = sin(swayPhase) * 2.0;
-            vec2 swayed_offset = offset + vec2(swayAmount, 0.0);
+            // Calculate leaf growth (0 to 1)
+            float leaf_grow_duration = 5.0;  // Leaves grow over 5 seconds (5x slower)
+            leafGrowth = clamp((growthTime - growthStart) / leaf_grow_duration, 0.0, 1.0);
             
-            // Apply rotation (including sway-induced rotation)
+            // If not grown yet, don't render
+            if (leafGrowth <= 0.0) {
+                gl_Position = vec4(0.0, 0.0, -10.0, 1.0);
+                return;
+            }
+            
+            // Apply swaying motion with audio reactivity
+            float swayPhase = swayTime * 0.5 + offset.x * 0.01;
+            float baseSwayAmount = sin(swayPhase) * 2.0;
+            // Bass adds extra sway amplitude
+            float audioSwayAmount = audioBass * 1.5 * sin(swayPhase * 1.3);
+            // Mids add faster flutter
+            float midFlutter = audioMid * 0.8 * sin(swayPhase * 3.0 + offset.y * 0.02);
+            vec2 swayed_offset = offset + vec2(baseSwayAmount + audioSwayAmount + midFlutter, 0.0);
+            
+            // Apply rotation (including sway-induced rotation and audio)
             float sway_rotation = sin(swayPhase) * 0.1;
-            float total_rotation = rotation + sway_rotation;
+            float audio_rotation = audioMid * 0.15 * sin(swayPhase * 2.0);
+            float total_rotation = rotation + sway_rotation + audio_rotation;
             float c = cos(total_rotation);
             float s = sin(total_rotation);
             vec2 rotated = vec2(
@@ -451,8 +512,10 @@ class TreeEffect(ShaderEffect):
                 position.x * s + position.y * c
             );
             
-            // Scale by leaf size
-            vec2 scaled = rotated * size * 3.0;
+            // Scale by leaf size with growth animation and audio reactivity
+            // High frequencies make leaves pulse slightly
+            float audioPulse = 1.0 + audioHigh * 0.15 * sin(swayPhase * 4.0);
+            vec2 scaled = rotated * size * 3.0 * leafGrowth * audioPulse;
             
             // Translate to leaf position (with sway)
             vec2 pos = scaled + swayed_offset;
@@ -467,7 +530,8 @@ class TreeEffect(ShaderEffect):
             
             gl_Position = vec4(clipPos, depth, 1.0);
             
-            fragColor = vec4(color, fadeAlpha);
+            // Fade in color as leaf grows
+            fragColor = vec4(color, fadeAlpha * smoothstep(0.0, 0.3, leafGrowth));
         }
         """
     
@@ -833,6 +897,19 @@ class TreeEffect(ShaderEffect):
             sway_loc = glGetUniformLocation(self.leaf_shader, "swayTime")
             glUniform1f(sway_loc, self.sway_time)
             
+            growth_loc = glGetUniformLocation(self.leaf_shader, "growthTime")
+            glUniform1f(growth_loc, self.growth_time)
+            
+            # Pass audio parameters
+            bass_loc = glGetUniformLocation(self.leaf_shader, "audioBass")
+            glUniform1f(bass_loc, self.audio_bass)
+            
+            mid_loc = glGetUniformLocation(self.leaf_shader, "audioMid")
+            glUniform1f(mid_loc, self.audio_mid)
+            
+            high_loc = glGetUniformLocation(self.leaf_shader, "audioHigh")
+            glUniform1f(high_loc, self.audio_high)
+            
             # Apply horizontal wrapping to leaves
             render_leaves = self._apply_leaf_wrapping(self.leaves)
             
@@ -842,8 +919,8 @@ class TreeEffect(ShaderEffect):
             
             glBindVertexArray(self.leaf_VAO)
             
-            # Setup leaf instance attributes (9 floats per instance)
-            stride = 9 * 4
+            # Setup leaf instance attributes (10 floats per instance)
+            stride = 10 * 4
             
             # Attribute 1: offset (x, y)
             glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -874,6 +951,11 @@ class TreeEffect(ShaderEffect):
             glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
             glEnableVertexAttribArray(6)
             glVertexAttribDivisor(6, 1)
+            
+            # Attribute 7: growthStart
+            glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
+            glEnableVertexAttribArray(7)
+            glVertexAttribDivisor(7, 1)
             
             # Draw leaves
             glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(render_leaves))
