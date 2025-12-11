@@ -19,7 +19,7 @@ from .base import ShaderEffect
 
 def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0, 
                        lightning_threshold=0.5, lightning_probability=0.3,
-                       num_balls=16):
+                       num_balls=16, squish_top_width=1.0):
     """
     Audio-reactive balls with lightning arcs between them
     
@@ -35,6 +35,7 @@ def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
         lightning_threshold: Minimum normalized energy for lightning (0-1, default 0.5)
         lightning_probability: Chance of lightning between nearby high-energy balls (default 0.3)
         num_balls: Number of balls to create (default 16)
+        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -60,7 +61,8 @@ def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
                 base_size=base_size,
                 lightning_threshold=lightning_threshold,
                 lightning_probability=lightning_probability,
-                num_balls=num_balls
+                num_balls=num_balls,
+                squish_top_width=squish_top_width
             )
             state['effect'] = effect
             print(f"✓ Initialized shader audio_balls for frame {frame_id}")
@@ -110,13 +112,15 @@ class AudioBallsEffect(ShaderEffect):
     
     def __init__(self, viewport, sensitivity: float = 2.0, base_size: float = 8.0,
                  lightning_threshold: float = 0.5, lightning_probability: float = 0.3,
-                 num_balls: int = 16):
+                 num_balls: int = 16, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.sensitivity = sensitivity
         self.base_size = base_size
         self.lightning_threshold = lightning_threshold
         self.lightning_probability = lightning_probability
         self.num_balls = min(num_balls, 32)  # Max 32 (one per frequency band)
+        self.squish_top_width = squish_top_width
+        self.viewport_height = viewport.height  # Store for squish calculation
         self.fade_factor = 0.0
         self.wrap_margin = self.base_size * (1.0 + self.sensitivity * 0.3) + 10  # Wrapping margin
         
@@ -134,6 +138,7 @@ class AudioBallsEffect(ShaderEffect):
         self.smoothed_energies = np.zeros(self.num_balls, dtype=np.float32)  # Smoothed energy for slower reaction
         self.energy_smoothing = 0.15  # Smoothing factor (lower = slower reaction)
         self.ball_ids = np.arange(self.num_balls, dtype=np.float32)  # Unique ID for each ball
+        self.squish_factors = np.ones(self.num_balls, dtype=np.float32)  # Horizontal width multipliers
         
         # Surface animation state
         self.surface_time = 0.0
@@ -176,6 +181,11 @@ class AudioBallsEffect(ShaderEffect):
         
         # Store base y positions for sinusoidal animation
         self.base_y_positions[:] = y_positions
+        
+        # Calculate squish factors based on y position (bottom = 1.0, top = squish_top_width)
+        # Normalize y: 0 at bottom, 1 at top
+        y_normalized = (self.viewport_height - y_positions) / self.viewport_height
+        self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
         
         # Vectorized speed generation
         self.speeds[:] = np.random.uniform(10, 30, size=self.num_balls)
@@ -453,6 +463,7 @@ class AudioBallsEffect(ShaderEffect):
         layout(location = 3) in vec3 ballColor;
         layout(location = 4) in float ballAlpha;
         layout(location = 5) in float ballId;
+        layout(location = 6) in float squishFactor;  // Horizontal width multiplier
         
         uniform vec2 resolution;
         uniform float time;
@@ -489,8 +500,9 @@ class AudioBallsEffect(ShaderEffect):
                 pos.x += viewportWidth;
             }
             
-            // Calculate world position of this vertex
-            vec2 worldPos = pos.xy + quadVertex * ballSize;
+            // Calculate world position of this vertex with squish applied to horizontal
+            vec2 scaledVertex = vec2(quadVertex.x * squishFactor, quadVertex.y);
+            vec2 worldPos = pos.xy + scaledVertex * ballSize;
             
             // Convert to clip space
             vec2 clipPos = (worldPos / resolution) * 2.0 - 1.0;
@@ -688,16 +700,16 @@ class AudioBallsEffect(ShaderEffect):
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
         
-        # Instance VBO (per-ball data: position, size, color, alpha, id)
+        # Instance VBO (per-ball data: position, size, color, alpha, id, squish_factor)
         self.instance_VBO = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        # Allocate space: position(3) + size(1) + color(3) + alpha(1) + id(1) = 9 floats per ball
+        # Allocate space: position(3) + size(1) + color(3) + alpha(1) + id(1) + squish(1) = 10 floats per ball
         # We only store data for num_balls, but draw num_balls * 3 instances
-        glBufferData(GL_ARRAY_BUFFER, self.num_balls * 9 * 4, None, GL_DYNAMIC_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, self.num_balls * 10 * 4, None, GL_DYNAMIC_DRAW)
         
         # Set up instance attributes
         # Divisor = 3 means attribute advances every 3 instances (each ball spawns 3 wrap instances)
-        stride = 9 * 4  # 9 floats
+        stride = 10 * 4  # 10 floats
         
         # Ball position (vec3)
         glEnableVertexAttribArray(1)
@@ -723,6 +735,11 @@ class AudioBallsEffect(ShaderEffect):
         glEnableVertexAttribArray(5)
         glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8 * 4))
         glVertexAttribDivisor(5, 3)
+        
+        # Squish factor (float)
+        glEnableVertexAttribArray(6)
+        glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(9 * 4))
+        glVertexAttribDivisor(6, 3)
         
         glBindVertexArray(0)
         
@@ -787,13 +804,14 @@ class AudioBallsEffect(ShaderEffect):
         ball_alphas = self.alphas * self.fade_factor
         
         # Pack instance data directly - no wrapping logic on CPU
-        # Build array row by row: each row is [pos.x, pos.y, pos.z, size, col.r, col.g, col.b, alpha, id]
-        instance_data = np.zeros((self.num_balls, 9), dtype=np.float32)
-        instance_data[:, 0:3] = self.positions      # xyz
+        # Build array row by row: each row is [pos.x, pos.y, pos.z, size, col.r, col.g, col.b, alpha, id, squish]
+        instance_data = np.zeros((self.num_balls, 10), dtype=np.float32)
+        instance_data[:, 0:3] = self.positions       # xyz
         instance_data[:, 3] = self.sizes             # size
         instance_data[:, 4:7] = self.colors          # rgb
         instance_data[:, 7] = ball_alphas            # alpha
         instance_data[:, 8] = self.ball_ids          # id
+        instance_data[:, 9] = self.squish_factors    # squish
         
         # Flatten and convert to bytes to avoid PyOpenGL array handling issues
         instance_bytes = instance_data.flatten().tobytes()
@@ -869,6 +887,10 @@ class AudioBallsEffect(ShaderEffect):
         time_scaled = 2 * np.pi * self.wave_frequencies * self.surface_time/10
         y_offsets = self.wave_amplitude * np.sin(time_scaled)
         self.positions[:, 1] = self.base_y_positions + y_offsets
+        
+        # Update squish factors based on current y position (bottom = 1.0, top = squish_top_width)
+        y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
+        self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
         
         # Update lightning
         self._update_lightning(dt)

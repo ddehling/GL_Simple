@@ -20,7 +20,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # ============================================================================
 
 def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0, 
-                          bass_sensitivity=8.0, mid_sensitivity=5.0):
+                          bass_sensitivity=8.0, mid_sensitivity=5.0, squish_top_width=1.0):
     """
     Audio-reactive falling leaves effect compatible with EventScheduler
     
@@ -35,6 +35,7 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
         fade_duration: Duration of fade in/out in seconds (default 10.0)
                         bass_sensitivity: How much bass affects spawn rate (default 8.0, very reactive)
         mid_sensitivity: How much mids affect flutter/rotation (default 5.0, very reactive)
+        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -57,7 +58,8 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
             leaves_effect = viewport.add_effect(
                 FallingLeavesEffect,
                 density=density,
-                max_leaves=30  # Gentle amount of leaves
+                max_leaves=30,  # Gentle amount of leaves
+                squish_top_width=squish_top_width
             )
             state['leaves_effect'] = leaves_effect
             state['smoothed_bass'] = 0.0  # For audio smoothing
@@ -142,10 +144,12 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
 class FallingLeavesEffect(ShaderEffect):
     """GPU-based audio-reactive falling leaves effect using instanced rendering"""
     
-    def __init__(self, viewport, density: float = 2.5, max_leaves: int = 100):
+    def __init__(self, viewport, density: float = 2.5, max_leaves: int = 100, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.density = density
         self.max_leaves = max_leaves
+        self.squish_top_width = squish_top_width
+        self.viewport_height = viewport.height  # Store for squish calculation
         self.instance_VBO = None
         self.fade_factor = 0.0  # For fade in/out (updated by event wrapper)
         
@@ -168,6 +172,7 @@ class FallingLeavesEffect(ShaderEffect):
         self.lifetimes = np.zeros(0, dtype=np.float32)
         self.leaf_types = np.zeros(0, dtype=np.int32)
         self.distances = np.zeros(0, dtype=np.float32)  # Depth (5-25) for 3D ordering
+        self.squish_factors = np.zeros(0, dtype=np.float32)  # Horizontal width multipliers
         
         # Horizontal wrapping margin (larger than largest leaf)
         self.wrap_margin = 50  # Should exceed max leaf size
@@ -212,6 +217,10 @@ class FallingLeavesEffect(ShaderEffect):
         # Generate colors based on season
         new_colors = self._generate_leaf_colors(count, season)
         
+        # Calculate squish factors based on y position (bottom = 1.0, top = squish_top_width)
+        y_normalized = (self.viewport_height - new_positions[:, 1]) / self.viewport_height
+        new_squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+        
         # Concatenate with existing arrays
         self.positions = np.vstack([self.positions, new_positions]) if len(self.positions) > 0 else new_positions
         self.velocities = np.vstack([self.velocities, new_velocities]) if len(self.velocities) > 0 else new_velocities
@@ -225,6 +234,7 @@ class FallingLeavesEffect(ShaderEffect):
         self.lifetimes = np.concatenate([self.lifetimes, new_lifetimes]) if len(self.lifetimes) > 0 else new_lifetimes
         self.leaf_types = np.concatenate([self.leaf_types, new_leaf_types]) if len(self.leaf_types) > 0 else new_leaf_types
         self.distances = np.concatenate([self.distances, new_distances]) if len(self.distances) > 0 else new_distances
+        self.squish_factors = np.concatenate([self.squish_factors, new_squish_factors]) if len(self.squish_factors) > 0 else new_squish_factors
     
     def _generate_leaf_colors(self, count: int, season: float) -> np.ndarray:
         """Generate leaf colors based on season (RGB format)"""
@@ -302,6 +312,7 @@ class FallingLeavesEffect(ShaderEffect):
         layout(location = 4) in vec4 color;     // Color (r, g, b, alpha)
         layout(location = 5) in float leafType; // Leaf shape type
         layout(location = 6) in float distance; // Depth value (5-25)
+        layout(location = 7) in float squishFactor; // Horizontal width multiplier
         
         out vec4 fragColor;
         out vec2 fragPos;  // Position within quad (-1 to 1)
@@ -321,8 +332,11 @@ class FallingLeavesEffect(ShaderEffect):
                 position.x * s + position.y * c
             );
             
-            // Scale by leaf size
-            vec2 scaled = rotated * size * 3.0;
+            // Scale by leaf size with squish applied to horizontal
+            vec2 scaled = vec2(
+                rotated.x * size * 3.0 * squishFactor,
+                rotated.y * size * 3.0
+            );
             
             // Translate to leaf position
             vec2 pos = scaled + offset;
@@ -571,6 +585,10 @@ class FallingLeavesEffect(ShaderEffect):
         self.positions[:, 1] += self.velocities[:, 1] * dt * movement_multiplier * audio_fall_modifier
         self.positions[:, 1] *= (1.0 - whomp * 0.1 * dt)
         
+        # Update squish factors based on current y positions
+        y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
+        self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+        
         # Natural rotation (subtle audio influence)
         rotation_speed_mult = 1.0 + self.audio_mid * 0.2  # Very subtle influence
         self.rotations += self.rotation_speeds * dt * 2 * rotation_speed_mult
@@ -616,6 +634,7 @@ class FallingLeavesEffect(ShaderEffect):
             self.lifetimes = self.lifetimes[valid_mask]
             self.leaf_types = self.leaf_types[valid_mask]
             self.distances = self.distances[valid_mask]
+            self.squish_factors = self.squish_factors[valid_mask]
 
     def render(self, state: Dict):
         """Render all leaves using instancing with horizontal wrapping"""
@@ -651,6 +670,7 @@ class FallingLeavesEffect(ShaderEffect):
         render_alphas = self.alphas.copy()
         render_leaf_types = self.leaf_types.copy()
         render_distances = self.distances.copy()
+        render_squish_factors = self.squish_factors.copy()
         
         # Add duplicates for left edge leaves (appear on right side)
         if np.any(left_edge_mask):
@@ -665,6 +685,7 @@ class FallingLeavesEffect(ShaderEffect):
             render_alphas = np.concatenate([render_alphas, self.alphas[left_indices]])
             render_leaf_types = np.concatenate([render_leaf_types, self.leaf_types[left_indices]])
             render_distances = np.concatenate([render_distances, self.distances[left_indices]])
+            render_squish_factors = np.concatenate([render_squish_factors, self.squish_factors[left_indices]])
         
         # Add duplicates for right edge leaves (appear on left side)
         if np.any(right_edge_mask):
@@ -679,6 +700,7 @@ class FallingLeavesEffect(ShaderEffect):
             render_alphas = np.concatenate([render_alphas, self.alphas[right_indices]])
             render_leaf_types = np.concatenate([render_leaf_types, self.leaf_types[right_indices]])
             render_distances = np.concatenate([render_distances, self.distances[right_indices]])
+            render_squish_factors = np.concatenate([render_squish_factors, self.squish_factors[right_indices]])
         
         # Audio subtly affects brightness and color
         audio_brightness = 1.0 + self.audio_high * 0.15  # Subtle brightness boost from highs
@@ -697,7 +719,8 @@ class FallingLeavesEffect(ShaderEffect):
             adjusted_colors,                                      # 3 floats: r, g, b (audio-adjusted)
             render_alphas[:, np.newaxis],                         # 1 float: alpha
             render_leaf_types[:, np.newaxis].astype(np.float32),  # 1 float: leafType
-            render_distances[:, np.newaxis]                       # 1 float: distance (depth)
+            render_distances[:, np.newaxis],                      # 1 float: distance (depth)
+            render_squish_factors[:, np.newaxis]                  # 1 float: squishFactor
         ]).astype(np.float32)
         
         # Upload instance data
@@ -706,8 +729,8 @@ class FallingLeavesEffect(ShaderEffect):
         
         glBindVertexArray(self.VAO)
         
-        # Setup instance attributes (10 floats per instance)
-        stride = 10 * 4  # 10 floats * 4 bytes
+        # Setup instance attributes (11 floats per instance)
+        stride = 11 * 4  # 11 floats * 4 bytes
         
         # Attribute 1: offset (x, y)
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
@@ -738,6 +761,11 @@ class FallingLeavesEffect(ShaderEffect):
         glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(36))
         glEnableVertexAttribArray(6)
         glVertexAttribDivisor(6, 1)
+        
+        # Attribute 7: squishFactor
+        glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(40))
+        glEnableVertexAttribArray(7)
+        glVertexAttribDivisor(7, 1)
         
                 # Render all leaf instances (originals + duplicates for seamless wrapping)
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(render_positions))

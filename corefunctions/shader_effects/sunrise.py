@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio_sensitivity=2.0):
+def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio_sensitivity=2.0, squish_top_width=1.0):
     """
     Sound-reactive sunrise with animated tentacles
     
@@ -25,6 +25,7 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
         tentacle_count: Number of tentacles emanating from sun
         color_intensity: Brightness multiplier for colors
         audio_sensitivity: How strongly audio affects tentacle movement
+        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -50,7 +51,8 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
                 SunriseEffect,
                 tentacle_count=tentacle_count,
                 color_intensity=color_intensity,
-                audio_sensitivity=audio_sensitivity
+                audio_sensitivity=audio_sensitivity,
+                squish_top_width=squish_top_width
             )
             state['effect'] = effect
             print(f"✓ Initialized shader sunrise for frame {frame_id}")
@@ -117,11 +119,13 @@ class SunriseEffect(ShaderEffect):
     """Sound-reactive sunrise with animated tentacles"""
     
     def __init__(self, viewport, tentacle_count: int = 8, 
-                 color_intensity: float = 1.0, audio_sensitivity: float = 2.0):
+                 color_intensity: float = 1.0, audio_sensitivity: float = 2.0,
+                 squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.tentacle_count = tentacle_count
         self.color_intensity = color_intensity
         self.audio_sensitivity = audio_sensitivity
+        self.squish_top_width = squish_top_width
         
         # Animation state
         self.rise_factor = 0.0  # 0 = below screen, 1 = fully risen
@@ -202,6 +206,7 @@ class SunriseEffect(ShaderEffect):
         uniform float audioEnergy;
         uniform float colorIntensity;
         uniform float fadeAlpha;
+        uniform float squishTopWidth;
         
         // Noise function for tentacle animation
         float hash(vec2 p) {
@@ -225,6 +230,15 @@ class SunriseEffect(ShaderEffect):
             // Convert to pixel coordinates
             vec2 uv = (fragCoord + 1.0) * 0.5;  // 0 to 1
             vec2 pixel = uv * resolution;
+            
+            // Apply horizontal squish based on y position (bottom = 1.0, top = squishTopWidth)
+            // Normalize y: 0 at bottom, 1 at top
+            float y_normalized = pixel.y / resolution.y;
+            float squish_factor = 1.0 + (squishTopWidth - 1.0) * y_normalized;
+            
+            // Apply squish to horizontal coordinate by scaling from center
+            float centerX = resolution.x * 0.5;
+            pixel.x = centerX + (pixel.x - centerX) * squish_factor;
             
             // Scale sun based on width - sun+halo+tentacles should be ~50% of total width
             float targetTotalWidth = resolution.x * 0.5;
@@ -515,6 +529,9 @@ class SunriseEffect(ShaderEffect):
         
         fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
         glUniform1f(fade_loc, self.fade_factor)
+        
+        squish_loc = glGetUniformLocation(self.shader, "squishTopWidth")
+        glUniform1f(squish_loc, self.squish_top_width)
         
         # Draw fullscreen quad
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)

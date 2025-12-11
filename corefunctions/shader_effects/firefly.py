@@ -12,7 +12,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
+def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0, squish_top_width=1.0):
     """
     Shader-based firefly effect compatible with EventScheduler
     
@@ -24,6 +24,7 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
         outstate: Global state dict (from EventScheduler)
         density: Firefly spawn rate multiplier
         audio_sensitivity: Audio reactivity multiplier (0.0 = no audio, 1.0 = normal, 2.0 = double)
+        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
@@ -47,7 +48,8 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
             firefly_effect = viewport.add_effect(
                 FireflyEffect,
                 density=density,
-                audio_sensitivity=audio_sensitivity
+                audio_sensitivity=audio_sensitivity,
+                squish_top_width=squish_top_width
             )
             state['firefly_effect'] = firefly_effect
             print(f"✓ Initialized shader fireflies for frame {frame_id}")
@@ -168,10 +170,12 @@ class FireflyEffect(ShaderEffect):
         
         return rgb
     
-    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, audio_sensitivity: float = 1.0):
+    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, audio_sensitivity: float = 1.0, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.density = density
         self.max_fireflies = max_fireflies
+        self.squish_top_width = squish_top_width
+        self.viewport_height = viewport.height  # Store for squish calculation
         self.instance_VBO = None
         self.audio_sensitivity = audio_sensitivity
         
@@ -197,11 +201,12 @@ class FireflyEffect(ShaderEffect):
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [h, s, v] in HSV
         self.base_sizes = np.zeros(0, dtype=np.float32)  # Base size (before depth scaling)
         self.audio_bands = np.zeros(0, dtype=np.int32)  # Which frequency band each firefly responds to (0=bass, 1=mid, 2=high)
+        self.squish_factors = np.zeros(0, dtype=np.float32)  # Horizontal width multipliers
         
         # Performance optimizations
         self.max_wrapping_instances = max_fireflies * 3  # Max originals + left wrap + right wrap
-        self.instance_buffer_size = self.max_wrapping_instances * 8 * 4  # 8 floats per instance
-        self.instance_data_cache = np.zeros((self.max_wrapping_instances, 8), dtype=np.float32)
+        self.instance_buffer_size = self.max_wrapping_instances * 9 * 4  # 9 floats per instance
+        self.instance_data_cache = np.zeros((self.max_wrapping_instances, 9), dtype=np.float32)
         
         # Spawn initial fireflies immediately
         initial_count = int(max_fireflies * 0.6)  # Start with 60% of max
@@ -232,10 +237,14 @@ class FireflyEffect(ShaderEffect):
             np.ones(count)                         # Value: full brightness
         ])
         
-        new_base_sizes = np.random.uniform(1.0, 2.0, count)  # Firefly size
+        new_base_sizes = np.random.uniform(2.0, 3.0, count)  # Firefly size
         
         # Assign each firefly to a frequency band (0=bass, 1=mid, 2=high)
         new_audio_bands = np.random.randint(0, 3, count)
+        
+        # Calculate squish factors based on y position (bottom = 1.0, top = squish_top_width)
+        y_normalized = (self.viewport_height - new_positions[:, 1]) / self.viewport_height
+        new_squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
         
         # Concatenate with existing arrays
         self.positions = np.vstack([self.positions, new_positions]) if len(self.positions) > 0 else new_positions
@@ -247,6 +256,7 @@ class FireflyEffect(ShaderEffect):
         self.colors = np.vstack([self.colors, new_colors]) if len(self.colors) > 0 else new_colors
         self.base_sizes = np.concatenate([self.base_sizes, new_base_sizes]) if len(self.base_sizes) > 0 else new_base_sizes
         self.audio_bands = np.concatenate([self.audio_bands, new_audio_bands]) if len(self.audio_bands) > 0 else new_audio_bands
+        self.squish_factors = np.concatenate([self.squish_factors, new_squish_factors]) if len(self.squish_factors) > 0 else new_squish_factors
         
     def get_vertex_shader(self):
         return """
@@ -257,6 +267,7 @@ class FireflyEffect(ShaderEffect):
         layout(location = 1) in vec3 offset;    // Firefly position (x, y, z)
         layout(location = 2) in float size;     // Firefly size (scaled by depth)
         layout(location = 3) in vec4 color;     // Color (r, g, b, brightness)
+        layout(location = 4) in float squishFactor; // Horizontal width multiplier
         
         out vec4 fragColor;
         out vec2 fragPos;  // Position within quad (-1 to 1)
@@ -266,8 +277,11 @@ class FireflyEffect(ShaderEffect):
             // Pass through for glow calculation
             fragPos = position;
             
-            // Scale the quad by firefly size
-            vec2 scaled = position * size;
+            // Scale the quad by firefly size with squish applied to horizontal
+            vec2 scaled = vec2(
+                position.x * size * squishFactor,
+                position.y * size
+            );
             
             // Translate to firefly XY position
             vec2 pos = scaled + offset.xy;
@@ -445,6 +459,10 @@ class FireflyEffect(ShaderEffect):
         self.positions[:, 0] %= self.viewport.width
         self.positions[:, 1] %= self.viewport.height
         
+        # Update squish factors based on current y positions
+        y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
+        self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+        
         # Decrease lifetimes
         self.lifetimes -= 0.001 * dt * 60
         
@@ -460,6 +478,7 @@ class FireflyEffect(ShaderEffect):
             self.colors = self.colors[alive_mask]
             self.base_sizes = self.base_sizes[alive_mask]
             self.audio_bands = self.audio_bands[alive_mask]
+            self.squish_factors = self.squish_factors[alive_mask]
 
     def render(self, state: Dict):
         """Render all fireflies using instancing with horizontal wrapping"""
@@ -545,6 +564,7 @@ class FireflyEffect(ShaderEffect):
         self.instance_data_cache[idx:idx+num_originals, 3] = scaled_sizes
         self.instance_data_cache[idx:idx+num_originals, 4:7] = rgb_colors
         self.instance_data_cache[idx:idx+num_originals, 7] = brightness
+        self.instance_data_cache[idx:idx+num_originals, 8] = self.squish_factors
         idx += num_originals
         
         # Add left edge wrapping duplicates
@@ -555,6 +575,7 @@ class FireflyEffect(ShaderEffect):
             self.instance_data_cache[idx:idx+num_left, 3] = scaled_sizes[left_indices]
             self.instance_data_cache[idx:idx+num_left, 4:7] = rgb_colors[left_indices]
             self.instance_data_cache[idx:idx+num_left, 7] = brightness[left_indices]
+            self.instance_data_cache[idx:idx+num_left, 8] = self.squish_factors[left_indices]
             idx += num_left
         
         # Add right edge wrapping duplicates
@@ -565,6 +586,7 @@ class FireflyEffect(ShaderEffect):
             self.instance_data_cache[idx:idx+num_right, 3] = scaled_sizes[right_indices]
             self.instance_data_cache[idx:idx+num_right, 4:7] = rgb_colors[right_indices]
             self.instance_data_cache[idx:idx+num_right, 7] = brightness[right_indices]
+            self.instance_data_cache[idx:idx+num_right, 8] = self.squish_factors[right_indices]
         
         # Get view of actual data to upload
         instance_data = self.instance_data_cache[:total_instances]
@@ -575,8 +597,8 @@ class FireflyEffect(ShaderEffect):
         
         glBindVertexArray(self.VAO)
         
-        # Setup instance attributes
-        stride = 8 * 4
+        # Setup instance attributes (9 floats per instance)
+        stride = 9 * 4
         
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
@@ -589,6 +611,10 @@ class FireflyEffect(ShaderEffect):
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(16))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
+        
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
+        glEnableVertexAttribArray(4)
+        glVertexAttribDivisor(4, 1)
         
                 # ============================================================
         # Single-pass render with global blend state
