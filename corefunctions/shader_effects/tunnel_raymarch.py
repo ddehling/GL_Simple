@@ -236,7 +236,7 @@ class TunnelRaymarchEffect(ShaderEffect):
             // Raymarching loop
             for (float i = 0.0; i < 250.0; i++) {
                 // Early exit conditions
-                if (layers > 8.0 || col.x > 1.0 || t > 5.6) break;
+                if (layers > 4.0 || col.x > 1.0 || t > 5.6) break;
                 
                 // Sample point along ray
                 sp = ro + rd * t;
@@ -249,8 +249,11 @@ class TunnelRaymarchEffect(ShaderEffect):
                 
                 // If close to surface, accumulate color
                 if (aD > 0.0) {
-                    // Assign each layer to a unique frequency band (cycle through 32 bands)
-                    int bandIndex = int(mod(layers, 32.0));
+                    // Assign each layer to spread across frequency spectrum
+                    // Layer 0 -> band 0 (sub-bass), Layer 1 -> band 10 (low-mids), 
+                    // Layer 2 -> band 20 (mids-highs), Layer 3 -> band 28 (highs)
+                    int bandIndex = int(layers * 8.0);  // Spread across spectrum (0, 8, 16, 24)
+                    bandIndex = min(bandIndex, 31);  // Clamp to valid range
                     float bandEnergy = audioBands[bandIndex];
                     
                     // Generate unique color per layer - darker base colors
@@ -258,8 +261,8 @@ class TunnelRaymarchEffect(ShaderEffect):
                         vec3(0.0, 2.1, 4.2) + 
                         t * 3.0 + 
                         sp.z * 2.0 + 
-                        layers * 0.8 +
-                        bandEnergy * 3.0  // Reduced color shift (was 5.0)
+                        layers * 1.5 +  // Increased spacing for more color variety (was 0.8)
+                        bandEnergy * 4.0  // Increased for more dramatic color shifts (was 3.0)
                     );
                     
                     // Smoothstep for smooth contribution
@@ -269,11 +272,11 @@ class TunnelRaymarchEffect(ShaderEffect):
                     float distanceFade = 1.0 / (1.0 + t * t * 0.25);
                     contribution *= distanceFade * 0.1;  // Much lower base contribution
                     
-                    // Band energy modulates thickness
-                    contribution *= (0.5 + bandEnergy * 0.8);  // Range: 0.5 to 4.5
+                    // Band energy modulates thickness DRAMATICALLY
+                    contribution *= (0.3 + bandEnergy * 1.2);  // Range: 0.3 to 6.3 (more contrast)
                     
-                    // Band energy affects brightness - more responsive
-                    float audioBrightness = 0.1 + bandEnergy * 0.5;  // Range: 0.1 to 2.6
+                    // Band energy affects brightness - MORE responsive
+                    float audioBrightness = 0.08 + bandEnergy * 0.7;  // Range: 0.08 to 3.58 (more dynamic)
                     layerColor *= audioBrightness;
                     
                     col += layerColor * contribution;
@@ -287,10 +290,15 @@ class TunnelRaymarchEffect(ShaderEffect):
             // Clamp color to prevent oversaturation
             col = min(col, vec3(1.0));
             
-            // Clamp final color and apply fade
-            col = clamp(col, 0.0, 1.0);
+            // Calculate alpha based on accumulated color (transparent background)
+            float colorBrightness = max(col.r, max(col.g, col.b));  // Use brightest channel
             
-            outColor = vec4(col, fadeAlpha);
+            // Boost alpha so tunnels are more visible even when dim
+            // Alpha is higher than color brightness to maintain visibility
+            float alpha = colorBrightness * 2.5;  // Multiply by 2.5 for better visibility
+            alpha = clamp(alpha, 0.0, 1.0) * fadeAlpha;  // Clamp and apply fade factor
+            
+            outColor = vec4(col, alpha);
         }
         """
     
