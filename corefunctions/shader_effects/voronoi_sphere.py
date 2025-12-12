@@ -165,14 +165,7 @@ class VoronoiSphereEffect(ShaderEffect):
         
         #define shape(p) length(p)-2.8
         
-        // Hash function for cell ID
-        float hash(vec3 p) {
-            p = fract(p * 0.3183099 + 0.1);
-            p *= 17.0;
-            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-        }
-        
-        // Better hash with more variation
+        // Hash function with variation for cell colors
         vec3 hash3(vec3 p) {
             p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
                      dot(p, vec3(269.5, 183.3, 246.1)),
@@ -261,49 +254,8 @@ class VoronoiSphereEffect(ShaderEffect):
             return rd;
         }
         
-        vec3 blackbody(float Temp) {
-            vec3 col = vec3(255.);
-            col.x = 56100000. * pow(Temp, (-3. / 2.)) + 148.;
-            col.y = 100.04 * log(Temp) - 623.6;
-            if (Temp > 6500.) col.y = 35200000. * pow(Temp, (-3. / 2.)) + 184.;
-            col.z = 194.18 * log(Temp) - 1448.6;
-            col = clamp(col, 0., 255.) / 255.;
-            if (Temp < 1000.) col *= Temp / 1000.;
-            return col;
-        }
-        
-        // light
+        // light position for simple shading
         const vec3 LPos = vec3(-0.6, 0.7, -0.5);
-        const vec3 LAmb = vec3(0.);
-        const vec3 LDif = vec3(1., 0.5, 0.);
-        const vec3 LSpe = vec3(0.8);
-        
-        // material
-        const vec3 MAmb = vec3(0.);
-        const vec3 MDif = vec3(1., 0.5, 0.);
-        const vec3 MSpe = vec3(0.6, 0.6, 0.6);
-        const float MShi = 30.;
-        
-        vec3 ads(vec3 p, vec3 n) {
-            vec3 ldif = normalize(LPos - p);
-            vec3 vv = normalize(vec3(0.) - p);
-            vec3 refl = reflect(vec3(0.) - ldif, n);
-            
-            vec3 amb = MAmb * LAmb + blackbody(2000.);
-            vec3 dif = max(0., dot(ldif, n.xyz)) * MDif * LDif;
-            vec3 spe = vec3(0.);
-            if (dot(ldif, vv) > 0.)
-                spe = pow(max(0., dot(vv, refl)), MShi) * MSpe * LSpe;
-            
-            return amb * 1.2 + dif * 1.5 + spe * 0.8;
-        }
-        
-        vec3 nrand3(vec2 co) {
-            vec3 a = fract(cos(co.x * 8.3e-3 + co.y) * vec3(1.3e5, 4.7e5, 2.9e5));
-            vec3 b = fract(sin(co.x * 0.3e-3 + co.y) * vec3(8.1e5, 1.0e5, 0.1e5));
-            vec3 c = mix(a, b, 0.5);
-            return c;
-        }
         
         void main() {
             vec2 si = resolution.xy;
@@ -377,9 +329,12 @@ class VoronoiSphereEffect(ShaderEffect):
                     vec3 cellColor = hsv2rgb(vec3(hue, saturation, brightness));
                     
                     finalColor = cellColor;
-                } else if (mat < 2.5) { // kernel
+                } else if (mat < 2.5) { // kernel - glowing center
                     float b = dot(n, normalize(ro - p)) * 0.9;
-                    vec3 kernelColor = (b * blackbody(2000.) + pow(b, 0.2) * vec3(1.0)) * (1.0 - d * 0.01);
+                    
+                    // Simple warm glow for kernel
+                    vec3 warmColor = vec3(1.0, 0.6, 0.3);
+                    vec3 kernelColor = (b * warmColor + pow(b, 0.2) * vec3(1.0)) * (1.0 - d * 0.01);
                     
                     // Kernel reacts to bass frequencies (bands 0-7)
                     float bassEnergy = 0.0;
@@ -394,12 +349,13 @@ class VoronoiSphereEffect(ShaderEffect):
                     finalColor = kernelColor;
                 }
             } else {
-                // Starfield background
-                vec3 rnd = nrand3(floor(uv * 2.0 * resolution.x));
-                finalColor = vec3(pow(rnd.y, 10.0));
+                // Transparent background (no starfield)
+                finalColor = vec3(0.);
             }
             
-            outColor = vec4(finalColor * fadeAlpha, fadeAlpha);
+            // Set alpha to 0 for background, fadeAlpha for sphere
+            float alpha = (d < 5.0) ? fadeAlpha : 0.0;
+            outColor = vec4(finalColor * fadeAlpha, alpha);
         }
         """
     
