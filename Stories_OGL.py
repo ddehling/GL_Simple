@@ -251,24 +251,42 @@ class EnvironmentalSystem:
         
         # Seasonal random event - 1/10000 chance
         if randcheck < 1/10000:
-            # Determine closest season (0=winter, 0.25=spring, 0.5=summer, 0.75=fall)
-            season_distances = [
-                abs(self.season - 0.0) if abs(self.season - 0.0) <= 0.5 else 1.0 - abs(self.season - 0.0),  # Winter
-                abs(self.season - 0.25),  # Spring
-                abs(self.season - 0.5),   # Summer
-                abs(self.season - 0.75)   # Fall
-            ]
-            closest_season = season_distances.index(min(season_distances))
+            # Determine closest position along the year (16 positions: 0/16, 1/16, 2/16, ..., 15/16)
+            num_positions = 11
+            positions = [i / num_positions for i in range(num_positions)]
             
-            # Schedule event based on season
-            if closest_season == 0:  # Winter
-                self.scheduler.schedule_event(0, 40, fx.shader_audio_balls,squish_top_width=self.scale, frame_id=0)
-            elif closest_season == 1:  # Spring
-                self.scheduler.schedule_event(0, 40, fx.shader_audio_curve, frame_id=0)
-            elif closest_season == 2:  # Summer
-                self.scheduler.schedule_event(0, 40, fx.shader_sunrise, squish_top_width=1/self.scale,frame_id=0)
-            elif closest_season == 3:  # Fall
-                self.scheduler.schedule_event(0, 40, fx.shader_gameoflife, frame_id=0)
+            # Calculate distance to each position (accounting for circular nature)
+            season_distances = []
+            for pos in positions:
+                distance = abs(self.season - pos)
+                if distance > 0.5:
+                    distance = 1.0 - distance  # Wrap around
+                season_distances.append(distance)
+            
+            closest_position = season_distances.index(min(season_distances))
+            
+            # Schedule event based on position (16 different events)
+            events = [
+                (fx.shader_audio_balls, {"squish_top_width": self.scale}),      # Position 0
+                (fx.shader_audio_curve, {}),                                     # Position 1
+                (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),        # Position 2
+                (fx.shader_gameoflife, {}),                                      # Position 3
+                (fx.shader_fractal_fog, {}),                                          # Position 4
+                (fx.shader_noise_isovalues, {}),          # Position 5
+                (fx.shader_tentacle, {}),             # Position 6
+                (fx.shader_tunnel_raymarch, {}),                                       # Position 7
+                (fx.shader_tunnel, {}),                                          # Position 8
+                (fx.shader_tunnel, {}),              # Position 9
+                (fx.shader_voronoi_sphere, {}),                                  # Position 10
+                # (fx., {}),   # Position 11
+                # (fx., {}),                                 # Position 12
+                # (fx., {}),                                           # Position 13
+                # (fx., {}),                                             # Position 14
+                # (fx., {}),                                            # Position 15
+            ]
+            
+            event_func, event_kwargs = events[closest_position]
+            self.scheduler.schedule_event(0, 60, event_func, frame_id=0, **event_kwargs)
 
 
         if (randcheck < self.weather_params["tree_prob"] / 2000):
