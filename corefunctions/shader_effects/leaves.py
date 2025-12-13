@@ -173,6 +173,11 @@ class FallingLeavesEffect(ShaderEffect):
         self.leaf_types = np.zeros(0, dtype=np.int32)
         self.distances = np.zeros(0, dtype=np.float32)  # Depth (5-25) for 3D ordering
         self.squish_factors = np.zeros(0, dtype=np.float32)  # Horizontal width multipliers
+        self.wind_phases = np.zeros(0, dtype=np.float32)  # Individual wind turbulence phases
+        
+        # Wind simulation parameters
+        self.wind_time = 0.0
+        self.wind_gust_phase = 0.0
         
         # Horizontal wrapping margin (larger than largest leaf)
         self.wrap_margin = 50  # Should exceed max leaf size
@@ -203,6 +208,7 @@ class FallingLeavesEffect(ShaderEffect):
         new_rotation_speeds = np.random.uniform(-0.3, 0.3, count)  # Slower, more natural rotation
         new_flutter_phases = np.random.uniform(0, 2 * np.pi, count)
         new_flutter_amplitudes = np.random.uniform(0.3, 0.8, count)  # Reduced amplitude for gentler movement
+        new_wind_phases = np.random.uniform(0, 2 * np.pi, count)  # Random wind turbulence phases
         
         # Adjust alpha based on distance (farther = more transparent)
         base_alphas = np.random.uniform(0.9, 1.0, count)
@@ -235,6 +241,7 @@ class FallingLeavesEffect(ShaderEffect):
         self.leaf_types = np.concatenate([self.leaf_types, new_leaf_types]) if len(self.leaf_types) > 0 else new_leaf_types
         self.distances = np.concatenate([self.distances, new_distances]) if len(self.distances) > 0 else new_distances
         self.squish_factors = np.concatenate([self.squish_factors, new_squish_factors]) if len(self.squish_factors) > 0 else new_squish_factors
+        self.wind_phases = np.concatenate([self.wind_phases, new_wind_phases]) if len(self.wind_phases) > 0 else new_wind_phases
     
     def _generate_leaf_colors(self, count: int, season: float) -> np.ndarray:
         """Generate leaf colors based on season (RGB format)"""
@@ -572,9 +579,29 @@ class FallingLeavesEffect(ShaderEffect):
         if len(self.positions) == 0:
             return
         
-        # Wind-driven horizontal movement (smooth, no flutter)
-        wind_force = wind * 0.5
-        self.velocities[:, 0] = wind_force
+        # Update wind simulation time
+        self.wind_time += dt
+        self.wind_gust_phase += dt * 0.5
+        
+        # Generate wind gusts (smooth varying wind strength)
+        wind_gust = np.sin(self.wind_gust_phase) * 0.5 + 0.5  # 0.0 to 1.0
+        wind_gust += np.sin(self.wind_gust_phase * 2.3) * 0.3  # Add complexity
+        wind_gust = np.clip(wind_gust, 0, 1)
+        
+        # Base wind force with gusts
+        base_wind = wind * (0.3 + wind_gust * 0.7)  # Wind varies from 30% to 100% strength
+        
+        # Individual leaf turbulence (each leaf experiences slightly different wind)
+        self.wind_phases += dt * 3.0  # Update turbulence phases
+        turbulence_x = np.sin(self.wind_phases) * 0.4
+        turbulence_y = np.cos(self.wind_phases * 1.7) * 0.2
+        
+        # Apply wind with turbulence to horizontal velocity
+        wind_force_x = base_wind + turbulence_x * np.abs(wind) * 0.5
+        self.velocities[:, 0] = wind_force_x * 30.0  # Scale to pixel velocity
+        
+        # Wind affects vertical movement (leaves sway up/down in gusts)
+        wind_vertical = turbulence_y * np.abs(wind) * 15.0
         
         # Audio subtly affects fall rate (bass makes them fall slightly faster/slower)
         audio_fall_modifier = 1.0 + (self.audio_bass - 0.5) * 0.1  # Subtle ±10% variation
@@ -582,15 +609,16 @@ class FallingLeavesEffect(ShaderEffect):
         # Update positions (apply audio modifier directly, don't modify velocities)
         movement_multiplier = 1.0 + whomp * 0.5  # Much gentler whomp effect
         self.positions[:, 0] += self.velocities[:, 0] * dt * movement_multiplier
-        self.positions[:, 1] += self.velocities[:, 1] * dt * movement_multiplier * audio_fall_modifier
+        self.positions[:, 1] += (self.velocities[:, 1] + wind_vertical) * dt * movement_multiplier * audio_fall_modifier
         self.positions[:, 1] *= (1.0 - whomp * 0.1 * dt)
         
         # Update squish factors based on current y positions
         y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
         self.squish_factors[:] = 1.0 + (self.squish_top_width - 1.0) * y_normalized
         
-        # Natural rotation (subtle audio influence)
-        rotation_speed_mult = 1.0 + self.audio_mid * 0.2  # Very subtle influence
+        # Wind affects rotation speed (leaves spin faster in stronger wind)
+        wind_rotation_influence = np.abs(wind) * 0.5 * wind_gust
+        rotation_speed_mult = 1.0 + self.audio_mid * 0.2 + wind_rotation_influence
         self.rotations += self.rotation_speeds * dt * 2 * rotation_speed_mult
         
         # Update flutter phases for subtle brightness variation later
@@ -635,6 +663,7 @@ class FallingLeavesEffect(ShaderEffect):
             self.leaf_types = self.leaf_types[valid_mask]
             self.distances = self.distances[valid_mask]
             self.squish_factors = self.squish_factors[valid_mask]
+            self.wind_phases = self.wind_phases[valid_mask]
 
     def render(self, state: Dict):
         """Render all leaves using instancing with horizontal wrapping"""
