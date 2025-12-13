@@ -290,8 +290,8 @@ WEATHER_PRESETS = {
         "ambient_sound": "26 Heavy Wind Gusts Blowing Sand EDITED.wav",
         "ARI": 30,
         "starryness": 0.25,
-        "fog": 0.45,
-        "fog_color": np.array([0.2, 0.1, 0.0]),  # Sandy colored fog
+        "fog": 0.65,
+        "fog_color": np.array([0.6, 0.5, 0.35]),  # Light brown sandy fog
         "possible_transitions": ["clear", "windy_night", "spooky"],
         "transition_weights": [0.3, 0.5, 0.1],
         "celestial_visibility": 0.6,
