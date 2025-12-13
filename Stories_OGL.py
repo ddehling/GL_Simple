@@ -250,9 +250,9 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
         
         # Seasonal random event - 1/10000 chance
-        if randcheck < 1/10000:
+        if randcheck < 1/1000000:
             # Determine closest position along the year (16 positions: 0/16, 1/16, 2/16, ..., 15/16)
-            num_positions = 11
+            num_positions = 12
             positions = [i / num_positions for i in range(num_positions)]
             
             # Calculate distance to each position (accounting for circular nature)
@@ -278,7 +278,7 @@ class EnvironmentalSystem:
                 (fx.shader_tunnel, {}),                                          # Position 8
                 (fx.shader_tunnel, {}),              # Position 9
                 (fx.shader_voronoi_sphere, {}),                                  # Position 10
-                # (fx., {}),   # Position 11
+                (fx.shader_wave_terrain, {}),   # Position 11
                 # (fx., {}),                                 # Position 12
                 # (fx., {}),                                           # Position 13
                 # (fx., {}),                                             # Position 14
