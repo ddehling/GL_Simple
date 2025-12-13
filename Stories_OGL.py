@@ -289,7 +289,7 @@ class EnvironmentalSystem:
             self.scheduler.schedule_event(0, 60, event_func, frame_id=0, **event_kwargs)
 
 
-        if (randcheck < self.weather_params["tree_prob"] / 2000):
+        if (randcheck < self.weather_params["tree_prob"] / 5000):
             # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
             self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=self.scale, frame_id=0) # noqa: F405
         
@@ -314,7 +314,7 @@ class EnvironmentalSystem:
         #     self.scheduler.schedule_event(0, 45, secondary_sandstorm, frame_id=1) # noqa: F405
 
         # # Spooky giant eye
-        if randcheck < self.weather_params["spookyness"] / 800:
+        if randcheck < self.weather_params["spookyness"] / 1000:
             self.scheduler.schedule_event(0, 30, fx.shader_eye, squish_top_width=self.scale,frame_id=0) # noqa: F405
 
         # # Random meteor events
@@ -399,9 +399,9 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.FIREFLY)
+    env_system.transition_to_weather(WeatherState.WINDY_NIGHT)
     #env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
-    env_system.scheduler.schedule_event(0, 90, fx.shader_wave_terrain,frame_id=0)
+    env_system.scheduler.schedule_event(0, 90, fx.shader_falling_leaves,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
