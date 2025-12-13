@@ -15,7 +15,8 @@ from .base import ShaderEffect
 
 def shader_wave_terrain(state, outstate, field_of_view=60.0, camera_height=10.0,
                         wave_speed=1.0, wave_scale=3.0, spacing=0.2,
-                        fade_duration=5.0, audio_reactive=False, audio_sensitivity=1.5):
+                        fade_duration=5.0, audio_reactive=False, audio_sensitivity=1.5,
+                        width_sensitivity=0.3):
     """
     Raymarched wave terrain effect compatible with EventScheduler
     
@@ -36,6 +37,7 @@ def shader_wave_terrain(state, outstate, field_of_view=60.0, camera_height=10.0,
         fade_duration: Duration of fade in/out in seconds (default 5.0)
         audio_reactive: Enable audio reactivity (default False)
         audio_sensitivity: How much audio affects waves (default 1.5)
+        width_sensitivity: How much audio affects line width (default 0.3)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -63,10 +65,12 @@ def shader_wave_terrain(state, outstate, field_of_view=60.0, camera_height=10.0,
                 wave_scale=wave_scale,
                 spacing=spacing,
                 audio_reactive=audio_reactive,
-                audio_sensitivity=audio_sensitivity
+                audio_sensitivity=audio_sensitivity,
+                width_sensitivity=width_sensitivity
             )
             state['effect'] = effect
             state['smoothed_bass'] = 0.0
+            state['audio_width_buffer'] = np.zeros(100, dtype=np.float32)  # ~2.5 seconds at 40 FPS
             print(f"✓ Initialized shader wave_terrain for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize wave terrain: {e}")
@@ -101,8 +105,20 @@ def shader_wave_terrain(state, outstate, field_of_view=60.0, camera_height=10.0,
             
             # Apply to effect
             state['effect'].audio_intensity = state['smoothed_bass'] * audio_sensitivity
+            
+            # Update audio width buffer - stride through normalized audio power
+            # Use total energy across all bands for width modulation
+            total_energy = np.mean(audio_data['norm_short'][0])
+            
+            # Shift buffer and add new value
+            state['audio_width_buffer'] = np.roll(state['audio_width_buffer'], 1)
+            state['audio_width_buffer'][0] = total_energy * width_sensitivity
+            
+            # Pass to effect
+            state['effect'].audio_widths = state['audio_width_buffer'].copy()
         else:
             state['effect'].audio_intensity = 0.0
+            state['effect'].audio_widths = np.zeros(100, dtype=np.float32)
     
     # Cleanup on close
     if state['count'] == -1:
@@ -121,7 +137,8 @@ class WaveTerrainEffect(ShaderEffect):
     
     def __init__(self, viewport, field_of_view: float = 60.0, camera_height: float = 10.0,
                  wave_speed: float = 1.0, wave_scale: float = 3.0, spacing: float = 0.2,
-                 audio_reactive: bool = False, audio_sensitivity: float = 1.5):
+                 audio_reactive: bool = False, audio_sensitivity: float = 1.5,
+                 width_sensitivity: float = 0.3):
         super().__init__(viewport)
         self.field_of_view = field_of_view
         self.camera_height = camera_height
@@ -130,8 +147,10 @@ class WaveTerrainEffect(ShaderEffect):
         self.spacing = spacing
         self.audio_reactive = audio_reactive
         self.audio_sensitivity = audio_sensitivity
+        self.width_sensitivity = width_sensitivity
         self.fade_factor = 0.0
         self.audio_intensity = 0.0
+        self.audio_widths = np.zeros(100, dtype=np.float32)  # 100 samples (~2.5s at 40 FPS)
         self.time = 0.0
     
     def get_vertex_shader(self):
@@ -165,6 +184,8 @@ class WaveTerrainEffect(ShaderEffect):
         uniform float spacing;
         uniform float fadeAlpha;
         uniform float audioIntensity;
+        uniform float audioWidths[100];  // Audio-derived width values
+        uniform float baseWidth;  // Base width value
         
         #define MAX_MARCHING_STEPS 128
         #define MIN_FLOAT 1e-6
@@ -193,9 +214,16 @@ class WaveTerrainEffect(ShaderEffect):
             // Audio modulates the wave amplitude
             float audioMod = 1.0 + audioIntensity * 0.5;
             
+            // Map z position to audio width buffer index
+            // Assuming visible range of z is about 0-50, and we want ~2 seconds of data
+            // 100 samples at 40 FPS = 2.5 seconds
+            float zNorm = mod(p.z, 50.0) / 50.0;  // Normalize z to 0-1 range
+            int widthIndex = int(zNorm * 99.0);  // Map to buffer index 0-99
+            widthIndex = clamp(widthIndex, 0, 99);
+            
             // Gaussian parameters (animated over time and z-position)
             float height = waveScale * audioMod * 0.75;  // Peak height
-            float width = 0.15;  // Standard deviation (controls spread) - reduced significantly
+            float width = baseWidth + audioWidths[widthIndex];  // Width from audio data
             float center = sin(p.z * 0.5 + time * waveSpeed) * (waveScale * audioMod * 0.125);  // Animated center position
             
             // Gaussian function: height * exp(-((x - center)^2) / (2 * width^2))
@@ -408,6 +436,16 @@ class WaveTerrainEffect(ShaderEffect):
         audio_loc = glGetUniformLocation(self.shader, "audioIntensity")
         if audio_loc != -1:
             glUniform1f(audio_loc, self.audio_intensity)
+        
+        # Audio width array
+        widths_loc = glGetUniformLocation(self.shader, "audioWidths")
+        if widths_loc != -1:
+            glUniform1fv(widths_loc, 100, self.audio_widths)
+        
+        # Base width
+        base_width_loc = glGetUniformLocation(self.shader, "baseWidth")
+        if base_width_loc != -1:
+            glUniform1f(base_width_loc, 0.15)
         
         # Draw fullscreen quad
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
