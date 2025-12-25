@@ -8,14 +8,22 @@ from OpenGL.GL import shaders
 from typing import Dict
 import cv2
 import os
+import time
+import threading
+import traceback
 from .base import ShaderEffect
 
 try:
-    from moviepy.editor import VideoFileClip
+    from moviepy import VideoFileClip
     MOVIEPY_AVAILABLE = True
 except ImportError:
-    MOVIEPY_AVAILABLE = False
-    print("WARNING: moviepy not available - audio playback disabled")
+    try:
+        # Try legacy import for older moviepy versions
+        from moviepy.editor import VideoFileClip
+        MOVIEPY_AVAILABLE = True
+    except ImportError:
+        MOVIEPY_AVAILABLE = False
+        print("WARNING: moviepy not available - audio playback disabled")
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
@@ -121,8 +129,8 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
         effect.rotation = outstate.get('movie_rotation', rotation)
         effect.scale = outstate.get('movie_scale', scale)
         
-        # Inject audio into outstate if enabled
-        if effect.enable_audio and effect.audio_buffer is not None:
+        # Always try to inject/start audio if enabled (regardless of buffer state)
+        if effect.enable_audio:
             effect.inject_audio_to_outstate(outstate)
     
     # Cleanup on close event
@@ -175,6 +183,20 @@ class MovieEffect(ShaderEffect):
         self.audio_buffer = None
         self.audio_sample_rate = 44100
         self.audio_playback_time = 0.0  # Current audio playback position
+        self.audio_thread = None
+        self.audio_thread_running = False
+        self.audio_start_time = None
+        self.sound_engine = None  # Reference to ThreadedAudioEngine
+        self.audio_loading_thread = None
+        self.audio_loading = False
+        self.audio_streaming_mode = False  # True when streaming from file instead of buffer
+        
+        # Prebuffer system for smooth playback
+        self.audio_prebuffer = None  # Rolling buffer with ~3 seconds of audio
+        self.prebuffer_lock = threading.Lock()
+        self.prebuffer_video_time = 0.0  # Video time position of prebuffer start
+        self.prebuffer_thread = None
+        self.prebuffer_thread_running = False
         
         # OpenGL texture
         self.texture = None
@@ -185,6 +207,17 @@ class MovieEffect(ShaderEffect):
         # Load video
         if video_path:
             self._load_video(video_path)
+        
+        # Start async audio loading if enabled (non-blocking)
+        if video_path and enable_audio:
+            self.audio_loading = True
+            self.audio_loading_thread = threading.Thread(
+                target=self._load_audio_async, 
+                args=(video_path,),
+                daemon=True
+            )
+            self.audio_loading_thread.start()
+            print("[MovieEffect] Audio loading started in background thread (non-blocking)")
     
     def _load_video(self, video_path: str):
         """Load video file using OpenCV"""
@@ -285,82 +318,300 @@ class MovieEffect(ShaderEffect):
         return True
         
     
-    def _load_audio(self, video_path: str):
-        """Load audio track from video using moviepy"""
+    def _load_audio_async(self, video_path: str):
+        """Async wrapper for audio loading - runs in background thread"""
+        try:
+            self._load_audio_sync(video_path)
+        finally:
+            self.audio_loading = False
+    
+    def _load_audio_sync(self, video_path: str):
+        """Load audio track from video using moviepy (blocking operation)"""
+        print(f"[MovieEffect] _load_audio_sync called with enable_audio={self.enable_audio}")
         if not MOVIEPY_AVAILABLE:
             print("  Audio disabled: moviepy not installed")
             return
         
         try:
             # Load video with moviepy to access audio
+            print(f"[MovieEffect] Opening video for audio: {video_path}")
             self.audio_clip = VideoFileClip(video_path)
             
             if self.audio_clip.audio is None:
-                print("  No audio track found in video")
+                print("[MovieEffect] WARNING: No audio track found in video!")
                 return
             
             # Get audio properties
             self.audio_sample_rate = self.audio_clip.audio.fps
             duration = self.audio_clip.duration
             
-            # Extract entire audio as numpy array
-            audio_array = self.audio_clip.audio.to_soundarray(fps=self.audio_sample_rate)
+            # Prebuffer 3 seconds of audio for smooth playback
+            prebuffer_duration = 3.0  # seconds
+            print(f"[MovieEffect] Video has {duration:.1f}s audio, prebuffering {prebuffer_duration}s from {self.start_time}s...")
             
-            # Convert to mono if stereo (average channels)
-            if len(audio_array.shape) > 1 and audio_array.shape[1] > 1:
-                audio_array = np.mean(audio_array, axis=1)
-            
-            # Apply volume
-            audio_array = audio_array * self.audio_volume
-            
-            # Store audio buffer
-            self.audio_buffer = audio_array.astype(np.float32)
-            
-            # Set playback time to match video start
-            self.audio_playback_time = self.start_time
-            
-            print(f"  Audio loaded: {self.audio_sample_rate}Hz, {duration:.2f}s, {len(self.audio_buffer)} samples")
+            try:
+                # Extract initial prebuffer
+                buffer_end = min(self.start_time + prebuffer_duration, duration)
+                audio_subclip = self.audio_clip.audio.subclipped(self.start_time, buffer_end)
+                prebuffer_audio = audio_subclip.to_soundarray(fps=self.audio_sample_rate)
+                
+                # Convert to mono if stereo
+                if len(prebuffer_audio.shape) > 1 and prebuffer_audio.shape[1] > 1:
+                    prebuffer_audio = np.mean(prebuffer_audio, axis=1)
+                
+                # Apply volume
+                prebuffer_audio = prebuffer_audio.astype(np.float32) * self.audio_volume
+                
+                with self.prebuffer_lock:
+                    self.audio_prebuffer = prebuffer_audio
+                    self.prebuffer_video_time = self.start_time
+                
+                print(f"[MovieEffect] ✓ Prebuffered {len(prebuffer_audio) / self.audio_sample_rate:.2f}s of audio")
+                self.audio_streaming_mode = True
+                
+            except Exception as e:
+                print(f"[MovieEffect] ERROR prebuffering audio: {e}")
+                traceback.print_exc()
+                return
             
         except Exception as e:
             print(f"  WARNING: Failed to load audio: {e}")
             self.audio_buffer = None
     
-    def inject_audio_to_outstate(self, outstate: Dict):
-        """Inject current audio samples into outstate playback buffer"""
-        if self.audio_buffer is None or not self.enable_audio:
+    def _prebuffer_refill_thread(self):
+        """Background thread that keeps prebuffer filled with upcoming audio"""
+        prebuffer_duration = 3.0
+        refill_threshold = 1.5  # Refill when less than 1.5s remaining
+        
+        while self.prebuffer_thread_running:
+            try:
+                with self.prebuffer_lock:
+                    if self.audio_prebuffer is None:
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Calculate how much audio is left in prebuffer
+                    current_video_time = self.start_time + (time.time() - self.audio_start_time) if self.audio_start_time else self.start_time
+                    time_into_buffer = current_video_time - self.prebuffer_video_time
+                    remaining_time = (len(self.audio_prebuffer) / self.audio_sample_rate) - time_into_buffer
+                
+                # Refill if running low
+                if remaining_time < refill_threshold:
+                    try:
+                        # Calculate new buffer position
+                        new_buffer_start = self.prebuffer_video_time + time_into_buffer
+                        new_buffer_end = min(new_buffer_start + prebuffer_duration, self.audio_clip.duration)
+                        
+                        # Extract new audio chunk
+                        audio_subclip = self.audio_clip.audio.subclipped(new_buffer_start, new_buffer_end)
+                        new_audio = audio_subclip.to_soundarray(fps=self.audio_sample_rate)
+                        
+                        # Convert to mono if stereo
+                        if len(new_audio.shape) > 1 and new_audio.shape[1] > 1:
+                            new_audio = np.mean(new_audio, axis=1)
+                        
+                        # Apply volume
+                        new_audio = new_audio.astype(np.float32) * self.audio_volume
+                        
+                        # Update prebuffer
+                        with self.prebuffer_lock:
+                            self.audio_prebuffer = new_audio
+                            self.prebuffer_video_time = new_buffer_start
+                        
+                    except Exception as e:
+                        print(f"[MovieEffect] Prebuffer refill error: {e}")
+                
+                time.sleep(0.5)  # Check every 500ms
+                
+            except Exception as e:
+                print(f"[MovieEffect] Prebuffer thread error: {e}")
+                time.sleep(0.5)
+    
+    def _audio_streaming_thread(self):
+        """Background thread that pushes audio to sound engine synchronized to video time"""
+        # Match chunk size to push rate for 1:1 timing
+        chunk_duration = 0.05   # 50ms chunks
+        push_interval = 0.045   # Push slightly faster to build small buffer cushion
+        chunk_samples = int(self.audio_sample_rate * chunk_duration)
+        print("[MovieEffect] Audio streaming thread started")
+        chunk_count = 0
+        next_push_time = None
+        
+        # PREBUILD initial buffer before starting playback
+        print("[MovieEffect] Prebuilding audio buffer...")
+        prebuild_duration = 0.3  # Build 300ms of audio before starting
+        prebuild_chunks = int(prebuild_duration / chunk_duration)
+        
+        prebuild_count = 0
+        while prebuild_count < prebuild_chunks and self.audio_thread_running:
+            if self.sound_engine is None:
+                time.sleep(0.1)
+                continue
+            
+            with self.prebuffer_lock:
+                if self.audio_prebuffer is None:
+                    time.sleep(0.1)
+                    continue
+                
+                # Get chunk from prebuffer - start from beginning
+                chunk_offset = prebuild_count * chunk_duration
+                start_sample = int(chunk_offset * self.audio_sample_rate)
+                end_sample = min(start_sample + chunk_samples, len(self.audio_prebuffer))
+                
+                if end_sample > start_sample:
+                    audio_chunk = self.audio_prebuffer[start_sample:end_sample].copy()
+                    self.sound_engine.push_stream_audio(audio_chunk)
+                    prebuild_count += 1
+        
+        print(f"[MovieEffect] ✓ Prebuffered {prebuild_duration}s of audio, starting realtime streaming")
+        
+        # NOW set start time after prebuild is complete
+        self.audio_start_time = time.time()
+        next_audio_position = prebuild_duration  # Continue from where prebuild left off
+        
+        while self.audio_thread_running:
+            if self.sound_engine is None:
+                time.sleep(0.1)
+                continue
+            
+            # Wait for prebuffer to be ready
+            with self.prebuffer_lock:
+                if self.audio_prebuffer is None:
+                    time.sleep(0.1)
+                    continue
+            
+            # Calculate which audio chunk to send based on sequential position
+            # Not based on elapsed time - let the audio engine consume at its own rate
+            chunk_video_time = self.start_time + next_audio_position
+            
+            try:
+                # Get chunk from prebuffer
+                with self.prebuffer_lock:
+                    time_into_buffer = chunk_video_time - self.prebuffer_video_time
+                    
+                    # Check if we're still in valid buffer range
+                    buffer_duration = len(self.audio_prebuffer) / self.audio_sample_rate
+                    
+                    if time_into_buffer < 0 or time_into_buffer >= buffer_duration:
+                        # Out of buffer range - wait for refill
+                        print(f"[MovieEffect] Waiting for buffer refill... time_into_buffer={time_into_buffer:.2f}s")
+                        time.sleep(0.05)
+                        continue
+                    
+                    # Extract chunk from prebuffer
+                    start_sample = int(time_into_buffer * self.audio_sample_rate)
+                    end_sample = min(start_sample + chunk_samples, len(self.audio_prebuffer))
+                    
+                    if end_sample <= start_sample:
+                        time.sleep(0.05)
+                        continue
+                    
+                    audio_chunk = self.audio_prebuffer[start_sample:end_sample].copy()
+                
+                # Apply fade factor
+                audio_chunk = audio_chunk * self.fade_factor
+                
+                # Push to sound engine
+                self.sound_engine.push_stream_audio(audio_chunk)
+                
+                # Advance position by the amount of audio we just pushed
+                actual_chunk_duration = len(audio_chunk) / self.audio_sample_rate
+                next_audio_position += actual_chunk_duration
+                
+                chunk_count += 1
+                if chunk_count % 100 == 0:  # Every 5 seconds
+                    # Check buffer level in sound engine
+                    with self.sound_engine.stream_buffer_lock:
+                        buffer_size = sum(len(chunk) for chunk in self.sound_engine.stream_buffer)
+                        buffer_ms = (buffer_size / self.audio_sample_rate) * 1000
+                    print(f"[MovieEffect] Audio: {chunk_video_time:.1f}s, fade={self.fade_factor:.2f}, buffer={buffer_ms:.0f}ms")
+                    
+            except Exception as e:
+                print(f"[MovieEffect] Error streaming audio: {e}")
+                traceback.print_exc()
+            
+            # Sleep to maintain timing - push at consistent rate
+            time.sleep(push_interval)
+    
+    def start_audio_streaming(self, sound_engine):
+        """Start real-time audio streaming to sound engine
+        
+        Args:
+            sound_engine: ThreadedAudioEngine instance from EventScheduler
+        """
+        if not self.enable_audio:
             return
         
-        # Get or create audio output buffer in outstate
-        if 'movie_audio_output' not in outstate:
-            outstate['movie_audio_output'] = np.zeros(4096, dtype=np.float32)  # Buffer for mixing
+        # Check if we have either buffer or streaming mode available
+        has_audio = (self.audio_buffer is not None) or (self.audio_streaming_mode and self.audio_clip is not None)
+        print(f"[MovieEffect] start_audio_streaming: streaming_mode={self.audio_streaming_mode}, has_audio={has_audio}")
         
-        # Calculate sample position
-        sample_position = int(self.audio_playback_time * self.audio_sample_rate)
+        if not has_audio:
+            print("[MovieEffect] Audio streaming NOT started (no audio source)")
+            return
         
-        # Clamp to valid range
-        if sample_position >= len(self.audio_buffer):
-            if self.loop:
-                # Loop audio back to start
-                sample_position = int(self.start_time * self.audio_sample_rate)
-                self.audio_playback_time = self.start_time
+        self.sound_engine = sound_engine
+        self.audio_thread_running = True
+        self.audio_start_time = None  # Will be set when thread starts
+        
+        # Start prebuffer refill thread
+        if self.audio_streaming_mode:
+            self.prebuffer_thread_running = True
+            self.prebuffer_thread = threading.Thread(target=self._prebuffer_refill_thread, daemon=True)
+            self.prebuffer_thread.start()
+        
+        # Start audio streaming thread
+        self.audio_thread = threading.Thread(target=self._audio_streaming_thread, daemon=True)
+        self.audio_thread.start()
+        
+        print(f"[MovieEffect] ✓ Started audio streaming with prebuffer system")
+    
+    def stop_audio_streaming(self):
+        """Stop audio streaming and prebuffer threads"""
+        # Stop prebuffer thread
+        if self.prebuffer_thread is not None:
+            self.prebuffer_thread_running = False
+            self.prebuffer_thread.join(timeout=1.0)
+            self.prebuffer_thread = None
+        
+        # Stop audio streaming thread
+        if self.audio_thread is not None:
+            self.audio_thread_running = False
+            self.audio_thread.join(timeout=1.0)
+            self.audio_thread = None
+        
+        # Clear any remaining audio from sound engine
+        if self.sound_engine is not None:
+            self.sound_engine.clear_stream_audio()
+    
+    def inject_audio_to_outstate(self, outstate: Dict):
+        """Legacy method - now starts audio streaming if not already started"""
+        if not self.enable_audio:
+            return
+        
+        # Wait for audio loading to complete
+        if self.audio_loading:
+            # Only print this occasionally to avoid spam
+            if hasattr(self, '_loading_msg_count'):
+                self._loading_msg_count += 1
+                if self._loading_msg_count % 60 == 0:  # Every ~2 seconds at 30fps
+                    print("[MovieEffect] Audio still loading...")
             else:
-                return  # Audio finished
+                self._loading_msg_count = 0
+                print("[MovieEffect] Audio loading in progress...")
+            return  # Still loading, try again next frame
         
-        # Get chunk of audio for this frame (typical 1024-4096 samples at 44.1kHz)
-        chunk_size = min(2048, len(self.audio_buffer) - sample_position)
+        # Check if audio is ready (either buffer mode or streaming mode)
+        audio_ready = (self.audio_buffer is not None) or (self.audio_streaming_mode and self.audio_clip is not None)
         
-        if chunk_size > 0:
-            audio_chunk = self.audio_buffer[sample_position:sample_position + chunk_size]
-            
-            # Apply fade factor to audio
-            audio_chunk = audio_chunk * self.fade_factor
-            
-            # Store in outstate (resize buffer to match chunk)
-            outstate['movie_audio_output'] = audio_chunk
-        self.current_frame = frame
-        self.current_frame_index += 1
+        if not audio_ready:
+            print("[MovieEffect] WARNING: No audio source available after loading")
+            return
         
-        return True
+        # Get sound engine from outstate and start streaming if not already running
+        if not self.audio_thread_running and 'soundengine' in outstate:
+            print("[MovieEffect] ✓ Audio loaded complete, starting streaming now")
+            self.start_audio_streaming(outstate['soundengine'])
     
     def _upload_frame_to_texture(self):
         """Upload current frame to OpenGL texture"""
@@ -397,10 +648,6 @@ class MovieEffect(ShaderEffect):
         while self.time_accumulator >= frame_duration:
             self.time_accumulator -= frame_duration
             self._read_next_frame()
-        
-        # Update audio playback time
-        if self.enable_audio and self.audio_buffer is not None:
-            self.audio_playback_time += dt
     
     def render(self, state: Dict):
         """Render movie frame as textured quad"""
@@ -572,6 +819,13 @@ class MovieEffect(ShaderEffect):
     
     def cleanup(self):
         """Clean up resources"""
+        # Stop audio streaming thread
+        self.stop_audio_streaming()
+        
+        # Wait for audio loading thread to finish
+        if self.audio_loading_thread is not None:
+            self.audio_loading_thread.join(timeout=2.0)
+        
         # Release video capture
         if self.video_capture is not None:
             self.video_capture.release()
@@ -592,3 +846,4 @@ class MovieEffect(ShaderEffect):
         
         # Call parent cleanup
         super().cleanup()
+
