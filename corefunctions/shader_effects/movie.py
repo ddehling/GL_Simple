@@ -31,7 +31,7 @@ except ImportError:
 
 def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0, 
                  rotation=0.0, depth=50.0, loop=True, fade_duration=2.0, start_time=0.0,
-                 enable_audio=False, audio_volume=1.0):
+                 enable_audio=False, audio_volume=1.0, aspect_ratio=1.0):
     """
     Movie playback effect compatible with EventScheduler
     
@@ -41,6 +41,7 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
                                x=512, y=384, scale=1.5, 
                                rotation=15.0, start_time=5.0, 
                                enable_audio=True, audio_volume=0.8,
+                               aspect_ratio=1.5,
                                frame_id=0)
     
     Args:
@@ -57,6 +58,7 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
         start_time: Starting position in video in seconds (default 0.0)
         enable_audio: Whether to play audio track (default=False, requires moviepy)
         audio_volume: Audio volume multiplier 0.0-1.0 (default=1.0)
+        aspect_ratio: Width/Height ratio (1.0=square, >1.0=wider, <1.0=taller)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -92,7 +94,8 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
                 loop=loop,
                 start_time=start_time,
                 enable_audio=enable_audio,
-                audio_volume=audio_volume
+                audio_volume=audio_volume,
+                aspect_ratio=aspect_ratio
             )
             state['movie_effect'] = effect
             state['movie_outstate'] = outstate  # Store reference for audio injection
@@ -154,7 +157,7 @@ class MovieEffect(ShaderEffect):
     def __init__(self, viewport, video_path: str = "", x: float = 0.0, y: float = 0.0,
                  scale: float = 1.0, rotation: float = 0.0, depth: float = 50.0,
                  loop: bool = True, start_time: float = 0.0, enable_audio: bool = False,
-                 audio_volume: float = 1.0):
+                 audio_volume: float = 1.0, aspect_ratio: float = 1.0):
         super().__init__(viewport)
         self.video_path = video_path
         self.x = x
@@ -166,6 +169,7 @@ class MovieEffect(ShaderEffect):
         self.start_time = start_time
         self.enable_audio = enable_audio
         self.audio_volume = audio_volume
+        self.aspect_ratio = aspect_ratio
         self.fade_factor = 0.0  # For fade in/out (updated by event wrapper)
         
         # Video capture
@@ -680,6 +684,9 @@ class MovieEffect(ShaderEffect):
         scale_loc = glGetUniformLocation(self.shader, "scale")
         glUniform1f(scale_loc, self.scale)
         
+        aspect_loc = glGetUniformLocation(self.shader, "aspectRatio")
+        glUniform1f(aspect_loc, self.aspect_ratio)
+        
         rotation_loc = glGetUniformLocation(self.shader, "rotation")
         glUniform1f(rotation_loc, np.radians(self.rotation))
         
@@ -715,10 +722,12 @@ class MovieEffect(ShaderEffect):
         uniform float scale;        // Scale multiplier
         uniform float rotation;     // Rotation angle in radians
         uniform float depth;        // Z-depth (0-100)
+        uniform float aspectRatio;  // Width/Height ratio
         
         void main() {
-            // Scale video to its original size, then apply scale factor
+            // Scale video to its original size, then apply scale and aspect ratio
             vec2 scaledSize = videoSize * scale;
+            scaledSize.x *= aspectRatio;  // Apply aspect ratio to width
             
             // Apply rotation matrix
             float cosR = cos(rotation);
