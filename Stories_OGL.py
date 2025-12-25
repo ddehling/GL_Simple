@@ -405,14 +405,8 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 60, fx.shader_audio_scan_line, 
-                        scan_speed=50.0,      # Pixels per second
-                        trail_length=75,        # Trail fade (lower = faster fade)
-                        intensity_sensitivity=2.0,  # Brightness response
-                        width_sensitivity=0.5,      # Width response
-                        base_width=2.0,        # Minimum line width
-                        max_width=20.0,        # Maximum line width
-                        color_hue=0.5,         # 0=red, 0.33=green, 0.66=blue
+    env_system.scheduler.schedule_event(0, 160, fx.shader_pond_ripples, 
+        # 0=red, 0.33=green, 0.66=blue
                         frame_id=0)
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
