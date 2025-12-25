@@ -79,6 +79,11 @@ class AudioEngine:
         self.active_events = set()
         self.lock = threading.RLock()
         self.audio_cache = AudioCache()
+        
+        # Streaming audio support (for movie audio, etc.)
+        self.stream_buffer = []
+        self.stream_buffer_lock = threading.Lock()
+        self.stream_active = False
 
     def safe_lock(self, timeout=1.0):
         acquired = self.lock.acquire(timeout=timeout)
@@ -90,7 +95,27 @@ class AudioEngine:
     def load_audio(self, filename, duration, skip_time=0,volume=1):
         return self.audio_cache.get(filename, duration, self.sample_rate, self.channels, skip_time,volume)
 
+    def push_stream_audio(self, audio_chunk):
+        """Push audio chunk for streaming playback (thread-safe)
+        
+        Args:
+            audio_chunk: numpy array of audio samples, shape (n_samples,) or (n_samples, channels)
+        """
+        with self.stream_buffer_lock:
+            # Convert mono to stereo if needed
+            if audio_chunk.ndim == 1:
+                audio_chunk = np.column_stack((audio_chunk, audio_chunk))
+            
+            self.stream_buffer.append(audio_chunk.astype(np.float32))
+            if not self.stream_active:
+                print(f"[AudioEngine] Stream activated with first chunk: {audio_chunk.shape}")
+            self.stream_active = True
 
+    def clear_stream_audio(self):
+        """Clear streaming audio buffer"""
+        with self.stream_buffer_lock:
+            self.stream_buffer = []
+            self.stream_active = False
 
     def start_audio_stream(self):
         self.stream = sd.OutputStream(
@@ -180,6 +205,37 @@ class AudioEngine:
                     del self.event_dict[event_id]
                     #print(f"Event {event_id} cancelled")
                     #print(f"After cancellation - Active events: {len(self.active_events)}, Event dict: {len(self.event_dict)}",len(self.event_heap))
+            
+            # Mix in streaming audio (e.g., from movie playback)
+            if self.stream_active:
+                with self.stream_buffer_lock:
+                    samples_needed = self.buffer_size
+                    samples_filled = 0
+                    
+                    while samples_filled < samples_needed and self.stream_buffer:
+                        chunk = self.stream_buffer[0]
+                        samples_available = len(chunk)
+                        samples_to_use = min(samples_needed - samples_filled, samples_available)
+                        
+                        # Mix chunk into buffer
+                        self.audio_buffer[samples_filled:samples_filled + samples_to_use] += chunk[:samples_to_use]
+                        
+                        samples_filled += samples_to_use
+                        
+                        # Remove used samples from chunk
+                        if samples_to_use >= samples_available:
+                            self.stream_buffer.pop(0)
+                        else:
+                            self.stream_buffer[0] = chunk[samples_to_use:]
+                    
+                    # Check for buffer underrun (crackling indicator)
+                    if samples_filled < samples_needed:
+                        # Fill remainder with silence to prevent crackling
+                        # This indicates we need more audio pushed from source
+                        pass  # audio_buffer already zero-filled at start
+                    
+                    # Don't mark inactive when buffer empties - new chunks will arrive from streaming thread
+            
             # Normalize if needed
             max_val = np.max(np.abs(self.audio_buffer))
             if max_val > 1:
