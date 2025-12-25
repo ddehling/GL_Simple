@@ -48,19 +48,30 @@ class SACNPixelSender:
             
         return mask
 
-    def send(self, source_array):
+    def send(self, source_array, verify=False):
         """
         Send pixel data to all configured receivers based on their addressing arrays.
         :param source_array: numpy array of shape (width, height, 3) containing source pixel data.
+        :param verify: If True, log checksums for data verification
         """
         height, width, _ = source_array.shape
         
+        # Data verification checkpoint: Log received array checksum
+        if verify:
+            checksum_received = np.sum(source_array.astype(np.uint64))
+            print(f"[ImageToDMX] Received shape={source_array.shape}, checksum={checksum_received}, min={source_array.min()}, max={source_array.max()}, mean={source_array.mean():.2f}")
+        
         # Prepare all universe data first (before sending anything)
-        for receiver, universes in zip(self.receivers, self.receiver_universes):
+        for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
             # Vectorized extraction of pixel data
             x_coords = np.clip(receiver['addressing_array'][:, 0], 0, height - 1)
             y_coords = np.clip(receiver['addressing_array'][:, 1], 0, width - 1)
             receiver_data = source_array[x_coords, y_coords]
+            
+            # Data verification checkpoint: Log extracted pixel data
+            if verify:
+                checksum_extracted = np.sum(receiver_data.astype(np.uint64))
+                print(f"[ImageToDMX] Receiver {rx_idx} ({receiver['ip']}): Extracted {receiver_data.shape[0]} pixels, checksum={checksum_extracted}, min={receiver_data.min()}, max={receiver_data.max()}, mean={receiver_data.mean():.2f}")
 
             # Prepare data in 170-pixel chunks
             for i, universe in enumerate(universes):
@@ -163,15 +174,15 @@ def make_indicesVS(filename):
                 indices.append([sublist[1]-sublist[2]-1-m, sublist[0]])   
     return np.array(indices).astype(int)
 
-def make_indices_V_rect_alternate(width, height):
+def make_indices_V_rect_alternate(width, height,start):
     indices = []
     for x in range(width):
         if x % 2 == 0:
             for y in range(height):
-                indices.append([y, x])
+                indices.append([y, x+start])
         else:
             for y in range(height-1, -1, -1):
-                indices.append([y, x])
+                indices.append([y, x+start])
     return np.array(indices).astype(int)
 
 def main():
