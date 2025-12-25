@@ -410,6 +410,7 @@ if __name__ == "__main__":
                         fade_duration=0.5,  # Quick 0.5s fade in
                         enable_audio=True,  # ENABLE AUDIO PLAYBACK
                         audio_volume=2.8,   # 280% volume
+                        aspect_ratio=1,
                         frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
