@@ -15,7 +15,7 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (120, 300),   # Frame 0 (primary/main display)
+            (120, 60),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -249,9 +249,9 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
         
         # Seasonal random event - 1/10000 chance
-        if randcheck < 1/1000000:
+        if randcheck < 1/2000:
             # Determine closest position along the year (16 positions: 0/16, 1/16, 2/16, ..., 15/16)
-            num_positions = 12
+            num_positions = 13
             positions = [i / num_positions for i in range(num_positions)]
             
             # Calculate distance to each position (accounting for circular nature)
@@ -278,7 +278,7 @@ class EnvironmentalSystem:
                 (fx.shader_tunnel, {}),              # Position 9
                 (fx.shader_voronoi_sphere, {}),                                  # Position 10
                 (fx.shader_wave_terrain, {}),   # Position 11
-                # (fx., {}),                                 # Position 12
+                (fx.shader_wave_equation, {}),                                 # Position 12
                 # (fx., {}),                                           # Position 13
                 # (fx., {}),                                             # Position 14
                 # (fx., {}),                                            # Position 15
@@ -398,13 +398,13 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.SANDSTORM)
-    #env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
+    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.scheduler.schedule_event(0, 30, fx.shader_wave_equation,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 50
+    FRAME_TIME = 1 / 30
     first_time = time.time()
     frame_count = 0
     try:
