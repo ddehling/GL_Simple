@@ -77,21 +77,26 @@ def shader_pond_ripples(state, outstate, depth=30.0, intensity=1.0,
         
         # Process audio data if available
         if audio_data is not None:
-            # Use normalized short-term for beat detection
-            bands = audio_data['norm_short'][0]
+            # Use long-term normalized for stable detection over ~2.5s window
+            bands_long = audio_data['norm_long'][0]
             
-            # Extract frequency ranges
-            bass_energy = np.mean(bands[0:8])      # Bass: 40-300 Hz (ripple triggers)
-            mid_energy = np.mean(bands[8:20])      # Mids: 300-2000 Hz (wave intensity)
-            high_energy = np.mean(bands[20:32])    # Highs: 2000-16000 Hz (shimmer)
+            # Extract frequency ranges using long-term average
+            bass_energy = np.mean(bands_long[0:8])      # Bass: 40-300 Hz (ripple triggers)
+            mid_energy = np.mean(bands_long[8:20])      # Mids: 300-2000 Hz (wave intensity)
+            high_energy = np.mean(bands_long[20:32])    # Highs: 2000-16000 Hz (shimmer)
             
             state['effect'].audio_bass = bass_energy
             state['effect'].audio_mid = mid_energy
             state['effect'].audio_high = high_energy
+            
+            # Overall loudness level
+            long_term_level = np.mean(bands_long)
+            state['effect'].audio_long_term_level = long_term_level
         else:
             state['effect'].audio_bass = 0.0
             state['effect'].audio_mid = 0.0
             state['effect'].audio_high = 0.0
+            state['effect'].audio_long_term_level = 0.0
         
         # Update from global state (optional)
         state['effect'].base_intensity = outstate.get('ripple_intensity', intensity)
@@ -140,7 +145,7 @@ class PondRipplesEffect(ShaderEffect):
         self.base_intensity = intensity
         self.damping = damping
         self.wave_speed = wave_speed * 0.3  # Scale down for stability
-        self.ripple_frequency = ripple_frequency
+        self.ripple_frequency = ripple_frequency * 0.3  # Reduce baseline automatic ripples
         self.bass_sensitivity = bass_sensitivity
         self.water_color = water_color if water_color else (0.2, 0.5, 0.8)
         
@@ -152,6 +157,7 @@ class PondRipplesEffect(ShaderEffect):
         self.audio_bass = 0.0
         self.audio_mid = 0.0
         self.audio_high = 0.0
+        self.audio_long_term_level = 0.0  # Long-term average for silence detection
         self.last_bass = 0.0
         
         # Smoothed audio values for stable modulation
@@ -431,6 +437,18 @@ class PondRipplesEffect(ShaderEffect):
             color += specular * 0.5;
             color += waterColor * height * 0.4;
             
+            // Ripple rings emanating from wave peaks
+            float distFromPeak = length(gradient);
+            float ringPattern = fract(distFromPeak * 15.0 - iTime * 3.0);
+            float rings = smoothstep(0.4, 0.5, ringPattern) - smoothstep(0.5, 0.6, ringPattern);
+            
+            // Only show rings where there's significant wave activity
+            float waveStrength = abs(height);
+            rings *= smoothstep(0.05, 0.2, waveStrength);
+            
+            // Add rings to color (white/light blue)
+            color += vec3(0.9, 0.95, 1.0) * rings * 0.6;
+            
             // Apply intensity
             color *= intensity;
             
@@ -544,11 +562,12 @@ class PondRipplesEffect(ShaderEffect):
         else:
             self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * decay_factor
         
-        # Detect bass hits for ripple spawning (lower threshold for more responsiveness)
+        # Detect bass hits - require BOTH increase AND high absolute level
         bass_threshold = 0.15 * self.bass_sensitivity
-        if self.audio_bass > self.last_bass + bass_threshold and self.audio_bass > 0.3:
-            # Bass hit! Spawn a ripple with strength based on bass energy
-            self._spawn_ripple(strength=self.audio_bass * 0.8)
+        # Only trigger when bass is actually VERY LOUD (> 1.2) AND increasing
+        if self.audio_bass > 1.2 and self.audio_bass > self.last_bass + bass_threshold:
+            # Strong bass hit - spawn ripple
+            self._spawn_ripple(strength=self.audio_bass * 1.5)
         
         self.last_bass = self.audio_bass
     
@@ -586,15 +605,8 @@ class PondRipplesEffect(ShaderEffect):
             write_fbo = self.buffer_previous_FBO
             display_tex = self.buffer_previous_tex
         
-        # Check for automatic ripple spawning
+        # Check for pending ripple (from audio triggers only)
         ripple_pos = (0.0, 0.0, 0.0)
-        
-        # Spawn random ripples based on frequency
-        if self.ripple_timer > 1.0 / self.ripple_frequency:
-            self._spawn_ripple(strength=np.random.uniform(0.2, 0.4))
-            self.ripple_timer = 0.0
-        
-        # Check for pending ripple (from audio or manual)
         if hasattr(self, 'pending_ripple'):
             ripple_pos = self.pending_ripple
             delattr(self, 'pending_ripple')
