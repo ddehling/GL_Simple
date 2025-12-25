@@ -110,43 +110,65 @@ class EventScheduler:
         self.state['simulate'] = True
         
         # Define receivers for each display
-        receivers = [
-            # Primary display receivers (frame 0)
+        receivers = [            
             [
                 {
-                    'ip': '192.168.68.111',
-                    'pixel_count': 2019,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitA.txt")
+                    'ip': '192.168.68.113',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,0)
+                },  
+                                         {
+                    'ip': '192.168.68.114',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,32)
+                },      
+                                         {
+                    'ip': '192.168.68.115',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,64)
                 },
-                {
-                    'ip': '192.168.68.125',
-                    'pixel_count': 1777,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitB.txt")
-                },         
-                {
-                    'ip': '192.168.68.124',
-                    'pixel_count': 1793,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitC.txt")
-                }
-            ],
-            # Secondary display receivers (frame 1)
-            [
-                {
-                    'ip': '192.168.68.130',
-                    'pixel_count': 2160,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitD.txt")
+                                                {
+                    'ip': '192.168.68.116',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
                 },
-                {
-                    'ip': '192.168.68.131',
-                    'pixel_count': 2040,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitE.txt")
-                },
-                {
-                    'ip': '192.168.68.132',
-                    'pixel_count': 2520,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitF.txt")
-                }
             ]
+            # Primary display receivers (frame 0)
+            # [
+            #     {
+            #         'ip': '192.168.68.111',
+            #         'pixel_count': 2019,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitA.txt")
+            #     },
+            #     {
+            #         'ip': '192.168.68.125',
+            #         'pixel_count': 1777,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitB.txt")
+            #     },         
+            #     {
+            #         'ip': '192.168.68.124',
+            #         'pixel_count': 1793,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitC.txt")
+            #     }
+            # ],
+            # # Secondary display receivers (frame 1)
+            # [
+            #     {
+            #         'ip': '192.168.68.130',
+            #         'pixel_count': 2160,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitD.txt")
+            #     },
+            #     {
+            #         'ip': '192.168.68.131',
+            #         'pixel_count': 2040,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitE.txt")
+            #     },
+            #     {
+            #         'ip': '192.168.68.132',
+            #         'pixel_count': 2520,
+            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitF.txt")
+            #     }
+            # ]
         ]
         
         # Create pixel senders for each display
@@ -279,7 +301,7 @@ class EventScheduler:
     
     def _send_to_displays(self, frames):
         """Send frames to physical displays"""
-        gamma = 2.8
+        gamma = 1#2.8
         
         # Process and send frames
         for i, frame in enumerate(frames):

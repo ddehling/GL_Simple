@@ -249,7 +249,7 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
         
         # Seasonal random event - 1/10000 chance
-        if randcheck < 1/1000000:
+        if randcheck < 1/10000:
             # Determine closest position along the year (16 positions: 0/16, 1/16, 2/16, ..., 15/16)
             num_positions = 12
             positions = [i / num_positions for i in range(num_positions)]
@@ -400,7 +400,7 @@ if __name__ == "__main__":
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.SANDSTORM)
     #env_system.scheduler.schedule_event(0, 300, fx.shader_test_pattern, orientation='vertical',frame_id=0)  # noqa: F405
-    #env_system.scheduler.schedule_event(0, 300, fx.shader_test_pattern,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 300, fx.shader_fireworks,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
