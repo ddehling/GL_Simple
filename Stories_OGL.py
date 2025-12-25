@@ -250,8 +250,34 @@ class EnvironmentalSystem:
         
         # Seasonal random event - 1/10000 chance
         if randcheck < 1/1000000:
-            # Determine closest position along the year (16 positions: 0/16, 1/16, 2/16, ..., 15/16)
-            num_positions = 13
+            # Define seasonal events
+            events = [
+                (fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
+                (fx.shader_audio_curve, {}),                                     # Position 1
+                (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),         # Position 2
+                (fx.shader_gameoflife, {}),                                      # Position 3
+                (fx.shader_fractal_fog, {}),                                     # Position 4
+                (fx.shader_noise_isovalues, {}),                                 # Position 5
+                (fx.shader_tentacle, {}),                                        # Position 6
+                (fx.shader_tunnel_raymarch, {}),                                 # Position 7
+                (fx.shader_tunnel, {}),                                          # Position 8
+                (fx.shader_tunnel, {}),                                          # Position 9
+                (fx.shader_voronoi_sphere, {}),                                  # Position 10
+                (fx.shader_wave_terrain, {}),                                    # Position 11
+                (fx.shader_wave_equation, {}),                                   # Position 12
+                (fx.shader_audio_scan_line, {
+                        "scan_speed": 50.0,
+                        "trail_length": 75,
+                        "intensity_sensitivity": 2.0,
+                        "width_sensitivity": 0.5,
+                        "base_width": 2.0,
+                        "max_width": 20.0,
+                        "color_hue": 0.5,
+                        "frame_id": 0}),                                         # Position 13
+            ]
+            
+            # Determine closest position along the year based on number of events
+            num_positions = len(events)
             positions = [i / num_positions for i in range(num_positions)]
             
             # Calculate distance to each position (accounting for circular nature)
@@ -263,26 +289,6 @@ class EnvironmentalSystem:
                 season_distances.append(distance)
             
             closest_position = season_distances.index(min(season_distances))
-            
-            # Schedule event based on position (16 different events)
-            events = [
-                (fx.shader_audio_balls, {"squish_top_width": self.scale}),      # Position 0
-                (fx.shader_audio_curve, {}),                                     # Position 1
-                (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),        # Position 2
-                (fx.shader_gameoflife, {}),                                      # Position 3
-                (fx.shader_fractal_fog, {}),                                          # Position 4
-                (fx.shader_noise_isovalues, {}),          # Position 5
-                (fx.shader_tentacle, {}),             # Position 6
-                (fx.shader_tunnel_raymarch, {}),                                       # Position 7
-                (fx.shader_tunnel, {}),                                          # Position 8
-                (fx.shader_tunnel, {}),              # Position 9
-                (fx.shader_voronoi_sphere, {}),                                  # Position 10
-                (fx.shader_wave_terrain, {}),   # Position 11
-                (fx.shader_wave_equation, {}),                                 # Position 12
-                # (fx., {}),                                           # Position 13
-                # (fx., {}),                                             # Position 14
-                # (fx., {}),                                            # Position 15
-            ]
             
             event_func, event_kwargs = events[closest_position]
             self.scheduler.schedule_event(0, 60, event_func, frame_id=0, **event_kwargs)
@@ -398,10 +404,15 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     # Start with summer bloom weather
-    env_system.transition_to_weather(WeatherState.SANDSTORM)
-    env_system.scheduler.schedule_event(0, 60, fx.shader_text,
-                        text="Vertical,Text,Here",
-                        text_rotation=270,  # or -90
+    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
+    env_system.scheduler.schedule_event(0, 60, fx.shader_audio_scan_line, 
+                        scan_speed=50.0,      # Pixels per second
+                        trail_length=75,        # Trail fade (lower = faster fade)
+                        intensity_sensitivity=2.0,  # Brightness response
+                        width_sensitivity=0.5,      # Width response
+                        base_width=2.0,        # Minimum line width
+                        max_width=20.0,        # Maximum line width
+                        color_hue=0.5,         # 0=red, 0.33=green, 0.66=blue
                         frame_id=0)
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
