@@ -399,19 +399,10 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.SANDSTORM)
-    env_system.scheduler.schedule_event(0, 160, fx.shader_movie, 
-                        video_path=r"G:\Torz3\DeadlyPrey1988vhsrip_TryFile.com_.avi",
-                        x=64, y=150,       # Center position
-                        scale=0.5,          # 1.5x size
-                        rotation=270.0,      # 15 degrees clockwise
-                        depth=30.0,         # Depth for layering
-                        loop=True, 
-                        start_time=550.0,   # Start at 550 seconds
-                        fade_duration=0.5,  # Quick 0.5s fade in
-                        enable_audio=True,  # ENABLE AUDIO PLAYBACK
-                        audio_volume=2.8,   # 280% volume
-                        aspect_ratio=1,
-                        frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 60, fx.shader_text,
+                        text="Vertical,Text,Here",
+                        text_rotation=270,  # or -90
+                        frame_id=0)
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
