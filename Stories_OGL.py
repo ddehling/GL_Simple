@@ -15,7 +15,7 @@ from corefunctions import shader_effects as fx
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (120, 60),   # Frame 0 (primary/main display)
+            (128, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -399,7 +399,15 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.SANDSTORM)
-    #env_system.scheduler.schedule_event(0, 300, fx.shader_aurora,frame_id=0)  # noqa: F405
+    env_system.scheduler.schedule_event(0, 60, fx.shader_movie, 
+                        video_path="G:\Torz3\DeadlyPrey1988vhsrip_TryFile.com_.avi",
+                        x=64, y=150,       # Center position
+                        scale=0.5,          # 1.5x size
+                        rotation=270.0,      # 15 degrees clockwise
+                        depth=30.0,         # Depth for layering
+                        loop=True, 
+                                 start_time=550.0,         # Loop video
+                        frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
