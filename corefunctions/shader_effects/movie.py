@@ -1,6 +1,6 @@
 """
 Movie playback shader effect - GPU-accelerated video with scaling and rotation
-Plays video files with real-time transformations
+Plays video files with real-time transformations and audio playback
 """
 import numpy as np
 from OpenGL.GL import *
@@ -10,12 +10,20 @@ import cv2
 import os
 from .base import ShaderEffect
 
+try:
+    from moviepy.editor import VideoFileClip
+    MOVIEPY_AVAILABLE = True
+except ImportError:
+    MOVIEPY_AVAILABLE = False
+    print("WARNING: moviepy not available - audio playback disabled")
+
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
 def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0, 
-                 rotation=0.0, depth=50.0, loop=True, fade_duration=2.0, start_time=0.0):
+                 rotation=0.0, depth=50.0, loop=True, fade_duration=2.0, start_time=0.0,
+                 enable_audio=False, audio_volume=1.0):
     """
     Movie playback effect compatible with EventScheduler
     
@@ -23,7 +31,9 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
         scheduler.schedule_event(0, 60, shader_movie, 
                                video_path="media/video.mp4",
                                x=512, y=384, scale=1.5, 
-                               rotation=15.0, start_time=5.0, frame_id=0)
+                               rotation=15.0, start_time=5.0, 
+                               enable_audio=True, audio_volume=0.8,
+                               frame_id=0)
     
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
@@ -37,6 +47,8 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
         loop: Whether to loop the video (default=True)
         fade_duration: Duration of fade in/out in seconds (default 2.0)
         start_time: Starting position in video in seconds (default 0.0)
+        enable_audio: Whether to play audio track (default=False, requires moviepy)
+        audio_volume: Audio volume multiplier 0.0-1.0 (default=1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -70,9 +82,12 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
                 rotation=rotation,
                 depth=depth,
                 loop=loop,
-                start_time=start_time
+                start_time=start_time,
+                enable_audio=enable_audio,
+                audio_volume=audio_volume
             )
             state['movie_effect'] = effect
+            state['movie_outstate'] = outstate  # Store reference for audio injection
             print(f"✓ Initialized shader movie for frame {frame_id}: {video_path}")
         except Exception as e:
             import traceback
@@ -105,6 +120,10 @@ def shader_movie(state, outstate, video_path="", x=None, y=None, scale=1.0,
         # Allow dynamic parameter updates from outstate
         effect.rotation = outstate.get('movie_rotation', rotation)
         effect.scale = outstate.get('movie_scale', scale)
+        
+        # Inject audio into outstate if enabled
+        if effect.enable_audio and effect.audio_buffer is not None:
+            effect.inject_audio_to_outstate(outstate)
     
     # Cleanup on close event
     if state['count'] == -1:
@@ -126,7 +145,8 @@ class MovieEffect(ShaderEffect):
     
     def __init__(self, viewport, video_path: str = "", x: float = 0.0, y: float = 0.0,
                  scale: float = 1.0, rotation: float = 0.0, depth: float = 50.0,
-                 loop: bool = True, start_time: float = 0.0):
+                 loop: bool = True, start_time: float = 0.0, enable_audio: bool = False,
+                 audio_volume: float = 1.0):
         super().__init__(viewport)
         self.video_path = video_path
         self.x = x
@@ -136,6 +156,8 @@ class MovieEffect(ShaderEffect):
         self.depth = depth
         self.loop = loop
         self.start_time = start_time
+        self.enable_audio = enable_audio
+        self.audio_volume = audio_volume
         self.fade_factor = 0.0  # For fade in/out (updated by event wrapper)
         
         # Video capture
@@ -147,6 +169,12 @@ class MovieEffect(ShaderEffect):
         self.current_frame_index = 0
         self.start_frame_index = 0  # Where to loop back to
         self.current_frame = None
+        
+        # Audio handling
+        self.audio_clip = None
+        self.audio_buffer = None
+        self.audio_sample_rate = 44100
+        self.audio_playback_time = 0.0  # Current audio playback position
         
         # OpenGL texture
         self.texture = None
@@ -217,6 +245,14 @@ class MovieEffect(ShaderEffect):
         
         # Read first frame
         self._read_next_frame()
+        
+        # Load audio if enabled (non-blocking - errors won't prevent video playback)
+        if self.enable_audio:
+            try:
+                self._load_audio(full_path)
+            except Exception as e:
+                print(f"  WARNING: Failed to load audio (video will still play): {e}")
+                self.audio_buffer = None
     
     def _read_next_frame(self):
         """Read the next frame from video"""
@@ -243,6 +279,84 @@ class MovieEffect(ShaderEffect):
         # Flip vertically (OpenGL texture coords are bottom-up)
         frame = np.flip(frame, axis=0)
         
+        self.current_frame = frame
+        self.current_frame_index += 1
+        
+        return True
+        
+    
+    def _load_audio(self, video_path: str):
+        """Load audio track from video using moviepy"""
+        if not MOVIEPY_AVAILABLE:
+            print("  Audio disabled: moviepy not installed")
+            return
+        
+        try:
+            # Load video with moviepy to access audio
+            self.audio_clip = VideoFileClip(video_path)
+            
+            if self.audio_clip.audio is None:
+                print("  No audio track found in video")
+                return
+            
+            # Get audio properties
+            self.audio_sample_rate = self.audio_clip.audio.fps
+            duration = self.audio_clip.duration
+            
+            # Extract entire audio as numpy array
+            audio_array = self.audio_clip.audio.to_soundarray(fps=self.audio_sample_rate)
+            
+            # Convert to mono if stereo (average channels)
+            if len(audio_array.shape) > 1 and audio_array.shape[1] > 1:
+                audio_array = np.mean(audio_array, axis=1)
+            
+            # Apply volume
+            audio_array = audio_array * self.audio_volume
+            
+            # Store audio buffer
+            self.audio_buffer = audio_array.astype(np.float32)
+            
+            # Set playback time to match video start
+            self.audio_playback_time = self.start_time
+            
+            print(f"  Audio loaded: {self.audio_sample_rate}Hz, {duration:.2f}s, {len(self.audio_buffer)} samples")
+            
+        except Exception as e:
+            print(f"  WARNING: Failed to load audio: {e}")
+            self.audio_buffer = None
+    
+    def inject_audio_to_outstate(self, outstate: Dict):
+        """Inject current audio samples into outstate playback buffer"""
+        if self.audio_buffer is None or not self.enable_audio:
+            return
+        
+        # Get or create audio output buffer in outstate
+        if 'movie_audio_output' not in outstate:
+            outstate['movie_audio_output'] = np.zeros(4096, dtype=np.float32)  # Buffer for mixing
+        
+        # Calculate sample position
+        sample_position = int(self.audio_playback_time * self.audio_sample_rate)
+        
+        # Clamp to valid range
+        if sample_position >= len(self.audio_buffer):
+            if self.loop:
+                # Loop audio back to start
+                sample_position = int(self.start_time * self.audio_sample_rate)
+                self.audio_playback_time = self.start_time
+            else:
+                return  # Audio finished
+        
+        # Get chunk of audio for this frame (typical 1024-4096 samples at 44.1kHz)
+        chunk_size = min(2048, len(self.audio_buffer) - sample_position)
+        
+        if chunk_size > 0:
+            audio_chunk = self.audio_buffer[sample_position:sample_position + chunk_size]
+            
+            # Apply fade factor to audio
+            audio_chunk = audio_chunk * self.fade_factor
+            
+            # Store in outstate (resize buffer to match chunk)
+            outstate['movie_audio_output'] = audio_chunk
         self.current_frame = frame
         self.current_frame_index += 1
         
@@ -283,10 +397,17 @@ class MovieEffect(ShaderEffect):
         while self.time_accumulator >= frame_duration:
             self.time_accumulator -= frame_duration
             self._read_next_frame()
+        
+        # Update audio playback time
+        if self.enable_audio and self.audio_buffer is not None:
+            self.audio_playback_time += dt
     
     def render(self, state: Dict):
         """Render movie frame as textured quad"""
-        if not self.enabled or self.current_frame is None:
+        if not self.enabled:
+            return
+        
+        if self.current_frame is None:
             return
         
         # Upload current frame to texture
@@ -455,6 +576,14 @@ class MovieEffect(ShaderEffect):
         if self.video_capture is not None:
             self.video_capture.release()
             self.video_capture = None
+        
+        # Release audio clip
+        if self.audio_clip is not None:
+            self.audio_clip.close()
+            self.audio_clip = None
+        
+        # Clear audio buffer
+        self.audio_buffer = None
         
         # Delete texture
         if self.texture is not None:
