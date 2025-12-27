@@ -77,20 +77,22 @@ def shader_pond_ripples(state, outstate, depth=30.0, intensity=1.0,
         
         # Process audio data if available
         if audio_data is not None:
-            # Use long-term normalized for stable detection over ~2.5s window
-            bands_long = audio_data['norm_long'][0]
+            # Use norm_long_relu which highlights above-average activity (already time-averaged)
+            # This avoids double averaging - norm_long_relu = ReLU(norm_long - 1)
+            bands_relu = audio_data['norm_long_relu'][0]
             
-            # Extract frequency ranges using long-term average
-            bass_energy = np.mean(bands_long[0:8])      # Bass: 40-300 Hz (ripple triggers)
-            mid_energy = np.mean(bands_long[8:20])      # Mids: 300-2000 Hz (wave intensity)
-            high_energy = np.mean(bands_long[20:32])    # Highs: 2000-16000 Hz (shimmer)
+            # Extract frequency ranges - these values are 0 when at/below average,
+            # and positive when above average (no additional smoothing needed)
+            bass_energy = np.mean(bands_relu[0:8])      # Bass: 40-300 Hz (ripple triggers)
+            mid_energy = np.mean(bands_relu[8:20])      # Mids: 300-2000 Hz (wave intensity)
+            high_energy = np.mean(bands_relu[20:32])    # Highs: 2000-16000 Hz (shimmer)
             
             state['effect'].audio_bass = bass_energy
             state['effect'].audio_mid = mid_energy
             state['effect'].audio_high = high_energy
             
-            # Overall loudness level
-            long_term_level = np.mean(bands_long)
+            # Overall loudness level (above average)
+            long_term_level = np.mean(bands_relu)
             state['effect'].audio_long_term_level = long_term_level
         else:
             state['effect'].audio_bass = 0.0
@@ -137,8 +139,8 @@ class PondRipplesEffect(ShaderEffect):
     """
     
     def __init__(self, viewport, depth: float = 30.0, intensity: float = 1.0,
-                 damping: float = 0.98, wave_speed: float = 1.5,
-                 ripple_frequency: float = 0.5, bass_sensitivity: float = 1.2,
+                 damping: float = 0.92, wave_speed: float = 1.5,
+                 ripple_frequency: float = 0.5, bass_sensitivity: float = 3.0,
                  water_color=None):
         super().__init__(viewport)
         self.depth = depth
@@ -159,11 +161,6 @@ class PondRipplesEffect(ShaderEffect):
         self.audio_high = 0.0
         self.audio_long_term_level = 0.0  # Long-term average for silence detection
         self.last_bass = 0.0
-        
-        # Smoothed audio values for stable modulation
-        self.audio_bass_smooth = 0.0
-        self.audio_mid_smooth = 0.0
-        self.audio_high_smooth = 0.0
         
         # Framebuffer objects for wave simulation (ping-pong buffers)
         self.buffer_current_FBO = None
@@ -540,34 +537,15 @@ class PondRipplesEffect(ShaderEffect):
         self.frame_count += 1
         self.ripple_timer += dt
         
-        # Smooth audio values with exponential decay (prevents flickering)
-        attack_factor = 1.0 - np.exp(-dt / 0.05)  # 50ms attack
-        decay_factor = 1.0 - np.exp(-dt / 0.2)    # 200ms decay
+        # No additional smoothing needed - norm_long_relu is already time-averaged
+        # and highlights above-average activity directly
         
-        # Bass: quick attack for ripple triggers
-        if self.audio_bass > self.audio_bass_smooth:
-            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * attack_factor
-        else:
-            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * decay_factor
-        
-        # Mid: affects wave intensity
-        if self.audio_mid > self.audio_mid_smooth:
-            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * attack_factor
-        else:
-            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * decay_factor
-        
-        # High: affects shimmer
-        if self.audio_high > self.audio_high_smooth:
-            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * attack_factor
-        else:
-            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * decay_factor
-        
-        # Detect bass hits - require BOTH increase AND high absolute level
-        bass_threshold = 0.15 * self.bass_sensitivity
-        # Only trigger when bass is actually VERY LOUD (> 1.2) AND increasing
-        if self.audio_bass > 1.2 and self.audio_bass > self.last_bass + bass_threshold:
-            # Strong bass hit - spawn ripple
-            self._spawn_ripple(strength=self.audio_bass * 1.5)
+        # Detect bass hits - audio_bass is now from norm_long_relu (0 = at/below average)
+        bass_threshold = 0.1 * self.bass_sensitivity  # Higher threshold for fewer ripples
+        # Trigger when bass is significantly above average AND increasing substantially
+        if self.audio_bass > bass_threshold and self.audio_bass > self.last_bass + 0.08:
+            # Bass hit - spawn ripple (reduced strength multiplier)
+            self._spawn_ripple(strength=self.audio_bass * 2.0)
         
         self.last_bass = self.audio_bass
     
@@ -626,12 +604,13 @@ class PondRipplesEffect(ShaderEffect):
         glUniform1f(dt_loc, 1.0 / 60.0)  # Assume 60 FPS
         
         # Audio-modulated damping (mid frequencies reduce damping = more active waves)
-        audio_damping = self.damping * (1.0 - self.audio_mid_smooth * 0.15)
+        # Use raw audio_mid directly (no smoothing needed, already from norm_long_relu)
+        audio_damping = self.damping * (1.0 - self.audio_mid * 0.15)
         damping_loc = glGetUniformLocation(self.shader_wave, "damping")
         glUniform1f(damping_loc, audio_damping)
         
         # Audio-modulated wave speed (mid frequencies increase speed)
-        audio_speed = self.wave_speed * (1.0 + self.audio_mid_smooth * 0.5)
+        audio_speed = self.wave_speed * (1.0 + self.audio_mid * 0.5)
         speed_loc = glGetUniformLocation(self.shader_wave, "waveSpeed")
         glUniform1f(speed_loc, audio_speed)
         
@@ -687,15 +666,15 @@ class PondRipplesEffect(ShaderEffect):
         time_loc = glGetUniformLocation(self.shader_image, "iTime")
         glUniform1f(time_loc, self.time)
         
-        # Audio uniforms for visual effects
+        # Audio uniforms for visual effects (use direct values, no smoothing)
         bass_loc = glGetUniformLocation(self.shader_image, "audioBass")
-        glUniform1f(bass_loc, self.audio_bass_smooth)
+        glUniform1f(bass_loc, self.audio_bass)
         
         mid_loc = glGetUniformLocation(self.shader_image, "audioMid")
-        glUniform1f(mid_loc, self.audio_mid_smooth)
+        glUniform1f(mid_loc, self.audio_mid)
         
         high_loc = glGetUniformLocation(self.shader_image, "audioHigh")
-        glUniform1f(high_loc, self.audio_high_smooth)
+        glUniform1f(high_loc, self.audio_high)
         
         # Bind wave texture
         glActiveTexture(GL_TEXTURE0)
