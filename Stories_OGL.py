@@ -221,8 +221,9 @@ class EnvironmentalSystem:
     def send_variables(self):
         self.season = (time.time() / 1800) % 1
         fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
-        self.cloudyness = (1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3
+        self.cloudyness = ((1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3)/4
         self.scheduler.state["cloudyness"] = self.cloudyness
+        #print(f"Cloudyness: {self.cloudyness:.3f}")
         # Set variables in scheduler state
         self.scheduler.state["fog_strength"] = fog
         self.scheduler.state["fog_color"] = self.weather_params["fog_color"]

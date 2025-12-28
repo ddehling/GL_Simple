@@ -47,10 +47,11 @@ def shader_drifting_clouds(state, outstate, density=1.0):
         outstate['has_clouds'] = True
         
         try:
+            # Always allocate max buffer for high cloudiness, actual spawning scales with cloudyness
             cloud_effect = viewport.add_effect(
                 CloudEffectGPU,
                 density=density,
-                max_clouds=20
+                max_clouds=40  # Fixed allocation for dynamic cloudiness changes
             )
             state['cloud_effect'] = cloud_effect
         except Exception as e:
@@ -115,12 +116,13 @@ class CloudEffectGPU(ShaderEffect):
         self.compute_shader = None
         
         # CPU-side mirror of cloud data for rendering (avoiding GPU readback)
-        self.cpu_cloud_data = np.zeros((max_clouds, 23), dtype=np.float32)
+        self.cpu_cloud_data = np.zeros((max_clouds, 24), dtype=np.float32)
         self.cpu_cloud_data[:, 9] = -1.0  # Mark all as inactive initially
         self.num_clouds = 0
         
         # Timing
         self.global_time = 0.0
+        self.last_fade_time = 0.0  # Track when we last marked a cloud for fading
         
     def get_compute_shader(self):
         """Compute shader for cloud physics updates"""
@@ -512,8 +514,8 @@ class CloudEffectGPU(ShaderEffect):
         # Create SSBO for cloud data storage
         # Each cloud: position(2) + size(2) + speed(1) + wind_sens(1) + opacities(2) + 
         #            scale(1) + lifetime(1) + is_fading(1) + turb_phase(3) + turb_speed(3) + 
-        #            turb_amount(3) + noise_seed(2) + depth(1) = 23 floats
-        cloud_data_size = self.max_clouds * 23 * 4  # 23 floats * 4 bytes
+        #            turb_amount(3) + noise_seed(2) + depth(1) + max_lifetime(1) = 24 floats
+        cloud_data_size = self.max_clouds * 24 * 4  # 24 floats * 4 bytes
         
         self.cloud_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
@@ -524,10 +526,10 @@ class CloudEffectGPU(ShaderEffect):
         print(f"    ✓ Created SSBO: {cloud_data_size} bytes for {self.max_clouds} clouds")
         
         # Initialize with empty clouds
-        initial_data = np.zeros(self.max_clouds * 23, dtype=np.float32)
+        initial_data = np.zeros(self.max_clouds * 24, dtype=np.float32)
         # Mark all as inactive (lifetime = -1)
         for i in range(self.max_clouds):
-            initial_data[i * 23 + 9] = -1.0  # lifetime field
+            initial_data[i * 24 + 9] = -1.0  # lifetime field
         
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, initial_data.nbytes, initial_data)
@@ -590,6 +592,11 @@ class CloudEffectGPU(ShaderEffect):
         wind_sens = altitude_factor * size_factor * np.random.uniform(0.5, 1.5)
         
         base_opacity = np.random.uniform(0.7, 1.0)
+        max_lifetime = np.random.uniform(40, 100)  # Variable lifespan
+        
+        # Randomize starting lifetime to prevent synchronized fading
+        # Give clouds a random "age" between 0 and 30 seconds
+        starting_lifetime = np.random.uniform(0, 30)
         
         # Build cloud data
         cloud_data = np.array([
@@ -599,7 +606,7 @@ class CloudEffectGPU(ShaderEffect):
             wind_sens,                  # wind sensitivity
             base_opacity, 0.2,          # base opacity, current opacity (start at 0.2 for faster fade-in)
             size_scale,                 # scale
-            0.0,                        # lifetime (start at 0)
+            starting_lifetime,          # lifetime (randomized starting age)
             0.0,                        # is_fading (not fading)
             *np.random.uniform(0, 2*np.pi, 3),  # turb_phase
             *np.random.uniform(0.1, 0.3, 3),    # turb_speed
@@ -608,11 +615,12 @@ class CloudEffectGPU(ShaderEffect):
             np.random.uniform(0.1, 0.3),        # turb_amount
             *np.random.uniform(0, 10, 2),       # noise_seed
             depth,                      # depth
+            max_lifetime,               # max lifetime
         ], dtype=np.float32)
         
         # Upload to SSBO
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.cloud_ssbo)
-        offset = inactive_idx * 22 * 4
+        offset = inactive_idx * 24 * 4
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, cloud_data.nbytes, cloud_data)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
         
@@ -631,9 +639,33 @@ class CloudEffectGPU(ShaderEffect):
         target_count = int(np.clip(self.cloudyness, 0, 1) * self.max_clouds)
         
         if self.num_clouds < target_count:
-            spawn_chance = dt * 0.3
-            if np.random.random() < spawn_chance:
-                self._spawn_cloud_gpu()
+            # Aggressive spawning when below target - spawn multiple per second
+            deficit = target_count - self.num_clouds
+            spawn_rate = min(2.0, deficit * 0.3)  # Up to 2 clouds/sec, faster when further from target
+            spawn_chance = dt * spawn_rate
+            
+            # Try to spawn (might spawn multiple in one frame if dt is large)
+            while spawn_chance > 0:
+                if np.random.random() < min(spawn_chance, 1.0):
+                    self._spawn_cloud_gpu()
+                spawn_chance -= 1.0
+                
+        elif self.num_clouds > target_count:
+            # Gradually mark excess clouds for fading (not all at once)
+            # Only mark 1 cloud every 2-4 seconds to create smooth, natural reduction
+            time_since_last_fade = self.global_time - self.last_fade_time
+            fade_interval = np.random.uniform(2.0, 4.0)  # Random interval for natural variation
+            
+            if time_since_last_fade >= fade_interval:
+                active_indices = np.where(self.cpu_cloud_data[:, 9] >= 0)[0]
+                not_fading_mask = self.cpu_cloud_data[active_indices, 10] < 0.5
+                not_fading = active_indices[not_fading_mask]
+                
+                if len(not_fading) > 0:
+                    # Mark just one random cloud for fading
+                    fade_idx = np.random.choice(not_fading)
+                    self.cpu_cloud_data[fade_idx, 10] = 1.0
+                    self.last_fade_time = self.global_time
         
         # Update physics on CPU for active clouds using vectorized operations
         active_mask = self.cpu_cloud_data[:, 9] >= 0
@@ -683,14 +715,10 @@ class CloudEffectGPU(ShaderEffect):
         removed_count = np.sum(fully_faded)
         self.num_clouds -= removed_count
         
-        # Natural lifecycle: start fading after 30 seconds if in middle (vectorized)
-        wrap_margin = 60.0
-        cloud_width_scaled = active_clouds[:, 2] * active_clouds[:, 8]  # width * scale
-        middle_left = wrap_margin + cloud_width_scaled
-        middle_right = self.viewport.width - wrap_margin - cloud_width_scaled
-        
-        in_middle = (active_clouds[:, 0] > middle_left) & (active_clouds[:, 0] < middle_right)
-        should_fade = (active_clouds[:, 9] > 30.0) & in_middle & (active_clouds[:, 10] < 0.5)
+        # Natural lifecycle: fade clouds after their individual max_lifetime (40-100 seconds)
+        # This ensures clouds eventually cycle regardless of position
+        max_lifetimes = active_clouds[:, 23]  # max_lifetime field
+        should_fade = (active_clouds[:, 9] > max_lifetimes) & (active_clouds[:, 10] < 0.5)
         active_clouds[should_fade, 10] = 1.0  # Start fading
         
         # Write back active clouds to main array
