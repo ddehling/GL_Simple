@@ -109,6 +109,31 @@ class EventScheduler:
         self.state['starryness'] = 0.0
         self.state['simulate'] = True
         
+        # Calculate total pixels across all displays
+        total_pixels = sum(width * height for width, height in frame_dimensions)
+        
+        # Brightness limiting configuration
+        # Setpoint is based on total pixels × average brightness per pixel × color factors
+        # For example: if you want max average brightness of 128 per pixel (half of 255)
+        max_avg_brightness_per_pixel = 64  # Adjust this value (0-255)
+        avg_color_factor = (0.7 + 0.9 + 1.0)  # Average of color factors
+        calculated_setpoint = total_pixels * max_avg_brightness_per_pixel * avg_color_factor
+        
+        self.brightness_config = {
+            'red_factor': 0.7,      # Brightnessfactors are based on LED per color power draws
+            'green_factor': 0.9,
+            'blue_factor': 1.,
+            'setpoint': calculated_setpoint,
+            'threshold': 0.8,         # Start limiting at 80% of setpoint
+            'smoothing': 0.05          # Lower = smoother but slower response (0.05-0.2 recommended)
+        }
+        self.brightness_state = {
+            'divisor': 1.0,           # Current brightness divisor
+            'bright_factor': 0.0      # Last calculated brightness factor
+        }
+        
+        print(f"Brightness limiting: {total_pixels} pixels, setpoint={calculated_setpoint:.0f}")
+        
         # Define receivers for each display
         receivers = [            
             [
@@ -317,6 +342,9 @@ class EventScheduler:
             frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
             frame_corrected = frame_corrected.astype(np.uint8)
             
+            # Apply brightness limiting
+            frame_corrected = self._apply_brightness_limiting(frame_corrected)
+            
             # Send to physical display if available
             if i < len(self.state['screens']) and self.state['screens'][i] is not None:
                 try:
@@ -397,7 +425,59 @@ class EventScheduler:
         
         return frame
 
-
+    def _apply_brightness_limiting(self, frame_corrected):
+        """
+        Apply brightness limiting to prevent total brightness from exceeding setpoint.
+        Uses exponential smoothing to prevent flickering.
+        
+        Args:
+            frame_corrected: RGB frame (height, width, 3) as uint8
+            
+        Returns:
+            Limited frame with same shape and dtype
+        """
+        cfg = self.brightness_config
+        state = self.brightness_state
+        
+        # Calculate weighted brightness factor
+        red_sum = np.sum(frame_corrected[:, :, 0].astype(np.float64))
+        green_sum = np.sum(frame_corrected[:, :, 1].astype(np.float64))
+        blue_sum = np.sum(frame_corrected[:, :, 2].astype(np.float64))
+        
+        bright_factor = (red_sum * cfg['red_factor'] + 
+                        green_sum * cfg['green_factor'] + 
+                        blue_sum * cfg['blue_factor'])
+        
+        state['bright_factor'] = bright_factor
+        
+        # Calculate target divisor
+        threshold_value = cfg['setpoint'] * cfg['threshold']
+        
+        if bright_factor <= threshold_value:
+            # Below threshold - no limiting needed
+            target_divisor = 1.0
+        else:
+            # Above threshold - calculate divisor to bring brightness to setpoint
+            # Use a smooth transition that gets stronger as we exceed the setpoint
+            target_divisor = bright_factor / cfg['setpoint']
+            
+            # Ensure divisor is at least 1.0
+            target_divisor = max(1.0, target_divisor)
+        
+        # Smooth the divisor using exponential moving average to prevent flickering
+        # Higher smoothing = slower response but smoother transitions
+        alpha = cfg['smoothing']
+        state['divisor'] = (alpha * target_divisor) + ((1 - alpha) * state['divisor'])
+        
+        # Apply the divisor if it's significantly above 1.0
+        if state['divisor'] > 1.001:
+            print(f"Brightness factor: {bright_factor:.1f}, Divisor: {state['divisor']:.3f}")
+            # Convert to float, divide, then convert back
+            frame_limited = frame_corrected.astype(np.float32) / state['divisor']
+            frame_limited = np.clip(frame_limited, 0, 255).astype(np.uint8)
+            return frame_limited
+        else:
+            return frame_corrected
 
     def cleanup(self):
         """Clean up all resources"""
