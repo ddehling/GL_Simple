@@ -272,7 +272,8 @@ class EnvironmentalSystem:
                         "base_width": 2.0,
                         "max_width": 20.0,
                         "color_hue": 0.5,
-                        "frame_id": 0}),                                         # Position 13
+                        "frame_id": 0}),    
+                (fx.shader_pixel_spots, {})                                     # Position 13
             ]
             
             # Determine closest position along the year based on number of events
@@ -293,7 +294,7 @@ class EnvironmentalSystem:
             self.scheduler.schedule_event(0, 60, event_func, frame_id=0, **event_kwargs)
 
 
-        if (randcheck < self.weather_params["tree_prob"] / 5000):
+        if (randcheck < self.weather_params["tree_prob"] / 10000):
             # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
             self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=self.scale, frame_id=0) # noqa: F405
         

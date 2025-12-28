@@ -41,7 +41,7 @@ def shader_rain(state, outstate, intensity=1.0, wind=0.3, audio_sensitivity=1.5)
     
     # Initialize rain effect on first call
     if state['count'] == 0:
-        num_drops = int(100 * intensity)
+        num_drops = int(300 * intensity)
         print(f"Initializing rain effect for frame {frame_id} with {num_drops} drops")
         
         try:
@@ -86,7 +86,7 @@ def shader_rain(state, outstate, intensity=1.0, wind=0.3, audio_sensitivity=1.5)
 class RainEffect(ShaderEffect):
     """GPU-based rain effect using instanced rendering with vectorized updates"""
     
-    def __init__(self, viewport, num_raindrops: int = 100, wind: float = 0.3):
+    def __init__(self, viewport, num_raindrops: int = 300, wind: float = 0.3):
         super().__init__(viewport)
         self.num_raindrops = num_raindrops
         self.base_num_raindrops = num_raindrops
@@ -610,12 +610,16 @@ class RainEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-        # Calculate rotations based on wind - use base velocities to prevent audio from changing direction
-        base_horizontal_velocity = self.wind * 100
-        vertical_velocity = self.base_velocities[combined_indices]  # Use base velocities, not audio-modified
-        velocity_angle = np.arctan2(base_horizontal_velocity, vertical_velocity)
-        base_rotation = np.pi
-        rotations = (base_rotation - velocity_angle).astype(np.float32)
+        # Calculate rotations to match actual movement direction
+        # Use the ACTUAL velocities being used for movement, not base velocities
+        horizontal_vel = self.wind * 100
+        vertical_vel = self.velocities[combined_indices]  # Use actual velocities with rain_intensity
+        
+        # Angle of movement from vertical downward direction
+        velocity_angle = np.arctan2(horizontal_vel, vertical_vel)
+        
+        # Quad starts pointing up, π rotates it down, then subtract angle to align with velocity
+        rotations = (np.pi - velocity_angle).astype(np.float32)
         
         # Build instance data (sorted back-to-front)
         instance_data = np.hstack([
