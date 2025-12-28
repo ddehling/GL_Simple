@@ -261,7 +261,6 @@ class EnvironmentalSystem:
                 (fx.shader_tentacle, {}),                                        # Position 6
                 (fx.shader_tunnel_raymarch, {}),                                 # Position 7
                 (fx.shader_tunnel, {}),                                          # Position 8
-                (fx.shader_tunnel, {}),                                          # Position 9
                 (fx.shader_voronoi_sphere, {}),                                  # Position 10
                 (fx.shader_wave_terrain, {}),                                    # Position 11
                 (fx.shader_wave_equation, {}),                                   # Position 12
@@ -405,7 +404,7 @@ if __name__ == "__main__":
 
     # Start with summer bloom weather
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 160, fx.shader_pond_ripples, 
+    env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
         # 0=red, 0.33=green, 0.66=blue
                         frame_id=0)
     #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
