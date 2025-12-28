@@ -338,11 +338,10 @@ class EventScheduler:
             
             #frame = self._generate_test_pattern(frame.shape[0], frame.shape[1], pattern_type=0)/4
 
-            # Apply gamma correction
+            # Apply gamma correction (keep as float)
             frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
-            frame_corrected = frame_corrected.astype(np.uint8)
             
-            # Apply brightness limiting
+            # Apply brightness limiting and convert to uint8
             frame_corrected = self._apply_brightness_limiting(frame_corrected)
             
             # Send to physical display if available
@@ -431,18 +430,18 @@ class EventScheduler:
         Uses exponential smoothing to prevent flickering.
         
         Args:
-            frame_corrected: RGB frame (height, width, 3) as uint8
+            frame_corrected: RGB frame (height, width, 3) as float (0-255 range)
             
         Returns:
-            Limited frame with same shape and dtype
+            Limited frame as uint8
         """
         cfg = self.brightness_config
         state = self.brightness_state
         
-        # Calculate weighted brightness factor
-        red_sum = np.sum(frame_corrected[:, :, 0].astype(np.float64))
-        green_sum = np.sum(frame_corrected[:, :, 1].astype(np.float64))
-        blue_sum = np.sum(frame_corrected[:, :, 2].astype(np.float64))
+        # Calculate weighted brightness factor (frame already in float)
+        red_sum = np.sum(frame_corrected[:, :, 0])
+        green_sum = np.sum(frame_corrected[:, :, 1])
+        blue_sum = np.sum(frame_corrected[:, :, 2])
         
         bright_factor = (red_sum * cfg['red_factor'] + 
                         green_sum * cfg['green_factor'] + 
@@ -472,12 +471,10 @@ class EventScheduler:
         # Apply the divisor if it's significantly above 1.0
         if state['divisor'] > 1.001:
             print(f"Brightness factor: {bright_factor:.1f}, Divisor: {state['divisor']:.3f}")
-            # Convert to float, divide, then convert back
-            frame_limited = frame_corrected.astype(np.float32) / state['divisor']
-            frame_limited = np.clip(frame_limited, 0, 255).astype(np.uint8)
-            return frame_limited
-        else:
-            return frame_corrected
+            frame_corrected = frame_corrected / state['divisor']
+        
+        # Convert to uint8 once at the end
+        return np.clip(frame_corrected, 0, 255).astype(np.uint8)
 
     def cleanup(self):
         """Clean up all resources"""
