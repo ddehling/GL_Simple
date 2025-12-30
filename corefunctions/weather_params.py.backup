@@ -342,8 +342,9 @@ WEATHER_SETS = {
         "name": "Cosmic Night",
         "season_extremity": 1,
         "season_speed": 2,
-        "states": ["clear", "windy_night", "thunderstorm"],
+        "states": ["clear", "windy_night", "thunderstorm", "sandstorm"],
         "transition_speed": 2,
+        "background_events": ["stars", "clouds"],
     },
 
     "desert_realm": {
@@ -354,6 +355,7 @@ WEATHER_SETS = {
         "season_speed": 0.5,
         "states": ["clear", "sandstorm", "volcano", "windy_night"],
         "transition_speed": 0.6,
+        "background_events": ["sandstorm", "stars", "clouds"],
     },
 
     "ethereal_mist": {
@@ -364,6 +366,7 @@ WEATHER_SETS = {
         "season_speed": 0.7,
         "states": ["heavy_fog", "foggy", "spooky", "mushroom", "firefly"],
         "transition_speed": 0.5,
+        "background_events": ["fog", "fog_beings", "firefly", "clouds"],
     },
 
     "full_spectrum": {
@@ -374,6 +377,7 @@ WEATHER_SETS = {
         "season_speed": 1,
         "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", "foggy", "heavy_fog", "spooky", "firefly", "volcano", "sandstorm", "asteroid", "mushroom", "leaves", "bloom"],
         "transition_speed": 1,
+        "background_events": ["clouds", "firefly", "stars", "rain", "fog"],
     },
 
     "peaceful_forest": {
@@ -384,6 +388,7 @@ WEATHER_SETS = {
         "season_speed": 1,
         "states": ["clear", "light_rain", "foggy", "firefly", "mushroom", "bloom", "leaves"],
         "transition_speed": 0.8,
+        "background_events": ["clouds", "firefly", "stars", "rain", "fog", "falling_leaves"],
     },
 
     "storm_world": {
@@ -394,6 +399,7 @@ WEATHER_SETS = {
         "season_speed": 1.5,
         "states": ["windy_night", "heavy_rain", "thunderstorm", "foggy", "spooky"],
         "transition_speed": 1.5,
+        "background_events": ["clouds", "rain", "fog", "stars"],
     },
 
 }
