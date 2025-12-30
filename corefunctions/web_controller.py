@@ -32,6 +32,15 @@ class WebController:
         self.control_dict = control_dict if control_dict is not None else {}
         self.port = port
         self.service_name = service_name
+        
+        # Add thread lock for thread-safe dictionary access
+        self._dict_lock = threading.RLock()
+        
+        # Cache for frequently accessed values to reduce lock contention
+        self._values_cache = None
+        self._values_cache_time = 0
+        self._cache_duration = 0.1  # Cache for 100ms
+        
         self.app = Flask(__name__, 
                         template_folder=str(Path(__file__).parent.parent / 'templates'))
         
@@ -207,7 +216,26 @@ class WebController:
         @self.app.route('/api/values')
         def get_values():
             """Return current values of all controls."""
-            return jsonify(self.control_dict)
+            # Use cached values if available and fresh
+            import time
+            current_time = time.time()
+            
+            if (self._values_cache is not None and 
+                current_time - self._values_cache_time < self._cache_duration):
+                return self._values_cache
+            
+            # Create a snapshot with lock to avoid holding it during JSON serialization
+            with self._dict_lock:
+                values_snapshot = self.control_dict.copy()
+            
+            # Serialize outside the lock
+            response = jsonify(values_snapshot)
+            
+            # Cache the response
+            self._values_cache = response
+            self._values_cache_time = current_time
+            
+            return response
         
         @self.app.route('/api/update', methods=['POST'])
         def update_value():
@@ -224,7 +252,12 @@ class WebController:
                 elif schema_type in ["slider", "number"]:
                     value = float(value)
                 
-                self.control_dict[key] = value
+                with self._dict_lock:
+                    self.control_dict[key] = value
+                
+                # Invalidate cache
+                self._values_cache = None
+                
                 return jsonify({"success": True, "key": key, "value": value})
             
             return jsonify({"success": False, "error": "Unknown key"}), 400
@@ -235,6 +268,7 @@ class WebController:
             data = request.json
             updated = {}
             
+            # Prepare updates outside lock
             for key, value in data.items():
                 if key in self.control_schema:
                     schema_type = self.control_schema[key]["type"]
@@ -242,9 +276,14 @@ class WebController:
                         value = bool(value)
                     elif schema_type in ["slider", "number"]:
                         value = float(value)
-                    
-                    self.control_dict[key] = value
                     updated[key] = value
+            
+            # Apply all updates at once under lock
+            with self._dict_lock:
+                self.control_dict.update(updated)
+            
+            # Invalidate cache
+            self._values_cache = None
             
             return jsonify({"success": True, "updated": updated})
         
@@ -257,13 +296,19 @@ class WebController:
             if not new_set:
                 return jsonify({"success": False, "error": "No set_name provided"}), 400
             
-            # Check if set exists
-            available_sets = self.control_dict.get('available_sets', [])
+            # Check if set exists (read with lock)
+            with self._dict_lock:
+                available_sets = self.control_dict.get('available_sets', [])
+            
             if new_set not in available_sets:
                 return jsonify({"success": False, "error": f"Unknown set: {new_set}"}), 400
             
             # Set the request in control dict for main loop to pick up
-            self.control_dict['request_weather_set'] = new_set
+            with self._dict_lock:
+                self.control_dict['request_weather_set'] = new_set
+            
+            # Invalidate cache
+            self._values_cache = None
             
             return jsonify({
                 "success": True, 
@@ -274,66 +319,71 @@ class WebController:
         @self.app.route('/api/weather_set/info')
         def weather_set_info():
             """Get current weather set information."""
-            return jsonify({
-                "current_set": self.control_dict.get('current_weather_set', 'unknown'),
-                "available_sets": self.control_dict.get('available_sets', []),
-                "current_weather": self.control_dict.get('current_weather', 'unknown'),
-                "season": self.control_dict.get('season', 0.0)
-            })
+            with self._dict_lock:
+                info = {
+                    "current_set": self.control_dict.get('current_weather_set', 'unknown'),
+                    "available_sets": self.control_dict.get('available_sets', []),
+                    "current_weather": self.control_dict.get('current_weather', 'unknown'),
+                    "season": self.control_dict.get('season', 0.0)
+                }
+            return jsonify(info)
         
         @self.app.route('/api/weather_editor/all_data')
         def get_all_weather_data():
             """Get all weather states, presets, and sets for editing."""
-            from corefunctions.weather_params import (
-                WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, GLOBAL_PARAMETERS
-            )
-            import numpy as np
-            import os
-            from pathlib import Path
+            # Cache this expensive operation
+            if not hasattr(self, '_weather_data_cache'):
+                from corefunctions.weather_params import (
+                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, GLOBAL_PARAMETERS
+                )
+                import numpy as np
+                from pathlib import Path
+                
+                def convert_to_json_serializable(obj):
+                    """Recursively convert numpy arrays to lists"""
+                    if isinstance(obj, np.ndarray):
+                        return obj.tolist()
+                    elif isinstance(obj, dict):
+                        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [convert_to_json_serializable(item) for item in obj]
+                    else:
+                        return obj
+                
+                # Get available sound files (only once)
+                sound_files = []
+                sounds_dir = Path(__file__).parent.parent / 'media' / 'sounds'
+                if sounds_dir.exists():
+                    sound_files = [f.name for f in sounds_dir.iterdir() if f.is_file()]
+                    sound_files.sort()
+                
+                # Convert WeatherState enum to list of strings
+                weather_states = [state.value for state in WeatherState]
+                
+                # Convert WEATHER_PRESETS dict (with WeatherState keys) to JSON-friendly format
+                presets = {}
+                for state, params in WEATHER_PRESETS.items():
+                    state_key = state.value if hasattr(state, 'value') else str(state)
+                    params_copy = convert_to_json_serializable(params.copy())
+                    presets[state_key] = params_copy
+                
+                # Convert default params
+                default_params = convert_to_json_serializable(DEFAULT_WEATHER_PARAMS.copy())
+                
+                # Convert weather sets
+                weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
+                
+                # Cache the result
+                self._weather_data_cache = {
+                    "weather_states": weather_states,
+                    "default_params": default_params,
+                    "weather_presets": presets,
+                    "weather_sets": weather_sets,
+                    "global_parameters": GLOBAL_PARAMETERS,
+                    "available_sounds": sound_files
+                }
             
-            def convert_to_json_serializable(obj):
-                """Recursively convert numpy arrays to lists"""
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                elif isinstance(obj, dict):
-                    return {k: convert_to_json_serializable(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [convert_to_json_serializable(item) for item in obj]
-                else:
-                    return obj
-            
-            # Get available sound files
-            sound_files = []
-            sounds_dir = Path(__file__).parent.parent / 'media' / 'sounds'
-            if sounds_dir.exists():
-                sound_files = [f.name for f in sounds_dir.iterdir() if f.is_file()]
-                sound_files.sort()
-            
-            # Convert WeatherState enum to list of strings
-            weather_states = [state.value for state in WeatherState]
-            
-            # Convert WEATHER_PRESETS dict (with WeatherState keys) to JSON-friendly format
-            presets = {}
-            for state, params in WEATHER_PRESETS.items():
-                state_key = state.value if hasattr(state, 'value') else str(state)
-                # Deep copy and convert all numpy arrays to lists
-                params_copy = convert_to_json_serializable(params.copy())
-                presets[state_key] = params_copy
-            
-            # Convert default params
-            default_params = convert_to_json_serializable(DEFAULT_WEATHER_PARAMS.copy())
-            
-            # Convert weather sets
-            weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
-            
-            return jsonify({
-                "weather_states": weather_states,
-                "default_params": default_params,
-                "weather_presets": presets,
-                "weather_sets": weather_sets,
-                "global_parameters": GLOBAL_PARAMETERS,
-                "available_sounds": sound_files
-            })
+            return jsonify(self._weather_data_cache)
         
         @self.app.route('/api/weather_editor/save', methods=['POST'])
         def save_weather_data():
@@ -348,6 +398,9 @@ class WebController:
                     weather_sets=data.get('weather_sets', {}),
                     global_parameters=data.get('global_parameters', [])
                 )
+                
+                # Clear cache since data has changed
+                self.clear_weather_data_cache()
                 
                 if result['success']:
                     return jsonify(result)
@@ -367,6 +420,9 @@ class WebController:
                 import importlib
                 from corefunctions import weather_params
                 importlib.reload(weather_params)
+                
+                # Clear cache since module has been reloaded
+                self.clear_weather_data_cache()
                 
                 return jsonify({
                     "success": True,
@@ -399,6 +455,11 @@ class WebController:
                     "valid": False,
                     "errors": [str(e)]
                 }), 500
+    
+    def clear_weather_data_cache(self):
+        """Clear cached weather data (call after saving changes)."""
+        if hasattr(self, '_weather_data_cache'):
+            delattr(self, '_weather_data_cache')
     
     def add_control(self, key, control_type, label, **kwargs):
         """
@@ -453,43 +514,51 @@ class WebController:
     
     def _register_mdns(self):
         """Register the service with mDNS/Bonjour for easy discovery."""
-        try:
-            # Get local IP address
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
-            
-            # Create service info
-            service_type = "_http._tcp.local."
-            service_name = f"{self.service_name}.{service_type}"
-            
-            self.zeroconf = Zeroconf()
-            self.service_info = ServiceInfo(
-                service_type,
-                service_name,
-                addresses=[socket.inet_aton(local_ip)],
-                port=self.port,
-                properties={
-                    'path': '/',
-                    'description': 'GL_Simple Control Panel'
-                },
-                server=f"{self.service_name}.local."
-            )
-            
-            # Register in a separate thread to avoid blocking
-            def register_with_timeout():
+        # Do this in background thread - it can be slow
+        def register_async():
+            try:
+                # Get local IP address (use a timeout to avoid blocking)
+                hostname = socket.gethostname()
+                # Try to get IP quickly, fallback to 127.0.0.1
                 try:
-                    self.zeroconf.register_service(self.service_info)
-                    print(f"mDNS service registered as '{self.service_name}.local'")
-                except Exception as e:
-                    print(f"Warning: mDNS registration failed: {e}")
-            
-            mdns_thread = threading.Thread(target=register_with_timeout, daemon=True)
-            mdns_thread.start()
-            
-        except Exception as e:
-            print(f"Warning: Could not register mDNS service: {e}")
-            print("Service will still be accessible via IP address")
-    
+                    local_ip = socket.gethostbyname(hostname)
+                except:
+                    local_ip = '127.0.0.1'
+                
+                # Create service info
+                service_type = "_http._tcp.local."
+                service_name = f"{self.service_name}.{service_type}"
+                
+                self.zeroconf = Zeroconf()
+                self.service_info = ServiceInfo(
+                    service_type,
+                    service_name,
+                    addresses=[socket.inet_aton(local_ip)],
+                    port=self.port,
+                    properties={
+                        'path': '/',
+                        'description': 'GL_Simple Control Panel'
+                    },
+                    server=f"{self.service_name}.local."
+                )
+                
+                # Register in a separate thread to avoid blocking
+                def register_with_timeout():
+                    try:
+                        self.zeroconf.register_service(self.service_info)
+                        print(f"mDNS service registered as '{self.service_name}.local'")
+                    except Exception as e:
+                        print(f"Warning: mDNS registration failed: {e}")
+                
+                register_with_timeout()
+                
+            except Exception as e:
+                print(f"Warning: Could not register mDNS service: {e}")
+                print("Service will still be accessible via IP address")
+        
+        # Start async registration in background
+        mdns_thread = threading.Thread(target=register_async, daemon=True)
+        mdns_thread.start()
     def stop(self):
         """Stop the web server and unregister mDNS service."""
         if self.zeroconf and self.service_info:
@@ -502,19 +571,25 @@ class WebController:
     
     def get(self, key, default=None):
         """Get a value from the control dictionary."""
-        return self.control_dict.get(key, default)
+        with self._dict_lock:
+            return self.control_dict.get(key, default)
     
     def set(self, key, value):
         """Set a value in the control dictionary."""
-        self.control_dict[key] = value
+        with self._dict_lock:
+            self.control_dict[key] = value
+        self._values_cache = None  # Invalidate cache
     
     def __getitem__(self, key):
         """Allow dictionary-style access."""
-        return self.control_dict[key]
+        with self._dict_lock:
+            return self.control_dict[key]
     
     def __setitem__(self, key, value):
         """Allow dictionary-style setting."""
-        self.control_dict[key] = value
+        with self._dict_lock:
+            self.control_dict[key] = value
+        self._values_cache = None  # Invalidate cache
 
 
 if __name__ == "__main__":

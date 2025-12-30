@@ -42,18 +42,23 @@ class EnvironmentalSystem:
         #self.specdat = np.zeros([513, 1000])
         self.scale = 1.0
         
-        # Initialize web control system
-        self.web_controls = {
-            "current_weather_set": self.current_set,
-            "available_sets": list(WEATHER_SETS.keys()),
-        }
-        self.web_controller = WebController(
-            self.web_controls, 
-            port=5000, 
-            service_name="glsimple",
-            admin_password="admin123"  # Change this to your desired password
-        )
-        self.web_controller.start(threaded=True)
+        # Initialize web control system (set to False to disable for max performance)
+        self.enable_web_control = True
+        self.web_controller = None
+        
+        if self.enable_web_control:
+            self.web_controls = {
+                "current_weather_set": self.current_set,
+                "available_sets": list(WEATHER_SETS.keys()),
+            }
+            self.web_controller = WebController(
+                self.web_controls, 
+                port=5000, 
+                service_name="glsimple",
+                admin_password="admin123"  # Change this to your desired password
+            )
+            self.web_controller.start(threaded=True)
+        
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
         # sort celestial bodies by distance, farthest first
@@ -279,30 +284,57 @@ class EnvironmentalSystem:
 
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
-        # Check for weather set change requests
-        if 'request_weather_set' in self.web_controls:
-            new_set = self.web_controls['request_weather_set']
-            if new_set != self.current_set:
-                self.change_weather_set(new_set)
-            del self.web_controls['request_weather_set']
+        # Skip entirely if web control is disabled
+        if not self.enable_web_control or self.web_controller is None:
+            return
         
-        # Update web controls with current state
-        self.web_controls['current_weather_set'] = self.current_set
-        self.web_controls['current_weather'] = self.current_weather.value
-        self.web_controls['season'] = float(self.season)
+        # Only check web controls occasionally - not every frame!
+        if not hasattr(self, '_last_web_check'):
+            self._last_web_check = 0
         
-        # Example: scale effects based on web controls
-        if 'weather_intensity' in self.web_controls:
-            intensity = self.web_controls['weather_intensity']
+        # Only check every 0.2 seconds instead of every frame (reduces from 30Hz to 5Hz)
+        if self.current_time - self._last_web_check < 0.2:
+            return
+        
+        self._last_web_check = self.current_time
+        
+        # Check for weather set change requests (only if present)
+        new_set = self.web_controller.get('request_weather_set')
+        if new_set and new_set != self.current_set:
+            self.change_weather_set(new_set)
+            self.web_controller.set('request_weather_set', None)
+        
+        # Update status values every 0.5 seconds
+        if not hasattr(self, '_last_status_update'):
+            self._last_status_update = 0
+        
+        if self.current_time - self._last_status_update > 0.5:
+            # Batch update to minimize lock acquisitions
+            self.web_controller._dict_lock.acquire()
+            try:
+                self.web_controls['current_weather_set'] = self.current_set
+                self.web_controls['current_weather'] = self.current_weather.value
+                self.web_controls['season'] = float(self.season)
+                self.web_controller._values_cache = None  # Invalidate cache
+            finally:
+                self.web_controller._dict_lock.release()
+            self._last_status_update = self.current_time
+        
+        # Read control values (only when we actually check)
+        weather_intensity = self.web_controller.get('weather_intensity')
+        if weather_intensity is not None:
             # Apply intensity to weather effects
+            pass
             
-        if 'fog_strength' in self.web_controls:
+        fog_strength = self.web_controller.get('fog_strength')
+        if fog_strength is not None:
             # Update fog strength in real-time
-            fog_strength = self.web_controls['fog_strength']
+            pass
             
-        if 'audio_sensitivity' in self.web_controls:
+        audio_sensitivity = self.web_controller.get('audio_sensitivity')
+        if audio_sensitivity is not None:
             # Adjust audio sensitivity
-            self.analyzer.sensitivity = self.web_controls['audio_sensitivity']
+            self.analyzer.sensitivity = audio_sensitivity
     
     def transition_update(self):
         # self.progress = 1.0
