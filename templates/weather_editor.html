@@ -1014,6 +1014,21 @@ function renderSetEditor() {
         
         <div class="editor-section">
             <div class="section-header">
+                <div class="section-title">Background Events (Always Active)</div>
+                <button class="btn btn-primary btn-sm" onclick="toggleBackgroundEventDropdown()">+ Add Background Event</button>
+            </div>
+            
+            <div class="weather-states-container">
+                <div class="weather-pills" id="backgroundEventPills"></div>
+                
+                <div class="add-weather-dropdown">
+                    <div class="dropdown-content" id="backgroundEventDropdown"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
                 <div class="section-title">Allowed Parameters for This Set</div>
                 <button class="btn btn-primary btn-sm" onclick="toggleParameterDropdown()">+ Add Parameter</button>
             </div>
@@ -1064,6 +1079,7 @@ function renderSetEditor() {
     
     renderWeatherPills();
     renderParameterPills();
+    renderBackgroundEventPills();
     renderWeatherTabs();
     renderSeasonVisualizer();
 }
@@ -1205,6 +1221,108 @@ function removeParameterFromSet(param) {
         renderParameterPills();
         renderWeatherTabs(); // Refresh to hide parameter
         showStatus(`Removed parameter ${param} from set`, 'success', 2000);
+    }
+}
+
+function renderBackgroundEventPills() {
+    const setData = weatherData.weather_sets[currentSet];
+    const eventPills = document.getElementById('backgroundEventPills');
+    
+    if (!eventPills) return;
+    
+    eventPills.innerHTML = '';
+    
+    const backgroundEvents = setData.background_events || [];
+    
+    if (backgroundEvents.length > 0) {
+        backgroundEvents.forEach(event => {
+            const pill = document.createElement('div');
+            pill.className = 'weather-pill';
+            pill.innerHTML = `
+                <span>${event}</span>
+                <button class="weather-pill-remove" onclick="removeBackgroundEvent('${event}')">×</button>
+            `;
+            eventPills.appendChild(pill);
+        });
+    } else {
+        eventPills.innerHTML = '<p style="color: #999; padding: 10px;">No background events configured.</p>';
+    }
+}
+
+function toggleBackgroundEventDropdown() {
+    const dropdown = document.getElementById('backgroundEventDropdown');
+    renderBackgroundEventDropdown();
+    dropdown.classList.toggle('show');
+    
+    // Close dropdown when clicking outside
+    setTimeout(() => {
+        document.addEventListener('click', function closeDropdown(e) {
+            if (!e.target.closest('.add-weather-dropdown')) {
+                dropdown.classList.remove('show');
+                document.removeEventListener('click', closeDropdown);
+            }
+        });
+    }, 0);
+}
+
+function renderBackgroundEventDropdown() {
+    const setData = weatherData.weather_sets[currentSet];
+    const dropdown = document.getElementById('backgroundEventDropdown');
+    
+    if (!dropdown) return;
+    
+    dropdown.innerHTML = '';
+    
+    // Available background events (from event_map in Stories_OGL.py)
+    const availableEvents = [
+        'clouds',
+        'firefly',
+        'stars',
+        'rain',
+        'fog',
+        'sandstorm',
+        'fog_beings',
+        'falling_leaves'
+    ];
+    
+    const backgroundEvents = setData.background_events || [];
+    
+    availableEvents.forEach(event => {
+        const isInSet = backgroundEvents.includes(event);
+        const item = document.createElement('div');
+        item.className = 'dropdown-item' + (isInSet ? ' disabled' : '');
+        item.textContent = event;
+        
+        if (!isInSet) {
+            item.onclick = () => addBackgroundEvent(event);
+        }
+        
+        dropdown.appendChild(item);
+    });
+}
+
+function addBackgroundEvent(event) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (!setData.background_events) {
+        setData.background_events = [];
+    }
+    
+    if (!setData.background_events.includes(event)) {
+        setData.background_events.push(event);
+        triggerAutoSave();
+        renderBackgroundEventPills();
+        document.getElementById('backgroundEventDropdown').classList.remove('show');
+        showStatus(`Added background event ${event} to set`, 'success', 2000);
+    }
+}
+
+function removeBackgroundEvent(event) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (setData.background_events) {
+        setData.background_events = setData.background_events.filter(e => e !== event);
+        triggerAutoSave();
+        renderBackgroundEventPills();
+        showStatus(`Removed background event ${event} from set`, 'success', 2000);
     }
 }
 
@@ -1723,6 +1841,8 @@ function createNewSet() {
         name: setName || setId,
         description: setDescription || 'Custom weather set',
         states: [],
+        allowed_parameters: [],
+        background_events: [],
         season_speed: 1.0,
         season_extremity: 1.0,
         transition_speed: 1.0
