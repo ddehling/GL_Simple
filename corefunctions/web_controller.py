@@ -360,6 +360,25 @@ class WebController:
                     "error": str(e)
                 }), 500
         
+        @self.app.route('/api/weather_editor/reload', methods=['POST'])
+        def reload_weather_module():
+            """Reload the weather_params module to reflect saved changes."""
+            try:
+                import importlib
+                from corefunctions import weather_params
+                importlib.reload(weather_params)
+                
+                return jsonify({
+                    "success": True,
+                    "message": "Weather parameters reloaded"
+                })
+                    
+            except Exception as e:
+                return jsonify({
+                    "success": False,
+                    "error": str(e)
+                }), 500
+        
         @self.app.route('/api/weather_editor/validate', methods=['POST'])
         def validate_weather_data():
             """Validate weather data without saving."""
