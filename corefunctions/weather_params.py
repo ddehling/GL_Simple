@@ -312,3 +312,64 @@ WEATHER_PRESETS = {
         "season_preference": 0.875 # Winter
     },
 }
+
+# Weather Sets - Mutually exclusive collections of weather states
+WEATHER_SETS = {
+    "peaceful_forest": {
+        "name": "Peaceful Forest",
+        "description": "Gentle natural cycles with fireflies and light weather",
+        "states": ["clear", "light_rain", "foggy", "firefly", "mushroom", "bloom", "leaves"],
+        "season_speed": 1.0,  # Normal seasonal progression
+        "season_extremity": 1.0,  # How much seasons affect transitions (0.5 = subtle, 2.0 = extreme)
+        "transition_speed": 0.8,  # Slower transitions (multiplier for Switch_rate)
+    },
+    
+    "storm_world": {
+        "name": "Storm World",
+        "description": "Intense weather with storms and high winds",
+        "states": ["windy_night", "heavy_rain", "thunderstorm", "foggy", "spooky"],
+        "season_speed": 1.5,  # Faster seasonal changes
+        "season_extremity": 0.5,  # Less seasonal influence (storms happen year-round)
+        "transition_speed": 1.5,  # Faster, more chaotic transitions
+    },
+    
+    "desert_realm": {
+        "name": "Desert Realm",
+        "description": "Harsh desert with sandstorms and volcanic activity",
+        "states": ["clear", "sandstorm", "volcano", "windy_night"],
+        "season_speed": 0.5,  # Very slow seasonal changes
+        "season_extremity": 2.0,  # Extreme seasonal variations
+        "transition_speed": 0.6,  # Slower, more deliberate transitions
+    },
+    
+    "ethereal_mist": {
+        "name": "Ethereal Mist",
+        "description": "Mysterious foggy realm with supernatural elements",
+        "states": ["heavy_fog", "foggy", "spooky", "mushroom", "firefly"],
+        "season_speed": 0.7,  # Slow, dreamlike time
+        "season_extremity": 1.5,  # Strong seasonal influence
+        "transition_speed": 0.5,  # Very slow, smooth transitions
+    },
+    
+    "cosmic_night": {
+        "name": "Cosmic Night",
+        "description": "Clear skies with meteors and celestial events",
+        "states": ["clear", "asteroid", "windy_night"],
+        "season_speed": 2.0,  # Fast seasonal cycles
+        "season_extremity": 1.0,  # Normal seasonal influence
+        "transition_speed": 2.0,  # Quick transitions
+    },
+    
+    "full_spectrum": {
+        "name": "Full Spectrum",
+        "description": "All weather states available - maximum variety",
+        "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", 
+                   "foggy", "heavy_fog", "spooky", "firefly", "volcano", "sandstorm", 
+                   "asteroid", "mushroom", "leaves", "bloom"],
+        "season_speed": 1.0,
+        "season_extremity": 1.0,
+        "transition_speed": 1.0,
+    },
+}
+
+DEFAULT_WEATHER_SET = "peaceful_forest"

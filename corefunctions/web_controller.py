@@ -125,6 +125,11 @@ class WebController:
             """Serve the main control page."""
             return render_template('control_panel.html')
         
+        @self.app.route('/weather_sets')
+        def weather_sets():
+            """Serve the weather sets control page."""
+            return render_template('weather_sets.html')
+        
         @self.app.route('/admin')
         def admin_panel():
             """Serve the admin panel page."""
@@ -237,6 +242,39 @@ class WebController:
                     updated[key] = value
             
             return jsonify({"success": True, "updated": updated})
+        
+        @self.app.route('/api/weather_set/change', methods=['POST'])
+        def change_weather_set():
+            """Request a weather set change."""
+            data = request.json
+            new_set = data.get('set_name')
+            
+            if not new_set:
+                return jsonify({"success": False, "error": "No set_name provided"}), 400
+            
+            # Check if set exists
+            available_sets = self.control_dict.get('available_sets', [])
+            if new_set not in available_sets:
+                return jsonify({"success": False, "error": f"Unknown set: {new_set}"}), 400
+            
+            # Set the request in control dict for main loop to pick up
+            self.control_dict['request_weather_set'] = new_set
+            
+            return jsonify({
+                "success": True, 
+                "message": f"Weather set change to '{new_set}' queued",
+                "set_name": new_set
+            })
+        
+        @self.app.route('/api/weather_set/info')
+        def weather_set_info():
+            """Get current weather set information."""
+            return jsonify({
+                "current_set": self.control_dict.get('current_weather_set', 'unknown'),
+                "available_sets": self.control_dict.get('available_sets', []),
+                "current_weather": self.control_dict.get('current_weather', 'unknown'),
+                "season": self.control_dict.get('season', 0.0)
+            })
     
     def add_control(self, key, control_type, label, **kwargs):
         """
