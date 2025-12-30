@@ -386,7 +386,7 @@ WEATHER_SETS = {
         "name": "Full Spectrum",
         "season_extremity": 1,
         "season_speed": 1,
-        "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", "foggy", "heavy_fog", "spooky", "firefly", "volcano", "sandstorm", "asteroid", "mushroom", "leaves", "bloom"],
+        "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", "foggy", "heavy_fog", "spooky", "firefly", "sandstorm", "mushroom", "leaves", "bloom"],
         "transition_speed": 1,
     },
 
