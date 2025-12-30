@@ -342,7 +342,7 @@ WEATHER_SETS = {
         "name": "Cosmic Night",
         "season_extremity": 1,
         "season_speed": 2,
-        "states": ["clear", "asteroid", "windy_night"],
+        "states": ["clear", "windy_night", "thunderstorm"],
         "transition_speed": 2,
     },
 

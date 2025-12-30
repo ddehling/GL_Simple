@@ -534,8 +534,9 @@
         <header>
             <h1>⚙️ Weather Set Editor</h1>
             <div class="header-actions">
+                <span id="autoSaveStatus" style="color: #666; font-size: 14px; margin-right: 15px;"></span>
                 <button class="btn btn-warning" id="validateBtn">Validate</button>
-                <button class="btn btn-primary" id="saveBtn">Save Changes</button>
+                <button class="btn btn-primary" id="saveBtn">Save Now</button>
                 <button class="btn btn-secondary" onclick="window.location.href='/'">Back to Control Panel</button>
             </div>
         </header>
@@ -692,6 +693,8 @@ let currentSet = null;
 let currentWeatherTab = null;
 let hasUnsavedChanges = false;
 let availableSounds = []; // List of available sound files
+let autoSaveTimeout = null;
+const AUTO_SAVE_DELAY = 1000; // Auto-save 1 second after last change
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -701,7 +704,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setupEventListeners() {
     document.getElementById('addSetBtn').addEventListener('click', showNewSetModal);
-    document.getElementById('saveBtn').addEventListener('click', saveChanges);
+    document.getElementById('saveBtn').addEventListener('click', () => {
+        // Clear auto-save timeout and save immediately
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout);
+        }
+        saveChanges();
+    });
     document.getElementById('validateBtn').addEventListener('click', validateData);
     
     // Warn before leaving with unsaved changes
@@ -804,7 +813,7 @@ function addGlobalParameter() {
     
     if (!weatherData.global_parameters.includes(param)) {
         weatherData.global_parameters.push(param);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderGlobalParameters();
         
         // Refresh set editor if a set is selected
@@ -825,7 +834,7 @@ function removeGlobalParameter(param) {
     
     if (weatherData.global_parameters) {
         weatherData.global_parameters = weatherData.global_parameters.filter(p => p !== param);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderGlobalParameters();
         
         // Refresh set editor if a set is selected
@@ -902,7 +911,7 @@ function deleteParameter() {
         weatherData.global_parameters = weatherData.global_parameters.filter(p => p !== param);
     }
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     
     closeDeleteParameterModal();
     renderGlobalParameters();
@@ -1035,6 +1044,15 @@ function renderSetEditor() {
         
         <div class="editor-section">
             <div class="section-header">
+                <div class="section-title">Season Transition Visualizer</div>
+            </div>
+            <div style="background: #fff; padding: 20px; border-radius: 8px; display: flex; justify-content: center;">
+                <canvas id="seasonVisualizer" width="600" height="600" style="border: 1px solid #ddd; border-radius: 8px;"></canvas>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
                 <div class="section-title">Edit Weather State Parameters</div>
                 <button class="btn btn-primary add-state-btn" onclick="showNewStateModal()">+ New Weather State</button>
             </div>
@@ -1047,6 +1065,7 @@ function renderSetEditor() {
     renderWeatherPills();
     renderParameterPills();
     renderWeatherTabs();
+    renderSeasonVisualizer();
 }
 
 function renderParameterPills() {
@@ -1170,7 +1189,7 @@ function addParameterToSet(param) {
     
     if (!setData.allowed_parameters.includes(param)) {
         setData.allowed_parameters.push(param);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderParameterPills();
         renderWeatherTabs(); // Refresh to show new parameter
         document.getElementById('parameterDropdown').classList.remove('show');
@@ -1182,7 +1201,7 @@ function removeParameterFromSet(param) {
     const setData = weatherData.weather_sets[currentSet];
     if (setData.allowed_parameters) {
         setData.allowed_parameters = setData.allowed_parameters.filter(p => p !== param);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderParameterPills();
         renderWeatherTabs(); // Refresh to hide parameter
         showStatus(`Removed parameter ${param} from set`, 'success', 2000);
@@ -1250,7 +1269,7 @@ function addWeatherToSet(state) {
     
     if (!setData.states.includes(state)) {
         setData.states.push(state);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderWeatherPills();
         renderWeatherTabs();
         document.getElementById('weatherDropdown').classList.remove('show');
@@ -1262,7 +1281,7 @@ function removeWeatherFromSet(state) {
     const setData = weatherData.weather_sets[currentSet];
     if (setData.states) {
         setData.states = setData.states.filter(s => s !== state);
-        hasUnsavedChanges = true;
+        triggerAutoSave();
         renderWeatherPills();
         renderWeatherTabs();
         showStatus(`Removed ${state} from set`, 'success', 2000);
@@ -1501,7 +1520,7 @@ function renderWeatherStateEditor(state) {
 function updateSetProperty(property, value) {
     if (!currentSet) return;
     weatherData.weather_sets[currentSet][property] = value;
-    hasUnsavedChanges = true;
+    triggerAutoSave();
 }
 
 function renderTransitionPairs(state, transitions, weights) {
@@ -1568,7 +1587,10 @@ function updateTransitionPair(state, index, field, value) {
         weatherData.weather_presets[state]['transition_weights'][index] = value;
     }
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
+    renderSeasonVisualizer();
+    
+    triggerAutoSave();
 }
 
 function addTransitionPair(state) {
@@ -1586,7 +1608,7 @@ function addTransitionPair(state) {
     weatherData.weather_presets[state]['possible_transitions'].push('clear');
     weatherData.weather_presets[state]['transition_weights'].push(1.0);
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     
     // Re-render the transition pairs
     const container = document.getElementById(`transitionPairs_${state}`);
@@ -1597,6 +1619,8 @@ function addTransitionPair(state) {
             weatherData.weather_presets[state]['transition_weights']
         );
     }
+    
+    renderSeasonVisualizer();
 }
 
 function removeTransitionPair(state, index) {
@@ -1609,7 +1633,7 @@ function removeTransitionPair(state, index) {
         weatherData.weather_presets[state]['transition_weights'].splice(index, 1);
     }
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     
     // Re-render the transition pairs
     const container = document.getElementById(`transitionPairs_${state}`);
@@ -1620,6 +1644,8 @@ function removeTransitionPair(state, index) {
             weatherData.weather_presets[state]['transition_weights'] || []
         );
     }
+    
+    renderSeasonVisualizer();
 }
 
 function updateWeatherParam(state, param, value) {
@@ -1627,7 +1653,12 @@ function updateWeatherParam(state, param, value) {
         weatherData.weather_presets[state] = {};
     }
     weatherData.weather_presets[state][param] = value;
-    hasUnsavedChanges = true;
+    triggerAutoSave();
+    
+    // Update visualizer if season_preference changes
+    if (param === 'season_preference') {
+        renderSeasonVisualizer();
+    }
 }
 
 function updateWeatherArrayParam(state, param, index, value) {
@@ -1638,7 +1669,7 @@ function updateWeatherArrayParam(state, param, index, value) {
         weatherData.weather_presets[state][param] = [0, 0, 0];
     }
     weatherData.weather_presets[state][param][index] = value;
-    hasUnsavedChanges = true;
+    triggerAutoSave();
 }
 
 function updateWeatherArrayStringParam(state, param, value) {
@@ -1646,7 +1677,7 @@ function updateWeatherArrayStringParam(state, param, value) {
         weatherData.weather_presets[state] = {};
     }
     weatherData.weather_presets[state][param] = value.split(',').map(s => s.trim()).filter(s => s);
-    hasUnsavedChanges = true;
+    triggerAutoSave();
 }
 
 function updateWeatherArrayNumberParam(state, param, value) {
@@ -1654,7 +1685,7 @@ function updateWeatherArrayNumberParam(state, param, value) {
         weatherData.weather_presets[state] = {};
     }
     weatherData.weather_presets[state][param] = value.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
-    hasUnsavedChanges = true;
+    triggerAutoSave();
 }
 
 function showNewSetModal() {
@@ -1697,7 +1728,7 @@ function createNewSet() {
         transition_speed: 1.0
     };
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     closeNewSetModal();
     renderSetList();
     selectSet(setId);
@@ -1712,7 +1743,7 @@ function deleteSet(setId, event) {
     }
     
     delete weatherData.weather_sets[setId];
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     
     if (currentSet === setId) {
         currentSet = null;
@@ -1765,7 +1796,7 @@ function createNewState() {
         transition_weights: [1.0]
     };
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     closeNewStateModal();
     showStatus(`Created new weather state: ${stateValue}`, 'success');
     
@@ -1792,7 +1823,7 @@ function deleteWeatherState(state) {
         }
     }
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     showStatus(`Deleted weather state: ${state}`, 'success');
     
     if (currentSet) {
@@ -1852,7 +1883,7 @@ function createNewParameter() {
     }
     weatherData.default_params[paramName] = parsedDefault;
     
-    hasUnsavedChanges = true;
+    triggerAutoSave();
     closeNewParameterModal();
     showStatus(`Created new parameter: ${paramName}`, 'success');
     
@@ -1887,11 +1918,28 @@ async function validateData() {
     }
 }
 
-async function saveChanges() {
-    if (!confirm('This will overwrite weather_params.py. Make sure you have a backup! Continue?')) {
-        return;
+function triggerAutoSave() {
+    hasUnsavedChanges = true;
+    
+    // Update status indicator
+    const statusEl = document.getElementById('autoSaveStatus');
+    if (statusEl) {
+        statusEl.textContent = 'Saving...';
+        statusEl.style.color = '#e67e22';
     }
     
+    // Clear existing timeout
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+    }
+    
+    // Set new timeout for auto-save
+    autoSaveTimeout = setTimeout(() => {
+        saveChanges();
+    }, AUTO_SAVE_DELAY);
+}
+
+async function saveChanges() {
     showLoading(true);
     try {
         const response = await fetch('/api/weather_editor/save', {
@@ -1906,7 +1954,31 @@ async function saveChanges() {
         
         if (result.success) {
             hasUnsavedChanges = false;
-            showStatus('Changes saved successfully! Restart the application to see changes.', 'success');
+            
+            // Update status indicator
+            const statusEl = document.getElementById('autoSaveStatus');
+            if (statusEl) {
+                statusEl.textContent = '✓ Saved';
+                statusEl.style.color = '#27ae60';
+                setTimeout(() => {
+                    statusEl.textContent = '';
+                }, 3000);
+            }
+            
+            // Reload the weather module on the backend
+            await fetch('/api/weather_editor/reload', {
+                method: 'POST'
+            });
+            
+            // Reload data to reflect changes
+            await loadWeatherData();
+            
+            // Re-render current set if one is selected
+            if (currentSet) {
+                renderSetEditor();
+            }
+            
+            showStatus('Changes saved and reloaded', 'success', 2000);
         } else {
             showStatus('Error saving: ' + result.error, 'error');
         }
@@ -1915,6 +1987,194 @@ async function saveChanges() {
     } finally {
         showLoading(false);
     }
+}
+
+function renderSeasonVisualizer() {
+    const canvas = document.getElementById('seasonVisualizer');
+    if (!canvas || !currentSet) return;
+    
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = 220;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    // Get set data
+    const setData = weatherData.weather_sets[currentSet];
+    const states = setData.states || [];
+    
+    if (states.length === 0) {
+        ctx.fillStyle = '#999';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('No weather states in this set', centerX, centerY);
+        return;
+    }
+    
+    // Draw season circle with labels
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Draw season labels
+    const seasons = ['Spring', 'Summer', 'Fall', 'Winter'];
+    const seasonAngles = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+    ctx.fillStyle = '#666';
+    ctx.font = '14px Arial';
+    ctx.textAlign = 'center';
+    
+    seasons.forEach((season, i) => {
+        const angle = seasonAngles[i];
+        const labelRadius = radius + 30;
+        const x = centerX + Math.cos(angle - Math.PI / 2) * labelRadius;
+        const y = centerY + Math.sin(angle - Math.PI / 2) * labelRadius;
+        ctx.fillText(season, x, y);
+    });
+    
+    // Build state positions map
+    const statePositions = {};
+    states.forEach(stateName => {
+        const preset = weatherData.weather_presets[stateName] || {};
+        const seasonPref = preset.season_preference !== undefined ? preset.season_preference : 0.375;
+        
+        // Convert season_preference (0-1) to angle (0-2π)
+        const angle = seasonPref * Math.PI * 2 - Math.PI / 2; // -π/2 to start at top
+        const x = centerX + Math.cos(angle) * radius;
+        const y = centerY + Math.sin(angle) * radius;
+        
+        statePositions[stateName] = { x, y, angle, seasonPref };
+    });
+    
+    // Draw transitions (arrows)
+    states.forEach(stateName => {
+        const preset = weatherData.weather_presets[stateName] || {};
+        const transitions = preset.possible_transitions || [];
+        const weights = preset.transition_weights || [];
+        const fromPos = statePositions[stateName];
+        
+        if (!fromPos) return;
+        
+        transitions.forEach((targetState, i) => {
+            const toPos = statePositions[targetState];
+            if (!toPos) return;
+            
+            const weight = weights[i] || 1.0;
+            
+            // Draw curved arrow
+            const dx = toPos.x - fromPos.x;
+            const dy = toPos.y - fromPos.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            // Control point for curve (perpendicular to line)
+            const midX = (fromPos.x + toPos.x) / 2;
+            const midY = (fromPos.y + toPos.y) / 2;
+            const perpX = -dy / distance;
+            const perpY = dx / distance;
+            const curveOffset = 20;
+            const ctrlX = midX + perpX * curveOffset;
+            const ctrlY = midY + perpY * curveOffset;
+            
+            // Color based on weight
+            const alpha = Math.min(weight / 3.0, 1.0);
+            const arrowColor = `rgba(60, 120, 180, ${alpha + 0.3})`;
+            ctx.strokeStyle = arrowColor;
+            ctx.lineWidth = Math.max(2, 1 + weight * 0.5);
+            
+            // Draw the full curved path
+            ctx.beginPath();
+            ctx.moveTo(fromPos.x, fromPos.y);
+            ctx.quadraticCurveTo(ctrlX, ctrlY, toPos.x, toPos.y);
+            ctx.stroke();
+            
+            // Function to get point on quadratic curve at t (0 to 1)
+            const getPointOnCurve = (t) => {
+                const x = Math.pow(1-t, 2) * fromPos.x + 
+                         2 * (1-t) * t * ctrlX + 
+                         Math.pow(t, 2) * toPos.x;
+                const y = Math.pow(1-t, 2) * fromPos.y + 
+                         2 * (1-t) * t * ctrlY + 
+                         Math.pow(t, 2) * toPos.y;
+                return {x, y};
+            };
+            
+            // Function to get tangent angle at point t
+            const getTangentAngle = (t) => {
+                const dx = 2 * (1-t) * (ctrlX - fromPos.x) + 2 * t * (toPos.x - ctrlX);
+                const dy = 2 * (1-t) * (ctrlY - fromPos.y) + 2 * t * (toPos.y - ctrlY);
+                return Math.atan2(dy, dx);
+            };
+            
+            // Draw multiple arrowheads along the path
+            const arrowPositions = [0.35, 0.5, 0.65]; // Place arrows at 35%, 50%, and 65% along the path
+            const arrowSize = 10;
+            
+            arrowPositions.forEach(t => {
+                const point = getPointOnCurve(t);
+                const angle = getTangentAngle(t);
+                
+                ctx.fillStyle = arrowColor;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1.5;
+                
+                ctx.beginPath();
+                ctx.moveTo(point.x, point.y);
+                ctx.lineTo(
+                    point.x - arrowSize * Math.cos(angle - Math.PI / 5),
+                    point.y - arrowSize * Math.sin(angle - Math.PI / 5)
+                );
+                ctx.lineTo(
+                    point.x - arrowSize * Math.cos(angle + Math.PI / 5),
+                    point.y - arrowSize * Math.sin(angle + Math.PI / 5)
+                );
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke(); // White outline for visibility
+            });
+        });
+    });
+    
+    // Draw state nodes on top
+    states.forEach(stateName => {
+        const pos = statePositions[stateName];
+        if (!pos) return;
+        
+        // Draw node circle
+        ctx.fillStyle = '#4a90e2';
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 25, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw state name
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Wrap text if needed
+        const words = stateName.split('_');
+        if (words.length > 1) {
+            ctx.fillText(words[0], pos.x, pos.y - 5);
+            ctx.fillText(words.slice(1).join('_'), pos.x, pos.y + 5);
+        } else {
+            ctx.fillText(stateName, pos.x, pos.y);
+        }
+        
+        // Draw season preference value
+        ctx.fillStyle = '#333';
+        ctx.font = '10px Arial';
+        const labelY = pos.y > centerY ? pos.y + 40 : pos.y - 40;
+        ctx.fillText(pos.seasonPref.toFixed(3), pos.x, labelY);
+    });
 }
 
 function showStatus(message, type, timeout = 5000) {
