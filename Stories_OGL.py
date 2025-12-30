@@ -361,36 +361,34 @@ class EnvironmentalSystem:
                 self.weather_params = target_params.copy()
 
     def send_variables(self):
-        # Apply season speed from current weather set
-        set_config = self.get_current_set_config()
+        # Apply season speed from current weather set (cache to avoid repeated lookups)
+        if not hasattr(self, '_cached_set_config') or self._cached_set_config[0] != self.current_set:
+            self._cached_set_config = (self.current_set, self.get_current_set_config())
+        
+        set_config = self._cached_set_config[1]
         season_speed = set_config.get("season_speed", 1.0)
         self.season = ((time.time() / 1800) * season_speed) % 1
         
         fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
         self.cloudyness = ((1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3)/4
-        self.scheduler.state["cloudyness"] = self.cloudyness
-        #print(f"Cloudyness: {self.cloudyness:.3f}")
-        # Set variables in scheduler state
-        self.scheduler.state["fog_strength"] = fog
-        self.scheduler.state["fog_color"] = self.weather_params["fog_color"]
-        #self.scheduler.state["whomp"] = self.whomp
-        self.scheduler.state["wind"] =self.weather_params["wind_speed"] * ( np.cos(np.pi * 2 * (self.season - 0.125)))  # noqa: F405
-        self.scheduler.state["season"] = self.season
-        self.scheduler.state["rain"] = self.weather_params["rain_rate"]
-        self.scheduler.state["starryness"] = self.weather_params["starryness"]
-        self.scheduler.state["sound"] = self.analyzer.get_extended_analysis()
-        # # Set fog for each frame
-        # self.scheduler.set_fog(0, fog, tuple(self.weather_params["fog_color"]), dir_scale=(1.0, 1.0))
-        # self.scheduler.set_fog(1, fog + self.cloudyness / 2, tuple(self.weather_params["fog_color"]), dir_scale=(1.0, 0.0))
         
-        self.scheduler.state["celestial_bodies"] = self.celestial_bodies
-        self.scheduler.state["celestial_visibility"] = self.weather_params["celestial_visibility"]
-        self.scheduler.state["firefly_density"] = self.weather_params["firefly_density"]
-        self.scheduler.state["meteor_rate"] = self.weather_params["meteor_rate"]
-        #print(self.weather_params["meteor_rate"])
-        self.scheduler.state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
-        self.scheduler.state["sand_density"] = self.weather_params.get("sand_density", 0)
-        self.scheduler.state["tree_growth"] = (self.weather_params.get("tree_prob", 0) + 0.25)
+        # Batch all state updates to reduce dictionary overhead
+        state = self.scheduler.state
+        state["cloudyness"] = self.cloudyness
+        state["fog_strength"] = fog
+        state["fog_color"] = self.weather_params["fog_color"]
+        state["wind"] = self.weather_params["wind_speed"] * np.cos(np.pi * 2 * (self.season - 0.125))
+        state["season"] = self.season
+        state["rain"] = self.weather_params["rain_rate"]
+        state["starryness"] = self.weather_params["starryness"]
+        state["sound"] = self.analyzer.get_extended_analysis()
+        state["celestial_bodies"] = self.celestial_bodies
+        state["celestial_visibility"] = self.weather_params["celestial_visibility"]
+        state["firefly_density"] = self.weather_params["firefly_density"]
+        state["meteor_rate"] = self.weather_params["meteor_rate"]
+        state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
+        state["sand_density"] = self.weather_params.get("sand_density", 0)
+        state["tree_growth"] = (self.weather_params.get("tree_prob", 0) + 0.25)
 
     def random_events(self):
         randcheck = np.random.random()
@@ -478,8 +476,11 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
                 
     def random_state_change(self):
-        # Apply set-specific transition speed
-        set_config = self.get_current_set_config()
+        # Apply set-specific transition speed (use cached config)
+        if not hasattr(self, '_cached_set_config') or self._cached_set_config[0] != self.current_set:
+            self._cached_set_config = (self.current_set, self.get_current_set_config())
+        
+        set_config = self._cached_set_config[1]
         transition_speed_mult = set_config.get("transition_speed", 1.0)
         
         randcheck = np.random.random()

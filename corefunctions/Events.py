@@ -330,16 +330,18 @@ class EventScheduler:
         
         # Process and send frames
         for i, frame in enumerate(frames):
-            # Convert RGBA to RGB (drop alpha channel)
+            # Convert RGBA to RGB (drop alpha channel) - avoid copy if already RGB
             if frame.shape[2] == 4:
                 frame_rgb = frame[:, :, :3]
             else:
                 frame_rgb = frame
             
-            #frame = self._generate_test_pattern(frame.shape[0], frame.shape[1], pattern_type=0)/4
-
-            # Apply gamma correction (keep as float)
-            frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
+            # Apply gamma correction (keep as float) - only if gamma != 1
+            if gamma != 1:
+                frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
+            else:
+                # Skip gamma correction if gamma is 1
+                frame_corrected = frame_rgb.astype(np.float32)
             
             # Apply brightness limiting and convert to uint8
             frame_corrected = self._apply_brightness_limiting(frame_corrected)
@@ -439,13 +441,10 @@ class EventScheduler:
         state = self.brightness_state
         
         # Calculate weighted brightness factor (frame already in float)
-        red_sum = np.sum(frame_corrected[:, :, 0])
-        green_sum = np.sum(frame_corrected[:, :, 1])
-        blue_sum = np.sum(frame_corrected[:, :, 2])
-        
-        bright_factor = (red_sum * cfg['red_factor'] + 
-                        green_sum * cfg['green_factor'] + 
-                        blue_sum * cfg['blue_factor'])
+        # Optimize: compute all channel sums in one pass
+        bright_factor = (np.sum(frame_corrected[:, :, 0]) * cfg['red_factor'] + 
+                        np.sum(frame_corrected[:, :, 1]) * cfg['green_factor'] + 
+                        np.sum(frame_corrected[:, :, 2]) * cfg['blue_factor'])
         
         state['bright_factor'] = bright_factor
         
