@@ -17,6 +17,17 @@ class WeatherState(Enum):
     MUSHROOM = "mushroom"
     LEAVES = "leaves"
     BLOOM = "bloom"
+    # Cyberpunk weather states
+    CYBER_NEON_DRIZZLE = "cyber_neon_drizzle"
+    CYBER_DATA_STORM = "cyber_data_storm"
+    CYBER_SMOG_HAZE = "cyber_smog_haze"
+    CYBER_ELECTRIC_STORM = "cyber_electric_storm"
+    CYBER_ACID_RAIN = "cyber_acid_rain"
+    CYBER_HOLOGRAM_NIGHT = "cyber_hologram_night"
+    CYBER_BLACKOUT = "cyber_blackout"
+    CYBER_GLITCH_FOG = "cyber_glitch_fog"
+    CYBER_NEON_CLEAR = "cyber_neon_clear"
+    CYBER_DRONE_PATROL = "cyber_drone_patrol"
 
 # Global parameters that are always available in every weather set
 # These cannot be removed from sets but their values can be customized per weather state
@@ -60,6 +71,16 @@ DEFAULT_WEATHER_PARAMS = {
     "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
+    # Cyberpunk-specific parameters
+    "neon_intensity": 0.0,
+    "pollution_level": 0.0,
+    "hologram_density": 0.0,
+    "electric_interference": 0.0,
+    "data_flow_rate": 0.0,
+    "light_pollution": 0.0,
+    "drone_activity": 0.0,
+    "glitch_probability": 0.0,
+    "scan_line_intensity": 0.0,
 }
 
 # Weather presets
@@ -332,6 +353,169 @@ WEATHER_PRESETS = {
         "wind_speed": 1.5,
     },
 
+    # Cyberpunk Weather States
+    WeatherState.CYBER_NEON_CLEAR: {
+        "ARI": 45,
+        "ambient_sound": "Forest Cicadas EDITED.wav",  # Replace with city ambience
+        "neon_intensity": 1.0,
+        "light_pollution": 1.0,
+        "hologram_density": 0.3,
+        "fog": 0.1,
+        "fog_color": np.array([0.2, 0.1, 0.4]),
+        "celestial_visibility": 0.1,
+        "starryness": 0.2,
+        "possible_transitions": ["cyber_neon_drizzle", "cyber_hologram_night", "cyber_drone_patrol", "cyber_smog_haze"],
+        "transition_weights": [1.5, 1.0, 0.8, 0.5],
+        "season_preference": 0.2,
+    },
+
+    WeatherState.CYBER_NEON_DRIZZLE: {
+        "ARI": 35,
+        "ambient_sound": "Rain Light EDITED.wav",
+        "rain_rate": 0.3,
+        "neon_intensity": 0.9,
+        "light_pollution": 0.8,
+        "fog": 0.2,
+        "fog_color": np.array([0.1, 0.3, 0.6]),
+        "celestial_visibility": 0.05,
+        "starryness": 0.1,
+        "possible_transitions": ["cyber_neon_clear", "cyber_acid_rain", "cyber_data_storm"],
+        "transition_weights": [1.5, 0.5, 0.3],
+        "season_preference": 0.15,
+    },
+
+    WeatherState.CYBER_DATA_STORM: {
+        "ARI": 40,
+        "ambient_sound": "Wind Strong EDITED.wav",  # Replace with digital static
+        "data_flow_rate": 1.0,
+        "electric_interference": 0.7,
+        "glitch_probability": 0.5,
+        "neon_intensity": 0.6,
+        "light_pollution": 0.5,
+        "fog": 0.3,
+        "fog_color": np.array([0.0, 1.0, 0.3]),
+        "celestial_visibility": 0.0,
+        "starryness": 0.0,
+        "possible_transitions": ["cyber_electric_storm", "cyber_glitch_fog", "cyber_neon_drizzle"],
+        "transition_weights": [0.8, 0.6, 1.0],
+        "season_preference": 0.5,
+    },
+
+    WeatherState.CYBER_SMOG_HAZE: {
+        "ARI": 50,
+        "ambient_sound": "Wind Strong EDITED.wav",  # Replace with industrial hum
+        "pollution_level": 1.0,
+        "fog": 0.9,
+        "fog_color": np.array([0.7, 0.5, 0.2]),
+        "celestial_visibility": 0.1,
+        "starryness": 0.0,
+        "neon_intensity": 0.4,
+        "light_pollution": 0.6,
+        "possible_transitions": ["cyber_acid_rain", "cyber_blackout", "cyber_neon_clear"],
+        "transition_weights": [0.7, 0.3, 1.2],
+        "season_preference": 0.6,
+    },
+
+    WeatherState.CYBER_ELECTRIC_STORM: {
+        "ARI": 38,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "lightning_probability": 1.0,
+        "electric_interference": 1.0,
+        "rain_rate": 0.5,
+        "neon_intensity": 0.3,
+        "light_pollution": 0.4,
+        "fog": 0.4,
+        "fog_color": np.array([0.0, 0.5, 1.0]),
+        "celestial_visibility": 0.0,
+        "starryness": 0.0,
+        "glitch_probability": 0.3,
+        "possible_transitions": ["cyber_data_storm", "cyber_acid_rain", "cyber_neon_drizzle"],
+        "transition_weights": [0.5, 0.8, 1.0],
+        "season_preference": 0.85,
+    },
+
+    WeatherState.CYBER_ACID_RAIN: {
+        "ARI": 42,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "rain_rate": 0.7,
+        "pollution_level": 0.8,
+        "fog": 0.6,
+        "fog_color": np.array([0.5, 0.8, 0.2]),
+        "neon_intensity": 0.5,
+        "light_pollution": 0.5,
+        "celestial_visibility": 0.0,
+        "starryness": 0.0,
+        "possible_transitions": ["cyber_smog_haze", "cyber_neon_drizzle", "cyber_electric_storm"],
+        "transition_weights": [1.0, 1.2, 0.6],
+        "season_preference": 0.7,
+    },
+
+    WeatherState.CYBER_HOLOGRAM_NIGHT: {
+        "ARI": 40,
+        "ambient_sound": "Forest Cicadas EDITED.wav",  # Replace with city night ambience
+        "hologram_density": 1.0,
+        "neon_intensity": 0.8,
+        "light_pollution": 0.9,
+        "celestial_visibility": 0.2,
+        "starryness": 0.3,
+        "fog": 0.1,
+        "fog_color": np.array([0.3, 0.1, 0.5]),
+        "drone_activity": 0.5,
+        "possible_transitions": ["cyber_neon_clear", "cyber_drone_patrol", "cyber_glitch_fog"],
+        "transition_weights": [1.2, 0.8, 0.4],
+        "season_preference": 0.0,
+    },
+
+    WeatherState.CYBER_BLACKOUT: {
+        "ARI": 35,
+        "ambient_sound": "Wind Strong EDITED.wav",  # Replace with quiet city ambience
+        "neon_intensity": 0.0,
+        "light_pollution": 0.1,
+        "hologram_density": 0.0,
+        "celestial_visibility": 0.8,
+        "starryness": 0.9,
+        "fog": 0.3,
+        "fog_color": np.array([0.1, 0.1, 0.15]),
+        "glitch_probability": 0.2,
+        "possible_transitions": ["cyber_neon_clear", "cyber_smog_haze", "cyber_glitch_fog"],
+        "transition_weights": [1.5, 0.5, 0.3],
+        "season_preference": 0.9,
+    },
+
+    WeatherState.CYBER_GLITCH_FOG: {
+        "ARI": 36,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "glitch_probability": 0.8,
+        "electric_interference": 0.6,
+        "fog": 0.8,
+        "fog_color": np.array([0.6, 0.0, 0.6]),
+        "neon_intensity": 0.7,
+        "light_pollution": 0.6,
+        "data_flow_rate": 0.4,
+        "celestial_visibility": 0.0,
+        "starryness": 0.0,
+        "possible_transitions": ["cyber_data_storm", "cyber_hologram_night", "cyber_neon_drizzle"],
+        "transition_weights": [0.7, 0.5, 1.0],
+        "season_preference": 0.25,
+    },
+
+    WeatherState.CYBER_DRONE_PATROL: {
+        "ARI": 38,
+        "ambient_sound": "Wind Strong EDITED.wav",  # Replace with drone hum
+        "drone_activity": 1.0,
+        "neon_intensity": 0.6,
+        "light_pollution": 0.7,
+        "hologram_density": 0.2,
+        "scan_line_intensity": 0.3,
+        "celestial_visibility": 0.3,
+        "starryness": 0.4,
+        "fog": 0.2,
+        "fog_color": np.array([0.2, 0.2, 0.3]),
+        "possible_transitions": ["cyber_neon_clear", "cyber_hologram_night", "cyber_blackout"],
+        "transition_weights": [1.0, 0.8, 0.3],
+        "season_preference": 0.4,
+    },
+
 }
 
 # Weather Sets - Mutually exclusive collections of weather states
@@ -348,13 +532,14 @@ WEATHER_SETS = {
     },
 
     "cyberpunk": {
-        "allowed_parameters": ["rain_rate", "wind_speed"],
-        "description": "Custom weather set",
-        "name": "Cyber Punk",
-        "season_extremity": 1,
-        "season_speed": 1,
-        "states": [],
-        "transition_speed": 1,
+        "allowed_parameters": ["rain_rate", "wind_speed", "fog", "fog_color", "lightning_probability", "neon_intensity", "pollution_level", "hologram_density", "electric_interference", "data_flow_rate", "light_pollution", "drone_activity", "glitch_probability", "scan_line_intensity", "celestial_visibility", "starryness", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
+        "background_events": ["clouds", "rain"],
+        "description": "Neon-lit dystopian cityscape with digital rain and holographic advertisements",
+        "name": "Cyberpunk Metropolis",
+        "season_extremity": 0.5,
+        "season_speed": 0.3,
+        "states": ["cyber_neon_clear", "cyber_neon_drizzle", "cyber_data_storm", "cyber_smog_haze", "cyber_electric_storm", "cyber_acid_rain", "cyber_hologram_night", "cyber_blackout", "cyber_glitch_fog", "cyber_drone_patrol"],
+        "transition_speed": 0.8,
     },
 
     "desert_realm": {
