@@ -134,6 +134,15 @@ class EventScheduler:
         
         print(f"Brightness limiting: {total_pixels} pixels, setpoint={calculated_setpoint:.0f}")
         
+        # Performance monitoring
+        self.perf_stats = {
+            'event_update': [],
+            'rendering': [],
+            'display_send': [],
+            'total_frame': [],
+            'last_report_time': time.time()
+        }
+        
         # Define receivers for each display
         receivers = [            
             [
@@ -200,10 +209,15 @@ class EventScheduler:
         self.state['screens'] = []
         for i in range(len(receivers)):
             if i < len(receivers):
-                self.state['screens'].append(imdmx.SACNPixelSender(receivers[i]))
+                sender = imdmx.SACNPixelSender(receivers[i])
+                # Enable async sending for better performance
+                sender.enable_async_send()
+                self.state['screens'].append(sender)
             else:
                 # For displays without physical receivers, add None as placeholder
                 self.state['screens'].append(None)
+        
+        print("✓ sACN senders initialized with async mode enabled")
         
 
     
@@ -253,6 +267,8 @@ class EventScheduler:
             self.renderer.set_fog(frame_id, amount, color, dir_scale)
 
     def update(self):
+        frame_start = time.perf_counter()
+        
         # Process OSC messages if needed
         # osc_messages = self.get_osc_messages()
         # if osc_messages != []:
@@ -273,7 +289,8 @@ class EventScheduler:
         while self.event_queue and self.event_queue[0].state['start_time'] <= self.state['current_time']:
             self.active_events.append(heapq.heappop(self.event_queue))
         
-        # Update active events
+        # Update active events - TIMED
+        event_start = time.perf_counter()
         i = 0
         while i < len(self.active_events):
             event = self.active_events[i]
@@ -281,19 +298,98 @@ class EventScheduler:
                 i += 1
             else:
                 self.active_events.pop(i)
+        event_time = time.perf_counter() - event_start
         
         # Calculate delta time
         dt = self.state['current_time'] - self.state['last_time']
         self.state['last_time'] = self.state['current_time']
         
-        # Render based on active renderer
+        # Render based on active renderer - TIMED
+        render_start = time.perf_counter()
         if self.use_shader_renderer:
             frames = self._render_shader(dt)
         else:
             frames = self._render_legacy()
+        render_time = time.perf_counter() - render_start
         
-        # Send to physical displays
+        # Send to physical displays - TIMED
+        send_start = time.perf_counter()
         self._send_to_displays(frames)
+        send_time = time.perf_counter() - send_start
+        
+        # Record performance metrics
+        total_time = time.perf_counter() - frame_start
+        self.perf_stats['event_update'].append(event_time * 1000)  # Convert to ms
+        self.perf_stats['rendering'].append(render_time * 1000)
+        self.perf_stats['display_send'].append(send_time * 1000)
+        self.perf_stats['total_frame'].append(total_time * 1000)
+        
+        # Report stats every 5 seconds
+        if time.time() - self.perf_stats['last_report_time'] > 5.0:
+            self._report_performance()
+            self.perf_stats['last_report_time'] = time.time()
+    
+    def _report_performance(self):
+        """Report performance statistics"""
+        if not self.perf_stats['total_frame']:
+            return
+        
+        # Calculate averages
+        avg_event = np.mean(self.perf_stats['event_update'])
+        avg_render = np.mean(self.perf_stats['rendering'])
+        avg_send = np.mean(self.perf_stats['display_send'])
+        avg_total = np.mean(self.perf_stats['total_frame'])
+        
+        # Calculate max values
+        max_event = np.max(self.perf_stats['event_update'])
+        max_render = np.max(self.perf_stats['rendering'])
+        max_send = np.max(self.perf_stats['display_send'])
+        max_total = np.max(self.perf_stats['total_frame'])
+        
+        print(f"\n=== Performance Report ({len(self.perf_stats['total_frame'])} frames) ===")
+        print(f"Event Update:   avg={avg_event:6.2f}ms  max={max_event:6.2f}ms")
+        print(f"Rendering:      avg={avg_render:6.2f}ms  max={max_render:6.2f}ms")
+        print(f"Display Send:   avg={avg_send:6.2f}ms  max={max_send:6.2f}ms")
+        print(f"Total Frame:    avg={avg_total:6.2f}ms  max={max_total:6.2f}ms")
+        print(f"Active Events:  {len(self.active_events)}")
+        print(f"Queued Events:  {len(self.event_queue)}")
+        
+        # Clear stats for next period
+        self.perf_stats['event_update'].clear()
+        self.perf_stats['rendering'].clear()
+        self.perf_stats['display_send'].clear()
+        self.perf_stats['total_frame'].clear()
+    
+    def _report_performance(self):
+        """Report performance statistics"""
+        if not self.perf_stats['total_frame']:
+            return
+        
+        # Calculate averages
+        avg_event = np.mean(self.perf_stats['event_update'])
+        avg_render = np.mean(self.perf_stats['rendering'])
+        avg_send = np.mean(self.perf_stats['display_send'])
+        avg_total = np.mean(self.perf_stats['total_frame'])
+        
+        # Calculate max values
+        max_event = np.max(self.perf_stats['event_update'])
+        max_render = np.max(self.perf_stats['rendering'])
+        max_send = np.max(self.perf_stats['display_send'])
+        max_total = np.max(self.perf_stats['total_frame'])
+        
+        print(f"\n=== Performance Report ({len(self.perf_stats['total_frame'])} frames) ===")
+        print(f"Event Update:   avg={avg_event:6.2f}ms  max={max_event:6.2f}ms")
+        print(f"Rendering:      avg={avg_render:6.2f}ms  max={max_render:6.2f}ms")
+        print(f"Display Send:   avg={avg_send:6.2f}ms  max={max_send:6.2f}ms")
+        print(f"Total Frame:    avg={avg_total:6.2f}ms  max={max_total:6.2f}ms")
+        print(f"Active Events:  {len(self.active_events)}")
+        print(f"Queued Events:  {len(self.event_queue)}")
+        
+        # Clear stats for next period
+        self.perf_stats['event_update'].clear()
+        self.perf_stats['rendering'].clear()
+        self.perf_stats['display_send'].clear()
+        self.perf_stats['total_frame'].clear()
     
     def _render_shader(self, dt):
         """Render using shader renderer"""
@@ -427,8 +523,7 @@ class EventScheduler:
         return frame
 
     def _apply_brightness_limiting(self, frame_corrected):
-        """
-        Apply brightness limiting to prevent total brightness from exceeding setpoint.
+        """Apply brightness limiting to prevent total brightness from exceeding setpoint.
         Uses exponential smoothing to prevent flickering.
         
         Args:
@@ -469,7 +564,6 @@ class EventScheduler:
         
         # Apply the divisor if it's significantly above 1.0
         if state['divisor'] > 1.001:
-            print(f"Brightness factor: {bright_factor:.1f}, Divisor: {state['divisor']:.3f}")
             frame_corrected = frame_corrected / state['divisor']
         
         # Convert to uint8 once at the end

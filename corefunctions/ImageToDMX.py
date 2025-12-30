@@ -1,6 +1,14 @@
 import numpy as np
 from sacn import sACNsender
 import math
+import threading
+import queue
+try:
+    from corefunctions.fast_pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    print("Warning: Numba not available, using slower numpy operations")
 class SACNPixelSender:
     def __init__(self, receivers,start_universe=1):
         """
@@ -17,6 +25,11 @@ class SACNPixelSender:
         # Set up universes for each receiver
         self.receiver_universes = []
         universe_counter = start_universe
+        
+        # Pre-compute and cache coordinate arrays (they never change)
+        self._cached_coords = []
+        self._universe_slices = []
+        
         for receiver in receivers:
             universe_count = math.ceil(receiver['pixel_count'] / 170)
             receiver_universes = list(range(universe_counter, universe_counter + universe_count))
@@ -27,7 +40,87 @@ class SACNPixelSender:
             for universe in receiver_universes:
                 self.sender.activate_output(universe)
                 self.sender[universe].destination = receiver['ip']
+            
+            # Pre-compute clipped coordinates (they never change frame-to-frame)
+            # Clip to actual frame dimensions for safety
+            x_coords = np.clip(receiver['addressing_array'][:, 0], 0, 127).astype(np.int32)
+            y_coords = np.clip(receiver['addressing_array'][:, 1], 0, 299).astype(np.int32)
+            self._cached_coords.append((x_coords, y_coords))
+            
+            # Pre-compute universe slice ranges for this receiver
+            slices = []
+            for i in range(universe_count):
+                start = i * 170
+                end = min(start + 170, receiver['pixel_count'])
+                needs_padding = (end - start) * 3 < 510
+                slices.append((start, end, needs_padding))
+            self._universe_slices.append(slices)
+        
+        # Pre-allocate buffers for data extraction (avoids allocations during send)
+        self._receiver_buffers = []
+        self._universe_buffers = []
+        self._universe_starts = []
+        self._universe_ends = []
+        
+        for receiver in receivers:
+            # Flat buffer to hold extracted pixel data (N*3 bytes)
+            pixel_count = receiver['pixel_count']
+            self._receiver_buffers.append(np.empty(pixel_count * 3, dtype=np.uint8))
+            
+            # Pre-compute universe start/end indices
+            universe_count = math.ceil(pixel_count / 170)
+            starts = np.array([i * 170 for i in range(universe_count)], dtype=np.int32)
+            ends = np.array([min((i + 1) * 170, pixel_count) for i in range(universe_count)], dtype=np.int32)
+            self._universe_starts.append(starts)
+            self._universe_ends.append(ends)
+            
+            # Create 2D buffer array for batch universe processing (for Numba)
+            universe_buffer_2d = np.zeros((universe_count, 510), dtype=np.uint8)
+            self._universe_buffers.append(universe_buffer_2d)
+        
+        # Async sending support
+        self._send_queue = queue.Queue(maxsize=2)  # Small queue to avoid lag
+        self._send_thread = None
+        self._stop_thread = False
+        self._async_enabled = False
 
+    def enable_async_send(self):
+        """Enable asynchronous sending in a background thread"""
+        if self._async_enabled:
+            return
+        
+        self._async_enabled = True
+        self._stop_thread = False
+        self._send_thread = threading.Thread(target=self._send_worker, daemon=True)
+        self._send_thread.start()
+        print("sACN async sending enabled")
+    
+    def disable_async_send(self):
+        """Disable asynchronous sending and wait for thread to finish"""
+        if not self._async_enabled:
+            return
+        
+        self._async_enabled = False
+        self._stop_thread = True
+        if self._send_thread:
+            self._send_thread.join(timeout=1.0)
+        print("sACN async sending disabled")
+    
+    def _send_worker(self):
+        """Background worker that sends frames from queue"""
+        while not self._stop_thread:
+            try:
+                # Get frame data from queue (timeout to check stop flag)
+                frame_data = self._send_queue.get(timeout=0.1)
+                if frame_data is None:  # Poison pill to stop
+                    break
+                
+                # Actually send the data
+                self._send_immediate(frame_data)
+                
+            except queue.Empty:
+                continue
+    
     def create_mask(self, height, width):
         """
         Creates a binary mask showing which pixels are mapped by receivers.
@@ -50,48 +143,89 @@ class SACNPixelSender:
 
     def send(self, source_array, verify=False):
         """
-        Send pixel data to all configured receivers based on their addressing arrays.
-        :param source_array: numpy array of shape (width, height, 3) containing source pixel data.
-        :param verify: If True, log checksums for data verification
+        Send pixel data to all configured receivers.
+        If async is enabled, queues data for background sending.
+        Otherwise sends immediately.
         """
-        height, width, _ = source_array.shape
+        if self._async_enabled:
+            # Drop frame if queue is full (prevents lag buildup)
+            # Note: We don't copy the array - caller must not modify after calling send()
+            try:
+                self._send_queue.put_nowait((source_array, verify))
+            except queue.Full:
+                pass  # Skip this frame if queue is full
+        else:
+            self._send_immediate((source_array, verify))
+    
+    def _send_immediate(self, frame_data):
+        """
+        Send pixel data using optimized Numba functions (releases GIL).
+        :param frame_data: Tuple of (source_array, verify)
+        """
+        source_array, verify = frame_data
         
-        # Data verification checkpoint: Log received array checksum
         if verify:
-            checksum_received = np.sum(source_array.astype(np.uint64))
-            print(f"[ImageToDMX] Received shape={source_array.shape}, checksum={checksum_received}, min={source_array.min()}, max={source_array.max()}, mean={source_array.mean():.2f}")
+            print(f"[ImageToDMX] Sending frame shape={source_array.shape}")
         
-        # Prepare all universe data first (before sending anything)
+        # Process each receiver using optimized Numba (releases GIL)
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
-            # Vectorized extraction of pixel data
-            x_coords = np.clip(receiver['addressing_array'][:, 0], 0, height - 1)
-            y_coords = np.clip(receiver['addressing_array'][:, 1], 0, width - 1)
-            receiver_data = source_array[x_coords, y_coords]
+            x_coords, y_coords = self._cached_coords[rx_idx]
+            pixel_buffer = self._receiver_buffers[rx_idx]
             
-            # Data verification checkpoint: Log extracted pixel data
-            if verify:
-                checksum_extracted = np.sum(receiver_data.astype(np.uint64))
-                print(f"[ImageToDMX] Receiver {rx_idx} ({receiver['ip']}): Extracted {receiver_data.shape[0]} pixels, checksum={checksum_extracted}, min={receiver_data.min()}, max={receiver_data.max()}, mean={receiver_data.mean():.2f}")
-
-            # Prepare data in 170-pixel chunks
-            for i, universe in enumerate(universes):
-                start = i * 170
-                end = min(start + 170, receiver['pixel_count'])
-                universe_data = receiver_data[start:end].flatten()
-                # Pad the last universe if necessary
-                if universe_data.size < 510:
-                    universe_data = np.pad(universe_data, (0, 510 - universe_data.size), 'constant')
+            if NUMBA_AVAILABLE:
+                # Ultra-fast: extract pixels with no bounds checking (coords pre-validated)
+                extract_and_pack_pixels_unchecked(
+                    source_array,
+                    x_coords,
+                    y_coords,
+                    pixel_buffer
+                )
                 
-                # Assign data without auto-sending
-                self.sender[universe].dmx_data = universe_data.tobytes()
+                # Process all universes in parallel
+                universe_buffer_2d = self._universe_buffers[rx_idx]
+                process_all_universes(
+                    pixel_buffer,
+                    self._universe_starts[rx_idx],
+                    self._universe_ends[rx_idx],
+                    universe_buffer_2d
+                )
+                
+                # Send all universes
+                for u, universe in enumerate(universes):
+                    self.sender[universe].dmx_data = universe_buffer_2d[u].tobytes()
+                    
+            else:
+                # Fallback to numpy
+                height, width = source_array.shape[:2]
+                x_valid = np.minimum(x_coords, height - 1)
+                y_valid = np.minimum(y_coords, width - 1)
+                pixels = source_array[x_valid, y_valid]
+                pixel_buffer[:] = pixels.flatten()
+                
+                # Pack into universe buffers
+                slices = self._universe_slices[rx_idx]
+                universe_buffer_2d = self._universe_buffers[rx_idx]
+                
+                for u, (start, end, needs_padding) in enumerate(slices):
+                    byte_start = start * 3
+                    byte_end = end * 3
+                    byte_count = byte_end - byte_start
+                    
+                    universe_buffer_2d[u, :byte_count] = pixel_buffer[byte_start:byte_end]
+                    if needs_padding:
+                        universe_buffer_2d[u, byte_count:] = 0
+                    
+                    self.sender[universes[u]].dmx_data = universe_buffer_2d[u].tobytes()
         
-        # Now flush all universes at once
+        # Flush all universes
         self.sender.flush()
 
     def close(self):
         """
         Properly close the sACN sender
         """
+        # Stop async thread if running
+        self.disable_async_send()
         self.sender.stop()
 
     def analyze_row_groups(self, max_pixels_per_group=170):
