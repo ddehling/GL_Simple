@@ -416,8 +416,7 @@ class EnvironmentalSystem:
                         "width_sensitivity": 0.5,
                         "base_width": 2.0,
                         "max_width": 20.0,
-                        "color_hue": 0.5,
-                        "frame_id": 0}),    
+                        "color_hue": 0.5}),    
                 (fx.shader_pixel_spots, {})                                     # Position 13
             ]
             
