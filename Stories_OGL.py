@@ -4,7 +4,10 @@ from pathlib import Path
 from corefunctions.Events import EventScheduler
 
 from corefunctions.soundinput import MicrophoneAnalyzer
-from corefunctions.weather_params import WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS
+from corefunctions.weather_params import (
+    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
+    WEATHER_SETS, DEFAULT_WEATHER_SET
+)
 from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.celestial_bodies import (
      shader_celestial_bodies, 
@@ -23,18 +26,27 @@ class EnvironmentalSystem:
         use_shader_renderer=True,
         headless=False,frames=frame_dimensions, magnification=3
     )
+        # Weather set management
+        self.current_set = DEFAULT_WEATHER_SET
+        self.target_set = None  # For pending set changes
+        self.weather_sets = WEATHER_SETS
+        
         self.current_weather = WeatherState.CLEAR
         self.target_weather = WeatherState.CLEAR
         self.transition_time = 0
         self.transition_start = 0
         self.progress = 0
+        self.season = 0.0  # Initialize season value
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
         self.analyzer.start()
         #self.specdat = np.zeros([513, 1000])
         self.scale = 1.0
         
         # Initialize web control system
-        self.web_controls = {}
+        self.web_controls = {
+            "current_weather_set": self.current_set,
+            "available_sets": list(WEATHER_SETS.keys()),
+        }
         self.web_controller = WebController(
             self.web_controls, 
             port=5000, 
@@ -117,6 +129,31 @@ class EnvironmentalSystem:
         params = self.default_weather_params.copy()
         params.update(self.weather_presets[weather_state])
         return params
+    
+    def get_current_set_config(self):
+        """Get the configuration for the current weather set"""
+        return self.weather_sets[self.current_set]
+    
+    def get_set_states(self, set_name=None):
+        """Get list of weather states in a set"""
+        if set_name is None:
+            set_name = self.current_set
+        return [WeatherState(state) for state in self.weather_sets[set_name]["states"]]
+    
+    def change_weather_set(self, new_set_name: str):
+        """Request a change to a different weather set"""
+        if new_set_name not in self.weather_sets:
+            print(f"⚠️ Unknown weather set: {new_set_name}")
+            return False
+        
+        if new_set_name == self.current_set:
+            print(f"Already in set '{new_set_name}'")
+            return True
+        
+        self.target_set = new_set_name
+        print(f"🔄 Weather set change queued: '{self.current_set}' → '{new_set_name}'")
+        print(f"   Will transition on next weather change...")
+        return True
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
@@ -207,6 +244,18 @@ class EnvironmentalSystem:
 
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
+        # Check for weather set change requests
+        if 'request_weather_set' in self.web_controls:
+            new_set = self.web_controls['request_weather_set']
+            if new_set != self.current_set:
+                self.change_weather_set(new_set)
+            del self.web_controls['request_weather_set']
+        
+        # Update web controls with current state
+        self.web_controls['current_weather_set'] = self.current_set
+        self.web_controls['current_weather'] = self.current_weather.value
+        self.web_controls['season'] = float(self.season)
+        
         # Example: scale effects based on web controls
         if 'weather_intensity' in self.web_controls:
             intensity = self.web_controls['weather_intensity']
@@ -245,7 +294,11 @@ class EnvironmentalSystem:
                 self.weather_params = target_params.copy()
 
     def send_variables(self):
-        self.season = (time.time() / 1800) % 1
+        # Apply season speed from current weather set
+        set_config = self.get_current_set_config()
+        season_speed = set_config.get("season_speed", 1.0)
+        self.season = ((time.time() / 1800) * season_speed) % 1
+        
         fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
         self.cloudyness = ((1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3)/4
         self.scheduler.state["cloudyness"] = self.cloudyness
@@ -358,41 +411,87 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
                 
     def random_state_change(self):
+        # Apply set-specific transition speed
+        set_config = self.get_current_set_config()
+        transition_speed_mult = set_config.get("transition_speed", 1.0)
+        
         randcheck = np.random.random()
-        if (randcheck < (1 / 800) * self.weather_params["Switch_rate"]) and (self.progress >= 0.99):  # 0.1% chance each frame
+        if (randcheck < (1 / 800) * self.weather_params["Switch_rate"] * transition_speed_mult) and (self.progress >= 0.99):
             self.progress = 0
+            
+            # Check if we need to change weather sets
+            if self.target_set is not None:
+                print(f"🌈 Switching weather set: '{self.current_set}' → '{self.target_set}'")
+                self.current_set = self.target_set
+                self.target_set = None
+                self.web_controls["current_weather_set"] = self.current_set
+                
+                # Pick a random weather from the new set
+                set_states = self.get_set_states()
+                new_weather = np.random.choice(set_states)
+                print(f"   Starting with: {new_weather.value}")
+                
+                new_weather_params = self.get_weather_params(new_weather)
+                t_duration = new_weather_params["transition_duration"]
+                self.transition_to_weather(new_weather, transition_duration=t_duration)
+                return
+            
+            # Normal transition within current set
             current_preset = self.weather_presets[self.current_weather]
             possible_states = [WeatherState(state) for state in current_preset["possible_transitions"]]
-            base_weights = current_preset["transition_weights"]
-            #print(f"Season = {self.season:.3f}")
+            
+            # Filter to only states in current set
+            set_states = self.get_set_states()
+            possible_states = [state for state in possible_states if state in set_states]
+            
+            if not possible_states:
+                # If no valid transitions in set, pick random state from set
+                possible_states = set_states
+                base_weights = [1.0] * len(possible_states)
+            else:
+                # Use weights from preset, but only for states in the set
+                base_weights = []
+                for state in possible_states:
+                    # Find the weight for this state
+                    try:
+                        idx = current_preset["possible_transitions"].index(state.value)
+                        base_weights.append(current_preset["transition_weights"][idx])
+                    except (ValueError, IndexError):
+                        base_weights.append(1.0)
             
             # Apply seasonal modifiers to weights
+            season_extremity = set_config.get("season_extremity", 1.0)
             adjusted_weights = []
             for i, state in enumerate(possible_states):
                 # Get the season preference for this weather state
                 target_season_pref = self.weather_presets[state].get("season_preference", 0.375)
                 
-                # Calculate seasonal multiplier (between 0.5 and 3.0)
+                # Calculate seasonal multiplier (modified by extremity)
                 season_multiplier = self.calculate_seasonal_weight_multiplier(target_season_pref, self.season)
+                
+                # Apply extremity: interpolate between 1.0 (no effect) and season_multiplier
+                # Use max to ensure we never go below a small positive value
+                if season_extremity > 0:
+                    season_multiplier = 1.0 + (season_multiplier - 1.0) * season_extremity
+                    season_multiplier = max(0.01, season_multiplier)  # Ensure non-negative
+                else:
+                    season_multiplier = 1.0  # No seasonal effect
                 
                 # Apply the seasonal modifier to the base weight
                 adjusted_weight = base_weights[i] * season_multiplier
                 adjusted_weights.append(adjusted_weight)
-                # Print season name and adjusted weight
-                #print(f"Weather: {state.name}, Base Weight:{base_weights[i]:.2f}, Adjusted Weight: {adjusted_weight:.2f}")
             
             # Normalize weights
             adjusted_weights = np.array(adjusted_weights)
-            if np.sum(adjusted_weights) > 0:  # Avoid division by zero
+            if np.sum(adjusted_weights) > 0:
                 adjusted_weights = adjusted_weights / np.sum(adjusted_weights)
             else:
-                # Fallback to equal probabilities if all weights are zero
                 adjusted_weights = np.ones(len(adjusted_weights)) / len(adjusted_weights)
             
-            # Choose new weather state with seasonally adjusted weights
+            # Choose new weather state
             new_weather = np.random.choice(possible_states, p=adjusted_weights)
             
-            # Find the 'transition duration of the new weather'
+            # Find the transition duration
             new_weather_params = self.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
             self.transition_to_weather(new_weather, transition_duration=t_duration)
