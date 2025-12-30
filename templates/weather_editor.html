@@ -1,0 +1,1942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Set Editor - GL_Simple</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        h1 {
+            color: #2a5298;
+            font-size: 28px;
+        }
+        
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #2196F3;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #0b7dda;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(33, 150, 243, 0.3);
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #da190b;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(244, 67, 54, 0.3);
+        }
+        
+        .btn-warning {
+            background: #ff9800;
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            background: #e68900;
+        }
+        
+        .main-layout {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+            align-items: start;
+        }
+        
+        /* Left Panel - Set Selection */
+        .left-panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .panel-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #2a5298;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        
+        .set-list {
+            list-style: none;
+        }
+        
+        .set-item {
+            padding: 12px 15px;
+            margin-bottom: 8px;
+            background: #f5f5f5;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border-left: 3px solid transparent;
+        }
+        
+        .set-item:hover {
+            background: #e8f4f8;
+            border-left-color: #2196F3;
+        }
+        
+        .set-item.active {
+            background: #e3f2fd;
+            border-left-color: #2196F3;
+            font-weight: 600;
+        }
+        
+        .set-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .set-delete-btn {
+            background: transparent;
+            border: none;
+            color: #f44336;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 0 5px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        
+        .set-item:hover .set-delete-btn {
+            opacity: 1;
+        }
+        
+        .set-delete-btn:hover {
+            color: #d32f2f;
+        }
+        
+        .add-set-btn {
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        /* Right Panel - Editor */
+        .right-panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .editor-section {
+            margin-bottom: 30px;
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2a5298;
+        }
+        
+        /* Set Configuration */
+        .set-config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        label {
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #555;
+            font-size: 14px;
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        textarea {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+        
+        /* Weather States in Set */
+        .weather-states-container {
+            background: #f9f9f9;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .weather-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .weather-pill {
+            padding: 8px 15px;
+            background: #e3f2fd;
+            border: 2px solid #2196F3;
+            border-radius: 20px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .weather-pill-remove {
+            background: transparent;
+            border: none;
+            color: #f44336;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+        
+        .weather-pill-remove:hover {
+            background: rgba(244, 67, 54, 0.1);
+        }
+        
+        .add-weather-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background: white;
+            min-width: 200px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+            border-radius: 5px;
+            z-index: 1000;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .dropdown-content.show {
+            display: block;
+        }
+        
+        .dropdown-item {
+            padding: 10px 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .dropdown-item:hover {
+            background: #f5f5f5;
+        }
+        
+        .dropdown-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        /* Weather State Editor */
+        .weather-state-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+            overflow-x: auto;
+            padding-bottom: 5px;
+        }
+        
+        .weather-tab {
+            padding: 10px 20px;
+            background: #e0e0e0;
+            border: none;
+            border-radius: 5px 5px 0 0;
+            cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        
+        .weather-tab:hover {
+            background: #d0d0d0;
+        }
+        
+        .weather-tab.active {
+            background: #2196F3;
+            color: white;
+            font-weight: 600;
+        }
+        
+        .weather-tab-content {
+            display: none;
+            background: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        
+        .weather-tab-content.active {
+            display: block;
+        }
+        
+        .param-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .param-item {
+            background: white;
+            padding: 12px;
+            border-radius: 5px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .param-item label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 13px;
+        }
+        
+        .param-item input {
+            width: 100%;
+        }
+        
+        .array-input {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .array-input input {
+            flex: 1;
+        }
+        
+        /* Status Messages */
+        .status-message {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .status-message.show {
+            display: block;
+        }
+        
+        .status-message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status-message.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        /* Loading Overlay */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .loading-overlay.show {
+            display: flex;
+        }
+        
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.show {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        .modal-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2a5298;
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+        
+        /* New Weather State Button */
+        .add-state-btn {
+            margin-top: 10px;
+        }
+        
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+    </div>
+    
+    <div class="container">
+        <header>
+            <h1>⚙️ Weather Set Editor</h1>
+            <div class="header-actions">
+                <button class="btn btn-warning" id="validateBtn">Validate</button>
+                <button class="btn btn-primary" id="saveBtn">Save Changes</button>
+                <button class="btn btn-secondary" onclick="window.location.href='/'">Back to Control Panel</button>
+            </div>
+        </header>
+        
+        <div class="status-message" id="statusMessage"></div>
+        
+        <!-- Global Parameters Section -->
+        <div style="background: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+            <h3 style="margin: 0 0 15px 0; color: #2a5298; display: flex; align-items: center; gap: 10px;">
+                🌐 Global Parameters
+                <span style="font-size: 14px; font-weight: normal; color: #666;">(always available in every set)</span>
+                <button class="btn btn-danger" onclick="showDeleteParameterModal()" style="margin-left: auto; padding: 8px 16px; font-size: 14px;">🗑️ Delete Parameter</button>
+            </h3>
+            <div id="globalParametersContainer" style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
+                <!-- Global parameters will be rendered here -->
+            </div>
+            <button class="btn btn-primary" onclick="showAddGlobalParameterModal()" style="padding: 8px 16px; font-size: 14px;">+ Add Global Parameter</button>
+        </div>
+        
+        <div class="main-layout">
+            <!-- Left Panel: Set Selection -->
+            <div class="left-panel">
+                <div class="panel-title">Weather Sets</div>
+                <ul class="set-list" id="setList"></ul>
+                <button class="btn btn-primary add-set-btn" id="addSetBtn">+ New Set</button>
+            </div>
+            
+            <!-- Right Panel: Set Editor -->
+            <div class="right-panel">
+                <div id="editorContent">
+                    <p style="text-align: center; color: #999; padding: 50px;">Select a set to edit or create a new one</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for New Set -->
+    <div class="modal" id="newSetModal">
+        <div class="modal-content">
+            <div class="modal-title">Create New Weather Set</div>
+            <div class="form-group">
+                <label>Set ID (internal name, lowercase, no spaces)</label>
+                <input type="text" id="newSetId" placeholder="e.g., mystical_realm">
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Display Name</label>
+                <input type="text" id="newSetName" placeholder="e.g., Mystical Realm">
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Description</label>
+                <textarea id="newSetDescription" placeholder="Describe this weather set..."></textarea>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeNewSetModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createNewSet()">Create</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for New Weather State -->
+    <div class="modal" id="newStateModal">
+        <div class="modal-content">
+            <div class="modal-title">Create New Weather State</div>
+            <div class="form-group">
+                <label>State Name (UPPERCASE_SNAKE_CASE for enum)</label>
+                <input type="text" id="newStateName" placeholder="e.g., MYSTIC_RAIN">
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>State Value (lowercase)</label>
+                <input type="text" id="newStateValue" placeholder="e.g., mystic_rain">
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeNewStateModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createNewState()">Create</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for New Parameter -->
+    <div class="modal" id="newParameterModal">
+        <div class="modal-content">
+            <div class="modal-title">Create New Parameter</div>
+            <div class="form-group">
+                <label>Parameter Name (lowercase_snake_case)</label>
+                <input type="text" id="newParamName" placeholder="e.g., my_custom_value">
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Parameter Type</label>
+                <select id="newParamType">
+                    <option value="number">Number</option>
+                    <option value="text">Text</option>
+                    <option value="array">Array (3 numbers)</option>
+                    <option value="array-string">Array of Strings</option>
+                    <option value="array-number">Array of Numbers</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Default Value</label>
+                <input type="text" id="newParamDefault" placeholder="e.g., 0 or 0,0,0">
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeNewParameterModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createNewParameter()">Create</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for Add Global Parameter -->
+    <div class="modal" id="addGlobalParameterModal">
+        <div class="modal-content">
+            <div class="modal-title">Add Global Parameter</div>
+            <p style="color: #666; margin-bottom: 15px;">Select a parameter to make it globally available in all weather sets.</p>
+            <div class="form-group">
+                <label>Parameter</label>
+                <select id="globalParamSelect" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <!-- Options will be populated by JavaScript -->
+                </select>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeAddGlobalParameterModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="addGlobalParameter()">Add</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for Delete Parameter -->
+    <div class="modal" id="deleteParameterModal">
+        <div class="modal-content">
+            <div class="modal-title">Delete Parameter</div>
+            <p style="color: #d9534f; margin-bottom: 15px;">⚠️ This will permanently delete the parameter from all weather states and sets!</p>
+            <div class="form-group">
+                <label>Parameter to Delete</label>
+                <select id="deleteParamSelect" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    <!-- Options will be populated by JavaScript -->
+                </select>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closeDeleteParameterModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="deleteParameter()">Delete</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+// Weather Editor JavaScript
+let weatherData = {
+    weather_states: [],
+    weather_presets: {},
+    weather_sets: {},
+    global_parameters: []
+};
+
+let currentSet = null;
+let currentWeatherTab = null;
+let hasUnsavedChanges = false;
+let availableSounds = []; // List of available sound files
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadWeatherData();
+    setupEventListeners();
+});
+
+function setupEventListeners() {
+    document.getElementById('addSetBtn').addEventListener('click', showNewSetModal);
+    document.getElementById('saveBtn').addEventListener('click', saveChanges);
+    document.getElementById('validateBtn').addEventListener('click', validateData);
+    
+    // Warn before leaving with unsaved changes
+    window.addEventListener('beforeunload', (e) => {
+        if (hasUnsavedChanges) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+}
+
+async function loadWeatherData() {
+    showLoading(true);
+    try {
+        console.log('Fetching weather data...');
+        const response = await fetch('/api/weather_editor/all_data');
+        console.log('Response status:', response.status);
+        if (!response.ok) throw new Error('Failed to load weather data');
+        
+        weatherData = await response.json();
+        availableSounds = weatherData.available_sounds || [];
+        console.log('Weather data loaded:', weatherData);
+        console.log('Weather sets:', Object.keys(weatherData.weather_sets || {}));
+        console.log('Available sounds:', availableSounds.length);
+        renderGlobalParameters();
+        renderSetList();
+        showStatus('Weather data loaded successfully', 'success');
+    } catch (error) {
+        console.error('Error loading weather data:', error);
+        showStatus('Error loading weather data: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function renderGlobalParameters() {
+    const container = document.getElementById('globalParametersContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    const globalParams = weatherData.global_parameters || [];
+    
+    if (globalParams.length === 0) {
+        container.innerHTML = '<p style="color: #999; margin: 0;">No global parameters set.</p>';
+        return;
+    }
+    
+    globalParams.forEach(param => {
+        const pill = document.createElement('div');
+        pill.className = 'weather-pill';
+        pill.style.backgroundColor = '#e8f4f8';
+        pill.style.borderColor = '#4a90a4';
+        pill.innerHTML = `
+            <span>${param}</span>
+            <button class="weather-pill-remove" onclick="removeGlobalParameter('${param}')">×</button>
+        `;
+        container.appendChild(pill);
+    });
+}
+
+function showAddGlobalParameterModal() {
+    const modal = document.getElementById('addGlobalParameterModal');
+    const select = document.getElementById('globalParamSelect');
+    
+    // Populate dropdown with available parameters
+    const allParams = Object.keys(weatherData.default_params || {});
+    const globalParams = weatherData.global_parameters || [];
+    const availableParams = allParams.filter(p => !globalParams.includes(p));
+    
+    select.innerHTML = '';
+    if (availableParams.length === 0) {
+        select.innerHTML = '<option>All parameters are already global</option>';
+    } else {
+        availableParams.forEach(param => {
+            const option = document.createElement('option');
+            option.value = param;
+            option.textContent = param;
+            select.appendChild(option);
+        });
+    }
+    
+    modal.classList.add('show');
+}
+
+function closeAddGlobalParameterModal() {
+    document.getElementById('addGlobalParameterModal').classList.remove('show');
+}
+
+function addGlobalParameter() {
+    const select = document.getElementById('globalParamSelect');
+    const param = select.value;
+    
+    if (!param || param === 'All parameters are already global') {
+        return;
+    }
+    
+    if (!weatherData.global_parameters) {
+        weatherData.global_parameters = [];
+    }
+    
+    if (!weatherData.global_parameters.includes(param)) {
+        weatherData.global_parameters.push(param);
+        hasUnsavedChanges = true;
+        renderGlobalParameters();
+        
+        // Refresh set editor if a set is selected
+        if (currentSet) {
+            renderSetEditor();
+        }
+        
+        showStatus(`Added "${param}" as a global parameter`, 'success');
+    }
+    
+    closeAddGlobalParameterModal();
+}
+
+function removeGlobalParameter(param) {
+    if (!confirm(`Remove "${param}" from global parameters? It will still be available as a set-specific parameter.`)) {
+        return;
+    }
+    
+    if (weatherData.global_parameters) {
+        weatherData.global_parameters = weatherData.global_parameters.filter(p => p !== param);
+        hasUnsavedChanges = true;
+        renderGlobalParameters();
+        
+        // Refresh set editor if a set is selected
+        if (currentSet) {
+            renderSetEditor();
+        }
+        
+        showStatus(`Removed "${param}" from global parameters`, 'success');
+    }
+}
+
+function showDeleteParameterModal() {
+    const modal = document.getElementById('deleteParameterModal');
+    const select = document.getElementById('deleteParamSelect');
+    
+    // Get all parameters
+    const allParams = Object.keys(weatherData.default_params || {});
+    
+    select.innerHTML = '';
+    if (allParams.length === 0) {
+        select.innerHTML = '<option>No parameters available</option>';
+    } else {
+        allParams.forEach(param => {
+            const option = document.createElement('option');
+            option.value = param;
+            option.textContent = param;
+            select.appendChild(option);
+        });
+    }
+    
+    modal.classList.add('show');
+}
+
+function closeDeleteParameterModal() {
+    document.getElementById('deleteParameterModal').classList.remove('show');
+}
+
+function deleteParameter() {
+    const select = document.getElementById('deleteParamSelect');
+    const param = select.value;
+    
+    if (!param || param === 'No parameters available') {
+        return;
+    }
+    
+    if (!confirm(`Are you sure you want to PERMANENTLY delete parameter "${param}"?\n\nThis will:\n- Remove it from DEFAULT_WEATHER_PARAMS\n- Remove it from all weather states\n- Remove it from all weather sets\n- Remove it from global parameters if present\n\nThis action cannot be undone!`)) {
+        return;
+    }
+    
+    // Remove from default params
+    if (weatherData.default_params) {
+        delete weatherData.default_params[param];
+    }
+    
+    // Remove from all weather presets
+    if (weatherData.weather_presets) {
+        for (const state in weatherData.weather_presets) {
+            delete weatherData.weather_presets[state][param];
+        }
+    }
+    
+    // Remove from all allowed_parameters in weather sets
+    if (weatherData.weather_sets) {
+        for (const setId in weatherData.weather_sets) {
+            const setData = weatherData.weather_sets[setId];
+            if (setData.allowed_parameters) {
+                setData.allowed_parameters = setData.allowed_parameters.filter(p => p !== param);
+            }
+        }
+    }
+    
+    // Remove from global parameters
+    if (weatherData.global_parameters) {
+        weatherData.global_parameters = weatherData.global_parameters.filter(p => p !== param);
+    }
+    
+    hasUnsavedChanges = true;
+    
+    closeDeleteParameterModal();
+    renderGlobalParameters();
+    
+    // Refresh set editor if a set is selected
+    if (currentSet) {
+        renderSetEditor();
+    }
+    
+    showStatus(`Deleted parameter "${param}" from all weather data`, 'success');
+}
+
+function renderSetList() {
+    console.log('renderSetList called');
+    const setList = document.getElementById('setList');
+    console.log('setList element:', setList);
+    setList.innerHTML = '';
+    
+    const sets = Object.entries(weatherData.weather_sets || {});
+    console.log('Number of sets to render:', sets.length);
+    
+    for (const [setId, setData] of sets) {
+        console.log('Rendering set:', setId, setData);
+        const li = document.createElement('li');
+        li.className = 'set-item';
+        if (currentSet === setId) {
+            li.classList.add('active');
+        }
+        
+        li.innerHTML = `
+            <div class="set-item-header">
+                <span>${setData.name || setId}</span>
+                <button class="set-delete-btn" onclick="deleteSet('${setId}', event)">×</button>
+            </div>
+        `;
+        
+        li.onclick = (e) => {
+            if (!e.target.classList.contains('set-delete-btn')) {
+                selectSet(setId);
+            }
+        };
+        
+        setList.appendChild(li);
+    }
+}
+
+function selectSet(setId) {
+    currentSet = setId;
+    renderSetList();
+    renderSetEditor();
+}
+
+function renderSetEditor() {
+    if (!currentSet) return;
+    
+    const setData = weatherData.weather_sets[currentSet];
+    const editorContent = document.getElementById('editorContent');
+    
+    editorContent.innerHTML = `
+        <div class="editor-section">
+            <div class="section-header">
+                <div class="section-title">Set Configuration: ${setData.name}</div>
+            </div>
+            
+            <div class="set-config-grid">
+                <div class="form-group">
+                    <label>Display Name</label>
+                    <input type="text" id="setName" value="${setData.name || ''}" 
+                           onchange="updateSetProperty('name', this.value)">
+                </div>
+                
+                <div class="form-group">
+                    <label>Season Speed</label>
+                    <input type="number" step="0.1" id="setSeasonSpeed" 
+                           value="${setData.season_speed || 1.0}"
+                           onchange="updateSetProperty('season_speed', parseFloat(this.value))">
+                </div>
+                
+                <div class="form-group">
+                    <label>Season Extremity</label>
+                    <input type="number" step="0.1" id="setSeasonExtremity" 
+                           value="${setData.season_extremity || 1.0}"
+                           onchange="updateSetProperty('season_extremity', parseFloat(this.value))">
+                </div>
+                
+                <div class="form-group">
+                    <label>Transition Speed</label>
+                    <input type="number" step="0.1" id="setTransitionSpeed" 
+                           value="${setData.transition_speed || 1.0}"
+                           onchange="updateSetProperty('transition_speed', parseFloat(this.value))">
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Description</label>
+                <textarea id="setDescription" 
+                          onchange="updateSetProperty('description', this.value)">${setData.description || ''}</textarea>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
+                <div class="section-title">Allowed Parameters for This Set</div>
+                <button class="btn btn-primary btn-sm" onclick="toggleParameterDropdown()">+ Add Parameter</button>
+            </div>
+            
+            <div class="weather-states-container">
+                <div class="weather-pills" id="parameterPills"></div>
+                
+                <div class="add-weather-dropdown">
+                    <div class="dropdown-content" id="parameterDropdown"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
+                <div class="section-title">Weather States in Set</div>
+                <button class="btn btn-primary btn-sm" onclick="toggleWeatherDropdown()">+ Add Weather</button>
+            </div>
+            
+            <div class="weather-states-container">
+                <div class="weather-pills" id="weatherPills"></div>
+                
+                <div class="add-weather-dropdown">
+                    <div class="dropdown-content" id="weatherDropdown"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
+                <div class="section-title">Edit Weather State Parameters</div>
+                <button class="btn btn-primary add-state-btn" onclick="showNewStateModal()">+ New Weather State</button>
+            </div>
+            
+            <div class="weather-state-tabs" id="weatherTabs"></div>
+            <div id="weatherTabsContent"></div>
+        </div>
+    `;
+    
+    renderWeatherPills();
+    renderParameterPills();
+    renderWeatherTabs();
+}
+
+function renderParameterPills() {
+    const setData = weatherData.weather_sets[currentSet];
+    const parameterPills = document.getElementById('parameterPills');
+    
+    if (!parameterPills) return;
+    
+    parameterPills.innerHTML = '';
+    
+    const allowedParams = setData.allowed_parameters || [];
+    const globalParams = weatherData.global_parameters || [];
+    
+    // Show global parameters first (cannot be removed)
+    if (globalParams.length > 0) {
+        const globalLabel = document.createElement('div');
+        globalLabel.style.cssText = 'color: #666; font-size: 11px; margin: 5px 0; font-weight: bold;';
+        globalLabel.textContent = 'Global Parameters (always present):';
+        parameterPills.appendChild(globalLabel);
+        
+        globalParams.forEach(param => {
+            const pill = document.createElement('div');
+            pill.className = 'weather-pill';
+            pill.style.backgroundColor = '#e8f4f8';
+            pill.style.borderColor = '#4a90a4';
+            pill.innerHTML = `<span title="Global parameter - always available">${param}</span>`;
+            parameterPills.appendChild(pill);
+        });
+    }
+    
+    // Show set-specific parameters
+    if (allowedParams.length > 0) {
+        const setLabel = document.createElement('div');
+        setLabel.style.cssText = 'color: #666; font-size: 11px; margin: 15px 0 5px 0; font-weight: bold;';
+        setLabel.textContent = 'Set-Specific Parameters:';
+        parameterPills.appendChild(setLabel);
+        
+        allowedParams.forEach(param => {
+            // Skip if it's a global parameter (already shown above)
+            if (globalParams.includes(param)) return;
+            
+            const pill = document.createElement('div');
+            pill.className = 'weather-pill';
+            pill.innerHTML = `
+                <span>${param}</span>
+                <button class="weather-pill-remove" onclick="removeParameterFromSet('${param}')">×</button>
+            `;
+            parameterPills.appendChild(pill);
+        });
+    }
+    
+    if (allowedParams.length === 0 && globalParams.length === 0) {
+        parameterPills.innerHTML = '<p style="color: #999; padding: 10px;">No parameters configured.</p>';
+    }
+}
+
+function toggleParameterDropdown() {
+    const dropdown = document.getElementById('parameterDropdown');
+    renderParameterDropdown();
+    dropdown.classList.toggle('show');
+    
+    // Close dropdown when clicking outside
+    setTimeout(() => {
+        document.addEventListener('click', function closeDropdown(e) {
+            if (!e.target.closest('.add-weather-dropdown')) {
+                dropdown.classList.remove('show');
+                document.removeEventListener('click', closeDropdown);
+            }
+        });
+    }, 0);
+}
+
+function renderParameterDropdown() {
+    const setData = weatherData.weather_sets[currentSet];
+    const dropdown = document.getElementById('parameterDropdown');
+    
+    if (!dropdown) return;
+    
+    dropdown.innerHTML = '';
+    
+    // Get all possible parameters from default params
+    const allParams = Object.keys(weatherData.default_params || {});
+    const allowedParams = setData.allowed_parameters || [];
+    const globalParams = weatherData.global_parameters || [];
+    
+    allParams.forEach(param => {
+        // Skip global parameters - they're always present
+        if (globalParams.includes(param)) return;
+        
+        const isInSet = allowedParams.includes(param);
+        const item = document.createElement('div');
+        item.className = 'dropdown-item' + (isInSet ? ' disabled' : '');
+        item.textContent = param;
+        
+        if (!isInSet) {
+            item.onclick = () => addParameterToSet(param);
+        }
+        
+        dropdown.appendChild(item);
+    });
+    
+    // Add option to create new parameter
+    const newParamItem = document.createElement('div');
+    newParamItem.className = 'dropdown-item';
+    newParamItem.style.borderTop = '2px solid #e0e0e0';
+    newParamItem.style.fontWeight = 'bold';
+    newParamItem.style.color = '#4CAF50';
+    newParamItem.textContent = '+ Create New Parameter';
+    newParamItem.onclick = () => {
+        dropdown.classList.remove('show');
+        showNewParameterModal();
+    };
+    dropdown.appendChild(newParamItem);
+}
+
+function addParameterToSet(param) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (!setData.allowed_parameters) {
+        setData.allowed_parameters = [];
+    }
+    
+    if (!setData.allowed_parameters.includes(param)) {
+        setData.allowed_parameters.push(param);
+        hasUnsavedChanges = true;
+        renderParameterPills();
+        renderWeatherTabs(); // Refresh to show new parameter
+        document.getElementById('parameterDropdown').classList.remove('show');
+        showStatus(`Added parameter ${param} to set`, 'success', 2000);
+    }
+}
+
+function removeParameterFromSet(param) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (setData.allowed_parameters) {
+        setData.allowed_parameters = setData.allowed_parameters.filter(p => p !== param);
+        hasUnsavedChanges = true;
+        renderParameterPills();
+        renderWeatherTabs(); // Refresh to hide parameter
+        showStatus(`Removed parameter ${param} from set`, 'success', 2000);
+    }
+}
+
+function renderWeatherPills() {
+    const setData = weatherData.weather_sets[currentSet];
+    const weatherPills = document.getElementById('weatherPills');
+    
+    weatherPills.innerHTML = '';
+    
+    (setData.states || []).forEach(state => {
+        const pill = document.createElement('div');
+        pill.className = 'weather-pill';
+        pill.innerHTML = `
+            <span>${state}</span>
+            <button class="weather-pill-remove" onclick="removeWeatherFromSet('${state}')">×</button>
+        `;
+        weatherPills.appendChild(pill);
+    });
+}
+
+function renderWeatherDropdown() {
+    const setData = weatherData.weather_sets[currentSet];
+    const dropdown = document.getElementById('weatherDropdown');
+    
+    dropdown.innerHTML = '';
+    
+    weatherData.weather_states.forEach(state => {
+        const isInSet = setData.states && setData.states.includes(state);
+        const item = document.createElement('div');
+        item.className = 'dropdown-item' + (isInSet ? ' disabled' : '');
+        item.textContent = state;
+        
+        if (!isInSet) {
+            item.onclick = () => addWeatherToSet(state);
+        }
+        
+        dropdown.appendChild(item);
+    });
+}
+
+function toggleWeatherDropdown() {
+    const dropdown = document.getElementById('weatherDropdown');
+    renderWeatherDropdown();
+    dropdown.classList.toggle('show');
+    
+    // Close dropdown when clicking outside
+    setTimeout(() => {
+        document.addEventListener('click', function closeDropdown(e) {
+            if (!e.target.closest('.add-weather-dropdown')) {
+                dropdown.classList.remove('show');
+                document.removeEventListener('click', closeDropdown);
+            }
+        });
+    }, 0);
+}
+
+function addWeatherToSet(state) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (!setData.states) {
+        setData.states = [];
+    }
+    
+    if (!setData.states.includes(state)) {
+        setData.states.push(state);
+        hasUnsavedChanges = true;
+        renderWeatherPills();
+        renderWeatherTabs();
+        document.getElementById('weatherDropdown').classList.remove('show');
+        showStatus(`Added ${state} to set`, 'success', 2000);
+    }
+}
+
+function removeWeatherFromSet(state) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (setData.states) {
+        setData.states = setData.states.filter(s => s !== state);
+        hasUnsavedChanges = true;
+        renderWeatherPills();
+        renderWeatherTabs();
+        showStatus(`Removed ${state} from set`, 'success', 2000);
+    }
+}
+
+function renderWeatherTabs() {
+    const setData = weatherData.weather_sets[currentSet];
+    const tabsContainer = document.getElementById('weatherTabs');
+    const tabsContent = document.getElementById('weatherTabsContent');
+    
+    tabsContainer.innerHTML = '';
+    tabsContent.innerHTML = '';
+    
+    if (!setData.states || setData.states.length === 0) {
+        tabsContent.innerHTML = '<p style="text-align: center; color: #999; padding: 30px;">No weather states in this set. Add some above!</p>';
+        return;
+    }
+    
+    setData.states.forEach((state, index) => {
+        // Create tab button
+        const tab = document.createElement('button');
+        tab.className = 'weather-tab';
+        tab.textContent = state;
+        tab.onclick = () => selectWeatherTab(state);
+        
+        if (index === 0 && !currentWeatherTab) {
+            currentWeatherTab = state;
+            tab.classList.add('active');
+        } else if (currentWeatherTab === state) {
+            tab.classList.add('active');
+        }
+        
+        tabsContainer.appendChild(tab);
+        
+        // Create tab content
+        const tabContent = document.createElement('div');
+        tabContent.className = 'weather-tab-content';
+        tabContent.id = `tab-${state}`;
+        
+        if (index === 0 && !currentWeatherTab || currentWeatherTab === state) {
+            tabContent.classList.add('active');
+        }
+        
+        tabContent.innerHTML = renderWeatherStateEditor(state);
+        tabsContent.appendChild(tabContent);
+    });
+}
+
+function selectWeatherTab(state) {
+    currentWeatherTab = state;
+    
+    // Update tab buttons
+    document.querySelectorAll('.weather-tab').forEach(tab => {
+        tab.classList.remove('active');
+        if (tab.textContent === state) {
+            tab.classList.add('active');
+        }
+    });
+    
+    // Update tab content
+    document.querySelectorAll('.weather-tab-content').forEach(content => {
+        content.classList.remove('active');
+        if (content.id === `tab-${state}`) {
+            content.classList.add('active');
+        }
+    });
+}
+
+function renderWeatherStateEditor(state) {
+    const preset = weatherData.weather_presets[state] || {};
+    const setData = weatherData.weather_sets[currentSet];
+    const allowedParams = setData.allowed_parameters || [];
+    const globalParams = weatherData.global_parameters || [];
+    
+    // Combine allowed and global parameters
+    const allAllowedParams = [...new Set([...globalParams, ...allowedParams])];
+    
+    // Define all possible parameters with types
+    const paramDefs = {
+        wind_speed: { type: 'number', step: 0.1 },
+        rain_rate: { type: 'number', step: 0.1 },
+        lightning_probability: { type: 'number', step: 0.05 },
+        starryness: { type: 'number', step: 0.1 },
+        spookyness: { type: 'number', step: 0.1 },
+        fog: { type: 'number', step: 0.05 },
+        fog_color: { type: 'array', length: 3 },
+        celestial_visibility: { type: 'number', step: 0.1 },
+        firefly_density: { type: 'number', step: 0.1 },
+        Aurora_probability: { type: 'number', step: 0.1 },
+        Wolfy: { type: 'number', step: 0.1 },
+        Switch_rate: { type: 'number', step: 0.1 },
+        meteor_rate: { type: 'number', step: 0.05 },
+        volcano_level: { type: 'number', step: 0.1 },
+        sand_density: { type: 'number', step: 0.1 },
+        skiptime: { type: 'number', step: 0.5 },
+        tree_prob: { type: 'number', step: 0.1 },
+        Weird: { type: 'number', step: 0.1 },
+        Sound_volume: { type: 'number', step: 0.1 },
+        season_preference: { type: 'number', step: 0.025 },
+        mountain: { type: 'number', step: 0.1 },
+        ambient_sound: { type: 'text' },
+        ARI: { type: 'number', step: 1 },
+        transition_duration: { type: 'number', step: 1 },
+        possible_transitions: { type: 'array-string' },
+        transition_weights: { type: 'array-number' }
+    };
+    
+    if (allAllowedParams.length === 0) {
+        return '<p style="text-align: center; color: #999; padding: 30px;">No parameters configured.</p>';
+    }
+    
+    let html = '<div class="param-grid">';
+    
+    // Check if transitions are available (we'll render them at the bottom)
+    const hasTransitions = allAllowedParams.includes('possible_transitions') && allAllowedParams.includes('transition_weights');
+    const transitionsValue = preset['possible_transitions'] || [];
+    const weightsValue = preset['transition_weights'] || [];
+    const isTransitionsGlobal = globalParams.includes('possible_transitions');
+    
+    // Render all allowed parameters (both global and set-specific)
+    for (const paramName of allAllowedParams) {
+        // Skip transition parameters - they'll be rendered at the bottom
+        if (paramName === 'possible_transitions' || paramName === 'transition_weights') continue;
+        
+        const paramDef = paramDefs[paramName];
+        if (!paramDef) continue; // Skip unknown parameters
+        
+        const value = preset[paramName];
+        const isGlobal = globalParams.includes(paramName);
+        const titleAttr = isGlobal ? 'title="Global parameter - available in all sets"' : '';
+        
+        if (paramDef.type === 'number') {
+            html += `
+                <div class="param-item" ${titleAttr}>
+                    <label>${paramName}${isGlobal ? ' 🌐' : ''}</label>
+                    <input type="number" step="${paramDef.step}" 
+                           value="${value !== undefined ? value : ''}"
+                           onchange="updateWeatherParam('${state}', '${paramName}', parseFloat(this.value))">
+                </div>
+            `;
+        } else if (paramDef.type === 'text') {
+            // Special handling for ambient_sound - use dropdown
+            if (paramName === 'ambient_sound') {
+                const soundOptions = availableSounds.map(sound => {
+                    const selected = sound === value ? 'selected' : '';
+                    return `<option value="${sound}" ${selected}>${sound}</option>`;
+                }).join('');
+                
+                html += `
+                    <div class="param-item" ${titleAttr}>
+                        <label>${paramName}${isGlobal ? ' 🌐' : ''}</label>
+                        <select onchange="updateWeatherParam('${state}', '${paramName}', this.value)"
+                                style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                            <option value="">-- None --</option>
+                            ${soundOptions}
+                        </select>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div class="param-item" ${titleAttr}>
+                        <label>${paramName}${isGlobal ? ' 🌐' : ''}</label>
+                        <input type="text" 
+                               value="${value !== undefined ? value : ''}"
+                               onchange="updateWeatherParam('${state}', '${paramName}', this.value)">
+                    </div>
+                `;
+            }
+        } else if (paramDef.type === 'array') {
+            const arrayValue = value || [0, 0, 0];
+            html += `
+                <div class="param-item" ${titleAttr}>
+                    <label>${paramName}${isGlobal ? ' 🌐' : ''}</label>
+                    <div class="array-input">
+                        ${arrayValue.map((v, i) => `
+                            <input type="number" step="0.1" value="${v}" 
+                                   onchange="updateWeatherArrayParam('${state}', '${paramName}', ${i}, parseFloat(this.value))">
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        } else if (paramDef.type === 'array-string') {
+            const arrayValue = value || [];
+            html += `
+                <div class="param-item" style="grid-column: span 2;" ${titleAttr}>
+                    <label>${paramName}${isGlobal ? ' 🌐' : ''}</label>
+                    <input type="text" 
+                           value="${arrayValue.join(', ')}"
+                           placeholder="comma-separated values"
+                           onchange="updateWeatherArrayStringParam('${state}', '${paramName}', this.value)">
+                </div>
+            `;
+        } else if (paramDef.type === 'array-number') {
+            const arrayValue = value || [];
+            html += `
+                <div class="param-item" style="grid-column: span 2;">
+                    <label>${paramName}</label>
+                    <input type="text" 
+                           value="${arrayValue.join(', ')}"
+                           placeholder="comma-separated numbers"
+                           onchange="updateWeatherArrayNumberParam('${state}', '${paramName}', this.value)">
+                </div>
+            `;
+        }
+    }
+    
+    html += '</div>';
+    
+    // Render transition configuration at the bottom, outside the param-grid
+    if (hasTransitions) {
+        html += `
+            <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; margin-top: 15px;">
+                <h4 style="margin: 0 0 10px 0; color: #2a5298; display: flex; align-items: center; gap: 8px;">
+                    Transition Configuration${isTransitionsGlobal ? ' 🌐' : ''}
+                    <button class="btn btn-primary" onclick="addTransitionPair('${state}')" style="margin-left: auto; padding: 5px 10px; font-size: 12px;">+ Add Transition</button>
+                </h4>
+                <div id="transitionPairs_${state}">
+                    ${renderTransitionPairs(state, transitionsValue, weightsValue)}
+                </div>
+            </div>
+        `;
+    }
+    
+    html += `
+        <div style="margin-top: 20px;">
+            <button class="btn btn-danger" onclick="deleteWeatherState('${state}')">
+                Delete Weather State: ${state}
+            </button>
+        </div>
+    `;
+    
+    return html;
+}
+
+function updateSetProperty(property, value) {
+    if (!currentSet) return;
+    weatherData.weather_sets[currentSet][property] = value;
+    hasUnsavedChanges = true;
+}
+
+function renderTransitionPairs(state, transitions, weights) {
+    let html = '';
+    const maxLength = Math.max(transitions.length, weights.length);
+    
+    if (maxLength === 0) {
+        return '<p style="color: #999; margin: 10px 0;">No transitions configured. Click "+ Add Transition" to add one.</p>';
+    }
+    
+    // Get available weather states
+    const allStates = weatherData.weather_states || [];
+    
+    for (let i = 0; i < maxLength; i++) {
+        const transition = transitions[i] || '';
+        const weight = weights[i] !== undefined ? weights[i] : 1.0;
+        
+        // Build options for dropdown, showing which states are already used
+        const usedStates = transitions.filter((t, idx) => idx !== i); // All except current
+        let options = '';
+        allStates.forEach(stateName => {
+            const isUsed = usedStates.includes(stateName);
+            const selected = stateName === transition ? 'selected' : '';
+            const disabled = isUsed ? 'disabled' : '';
+            const label = isUsed ? `${stateName} (already used)` : stateName;
+            options += `<option value="${stateName}" ${selected} ${disabled}>${label}</option>`;
+        });
+        
+        html += `
+            <div style="display: flex; gap: 10px; margin-bottom: 8px; align-items: center;">
+                <label style="min-width: 80px; margin: 0;">Pair ${i + 1}:</label>
+                <select onchange="updateTransitionPair('${state}', ${i}, 'transition', this.value)"
+                        style="flex: 2; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                    ${options}
+                </select>
+                <label style="margin: 0;">Weight:</label>
+                <input type="number" 
+                       step="0.1" 
+                       value="${weight}"
+                       onchange="updateTransitionPair('${state}', ${i}, 'weight', parseFloat(this.value))"
+                       style="width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                <button class="btn btn-danger" onclick="removeTransitionPair('${state}', ${i})" style="padding: 6px 12px; font-size: 12px;">×</button>
+            </div>
+        `;
+    }
+    
+    return html;
+}
+
+function updateTransitionPair(state, index, field, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    
+    if (field === 'transition') {
+        if (!weatherData.weather_presets[state]['possible_transitions']) {
+            weatherData.weather_presets[state]['possible_transitions'] = [];
+        }
+        weatherData.weather_presets[state]['possible_transitions'][index] = value;
+    } else if (field === 'weight') {
+        if (!weatherData.weather_presets[state]['transition_weights']) {
+            weatherData.weather_presets[state]['transition_weights'] = [];
+        }
+        weatherData.weather_presets[state]['transition_weights'][index] = value;
+    }
+    
+    hasUnsavedChanges = true;
+}
+
+function addTransitionPair(state) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    
+    if (!weatherData.weather_presets[state]['possible_transitions']) {
+        weatherData.weather_presets[state]['possible_transitions'] = [];
+    }
+    if (!weatherData.weather_presets[state]['transition_weights']) {
+        weatherData.weather_presets[state]['transition_weights'] = [];
+    }
+    
+    weatherData.weather_presets[state]['possible_transitions'].push('clear');
+    weatherData.weather_presets[state]['transition_weights'].push(1.0);
+    
+    hasUnsavedChanges = true;
+    
+    // Re-render the transition pairs
+    const container = document.getElementById(`transitionPairs_${state}`);
+    if (container) {
+        container.innerHTML = renderTransitionPairs(
+            state,
+            weatherData.weather_presets[state]['possible_transitions'],
+            weatherData.weather_presets[state]['transition_weights']
+        );
+    }
+}
+
+function removeTransitionPair(state, index) {
+    if (!weatherData.weather_presets[state]) return;
+    
+    if (weatherData.weather_presets[state]['possible_transitions']) {
+        weatherData.weather_presets[state]['possible_transitions'].splice(index, 1);
+    }
+    if (weatherData.weather_presets[state]['transition_weights']) {
+        weatherData.weather_presets[state]['transition_weights'].splice(index, 1);
+    }
+    
+    hasUnsavedChanges = true;
+    
+    // Re-render the transition pairs
+    const container = document.getElementById(`transitionPairs_${state}`);
+    if (container) {
+        container.innerHTML = renderTransitionPairs(
+            state,
+            weatherData.weather_presets[state]['possible_transitions'] || [],
+            weatherData.weather_presets[state]['transition_weights'] || []
+        );
+    }
+}
+
+function updateWeatherParam(state, param, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    weatherData.weather_presets[state][param] = value;
+    hasUnsavedChanges = true;
+}
+
+function updateWeatherArrayParam(state, param, index, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    if (!weatherData.weather_presets[state][param]) {
+        weatherData.weather_presets[state][param] = [0, 0, 0];
+    }
+    weatherData.weather_presets[state][param][index] = value;
+    hasUnsavedChanges = true;
+}
+
+function updateWeatherArrayStringParam(state, param, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    weatherData.weather_presets[state][param] = value.split(',').map(s => s.trim()).filter(s => s);
+    hasUnsavedChanges = true;
+}
+
+function updateWeatherArrayNumberParam(state, param, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    weatherData.weather_presets[state][param] = value.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+    hasUnsavedChanges = true;
+}
+
+function showNewSetModal() {
+    document.getElementById('newSetModal').classList.add('show');
+    document.getElementById('newSetId').value = '';
+    document.getElementById('newSetName').value = '';
+    document.getElementById('newSetDescription').value = '';
+}
+
+function closeNewSetModal() {
+    document.getElementById('newSetModal').classList.remove('show');
+}
+
+function createNewSet() {
+    const setId = document.getElementById('newSetId').value.trim();
+    const setName = document.getElementById('newSetName').value.trim();
+    const setDescription = document.getElementById('newSetDescription').value.trim();
+    
+    if (!setId) {
+        alert('Set ID is required');
+        return;
+    }
+    
+    if (!/^[a-z0-9_]+$/.test(setId)) {
+        alert('Set ID must be lowercase letters, numbers, and underscores only');
+        return;
+    }
+    
+    if (weatherData.weather_sets[setId]) {
+        alert('A set with this ID already exists');
+        return;
+    }
+    
+    weatherData.weather_sets[setId] = {
+        name: setName || setId,
+        description: setDescription || 'Custom weather set',
+        states: [],
+        season_speed: 1.0,
+        season_extremity: 1.0,
+        transition_speed: 1.0
+    };
+    
+    hasUnsavedChanges = true;
+    closeNewSetModal();
+    renderSetList();
+    selectSet(setId);
+    showStatus(`Created new set: ${setName || setId}`, 'success');
+}
+
+function deleteSet(setId, event) {
+    event.stopPropagation();
+    
+    if (!confirm(`Are you sure you want to delete the set "${weatherData.weather_sets[setId].name}"?`)) {
+        return;
+    }
+    
+    delete weatherData.weather_sets[setId];
+    hasUnsavedChanges = true;
+    
+    if (currentSet === setId) {
+        currentSet = null;
+        document.getElementById('editorContent').innerHTML = '<p style="text-align: center; color: #999; padding: 50px;">Select a set to edit or create a new one</p>';
+    }
+    
+    renderSetList();
+    showStatus('Set deleted', 'success');
+}
+
+function showNewStateModal() {
+    document.getElementById('newStateModal').classList.add('show');
+    document.getElementById('newStateName').value = '';
+    document.getElementById('newStateValue').value = '';
+}
+
+function closeNewStateModal() {
+    document.getElementById('newStateModal').classList.remove('show');
+}
+
+function createNewState() {
+    const stateName = document.getElementById('newStateName').value.trim();
+    const stateValue = document.getElementById('newStateValue').value.trim();
+    
+    if (!stateName || !stateValue) {
+        alert('Both state name and value are required');
+        return;
+    }
+    
+    if (!/^[A-Z0-9_]+$/.test(stateName)) {
+        alert('State name must be UPPERCASE_SNAKE_CASE');
+        return;
+    }
+    
+    if (!/^[a-z0-9_]+$/.test(stateValue)) {
+        alert('State value must be lowercase');
+        return;
+    }
+    
+    if (weatherData.weather_states.includes(stateValue)) {
+        alert('A state with this value already exists');
+        return;
+    }
+    
+    weatherData.weather_states.push(stateValue);
+    weatherData.weather_presets[stateValue] = {
+        wind_speed: 0.0,
+        rain_rate: 0.0,
+        possible_transitions: ["clear"],
+        transition_weights: [1.0]
+    };
+    
+    hasUnsavedChanges = true;
+    closeNewStateModal();
+    showStatus(`Created new weather state: ${stateValue}`, 'success');
+    
+    if (currentSet) {
+        renderSetEditor();
+    }
+}
+
+function deleteWeatherState(state) {
+    if (!confirm(`Are you sure you want to delete the weather state "${state}"? This will remove it from all sets and delete all its parameters.`)) {
+        return;
+    }
+    
+    // Remove from weather_states array
+    weatherData.weather_states = weatherData.weather_states.filter(s => s !== state);
+    
+    // Remove from presets
+    delete weatherData.weather_presets[state];
+    
+    // Remove from all sets
+    for (const setData of Object.values(weatherData.weather_sets)) {
+        if (setData.states) {
+            setData.states = setData.states.filter(s => s !== state);
+        }
+    }
+    
+    hasUnsavedChanges = true;
+    showStatus(`Deleted weather state: ${state}`, 'success');
+    
+    if (currentSet) {
+        renderSetEditor();
+    }
+}
+
+function showNewParameterModal() {
+    document.getElementById('newParameterModal').classList.add('show');
+    document.getElementById('newParamName').value = '';
+    document.getElementById('newParamType').value = 'number';
+    document.getElementById('newParamDefault').value = '0';
+}
+
+function closeNewParameterModal() {
+    document.getElementById('newParameterModal').classList.remove('show');
+}
+
+function createNewParameter() {
+    const paramName = document.getElementById('newParamName').value.trim();
+    const paramType = document.getElementById('newParamType').value;
+    const defaultValue = document.getElementById('newParamDefault').value.trim();
+    
+    if (!paramName) {
+        alert('Parameter name is required');
+        return;
+    }
+    
+    if (!/^[a-z0-9_]+$/.test(paramName)) {
+        alert('Parameter name must be lowercase_snake_case');
+        return;
+    }
+    
+    if (weatherData.default_params && weatherData.default_params[paramName] !== undefined) {
+        alert('A parameter with this name already exists');
+        return;
+    }
+    
+    // Parse default value based on type
+    let parsedDefault;
+    if (paramType === 'number') {
+        parsedDefault = parseFloat(defaultValue) || 0;
+    } else if (paramType === 'text') {
+        parsedDefault = defaultValue || '';
+    } else if (paramType === 'array') {
+        const parts = defaultValue.split(',').map(v => parseFloat(v.trim()));
+        parsedDefault = parts.length === 3 ? parts : [0, 0, 0];
+    } else if (paramType === 'array-string') {
+        parsedDefault = defaultValue ? defaultValue.split(',').map(s => s.trim()) : [];
+    } else if (paramType === 'array-number') {
+        parsedDefault = defaultValue ? defaultValue.split(',').map(s => parseFloat(s.trim())) : [];
+    }
+    
+    // Add to default params
+    if (!weatherData.default_params) {
+        weatherData.default_params = {};
+    }
+    weatherData.default_params[paramName] = parsedDefault;
+    
+    hasUnsavedChanges = true;
+    closeNewParameterModal();
+    showStatus(`Created new parameter: ${paramName}`, 'success');
+    
+    // Refresh parameter dropdown if visible
+    if (currentSet) {
+        renderParameterPills();
+    }
+}
+
+async function validateData() {
+    showLoading(true);
+    try {
+        const response = await fetch('/api/weather_editor/validate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(weatherData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.valid) {
+            showStatus('All data is valid!', 'success');
+        } else {
+            showStatus('Validation errors: ' + result.errors.join(', '), 'error');
+        }
+    } catch (error) {
+        showStatus('Error validating data: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function saveChanges() {
+    if (!confirm('This will overwrite weather_params.py. Make sure you have a backup! Continue?')) {
+        return;
+    }
+    
+    showLoading(true);
+    try {
+        const response = await fetch('/api/weather_editor/save', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(weatherData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            hasUnsavedChanges = false;
+            showStatus('Changes saved successfully! Restart the application to see changes.', 'success');
+        } else {
+            showStatus('Error saving: ' + result.error, 'error');
+        }
+    } catch (error) {
+        showStatus('Error saving changes: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function showStatus(message, type, timeout = 5000) {
+    const statusEl = document.getElementById('statusMessage');
+    statusEl.textContent = message;
+    statusEl.className = 'status-message show ' + type;
+    
+    if (timeout > 0) {
+        setTimeout(() => {
+            statusEl.classList.remove('show');
+        }, timeout);
+    }
+}
+
+function showLoading(show) {
+    const overlay = document.getElementById('loadingOverlay');
+    if (show) {
+        overlay.classList.add('show');
+    } else {
+        overlay.classList.remove('show');
+    }
+}
+    </script>
+</body>
+</html>

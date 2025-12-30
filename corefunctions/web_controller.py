@@ -130,6 +130,11 @@ class WebController:
             """Serve the weather sets control page."""
             return render_template('weather_sets.html')
         
+        @self.app.route('/weather_editor')
+        def weather_editor():
+            """Serve the weather set editor page."""
+            return render_template('weather_editor.html')
+        
         @self.app.route('/admin')
         def admin_panel():
             """Serve the admin panel page."""
@@ -275,6 +280,106 @@ class WebController:
                 "current_weather": self.control_dict.get('current_weather', 'unknown'),
                 "season": self.control_dict.get('season', 0.0)
             })
+        
+        @self.app.route('/api/weather_editor/all_data')
+        def get_all_weather_data():
+            """Get all weather states, presets, and sets for editing."""
+            from corefunctions.weather_params import (
+                WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, GLOBAL_PARAMETERS
+            )
+            import numpy as np
+            import os
+            from pathlib import Path
+            
+            def convert_to_json_serializable(obj):
+                """Recursively convert numpy arrays to lists"""
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_json_serializable(item) for item in obj]
+                else:
+                    return obj
+            
+            # Get available sound files
+            sound_files = []
+            sounds_dir = Path(__file__).parent.parent / 'media' / 'sounds'
+            if sounds_dir.exists():
+                sound_files = [f.name for f in sounds_dir.iterdir() if f.is_file()]
+                sound_files.sort()
+            
+            # Convert WeatherState enum to list of strings
+            weather_states = [state.value for state in WeatherState]
+            
+            # Convert WEATHER_PRESETS dict (with WeatherState keys) to JSON-friendly format
+            presets = {}
+            for state, params in WEATHER_PRESETS.items():
+                state_key = state.value if hasattr(state, 'value') else str(state)
+                # Deep copy and convert all numpy arrays to lists
+                params_copy = convert_to_json_serializable(params.copy())
+                presets[state_key] = params_copy
+            
+            # Convert default params
+            default_params = convert_to_json_serializable(DEFAULT_WEATHER_PARAMS.copy())
+            
+            # Convert weather sets
+            weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
+            
+            return jsonify({
+                "weather_states": weather_states,
+                "default_params": default_params,
+                "weather_presets": presets,
+                "weather_sets": weather_sets,
+                "global_parameters": GLOBAL_PARAMETERS,
+                "available_sounds": sound_files
+            })
+        
+        @self.app.route('/api/weather_editor/save', methods=['POST'])
+        def save_weather_data():
+            """Save modified weather data back to weather_params.py."""
+            try:
+                data = request.json
+                from corefunctions.weather_editor_utils import save_weather_params
+                
+                result = save_weather_params(
+                    weather_states=data.get('weather_states', []),
+                    weather_presets=data.get('weather_presets', {}),
+                    weather_sets=data.get('weather_sets', {}),
+                    global_parameters=data.get('global_parameters', [])
+                )
+                
+                if result['success']:
+                    return jsonify(result)
+                else:
+                    return jsonify(result), 500
+                    
+            except Exception as e:
+                return jsonify({
+                    "success": False,
+                    "error": str(e)
+                }), 500
+        
+        @self.app.route('/api/weather_editor/validate', methods=['POST'])
+        def validate_weather_data():
+            """Validate weather data without saving."""
+            try:
+                data = request.json
+                from corefunctions.weather_editor_utils import validate_weather_params
+                
+                result = validate_weather_params(
+                    weather_states=data.get('weather_states', []),
+                    weather_presets=data.get('weather_presets', {}),
+                    weather_sets=data.get('weather_sets', {})
+                )
+                
+                return jsonify(result)
+                    
+            except Exception as e:
+                return jsonify({
+                    "valid": False,
+                    "errors": [str(e)]
+                }), 500
     
     def add_control(self, key, control_type, label, **kwargs):
         """
@@ -351,8 +456,17 @@ class WebController:
                 server=f"{self.service_name}.local."
             )
             
-            self.zeroconf.register_service(self.service_info)
-            print(f"mDNS service registered as '{self.service_name}.local'")
+            # Register in a separate thread to avoid blocking
+            def register_with_timeout():
+                try:
+                    self.zeroconf.register_service(self.service_info)
+                    print(f"mDNS service registered as '{self.service_name}.local'")
+                except Exception as e:
+                    print(f"Warning: mDNS registration failed: {e}")
+            
+            mdns_thread = threading.Thread(target=register_with_timeout, daemon=True)
+            mdns_thread.start()
+            
         except Exception as e:
             print(f"Warning: Could not register mDNS service: {e}")
             print("Service will still be accessible via IP address")
