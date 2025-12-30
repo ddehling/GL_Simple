@@ -394,7 +394,7 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
         
         # Seasonal random event - 1/10000 chance
-        if randcheck < 1/1000000:
+        if randcheck < 1/10000:
             # Define seasonal events
             events = [
                 (fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
@@ -615,23 +615,39 @@ if __name__ == "__main__":
     FRAME_TIME = 1 / 50
     first_time = time.time()
     frame_count = 0
+    fps_start_time = time.time()
+    
+    # For better sleep precision on Windows
+    import sys
+    if sys.platform == 'win32':
+        import ctypes
+        winmm = ctypes.WinDLL('winmm')
+        winmm.timeBeginPeriod(1)  # Set 1ms timer resolution
+    
     try:
         while True:
-            # Update environmental system
+            frame_start = time.perf_counter()
+            
+            # Update environmental system (includes scheduler.update())
             env_system.update()
 
-            current_time = time.time()
-            elapsed = current_time - last_time
-            sleep_time = max(0, FRAME_TIME - elapsed)
-            time.sleep(sleep_time)
+            # Calculate time taken
+            frame_time = time.perf_counter() - frame_start
+            
+            # Sleep to maintain target framerate (busy-wait for last 1ms for precision)
+            sleep_time = FRAME_TIME - frame_time
+            if sleep_time > 0.001:
+                time.sleep(sleep_time - 0.001)
+                # Busy wait for the last millisecond for precision
+                while time.perf_counter() - frame_start < FRAME_TIME:
+                    pass
             
             frame_count += 1
-            if frame_count % 50 == 0:  # Print FPS every second
-                actual_fps = 1.0 / (elapsed + sleep_time)
-                #um_effects = sum(len(vp.effects) for vp in scheduler.shader_renderer.viewports)
-                print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
-            
-            last_time = current_time
+            if frame_count % 50 == 0:  # Print FPS every 50 frames
+                current_time = time.time()
+                actual_fps = 50.0 / (current_time - fps_start_time)
+                fps_start_time = current_time
+                print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
             # Print stats if needed
             # print(["%.2f" % (1/(time.time()-lasttime)), "%.2f" % len(scheduler.active_events), len(scheduler.event_queue),"%.3f" %((lasttime-first_time)/3600)])
             #last_time = time.time()
