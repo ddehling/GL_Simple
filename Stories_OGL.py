@@ -579,7 +579,7 @@ if __name__ == "__main__":
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 30
+    FRAME_TIME = 1 / 50
     first_time = time.time()
     frame_count = 0
     try:
@@ -596,7 +596,7 @@ if __name__ == "__main__":
             if frame_count % 50 == 0:  # Print FPS every second
                 actual_fps = 1.0 / (elapsed + sleep_time)
                 #um_effects = sum(len(vp.effects) for vp in scheduler.shader_renderer.viewports)
-                #print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
+                print(f"FPS: {actual_fps:.1f}, Active events: {len(scheduler.active_events)}")
             
             last_time = current_time
             # Print stats if needed

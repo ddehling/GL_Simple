@@ -347,6 +347,16 @@ WEATHER_SETS = {
         "transition_speed": 2,
     },
 
+    "cyberpunk": {
+        "allowed_parameters": ["rain_rate", "wind_speed"],
+        "description": "Custom weather set",
+        "name": "Cyber Punk",
+        "season_extremity": 1,
+        "season_speed": 1,
+        "states": [],
+        "transition_speed": 1,
+    },
+
     "desert_realm": {
         "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Switch_rate", "ambient_sound", "ARI", "mountain", "possible_transitions", "transition_weights", "season_preference"],
         "background_events": ["sandstorm", "stars", "clouds"],
@@ -377,6 +387,15 @@ WEATHER_SETS = {
         "season_extremity": 1,
         "season_speed": 1,
         "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", "foggy", "heavy_fog", "spooky", "firefly", "volcano", "sandstorm", "asteroid", "mushroom", "leaves", "bloom"],
+        "transition_speed": 1,
+    },
+
+    "ocean": {
+        "description": "Custom weather set",
+        "name": "Ocean Realm",
+        "season_extremity": 1,
+        "season_speed": 1,
+        "states": [],
         "transition_speed": 1,
     },
 
