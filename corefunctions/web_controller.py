@@ -1,0 +1,366 @@
+"""
+Web-based control system for GL_Simple environmental effects.
+Provides a Flask web server with real-time control interface.
+"""
+import threading
+import socket
+import hashlib
+import secrets
+from flask import Flask, render_template, jsonify, request, session
+from pathlib import Path
+import json
+from zeroconf import Zeroconf, ServiceInfo
+
+
+class WebController:
+    """
+    Web-based control interface for modifying runtime parameters.
+    Thread-safe dictionary updates with real-time web interface.
+    """
+    
+    def __init__(self, control_dict=None, port=5000, service_name="glsimple", admin_password=None):
+        """
+        Initialize the web controller.
+        
+        Args:
+            control_dict: Dictionary to be controlled (default: creates new dict)
+            port: Port number for the web server (default: 5000)
+            service_name: mDNS service name (default: "glsimple")
+                         Will be accessible at http://{service_name}.local:{port}
+            admin_password: Password for admin panel (default: None = no admin access)
+        """
+        self.control_dict = control_dict if control_dict is not None else {}
+        self.port = port
+        self.service_name = service_name
+        self.app = Flask(__name__, 
+                        template_folder=str(Path(__file__).parent.parent / 'templates'))
+        
+        # Configure Flask session with a secret key
+        self.app.secret_key = secrets.token_hex(32)
+        
+        # Hash the admin password if provided
+        self.admin_password_hash = None
+        if admin_password:
+            self.admin_password_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        
+        self.server_thread = None
+        self.zeroconf = None
+        self.service_info = None
+        self._setup_routes()
+        
+        # Default control schema - defines what controls are available
+        self.control_schema = {
+            "weather_intensity": {
+                "type": "slider",
+                "min": 0.0,
+                "max": 2.0,
+                "step": 0.1,
+                "default": 1.0,
+                "label": "Weather Intensity"
+            },
+            "fog_strength": {
+                "type": "slider",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.3,
+                "label": "Fog Strength"
+            },
+            "rain_amount": {
+                "type": "slider",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.5,
+                "label": "Rain Amount"
+            },
+            "audio_sensitivity": {
+                "type": "slider",
+                "min": 0.1,
+                "max": 3.0,
+                "step": 0.1,
+                "default": 1.0,
+                "label": "Audio Sensitivity"
+            },
+            "enable_fireflies": {
+                "type": "checkbox",
+                "default": True,
+                "label": "Enable Fireflies"
+            },
+            "enable_stars": {
+                "type": "checkbox",
+                "default": True,
+                "label": "Enable Stars"
+            },
+            "color_mode": {
+                "type": "select",
+                "options": ["default", "warm", "cool", "monochrome"],
+                "default": "default",
+                "label": "Color Mode"
+            },
+            "effect_speed": {
+                "type": "slider",
+                "min": 0.1,
+                "max": 5.0,
+                "step": 0.1,
+                "default": 1.0,
+                "label": "Effect Speed Multiplier"
+            }
+        }
+        
+        # Initialize control_dict with defaults
+        self._init_defaults()
+    
+    def _init_defaults(self):
+        """Initialize control dictionary with default values from schema."""
+        for key, config in self.control_schema.items():
+            if key not in self.control_dict:
+                self.control_dict[key] = config["default"]
+    
+    def _setup_routes(self):
+        """Setup Flask routes for the web interface."""
+        
+        @self.app.route('/')
+        def index():
+            """Serve the main control page."""
+            return render_template('control_panel.html')
+        
+        @self.app.route('/admin')
+        def admin_panel():
+            """Serve the admin panel page."""
+            if not self.admin_password_hash:
+                return jsonify({"error": "Admin panel not configured"}), 403
+            return render_template('admin_panel.html')
+        
+        @self.app.route('/api/admin/login', methods=['POST'])
+        def admin_login():
+            """Authenticate admin user."""
+            if not self.admin_password_hash:
+                return jsonify({"success": False, "error": "Admin panel not configured"}), 403
+            
+            data = request.json
+            password = data.get('password', '')
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            if password_hash == self.admin_password_hash:
+                session['admin_authenticated'] = True
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "Invalid password"}), 401
+        
+        @self.app.route('/api/admin/logout', methods=['POST'])
+        def admin_logout():
+            """Logout admin user."""
+            session.pop('admin_authenticated', None)
+            return jsonify({"success": True})
+        
+        @self.app.route('/api/admin/check')
+        def admin_check():
+            """Check if admin is authenticated."""
+            is_authenticated = session.get('admin_authenticated', False)
+            has_admin = self.admin_password_hash is not None
+            return jsonify({
+                "authenticated": is_authenticated,
+                "admin_enabled": has_admin
+            })
+        
+        @self.app.route('/api/admin/system_info')
+        def system_info():
+            """Return system information (admin only)."""
+            if not session.get('admin_authenticated', False):
+                return jsonify({"error": "Unauthorized"}), 401
+            
+            import platform
+            
+            info = {
+                "platform": platform.platform(),
+                "python_version": platform.python_version(),
+                "hostname": socket.gethostname()
+            }
+            
+            # Try to get psutil info, but don't fail if not available
+            try:
+                import psutil
+                info["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+                info["memory_percent"] = psutil.virtual_memory().percent
+            except ImportError:
+                info["cpu_percent"] = "N/A (install psutil)"
+                info["memory_percent"] = "N/A (install psutil)"
+            
+            return jsonify(info)
+        
+        @self.app.route('/api/schema')
+        def get_schema():
+            """Return the control schema for dynamic UI generation."""
+            return jsonify(self.control_schema)
+        
+        @self.app.route('/api/values')
+        def get_values():
+            """Return current values of all controls."""
+            return jsonify(self.control_dict)
+        
+        @self.app.route('/api/update', methods=['POST'])
+        def update_value():
+            """Update a control value."""
+            data = request.json
+            key = data.get('key')
+            value = data.get('value')
+            
+            if key in self.control_schema:
+                # Convert value to appropriate type
+                schema_type = self.control_schema[key]["type"]
+                if schema_type == "checkbox":
+                    value = bool(value)
+                elif schema_type in ["slider", "number"]:
+                    value = float(value)
+                
+                self.control_dict[key] = value
+                return jsonify({"success": True, "key": key, "value": value})
+            
+            return jsonify({"success": False, "error": "Unknown key"}), 400
+        
+        @self.app.route('/api/batch_update', methods=['POST'])
+        def batch_update():
+            """Update multiple control values at once."""
+            data = request.json
+            updated = {}
+            
+            for key, value in data.items():
+                if key in self.control_schema:
+                    schema_type = self.control_schema[key]["type"]
+                    if schema_type == "checkbox":
+                        value = bool(value)
+                    elif schema_type in ["slider", "number"]:
+                        value = float(value)
+                    
+                    self.control_dict[key] = value
+                    updated[key] = value
+            
+            return jsonify({"success": True, "updated": updated})
+    
+    def add_control(self, key, control_type, label, **kwargs):
+        """
+        Add a new control to the schema.
+        
+        Args:
+            key: Unique identifier for the control
+            control_type: Type of control ('slider', 'checkbox', 'select', 'number')
+            label: Display label for the control
+            **kwargs: Additional parameters (min, max, step, default, options, etc.)
+        """
+        self.control_schema[key] = {
+            "type": control_type,
+            "label": label,
+            **kwargs
+        }
+        
+        # Set default value if provided and not already in dict
+        if "default" in kwargs and key not in self.control_dict:
+            self.control_dict[key] = kwargs["default"]
+    
+    def start(self, threaded=True):
+        """
+        Start the web server.
+        
+        Args:
+            threaded: If True, run server in a separate thread (non-blocking)
+        """
+        # Register mDNS service
+        self._register_mdns()
+        
+        if threaded:
+            self.server_thread = threading.Thread(
+                target=self._run_server,
+                daemon=True
+            )
+            self.server_thread.start()
+            print(f"Web control panel started at:")
+            print(f"  - http://localhost:{self.port}")
+            print(f"  - http://{self.service_name}.local:{self.port}")
+        else:
+            self._run_server()
+    
+    def _run_server(self):
+        """Internal method to run the Flask server."""
+        # Disable Flask request logging
+        import logging
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
+        
+        self.app.run(host='0.0.0.0', port=self.port, debug=False, use_reloader=False)
+    
+    def _register_mdns(self):
+        """Register the service with mDNS/Bonjour for easy discovery."""
+        try:
+            # Get local IP address
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            
+            # Create service info
+            service_type = "_http._tcp.local."
+            service_name = f"{self.service_name}.{service_type}"
+            
+            self.zeroconf = Zeroconf()
+            self.service_info = ServiceInfo(
+                service_type,
+                service_name,
+                addresses=[socket.inet_aton(local_ip)],
+                port=self.port,
+                properties={
+                    'path': '/',
+                    'description': 'GL_Simple Control Panel'
+                },
+                server=f"{self.service_name}.local."
+            )
+            
+            self.zeroconf.register_service(self.service_info)
+            print(f"mDNS service registered as '{self.service_name}.local'")
+        except Exception as e:
+            print(f"Warning: Could not register mDNS service: {e}")
+            print("Service will still be accessible via IP address")
+    
+    def stop(self):
+        """Stop the web server and unregister mDNS service."""
+        if self.zeroconf and self.service_info:
+            try:
+                self.zeroconf.unregister_service(self.service_info)
+                self.zeroconf.close()
+                print("mDNS service unregistered")
+            except Exception as e:
+                print(f"Warning: Error unregistering mDNS service: {e}")
+    
+    def get(self, key, default=None):
+        """Get a value from the control dictionary."""
+        return self.control_dict.get(key, default)
+    
+    def set(self, key, value):
+        """Set a value in the control dictionary."""
+        self.control_dict[key] = value
+    
+    def __getitem__(self, key):
+        """Allow dictionary-style access."""
+        return self.control_dict[key]
+    
+    def __setitem__(self, key, value):
+        """Allow dictionary-style setting."""
+        self.control_dict[key] = value
+
+
+if __name__ == "__main__":
+    # Example usage
+    control_dict = {}
+    controller = WebController(control_dict)
+    
+    # Add custom controls
+    controller.add_control(
+        "custom_param",
+        "slider",
+        "Custom Parameter",
+        min=0,
+        max=100,
+        step=1,
+        default=50
+    )
+    
+    # Start the server (blocking mode for standalone testing)
+    controller.start(threaded=False)

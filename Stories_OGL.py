@@ -11,6 +11,7 @@ from corefunctions.shader_effects.celestial_bodies import (
      CELESTIAL_BODIES
  )
 from corefunctions import shader_effects as fx
+from corefunctions.web_controller import WebController
 
 class EnvironmentalSystem:
     def __init__(self, scheduler):
@@ -31,6 +32,16 @@ class EnvironmentalSystem:
         self.analyzer.start()
         #self.specdat = np.zeros([513, 1000])
         self.scale = 1.0
+        
+        # Initialize web control system
+        self.web_controls = {}
+        self.web_controller = WebController(
+            self.web_controls, 
+            port=5000, 
+            service_name="glsimple",
+            admin_password="admin123"  # Change this to your desired password
+        )
+        self.web_controller.start(threaded=True)
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
         # sort celestial bodies by distance, farthest first
@@ -194,6 +205,21 @@ class EnvironmentalSystem:
     #     swloud = (loud > thresh) * 1
     #     self.whomp = swloud * (np.clip(loud, 0, maxsound) - thresh) / (maxsound - thresh)
 
+    def apply_web_controls(self):
+        """Apply web control values to system parameters."""
+        # Example: scale effects based on web controls
+        if 'weather_intensity' in self.web_controls:
+            intensity = self.web_controls['weather_intensity']
+            # Apply intensity to weather effects
+            
+        if 'fog_strength' in self.web_controls:
+            # Update fog strength in real-time
+            fog_strength = self.web_controls['fog_strength']
+            
+        if 'audio_sensitivity' in self.web_controls:
+            # Adjust audio sensitivity
+            self.analyzer.sensitivity = self.web_controls['audio_sensitivity']
+    
     def transition_update(self):
         # self.progress = 1.0
         if self.current_weather != self.target_weather:
@@ -375,6 +401,9 @@ class EnvironmentalSystem:
         """Update the environmental system - should be called each frame"""
         #self.get_whomp()
         self.current_time = time.time()
+        
+        # Apply web control values
+        self.apply_web_controls()
        
         # OSC handling
         #messages = self.scheduler.get_osc_messages()
