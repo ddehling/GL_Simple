@@ -189,7 +189,7 @@ class EnvironmentalSystem:
         # #             self.scheduler.state["has_clouds"] = True
         # #             self.scheduler.schedule_event(70, 40, drifting_clouds, frame_id=0) # noqa: F405
 
-        if new_weather == WeatherState.FALLING_LEAVES:
+        if new_weather == WeatherState.LEAVES:
             if not self.scheduler.state.get("has_leaves", False):
                 self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves,squish_top_width=self.scale, frame_id=0) # noqa: F405
 
