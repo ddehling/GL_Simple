@@ -84,23 +84,9 @@ class EnvironmentalSystem:
         (180, 80),   # Bottom-right
         (-0, 80)   # Bottom-left
     ]
-        sim_forever=999999999
-        self.scheduler.schedule_event(0, sim_forever, fx.shader_drifting_clouds, frame_id=0)
-        self.scheduler.schedule_event(0, sim_forever, fx.shader_firefly,squish_top_width=0.1,frame_id=0)
-        self.scheduler.schedule_event(0, sim_forever, fx.shader_stars,frame_id=0)
-        # self.scheduler.schedule_event(0, sim_forever, fx.shader_celestial_bodies, 
-        #                     corners=corners_frame0, frame_id=0)
-        self.scheduler.schedule_event(0, sim_forever, fx.shader_rain, frame_id=0)
+        # Initialize background events for the starting weather set
+        self._initialize_weather_set_events()
         
-        # Schedule fog LAST so it renders after all other effects (post-processing)
-        # Initial values will be overridden by weather system
-        self.scheduler.schedule_event(0, sim_forever, fx.shader_fog, 
-                                      strength=0.0, 
-                                      color=(0.7, 0.7, 0.8),
-                                      fog_near=20.0,
-                                      fog_far=80.0,
-                                      frame_id=0)
-
         # Schedule world rendering events for each frame, keeping the original function names
         #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
         #self.active_effects["secondary_world"] = self.scheduler.schedule_event(0, 999999999, secondary_multilayer_world, frame_id=1) # noqa: F405
@@ -154,6 +140,55 @@ class EnvironmentalSystem:
         print(f"🔄 Weather set change queued: '{self.current_set}' → '{new_set_name}'")
         print(f"   Will transition on next weather change...")
         return True
+    
+    def _initialize_weather_set_events(self):
+        """Cancel all events and start background events for the current weather set"""
+        print(f"🔄 Initializing events for weather set: '{self.current_set}'")
+        
+        # Cancel all active events
+        self.scheduler.cancel_all_events()
+        
+        # Get the background events for this set
+        set_config = self.get_current_set_config()
+        background_events = set_config.get("background_events", [])
+        
+        # Schedule the permanent background events based on set configuration
+        sim_forever = 10E9  # 10 billion seconds (over 300 years)
+        
+        # Map event names to shader effects and their parameters
+        event_map = {
+            "clouds": lambda: fx.shader_drifting_clouds,
+            "firefly": lambda: (fx.shader_firefly, {"squish_top_width": 0.1}),
+            "stars": lambda: fx.shader_stars,
+            "rain": lambda: fx.shader_rain,
+            "fog": lambda: (fx.shader_fog, {
+                "strength": 0.0,
+                "color": (0.7, 0.7, 0.8),
+                "fog_near": 20.0,
+                "fog_far": 80.0
+            }),
+            "sandstorm": lambda: fx.shader_sandstorm,
+            "fog_beings": lambda: fx.shader_chromatic_fog_beings,
+            "falling_leaves": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}),
+        }
+        
+        # Schedule background events for this set
+        for event_name in background_events:
+            print(f"   📅 Scheduling background event: {event_name}")
+            
+            if event_name in event_map:
+                event_config = event_map[event_name]()
+                if isinstance(event_config, tuple):
+                    # Event with parameters
+                    effect_func, params = event_config
+                    self.scheduler.schedule_event(0, sim_forever, effect_func, frame_id=0, **params)
+                else:
+                    # Simple event
+                    self.scheduler.schedule_event(0, sim_forever, event_config, frame_id=0)
+            else:
+                print(f"   ⚠️ Unknown background event: {event_name}")
+        
+        print(f"✓ Background events initialized for '{self.current_set}'")
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
@@ -425,6 +460,9 @@ class EnvironmentalSystem:
                 self.current_set = self.target_set
                 self.target_set = None
                 self.web_controls["current_weather_set"] = self.current_set
+                
+                # Cancel all existing events and start new background events for the set
+                self._initialize_weather_set_events()
                 
                 # Pick a random weather from the new set
                 set_states = self.get_set_states()
