@@ -48,6 +48,7 @@ class WebController:
         self.app.secret_key = secrets.token_hex(32)
         
         # Hash the admin password if provided
+        self.available_events = []  # Will be set by EnvironmentalSystem
         self.admin_password_hash = None
         if admin_password:
             self.admin_password_hash = hashlib.sha256(admin_password.encode()).hexdigest()
@@ -380,7 +381,8 @@ class WebController:
                     "weather_presets": presets,
                     "weather_sets": weather_sets,
                     "global_parameters": GLOBAL_PARAMETERS,
-                    "available_sounds": sound_files
+                    "available_sounds": sound_files,
+                    "available_events": sorted(self.available_events) if hasattr(self, 'available_events') else []
                 }
             
             return jsonify(self._weather_data_cache)
@@ -568,6 +570,13 @@ class WebController:
                 print("mDNS service unregistered")
             except Exception as e:
                 print(f"Warning: Error unregistering mDNS service: {e}")
+    
+    def set_available_events(self, event_names):
+        """Set the list of available event names from the event_map."""
+        self.available_events = event_names
+        # Clear the weather data cache so it gets regenerated with new events
+        if hasattr(self, '_weather_data_cache'):
+            delattr(self, '_weather_data_cache')
     
     def get(self, key, default=None):
         """Get a value from the control dictionary."""

@@ -1029,6 +1029,31 @@ function renderSetEditor() {
         
         <div class="editor-section">
             <div class="section-header">
+                <div class="section-title">Seasonal Random Events</div>
+                <button class="btn btn-primary btn-sm" onclick="addRandomEvent()">+ Add Event</button>
+            </div>
+            
+            <div class="weather-states-container">
+                <div style="margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Event Trigger Rate:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="number" 
+                               id="randomEventRate"
+                               step="0.00001" 
+                               min="0"
+                               max="1"
+                               onchange="updateRandomEventRate(parseFloat(this.value))"
+                               style="width: 120px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                        <span id="randomEventRatePercent" style="color: #666; font-size: 14px;"></span>
+                        <span style="color: #999; font-size: 12px; margin-left: 10px;">When triggered, the event closest to the current season will be selected from the list below</span>
+                    </div>
+                </div>
+                <div id="randomEventsList"></div>
+            </div>
+        </div>
+        
+        <div class="editor-section">
+            <div class="section-header">
                 <div class="section-title">Allowed Parameters for This Set</div>
                 <button class="btn btn-primary btn-sm" onclick="toggleParameterDropdown()">+ Add Parameter</button>
             </div>
@@ -1080,8 +1105,102 @@ function renderSetEditor() {
     renderWeatherPills();
     renderParameterPills();
     renderBackgroundEventPills();
+    renderRandomEventsList();
     renderWeatherTabs();
     renderSeasonVisualizer();
+}
+
+function renderRandomEventsList() {
+    const setData = weatherData.weather_sets[currentSet];
+    const container = document.getElementById('randomEventsList');
+    const rateInput = document.getElementById('randomEventRate');
+    const ratePercent = document.getElementById('randomEventRatePercent');
+    
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    // Update rate input and display
+    const eventRate = setData.random_event_rate !== undefined ? setData.random_event_rate : 0.0001;
+    if (rateInput) {
+        rateInput.value = eventRate;
+    }
+    if (ratePercent) {
+        ratePercent.textContent = `(${(eventRate * 100).toFixed(3)}% per frame)`;
+    }
+    
+    const randomEvents = setData.random_events || [];
+    const availableEvents = weatherData.available_events || [];
+    
+    if (randomEvents.length === 0) {
+        container.innerHTML = '<p style="color: #999; padding: 10px;">No seasonal events configured. Events are distributed evenly across the seasonal cycle (0=winter, 0.5=summer). The event closest to the current season will be triggered.</p>';
+        return;
+    }
+    
+    // Show events as pills similar to background events
+    randomEvents.forEach((eventName, index) => {
+        const pill = document.createElement('div');
+        pill.className = 'weather-pill';
+        pill.style.cssText = 'display: inline-flex; align-items: center; gap: 5px; margin: 4px;';
+        
+        // Build dropdown options
+        let options = '';
+        availableEvents.forEach(evt => {
+            const selected = evt === eventName ? 'selected' : '';
+            options += `<option value="${evt}" ${selected}>${evt}</option>`;
+        });
+        
+        pill.innerHTML = `
+            <select onchange="updateRandomEvent(${index}, this.value)"
+                    style="padding: 4px; border: 1px solid #ddd; border-radius: 3px; background: white;">
+                ${options}
+            </select>
+            <button class="weather-pill-remove" onclick="removeRandomEvent(${index})">×</button>
+        `;
+        container.appendChild(pill);
+    });
+}
+
+function updateRandomEvent(index, eventName) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (!setData.random_events) {
+        setData.random_events = [];
+    }
+    
+    if (setData.random_events[index] !== undefined) {
+        setData.random_events[index] = eventName;
+        triggerAutoSave();
+    }
+}
+
+function updateRandomEventRate(rate) {
+    const setData = weatherData.weather_sets[currentSet];
+    setData.random_event_rate = rate;
+    triggerAutoSave();
+    renderRandomEventsList(); // Re-render to update percentage display
+}
+
+function addRandomEvent() {
+    const setData = weatherData.weather_sets[currentSet];
+    if (!setData.random_events) {
+        setData.random_events = [];
+    }
+    
+    // Add new event with default event name
+    setData.random_events.push('clouds');
+    
+    triggerAutoSave();
+    renderRandomEventsList();
+}
+
+function removeRandomEvent(index) {
+    const setData = weatherData.weather_sets[currentSet];
+    if (setData.random_events) {
+        setData.random_events.splice(index, 1);
+        triggerAutoSave();
+        renderRandomEventsList();
+        showStatus('Random event removed', 'success', 2000);
+    }
 }
 
 function renderParameterPills() {
@@ -1505,7 +1624,18 @@ function renderWeatherStateEditor(state) {
         ARI: { type: 'number', step: 1 },
         transition_duration: { type: 'number', step: 1 },
         possible_transitions: { type: 'array-string' },
-        transition_weights: { type: 'array-number' }
+        transition_weights: { type: 'array-number' },
+        on_transition_events: { type: 'event-list' },
+        // Cyberpunk parameters
+        neon_intensity: { type: 'number', step: 0.05 },
+        pollution_level: { type: 'number', step: 0.05 },
+        hologram_density: { type: 'number', step: 0.05 },
+        electric_interference: { type: 'number', step: 0.05 },
+        data_flow_rate: { type: 'number', step: 0.05 },
+        light_pollution: { type: 'number', step: 0.05 },
+        drone_activity: { type: 'number', step: 0.05 },
+        glitch_probability: { type: 'number', step: 0.05 },
+        scan_line_intensity: { type: 'number', step: 0.05 }
     };
     
     if (allAllowedParams.length === 0) {
@@ -1523,7 +1653,7 @@ function renderWeatherStateEditor(state) {
     // Render all allowed parameters (both global and set-specific)
     for (const paramName of allAllowedParams) {
         // Skip transition parameters - they'll be rendered at the bottom
-        if (paramName === 'possible_transitions' || paramName === 'transition_weights') continue;
+        if (paramName === 'possible_transitions' || paramName === 'transition_weights' || paramName === 'on_transition_events') continue;
         
         const paramDef = paramDefs[paramName];
         if (!paramDef) continue; // Skip unknown parameters
@@ -1619,6 +1749,24 @@ function renderWeatherStateEditor(state) {
                 </h4>
                 <div id="transitionPairs_${state}">
                     ${renderTransitionPairs(state, transitionsValue, weightsValue)}
+                </div>
+            </div>
+        `;
+    }
+    
+    // Render on-transition events configuration
+    const hasOnTransitionEvents = allAllowedParams.includes('on_transition_events');
+    if (hasOnTransitionEvents) {
+        const onTransitionEvents = preset['on_transition_events'] || [];
+        html += `
+            <div style="padding: 15px; background: #e8f5e9; border-radius: 8px; margin-top: 15px;">
+                <h4 style="margin: 0 0 10px 0; color: #2e7d32; display: flex; align-items: center; gap: 8px;">
+                    On-Transition Events
+                    <span style="font-size: 12px; font-weight: normal; color: #666;">(triggered when this weather state starts)</span>
+                    <button class="btn btn-primary" onclick="addOnTransitionEvent('${state}')" style="margin-left: auto; padding: 5px 10px; font-size: 12px;">+ Add Event</button>
+                </h4>
+                <div id="onTransitionEvents_${state}">
+                    ${renderOnTransitionEvents(state, onTransitionEvents)}
                 </div>
             </div>
         `;
@@ -1739,6 +1887,127 @@ function addTransitionPair(state) {
     }
     
     renderSeasonVisualizer();
+}
+
+function renderOnTransitionEvents(state, events) {
+    if (!events || events.length === 0) {
+        return '<p style="color: #999; margin: 10px 0;">No on-transition events configured. Click "+ Add Event" to add one.</p>';
+    }
+    
+    // Get available event names from the backend data
+    const availableEvents = weatherData.available_events || [];
+    
+    let html = '';
+    
+    events.forEach((eventConfig, i) => {
+        const eventName = Array.isArray(eventConfig) ? eventConfig[0] : '';
+        const duration = Array.isArray(eventConfig) && eventConfig.length > 1 ? eventConfig[1] : 60;
+        const frameId = Array.isArray(eventConfig) && eventConfig.length > 2 ? eventConfig[2] : 0;
+        
+        // Build options for event dropdown
+        let options = '';
+        availableEvents.forEach(evtName => {
+            const selected = evtName === eventName ? 'selected' : '';
+            options += `<option value="${evtName}" ${selected}>${evtName}</option>`;
+        });
+        
+        html += `
+            <div style="display: flex; gap: 10px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
+                <label style="min-width: 60px; margin: 0;">Event ${i + 1}:</label>
+                <select onchange="updateOnTransitionEvent('${state}', ${i}, 'event', this.value)"
+                        style="flex: 1; min-width: 150px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                    ${options}
+                </select>
+                <label style="margin: 0; white-space: nowrap;">Duration (s):</label>
+                <input type="number" 
+                       step="1" 
+                       min="1"
+                       value="${duration}"
+                       onchange="updateOnTransitionEvent('${state}', ${i}, 'duration', parseFloat(this.value))"
+                       style="width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                <label style="margin: 0;">Frame:</label>
+                <input type="number" 
+                       step="1" 
+                       min="0"
+                       value="${frameId}"
+                       onchange="updateOnTransitionEvent('${state}', ${i}, 'frame', parseInt(this.value))"
+                       style="width: 60px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                <button class="btn btn-danger" onclick="removeOnTransitionEvent('${state}', ${i})" style="padding: 6px 12px; font-size: 12px;">×</button>
+            </div>
+        `;
+    });
+    
+    return html;
+}
+
+function updateOnTransitionEvent(state, index, field, value) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    
+    if (!weatherData.weather_presets[state]['on_transition_events']) {
+        weatherData.weather_presets[state]['on_transition_events'] = [];
+    }
+    
+    const events = weatherData.weather_presets[state]['on_transition_events'];
+    
+    // Ensure the event at this index exists as an array
+    if (!events[index]) {
+        events[index] = ['clouds', 60, 0];
+    }
+    
+    if (field === 'event') {
+        events[index][0] = value;
+    } else if (field === 'duration') {
+        events[index][1] = value;
+    } else if (field === 'frame') {
+        events[index][2] = value;
+    }
+    
+    triggerAutoSave();
+}
+
+function addOnTransitionEvent(state) {
+    if (!weatherData.weather_presets[state]) {
+        weatherData.weather_presets[state] = {};
+    }
+    
+    if (!weatherData.weather_presets[state]['on_transition_events']) {
+        weatherData.weather_presets[state]['on_transition_events'] = [];
+    }
+    
+    // Add new event with default values: ['clouds', 60, 0]
+    weatherData.weather_presets[state]['on_transition_events'].push(['clouds', 60, 0]);
+    
+    triggerAutoSave();
+    
+    // Re-render the on-transition events
+    const container = document.getElementById(`onTransitionEvents_${state}`);
+    if (container) {
+        container.innerHTML = renderOnTransitionEvents(
+            state,
+            weatherData.weather_presets[state]['on_transition_events']
+        );
+    }
+}
+
+function removeOnTransitionEvent(state, index) {
+    if (!weatherData.weather_presets[state]) return;
+    
+    if (weatherData.weather_presets[state]['on_transition_events']) {
+        weatherData.weather_presets[state]['on_transition_events'].splice(index, 1);
+    }
+    
+    triggerAutoSave();
+    
+    // Re-render the on-transition events
+    const container = document.getElementById(`onTransitionEvents_${state}`);
+    if (container) {
+        container.innerHTML = renderOnTransitionEvents(
+            state,
+            weatherData.weather_presets[state]['on_transition_events'] || []
+        );
+    }
 }
 
 function removeTransitionPair(state, index) {
