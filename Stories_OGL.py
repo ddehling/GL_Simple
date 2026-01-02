@@ -89,6 +89,50 @@ class EnvironmentalSystem:
         (180, 80),   # Bottom-right
         (-0, 80)   # Bottom-left
     ]
+        # Event map - maps event names to shader effects and their parameters
+        # This is used for both background events and on-transition events
+        self.event_map = {
+            "clouds": lambda: fx.shader_drifting_clouds,
+            "firefly": lambda: (fx.shader_firefly, {"squish_top_width": 0.1}),
+            "stars": lambda: fx.shader_stars,
+            "rain": lambda: fx.shader_rain,
+            "fog": lambda: (fx.shader_fog, {
+                "strength": 0.0,
+                "color": (0.7, 0.7, 0.8),
+                "fog_near": 20.0,
+                "fog_far": 80.0
+            }),
+
+            "sandstorm_event": lambda: fx.shader_sandstorm,
+            "fog_beings_event": lambda: fx.shader_chromatic_fog_beings,
+            "falling_leaves_event": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}), 
+            "audio_balls": lambda:(fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
+            "audio_curve": lambda:    fx.shader_audio_curve,                                     # Position 1
+            "sunrise": lambda:    (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),         # Position 2
+            "game_of_life": lambda:    fx.shader_gameoflife,                                      # Position 3
+            "fractal_fog": lambda:    fx.shader_fractal_fog,                                     # Position 4
+            "noise_isovalues": lambda:    fx.shader_noise_isovalues,                                 # Position 5
+            "tentacle": lambda:    fx.shader_tentacle,                                        # Position 6
+            "tunnel_raymarch": lambda:    fx.shader_tunnel_raymarch,                                  # Position 7
+            "tunnel": lambda:    fx.shader_tunnel,                                          # Position 8
+            "voronoi_sphere": lambda:    fx.shader_voronoi_sphere,                                  # Position 10
+            "wave_terrain": lambda:    fx.shader_wave_terrain,                                    # Position 11
+            "wave_equation": lambda:    fx.shader_wave_equation,                                   # Position 12
+            "audio_scan_line": lambda:    (fx.shader_audio_scan_line, {
+                    "scan_speed": 50.0,
+                    "trail_length": 75,
+                        "intensity_sensitivity": 2.0,
+                        "width_sensitivity": 0.5,
+                        "base_width": 2.0,
+                        "max_width": 20.0,
+                        "color_hue": 0.5}),    
+            "pixel_spots": lambda:    fx.shader_pixel_spots   
+        }
+        
+        # Pass event_map keys to web controller if enabled
+        if self.enable_web_control:
+            self.web_controller.set_available_events(list(self.event_map.keys()))
+        
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
         
@@ -160,40 +204,27 @@ class EnvironmentalSystem:
         # Schedule the permanent background events based on set configuration
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
         
-        # Map event names to shader effects and their parameters
-        event_map = {
-            "clouds": lambda: fx.shader_drifting_clouds,
-            "firefly": lambda: (fx.shader_firefly, {"squish_top_width": 0.1}),
-            "stars": lambda: fx.shader_stars,
-            "rain": lambda: fx.shader_rain,
-            "fog": lambda: (fx.shader_fog, {
-                "strength": 0.0,
-                "color": (0.7, 0.7, 0.8),
-                "fog_near": 20.0,
-                "fog_far": 80.0
-            }),
-            "sandstorm": lambda: fx.shader_sandstorm,
-            "fog_beings": lambda: fx.shader_chromatic_fog_beings,
-            "falling_leaves": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}),
-        }
-        
         # Schedule background events for this set
         for event_name in background_events:
             print(f"   📅 Scheduling background event: {event_name}")
-            
-            if event_name in event_map:
-                event_config = event_map[event_name]()
-                if isinstance(event_config, tuple):
-                    # Event with parameters
-                    effect_func, params = event_config
-                    self.scheduler.schedule_event(0, sim_forever, effect_func, frame_id=0, **params)
-                else:
-                    # Simple event
-                    self.scheduler.schedule_event(0, sim_forever, event_config, frame_id=0)
-            else:
-                print(f"   ⚠️ Unknown background event: {event_name}")
+            self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
         
         print(f"✓ Background events initialized for '{self.current_set}'")
+    
+    def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
+        """Schedule an event from the event map"""
+        if event_name not in self.event_map:
+            print(f"   ⚠️ Unknown event: {event_name}")
+            return None
+        
+        event_config = self.event_map[event_name]()
+        if isinstance(event_config, tuple):
+            # Event with parameters
+            effect_func, params = event_config
+            return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
+        else:
+            # Simple event
+            return self.scheduler.schedule_event(start_time, duration, event_config, frame_id=frame_id)
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
@@ -205,37 +236,16 @@ class EnvironmentalSystem:
         # Start new effects if needed, one offs that occur when a weather state happens
         target_params = self.get_weather_params(new_weather)
         
-        # Schedule weather-specific events for appropriate frames, using original function names
-        # if new_weather == WeatherState.VOLCANO:
-        #     self.scheduler.schedule_event(0, 100, volcanic_mountain, frame_id=0) # noqa: F405
-
-        if new_weather == WeatherState.SANDSTORM:
-            self.scheduler.schedule_event(0, 100, fx.shader_sandstorm, frame_id=0) # noqa: F405
-
-        # if new_weather == WeatherState.ASTEROID:
-        #     self.scheduler.schedule_event(0, 20, meteor_shower, frame_id=0) # noqa: F405
-        #     self.scheduler.schedule_event(0, 30, secondary_meteor_shower, frame_id=1) # noqa: F405
-        #     self.scheduler.schedule_event(0, 30, secondary_alarm, frame_id=1) # noqa: F405
-        #     sound_path = (Path("media") / Path("sounds") / "45. Buzzer - 'Space Alarm' Warning.flac")
-        #     self.scheduler.state["soundengine"].schedule_event(sound_path, time.time(), 20)
-
-        if new_weather == WeatherState.HEAVY_FOG:
-            self.scheduler.schedule_event(0, 80, fx.shader_chromatic_fog_beings, frame_id=0) # noqa: F405
-
-        # # if new_weather == WeatherState.MUSHROOM:
-        # #     if not self.scheduler.state.get("has_mushrooms", False):
-        # #         self.scheduler.schedule_event(0, 100, growing_mushrooms, frame_id=0) # noqa: F405
-        # #         if self.scheduler.state.get("has_clouds", False):
-        # #             self.scheduler.state["has_clouds"] = True
-        # #             self.scheduler.schedule_event(70, 40, drifting_clouds, frame_id=0) # noqa: F405
-
-        if new_weather == WeatherState.LEAVES:
-            if not self.scheduler.state.get("has_leaves", False):
-                self.scheduler.schedule_event(0, 60, fx.shader_falling_leaves,squish_top_width=self.scale, frame_id=0) # noqa: F405
-
-
-        # if new_weather == WeatherState.SUMMER_BLOOM:
-        #     self.scheduler.schedule_event(0, 90, bioluminescent_wildflowers, frame_id=0) # noqa: F405
+        # Schedule events based on on_transition_events in weather preset
+        on_transition_events = target_params.get("on_transition_events", [])
+        for event_config in on_transition_events:
+            if isinstance(event_config, tuple) and len(event_config) >= 2:
+                event_name, duration = event_config[:2]
+                frame_id = event_config[2] if len(event_config) > 2 else 0
+                print(f"   🎬 Transition event: {event_name} ({duration}s)")
+                self._schedule_event_from_map(event_name, 0, duration, frame_id=frame_id)
+            else:
+                print(f"   ⚠️ Invalid on_transition_event format: {event_config}")
 
         # Handle ambient sound transition
         if self.active_effects["ambient_sound"]:
@@ -393,51 +403,28 @@ class EnvironmentalSystem:
     def random_events(self):
         randcheck = np.random.random()
         
-        # Seasonal random event - 1/10000 chance
-        if randcheck < 1/10000:
-            # Define seasonal events
-            events = [
-                (fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
-                (fx.shader_audio_curve, {}),                                     # Position 1
-                (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),         # Position 2
-                (fx.shader_gameoflife, {}),                                      # Position 3
-                (fx.shader_fractal_fog, {}),                                     # Position 4
-                (fx.shader_noise_isovalues, {}),                                 # Position 5
-                (fx.shader_tentacle, {}),                                        # Position 6
-                (fx.shader_tunnel_raymarch, {}),                                 # Position 7
-                (fx.shader_tunnel, {}),                                          # Position 8
-                (fx.shader_voronoi_sphere, {}),                                  # Position 10
-                (fx.shader_wave_terrain, {}),                                    # Position 11
-                (fx.shader_wave_equation, {}),                                   # Position 12
-                (fx.shader_audio_scan_line, {
-                        "scan_speed": 50.0,
-                        "trail_length": 75,
-                        "intensity_sensitivity": 2.0,
-                        "width_sensitivity": 0.5,
-                        "base_width": 2.0,
-                        "max_width": 20.0,
-                        "color_hue": 0.5}),    
-                (fx.shader_pixel_spots, {})                                     # Position 13
-            ]
+        # Random events from current weather set configuration
+        set_config = self.get_current_set_config()
+        random_events = set_config.get("random_events", [])
+        random_event_rate = set_config.get("random_event_rate", 0.0001)
+        
+        # Check if a random event should trigger based on the set's rate
+        if random_events and randcheck < random_event_rate:
+            # Assign each event a seasonal position based on its index
+            # and select the one closest to the current season
+            num_events = len(random_events)
+            event_positions = np.linspace(0, 1, num_events, endpoint=False)
             
-            # Determine closest position along the year based on number of events
-            num_positions = len(events)
-            positions = [i / num_positions for i in range(num_positions)]
+            # Find the event closest to the current season
+            seasonal_distances = np.abs(event_positions - self.season)
+            # Account for wraparound (e.g., season 0.95 is close to position 0.05)
+            seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
+            closest_index = np.argmin(seasonal_distances)
             
-            # Calculate distance to each position (accounting for circular nature)
-            season_distances = []
-            for pos in positions:
-                distance = abs(self.season - pos)
-                if distance > 0.5:
-                    distance = 1.0 - distance  # Wrap around
-                season_distances.append(distance)
-            
-            closest_position = season_distances.index(min(season_distances))
-            
-            event_func, event_kwargs = events[closest_position]
-            self.scheduler.schedule_event(0, 60, event_func, frame_id=0, **event_kwargs)
-
-
+            event_name = random_events[closest_index]
+            print(f"   🎲 Seasonal event triggered: {event_name} (season: {self.season:.3f}, position: {event_positions[closest_index]:.3f})")
+            self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
+        
         if (randcheck < self.weather_params["tree_prob"] / 10000):
             # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
             self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=self.scale, frame_id=0) # noqa: F405
