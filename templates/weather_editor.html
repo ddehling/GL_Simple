@@ -1392,17 +1392,8 @@ function renderBackgroundEventDropdown() {
     
     dropdown.innerHTML = '';
     
-    // Available background events (from event_map in Stories_OGL.py)
-    const availableEvents = [
-        'clouds',
-        'firefly',
-        'stars',
-        'rain',
-        'fog',
-        'sandstorm',
-        'fog_beings',
-        'falling_leaves'
-    ];
+    // Get available background events from backend data
+    const availableEvents = weatherData.available_background_events || [];
     
     const backgroundEvents = setData.background_events || [];
     
@@ -1597,46 +1588,8 @@ function renderWeatherStateEditor(state) {
     // Combine allowed and global parameters
     const allAllowedParams = [...new Set([...globalParams, ...allowedParams])];
     
-    // Define all possible parameters with types
-    const paramDefs = {
-        wind_speed: { type: 'number', step: 0.1 },
-        rain_rate: { type: 'number', step: 0.1 },
-        lightning_probability: { type: 'number', step: 0.05 },
-        starryness: { type: 'number', step: 0.1 },
-        spookyness: { type: 'number', step: 0.1 },
-        fog: { type: 'number', step: 0.05 },
-        fog_color: { type: 'array', length: 3 },
-        celestial_visibility: { type: 'number', step: 0.1 },
-        firefly_density: { type: 'number', step: 0.1 },
-        Aurora_probability: { type: 'number', step: 0.1 },
-        Wolfy: { type: 'number', step: 0.1 },
-        Switch_rate: { type: 'number', step: 0.1 },
-        meteor_rate: { type: 'number', step: 0.05 },
-        volcano_level: { type: 'number', step: 0.1 },
-        sand_density: { type: 'number', step: 0.1 },
-        skiptime: { type: 'number', step: 0.5 },
-        tree_prob: { type: 'number', step: 0.1 },
-        Weird: { type: 'number', step: 0.1 },
-        Sound_volume: { type: 'number', step: 0.1 },
-        season_preference: { type: 'number', step: 0.025 },
-        mountain: { type: 'number', step: 0.1 },
-        ambient_sound: { type: 'text' },
-        ARI: { type: 'number', step: 1 },
-        transition_duration: { type: 'number', step: 1 },
-        possible_transitions: { type: 'array-string' },
-        transition_weights: { type: 'array-number' },
-        on_transition_events: { type: 'event-list' },
-        // Cyberpunk parameters
-        neon_intensity: { type: 'number', step: 0.05 },
-        pollution_level: { type: 'number', step: 0.05 },
-        hologram_density: { type: 'number', step: 0.05 },
-        electric_interference: { type: 'number', step: 0.05 },
-        data_flow_rate: { type: 'number', step: 0.05 },
-        light_pollution: { type: 'number', step: 0.05 },
-        drone_activity: { type: 'number', step: 0.05 },
-        glitch_probability: { type: 'number', step: 0.05 },
-        scan_line_intensity: { type: 'number', step: 0.05 }
-    };
+    // Get parameter definitions from backend data
+    const paramDefs = weatherData.parameter_definitions || {};
     
     if (allAllowedParams.length === 0) {
         return '<p style="text-align: center; color: #999; padding: 30px;">No parameters configured.</p>';
@@ -1976,8 +1929,11 @@ function addOnTransitionEvent(state) {
         weatherData.weather_presets[state]['on_transition_events'] = [];
     }
     
-    // Add new event with default values: ['clouds', 60, 0]
-    weatherData.weather_presets[state]['on_transition_events'].push(['clouds', 60, 0]);
+    // Add new event with default values: use first available event from backend
+    const defaultEvent = (weatherData.available_events && weatherData.available_events.length > 0) 
+        ? weatherData.available_events[0] 
+        : 'clouds';
+    weatherData.weather_presets[state]['on_transition_events'].push([defaultEvent, 60, 0]);
     
     triggerAutoSave();
     

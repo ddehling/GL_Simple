@@ -151,6 +151,66 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
     lines.append("]")
     lines.append("")
     
+    # Available background events
+    lines.append("# Available background events (always-active effects)")
+    lines.append("# This is the single source of truth for which events can be used as continuous background effects.")
+    lines.append("# Add new background-capable events here. They must also exist in Stories_OGL.py's event_map.")
+    lines.append("AVAILABLE_BACKGROUND_EVENTS = [")
+    background_events = [
+        'clouds', 'firefly', 'stars', 'rain', 'fog', 'sandstorm', 'fog_beings', 'falling_leaves'
+    ]
+    for event in background_events:
+        lines.append(f"    '{event}',")
+    lines.append("]")
+    lines.append("")
+    
+    # Parameter definitions
+    lines.append("# Parameter definitions for the weather editor")
+    lines.append("# Defines the type and input configuration for each parameter")
+    lines.append("PARAMETER_DEFINITIONS = {")
+    param_defs = {
+        'wind_speed': {'type': 'number', 'step': 0.1},
+        'rain_rate': {'type': 'number', 'step': 0.1},
+        'lightning_probability': {'type': 'number', 'step': 0.05},
+        'starryness': {'type': 'number', 'step': 0.1},
+        'spookyness': {'type': 'number', 'step': 0.1},
+        'fog': {'type': 'number', 'step': 0.05},
+        'fog_color': {'type': 'array', 'length': 3},
+        'celestial_visibility': {'type': 'number', 'step': 0.1},
+        'firefly_density': {'type': 'number', 'step': 0.1},
+        'Aurora_probability': {'type': 'number', 'step': 0.1},
+        'Wolfy': {'type': 'number', 'step': 0.1},
+        'Switch_rate': {'type': 'number', 'step': 0.1},
+        'meteor_rate': {'type': 'number', 'step': 0.05},
+        'volcano_level': {'type': 'number', 'step': 0.1},
+        'sand_density': {'type': 'number', 'step': 0.1},
+        'skiptime': {'type': 'number', 'step': 0.5},
+        'tree_prob': {'type': 'number', 'step': 0.1},
+        'Weird': {'type': 'number', 'step': 0.1},
+        'Sound_volume': {'type': 'number', 'step': 0.1},
+        'season_preference': {'type': 'number', 'step': 0.025},
+        'mountain': {'type': 'number', 'step': 0.1},
+        'ambient_sound': {'type': 'text'},
+        'ARI': {'type': 'number', 'step': 1},
+        'transition_duration': {'type': 'number', 'step': 1},
+        'possible_transitions': {'type': 'array-string'},
+        'transition_weights': {'type': 'array-number'},
+        'on_transition_events': {'type': 'event-list'},
+        'neon_intensity': {'type': 'number', 'step': 0.05},
+        'pollution_level': {'type': 'number', 'step': 0.05},
+        'hologram_density': {'type': 'number', 'step': 0.05},
+        'electric_interference': {'type': 'number', 'step': 0.05},
+        'data_flow_rate': {'type': 'number', 'step': 0.05},
+        'light_pollution': {'type': 'number', 'step': 0.05},
+        'drone_activity': {'type': 'number', 'step': 0.05},
+        'glitch_probability': {'type': 'number', 'step': 0.05},
+        'scan_line_intensity': {'type': 'number', 'step': 0.05}
+    }
+    for param_name, param_def in sorted(param_defs.items()):
+        lines.append(f"    '{param_name}': {repr(param_def)},")
+    lines.append("}")
+    lines.append("")
+    
     # DEFAULT_WEATHER_PARAMS (keep static for now)
     lines.append("# Default weather parameters")
     lines.append("DEFAULT_WEATHER_PARAMS = {")

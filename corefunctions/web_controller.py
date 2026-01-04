@@ -335,7 +335,8 @@ class WebController:
             # Cache this expensive operation
             if not hasattr(self, '_weather_data_cache'):
                 from corefunctions.weather_params import (
-                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, GLOBAL_PARAMETERS
+                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, 
+                    GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS, AVAILABLE_BACKGROUND_EVENTS
                 )
                 import numpy as np
                 from pathlib import Path
@@ -374,6 +375,13 @@ class WebController:
                 # Convert weather sets
                 weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
                 
+                # Use dynamically provided background events if available, otherwise fall back to static list
+                background_events = (
+                    sorted(self.available_background_events) 
+                    if hasattr(self, 'available_background_events') 
+                    else AVAILABLE_BACKGROUND_EVENTS
+                )
+                
                 # Cache the result
                 self._weather_data_cache = {
                     "weather_states": weather_states,
@@ -381,6 +389,8 @@ class WebController:
                     "weather_presets": presets,
                     "weather_sets": weather_sets,
                     "global_parameters": GLOBAL_PARAMETERS,
+                    "parameter_definitions": PARAMETER_DEFINITIONS,
+                    "available_background_events": background_events,
                     "available_sounds": sound_files,
                     "available_events": sorted(self.available_events) if hasattr(self, 'available_events') else []
                 }
@@ -571,9 +581,19 @@ class WebController:
             except Exception as e:
                 print(f"Warning: Error unregistering mDNS service: {e}")
     
-    def set_available_events(self, event_names):
-        """Set the list of available event names from the event_map."""
-        self.available_events = event_names
+    def set_available_events(self, all_events=None, background_events=None):
+        """
+        Set the list of available event names from the event_map.
+        
+        Args:
+            all_events: List of all event names (for on-transition events)
+            background_events: List of events suitable for background use (for weather sets)
+        """
+        if all_events is not None:
+            self.available_events = all_events
+        if background_events is not None:
+            self.available_background_events = background_events
+        
         # Clear the weather data cache so it gets regenerated with new events
         if hasattr(self, '_weather_data_cache'):
             delattr(self, '_weather_data_cache')
