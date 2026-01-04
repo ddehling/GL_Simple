@@ -175,8 +175,13 @@ class EnvironmentalSystem:
             set_name = self.current_set
         return [WeatherState(state) for state in self.weather_sets[set_name]["states"]]
     
-    def change_weather_set(self, new_set_name: str):
-        """Request a change to a different weather set"""
+    def change_weather_set(self, new_set_name: str, immediate: bool = False):
+        """Request a change to a different weather set
+        
+        Args:
+            new_set_name: Name of the weather set to change to
+            immediate: If True, change immediately. If False, queue for next transition.
+        """
         if new_set_name not in self.weather_sets:
             print(f"⚠️ Unknown weather set: {new_set_name}")
             return False
@@ -185,9 +190,31 @@ class EnvironmentalSystem:
             print(f"Already in set '{new_set_name}'")
             return True
         
-        self.target_set = new_set_name
-        print(f"🔄 Weather set change queued: '{self.current_set}' → '{new_set_name}'")
-        print(f"   Will transition on next weather change...")
+        if immediate:
+            # Apply the change immediately
+            print(f"🌈 Switching weather set immediately: '{self.current_set}' → '{new_set_name}'")
+            self.current_set = new_set_name
+            self.target_set = None
+            if self.enable_web_control:
+                self.web_controls["current_weather_set"] = self.current_set
+            
+            # Cancel all existing events and start new background events for the set
+            self._initialize_weather_set_events()
+            
+            # Pick a random weather from the new set
+            set_states = self.get_set_states()
+            new_weather = np.random.choice(set_states)
+            print(f"   Starting with: {new_weather.value}")
+            
+            new_weather_params = self.get_weather_params(new_weather)
+            t_duration = new_weather_params["transition_duration"]
+            self.transition_to_weather(new_weather, transition_duration=t_duration)
+        else:
+            # Queue for next transition
+            self.target_set = new_set_name
+            print(f"🔄 Weather set change queued: '{self.current_set}' → '{new_set_name}'")
+            print(f"   Will transition on next weather change...")
+        
         return True
     
     def _initialize_weather_set_events(self):
@@ -589,7 +616,8 @@ if __name__ == "__main__":
     scheduler = EventScheduler()
     env_system = EnvironmentalSystem(scheduler)
 
-    # Start with summer bloom weather
+    #change to a specific weather set on startup
+    env_system.change_weather_set("ethereal_mist", immediate=True)
     env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
     env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
         # 0=red, 0.33=green, 0.66=blue

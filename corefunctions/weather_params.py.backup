@@ -335,7 +335,7 @@ WEATHER_PRESETS = {
         "firefly_density": 2,
         "fog": 1.25,
         "fog_color": np.array([0.6, 0, 0.6]),
-        "on_transition_events": [['fog_beings_event', 80, 0]],
+        "on_transition_events": [['fog_beings_event', 80, 0], ['clouds', 60, 0]],
         "possible_transitions": ["spooky", "firefly", "mushroom"],
         "rain_rate": 0,
         "season_preference": 0.175,
@@ -523,7 +523,7 @@ WEATHER_SETS = {
         "random_events": ["audio_balls", "sunrise", "fractal_fog"],
         "season_extremity": 1,
         "season_speed": 2,
-        "states": ["clear", "windy_night"],
+        "states": ["clear", "windy_night", "asteroid"],
         "transition_speed": 2,
     },
 

@@ -261,33 +261,21 @@ class SACNPixelSender:
         if verify:
             print(f"[ImageToDMX] Sending frame shape={source_array.shape}")
         
-        # Timing instrumentation
-        import time
-        t_start = time.perf_counter()
-        timings = {}
-        
         # Process each receiver using optimized Numba (releases GIL)
-        t_extract = 0
-        t_pack = 0
-        t_assign = 0
-        
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
             x_coords, y_coords = self._cached_coords[rx_idx]
             pixel_buffer = self._receiver_buffers[rx_idx]
             
             if NUMBA_AVAILABLE:
                 # Ultra-fast: extract pixels with no bounds checking (coords pre-validated)
-                t0 = time.perf_counter()
                 extract_and_pack_pixels_unchecked(
                     source_array,
                     x_coords,
                     y_coords,
                     pixel_buffer
                 )
-                t_extract += time.perf_counter() - t0
                 
                 # Process all universes in parallel
-                t0 = time.perf_counter()
                 universe_buffer_2d = self._universe_buffers[rx_idx]
                 process_all_universes(
                     pixel_buffer,
@@ -295,32 +283,25 @@ class SACNPixelSender:
                     self._universe_ends[rx_idx],
                     universe_buffer_2d
                 )
-                t_pack += time.perf_counter() - t0
                 
-                # Send all universes using pre-allocated memoryviews
-                t0 = time.perf_counter()
+                # Send all universes
                 if not self.skip_network:
                     if self.use_raw_udp:
-                        # Raw UDP sending - much faster
                         self._send_udp_universes(rx_idx, receiver['ip'], universes)
                     else:
                         memviews = self._universe_memviews[rx_idx]
                         for u, universe in enumerate(universes):
                             self.sender[universe].dmx_data = memviews[u]
-                t_assign += time.perf_counter() - t0
                     
             else:
                 # Fallback to numpy
-                t0 = time.perf_counter()
                 height, width = source_array.shape[:2]
                 x_valid = np.minimum(x_coords, height - 1)
                 y_valid = np.minimum(y_coords, width - 1)
                 pixels = source_array[x_valid, y_valid]
                 pixel_buffer[:] = pixels.flatten()
-                t_extract += time.perf_counter() - t0
                 
                 # Pack into universe buffers
-                t0 = time.perf_counter()
                 slices = self._universe_slices[rx_idx]
                 universe_buffer_2d = self._universe_buffers[rx_idx]
                 
@@ -332,9 +313,7 @@ class SACNPixelSender:
                     universe_buffer_2d[u, :byte_count] = pixel_buffer[byte_start:byte_end]
                     if needs_padding:
                         universe_buffer_2d[u, byte_count:] = 0
-                t_pack += time.perf_counter() - t0
                 
-                t0 = time.perf_counter()
                 if not self.skip_network:
                     if self.use_raw_udp:
                         self._send_udp_universes(rx_idx, receiver['ip'], universes)
@@ -342,40 +321,10 @@ class SACNPixelSender:
                         memviews = self._universe_memviews[rx_idx]
                         for u, (start, end, needs_padding) in enumerate(slices):
                             self.sender[universes[u]].dmx_data = memviews[u]
-                t_assign += time.perf_counter() - t0
         
         # Flush all universes
-        t0 = time.perf_counter()
         if not self.skip_network and not self.use_raw_udp:
             self.sender.flush()
-        t_flush = time.perf_counter() - t0
-        
-        t_total = time.perf_counter() - t_start
-        
-        # Store timing stats for periodic reporting
-        if not hasattr(self, '_timing_samples'):
-            self._timing_samples = {'extract': [], 'pack': [], 'assign': [], 'flush': [], 'total': []}
-            self._last_timing_report = time.time()
-        
-        self._timing_samples['extract'].append(t_extract * 1000)
-        self._timing_samples['pack'].append(t_pack * 1000)
-        self._timing_samples['assign'].append(t_assign * 1000)
-        self._timing_samples['flush'].append(t_flush * 1000)
-        self._timing_samples['total'].append(t_total * 1000)
-        
-        # Report every 5 seconds
-        if time.time() - self._last_timing_report > 5.0:
-            print(f"\n=== sACN Send Timing (avg over {len(self._timing_samples['total'])} frames) ===")
-            print(f"Extract:  {np.mean(self._timing_samples['extract']):6.3f}ms")
-            print(f"Pack:     {np.mean(self._timing_samples['pack']):6.3f}ms")
-            print(f"Assign:   {np.mean(self._timing_samples['assign']):6.3f}ms")
-            print(f"Flush:    {np.mean(self._timing_samples['flush']):6.3f}ms")
-            print(f"TOTAL:    {np.mean(self._timing_samples['total']):6.3f}ms")
-            
-            # Clear samples
-            for key in self._timing_samples:
-                self._timing_samples[key].clear()
-            self._last_timing_report = time.time()
 
     def close(self):
         """
