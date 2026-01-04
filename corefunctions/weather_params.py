@@ -43,6 +43,64 @@ GLOBAL_PARAMETERS = [
     "on_transition_events",
 ]
 
+# Available background events (always-active effects)
+# This is the single source of truth for which events can be used as continuous background effects.
+# Add new background-capable events here. They must also exist in Stories_OGL.py's event_map.
+AVAILABLE_BACKGROUND_EVENTS = [
+    'clouds',
+    'firefly',
+    'stars',
+    'rain',
+    'fog',
+    'sandstorm',
+    'fog_beings',
+    'falling_leaves',
+    'tunnel',
+    'wave_terrain'
+]
+
+# Parameter definitions for the weather editor
+# Defines the type and input configuration for each parameter
+PARAMETER_DEFINITIONS = {
+    'wind_speed': {'type': 'number', 'step': 0.1},
+    'rain_rate': {'type': 'number', 'step': 0.1},
+    'lightning_probability': {'type': 'number', 'step': 0.05},
+    'starryness': {'type': 'number', 'step': 0.1},
+    'spookyness': {'type': 'number', 'step': 0.1},
+    'fog': {'type': 'number', 'step': 0.05},
+    'fog_color': {'type': 'array', 'length': 3},
+    'celestial_visibility': {'type': 'number', 'step': 0.1},
+    'firefly_density': {'type': 'number', 'step': 0.1},
+    'Aurora_probability': {'type': 'number', 'step': 0.1},
+    'Wolfy': {'type': 'number', 'step': 0.1},
+    'Switch_rate': {'type': 'number', 'step': 0.1},
+    'meteor_rate': {'type': 'number', 'step': 0.05},
+    'volcano_level': {'type': 'number', 'step': 0.1},
+    'sand_density': {'type': 'number', 'step': 0.1},
+    'skiptime': {'type': 'number', 'step': 0.5},
+    'tree_prob': {'type': 'number', 'step': 0.1},
+    'Weird': {'type': 'number', 'step': 0.1},
+    'Sound_volume': {'type': 'number', 'step': 0.1},
+    'season_preference': {'type': 'number', 'step': 0.025},
+    'mountain': {'type': 'number', 'step': 0.1},
+    'ambient_sound': {'type': 'text'},
+    'ARI': {'type': 'number', 'step': 1},
+    'transition_duration': {'type': 'number', 'step': 1},
+    'possible_transitions': {'type': 'array-string'},
+    'transition_weights': {'type': 'array-number'},
+    'on_transition_events': {'type': 'event-list'},
+    # Cyberpunk parameters
+    'neon_intensity': {'type': 'number', 'step': 0.05},
+    'pollution_level': {'type': 'number', 'step': 0.05},
+    'hologram_density': {'type': 'number', 'step': 0.05},
+    'electric_interference': {'type': 'number', 'step': 0.05},
+    'data_flow_rate': {'type': 'number', 'step': 0.05},
+    'light_pollution': {'type': 'number', 'step': 0.05},
+    'drone_activity': {'type': 'number', 'step': 0.05},
+    'glitch_probability': {'type': 'number', 'step': 0.05},
+    'scan_line_intensity': {'type': 'number', 'step': 0.05}
+}
+
 # Default weather parameters
 DEFAULT_WEATHER_PARAMS = {
     "wind_speed": 0,

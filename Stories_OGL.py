@@ -6,7 +6,7 @@ from corefunctions.Events import EventScheduler
 from corefunctions.soundinput import MicrophoneAnalyzer
 from corefunctions.weather_params import (
     WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
-    WEATHER_SETS, DEFAULT_WEATHER_SET
+    WEATHER_SETS, DEFAULT_WEATHER_SET, AVAILABLE_BACKGROUND_EVENTS
 )
 from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.celestial_bodies import (
@@ -103,9 +103,9 @@ class EnvironmentalSystem:
                 "fog_far": 80.0
             }),
 
-            "sandstorm_event": lambda: fx.shader_sandstorm,
-            "fog_beings_event": lambda: fx.shader_chromatic_fog_beings,
-            "falling_leaves_event": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}), 
+            "sandstorm": lambda: fx.shader_sandstorm,
+            "fog_beings": lambda: fx.shader_chromatic_fog_beings,
+            "falling_leaves": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}), 
             "audio_balls": lambda:(fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
             "audio_curve": lambda:    fx.shader_audio_curve,                                     # Position 1
             "sunrise": lambda:    (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),         # Position 2
@@ -129,9 +129,13 @@ class EnvironmentalSystem:
             "pixel_spots": lambda:    fx.shader_pixel_spots   
         }
         
-        # Pass event_map keys to web controller if enabled
+        # Pass event_map keys and background events to web controller if enabled
+        # Background events are defined in weather_params.py as AVAILABLE_BACKGROUND_EVENTS
         if self.enable_web_control:
-            self.web_controller.set_available_events(list(self.event_map.keys()))
+            self.web_controller.set_available_events(
+                all_events=list(self.event_map.keys()),
+                background_events=AVAILABLE_BACKGROUND_EVENTS
+            )
         
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
