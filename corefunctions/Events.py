@@ -209,7 +209,7 @@ class EventScheduler:
         self.state['screens'] = []
         for i in range(len(receivers)):
             if i < len(receivers):
-                sender = imdmx.SACNPixelSender(receivers[i])
+                sender = imdmx.SACNPixelSender(receivers[i], skip_network=False, use_raw_udp=True)
                 # Enable async sending for better performance
                 sender.enable_async_send()
                 self.state['screens'].append(sender)

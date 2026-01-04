@@ -3,6 +3,8 @@ from sacn import sACNsender
 import math
 import threading
 import queue
+import socket
+import struct
 try:
     from corefunctions.fast_pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
     NUMBA_AVAILABLE = True
@@ -10,17 +12,33 @@ except ImportError:
     NUMBA_AVAILABLE = False
     print("Warning: Numba not available, using slower numpy operations")
 class SACNPixelSender:
-    def __init__(self, receivers,start_universe=1):
+    def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False):
         """
         Initialize the SACNPixelSender with receiver configurations.
         :param receivers: List of dicts, each with 'ip', 'pixel_count', and 'addressing_array' keys.
+        :param skip_network: If True, skip actual network transmission (for testing)
+        :param use_raw_udp: If True, use raw UDP sockets instead of sACN library (much faster)
         """
         self.receivers = receivers
-        self.sender = sACNsender()
+        self.skip_network = skip_network
+        self.use_raw_udp = use_raw_udp
         
-        # Enable manual flush for synchronized sending
-        self.sender.manual_flush = True
-        self.sender.start()
+        if use_raw_udp:
+            # Create UDP socket for raw packet sending
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Set socket to non-blocking for async operation
+            self.udp_socket.setblocking(False)
+            # Increase send buffer size
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
+            
+            # Pre-build sACN packet headers for each universe
+            self._sacn_headers = []
+            self._sequence_numbers = []
+        else:
+            self.sender = sACNsender()
+            # Enable manual flush for synchronized sending
+            self.sender.manual_flush = True
+            self.sender.start()
 
         # Set up universes for each receiver
         self.receiver_universes = []
@@ -36,10 +54,24 @@ class SACNPixelSender:
             self.receiver_universes.append(receiver_universes)
             universe_counter += universe_count
 
-            # Activate universes for this receiver
-            for universe in receiver_universes:
-                self.sender.activate_output(universe)
-                self.sender[universe].destination = receiver['ip']
+            if self.use_raw_udp:
+                # Pre-build sACN packet headers for each universe of this receiver
+                receiver_headers = []
+                receiver_seqs = []
+                for universe in receiver_universes:
+                    # Build sACN E1.31 packet header (126 bytes + 512 DMX data)
+                    header = self._build_sacn_header(universe)
+                    receiver_headers.append(header)
+                    receiver_seqs.append(0)
+                self._sacn_headers.append(receiver_headers)
+                self._sequence_numbers.append(receiver_seqs)
+            else:
+                # Activate universes for this receiver
+                for universe in receiver_universes:
+                    self.sender.activate_output(universe)
+                    self.sender[universe].destination = receiver['ip']
+                    self.sender[universe].multicast = False  # Use unicast for better performance
+                    self.sender[universe].ttl = 20  # Reduce TTL for local network
             
             # Pre-compute clipped coordinates (they never change frame-to-frame)
             # Clip to actual frame dimensions for safety
@@ -59,6 +91,7 @@ class SACNPixelSender:
         # Pre-allocate buffers for data extraction (avoids allocations during send)
         self._receiver_buffers = []
         self._universe_buffers = []
+        self._universe_memviews = []
         self._universe_starts = []
         self._universe_ends = []
         
@@ -77,6 +110,10 @@ class SACNPixelSender:
             # Create 2D buffer array for batch universe processing (for Numba)
             universe_buffer_2d = np.zeros((universe_count, 510), dtype=np.uint8)
             self._universe_buffers.append(universe_buffer_2d)
+            
+            # Pre-allocate memoryview objects to avoid tobytes() overhead
+            universe_memviews = [memoryview(universe_buffer_2d[u]) for u in range(universe_count)]
+            self._universe_memviews.append(universe_memviews)
         
         # Async sending support
         self._send_queue = queue.Queue(maxsize=2)  # Small queue to avoid lag
@@ -120,6 +157,63 @@ class SACNPixelSender:
                 
             except queue.Empty:
                 continue
+    
+    def _build_sacn_header(self, universe):
+        """Build a pre-formatted sACN E1.31 packet header (126 bytes)"""
+        header = bytearray(126)
+        
+        # Root Layer
+        header[0:2] = b'\x00\x10'  # Preamble Size
+        header[2:4] = b'\x00\x00'  # Post-amble Size
+        header[4:16] = b'ASC-E1.17\x00\x00\x00'  # ACN Packet Identifier
+        header[16:18] = struct.pack('>H', 0x7000 | (638 & 0x0FFF))  # Flags and Length
+        header[18:22] = struct.pack('>I', 0x00000004)  # Vector
+        header[22:38] = b'\x00' * 16  # CID (sender ID)
+        
+        # Framing Layer
+        header[38:40] = struct.pack('>H', 0x7000 | (638 - 38))  # Flags and Length
+        header[40:44] = struct.pack('>I', 0x00000002)  # Vector
+        header[44:108] = b'Raw UDP sACN\x00' + b'\x00' * 51  # Source Name (64 bytes)
+        header[108] = 100  # Priority
+        header[109:111] = b'\x00\x00'  # Sync Address
+        header[111] = 0  # Sequence Number (updated per packet)
+        header[112] = 0  # Options
+        header[113:115] = struct.pack('>H', universe)  # Universe
+        
+        # DMP Layer
+        header[115:117] = struct.pack('>H', 0x7000 | (638 - 115))  # Flags and Length
+        header[117] = 0x02  # Vector
+        header[118] = 0xa1  # Address Type & Data Type
+        header[119:121] = b'\x00\x00'  # First Property Address
+        header[121:123] = b'\x00\x01'  # Address Increment
+        header[123:125] = struct.pack('>H', 513)  # Property count (1 + 512)
+        header[125] = 0  # DMX START code
+        
+        return bytes(header)
+    
+    def _send_udp_universes(self, rx_idx, ip, universes):
+        """Send universe data via raw UDP sockets"""
+        universe_buffer_2d = self._universe_buffers[rx_idx]
+        headers = self._sacn_headers[rx_idx]
+        sequences = self._sequence_numbers[rx_idx]
+        
+        for u, universe in enumerate(universes):
+            # Update sequence number in header (byte 111)
+            seq = sequences[u]
+            header = bytearray(headers[u])
+            header[111] = seq
+            
+            # Construct packet: header + DMX data (510 bytes)
+            packet = header + universe_buffer_2d[u, :510].tobytes()
+            
+            # Send via UDP to port 5568 (sACN)
+            try:
+                self.udp_socket.sendto(packet, (ip, 5568))
+            except BlockingIOError:
+                pass  # Socket buffer full, skip this packet
+            
+            # Increment sequence number (0-255)
+            sequences[u] = (seq + 1) % 256
     
     def create_mask(self, height, width):
         """
@@ -167,21 +261,33 @@ class SACNPixelSender:
         if verify:
             print(f"[ImageToDMX] Sending frame shape={source_array.shape}")
         
+        # Timing instrumentation
+        import time
+        t_start = time.perf_counter()
+        timings = {}
+        
         # Process each receiver using optimized Numba (releases GIL)
+        t_extract = 0
+        t_pack = 0
+        t_assign = 0
+        
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
             x_coords, y_coords = self._cached_coords[rx_idx]
             pixel_buffer = self._receiver_buffers[rx_idx]
             
             if NUMBA_AVAILABLE:
                 # Ultra-fast: extract pixels with no bounds checking (coords pre-validated)
+                t0 = time.perf_counter()
                 extract_and_pack_pixels_unchecked(
                     source_array,
                     x_coords,
                     y_coords,
                     pixel_buffer
                 )
+                t_extract += time.perf_counter() - t0
                 
                 # Process all universes in parallel
+                t0 = time.perf_counter()
                 universe_buffer_2d = self._universe_buffers[rx_idx]
                 process_all_universes(
                     pixel_buffer,
@@ -189,20 +295,32 @@ class SACNPixelSender:
                     self._universe_ends[rx_idx],
                     universe_buffer_2d
                 )
+                t_pack += time.perf_counter() - t0
                 
-                # Send all universes
-                for u, universe in enumerate(universes):
-                    self.sender[universe].dmx_data = universe_buffer_2d[u].tobytes()
+                # Send all universes using pre-allocated memoryviews
+                t0 = time.perf_counter()
+                if not self.skip_network:
+                    if self.use_raw_udp:
+                        # Raw UDP sending - much faster
+                        self._send_udp_universes(rx_idx, receiver['ip'], universes)
+                    else:
+                        memviews = self._universe_memviews[rx_idx]
+                        for u, universe in enumerate(universes):
+                            self.sender[universe].dmx_data = memviews[u]
+                t_assign += time.perf_counter() - t0
                     
             else:
                 # Fallback to numpy
+                t0 = time.perf_counter()
                 height, width = source_array.shape[:2]
                 x_valid = np.minimum(x_coords, height - 1)
                 y_valid = np.minimum(y_coords, width - 1)
                 pixels = source_array[x_valid, y_valid]
                 pixel_buffer[:] = pixels.flatten()
+                t_extract += time.perf_counter() - t0
                 
                 # Pack into universe buffers
+                t0 = time.perf_counter()
                 slices = self._universe_slices[rx_idx]
                 universe_buffer_2d = self._universe_buffers[rx_idx]
                 
@@ -214,11 +332,50 @@ class SACNPixelSender:
                     universe_buffer_2d[u, :byte_count] = pixel_buffer[byte_start:byte_end]
                     if needs_padding:
                         universe_buffer_2d[u, byte_count:] = 0
-                    
-                    self.sender[universes[u]].dmx_data = universe_buffer_2d[u].tobytes()
+                t_pack += time.perf_counter() - t0
+                
+                t0 = time.perf_counter()
+                if not self.skip_network:
+                    if self.use_raw_udp:
+                        self._send_udp_universes(rx_idx, receiver['ip'], universes)
+                    else:
+                        memviews = self._universe_memviews[rx_idx]
+                        for u, (start, end, needs_padding) in enumerate(slices):
+                            self.sender[universes[u]].dmx_data = memviews[u]
+                t_assign += time.perf_counter() - t0
         
         # Flush all universes
-        self.sender.flush()
+        t0 = time.perf_counter()
+        if not self.skip_network and not self.use_raw_udp:
+            self.sender.flush()
+        t_flush = time.perf_counter() - t0
+        
+        t_total = time.perf_counter() - t_start
+        
+        # Store timing stats for periodic reporting
+        if not hasattr(self, '_timing_samples'):
+            self._timing_samples = {'extract': [], 'pack': [], 'assign': [], 'flush': [], 'total': []}
+            self._last_timing_report = time.time()
+        
+        self._timing_samples['extract'].append(t_extract * 1000)
+        self._timing_samples['pack'].append(t_pack * 1000)
+        self._timing_samples['assign'].append(t_assign * 1000)
+        self._timing_samples['flush'].append(t_flush * 1000)
+        self._timing_samples['total'].append(t_total * 1000)
+        
+        # Report every 5 seconds
+        if time.time() - self._last_timing_report > 5.0:
+            print(f"\n=== sACN Send Timing (avg over {len(self._timing_samples['total'])} frames) ===")
+            print(f"Extract:  {np.mean(self._timing_samples['extract']):6.3f}ms")
+            print(f"Pack:     {np.mean(self._timing_samples['pack']):6.3f}ms")
+            print(f"Assign:   {np.mean(self._timing_samples['assign']):6.3f}ms")
+            print(f"Flush:    {np.mean(self._timing_samples['flush']):6.3f}ms")
+            print(f"TOTAL:    {np.mean(self._timing_samples['total']):6.3f}ms")
+            
+            # Clear samples
+            for key in self._timing_samples:
+                self._timing_samples[key].clear()
+            self._last_timing_report = time.time()
 
     def close(self):
         """
@@ -226,7 +383,10 @@ class SACNPixelSender:
         """
         # Stop async thread if running
         self.disable_async_send()
-        self.sender.stop()
+        if self.use_raw_udp:
+            self.udp_socket.close()
+        else:
+            self.sender.stop()
 
     def analyze_row_groups(self, max_pixels_per_group=170):
         """
