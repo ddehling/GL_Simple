@@ -109,7 +109,7 @@ class OceanWaves(ShaderEffect):
                  wave_speed: float = 1.0, wave_height: float = 1.0, foam_amount: float = 1.0):
         super().__init__(viewport)
         self.height_ratio = height_ratio
-        self.height = int(viewport.height * height_ratio)
+        self.height = viewport.height  # Use full viewport height
         self.depth = depth
         self.wave_speed = wave_speed
         self.wave_height = wave_height
@@ -258,9 +258,18 @@ class OceanWaves(ShaderEffect):
                 waveHeight_combined += breakingIntensity * breakingNoise * 1.5;
             }
             
+            // Beach zone - only dampen at the very top where beach is
+            // normY = 1 is top, so dampen when normY > 0.97
+            float beachZone = smoothstep(0.97, 0.99, normY);
+            waveHeight_combined *= (1.0 - beachZone);
+            
             // Apply wave height displacement
             float totalHeight = waveHeight_combined * 30.0 * waveHeight;
             pos.y += totalHeight;
+            
+            // CRITICAL: Clamp Y position to prevent vertices from going above viewport
+            // This prevents the black gap at the top
+            pos.y = min(pos.y, height);
             
             // Convert to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -319,19 +328,11 @@ class OceanWaves(ShaderEffect):
         
         // Ocean color palette
         vec3 getOceanColor(float depth, float waveIntensity, float foam) {
-            // Deep ocean: dark blue-green
             vec3 deepColor = vec3(0.0, 0.15, 0.3);
-            
-            // Mid water: teal
             vec3 midColor = vec3(0.0, 0.4, 0.5);
-            
-            // Shallow/shore: cyan
             vec3 shallowColor = vec3(0.1, 0.6, 0.7);
-            
-            // Foam: white with slight blue tint
             vec3 foamColor = vec3(0.9, 0.95, 1.0);
             
-            // Blend based on distance from shore (depth)
             vec3 baseColor;
             if (depth > 0.7) {
                 baseColor = mix(midColor, deepColor, (depth - 0.7) / 0.3);
@@ -341,56 +342,45 @@ class OceanWaves(ShaderEffect):
                 baseColor = shallowColor;
             }
             
-            // Add foam highlights on wave crests
             baseColor = mix(baseColor, foamColor, foam);
-            
             return baseColor;
         }
         
         void main() {
             float x = vTexCoord.x;
+            float y = vTexCoord.y;
             float depth = vDistanceFromShore;
             
-            // Create foam texture using noise (no vertical stripes!)
+            // Create foam texture
             vec2 foamCoord = vWorldPos * 0.1 + vec2(time * waveSpeed * 0.5, -time * waveSpeed * 0.3);
             float foamNoise1 = noise(foamCoord);
             float foamNoise2 = noise(foamCoord * 2.3 + vec2(1.7, 3.2));
             float foamTexture = foamNoise1 * 0.6 + foamNoise2 * 0.4;
             
-            // Foam appears on wave crests
             float waveCrestFoam = smoothstep(0.65, 0.95, vWaveIntensity);
-            
-            // Heavy foam at shore where waves break
             float shoreFoam = smoothstep(0.25, 0.0, depth);
             
-            // Breaking wave foam (chaotic white water right at shore)
             float breakingFoam = 0.0;
             if (depth < 0.15) {
                 float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, time * waveSpeed * 2.0));
                 breakingFoam = (0.15 - depth) / 0.15 * breakingNoise;
             }
             
-            // Combine all foam sources
             float foamFactor = (waveCrestFoam * 0.4 + shoreFoam * 0.6 + breakingFoam * 0.8) * foamTexture * foamAmount;
             foamFactor = clamp(foamFactor, 0.0, 1.0);
             
-            // Get ocean color with foam
             vec3 color = getOceanColor(depth, vWaveIntensity, foamFactor);
             
-            // Add subtle shimmer on wave surfaces
             float shimmer = noise(vWorldPos * 0.3 + vec2(time * waveSpeed, 0.0)) * 0.15 + 0.85;
             color *= shimmer;
             
-            // Lighting based on wave height (peaks are brighter)
             float lighting = 0.75 + vWaveIntensity * 0.5;
             color *= lighting;
             
-            // Calculate alpha - more opaque at shore, semi-transparent in deep water
             float alpha = 0.5 + (1.0 - depth) * 0.3;
-            alpha += foamFactor * 0.3;  // Foam is more opaque
+            alpha += foamFactor * 0.3;
             alpha = clamp(alpha, 0.0, 0.95);
             
-            // Apply fade in/out
             alpha *= fadeAlpha;
             
             outColor = vec4(color, alpha);
