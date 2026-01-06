@@ -126,7 +126,8 @@ class EnvironmentalSystem:
                         "base_width": 2.0,
                         "max_width": 20.0,
                         "color_hue": 0.5}),    
-            "pixel_spots": lambda:    fx.shader_pixel_spots   
+            "pixel_spots": lambda:    fx.shader_pixel_spots,
+            "ocean_background": lambda:    (fx.shader_ocean_background, {"depth": 10.0})
         }
         
         # Pass event_map keys and background events to web controller if enabled
@@ -196,7 +197,7 @@ class EnvironmentalSystem:
         
         if immediate:
             # Apply the change immediately
-            print(f"🌈 Switching weather set immediately: '{self.current_set}' → '{new_set_name}'")
+            print(f"[WEATHER] Switching weather set immediately: '{self.current_set}' -> '{new_set_name}'")
             self.current_set = new_set_name
             self.target_set = None
             if self.enable_web_control:
@@ -216,14 +217,14 @@ class EnvironmentalSystem:
         else:
             # Queue for next transition
             self.target_set = new_set_name
-            print(f"🔄 Weather set change queued: '{self.current_set}' → '{new_set_name}'")
+            print(f"[WEATHER] Weather set change queued: '{self.current_set}' -> '{new_set_name}'")
             print(f"   Will transition on next weather change...")
         
         return True
     
     def _initialize_weather_set_events(self):
         """Cancel all events and start background events for the current weather set"""
-        print(f"🔄 Initializing events for weather set: '{self.current_set}'")
+        print(f"[WEATHER] Initializing events for weather set: '{self.current_set}'")
         
         # Cancel all active events
         self.scheduler.cancel_all_events()
@@ -237,10 +238,10 @@ class EnvironmentalSystem:
         
         # Schedule background events for this set
         for event_name in background_events:
-            print(f"   📅 Scheduling background event: {event_name}")
+            print(f"   [EVENT] Scheduling background event: {event_name}")
             self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
         
-        print(f"✓ Background events initialized for '{self.current_set}'")
+        print(f"[OK] Background events initialized for '{self.current_set}'")
     
     def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
         """Schedule an event from the event map"""
@@ -390,9 +391,11 @@ class EnvironmentalSystem:
             # Interpolate parameters
             for param in target_params:
                 if isinstance(target_params[param], (int, float, np.ndarray)):
+                    # Get start value, using default if parameter doesn't exist in start state
+                    start_value = start_params.get(param, self.default_weather_params.get(param, 0))
                     self.weather_params[param] = (
-                        target_params[param] - start_params[param]
-                    ) * self.progress + start_params[param]
+                        target_params[param] - start_value
+                    ) * self.progress + start_value
                 else:
                     # For non-numeric parameters, just use the target value
                     self.weather_params[param] = target_params[param]
@@ -430,6 +433,15 @@ class EnvironmentalSystem:
         state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
         state["sand_density"] = self.weather_params.get("sand_density", 0)
         state["tree_growth"] = (self.weather_params.get("tree_prob", 0) + 0.25)
+        
+        # Ocean-specific parameters
+        state["wave_speed"] = self.weather_params.get("wave_speed", 0.5)
+        state["wave_amplitude"] = self.weather_params.get("wave_amplitude", 0.5)
+        state["tide_level"] = self.weather_params.get("tide_level", 0.0)
+        state["bioluminescence"] = self.weather_params.get("bioluminescence", 0.0)
+        state["bubble_density"] = self.weather_params.get("bubble_density", 0.0)
+        state["marine_life_activity"] = self.weather_params.get("marine_life_activity", 0.0)
+        state["kelp_density"] = self.weather_params.get("kelp_density", 0.0)
 
     def random_events(self):
         randcheck = np.random.random()
@@ -506,7 +518,7 @@ class EnvironmentalSystem:
             
             # Check if we need to change weather sets
             if self.target_set is not None:
-                print(f"🌈 Switching weather set: '{self.current_set}' → '{self.target_set}'")
+                print(f"[WEATHER] Switching weather set: '{self.current_set}' -> '{self.target_set}'")
                 self.current_set = self.target_set
                 self.target_set = None
                 self.web_controls["current_weather_set"] = self.current_set
@@ -621,12 +633,12 @@ if __name__ == "__main__":
     env_system = EnvironmentalSystem(scheduler)
 
     #change to a specific weather set on startup
-    env_system.change_weather_set("ethereal_mist", immediate=True)
-    env_system.transition_to_weather(WeatherState.HEAVY_RAIN)
-    env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
-        # 0=red, 0.33=green, 0.66=blue
-                        frame_id=0)
-    #env_system.scheduler.schedule_event(0, 90, fx.shader_sandstorm,frame_id=0)
+    env_system.change_weather_set("ocean", immediate=True)
+    env_system.transition_to_weather(WeatherState.OCEAN_CALM_SHALLOWS)
+    # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
+    #     # 0=red, 0.33=green, 0.66=blue
+    #                     frame_id=0)
+    env_system.scheduler.schedule_event(0, 900, fx.shader_ocean_waves,frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
@@ -661,9 +673,9 @@ if __name__ == "__main__":
                     pass
             
             frame_count += 1
-            if frame_count % 50 == 0:  # Print FPS every 50 frames
+            if frame_count % 500 == 0:  # Print FPS every 50 frames
                 current_time = time.time()
-                actual_fps = 50.0 / (current_time - fps_start_time)
+                actual_fps = 500.0 / (current_time - fps_start_time)
                 fps_start_time = current_time
                 print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
             # Print stats if needed

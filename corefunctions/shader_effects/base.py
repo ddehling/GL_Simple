@@ -19,9 +19,9 @@ class ShaderEffect:
         try:
             self.shader = self.compile_shader()
             self.setup_buffers()
-            print(f"    ✓ {self.__class__.__name__} shader compiled successfully")
+            print(f"    [OK] {self.__class__.__name__} shader compiled successfully")
         except Exception as e:
-            print(f"    ✗ Error initializing {self.__class__.__name__}: {e}")
+            print(f"    [ERROR] Error initializing {self.__class__.__name__}: {e}")
             self.enabled = False
             raise
         

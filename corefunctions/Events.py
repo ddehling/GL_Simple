@@ -93,7 +93,7 @@ class EventScheduler:
             
             # Create a placeholder for legacy render compatibility
             self.state['render'] = [None] * len(frame_dimensions)
-            print(f"✓ {mode_str} shader renderer initialized")
+            print(f"[OK] {mode_str} shader renderer initialized")
         else:
             print("no CPU renderer...")
 
@@ -217,7 +217,7 @@ class EventScheduler:
                 # For displays without physical receivers, add None as placeholder
                 self.state['screens'].append(None)
         
-        print("✓ sACN senders initialized with async mode enabled")
+        print("[OK] sACN senders initialized with async mode enabled")
         
 
     
@@ -502,7 +502,7 @@ class EventScheduler:
         if hasattr(self.state.get('soundengine'), 'stop'):
             self.state['soundengine'].stop()
         
-        print("✓ Cleanup complete")
+        print("[OK] Cleanup complete")
     
     def __del__(self):
         """Destructor to ensure cleanup"""

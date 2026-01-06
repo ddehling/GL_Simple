@@ -332,8 +332,11 @@ class WebController:
         @self.app.route('/api/weather_editor/all_data')
         def get_all_weather_data():
             """Get all weather states, presets, and sets for editing."""
-            # Cache this expensive operation
-            if not hasattr(self, '_weather_data_cache'):
+            # Check if cache should be refreshed (allow manual refresh via query param)
+            refresh = request.args.get('refresh', 'false').lower() == 'true'
+            
+            # Cache this expensive operation (but allow refresh)
+            if not hasattr(self, '_weather_data_cache') or refresh:
                 from corefunctions.weather_params import (
                     WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, 
                     GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS, AVAILABLE_BACKGROUND_EVENTS
