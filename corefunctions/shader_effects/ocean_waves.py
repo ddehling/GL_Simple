@@ -127,6 +127,7 @@ class OceanWaves(ShaderEffect):
         self.foam_amount = foam_amount
         self.tide_level = tide_level  # Controls water level: -1=low tide, 0=normal, 1=high tide
         self.time = 0.0
+        self.phase = 0.0  # Accumulated phase for smooth wave speed transitions
         self.fade_factor = 0.0
         
         # Buffer objects
@@ -199,6 +200,7 @@ class OceanWaves(ShaderEffect):
         uniform vec2 resolution;
         uniform float depth;
         uniform float time;
+        uniform float phase;  // Accumulated phase for smooth transitions
         uniform float height;
         uniform float waveSpeed;
         uniform float waveHeight;
@@ -249,12 +251,12 @@ class OceanWaves(ShaderEffect):
             
             // Create wave fronts that roll toward shore
             // Wave phase moves with time AND position to create motion
-            // ADD time instead of subtract to make waves move UP toward shore
-            // waveSpeed expected in 0-1 range, scale to 0-2
-            float wavePhase = shoreDistance * 8.0 + time * (waveSpeed * 2.0) * 0.8;
+            // Use accumulated phase to avoid discontinuities when speed changes
+            float wavePhase = shoreDistance * 8.0 + phase;
             
             // Add horizontal variation with noise to break up vertical stripes
-            float horizontalVariation = noise(vec2(normX * 3.0, time * (waveSpeed * 2.0) * 0.1)) * 2.0;
+            // Use phase * 0.125 to slow down horizontal variation (phase is 8x faster than old time calc)
+            float horizontalVariation = noise(vec2(normX * 3.0, phase * 0.125)) * 2.0;
             wavePhase += horizontalVariation;
             
             // Multiple wave layers with different scales
@@ -271,8 +273,9 @@ class OceanWaves(ShaderEffect):
             float waveHeight_combined = (wave1 * 0.5 + wave2 * 0.3 + wave3 * 0.2);
             
             // Add noise-based turbulence for organic motion
-            float turbulence = noise(vec2(normX * 3.0 + time * (waveSpeed * 2.0) * 0.3,
-                                          shoreDistance * 4.0 - time * (waveSpeed * 2.0) * 0.2));
+            // Use phase with appropriate scaling
+            float turbulence = noise(vec2(normX * 3.0 + phase * 0.375,
+                                          shoreDistance * 4.0 - phase * 0.25));
             waveHeight_combined += turbulence * 0.15;
             
             // Waves grow taller as they approach shore (shoaling)
@@ -283,7 +286,7 @@ class OceanWaves(ShaderEffect):
             if (shoreDistance < 0.15) {
                 // Extreme steepening and chaos at shore
                 float breakingIntensity = (0.15 - shoreDistance) / 0.15;
-                float breakingNoise = noise(vec2(normX * 5.0, time * (waveSpeed * 2.0) * 1.0));
+                float breakingNoise = noise(vec2(normX * 5.0, phase * 1.25));
                 waveHeight_combined += breakingIntensity * breakingNoise * 1.5;
             }
             
@@ -330,6 +333,7 @@ class OceanWaves(ShaderEffect):
         in vec2 vWorldPos;
         
         uniform float time;
+        uniform float phase;  // Accumulated phase for smooth transitions
         uniform float waveSpeed;
         uniform float foamAmount;
         uniform float fadeAlpha;
@@ -416,7 +420,7 @@ class OceanWaves(ShaderEffect):
             sandColor *= sandTexture;
             
             // Create foam texture
-            vec2 foamCoord = vWorldPos * 0.1 + vec2(time * (waveSpeed * 2.0) * 0.5, -time * (waveSpeed * 2.0) * 0.3);
+            vec2 foamCoord = vWorldPos * 0.1 + vec2(phase * 0.625, -phase * 0.375);
             float foamNoise1 = noise(foamCoord);
             float foamNoise2 = noise(foamCoord * 2.3 + vec2(1.7, 3.2));
             float foamTexture = foamNoise1 * 0.6 + foamNoise2 * 0.4;
@@ -426,7 +430,7 @@ class OceanWaves(ShaderEffect):
             
             float breakingFoam = 0.0;
             if (depth < 0.15) {
-                float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, time * (waveSpeed * 2.0) * 2.0));
+                float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, phase * 2.5));
                 breakingFoam = (0.15 - depth) / 0.15 * breakingNoise;
             }
             
@@ -435,7 +439,7 @@ class OceanWaves(ShaderEffect):
             
             // Water color
             vec3 waterColor = getOceanColor(depth, vWaveIntensity, foamFactor);
-            float shimmer = noise(vWorldPos * 0.3 + vec2(time * (waveSpeed * 2.0), 0.0)) * 0.15 + 0.85;
+            float shimmer = noise(vWorldPos * 0.3 + vec2(phase * 1.25, 0.0)) * 0.15 + 0.85;
             waterColor *= shimmer;
             float lighting = 0.75 + vWaveIntensity * 0.5;
             waterColor *= lighting;
@@ -452,7 +456,7 @@ class OceanWaves(ShaderEffect):
                 float foamLineStart = wetThreshold;
                 float foamLineEnd = dryThreshold - 0.01;
                 float foamLine = smoothstep(foamLineStart - 0.02, foamLineStart, y) * smoothstep(foamLineEnd + 0.02, foamLineStart, y);
-                float foamLineNoise = noise(vec2(x * 20.0, time * (waveSpeed * 2.0) * 2.0));
+                float foamLineNoise = noise(vec2(x * 20.0, phase * 2.5));
                 foamLine *= foamLineNoise * 0.5 + 0.5;
                 vec3 foamColor = vec3(0.95, 0.95, 1.0);
                 color = mix(color, foamColor, foamLine * 0.7);
@@ -508,6 +512,11 @@ class OceanWaves(ShaderEffect):
         
         # Update animation time
         self.time += dt
+        
+        # Accumulate phase based on current wave_speed to avoid discontinuities
+        # Scale wave_speed (0-1 range) to appropriate phase rate
+        phase_rate = self.wave_speed * 2.0 * 0.8  # Same scaling as before
+        self.phase += dt * phase_rate
     
     def render(self, state: Dict):
         """Render the ocean waves effect"""
@@ -525,6 +534,9 @@ class OceanWaves(ShaderEffect):
         
         time_loc = glGetUniformLocation(self.shader, "time")
         glUniform1f(time_loc, self.time)
+        
+        phase_loc = glGetUniformLocation(self.shader, "phase")
+        glUniform1f(phase_loc, self.phase)
         
         height_loc = glGetUniformLocation(self.shader, "height")
         glUniform1f(height_loc, float(self.height))
