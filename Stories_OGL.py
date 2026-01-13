@@ -437,7 +437,7 @@ class EnvironmentalSystem:
         # Ocean-specific parameters
         state["wave_speed"] = self.weather_params.get("wave_speed", 0.5)
         state["wave_amplitude"] = self.weather_params.get("wave_amplitude", 0.5)
-        state["tide_level"] = self.weather_params.get("tide_level", 0.0)
+        state["tide_level"] = self.weather_params.get("tide_level", 0.5)
         state["bioluminescence"] = self.weather_params.get("bioluminescence", 0.0)
         state["bubble_density"] = self.weather_params.get("bubble_density", 0.0)
         state["marine_life_activity"] = self.weather_params.get("marine_life_activity", 0.0)
@@ -642,7 +642,7 @@ if __name__ == "__main__":
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 50
+    FRAME_TIME = 1 / 40
     first_time = time.time()
     frame_count = 0
     fps_start_time = time.time()
