@@ -630,9 +630,9 @@ WEATHER_PRESETS = {
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "bioluminescence": 0,
         "bubble_density": 1,
-        "celestial_visibility": 0.1,
+        "celestial_visibility": 0.25,  # Increased from 0.1 to reduce abrupt darkening
         "fog": 0.7,
-        "fog_color": np.array([0.15, 0.3, 0.4]),
+        "fog_color": np.array([0.2, 0.35, 0.45]),  # Slightly brighter to reduce abrupt darkening
         "kelp_density": 0,
         "lightning_probability": 0.8,
         "marine_life_activity": 0.05,
