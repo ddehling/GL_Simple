@@ -71,6 +71,7 @@ def shader_ocean_waves(state, outstate, height_ratio=0.9, depth=85.0,
         state['effect'].wave_speed = outstate.get('wave_speed', wave_speed)
         state['effect'].wave_height = outstate.get('wave_amplitude', wave_height)
         state['effect'].tide_level = outstate.get('tide_level', 0.5)
+        state['effect'].time_of_day = outstate.get('season', 0.5)  # Use season as time of day
         
         # Implement fade in/out
         elapsed_time = state['elapsed_time']
@@ -118,6 +119,7 @@ class OceanWaves(ShaderEffect):
         self.wave_height = wave_height
         self.foam_amount = foam_amount
         self.tide_level = tide_level  # Controls water level: -1=low tide, 0=normal, 1=high tide
+        self.time_of_day = 0.5  # Season parameter used as time of day (0=midnight, 0.5=noon)
         self.time = 0.0
         self.phase = 0.0  # Accumulated phase for smooth wave speed transitions
         self.fade_factor = 0.0
@@ -330,6 +332,7 @@ class OceanWaves(ShaderEffect):
         uniform float foamAmount;
         uniform float fadeAlpha;
         uniform float tideLevel;
+        uniform float timeOfDay;  // 0-1 cycle: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
         
         out vec4 outColor;
         
@@ -371,6 +374,16 @@ class OceanWaves(ShaderEffect):
             
             baseColor = mix(baseColor, foamColor, foam);
             return baseColor;
+        }
+        
+        // Calculate brightness multiplier based on time of day
+        // timeOfDay: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset, 1.0=midnight
+        float getDayBrightness(float timeOfDay) {
+            // Use cosine curve for smooth day/night cycle
+            // cos(0) = 1 (midnight dark), cos(PI) = -1 (noon bright)
+            float cycle = cos(timeOfDay * 2.0 * 3.14159);
+            // Map from [-1, 1] to [0.3, 1.2] (night to day brightness)
+            return 0.65 + cycle * -0.55;  // Inverted: midnight=0.3, noon=1.2
         }
         
         void main() {
@@ -429,12 +442,21 @@ class OceanWaves(ShaderEffect):
             float foamFactor = (waveCrestFoam * 0.4 + shoreFoam * 0.6 + breakingFoam * 0.8) * foamTexture * foamAmount;
             foamFactor = clamp(foamFactor, 0.0, 1.0);
             
+            // Apply time of day brightness (day/night cycle)
+            float dayBrightness = getDayBrightness(timeOfDay);
+            
+            // Reduce foam visibility at night - foam should be less visible in low light
+            float nightFoamReduction = mix(0.3, 1.0, dayBrightness / 1.2);  // Scale based on brightness
+            foamFactor *= nightFoamReduction;
+            
             // Water color
             vec3 waterColor = getOceanColor(depth, vWaveIntensity, foamFactor);
             float shimmer = noise(vWorldPos * 0.3 + vec2(phase * 1.25, 0.0)) * 0.15 + 0.85;
             waterColor *= shimmer;
             float lighting = 0.75 + vWaveIntensity * 0.5;
             waterColor *= lighting;
+            
+            waterColor *= dayBrightness;
             
             // Blend beach and water
             vec3 color;
@@ -444,13 +466,22 @@ class OceanWaves(ShaderEffect):
                 // Mostly beach
                 color = sandColor;
                 
+                // Apply time of day brightness to beach
+                float dayBrightness = getDayBrightness(timeOfDay);
+                color *= dayBrightness;
+                
                 // Add foam line at water's edge (adjusted for tide)
                 float foamLineStart = wetThreshold;
                 float foamLineEnd = dryThreshold - 0.01;
                 float foamLine = smoothstep(foamLineStart - 0.02, foamLineStart, y) * smoothstep(foamLineEnd + 0.02, foamLineStart, y);
                 float foamLineNoise = noise(vec2(x * 20.0, phase * 2.5));
                 foamLine *= foamLineNoise * 0.5 + 0.5;
-                vec3 foamColor = vec3(0.95, 0.95, 1.0);
+                
+                // Reduce beach foam line visibility at night
+                float nightFoamReduction = mix(0.3, 1.0, dayBrightness / 1.2);
+                foamLine *= nightFoamReduction;
+                
+                vec3 foamColor = vec3(0.95, 0.95, 1.0) * dayBrightness;  // Dim foam by day/night
                 color = mix(color, foamColor, foamLine * 0.7);
                 
                 // Underwater sand has water overlay (adjusted for tide)
@@ -547,6 +578,9 @@ class OceanWaves(ShaderEffect):
         
         tide_level_loc = glGetUniformLocation(self.shader, "tideLevel")
         glUniform1f(tide_level_loc, self.tide_level)
+        
+        time_of_day_loc = glGetUniformLocation(self.shader, "timeOfDay")
+        glUniform1f(time_of_day_loc, self.time_of_day)
         
         foam_loc = glGetUniformLocation(self.shader, "foamAmount")
         glUniform1f(foam_loc, self.foam_amount)
