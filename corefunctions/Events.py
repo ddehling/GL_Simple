@@ -340,7 +340,7 @@ class EventScheduler:
     
     def _send_to_displays(self, frames):
         """Send frames to physical displays"""
-        gamma = 1#2.8
+        gamma = 2.8
         
         # Process and send frames
         for i, frame in enumerate(frames):

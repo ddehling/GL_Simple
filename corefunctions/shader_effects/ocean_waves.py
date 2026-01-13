@@ -65,10 +65,20 @@ def shader_ocean_waves(state, outstate, height_ratio=0.9, depth=85.0,
             traceback.print_exc()
             return
     
-    # Update from global state (optional)
+    # Update from global state - read ocean weather parameters
     if 'effect' in state:
-        state['effect'].wave_speed = outstate.get('ocean_speed', wave_speed)
-        state['effect'].wave_height = outstate.get('ocean_height', wave_height)
+        # Use ocean weather set parameter names
+        new_wave_speed = outstate.get('wave_speed', wave_speed)
+        new_wave_height = outstate.get('wave_amplitude', wave_height)
+        new_tide_level = outstate.get('tide_level', 0.5)
+        
+        # Debug output every 60 frames (~once per second)
+        if state['count'] % 60 == 0:
+            print(f"Ocean: speed={new_wave_speed:.3f}, amp={new_wave_height:.3f}, tide={new_tide_level:.3f}")
+        
+        state['effect'].wave_speed = new_wave_speed
+        state['effect'].wave_height = new_wave_height
+        state['effect'].tide_level = new_tide_level
         
         # Implement fade in/out
         elapsed_time = state['elapsed_time']
@@ -106,7 +116,8 @@ class OceanWaves(ShaderEffect):
     """
     
     def __init__(self, viewport, height_ratio: float = 0.9, depth: float = 85.0,
-                 wave_speed: float = 1.0, wave_height: float = 1.0, foam_amount: float = 1.0):
+                 wave_speed: float = 1.0, wave_height: float = 1.0, foam_amount: float = 1.0,
+                 tide_level: float = 0.0):
         super().__init__(viewport)
         self.height_ratio = height_ratio
         self.height = viewport.height  # Use full viewport height
@@ -114,6 +125,7 @@ class OceanWaves(ShaderEffect):
         self.wave_speed = wave_speed
         self.wave_height = wave_height
         self.foam_amount = foam_amount
+        self.tide_level = tide_level  # Controls water level: -1=low tide, 0=normal, 1=high tide
         self.time = 0.0
         self.fade_factor = 0.0
         
@@ -132,10 +144,16 @@ class OceanWaves(ShaderEffect):
         """Initialize mesh data for ocean surface"""
         width = self.viewport.width
         
-        # Create a grid mesh covering the viewport
+        # Extend mesh MUCH further beyond viewport to handle wave displacement
+        # Start at -100 pixels and go to height + 100 pixels
+        self.mesh_start = -100.0
+        self.mesh_end = float(self.height) + 100.0
+        mesh_height = self.mesh_end - self.mesh_start
+        
+        # Create a grid mesh covering the extended area
         vertices = []
         for y in range(self.segments_y + 1):
-            y_pos = (y / self.segments_y) * self.height
+            y_pos = self.mesh_start + (y / self.segments_y) * mesh_height
             for x in range(self.segments_x + 1):
                 x_pos = (x / self.segments_x) * width
                 vertices.append([x_pos, y_pos])
@@ -184,6 +202,9 @@ class OceanWaves(ShaderEffect):
         uniform float height;
         uniform float waveSpeed;
         uniform float waveHeight;
+        uniform float tideLevel;
+        uniform float meshStart;
+        uniform float meshEnd;
         
         out vec2 vTexCoord;
         out float vWaveIntensity;
@@ -213,19 +234,27 @@ class OceanWaves(ShaderEffect):
         void main() {
             vec2 pos = position;
             
-            // Normalize coordinates (0-1)
-            float normY = pos.y / height;  // 0 at bottom, 1 at top (shore)
+            // Normalize coordinates based on VIEWPORT, not mesh bounds
+            // Clamp to 0-1 range for areas within viewport
+            float normY = clamp((pos.y - 0.0) / height, 0.0, 1.0);
+            // Invert Y to rotate 180 degrees (beach at bottom, waves go down)
+            normY = 1.0 - normY;
             float normX = pos.x / resolution.x;
             
             // Distance from shore: 0 at shore (top), 1 at deep water (bottom)
-            float shoreDistance = 1.0 - normY;
+            // Apply tide level: tideLevel expected in 0-1 range, map to -0.5 to 0.5 (0.5 = normal)
+            float tideFactor = (tideLevel - 0.5) * 0.3;  // Map 0-1 to -0.15 to +0.15
+            float shoreDistance = 1.0 - (normY + tideFactor);
+            shoreDistance = clamp(shoreDistance, 0.0, 1.0);
             
             // Create wave fronts that roll toward shore
             // Wave phase moves with time AND position to create motion
-            float wavePhase = shoreDistance * 8.0 - time * waveSpeed * 1.5;
+            // ADD time instead of subtract to make waves move UP toward shore
+            // waveSpeed expected in 0-1 range, scale to 0-2
+            float wavePhase = shoreDistance * 8.0 + time * (waveSpeed * 2.0) * 0.8;
             
             // Add horizontal variation with noise to break up vertical stripes
-            float horizontalVariation = noise(vec2(normX * 3.0, time * waveSpeed * 0.1)) * 2.0;
+            float horizontalVariation = noise(vec2(normX * 3.0, time * (waveSpeed * 2.0) * 0.1)) * 2.0;
             wavePhase += horizontalVariation;
             
             // Multiple wave layers with different scales
@@ -242,8 +271,8 @@ class OceanWaves(ShaderEffect):
             float waveHeight_combined = (wave1 * 0.5 + wave2 * 0.3 + wave3 * 0.2);
             
             // Add noise-based turbulence for organic motion
-            float turbulence = noise(vec2(normX * 5.0 + time * waveSpeed * 0.5, 
-                                          shoreDistance * 4.0 - time * waveSpeed * 0.3));
+            float turbulence = noise(vec2(normX * 3.0 + time * (waveSpeed * 2.0) * 0.3,
+                                          shoreDistance * 4.0 - time * (waveSpeed * 2.0) * 0.2));
             waveHeight_combined += turbulence * 0.15;
             
             // Waves grow taller as they approach shore (shoaling)
@@ -254,22 +283,23 @@ class OceanWaves(ShaderEffect):
             if (shoreDistance < 0.15) {
                 // Extreme steepening and chaos at shore
                 float breakingIntensity = (0.15 - shoreDistance) / 0.15;
-                float breakingNoise = noise(vec2(normX * 15.0, time * waveSpeed * 3.0));
+                float breakingNoise = noise(vec2(normX * 5.0, time * (waveSpeed * 2.0) * 1.0));
                 waveHeight_combined += breakingIntensity * breakingNoise * 1.5;
             }
             
-            // Beach zone - only dampen at the very top where beach is
-            // normY = 1 is top, so dampen when normY > 0.97
+            // Beach zone - only dampen at the very bottom where beach is (after Y inversion)
+            // normY = 1 is bottom now, so dampen when normY > 0.97
             float beachZone = smoothstep(0.97, 0.99, normY);
             waveHeight_combined *= (1.0 - beachZone);
             
             // Apply wave height displacement
-            float totalHeight = waveHeight_combined * 30.0 * waveHeight;
+            // waveHeight expected in 0-1 range, use power curve to reduce dramatic high-end changes
+            // pow(x, 1.5) compresses high values: 0.3→0.16, 0.5→0.35, 0.8→0.72, 1.0→1.0
+            float scaledHeight = pow(waveHeight, 1.5) * 1.5;  // Range: 0 to 1.5
+            float totalHeight = waveHeight_combined * 20.0 * scaledHeight;
             pos.y += totalHeight;
             
-            // CRITICAL: Clamp Y position to prevent vertices from going above viewport
-            // This prevents the black gap at the top
-            pos.y = min(pos.y, height);
+            // No clamping needed - mesh extends beyond viewport
             
             // Convert to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -303,6 +333,7 @@ class OceanWaves(ShaderEffect):
         uniform float waveSpeed;
         uniform float foamAmount;
         uniform float fadeAlpha;
+        uniform float tideLevel;
         
         out vec4 outColor;
         
@@ -351,8 +382,41 @@ class OceanWaves(ShaderEffect):
             float y = vTexCoord.y;
             float depth = vDistanceFromShore;
             
+            // Beach zone at shore (top of screen where normY is close to 1)
+            // Beach extends from normY 0.92 to 1.0 (top 8% of screen)
+            // Tide level shifts beach boundary: tideLevel in 0-1 range, map to -0.5 to 0.5 (0.5 = normal)
+            float tideFactor = (tideLevel - 0.5) * 0.3;  // Map 0-1 to -0.15 to +0.15
+            float beachStart = 0.92 + tideFactor;
+            float beachZone = smoothstep(beachStart, 1.0, y);
+            
+            // Sand colors
+            vec3 drySandColor = vec3(0.85, 0.75, 0.55);
+            vec3 wetSandColor = vec3(0.55, 0.45, 0.30);
+            vec3 underwaterSandColor = vec3(0.45, 0.38, 0.25);
+            
+            // Sand texture
+            float sandNoise1 = noise(vWorldPos * 0.15);
+            float sandNoise2 = noise(vWorldPos * 0.5);
+            float sandTexture = sandNoise1 * 0.7 + sandNoise2 * 0.3;
+            sandTexture = sandTexture * 0.3 + 0.7;
+            
+            // Determine sand wetness based on position
+            vec3 sandColor;
+            float dryThreshold = 0.97 + tideFactor;
+            float wetThreshold = 0.94 + tideFactor;
+            if (y > dryThreshold) {
+                sandColor = drySandColor;
+            } else if (y > wetThreshold) {
+                float blend = (y - wetThreshold) / 0.03;
+                sandColor = mix(wetSandColor, drySandColor, blend);
+            } else {
+                float blend = (y - beachStart) / (0.94 - beachStart);
+                sandColor = mix(underwaterSandColor, wetSandColor, blend);
+            }
+            sandColor *= sandTexture;
+            
             // Create foam texture
-            vec2 foamCoord = vWorldPos * 0.1 + vec2(time * waveSpeed * 0.5, -time * waveSpeed * 0.3);
+            vec2 foamCoord = vWorldPos * 0.1 + vec2(time * (waveSpeed * 2.0) * 0.5, -time * (waveSpeed * 2.0) * 0.3);
             float foamNoise1 = noise(foamCoord);
             float foamNoise2 = noise(foamCoord * 2.3 + vec2(1.7, 3.2));
             float foamTexture = foamNoise1 * 0.6 + foamNoise2 * 0.4;
@@ -362,24 +426,52 @@ class OceanWaves(ShaderEffect):
             
             float breakingFoam = 0.0;
             if (depth < 0.15) {
-                float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, time * waveSpeed * 2.0));
+                float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, time * (waveSpeed * 2.0) * 2.0));
                 breakingFoam = (0.15 - depth) / 0.15 * breakingNoise;
             }
             
             float foamFactor = (waveCrestFoam * 0.4 + shoreFoam * 0.6 + breakingFoam * 0.8) * foamTexture * foamAmount;
             foamFactor = clamp(foamFactor, 0.0, 1.0);
             
-            vec3 color = getOceanColor(depth, vWaveIntensity, foamFactor);
-            
-            float shimmer = noise(vWorldPos * 0.3 + vec2(time * waveSpeed, 0.0)) * 0.15 + 0.85;
-            color *= shimmer;
-            
+            // Water color
+            vec3 waterColor = getOceanColor(depth, vWaveIntensity, foamFactor);
+            float shimmer = noise(vWorldPos * 0.3 + vec2(time * (waveSpeed * 2.0), 0.0)) * 0.15 + 0.85;
+            waterColor *= shimmer;
             float lighting = 0.75 + vWaveIntensity * 0.5;
-            color *= lighting;
+            waterColor *= lighting;
             
-            float alpha = 0.5 + (1.0 - depth) * 0.3;
-            alpha += foamFactor * 0.3;
-            alpha = clamp(alpha, 0.0, 0.95);
+            // Blend beach and water
+            vec3 color;
+            float alpha;
+            
+            if (beachZone > 0.01) {  // Render beach in entire zone, not just beachZone > 0.5
+                // Mostly beach
+                color = sandColor;
+                
+                // Add foam line at water's edge (adjusted for tide)
+                float foamLineStart = wetThreshold;
+                float foamLineEnd = dryThreshold - 0.01;
+                float foamLine = smoothstep(foamLineStart - 0.02, foamLineStart, y) * smoothstep(foamLineEnd + 0.02, foamLineStart, y);
+                float foamLineNoise = noise(vec2(x * 20.0, time * (waveSpeed * 2.0) * 2.0));
+                foamLine *= foamLineNoise * 0.5 + 0.5;
+                vec3 foamColor = vec3(0.95, 0.95, 1.0);
+                color = mix(color, foamColor, foamLine * 0.7);
+                
+                // Underwater sand has water overlay (adjusted for tide)
+                if (y < wetThreshold) {
+                    float waterOverlay = smoothstep(wetThreshold, beachStart, y);
+                    color = mix(color, waterColor, waterOverlay * 0.6);
+                    alpha = mix(0.95, 0.75, waterOverlay);
+                } else {
+                    alpha = 0.95;
+                }
+            } else {
+                // Pure water
+                color = waterColor;
+                alpha = 0.5 + (1.0 - depth) * 0.3;
+                alpha += foamFactor * 0.3;
+                alpha = clamp(alpha, 0.0, 0.95);
+            }
             
             alpha *= fadeAlpha;
             
@@ -440,8 +532,17 @@ class OceanWaves(ShaderEffect):
         wave_speed_loc = glGetUniformLocation(self.shader, "waveSpeed")
         glUniform1f(wave_speed_loc, self.wave_speed)
         
+        mesh_start_loc = glGetUniformLocation(self.shader, "meshStart")
+        glUniform1f(mesh_start_loc, self.mesh_start)
+        
+        mesh_end_loc = glGetUniformLocation(self.shader, "meshEnd")
+        glUniform1f(mesh_end_loc, self.mesh_end)
+        
         wave_height_loc = glGetUniformLocation(self.shader, "waveHeight")
         glUniform1f(wave_height_loc, self.wave_height)
+        
+        tide_level_loc = glGetUniformLocation(self.shader, "tideLevel")
+        glUniform1f(tide_level_loc, self.tide_level)
         
         foam_loc = glGetUniformLocation(self.shader, "foamAmount")
         glUniform1f(foam_loc, self.foam_amount)
