@@ -68,17 +68,9 @@ def shader_ocean_waves(state, outstate, height_ratio=0.9, depth=85.0,
     # Update from global state - read ocean weather parameters
     if 'effect' in state:
         # Use ocean weather set parameter names
-        new_wave_speed = outstate.get('wave_speed', wave_speed)
-        new_wave_height = outstate.get('wave_amplitude', wave_height)
-        new_tide_level = outstate.get('tide_level', 0.5)
-        
-        # Debug output every 60 frames (~once per second)
-        if state['count'] % 60 == 0:
-            print(f"Ocean: speed={new_wave_speed:.3f}, amp={new_wave_height:.3f}, tide={new_tide_level:.3f}")
-        
-        state['effect'].wave_speed = new_wave_speed
-        state['effect'].wave_height = new_wave_height
-        state['effect'].tide_level = new_tide_level
+        state['effect'].wave_speed = outstate.get('wave_speed', wave_speed)
+        state['effect'].wave_height = outstate.get('wave_amplitude', wave_height)
+        state['effect'].tide_level = outstate.get('tide_level', 0.5)
         
         # Implement fade in/out
         elapsed_time = state['elapsed_time']
@@ -390,7 +382,7 @@ class OceanWaves(ShaderEffect):
             // Beach extends from normY 0.92 to 1.0 (top 8% of screen)
             // Tide level shifts beach boundary: tideLevel in 0-1 range, map to -0.5 to 0.5 (0.5 = normal)
             float tideFactor = (tideLevel - 0.5) * 0.3;  // Map 0-1 to -0.15 to +0.15
-            float beachStart = 0.92 + tideFactor;
+            float beachStart = clamp(0.92 + tideFactor, 0.0, 0.99);  // Clamp to prevent invalid smoothstep
             float beachZone = smoothstep(beachStart, 1.0, y);
             
             // Sand colors
