@@ -677,7 +677,7 @@ if __name__ == "__main__":
                 current_time = time.time()
                 actual_fps = 500.0 / (current_time - fps_start_time)
                 fps_start_time = current_time
-                print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
+                #print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
             # Print stats if needed
             # print(["%.2f" % (1/(time.time()-lasttime)), "%.2f" % len(scheduler.active_events), len(scheduler.event_queue),"%.3f" %((lasttime-first_time)/3600)])
             #last_time = time.time()
