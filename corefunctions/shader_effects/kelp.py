@@ -264,10 +264,13 @@ class KelpEffect(ShaderEffect):
             
             // Smooth fade in/out as density crosses this strand's threshold
             float fadeWidth = 0.1;  // How gradually strands fade (10% of density range)
-            float strandAlpha = smoothstep(strandThreshold - fadeWidth, strandThreshold + fadeWidth, kelpDensity);
+            // Ensure strands are completely invisible at density=0
+            float fadeStart = max(0.0, strandThreshold - fadeWidth);
+            float fadeEnd = strandThreshold + fadeWidth;
+            float strandAlpha = smoothstep(fadeStart, fadeEnd, kelpDensity);
             
             // Cull completely invisible strands for performance
-            if (strandAlpha < 0.01) {
+            if (strandAlpha < 0.01 || kelpDensity < 0.001) {
                 gl_Position = vec4(0.0, 0.0, -10.0, 1.0);
                 return;
             }
