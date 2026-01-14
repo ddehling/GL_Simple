@@ -494,7 +494,7 @@ WEATHER_PRESETS = {
     WeatherState.OCEAN_ABYSS: {
         "ARI": 60,
         "ambient_sound": "Tinkle Atmosphere 01.wav",
-        "bioluminescence": 0.3,
+        "bioluminescence": 0.5,
         "bubble_density": 0,
         "celestial_visibility": 0,
         "fog": 0.95,
@@ -571,7 +571,7 @@ WEATHER_PRESETS = {
     WeatherState.OCEAN_CORAL_REEF: {
         "ARI": 40,
         "ambient_sound": "Forest Cicadas EDITED.wav",
-        "bioluminescence": 0.3,
+        "bioluminescence": 0.1,
         "bubble_density": 0.3,
         "celestial_visibility": 0.9,
         "fog": 0.15,
@@ -609,7 +609,7 @@ WEATHER_PRESETS = {
     WeatherState.OCEAN_KELP_FOREST: {
         "ARI": 42,
         "ambient_sound": "Forest Cicadas EDITED.wav",
-        "bioluminescence": 0.2,
+        "bioluminescence": 0.1,
         "bubble_density": 0.2,
         "celestial_visibility": 0.7,
         "fog": 0.25,

@@ -634,12 +634,13 @@ if __name__ == "__main__":
 
     #change to a specific weather set on startup
     env_system.change_weather_set("ocean", immediate=True)
-    env_system.transition_to_weather(WeatherState.OCEAN_ABYSS)
+    env_system.transition_to_weather(WeatherState.OCEAN_BIOLUMINESCENT_SWARM)
     # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
     #     # 0=red, 0.33=green, 0.66=blue
     #                     frame_id=0)
     env_system.scheduler.schedule_event(0, 900, fx.shader_kelp, frame_id=0)
     env_system.scheduler.schedule_event(0, 900, fx.shader_ocean_waves,frame_id=0)
+    env_system.scheduler.schedule_event(0, 900, fx.shader_bioluminescence, frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
