@@ -634,7 +634,7 @@ if __name__ == "__main__":
 
     #change to a specific weather set on startup
     env_system.change_weather_set("ocean", immediate=True)
-    env_system.transition_to_weather(WeatherState.OCEAN_KELP_FOREST)
+    env_system.transition_to_weather(WeatherState.OCEAN_ABYSS)
     # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
     #     # 0=red, 0.33=green, 0.66=blue
     #                     frame_id=0)
