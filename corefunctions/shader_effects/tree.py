@@ -19,7 +19,7 @@ sys.path.insert(0, str(ParentPath))
 # ============================================================================
 
 def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0, 
-                bass_sensitivity=2.0, mid_sensitivity=3.0, squish_top_width=1.0):
+                bass_sensitivity=2.0, mid_sensitivity=3.0):
     """
     Shader-based tree effect compatible with EventScheduler
     
@@ -34,11 +34,11 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0,
         fade_duration: Duration of fade in/out in seconds (default 5.0)
         bass_sensitivity: How much bass affects leaf movement (default 2.0)
         mid_sensitivity: How much mids affect leaf sway (default 3.0)
-        squish_top_width: Horizontal width multiplier at top of tree (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     audio_data = outstate.get('sound')
+    squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")

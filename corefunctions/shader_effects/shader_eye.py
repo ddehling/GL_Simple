@@ -13,7 +13,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_eye(state, outstate, num_eyes=6, scale=0.175, squish_top_width=1.0):
+def shader_eye(state, outstate, num_eyes=6, scale=0.175):
     """
     Shader-based eye effect compatible with EventScheduler
     
@@ -25,11 +25,11 @@ def shader_eye(state, outstate, num_eyes=6, scale=0.175, squish_top_width=1.0):
         outstate: Global state dict (from EventScheduler)
         num_eyes: Number of eyes to render (default 6)
         scale: Size of each eye (default 0.075)
-        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
+    squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")

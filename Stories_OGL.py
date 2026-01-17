@@ -17,9 +17,9 @@ from corefunctions import shader_effects as fx
 from corefunctions.web_controller import WebController
 
 class EnvironmentalSystem:
-    def __init__(self, scheduler):
+    def __init__(self):
         frame_dimensions = [
-            (120, 60),   # Frame 0 (primary/main display)
+            (128, 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -91,43 +91,44 @@ class EnvironmentalSystem:
     ]
         # Event map - maps event names to shader effects and their parameters
         # This is used for both background events and on-transition events
+        # Format: "event_name": (shader_function, {params_dict})
         self.event_map = {
-            "clouds": lambda: fx.shader_drifting_clouds,
-            "firefly": lambda: (fx.shader_firefly, {"squish_top_width": 0.1}),
-            "stars": lambda: fx.shader_stars,
-            "rain": lambda: fx.shader_rain,
-            "fog": lambda: (fx.shader_fog, {
+            "clouds": (fx.shader_drifting_clouds, {}),
+            "firefly": (fx.shader_firefly, {}),
+            "stars": (fx.shader_stars, {}),
+            "rain": (fx.shader_rain, {}),
+            "fog": (fx.shader_fog, {
                 "strength": 0.0,
                 "color": (0.7, 0.7, 0.8),
                 "fog_near": 20.0,
                 "fog_far": 80.0
             }),
-
-            "sandstorm": lambda: fx.shader_sandstorm,
-            "fog_beings": lambda: fx.shader_chromatic_fog_beings,
-            "falling_leaves": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}), 
-            "audio_balls": lambda:(fx.shader_audio_balls, {"squish_top_width": self.scale}),       # Position 0
-            "audio_curve": lambda:    fx.shader_audio_curve,                                     # Position 1
-            "sunrise": lambda:    (fx.shader_sunrise, {"squish_top_width": 1/self.scale}),         # Position 2
-            "game_of_life": lambda:    fx.shader_gameoflife,                                      # Position 3
-            "fractal_fog": lambda:    fx.shader_fractal_fog,                                     # Position 4
-            "noise_isovalues": lambda:    fx.shader_noise_isovalues,                                 # Position 5
-            "tentacle": lambda:    fx.shader_tentacle,                                        # Position 6
-            "tunnel_raymarch": lambda:    fx.shader_tunnel_raymarch,                                  # Position 7
-            "tunnel": lambda:    fx.shader_tunnel,                                          # Position 8
-            "voronoi_sphere": lambda:    fx.shader_voronoi_sphere,                                  # Position 10
-            "wave_terrain": lambda:    fx.shader_wave_terrain,                                    # Position 11
-            "wave_equation": lambda:    fx.shader_wave_equation,                                   # Position 12
-            "audio_scan_line": lambda:    (fx.shader_audio_scan_line, {
-                    "scan_speed": 50.0,
-                    "trail_length": 75,
-                        "intensity_sensitivity": 2.0,
-                        "width_sensitivity": 0.5,
-                        "base_width": 2.0,
-                        "max_width": 20.0,
-                        "color_hue": 0.5}),    
-            "pixel_spots": lambda:    fx.shader_pixel_spots,
-            "ocean_background": lambda:    (fx.shader_ocean_background, {"depth": 10.0})
+            "sandstorm": (fx.shader_sandstorm, {}),
+            "fog_beings": (fx.shader_chromatic_fog_beings, {}),
+            "falling_leaves": (fx.shader_falling_leaves, {}), 
+            "audio_balls": (fx.shader_audio_balls, {}),
+            "audio_curve": (fx.shader_audio_curve, {}),
+            "sunrise": (fx.shader_sunrise, {}),
+            "game_of_life": (fx.shader_gameoflife, {}),
+            "fractal_fog": (fx.shader_fractal_fog, {}),
+            "noise_isovalues": (fx.shader_noise_isovalues, {}),
+            "tentacle": (fx.shader_tentacle, {}),
+            "tunnel_raymarch": (fx.shader_tunnel_raymarch, {}),
+            "tunnel": (fx.shader_tunnel, {}),
+            "voronoi_sphere": (fx.shader_voronoi_sphere, {}),
+            "wave_terrain": (fx.shader_wave_terrain, {}),
+            "wave_equation": (fx.shader_wave_equation, {}),
+            "audio_scan_line": (fx.shader_audio_scan_line, {
+                "scan_speed": 50.0,
+                "trail_length": 75,
+                "intensity_sensitivity": 2.0,
+                "width_sensitivity": 0.5,
+                "base_width": 2.0,
+                "max_width": 20.0,
+                "color_hue": 0.5
+            }),
+            "pixel_spots": (fx.shader_pixel_spots, {}),
+            "ocean_background": (fx.shader_ocean_background, {"depth": 10.0})
         }
         
         # Pass event_map keys and background events to web controller if enabled
@@ -249,14 +250,9 @@ class EnvironmentalSystem:
             print(f"   ⚠️ Unknown event: {event_name}")
             return None
         
-        event_config = self.event_map[event_name]()
-        if isinstance(event_config, tuple):
-            # Event with parameters
-            effect_func, params = event_config
-            return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
-        else:
-            # Simple event
-            return self.scheduler.schedule_event(start_time, duration, event_config, frame_id=frame_id)
+        # Unpack the pre-stored tuple (no lambda call needed)
+        effect_func, params = self.event_map[event_name]
+        return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
@@ -425,6 +421,7 @@ class EnvironmentalSystem:
         state["fog_color"] = self.weather_params["fog_color"]
         state["wind"] = self.weather_params["wind_speed"] * np.cos(np.pi * 2 * (self.season - 0.125))
         state["season"] = self.season
+        state["scale"] = self.scale
         state["rain"] = self.weather_params["rain_rate"]
         state["starryness"] = self.weather_params["starryness"]
         state["sound"] = self.analyzer.get_extended_analysis()
@@ -472,7 +469,7 @@ class EnvironmentalSystem:
         
         if (randcheck < self.weather_params["tree_prob"] / 10000):
             # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
-            self.scheduler.schedule_event(0, 80, fx.shader_tree,squish_top_width=self.scale, frame_id=0) # noqa: F405
+            self.scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0) # noqa: F405
         
         # Wolf howl
         # if (randcheck < (self.weather_params["Wolfy"] + self.weather_params["spookyness"] / 10) / 2000):
@@ -496,7 +493,7 @@ class EnvironmentalSystem:
 
         # # Spooky giant eye
         if randcheck < self.weather_params["spookyness"] / 1000:
-            self.scheduler.schedule_event(0, 30, fx.shader_eye, squish_top_width=self.scale,frame_id=0) # noqa: F405
+            self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
 
         # # Random meteor events
         if randcheck < self.weather_params["meteor_rate"] / 800:
@@ -632,8 +629,7 @@ class EnvironmentalSystem:
 
 # Main execution
 if __name__ == "__main__":
-    scheduler = EventScheduler()
-    env_system = EnvironmentalSystem(scheduler)
+    env_system = EnvironmentalSystem()
 
     #change to a specific weather set on startup
     env_system.change_weather_set("ocean", immediate=True)

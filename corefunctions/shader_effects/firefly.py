@@ -12,7 +12,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0, squish_top_width=1.0):
+def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
     """
     Shader-based firefly effect compatible with EventScheduler
     
@@ -24,12 +24,12 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0, squish_t
         outstate: Global state dict (from EventScheduler)
         density: Firefly spawn rate multiplier
         audio_sensitivity: Audio reactivity multiplier (0.0 = no audio, 1.0 = normal, 2.0 = double)
-        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     audio_data = outstate.get('sound')
+    squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
