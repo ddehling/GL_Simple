@@ -6,7 +6,7 @@ from corefunctions.Events import EventScheduler
 from corefunctions.soundinput import MicrophoneAnalyzer
 from corefunctions.weather_params import (
     WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
-    WEATHER_SETS, DEFAULT_WEATHER_SET, AVAILABLE_BACKGROUND_EVENTS
+    WEATHER_SETS, DEFAULT_WEATHER_SET
 )
 from corefunctions.shader_effects.shader_fog import ShaderFog
 from corefunctions.shader_effects.celestial_bodies import (
@@ -131,12 +131,13 @@ class EnvironmentalSystem:
             "ocean_background": (fx.shader_ocean_background, {"depth": 10.0})
         }
         
-        # Pass event_map keys and background events to web controller if enabled
-        # Background events are defined in weather_params.py as AVAILABLE_BACKGROUND_EVENTS
+        # Pass event_map keys to web controller if enabled
+        # Both all events and background events come from the same event_map
         if self.enable_web_control:
+            event_list = list(self.event_map.keys())
             self.web_controller.set_available_events(
-                all_events=list(self.event_map.keys()),
-                background_events=AVAILABLE_BACKGROUND_EVENTS
+                all_events=event_list,
+                background_events=event_list
             )
         
         # Initialize background events for the starting weather set
