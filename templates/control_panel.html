@@ -250,7 +250,7 @@
         
         <div class="tabs">
             <a href="/" class="tab active">Controls</a>
-            <a href="/weather_sets" class="tab">Weather Sets</a>
+
             <a href="/weather_editor" class="tab">⚙️ Editor</a>
             <a href="/admin" class="tab" id="admin-tab">Admin</a>
         </div>
@@ -597,9 +597,7 @@
                     });
                     
                     const result = await response.json();
-                    if (result.success) {
-                        alert(`Weather set change to '${WEATHER_SET_NAMES[newSet]}' queued!\nWill switch on next weather transition.`);
-                    } else {
+                    if (!result.success) {
                         alert('Error: ' + result.error);
                     }
                 } catch (error) {

@@ -338,7 +338,6 @@
                 if (data.success) {
                     pendingSet = setKey;
                     renderSets(Object.keys(WEATHER_SET_DESCRIPTIONS));
-                    console.log(data.message);
                 } else {
                     alert('Error: ' + data.error);
                 }

@@ -19,7 +19,7 @@ from corefunctions.web_controller import WebController
 class EnvironmentalSystem:
     def __init__(self, scheduler):
         frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
+            (120, 60),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
@@ -201,7 +201,7 @@ class EnvironmentalSystem:
             self.current_set = new_set_name
             self.target_set = None
             if self.enable_web_control:
-                self.web_controls["current_weather_set"] = self.current_set
+                self.web_controller.set("current_weather_set", self.current_set)
             
             # Cancel all existing events and start new background events for the set
             self._initialize_weather_set_events()
@@ -341,10 +341,12 @@ class EnvironmentalSystem:
         self._last_web_check = self.current_time
         
         # Check for weather set change requests (only if present)
-        new_set = self.web_controller.get('request_weather_set')
-        if new_set and new_set != self.current_set:
-            self.change_weather_set(new_set)
-            self.web_controller.set('request_weather_set', None)
+        # Read and clear atomically to avoid race conditions
+        with self.web_controller._dict_lock:
+            new_set = self.web_controller.control_dict.pop('request_weather_set', None)
+        
+        if new_set is not None and new_set != self.current_set:
+            self.change_weather_set(new_set, immediate=True)
         
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
@@ -354,9 +356,9 @@ class EnvironmentalSystem:
             # Batch update to minimize lock acquisitions
             self.web_controller._dict_lock.acquire()
             try:
-                self.web_controls['current_weather_set'] = self.current_set
-                self.web_controls['current_weather'] = self.current_weather.value
-                self.web_controls['season'] = float(self.season)
+                self.web_controller.control_dict['current_weather_set'] = self.current_set
+                self.web_controller.control_dict['current_weather'] = self.current_weather.value
+                self.web_controller.control_dict['season'] = float(self.season)
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
                 self.web_controller._dict_lock.release()
@@ -521,7 +523,8 @@ class EnvironmentalSystem:
                 print(f"[WEATHER] Switching weather set: '{self.current_set}' -> '{self.target_set}'")
                 self.current_set = self.target_set
                 self.target_set = None
-                self.web_controls["current_weather_set"] = self.current_set
+                if self.enable_web_control:
+                    self.web_controller.set("current_weather_set", self.current_set)
                 
                 # Cancel all existing events and start new background events for the set
                 self._initialize_weather_set_events()
