@@ -19,7 +19,7 @@ from .base import ShaderEffect
 
 def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0, 
                        lightning_threshold=0.5, lightning_probability=0.3,
-                       num_balls=16, squish_top_width=1.0):
+                       num_balls=16):
     """
     Audio-reactive balls with lightning arcs between them
     
@@ -35,11 +35,11 @@ def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
         lightning_threshold: Minimum normalized energy for lightning (0-1, default 0.5)
         lightning_probability: Chance of lightning between nearby high-energy balls (default 0.3)
         num_balls: Number of balls to create (default 16)
-        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     audio_data = outstate.get('sound')
+    squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")

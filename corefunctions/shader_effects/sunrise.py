@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio_sensitivity=2.0, squish_top_width=1.0):
+def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio_sensitivity=2.0):
     """
     Sound-reactive sunrise with animated tentacles
     
@@ -25,11 +25,12 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
         tentacle_count: Number of tentacles emanating from sun
         color_intensity: Brightness multiplier for colors
         audio_sensitivity: How strongly audio affects tentacle movement
-        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     audio_data = outstate.get('sound')
+    scale = outstate.get('scale', 1.0)
+    squish_top_width = 1.0 / scale if scale != 0 else 1.0  # Get inverse scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")

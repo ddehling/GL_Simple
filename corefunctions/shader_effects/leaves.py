@@ -20,7 +20,7 @@ from corefunctions.shader_effects.base import ShaderEffect
 # ============================================================================
 
 def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0, 
-                          bass_sensitivity=8.0, mid_sensitivity=5.0, squish_top_width=1.0):
+                          bass_sensitivity=8.0, mid_sensitivity=5.0):
     """
     Audio-reactive falling leaves effect compatible with EventScheduler
     
@@ -35,11 +35,11 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
         fade_duration: Duration of fade in/out in seconds (default 10.0)
                         bass_sensitivity: How much bass affects spawn rate (default 8.0, very reactive)
         mid_sensitivity: How much mids affect flutter/rotation (default 5.0, very reactive)
-        squish_top_width: Horizontal width multiplier at top of viewport (default 1.0, bottom is always 1.0)
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
     audio_data = outstate.get('sound')  # Audio analysis data
+    squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
