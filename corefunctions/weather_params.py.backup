@@ -134,14 +134,6 @@ DEFAULT_WEATHER_PARAMS = {
     "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
-    # Ocean parameters
-    "wave_speed": 0.5,
-    "wave_amplitude": 0.5,
-    "tide_level": 0.5,
-    "bioluminescence": 0.0,
-    "bubble_density": 0.0,
-    "marine_life_activity": 0.0,
-    "kelp_density": 0.0,
 }
 
 # Weather presets
@@ -518,7 +510,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.5,
         "fog": 0.3,
         "fog_color": np.array([0.15, 0.25, 0.4]),
-        "kelp_density": 0.0,
+        "kelp_density": 0,
         "marine_life_activity": 1,
         "possible_transitions": ["ocean_deep_calm", "ocean_calm_shallows", "ocean_kelp_forest"],
         "season_preference": 0.375,
@@ -576,7 +568,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.9,
         "fog": 0.15,
         "fog_color": np.array([0.25, 0.65, 0.95]),
-        "kelp_density": 0.0,
+        "kelp_density": 0,
         "marine_life_activity": 1,
         "possible_transitions": ["ocean_calm_shallows", "ocean_kelp_forest", "ocean_choppy_surface"],
         "season_preference": 0.3,
@@ -630,9 +622,9 @@ WEATHER_PRESETS = {
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "bioluminescence": 0,
         "bubble_density": 1,
-        "celestial_visibility": 0.25,  # Increased from 0.1 to reduce abrupt darkening
+        "celestial_visibility": 0.25,
         "fog": 0.7,
-        "fog_color": np.array([0.2, 0.35, 0.45]),  # Slightly brighter to reduce abrupt darkening
+        "fog_color": np.array([0.2, 0.35, 0.45]),
         "kelp_density": 0,
         "lightning_probability": 0.8,
         "marine_life_activity": 0.05,
@@ -640,8 +632,8 @@ WEATHER_PRESETS = {
         "season_preference": 0.75,
         "tide_level": 0.95,
         "transition_weights": [1.5, 0.5],
-        "wave_amplitude": 1.0,
-        "wave_speed": 1.0,
+        "wave_amplitude": 1,
+        "wave_speed": 1,
         "wind_speed": 1.5,
     },
 
@@ -806,12 +798,12 @@ WEATHER_SETS = {
 
     "ocean": {
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "celestial_visibility", "lightning_probability", "wave_speed", "wave_amplitude", "bioluminescence", "tide_level", "bubble_density", "marine_life_activity", "kelp_density", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": [],
+        "background_events": ["Bioluminescence", "ocean_waves", "kelp"],
         "description": "Oceanic environment with waves and aquatic life - fog represents water clarity, season represents time of day",
         "name": "Ocean Realm",
         "random_event_rate": 8e-05,
-        "random_events": ["wave_terrain", "wave_equation", "voronoi_sphere", "tunnel"],
-        "season_extremity": 1.0,
+        "random_events": ["wave_terrain", "wave_equation", "voronoi_sphere", "clouds"],
+        "season_extremity": 1,
         "season_speed": 2,
         "states": ["ocean_calm_shallows", "ocean_choppy_surface", "ocean_storm_surge", "ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_abyss", "ocean_kelp_forest", "ocean_coral_reef"],
         "transition_speed": 0.7,
