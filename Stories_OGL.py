@@ -40,7 +40,7 @@ class EnvironmentalSystem:
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
         self.analyzer.start()
         #self.specdat = np.zeros([513, 1000])
-        self.scale = 1.0
+        self.scale = 0.2
         
         # Initialize web control system (set to False to disable for max performance)
         self.enable_web_control = True
@@ -128,7 +128,11 @@ class EnvironmentalSystem:
                 "color_hue": 0.5
             }),
             "pixel_spots": (fx.shader_pixel_spots, {}),
-            "ocean_background": (fx.shader_ocean_background, {"depth": 10.0})
+            "ocean_waves": (fx.shader_ocean_waves, {}),
+            "kelp": (fx.shader_kelp, {}),
+            "Bioluminescence": (fx.shader_bioluminescence, {}),
+            "bubbles": (fx.shader_bubbles, {}),
+            "fish": (fx.shader_fish, {})
         }
         
         # Pass event_map keys to web controller if enabled
@@ -634,13 +638,13 @@ if __name__ == "__main__":
 
     #change to a specific weather set on startup
     env_system.change_weather_set("ocean", immediate=True)
-    env_system.transition_to_weather(WeatherState.OCEAN_BIOLUMINESCENT_SWARM)
+    env_system.transition_to_weather(WeatherState.OCEAN_KELP_FOREST)
     # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
     #     # 0=red, 0.33=green, 0.66=blue
     #                     frame_id=0)
-    env_system.scheduler.schedule_event(0, 900, fx.shader_kelp, frame_id=0)
-    env_system.scheduler.schedule_event(0, 900, fx.shader_ocean_waves,frame_id=0)
-    env_system.scheduler.schedule_event(0, 900, fx.shader_bioluminescence, frame_id=0)
+    #env_system.scheduler.schedule_event(0, 900, fx.shader_bubbles, frame_id=0)
+    # env_system.scheduler.schedule_event(0, 900, fx.shader_ocean_waves,frame_id=0)
+    # env_system.scheduler.schedule_event(0, 900, fx.shader_bioluminescence, frame_id=0)
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()

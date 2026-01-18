@@ -63,6 +63,8 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
+    'bubbles',
+    'fish',
 ]
 
 # Parameter definitions for the weather editor
@@ -104,6 +106,13 @@ PARAMETER_DEFINITIONS = {
     'tree_prob': {'type': 'number', 'step': 0.1},
     'volcano_level': {'type': 'number', 'step': 0.1},
     'wind_speed': {'type': 'number', 'step': 0.1},
+    'wave_speed': {'type': 'number', 'step': 0.1},
+    'wave_amplitude': {'type': 'number', 'step': 0.1},
+    'bioluminescence': {'type': 'number', 'step': 0.1},
+    'tide_level': {'type': 'number', 'step': 0.05},
+    'bubble_density': {'type': 'number', 'step': 0.1},
+    'marine_life_activity': {'type': 'number', 'step': 0.1},
+    'kelp_density': {'type': 'number', 'step': 0.1},
 }
 
 # Default weather parameters
@@ -134,6 +143,13 @@ DEFAULT_WEATHER_PARAMS = {
     "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
+    "wave_speed": 0.0,
+    "wave_amplitude": 0.0,
+    "bioluminescence": 0.0,
+    "tide_level": 0.5,
+    "bubble_density": 0.0,
+    "marine_life_activity": 0.0,
+    "kelp_density": 0.0,
 }
 
 # Weather presets
@@ -798,11 +814,11 @@ WEATHER_SETS = {
 
     "ocean": {
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "celestial_visibility", "lightning_probability", "wave_speed", "wave_amplitude", "bioluminescence", "tide_level", "bubble_density", "marine_life_activity", "kelp_density", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["ocean_background"],
+        "background_events": ["Bioluminescence", "ocean_waves", "kelp", "bubbles", "fish"],
         "description": "Oceanic environment with waves and aquatic life - fog represents water clarity, season represents time of day",
         "name": "Ocean Realm",
         "random_event_rate": 8e-05,
-        "random_events": ["wave_terrain", "wave_equation", "voronoi_sphere", "tunnel"],
+        "random_events": ["wave_terrain", "wave_equation", "voronoi_sphere", "sunrise"],
         "season_extremity": 1,
         "season_speed": 2,
         "states": ["ocean_calm_shallows", "ocean_choppy_surface", "ocean_storm_surge", "ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_abyss", "ocean_kelp_forest", "ocean_coral_reef"],
