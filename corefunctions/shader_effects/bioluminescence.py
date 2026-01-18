@@ -115,7 +115,7 @@ class BioluminescenceEffect(ShaderEffect):
         self.time = 0.0
         
         # Particle parameters
-        self.max_particles = 1000
+        self.max_particles = 2000
         
         # Buffer objects
         self.VAO = None
@@ -137,12 +137,13 @@ class BioluminescenceEffect(ShaderEffect):
             np.random.uniform(height * 0.15, height, self.max_particles),  # Start at 15% from top
         ]).astype(np.float32)
         
-        # Particle properties: [size, pulse_phase, pulse_speed, color_hue]
+        # Particle properties: [size, pulse_phase, pulse_speed, color_hue, depth]
         self.particle_properties = np.column_stack([
             np.random.uniform(2.0, 8.0, self.max_particles),  # size
             np.random.uniform(0, 2 * np.pi, self.max_particles),  # pulse phase
             np.random.uniform(0.5, 2.0, self.max_particles),  # pulse speed
             np.random.uniform(0, 1.0, self.max_particles),  # color variation
+            np.random.uniform(0, 80.0, self.max_particles),  # depth (0=near, 80=far)
         ]).astype(np.float32)
         
         # Create point sprite vertices (each particle is a point)
@@ -174,7 +175,6 @@ class BioluminescenceEffect(ShaderEffect):
         layout(location = 1) in float particleId;
         
         uniform vec2 resolution;
-        uniform float depth;
         uniform float time;
         uniform int maxParticles;
         uniform float bioLevel;
@@ -212,6 +212,7 @@ class BioluminescenceEffect(ShaderEffect):
             float pulsePhase = hash(pidFloat * 2.1) * 6.28318;
             float pulseSpeed = 0.5 + hash(pidFloat * 2.7) * 1.5;
             float colorHue = hash(pidFloat * 3.3);
+            float particleDepth = hash(pidFloat * 5.7) * 80.0;  // Random depth 0-80
             
             // Each particle has a threshold for visibility
             float particleThreshold = hash(pidFloat * 4.4);
@@ -294,8 +295,8 @@ class BioluminescenceEffect(ShaderEffect):
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
             
-            // Depth
-            float mappedDepth = depth / 100.0;
+            // Use per-particle depth
+            float mappedDepth = particleDepth / 100.0;
             mappedDepth = clamp(mappedDepth, 0.0, 1.0);
             
             gl_Position = vec4(clipPos, mappedDepth, 1.0);
@@ -389,7 +390,6 @@ class BioluminescenceEffect(ShaderEffect):
         # Set uniforms
         glUniform2f(glGetUniformLocation(self.shader, b"resolution"),
                     self.viewport.width, self.viewport.height)
-        glUniform1f(glGetUniformLocation(self.shader, b"depth"), self.depth)
         glUniform1f(glGetUniformLocation(self.shader, b"time"), self.time)
         glUniform1i(glGetUniformLocation(self.shader, b"maxParticles"), self.max_particles)
         glUniform1f(glGetUniformLocation(self.shader, b"bioLevel"), self.bio_level)

@@ -414,7 +414,7 @@ WEATHER_PRESETS = {
         "firefly_density": 2,
         "fog": 1.25,
         "fog_color": np.array([0.6, 0, 0.6]),
-        "on_transition_events": [['fog_beings_event', 80, 0]],
+        "on_transition_events": [['fog_beings', 80, 0]],
         "possible_transitions": ["spooky", "firefly", "mushroom"],
         "rain_rate": 0,
         "season_preference": 0.175,
@@ -454,7 +454,7 @@ WEATHER_PRESETS = {
         "fog": 0.25,
         "meteor_rate": 0,
         "mountain": 0.1,
-        "on_transition_events": [['falling_leaves_event', 60, 0]],
+        "on_transition_events": [['falling_leaves', 60, 0]],
         "possible_transitions": ["clear", "windy_night", "spooky"],
         "rain_rate": 0.2,
         "season_preference": 0.7,
@@ -538,8 +538,8 @@ WEATHER_PRESETS = {
     },
 
     WeatherState.OCEAN_CALM_SHALLOWS: {
-        "ARI": 40,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ARI": 50,
+        "ambient_sound": "285 Water - Natural long small ocean wave by x5.mp3",
         "bioluminescence": 0.2,
         "bubble_density": 0.1,
         "celestial_visibility": 0.9,
@@ -557,8 +557,8 @@ WEATHER_PRESETS = {
     },
 
     WeatherState.OCEAN_CHOPPY_SURFACE: {
-        "ARI": 35,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ARI": 45,
+        "ambient_sound": "46 Waves 2 Medium Size Waves Crash & Close Out with Foam H.mp3",
         "bioluminescence": 0,
         "bubble_density": 0.8,
         "celestial_visibility": 0.5,
@@ -578,7 +578,7 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_CORAL_REEF: {
         "ARI": 40,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ambient_sound": "562 Small Bubbles Ascend & Descend (2).mp3",
         "bioluminescence": 0.1,
         "bubble_density": 0.3,
         "celestial_visibility": 0.9,
@@ -616,7 +616,7 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_KELP_FOREST: {
         "ARI": 42,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ambient_sound": "10 Sea from cliff top.mp3",
         "bioluminescence": 0.1,
         "bubble_density": 0.2,
         "celestial_visibility": 0.7,
@@ -661,7 +661,7 @@ WEATHER_PRESETS = {
         "fog": 0.65,
         "fog_color": np.array([0.6, 0.5, 0.35]),
         "mountain": 0.1,
-        "on_transition_events": [['sandstorm_event', 100, 0]],
+        "on_transition_events": [['sandstorm', 100, 0]],
         "possible_transitions": ["clear", "windy_night", "spooky"],
         "sand_density": 1,
         "season_preference": 0.6,
