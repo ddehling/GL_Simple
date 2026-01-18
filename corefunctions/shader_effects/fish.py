@@ -441,7 +441,9 @@ class FishEffect(ShaderEffect):
     def compile_shader(self):
         """Compile vertex and fragment shaders for fish rendering"""
         vertex_shader = """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         layout(location = 0) in vec2 position;  // Fish shape vertices
         layout(location = 1) in vec3 instance_pos;  // Instance: x, y, z
         layout(location = 2) in float instance_size;
@@ -484,7 +486,9 @@ class FishEffect(ShaderEffect):
         """
         
         fragment_shader = """
-        #version 330 core
+        #version 310 es
+        precision highp float;
+        
         in float fragAlpha;
         in vec3 fragColor;
         in vec2 fragCoord;

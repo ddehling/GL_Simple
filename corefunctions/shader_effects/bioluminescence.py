@@ -208,7 +208,7 @@ class BioluminescenceEffect(ShaderEffect):
                 hash2(vec2(pidFloat * 0.1, 2.0)) * resolution.y * 0.85 + resolution.y * 0.15
             );
             
-            float size = 2.0 + hash(pidFloat * 1.5) * 6.0;
+            float size = 3.0 + hash(pidFloat * 1.5) * 9.0;
             float pulsePhase = hash(pidFloat * 2.1) * 6.28318;
             float pulseSpeed = 0.5 + hash(pidFloat * 2.7) * 1.5;
             float colorHue = hash(pidFloat * 3.3);
@@ -277,7 +277,7 @@ class BioluminescenceEffect(ShaderEffect):
             // Night brightness - bright at night, dim during day
             // season: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
             float dayNightCycle = cos(season * 2.0 * 3.14159);
-            float nightBrightness = 0.1 + dayNightCycle * 0.9;  // midnight=1.0, noon=0.1
+            float nightBrightness = 0.3 + dayNightCycle * 1.2;  // midnight=1.5, noon=0.3
             
             vBrightness = pulse * flicker * nightBrightness;
             
@@ -330,16 +330,16 @@ class BioluminescenceEffect(ShaderEffect):
             float core = 1.0 - smoothstep(0.0, 0.2, dist);
             core = pow(core, 3.0);
             
-            float brightness = (glow * 0.6 + core * 0.4) * vBrightness * bioIntensity;
+            float brightness = (glow * 0.8 + core * 0.6) * vBrightness * bioIntensity;
             
             vec3 color = vColor * brightness;
             
             // Alpha - glowing particles are semi-transparent
-            float alpha = (glow * 0.5 + core * 0.5) * vBrightness;
+            float alpha = (glow * 0.7 + core * 0.8) * vBrightness;
             alpha *= vParticleAlpha;
             alpha *= fadeAlpha;
             
-            alpha = clamp(alpha, 0.0, 0.9);
+            alpha = clamp(alpha, 0.0, 1.0);
             
             outColor = vec4(color, alpha);
         }
