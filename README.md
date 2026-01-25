@@ -1,8 +1,9 @@
-# GL_Simple - Windows Setup Guide
+# GL_Simple
 
 This is an OpenGL-based DMX lighting control system with weather effects, shader rendering, audio analysis, and web control.
 
-## Quick Start (Easiest Method)
+## Windows
+### Quick Start (Easiest Method)
 
 1. **Double-click `setup_and_run.bat`**
    - This will automatically:
@@ -15,13 +16,13 @@ This is an OpenGL-based DMX lighting control system with weather effects, shader
    - Open your browser to: `http://localhost:5000`
    - Control weather effects, shaders, and more!
 
-## Alternative Launch Methods
+### Alternative Launch Methods
 
-### After First Setup
+#### After First Setup
 Once you've run the setup script once, you can use the quick launcher:
 - **Double-click `quick_run.bat`** for faster startup
 
-### Manual Launch
+#### Manual Launch
 If you prefer manual control:
 ```batch
 # Activate virtual environment
@@ -31,20 +32,20 @@ venv\Scripts\activate
 python Stories_OGL.py
 ```
 
-### PowerShell Direct
+#### PowerShell Direct
 ```powershell
 # Run the setup script directly
 powershell -ExecutionPolicy Bypass -File setup_and_run.ps1
 ```
 
-## Requirements
+### Requirements
 
 - **Python 3.8+** (3.10 or higher recommended)
 - **Windows 10/11**
 - **OpenGL-compatible graphics card**
 - **Audio input device** (optional, for audio-reactive effects)
 
-### Installing Python
+#### Installing Python
 If you don't have Python installed:
 1. Download from: https://www.python.org/downloads/
 2. During installation, **check "Add Python to PATH"**
