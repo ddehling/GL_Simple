@@ -47,11 +47,55 @@ function Install-Python {
 
 # Check if Python is installed
 Write-Host "[1/5] Checking Python installation..." -ForegroundColor Yellow
-try {
-    $pythonVersion = & python --version 2>&1 | Out-String
+
+# Try multiple Python commands and locations
+$pythonCmd = $null
+$pythonCmds = @("python", "python3", "py")
+
+foreach ($cmd in $pythonCmds) {
+    try {
+        $testVersion = & $cmd --version 2>&1 | Out-String
+        if ($testVersion -match "Python \d+\.\d+\.\d+" -and $testVersion -notlike "*Microsoft Store*") {
+            $pythonCmd = $cmd
+            $pythonVersion = $testVersion
+            break
+        }
+    } catch {
+        continue
+    }
+}
+
+# If not found in PATH, try common installation locations
+if (-not $pythonCmd) {
+    $commonPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+        "C:\Python312\python.exe",
+        "C:\Python311\python.exe",
+        "C:\Python310\python.exe"
+    )
     
+    foreach ($path in $commonPaths) {
+        if (Test-Path $path) {
+            try {
+                $testVersion = & $path --version 2>&1 | Out-String
+                if ($testVersion -match "Python \d+\.\d+\.\d+") {
+                    $pythonCmd = $path
+                    $pythonVersion = $testVersion
+                    Write-Host "  Found Python at: $path" -ForegroundColor Cyan
+                    break
+                }
+            } catch {
+                continue
+            }
+        }
+    }
+}
+
+try {
     # Check if this is the Windows Store redirect or not found
-    if ($pythonVersion -like "*Microsoft Store*" -or $pythonVersion -like "*was not found*") {
+    if (-not $pythonCmd -or $pythonVersion -like "*Microsoft Store*" -or $pythonVersion -like "*was not found*") {
         Write-Host "  Python is not installed" -ForegroundColor Yellow
         Write-Host "" -ForegroundColor Yellow
         
@@ -84,12 +128,16 @@ try {
     }
     
     Write-Host "  Found: $($pythonVersion.Trim())" -ForegroundColor Green
+    Write-Host "  Using command: $pythonCmd" -ForegroundColor Cyan
 } catch {
     Write-Host "  ERROR: Python not found!" -ForegroundColor Red
     Write-Host "  Install from: https://www.python.org/" -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
+
+# Store the Python command for later use
+$global:PYTHON_CMD = $pythonCmd
 
 # Check Python version
 $versionString = $pythonVersion.Trim() -replace 'Python ', ''
@@ -119,7 +167,7 @@ if (Test-Path $venvPath) {
     Write-Host "  Virtual environment already exists" -ForegroundColor Green
 } else {
     Write-Host "  Creating new virtual environment..." -ForegroundColor Cyan
-    & python -m venv venv
+    & $global:PYTHON_CMD -m venv venv
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Failed to create virtual environment!" -ForegroundColor Red
         Read-Host "Press Enter to exit"
@@ -144,7 +192,7 @@ if (Test-Path $activateScript) {
 # Upgrade pip
 Write-Host ""
 Write-Host "[4/5] Upgrading pip..." -ForegroundColor Yellow
-& python -m pip install --upgrade pip --quiet
+& $global:PYTHON_CMD -m pip install --upgrade pip --quiet
 Write-Host "  pip upgraded successfully" -ForegroundColor Green
 
 # Install dependencies
@@ -166,14 +214,14 @@ if (Test-Path $requirementsPath) {
         Write-Host "  Attempting to verify critical packages..." -ForegroundColor Yellow
         
         # Try to verify numpy is installed
-        & python -c "import numpy" 2>$null
+        & $global:PYTHON_CMD -c "import numpy" 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: Critical packages failed to install!" -ForegroundColor Red
             Write-Host "  Trying to install packages one more time..." -ForegroundColor Yellow
             & pip install -r $requirementsPath --no-cache-dir
             
             # Check again
-            & python -c "import numpy" 2>$null
+            & $global:PYTHON_CMD -c "import numpy" 2>$null
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  ERROR: Installation failed. Please check the errors above." -ForegroundColor Red
                 Read-Host "Press Enter to exit"
@@ -208,7 +256,7 @@ Start-Sleep -Seconds 2
 
 # Run the main application
 try {
-    & python Stories_OGL.py
+    & $global:PYTHON_CMD Stories_OGL.py
 } catch {
     Write-Host ""
     Write-Host "Application terminated" -ForegroundColor Yellow
