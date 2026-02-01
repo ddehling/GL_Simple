@@ -74,9 +74,11 @@ class SACNPixelSender:
                     self.sender[universe].ttl = 20  # Reduce TTL for local network
             
             # Pre-compute clipped coordinates (they never change frame-to-frame)
-            # Clip to actual frame dimensions for safety
-            x_coords = np.clip(receiver['addressing_array'][:, 0], 0, 127).astype(np.int32)
-            y_coords = np.clip(receiver['addressing_array'][:, 1], 0, 299).astype(np.int32)
+            # Determine max dimensions from addressing array itself
+            max_x = receiver['addressing_array'][:, 0].max()
+            max_y = receiver['addressing_array'][:, 1].max()
+            x_coords = np.clip(receiver['addressing_array'][:, 0], 0, max_x).astype(np.int32)
+            y_coords = np.clip(receiver['addressing_array'][:, 1], 0, max_y).astype(np.int32)
             self._cached_coords.append((x_coords, y_coords))
             
             # Pre-compute universe slice ranges for this receiver

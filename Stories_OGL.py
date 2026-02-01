@@ -132,7 +132,8 @@ class EnvironmentalSystem:
             "kelp": (fx.shader_kelp, {}),
             "Bioluminescence": (fx.shader_bioluminescence, {}),
             "bubbles": (fx.shader_bubbles, {}),
-            "fish": (fx.shader_fish, {})
+            "fish": (fx.shader_fish, {}),
+            "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
         }
         
         # Pass event_map keys to web controller if enabled

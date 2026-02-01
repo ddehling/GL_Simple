@@ -63,8 +63,6 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
-    'bubbles',
-    'fish',
 ]
 
 # Parameter definitions for the weather editor
@@ -106,13 +104,6 @@ PARAMETER_DEFINITIONS = {
     'tree_prob': {'type': 'number', 'step': 0.1},
     'volcano_level': {'type': 'number', 'step': 0.1},
     'wind_speed': {'type': 'number', 'step': 0.1},
-    'wave_speed': {'type': 'number', 'step': 0.1},
-    'wave_amplitude': {'type': 'number', 'step': 0.1},
-    'bioluminescence': {'type': 'number', 'step': 0.1},
-    'tide_level': {'type': 'number', 'step': 0.05},
-    'bubble_density': {'type': 'number', 'step': 0.1},
-    'marine_life_activity': {'type': 'number', 'step': 0.1},
-    'kelp_density': {'type': 'number', 'step': 0.1},
 }
 
 # Default weather parameters
@@ -143,13 +134,6 @@ DEFAULT_WEATHER_PARAMS = {
     "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
-    "wave_speed": 0.0,
-    "wave_amplitude": 0.0,
-    "bioluminescence": 0.0,
-    "tide_level": 0.5,
-    "bubble_density": 0.0,
-    "marine_life_activity": 0.0,
-    "kelp_density": 0.0,
 }
 
 # Weather presets
@@ -510,7 +494,7 @@ WEATHER_PRESETS = {
         "kelp_density": 0,
         "marine_life_activity": 0.1,
         "possible_transitions": ["ocean_deep_calm", "ocean_bioluminescent_swarm"],
-        "season_preference": 0.0,
+        "season_preference": 0,
         "tide_level": 0.05,
         "transition_weights": [1, 0.5],
         "wave_amplitude": 0.05,
@@ -849,6 +833,17 @@ WEATHER_SETS = {
         "season_speed": 1.5,
         "states": ["windy_night", "heavy_rain", "thunderstorm", "foggy", "spooky"],
         "transition_speed": 1.5,
+    },
+
+    "test": {
+        "allowed_parameters": [],
+        "background_events": ["test_pattern"],
+        "description": "test system",
+        "name": "test",
+        "season_extremity": 1,
+        "season_speed": 1,
+        "states": ["clear"],
+        "transition_speed": 1,
     },
 
 }
