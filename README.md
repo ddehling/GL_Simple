@@ -122,6 +122,17 @@ The setup script installs these Python packages:
 
 ## Configuration
 
+## Ubuntu (Linux)
+
+This repository targets Ubuntu/Debian systems (tested on Pop!_OS). To perform a one-step setup and run, make the scripts executable and run the prescriptive installer:
+
+```bash
+chmod +x setup_and_run.sh quick_run.sh
+./setup_and_run.sh
+```
+
+The setup script will install required system libraries (including PortAudio/libsndfile), create a virtual environment, install Python packages and launch the app.
+
 ### Main Application Settings
 Edit `Stories_OGL.py`:
 - **Line 22-25**: Frame dimensions and magnification
