@@ -2,6 +2,19 @@
 
 This is an OpenGL-based DMX lighting control system with weather effects, shader rendering, audio analysis, and web control.
 
+## Configuration
+
+**NEW:** GL_Simple now supports comprehensive configuration via `config.ini`! 
+
+You can now easily control features without editing code:
+- Enable/disable rendering window (headless mode)
+- Show/hide FPS counter
+- Configure web control settings
+- Set startup weather and effects
+- Adjust performance settings
+
+See [info/CONFIG_README.md](info/CONFIG_README.md) for detailed configuration options.
+
 ## Windows
 ### Quick Start (Easiest Method)
 

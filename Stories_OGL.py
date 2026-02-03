@@ -1,6 +1,7 @@
 import numpy as np
 import time
 from pathlib import Path
+import configparser
 from corefunctions.Events import EventScheduler
 
 from corefunctions.soundinput import MicrophoneAnalyzer
@@ -16,16 +17,82 @@ from corefunctions.shader_effects.celestial_bodies import (
 from corefunctions import shader_effects as fx
 from corefunctions.web_controller import WebController
 
+def load_config(config_path='config.ini'):
+    """Load configuration from config.ini file with defaults"""
+    config = configparser.ConfigParser()
+    
+    # Default values
+    defaults = {
+        'Display': {
+            'show_rendering_window': 'True',
+            'magnification': '3',
+            'show_fps': 'False',
+            'target_fps': '40'
+        },
+        'Audio': {
+            'microphone_device': 'TONOR'
+        },
+        'WebControl': {
+            'enable_web_control': 'True',
+            'web_port': '5000',
+            'service_name': 'glsimple',
+            'admin_password': 'admin123'
+        },
+        'Startup': {
+            'startup_weather_set': '',
+            'startup_weather_state': '',
+            'immediate_startup': 'True'
+        },
+        'Performance': {
+            'frame_dimensions': '128,300',
+            'use_shader_renderer': 'True',
+            'enable_precision_timing': 'True'
+        },
+        'Debug': {
+            'debug_mode': 'False',
+            'show_tree': 'False',
+            'show_skyfull': 'False'
+        }
+    }
+    
+    # Read config file if it exists
+    if Path(config_path).exists():
+        config.read(config_path)
+    
+    # Fill in missing values with defaults
+    for section, options in defaults.items():
+        if not config.has_section(section):
+            config.add_section(section)
+        for option, default_value in options.items():
+            if not config.has_option(section, option):
+                config.set(section, option, default_value)
+    
+    return config
+
 class EnvironmentalSystem:
-    def __init__(self):
-        frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
-              # Frame 1 (secondary display)
-        ]
+    def __init__(self, config_path='config.ini'):
+        # Load configuration
+        self.config = load_config(config_path)
+        
+        # Parse frame dimensions from config
+        frame_dims_str = self.config.get('Performance', 'frame_dimensions')
+        frame_dimensions = []
+        for dim_pair in frame_dims_str.split(';'):
+            if dim_pair.strip():
+                w, h = map(int, dim_pair.strip().split(','))
+                frame_dimensions.append((w, h))
+        
+        # Get display settings
+        show_window = self.config.getboolean('Display', 'show_rendering_window')
+        magnification = self.config.getint('Display', 'magnification')
+        use_shader = self.config.getboolean('Performance', 'use_shader_renderer')
+        
         self.scheduler = EventScheduler(
-        use_shader_renderer=True,
-        headless=False,frames=frame_dimensions, magnification=3
-    )
+            use_shader_renderer=use_shader,
+            headless=not show_window,
+            frames=frame_dimensions,
+            magnification=magnification
+        )
         # Weather set management
         self.current_set = DEFAULT_WEATHER_SET
         self.target_set = None  # For pending set changes
@@ -37,13 +104,16 @@ class EnvironmentalSystem:
         self.transition_start = 0
         self.progress = 0
         self.season = 0.0  # Initialize season value
-        self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
+        
+        # Audio settings from config
+        mic_device = self.config.get('Audio', 'microphone_device')
+        self.analyzer = MicrophoneAnalyzer(device_name=mic_device if mic_device else None)
         self.analyzer.start()
         #self.specdat = np.zeros([513, 1000])
         self.scale = 0.2
         
-        # Initialize web control system (set to False to disable for max performance)
-        self.enable_web_control = True
+        # Initialize web control system (configurable via config.ini)
+        self.enable_web_control = self.config.getboolean('WebControl', 'enable_web_control')
         self.web_controller = None
         
         if self.enable_web_control:
@@ -51,11 +121,16 @@ class EnvironmentalSystem:
                 "current_weather_set": self.current_set,
                 "available_sets": list(WEATHER_SETS.keys()),
             }
+            # Get web control settings from config
+            web_port = self.config.getint('WebControl', 'web_port')
+            service_name = self.config.get('WebControl', 'service_name')
+            admin_password = self.config.get('WebControl', 'admin_password')
+            
             self.web_controller = WebController(
                 self.web_controls, 
-                port=5000, 
-                service_name="glsimple",
-                admin_password="admin123"  # Change this to your desired password
+                port=web_port, 
+                service_name=service_name,
+                admin_password=admin_password
             )
             self.web_controller.start(threaded=True)
         
@@ -70,9 +145,11 @@ class EnvironmentalSystem:
 
         # Weather state parameters
         self.weather_presets = WEATHER_PRESETS
-        self.scheduler.state["tree"] = False
-        self.scheduler.state["skyfull"] = False
-        self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
+        
+        # Debug settings from config
+        self.scheduler.state["tree"] = self.config.getboolean('Debug', 'show_tree')
+        self.scheduler.state["skyfull"] = self.config.getboolean('Debug', 'show_skyfull')
+        self.scheduler.state["simulate"] = show_window  # Display the leds in an opencv window for visualization
         self.active_effects = {"world": None, "ambient_sound": None}
         self._prewarm_audio_cache()
         corners_frame0 = [
@@ -636,10 +713,30 @@ class EnvironmentalSystem:
 # Main execution
 if __name__ == "__main__":
     env_system = EnvironmentalSystem()
-
-    #change to a specific weather set on startup
-    env_system.change_weather_set("ocean", immediate=True)
-    env_system.transition_to_weather(WeatherState.OCEAN_KELP_FOREST)
+    
+    # Apply startup configuration
+    startup_set = env_system.config.get('Startup', 'startup_weather_set')
+    startup_state = env_system.config.get('Startup', 'startup_weather_state')
+    immediate = env_system.config.getboolean('Startup', 'immediate_startup')
+    
+    # Change to specific weather set on startup if configured
+    if startup_set:
+        env_system.change_weather_set(startup_set, immediate=immediate)
+    
+    # Transition to specific weather state if configured
+    if startup_state:
+        try:
+            # Convert string to WeatherState enum
+            weather_state = WeatherState[startup_state]
+            env_system.transition_to_weather(weather_state)
+        except KeyError:
+            print(f"Warning: Unknown weather state '{startup_state}' in config. Using default.")
+    
+    # Get configuration values
+    target_fps = env_system.config.getint('Display', 'target_fps')
+    show_fps = env_system.config.getboolean('Display', 'show_fps')
+    enable_precision = env_system.config.getboolean('Performance', 'enable_precision_timing')
+    
     # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
     #     # 0=red, 0.33=green, 0.66=blue
     #                     frame_id=0)
@@ -649,14 +746,14 @@ if __name__ == "__main__":
     #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
     #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
-    FRAME_TIME = 1 / 40
+    FRAME_TIME = 1 / target_fps
     first_time = time.time()
     frame_count = 0
     fps_start_time = time.time()
     
     # For better sleep precision on Windows
     import sys
-    if sys.platform == 'win32':
+    if sys.platform == 'win32' and enable_precision:
         import ctypes
         winmm = ctypes.WinDLL('winmm')
         winmm.timeBeginPeriod(1)  # Set 1ms timer resolution
@@ -680,11 +777,12 @@ if __name__ == "__main__":
                     pass
             
             frame_count += 1
-            if frame_count % 500 == 0:  # Print FPS every 50 frames
+            if frame_count % 500 == 0:  # Print FPS every 500 frames
                 current_time = time.time()
                 actual_fps = 500.0 / (current_time - fps_start_time)
                 fps_start_time = current_time
-                #print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
+                if show_fps:
+                    print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(env_system.scheduler.active_events)}")
             # Print stats if needed
             # print(["%.2f" % (1/(time.time()-lasttime)), "%.2f" % len(scheduler.active_events), len(scheduler.event_queue),"%.3f" %((lasttime-first_time)/3600)])
             #last_time = time.time()
