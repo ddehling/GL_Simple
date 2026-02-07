@@ -13,22 +13,48 @@ class ShaderRenderer:
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
         self.headless = headless
-        self.magnification = max(1, int(magnification))  # Ensure integer >= 1
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
         
-        # Use only the first frame dimension for window size, scaled by magnification
+        # Initialize GLFW first to detect monitor size
+        self.init_glfw()
+        
+        # Get monitor dimensions for autoscaling
         base_width, base_height = frame_dimensions[0]
+        
+        # Auto-calculate magnification if set to 0 or None
+        if magnification is None or magnification == 0:
+            monitor_height = self.get_monitor_height()
+            # Calculate maximum magnification that fits monitor height
+            # Leave some space for window decorations/taskbar (subtract ~100 pixels)
+            available_height = monitor_height - 100 if not headless else monitor_height
+            calculated_mag = max(1, int(available_height / base_height))
+            self.magnification = calculated_mag
+            print(f"Auto-calculated magnification: {self.magnification}x (monitor height: {monitor_height}px, available: {available_height}px)")
+        else:
+            self.magnification = max(1, int(magnification))  # Ensure integer >= 1
+        
+        # Use only the first frame dimension for window size, scaled by magnification
         self.window_width = base_width * self.magnification
         self.window_height = base_height * self.magnification
+        
+        # Double-check that window height doesn't exceed monitor
+        if not headless:
+            monitor_height = self.get_monitor_height()
+            if self.window_height > monitor_height - 100:
+                # Recalculate magnification to fit
+                old_mag = self.magnification
+                self.magnification = max(1, int((monitor_height - 100) / base_height))
+                self.window_width = base_width * self.magnification
+                self.window_height = base_height * self.magnification
+                print(f"Adjusted magnification from {old_mag}x to {self.magnification}x to fit monitor")
         
         if self.magnification > 1:
             print(f"Window size: {self.window_width}x{self.window_height} ({self.magnification}x magnification of {base_width}x{base_height})")
         else:
             print(f"Window size: {self.window_width}x{self.window_height} (viewport 0 native size)")
         
-        self.init_glfw()
         self.create_window()
         
         
@@ -48,6 +74,20 @@ class ShaderRenderer:
             glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
             glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+    
+    def get_monitor_height(self):
+        """Get the height of the primary monitor"""
+        try:
+            monitor = glfw.get_primary_monitor()
+            if monitor:
+                video_mode = glfw.get_video_mode(monitor)
+                if video_mode:
+                    return video_mode.size[1]  # Return height
+        except Exception as e:
+            print(f"Warning: Could not detect monitor size: {e}")
+        
+        # Fallback to a reasonable default if detection fails
+        return 1080
         
     def create_window(self):
         """Create a visible OpenGL window"""

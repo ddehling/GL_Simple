@@ -24,7 +24,7 @@ class EnvironmentalSystem:
         ]
         self.scheduler = EventScheduler(
         use_shader_renderer=True,
-        headless=False,frames=frame_dimensions, magnification=3
+        headless=False,frames=frame_dimensions, magnification=0  # 0 = auto-scale to monitor
     )
         # Weather set management
         self.current_set = DEFAULT_WEATHER_SET
