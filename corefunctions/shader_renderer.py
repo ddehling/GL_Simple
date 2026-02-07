@@ -63,6 +63,9 @@ class ShaderRenderer:
         if not glfw.init():
             raise RuntimeError("Failed to initialize GLFW")
         
+        # Make window non-resizable
+        glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
+        
         if IS_RASPBERRY_PI:
             print("Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
             glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
@@ -98,12 +101,18 @@ class ShaderRenderer:
             
         glfw.make_context_current(self.window)
         
+        # Disable window resizing at runtime (redundant with hint, but ensures it)
+        glfw.set_window_attrib(self.window, glfw.RESIZABLE, glfw.FALSE)
+        
         # OpenGL setup for depth-based rendering
         glEnable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE)  # ENABLE depth writes for proper occlusion
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_SCISSOR_TEST)
+        
+        # Set viewport to ensure full frame is displayed
+        glViewport(0, 0, self.window_width, self.window_height)
         
         version = glGetString(GL_VERSION)
         if version:
@@ -112,7 +121,7 @@ class ShaderRenderer:
         if glsl_version:
             print(f"GLSL Version: {glsl_version.decode()}")
         
-        print(f"Created OpenGL window: {self.window_width}x{self.window_height}")
+        print(f"Created non-resizable OpenGL window: {self.window_width}x{self.window_height}")
         self.ctx_initialized = True
         
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
