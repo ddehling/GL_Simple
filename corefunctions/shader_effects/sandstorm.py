@@ -135,6 +135,59 @@ class SandstormEffect(ShaderEffect):
         initial_count = min(50, max_particles)
         if initial_count > 0:
             self._spawn_initial_particles(initial_count)
+    
+    def _hsv_to_rgb_vectorized(self, h, s, v):
+        """Convert HSV to RGB using vectorized NumPy operations
+        
+        Args:
+            h: Hue (0-1), can be scalar or array
+            s: Saturation (0-1), can be scalar or array  
+            v: Value/Brightness (0-1), can be scalar or array
+            
+        Returns:
+            RGB array of shape (N, 3) where N is the number of colors
+        """
+        # Ensure inputs are arrays
+        h = np.atleast_1d(h)
+        s = np.atleast_1d(s)
+        v = np.atleast_1d(v)
+        
+        # Initialize output
+        n = len(h)
+        rgb = np.zeros((n, 3), dtype=np.float32)
+        
+        # Calculate chroma
+        c = v * s
+        
+        # Calculate hue sector (0-6)
+        h_prime = (h * 6.0) % 6.0
+        
+        # Calculate x (second largest component)
+        x = c * (1 - np.abs(h_prime % 2 - 1))
+        
+        # Calculate m (amount to add to match value)
+        m = v - c
+        
+        # Assign RGB based on hue sector
+        for i in range(n):
+            sector = int(h_prime[i])
+            if sector == 0:
+                rgb[i] = [c[i], x[i], 0]
+            elif sector == 1:
+                rgb[i] = [x[i], c[i], 0]
+            elif sector == 2:
+                rgb[i] = [0, c[i], x[i]]
+            elif sector == 3:
+                rgb[i] = [0, x[i], c[i]]
+            elif sector == 4:
+                rgb[i] = [x[i], 0, c[i]]
+            else:  # sector == 5
+                rgb[i] = [c[i], 0, x[i]]
+            
+            # Add m to match value
+            rgb[i] += m[i]
+        
+        return rgb
         
     def _spawn_particles(self, count: int):
         """Spawn new sand particles"""
@@ -167,12 +220,10 @@ class SandstormEffect(ShaderEffect):
         brightness = np.random.uniform(0.6, 0.9, count)
         
         # Convert HSV to RGB for sand colors (hue around 0.11 = yellow-orange)
-        from skimage import color as skcolor
-        new_colors = np.zeros((count, 3), dtype=np.float32)
-        for i in range(count):
-            hsv = np.array([0.11 + hue_variation[i], saturation[i], brightness[i]])
-            rgb = skcolor.hsv2rgb(hsv.reshape(1, 1, 3)).reshape(3)
-            new_colors[i] = rgb
+        # Native NumPy implementation (no skimage dependency)
+        new_colors = self._hsv_to_rgb_vectorized(
+            0.11 + hue_variation, saturation, brightness
+        )
         
         # Adjust alpha based on distance (farther = more transparent)
         base_alphas = np.random.uniform(0.3, 0.6, count)
@@ -229,12 +280,10 @@ class SandstormEffect(ShaderEffect):
         saturation = np.random.uniform(0.3, 0.5, count)
         brightness = np.random.uniform(0.6, 0.9, count)
         
-        from skimage import color as skcolor
-        new_colors = np.zeros((count, 3), dtype=np.float32)
-        for i in range(count):
-            hsv = np.array([0.11 + hue_variation[i], saturation[i], brightness[i]])
-            rgb = skcolor.hsv2rgb(hsv.reshape(1, 1, 3)).reshape(3)
-            new_colors[i] = rgb
+        # Native NumPy implementation (no skimage dependency)
+        new_colors = self._hsv_to_rgb_vectorized(
+            0.11 + hue_variation, saturation, brightness
+        )
         
         # Adjust alpha based on distance
         base_alphas = np.random.uniform(0.4, 0.7, count)

@@ -63,8 +63,6 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
-    'bubbles',
-    'fish',
 ]
 
 # Parameter definitions for the weather editor
@@ -106,13 +104,6 @@ PARAMETER_DEFINITIONS = {
     'tree_prob': {'type': 'number', 'step': 0.1},
     'volcano_level': {'type': 'number', 'step': 0.1},
     'wind_speed': {'type': 'number', 'step': 0.1},
-    'wave_speed': {'type': 'number', 'step': 0.1},
-    'wave_amplitude': {'type': 'number', 'step': 0.1},
-    'bioluminescence': {'type': 'number', 'step': 0.1},
-    'tide_level': {'type': 'number', 'step': 0.05},
-    'bubble_density': {'type': 'number', 'step': 0.1},
-    'marine_life_activity': {'type': 'number', 'step': 0.1},
-    'kelp_density': {'type': 'number', 'step': 0.1},
 }
 
 # Default weather parameters
@@ -143,13 +134,6 @@ DEFAULT_WEATHER_PARAMS = {
     "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
-    "wave_speed": 0.0,
-    "wave_amplitude": 0.0,
-    "bioluminescence": 0.0,
-    "tide_level": 0.5,
-    "bubble_density": 0.0,
-    "marine_life_activity": 0.0,
-    "kelp_density": 0.0,
 }
 
 # Weather presets
@@ -510,7 +494,7 @@ WEATHER_PRESETS = {
         "kelp_density": 0,
         "marine_life_activity": 0.1,
         "possible_transitions": ["ocean_deep_calm", "ocean_bioluminescent_swarm"],
-        "season_preference": 0.0,
+        "season_preference": 0,
         "tide_level": 0.05,
         "transition_weights": [1, 0.5],
         "wave_amplitude": 0.05,
@@ -520,7 +504,7 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_BIOLUMINESCENT_SWARM: {
         "ARI": 50,
-        "ambient_sound": "High Desert Crickets.wav",
+        "ambient_sound": "280 Water - Processed long big ocean wave whoosh by x5.mp3",
         "bioluminescence": 1,
         "bubble_density": 0.1,
         "celestial_visibility": 0.5,
@@ -580,7 +564,7 @@ WEATHER_PRESETS = {
         "ARI": 40,
         "ambient_sound": "562 Small Bubbles Ascend & Descend (2).mp3",
         "bioluminescence": 0.1,
-        "bubble_density": 0.3,
+        "bubble_density": 1,
         "celestial_visibility": 0.9,
         "fog": 0.15,
         "fog_color": np.array([0.25, 0.65, 0.95]),
@@ -775,7 +759,7 @@ WEATHER_SETS = {
 
     "desert_realm": {
         "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Switch_rate", "ambient_sound", "ARI", "mountain", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["sandstorm", "stars", "clouds"],
+        "background_events": ["sandstorm", "stars", "clouds", "fog"],
         "description": "Harsh desert with sandstorms and volcanic activity",
         "name": "Desert Realm",
         "random_event_rate": 7e-05,
@@ -814,7 +798,7 @@ WEATHER_SETS = {
 
     "ocean": {
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "celestial_visibility", "lightning_probability", "wave_speed", "wave_amplitude", "bioluminescence", "tide_level", "bubble_density", "marine_life_activity", "kelp_density", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["Bioluminescence", "ocean_waves", "kelp", "bubbles", "fish"],
+        "background_events": ["Bioluminescence", "ocean_waves", "kelp", "bubbles", "fish", "fog"],
         "description": "Oceanic environment with waves and aquatic life - fog represents water clarity, season represents time of day",
         "name": "Ocean Realm",
         "random_event_rate": 8e-05,
