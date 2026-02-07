@@ -63,7 +63,7 @@ class TimedEvent:
 
 
 class EventScheduler:
-    def __init__(self, use_shader_renderer=False, headless=False,frames=[(100,100)], magnification=1):
+    def __init__(self, use_shader_renderer=False, headless=False,frames=[(128,300)], magnification=1):
         self.event_queue = []
         self.active_events = []
         self.state = {}
@@ -145,6 +145,28 @@ class EventScheduler:
         
         # Define receivers for each display
         receivers = [            
+            [
+                {
+                    'ip': '192.168.68.119',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,0)
+                },  
+                                         {
+                    'ip': '192.168.68.114',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,32)
+                },      
+                                         {
+                    'ip': '192.168.68.115',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,64)
+                },
+                                                {
+                    'ip': '192.168.68.116',
+                    'pixel_count': 300*32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
+                },
+            ]
             # [
             #     {
             #         'ip': '192.168.68.113',
