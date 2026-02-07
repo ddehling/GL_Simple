@@ -109,30 +109,29 @@ class EventScheduler:
         self.state['starryness'] = 0.0
         self.state['simulate'] = True
         
-        # Calculate total pixels across all displays
-        total_pixels = sum(width * height for width, height in frame_dimensions)
+        # Store frame dimensions for per-frame brightness calculations
+        self.frame_dimensions = frame_dimensions
         
         # Brightness limiting configuration
-        # Setpoint is based on total pixels × average brightness per pixel × color factors
-        # For example: if you want max average brightness of 128 per pixel (half of 255)
-        max_avg_brightness_per_pixel = 64  # Adjust this value (0-255)
-        avg_color_factor = (0.7 + 0.9 + 1.0)  # Average of color factors
-        calculated_setpoint = total_pixels * max_avg_brightness_per_pixel * avg_color_factor
+        # Setpoint is normalized 0-1 where 1.0 = all pixels at full white (255,255,255)
+        # Set to 0.25 for 25% of maximum possible brightness, etc.
+        self.brightness_setpoint = 0.1  # Adjust this value (0.0 - 1.0)
         
         self.brightness_config = {
             'red_factor': 0.7,      # Brightnessfactors are based on LED per color power draws
-            'green_factor': 0.9,
-            'blue_factor': 1.,
-            'setpoint': calculated_setpoint,
+            'green_factor': 1.0,
+            'blue_factor': 1.3,
             'threshold': 0.8,         # Start limiting at 80% of setpoint
             'smoothing': 0.05          # Lower = smoother but slower response (0.05-0.2 recommended)
         }
-        self.brightness_state = {
+        # Store per-frame brightness state
+        self.brightness_state = [{
             'divisor': 1.0,           # Current brightness divisor
             'bright_factor': 0.0      # Last calculated brightness factor
-        }
+        } for _ in frame_dimensions]
         
-        print(f"Brightness limiting: {total_pixels} pixels, setpoint={calculated_setpoint:.0f}")
+        total_pixels = sum(width * height for width, height in frame_dimensions)
+        print(f"Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
         
         # Performance monitoring
         self.perf_stats = {
@@ -166,7 +165,7 @@ class EventScheduler:
                     'pixel_count': 300*32,
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
                 },
-            ]
+            ],
             # [
             #     {
             #         'ip': '192.168.68.113',
@@ -380,7 +379,7 @@ class EventScheduler:
                 frame_corrected = frame_rgb.astype(np.float32)
             
             # Apply brightness limiting and convert to uint8
-            frame_corrected = self._apply_brightness_limiting(frame_corrected)
+            frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
             
             # Send to physical display if available
             if i < len(self.state['screens']) and self.state['screens'][i] is not None:
@@ -462,18 +461,26 @@ class EventScheduler:
         
         return frame
 
-    def _apply_brightness_limiting(self, frame_corrected):
+    def _apply_brightness_limiting(self, frame_corrected, frame_index):
         """Apply brightness limiting to prevent total brightness from exceeding setpoint.
         Uses exponential smoothing to prevent flickering.
         
         Args:
             frame_corrected: RGB frame (height, width, 3) as float (0-255 range)
+            frame_index: Index of the frame being processed (for per-frame state)
             
         Returns:
             Limited frame as uint8
         """
         cfg = self.brightness_config
-        state = self.brightness_state
+        state = self.brightness_state[frame_index]
+        
+        # Calculate maximum possible weighted brightness for this frame
+        # When all pixels are full white (255,255,255), weighted sum = pixels * 255 * sum_of_weights
+        height, width = frame_corrected.shape[:2]
+        actual_pixels = height * width
+        sum_of_weights = cfg['red_factor'] + cfg['green_factor'] + cfg['blue_factor']  # = 3.0
+        max_possible_brightness = actual_pixels * 255.0 * sum_of_weights
         
         # Calculate weighted brightness factor (frame already in float)
         # Optimize: compute all channel sums in one pass
@@ -481,18 +488,21 @@ class EventScheduler:
                         np.sum(frame_corrected[:, :, 1]) * cfg['green_factor'] + 
                         np.sum(frame_corrected[:, :, 2]) * cfg['blue_factor'])
         
-        state['bright_factor'] = bright_factor
+        # Normalize to 0-1 range
+        normalized_brightness = bright_factor / max_possible_brightness
         
-        # Calculate target divisor
-        threshold_value = cfg['setpoint'] * cfg['threshold']
+        state['bright_factor'] = normalized_brightness
         
-        if bright_factor <= threshold_value:
+        # Calculate target divisor using normalized setpoint (0-1)
+        threshold_value = self.brightness_setpoint * cfg['threshold']
+        
+        if normalized_brightness <= threshold_value:
             # Below threshold - no limiting needed
             target_divisor = 1.0
         else:
             # Above threshold - calculate divisor to bring brightness to setpoint
             # Use a smooth transition that gets stronger as we exceed the setpoint
-            target_divisor = bright_factor / cfg['setpoint']
+            target_divisor = normalized_brightness / self.brightness_setpoint
             
             # Ensure divisor is at least 1.0
             target_divisor = max(1.0, target_divisor)
@@ -505,6 +515,7 @@ class EventScheduler:
         # Apply the divisor if it's significantly above 1.0
         if state['divisor'] > 1.001:
             frame_corrected = frame_corrected / state['divisor']
+            print(f"Applying brightness divisor: {state['divisor']}")
         
         # Convert to uint8 once at the end
         return np.clip(frame_corrected, 0, 255).astype(np.uint8)
