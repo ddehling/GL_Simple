@@ -19,7 +19,7 @@ from corefunctions.web_controller import WebController
 class EnvironmentalSystem:
     def __init__(self):
         frame_dimensions = [
-            (120, 60),   # Frame 0 (primary/main display)
+            (128 , 300),   # Frame 0 (primary/main display)
               # Frame 1 (secondary display)
         ]
         self.scheduler = EventScheduler(
