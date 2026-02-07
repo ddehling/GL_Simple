@@ -1,2 +1,107 @@
+# Python Virtual Environments
+venv/
+env/
+ENV/
+virtualenv/
+.venv/
+.virtualenv/
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
 *.pyc
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+desktop.ini
+
+# Project-specific temporary files
+*.log
+*.tmp
+*.temp
+
+# Audio/Media cache or generated files
+media/cache/
+*.wav.temp
+*.mp3.temp
+
+# User-specific settings
+sound_editor_settings.ini
+*.local.py
+*.local.ini
+config.local.*
+
+# DMX/LED output logs
+dmx_output.log
+led_state.log
+
+# Shader compilation cache
+*.spv
+shader_cache/
+
+# Performance profiling
+*.prof
+*.pstats
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Documentation builds
+docs/_build/
+site/
+
+# Backup files
+*.backup
+*.bak
+*.old
+*~
+
+# Windows installer files
+*.exe
+*.msi
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Project-specific
 glsign/*

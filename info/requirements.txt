@@ -11,7 +11,7 @@ pyglm
 PyOpenGL
 sacn
 scipy
-skimage
+scikit-image
 sounddevice
 soundfile
 zeroconf

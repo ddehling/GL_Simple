@@ -835,6 +835,17 @@ WEATHER_SETS = {
         "transition_speed": 1.5,
     },
 
+    "test": {
+        "allowed_parameters": [],
+        "background_events": ["test_pattern"],
+        "description": "test system",
+        "name": "test",
+        "season_extremity": 1,
+        "season_speed": 1,
+        "states": ["clear"],
+        "transition_speed": 1,
+    },
+
 }
 
 DEFAULT_WEATHER_SET = "cosmic_night"
