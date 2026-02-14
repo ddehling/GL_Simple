@@ -118,9 +118,9 @@ class EventScheduler:
         self.brightness_setpoint = 0.1  # Adjust this value (0.0 - 1.0)
         
         self.brightness_config = {
-            'red_factor': 0.7,      # Brightnessfactors are based on LED per color power draws
+            'red_factor': 1.0,      # Brightnessfactors are based on LED per color power draws
             'green_factor': 1.0,
-            'blue_factor': 1.3,
+            'blue_factor': 1.0,
             'threshold': 0.8,         # Start limiting at 80% of setpoint
             'smoothing': 0.05          # Lower = smoother but slower response (0.05-0.2 recommended)
         }
@@ -146,22 +146,22 @@ class EventScheduler:
         receivers = [            
             [
                 {
-                    'ip': '192.168.68.119',
+                    'ip': '192.168.68.140',
                     'pixel_count': 300*32,
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,0)
                 },  
                                          {
-                    'ip': '192.168.68.114',
+                    'ip': '192.168.68.141',
                     'pixel_count': 300*32,
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,32)
                 },      
                                          {
-                    'ip': '192.168.68.115',
+                    'ip': '192.168.68.142',
                     'pixel_count': 300*32,
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,64)
                 },
                                                 {
-                    'ip': '192.168.68.116',
+                    'ip': '192.168.68.143',
                     'pixel_count': 300*32,
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
                 },
@@ -230,7 +230,7 @@ class EventScheduler:
         self.state['screens'] = []
         for i in range(len(receivers)):
             if i < len(receivers):
-                sender = imdmx.SACNPixelSender(receivers[i], skip_network=False, use_raw_udp=True)
+                sender = imdmx.SACNPixelSender(receivers[i], skip_network=False, use_raw_udp=True,per_receiver_universe=True)
                 # Enable async sending for better performance
                 sender.enable_async_send()
                 self.state['screens'].append(sender)
