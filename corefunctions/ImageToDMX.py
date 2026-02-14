@@ -12,16 +12,18 @@ except ImportError:
     NUMBA_AVAILABLE = False
     print("Warning: Numba not available, using slower numpy operations")
 class SACNPixelSender:
-    def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False):
+    def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False, per_receiver_universe=False):
         """
         Initialize the SACNPixelSender with receiver configurations.
         :param receivers: List of dicts, each with 'ip', 'pixel_count', and 'addressing_array' keys.
         :param skip_network: If True, skip actual network transmission (for testing)
         :param use_raw_udp: If True, use raw UDP sockets instead of sACN library (much faster)
+        :param per_receiver_universe: If True, each receiver restarts at start_universe. If False, use global sequential universes.
         """
         self.receivers = receivers
         self.skip_network = skip_network
         self.use_raw_udp = use_raw_udp
+        self.per_receiver_universe = per_receiver_universe
         
         if use_raw_udp:
             # Create UDP socket for raw packet sending
@@ -50,9 +52,16 @@ class SACNPixelSender:
         
         for receiver in receivers:
             universe_count = math.ceil(receiver['pixel_count'] / 170)
-            receiver_universes = list(range(universe_counter, universe_counter + universe_count))
+            
+            if per_receiver_universe:
+                # Each receiver restarts at start_universe
+                receiver_universes = list(range(start_universe, start_universe + universe_count))
+            else:
+                # Global sequential universe numbering
+                receiver_universes = list(range(universe_counter, universe_counter + universe_count))
+                universe_counter += universe_count
+            
             self.receiver_universes.append(receiver_universes)
-            universe_counter += universe_count
 
             if self.use_raw_udp:
                 # Pre-build sACN packet headers for each universe of this receiver
