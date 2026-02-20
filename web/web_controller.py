@@ -512,9 +512,9 @@ class WebController:
                 daemon=True
             )
             self.server_thread.start()
-            print(f"Web control panel started at:")
-            print(f"  - http://localhost:{self.port}")
-            print(f"  - http://{self.service_name}.local:{self.port}")
+            print(f"[WebController] Started at:")
+            print(f"[WebController]   http://localhost:{self.port}")
+            print(f"[WebController]   http://{self.service_name}.local:{self.port}")
         else:
             self._run_server()
     
@@ -561,15 +561,15 @@ class WebController:
                 def register_with_timeout():
                     try:
                         self.zeroconf.register_service(self.service_info)
-                        print(f"mDNS service registered as '{self.service_name}.local'")
+                        print(f"[WebController] mDNS registered as '{self.service_name}.local'")
                     except Exception as e:
-                        print(f"Warning: mDNS registration failed: {e}")
+                        print(f"[WebController] Warning: mDNS registration failed: {e}")
                 
                 register_with_timeout()
                 
             except Exception as e:
-                print(f"Warning: Could not register mDNS service: {e}")
-                print("Service will still be accessible via IP address")
+                print(f"[WebController] Warning: Could not register mDNS service: {e}")
+                print("[WebController] Service still accessible via IP address")
         
         # Start async registration in background
         mdns_thread = threading.Thread(target=register_async, daemon=True)
@@ -580,9 +580,9 @@ class WebController:
             try:
                 self.zeroconf.unregister_service(self.service_info)
                 self.zeroconf.close()
-                print("mDNS service unregistered")
+                print("[WebController] mDNS unregistered")
             except Exception as e:
-                print(f"Warning: Error unregistering mDNS service: {e}")
+                print(f"[WebController] Warning: Error unregistering mDNS service: {e}")
     
     def set_available_events(self, all_events=None, background_events=None):
         """

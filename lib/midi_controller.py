@@ -139,7 +139,7 @@ class KorgNanoKontrol2:
             if info[2]:  # is_input
                 name = info[1].decode().lower()
                 if device_name_lower in name:
-                    print(f"Found MIDI device: {info[1].decode()} (ID: {i})")
+                    print(f"[MidiController] Found device: {info[1].decode()} (ID: {i})")
                     return i
         
         return None
@@ -152,22 +152,22 @@ class KorgNanoKontrol2:
             True if connection successful, False otherwise
         """
         if self.input_device is not None:
-            print("Already connected to MIDI device")
+            print("[MidiController] Already connected")
             return True
-        
+
         self.device_id = self.find_device()
-        
+
         if self.device_id is None:
-            print(f"MIDI device '{self.device_name}' not found")
+            print(f"[MidiController] Device '{self.device_name}' not found")
             self.list_devices()
             return False
-        
+
         try:
             self.input_device = pygame.midi.Input(self.device_id)
-            print(f"Connected to MIDI device ID {self.device_id}")
+            print(f"[MidiController] Connected to device ID {self.device_id}")
             return True
         except Exception as e:
-            print(f"Error connecting to MIDI device: {e}")
+            print(f"[MidiController] Error connecting: {e}")
             return False
     
     def disconnect(self):
@@ -175,7 +175,7 @@ class KorgNanoKontrol2:
         if self.input_device:
             self.input_device.close()
             self.input_device = None
-            print("Disconnected from MIDI device")
+            print("[MidiController] Disconnected")
     
     def _get_control_name(self, cc: int) -> Optional[str]:
         """Map MIDI CC number to control name"""
@@ -306,13 +306,13 @@ class KorgNanoKontrol2:
     def start_reading(self):
         """Start background thread to continuously read MIDI input"""
         if self.running:
-            print("Already reading MIDI input")
+            print("[MidiController] Already reading")
             return
-        
+
         self.running = True
         self.thread = threading.Thread(target=self._read_loop, daemon=True)
         self.thread.start()
-        print("Started MIDI reading thread")
+        print("[MidiController] Reading thread started")
     
     def stop_reading(self):
         """Stop background thread"""
@@ -322,7 +322,7 @@ class KorgNanoKontrol2:
         self.running = False
         if self.thread:
             self.thread.join(timeout=1.0)
-        print("Stopped MIDI reading thread")
+        print("[MidiController] Reading thread stopped")
     
     def _read_loop(self):
         """Background thread loop for reading MIDI"""
