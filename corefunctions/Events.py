@@ -1,8 +1,8 @@
 import time
 import heapq
 import numpy as np
-import corefunctions.soundtestthreaded as sound
-import corefunctions.ImageToDMX as imdmx
+import lib.audio_engine as sound
+import lib.dmx_sender as imdmx
 from corefunctions.shader_renderer import ShaderRenderer
 import threading
 

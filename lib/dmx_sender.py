@@ -6,7 +6,7 @@ import queue
 import socket
 import struct
 try:
-    from corefunctions.fast_pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
+    from lib.pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
