@@ -56,7 +56,7 @@ Events can be defined in two formats:
 
 Background events run continuously (10E9 seconds) when a weather set is active. They are defined in the weather set configuration.
 
-**Configuration Location:** `corefunctions/weather_params.py` - `WEATHER_SETS`
+**Configuration Location:** `lib/weather_params.py` - `WEATHER_SETS`
 
 ```python
 WEATHER_SETS = {
@@ -81,7 +81,7 @@ WEATHER_SETS = {
 
 On-transition events are triggered when a specific weather state becomes active. They run for a specified duration and then end.
 
-**Configuration Location:** `corefunctions/weather_params.py` - `WEATHER_PRESETS`
+**Configuration Location:** `lib/weather_params.py` - `WEATHER_PRESETS`
 
 ```python
 WeatherState.SANDSTORM: {

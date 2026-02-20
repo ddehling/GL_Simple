@@ -23,17 +23,17 @@ OpenGL-based DMX lighting control system with real-time GPU shader effects, audi
 
 ```bash
 # First-time setup: creates venv, installs deps, launches app
-./setup_and_run.sh        # Linux/macOS
+./bin/setup_and_run.sh        # Linux/macOS
 setup_and_run.bat         # Windows (double-click or run in cmd)
 
 # Quick launch after first setup
-./quick_run.sh            # Linux/macOS
+./bin/quick_run.sh            # Linux/macOS
 quick_run.bat             # Windows
 ```
 
 On Linux, make scripts executable first:
 ```bash
-chmod +x setup_and_run.sh quick_run.sh
+chmod +x bin/setup_and_run.sh bin/quick_run.sh
 ```
 
 ### Manual Launch
@@ -53,7 +53,7 @@ Once running, the web control panel is at `http://localhost:5000`.
 
 Install or reinstall at any time:
 ```bash
-pip install -r info/requirements.txt
+pip install -r requirements.txt
 ```
 
 Key packages: `glfw`, `PyOpenGL`, `numpy`, `scipy`, `opencv-python`, `sounddevice`, `librosa`, `soundfile`, `flask`, `sacn`, `pygame`, `numba`, `pyglm`, `scikit-image`, `zeroconf`.
@@ -81,7 +81,7 @@ All main settings are in `Stories_OGL.py`:
 | 639    | Initial weather set |
 | 640    | Initial weather state |
 
-**DMX universes and fixtures**: edit files in `DMXconfig/`.
+**DMX universes and fixtures**: edit files in `config/`.
 
 **Disable the render window**: set `self.scheduler.state["simulate"] = False` in `Stories_OGL.py`.
 
@@ -137,7 +137,7 @@ Each set only transitions between its own states. If a state's normal transition
 
 ### Adding a New Set in Code
 
-Edit `corefunctions/weather_params.py`:
+Edit `lib/weather_params.py`:
 
 ```python
 WEATHER_SETS = {
@@ -181,7 +181,7 @@ A visual browser-based editor is available at `http://localhost:5000/weather_edi
 1. Select a set from the left panel
 2. Click a weather state tab to edit its parameters
 3. Click **Validate** to check for errors before saving
-4. Click **Save Changes** — this overwrites `corefunctions/weather_params.py` (a backup is created at `.backup`)
+4. Click **Save Changes** — this overwrites `lib/weather_params.py` (a backup is created at `.backup`)
 5. **Restart the application** for changes to take effect
 
 **Creating a new weather state:**
@@ -289,7 +289,7 @@ Transport: ⏮ ⏭  ↻  ●  ◄  ■  ►  ●
 ### Basic Usage
 
 ```python
-from corefunctions.midi_controller import KorgNanoKontrol2
+from lib.midi_controller import KorgNanoKontrol2
 
 midi = KorgNanoKontrol2(auto_connect=True)
 midi.start_reading()   # Background thread, ~1000 Hz poll
@@ -341,7 +341,7 @@ midi.connect()
 
 **Test standalone:**
 ```bash
-python corefunctions/midi_controller.py
+python lib/midi_controller.py
 python midi_integration_example.py
 ```
 
@@ -512,7 +512,7 @@ self._schedule_event_from_map("fog_beings", start_time=0, duration=60, frame_id=
 Ensure Python is installed and on PATH. Verify with `python --version`. Restart terminal after installing.
 
 ### "Module not found"
-Run `pip install -r info/requirements.txt` with the venv activated. Or re-run `setup_and_run.bat` / `setup_and_run.sh`.
+Run `pip install -r requirements.txt` with the venv activated. Or re-run `setup_and_run.bat` / `bin/setup_and_run.sh`.
 
 ### Audio device not found
 - Run `sound_editor.py` to list available devices
@@ -537,8 +537,8 @@ Change the port at line 57 of `Stories_OGL.py`, or close whatever is using 5000.
 
 ### Weather editor won't save
 - Click **Validate** first — fix any reported errors
-- Ensure write permissions on `corefunctions/`
-- Restore from backup: `corefunctions/weather_params.py.backup`
+- Ensure write permissions on `lib/`
+- Restore from backup: `lib/weather_params.py.backup`
 
 ### Web controls not updating
 - Check browser console (F12) for JS errors
@@ -561,7 +561,7 @@ Check terminal for "Weather set change queued". The change applies on the next w
 
 ### Adding a Shader Effect
 
-1. Create a new file in `corefunctions/shader_effects/` that extends `ShaderEffect` from `base.py`
+1. Create a new file in `renderer/effects/` that extends `ShaderEffect` from `base.py`
 2. Name the wrapper function with `shader_` prefix and the class with `Effect` suffix — they are auto-discovered
 3. See `info/shader_info.txt` for the full guide covering: depth/alpha blending system, horizontal wrapping, event wrapper pattern, fade in/out, audio reactivity, and a complete template
 
@@ -569,7 +569,7 @@ Check terminal for "Weather set change queued". The change applies on the next w
 
 ```
 Stories_OGL.py              # Entry point — wires everything together
-corefunctions/
+lib/
   shader_renderer.py        # GLFW window + OpenGL rendering loop
   Events.py                 # Timed event scheduler, frame orchestration
   soundinput.py             # Microphone capture and frequency analysis
@@ -581,7 +581,7 @@ corefunctions/
     base.py                 # ShaderEffect base class
 sceneutils/                 # Scene/biome-level event compositions
 templates/                  # Flask HTML templates
-DMXconfig/                  # DMX universe and fixture definitions
+config/                  # DMX universe and fixture definitions
 media/sounds/               # Ambient audio files
 media/images/               # Image assets
 info/                       # Documentation and notes

@@ -5,6 +5,9 @@
 # 3. Install all required dependencies
 # 4. Run the application
 
+# Anchor to project root regardless of where the script is invoked from
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host "  GL_Simple Setup & Launcher" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
@@ -198,7 +201,7 @@ Write-Host "  pip upgraded successfully" -ForegroundColor Green
 # Install dependencies
 Write-Host ""
 Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
-$requirementsPath = ".\info\requirements.txt"
+$requirementsPath = ".\requirements.txt"
 if (Test-Path $requirementsPath) {
     Write-Host "  Installing packages from requirements.txt..." -ForegroundColor Cyan
     Write-Host "  This may take several minutes..." -ForegroundColor Yellow

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 echo "====================================="
 echo "  GL_Simple Setup & Launcher (Ubuntu)"
@@ -25,10 +26,10 @@ echo "[3/4] Activating virtual environment and installing Python packages..."
 source venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 
-REQ="info/requirements.txt"
+REQ="requirements.txt"
 if [ ! -f "$REQ" ]; then
     echo "ERROR: requirements file not found at $REQ" >&2
-    echo "Please provide dependency file at info/requirements.txt" >&2
+    echo "Please provide dependency file at requirements.txt" >&2
     exit 1
 fi
 

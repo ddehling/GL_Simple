@@ -105,7 +105,7 @@ The weather set system allows you to create mutually exclusive collections of we
 
 ## Adding New Sets
 
-Edit `corefunctions/weather_params.py`:
+Edit `lib/weather_params.py`:
 
 ```python
 WEATHER_SETS = {

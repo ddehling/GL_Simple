@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0.."
 REM Quick Run Script - assumes setup has already been completed
 REM Use this after running setup_and_run.bat at least once
 
