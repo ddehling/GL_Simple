@@ -169,12 +169,15 @@ class EnvironmentalSystem:
         
         self.whompcount = 0
 
-    def change_weather_set(self, new_set_name: str, immediate: bool = False):
-        """Request a change to a different weather set
-        
+    def change_weather_set(self, new_set_name: str, immediate: bool = False,
+                           initial_weather: WeatherState = None):
+        """Request a change to a different weather set.
+
         Args:
-            new_set_name: Name of the weather set to change to
+            new_set_name: Name of the weather set to change to.
             immediate: If True, change immediately. If False, queue for next transition.
+            initial_weather: When immediate=True, start with this specific state instead
+                             of a random one. Ignored if the state is not in the new set.
         """
         if not self.weather_set.is_valid_set(new_set_name):
             print(f"[WEATHER] Unknown weather set: {new_set_name}")
@@ -194,9 +197,12 @@ class EnvironmentalSystem:
             # Cancel all existing events and start new background events for the set
             self._initialize_weather_set_events()
 
-            # Pick a random weather from the new set
+            # Pick initial weather: use caller's choice if valid, else random
             set_states = self.weather_set.get_set_states()
-            new_weather = np.random.choice(set_states)
+            if initial_weather is not None and initial_weather in set_states:
+                new_weather = initial_weather
+            else:
+                new_weather = np.random.choice(set_states)
             print(f"[WEATHER]   Starting with: {new_weather.value}")
 
             new_weather_params = self.weather_state.get_weather_params(new_weather)
@@ -221,10 +227,10 @@ class EnvironmentalSystem:
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
 
         for event_name in self.weather_set.get_background_events():
-            print(f"   [EVENT] Scheduling background event: {event_name}")
+            print(f"[WEATHER]   Background event: {event_name}")
             self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
 
-        print(f"[OK] Background events initialized for '{self.weather_set.current_set}'")
+        print(f"[WEATHER] Background events initialized for '{self.weather_set.current_set}'")
     
     def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
         """Schedule an event from the event map"""
@@ -243,13 +249,13 @@ class EnvironmentalSystem:
         # Schedule events based on on_transition_events in weather preset
         on_transition_events = target_params.get("on_transition_events", [])
         for event_config in on_transition_events:
-            if isinstance(event_config, tuple) and len(event_config) >= 2:
+            if isinstance(event_config, (tuple, list)) and len(event_config) >= 2:
                 event_name, duration = event_config[:2]
                 frame_id = event_config[2] if len(event_config) > 2 else 0
                 print(f"[WEATHER]   Transition event: {event_name} ({duration}s)")
                 self._schedule_event_from_map(event_name, 0, duration, frame_id=frame_id)
             else:
-                print(f"[WEATHER]   Invalid on_transition_event format: {event_config}")
+                print(f"[WEATHER]   Invalid on_transition_event format: {event_config!r}")
 
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
         volume = target_params.get("Sound_volume", 1.0)
@@ -441,9 +447,9 @@ class EnvironmentalSystem:
 if __name__ == "__main__":
     env_system = EnvironmentalSystem()
 
-    #change to a specific weather set on startup
-    env_system.change_weather_set("ocean", immediate=True)
-    env_system.transition_to_weather(WeatherState.OCEAN_KELP_FOREST)
+    # Change to a specific weather set and state on startup
+    env_system.change_weather_set("ocean", immediate=True,
+                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()

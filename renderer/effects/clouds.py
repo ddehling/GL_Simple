@@ -739,28 +739,8 @@ class CloudEffectGPU(ShaderEffect):
         active_clouds = self.cpu_cloud_data[active_mask]
         
         if len(active_clouds) == 0:
-            # Debug: print once if we have no clouds
-            if not hasattr(self, '_no_clouds_warned'):
-                target_count = int(self.cloudyness * self.max_clouds)
-                print(f"GPU Clouds: No active clouds to render (target: {target_count}, fade_factor: {self.fade_factor:.2f})")
-                self._no_clouds_warned = True
             return
-        
-        # Reset warning flag when we have clouds
-        if hasattr(self, '_no_clouds_warned'):
-            print(f"GPU Clouds: Now rendering {len(active_clouds)} clouds!")
-            delattr(self, '_no_clouds_warned')
-        
-        # Debug first render
-        if not hasattr(self, '_first_render_done'):
-            first_opacity = active_clouds[0, 7]
-            first_x = active_clouds[0, 0]
-            first_y = active_clouds[0, 1]
-            print(f"GPU Clouds first render: {len(active_clouds)} clouds")
-            print(f"  First cloud opacity: {first_opacity:.2f}, position: ({first_x:.1f}, {first_y:.1f})")
-            print(f"  fade_factor: {self.fade_factor:.2f}")
-            self._first_render_done = True
-        
+
         # Build instance data for rendering
         # position(2), size(2), scale(1), opacity(1), noiseSeed(2), depth(1)
         instance_data = np.column_stack([
