@@ -6,10 +6,10 @@ from corefunctions.Events import EventScheduler
 from corefunctions.soundtestthreaded import StreamingPlayer
 
 from corefunctions.soundinput import MicrophoneAnalyzer
-from corefunctions.weather_params import (
-    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
-    WEATHER_SETS, DEFAULT_WEATHER_SET
+from lib.weather_params import (
+    WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 )
+from lib.weather_state import WeatherStateController
 from corefunctions.shader_effects.celestial_bodies import CELESTIAL_BODIES
 from corefunctions import shader_effects as fx
 from corefunctions.web_controller import WebController
@@ -29,11 +29,7 @@ class EnvironmentalSystem:
         self.target_set = None  # For pending set changes
         self.weather_sets = WEATHER_SETS
         
-        self.current_weather = WeatherState.CLEAR
-        self.target_weather = WeatherState.CLEAR
-        self.transition_time = 0
-        self.transition_start = 0
-        self.progress = 0
+        self.weather_state = WeatherStateController()
         self.season = 0.0  # Initialize season value
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
         self.analyzer.start()
@@ -61,12 +57,6 @@ class EnvironmentalSystem:
         # sort celestial bodies by distance, farthest first
         self.celestial_bodies.sort(key=lambda x: x.distance, reverse=True)
 
-        # Keep track of active weather effects
-        self.default_weather_params = DEFAULT_WEATHER_PARAMS.copy()
-        self.weather_params = self.default_weather_params.copy()
-
-        # Weather state parameters
-        self.weather_presets = WEATHER_PRESETS
         self.scheduler.state["tree"] = False
         self.scheduler.state["skyfull"] = False
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
@@ -133,12 +123,6 @@ class EnvironmentalSystem:
         
         self.whompcount = 0
 
-    def get_weather_params(self, weather_state: WeatherState):
-        """Get the complete set of parameters for a weather state by combining with defaults"""
-        params = self.default_weather_params.copy()
-        params.update(self.weather_presets[weather_state])
-        return params
-    
     def get_current_set_config(self):
         """Get the configuration for the current weather set"""
         return self.weather_sets[self.current_set]
@@ -179,8 +163,8 @@ class EnvironmentalSystem:
             set_states = self.get_set_states()
             new_weather = np.random.choice(set_states)
             print(f"   Starting with: {new_weather.value}")
-            
-            new_weather_params = self.get_weather_params(new_weather)
+
+            new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
             self.transition_to_weather(new_weather, transition_duration=t_duration)
         else:
@@ -224,13 +208,8 @@ class EnvironmentalSystem:
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
-        self.target_weather = new_weather
-        print(self.target_weather)
-        self.transition_time = transition_duration
-        self.transition_start = time.time()
-
-        # Start new effects if needed, one offs that occur when a weather state happens
-        target_params = self.get_weather_params(new_weather)
+        target_params = self.weather_state.start_transition(new_weather, transition_duration, time.time())
+        print(self.weather_state.target_weather)
         
         # Schedule events based on on_transition_events in weather preset
         on_transition_events = target_params.get("on_transition_events", [])
@@ -272,25 +251,6 @@ class EnvironmentalSystem:
                          name="audio-transition").start()
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
-    def calculate_seasonal_weight_multiplier(self, season_preference, current_season):
-        """
-        Calculate a weight multiplier based on how close the current season is to the preferred season.
-        Returns a value between 0.5 (furthest from preferred) and 3.0 (at preferred season).
-        """
-        # Calculate distance between current season and preferred season
-        # Since seasons are cyclical (0-1), we need to find the shortest distance
-        distance = abs(current_season - season_preference)
-        if distance > 0.5:
-            distance = 1.0 - distance  # Take the shorter path around the cycle
-        
-        # Normalize distance to range [0, 1] where 0 means perfect match and 1 means opposite season
-        normalized_distance = distance * 2  # Now 0 = perfect match, 1 = opposite season
-        
-        # Calculate multiplier that varies from 3.0 (perfect match) to 0.5 (opposite season)
-        multiplier = 1.0 - (normalized_distance * .95)
-        
-        return multiplier
-
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
         # Skip entirely if web control is disabled
@@ -324,7 +284,7 @@ class EnvironmentalSystem:
             self.web_controller._dict_lock.acquire()
             try:
                 self.web_controller.control_dict['current_weather_set'] = self.current_set
-                self.web_controller.control_dict['current_weather'] = self.current_weather.value
+                self.web_controller.control_dict['current_weather'] = self.weather_state.current_weather.value
                 self.web_controller.control_dict['season'] = float(self.season)
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
@@ -336,32 +296,6 @@ class EnvironmentalSystem:
             # Adjust audio sensitivity
             self.analyzer.sensitivity = audio_sensitivity
     
-    def transition_update(self):
-        # self.progress = 1.0
-        if self.current_weather != self.target_weather:
-            self.progress = min(
-                1.0, (self.current_time - self.transition_start) / self.transition_time
-            )
-
-            start_params = self.get_weather_params(self.current_weather)
-            target_params = self.get_weather_params(self.target_weather)
-
-            # Interpolate parameters
-            for param in target_params:
-                if isinstance(target_params[param], (int, float, np.ndarray)):
-                    # Get start value, using default if parameter doesn't exist in start state
-                    start_value = start_params.get(param, self.default_weather_params.get(param, 0))
-                    self.weather_params[param] = (
-                        target_params[param] - start_value
-                    ) * self.progress + start_value
-                else:
-                    # For non-numeric parameters, just use the target value
-                    self.weather_params[param] = target_params[param]
-
-            if self.progress >= 1.0:
-                self.current_weather = self.target_weather
-                self.weather_params = target_params.copy()
-
     def send_variables(self):
         # Apply season speed from current weather set (cache to avoid repeated lookups)
         if not hasattr(self, '_cached_set_config') or self._cached_set_config[0] != self.current_set:
@@ -371,36 +305,12 @@ class EnvironmentalSystem:
         season_speed = set_config.get("season_speed", 1.0)
         self.season = ((time.time() / 1800) * season_speed) % 1
         
-        fog = np.maximum(0,self.weather_params["fog"] * (0.75 - 0.25 * np.cos(np.pi * 2 * (self.season - 0.625))))
-        self.cloudyness = ((1 - self.weather_params["starryness"]) + (1 - self.weather_params["celestial_visibility"]) + fog + self.weather_params["rain_rate"] + self.weather_params["wind_speed"] / 3)/4
-        
-        # Batch all state updates to reduce dictionary overhead
         state = self.scheduler.state
-        state["cloudyness"] = self.cloudyness
-        state["fog_strength"] = fog
-        state["fog_color"] = self.weather_params["fog_color"]
-        state["wind"] = self.weather_params["wind_speed"] * np.cos(np.pi * 2 * (self.season - 0.125))
+        state.update(self.weather_state.get_state_output(self.season, self.current_time))
         state["season"] = self.season
         state["scale"] = self.scale
-        state["rain"] = self.weather_params["rain_rate"]
-        state["starryness"] = self.weather_params["starryness"]
         state["sound"] = self.analyzer.get_extended_analysis()
         state["celestial_bodies"] = self.celestial_bodies
-        state["celestial_visibility"] = self.weather_params["celestial_visibility"]
-        state["firefly_density"] = self.weather_params["firefly_density"]
-        state["meteor_rate"] = self.weather_params["meteor_rate"]
-        state["volcano_level"] = (np.sin(self.current_time / 100) * 0.5 + 0.5) * self.weather_params["volcano_level"]
-        state["sand_density"] = self.weather_params.get("sand_density", 0)
-        state["tree_growth"] = (self.weather_params.get("tree_prob", 0) + 0.25)
-        
-        # Ocean-specific parameters
-        state["wave_speed"] = self.weather_params.get("wave_speed", 0.5)
-        state["wave_amplitude"] = self.weather_params.get("wave_amplitude", 0.5)
-        state["tide_level"] = self.weather_params.get("tide_level", 0.5)
-        state["bioluminescence"] = self.weather_params.get("bioluminescence", 0.0)
-        state["bubble_density"] = self.weather_params.get("bubble_density", 0.0)
-        state["marine_life_activity"] = self.weather_params.get("marine_life_activity", 0.0)
-        state["kelp_density"] = self.weather_params.get("kelp_density", 0.0)
 
     def random_events(self):
         randcheck = np.random.random()
@@ -427,29 +337,29 @@ class EnvironmentalSystem:
             print(f"   🎲 Seasonal event triggered: {event_name} (season: {self.season:.3f}, position: {event_positions[closest_index]:.3f})")
             self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
         
-        if (randcheck < self.weather_params["tree_prob"] / 10000):
+        if (randcheck < self.weather_state.weather_params["tree_prob"] / 10000):
             self.scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0) # noqa: F405
 
-        if randcheck < self.weather_params["Aurora_probability"] / 1000:
+        if randcheck < self.weather_state.weather_params["Aurora_probability"] / 1000:
             self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
 
-        if randcheck < self.weather_params["lightning_probability"] / 500:
+        if randcheck < self.weather_state.weather_params["lightning_probability"] / 500:
             self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
 
-                
+
         randcheck = np.random.random()
 
         # Sand storms
-        if randcheck < self.weather_params["sand_density"] / 2000:
+        if randcheck < self.weather_state.weather_params["sand_density"] / 2000:
             self.scheduler.schedule_event(0, 45, fx.shader_sandstorm, frame_id=0) # noqa: F405
 
 
         # # Spooky giant eye
-        if randcheck < self.weather_params["spookyness"] / 1000:
+        if randcheck < self.weather_state.weather_params["spookyness"] / 1000:
             self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
 
         # # Random meteor events
-        if randcheck < self.weather_params["meteor_rate"] / 800:
+        if randcheck < self.weather_state.weather_params["meteor_rate"] / 800:
             self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
 
 
@@ -465,9 +375,9 @@ class EnvironmentalSystem:
         transition_speed_mult = set_config.get("transition_speed", 1.0)
         
         randcheck = np.random.random()
-        if (randcheck < (1 / 800) * self.weather_params["Switch_rate"] * transition_speed_mult) and (self.progress >= 0.99):
-            self.progress = 0
-            
+        if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 0.99):
+            self.weather_state.progress = 0
+
             # Check if we need to change weather sets
             if self.target_set is not None:
                 print(f"[WEATHER] Switching weather set: '{self.current_set}' -> '{self.target_set}'")
@@ -484,13 +394,13 @@ class EnvironmentalSystem:
                 new_weather = np.random.choice(set_states)
                 print(f"   Starting with: {new_weather.value}")
                 
-                new_weather_params = self.get_weather_params(new_weather)
+                new_weather_params = self.weather_state.get_weather_params(new_weather)
                 t_duration = new_weather_params["transition_duration"]
                 self.transition_to_weather(new_weather, transition_duration=t_duration)
                 return
-            
+
             # Normal transition within current set
-            current_preset = self.weather_presets[self.current_weather]
+            current_preset = self.weather_state.weather_presets[self.weather_state.current_weather]
             possible_states = [WeatherState(state) for state in current_preset["possible_transitions"]]
             
             # Filter to only states in current set
@@ -517,10 +427,10 @@ class EnvironmentalSystem:
             adjusted_weights = []
             for i, state in enumerate(possible_states):
                 # Get the season preference for this weather state
-                target_season_pref = self.weather_presets[state].get("season_preference", 0.375)
-                
+                target_season_pref = self.weather_state.weather_presets[state].get("season_preference", 0.375)
+
                 # Calculate seasonal multiplier (modified by extremity)
-                season_multiplier = self.calculate_seasonal_weight_multiplier(target_season_pref, self.season)
+                season_multiplier = WeatherStateController.calculate_seasonal_weight_multiplier(target_season_pref, self.season)
                 
                 # Apply extremity: interpolate between 1.0 (no effect) and season_multiplier
                 # Use max to ensure we never go below a small positive value
@@ -545,7 +455,7 @@ class EnvironmentalSystem:
             new_weather = np.random.choice(possible_states, p=adjusted_weights)
             
             # Find the transition duration
-            new_weather_params = self.get_weather_params(new_weather)
+            new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
             self.transition_to_weather(new_weather, transition_duration=t_duration)
 
@@ -564,7 +474,7 @@ class EnvironmentalSystem:
         self.apply_web_controls()
 
         # Handle transitions
-        self.transition_update()
+        self.weather_state.update(self.current_time)
 
         # Update celestial bodies
         for body in self.celestial_bodies:
