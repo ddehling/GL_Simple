@@ -7,7 +7,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 import time
-from corefunctions.shader_effects.base import ShaderEffect
+from renderer.effects.base import ShaderEffect
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler

@@ -3,7 +3,7 @@ from OpenGL.GL import *
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 import platform
-from corefunctions.shader_effects.base import ShaderEffect
+from renderer.effects.base import ShaderEffect
 # Detect platform
 IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
