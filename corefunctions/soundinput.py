@@ -4,7 +4,6 @@ import threading
 import time
 from queue import Queue
 from scipy import signal
-from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 

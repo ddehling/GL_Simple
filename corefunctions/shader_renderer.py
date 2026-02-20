@@ -228,30 +228,7 @@ class ShaderViewport:
         self.color_texture = None
         self.depth_texture = None
         
-        
-    def init_glfw(self):
-        """Initialize GLFW with OpenGL ES 3.1"""
-        if not glfw.init():
-            raise RuntimeError("Failed to initialize GLFW")
-        
-        # Set visibility based on headless mode
-        if self.headless:
-            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-            print("Configuring headless mode (window hidden)")
-        
-        if IS_RASPBERRY_PI:
-            print("Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
-            glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
-            glfw.window_hint(glfw.CONTEXT_CREATION_API, glfw.EGL_CONTEXT_API)
-        else:
-            if not self.headless:
-                print("Configuring for Desktop (OpenGL ES 3.1)")
-            glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
-        
+
     def init_framebuffer(self):
         """Create framebuffer for offscreen rendering (for LED output)"""
         glfw.make_context_current(self.glfw_window)
