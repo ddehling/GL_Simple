@@ -1,3 +1,15 @@
+"""Hardware integration layer: shader renderer + audio engine + DMX senders.
+
+RenderPipeline wires together all hardware subsystems and drives the per-frame
+render/send loop. It delegates event scheduling to an internal EventScheduler
+and proxies its public API so callers can use a single object for both
+scheduling and rendering.
+
+The ``state`` dict (owned by EventScheduler) acts as a blackboard: hardware
+references (``soundengine``, ``screens``, ``shader_renderer``) are seeded here
+at init time and read by shader effects each frame.
+"""
+
 import time
 import numpy as np
 
@@ -30,7 +42,7 @@ class RenderPipeline:
 
         # --- Renderer ---
         mode = "headless GPU" if headless else "GPU"
-        print(f"Initializing {mode} shader renderer...")
+        print(f"[RenderPipeline] Initializing {mode} shader renderer...")
         self._shader_renderer = ShaderRenderer(
             frame_dimensions=frame_dimensions,
             headless=headless,
@@ -39,7 +51,7 @@ class RenderPipeline:
         for frame_id in range(len(frame_dimensions)):
             self._shader_renderer.create_viewport(frame_id)
             if not headless:
-                print(f"  Created viewport {frame_id}: {frame_dimensions[frame_id]}")
+                print(f"[RenderPipeline]   Viewport {frame_id}: {frame_dimensions[frame_id]}")
 
         # Seed the shared state dict with hardware references
         state = self._scheduler.state
@@ -53,7 +65,7 @@ class RenderPipeline:
         state['thunderrate'] = 0.0
         state['starryness'] = 0.0
         state['simulate'] = True
-        print(f"[OK] {mode} shader renderer initialized")
+        print(f"[RenderPipeline] {mode} shader renderer initialized")
 
         # --- Audio ---
         engine = sound.ThreadedAudioEngine()
@@ -77,7 +89,7 @@ class RenderPipeline:
         ]
 
         total_pixels = sum(w * h for w, h in frame_dimensions)
-        print(f"Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
+        print(f"[RenderPipeline] Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
 
         state['screens'] = []
         for frame_receivers in receivers:
@@ -88,7 +100,7 @@ class RenderPipeline:
             sender.enable_async_send()
             state['screens'].append(sender)
 
-        print("[OK] sACN senders initialized with async mode enabled")
+        print("[RenderPipeline] sACN senders initialized with async mode enabled")
 
     # ------------------------------------------------------------------
     # EventScheduler delegation — callers use RenderPipeline as their
@@ -118,7 +130,7 @@ class RenderPipeline:
     def update(self):
         self._shader_renderer.poll_events()
         if self._shader_renderer.should_close():
-            print("Window closed by user")
+            print("[RenderPipeline] Window closed by user")
             self.cleanup()
             self.should_exit = True
             return
@@ -160,7 +172,7 @@ class RenderPipeline:
                 try:
                     screens[i].send(frame_corrected[:, :, [0, 1, 2]])
                 except OSError as e:
-                    print(f"Network error while sending sACN data to display {i}: {e}")
+                    print(f"[RenderPipeline] Network error sending to display {i}: {e}")
 
         self._shader_renderer.swap_buffers()
 
@@ -195,7 +207,7 @@ class RenderPipeline:
 
         if state['divisor'] > 1.001:
             frame_corrected = frame_corrected / state['divisor']
-            print(f"Applying brightness divisor: {state['divisor']:.3f}")
+            print(f"[RenderPipeline] Brightness divisor: {state['divisor']:.3f}")
 
         return np.clip(frame_corrected, 0, 255).astype(np.uint8)
 
@@ -207,13 +219,13 @@ class RenderPipeline:
         if self._cleaned_up:
             return
         self._cleaned_up = True
-        print("Cleaning up RenderPipeline...")
+        print("[RenderPipeline] Cleaning up...")
         self._scheduler.cancel_all_events()
         self._shader_renderer.cleanup()
         engine = self.state.get('soundengine')
         if hasattr(engine, 'stop'):
             engine.stop()
-        print("[OK] Cleanup complete")
+        print("[RenderPipeline] Cleanup complete")
 
     def __del__(self):
         try:

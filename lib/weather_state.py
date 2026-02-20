@@ -1,3 +1,10 @@
+"""Weather state interpolation and seasonal transition selection.
+
+WeatherStateController tracks the current and target WeatherState, interpolates
+parameters between them during a transition, and chooses the next state using
+season-biased probability weights. Has no audio, scheduler, or web dependencies.
+"""
+
 import numpy as np
 import time
 

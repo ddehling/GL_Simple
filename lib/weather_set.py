@@ -1,3 +1,11 @@
+"""Weather set management: active set, queued set changes, and per-set config.
+
+WeatherSetManager owns the event_map (passed in at construction) and provides
+typed accessors for all set-level configuration keys so call sites don't need
+to dig into the raw WEATHER_SETS dict. Has no scheduler, web_controller, or
+audio dependencies.
+"""
+
 from typing import Optional
 from lib.weather_params import WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 

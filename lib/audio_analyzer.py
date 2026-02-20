@@ -1,3 +1,13 @@
+"""Real-time microphone audio analysis with frequency band extraction.
+
+MicrophoneAnalyzer captures audio from a sounddevice input stream, computes
+FFT spectra at ~40 FPS, and maintains circular-buffer histories for 32
+logarithmic frequency bands. Provides both raw and normalized (short-term /
+long-term) band power for shader effects to consume via get_extended_analysis().
+
+SpectrogramPlotter (matplotlib) is included for standalone diagnostic use.
+"""
+
 import sounddevice as sd
 import numpy as np
 import threading

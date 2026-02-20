@@ -1,3 +1,14 @@
+"""sACN/E1.31 DMX pixel sender.
+
+SACNPixelSender maps rendered frame pixels to DMX universes and transmits
+them to physical LED receivers over the network. Supports both the sacn
+library (standard) and raw UDP sockets (lower latency), and optional
+Numba-accelerated pixel extraction for high pixel counts.
+
+Pixel coordinates are specified via per-receiver ``addressing_array`` (Nx2
+arrays of [row, col] indices into the source frame).
+"""
+
 import numpy as np
 from sacn import sACNsender
 import math
@@ -10,7 +21,7 @@ try:
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
-    print("Warning: Numba not available, using slower numpy operations")
+    print("[DMXSender] Warning: Numba not available, using slower numpy operations")
 class SACNPixelSender:
     def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False, per_receiver_universe=False):
         """
@@ -141,7 +152,7 @@ class SACNPixelSender:
         self._stop_thread = False
         self._send_thread = threading.Thread(target=self._send_worker, daemon=True)
         self._send_thread.start()
-        print("sACN async sending enabled")
+        print("[DMXSender] Async sending enabled")
     
     def disable_async_send(self):
         """Disable asynchronous sending and wait for thread to finish"""
@@ -152,7 +163,7 @@ class SACNPixelSender:
         self._stop_thread = True
         if self._send_thread:
             self._send_thread.join(timeout=1.0)
-        print("sACN async sending disabled")
+        print("[DMXSender] Async sending disabled")
     
     def _send_worker(self):
         """Background worker that sends frames from queue"""
@@ -270,7 +281,7 @@ class SACNPixelSender:
         source_array, verify = frame_data
         
         if verify:
-            print(f"[ImageToDMX] Sending frame shape={source_array.shape}")
+            print(f"[DMXSender] Sending frame shape={source_array.shape}")
         
         # Process each receiver using optimized Numba (releases GIL)
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
@@ -392,7 +403,7 @@ class SACNPixelSender:
             #handle the last group
             groups.append(current_group)
             pixels_in_group.append(group_pixel_count)
-            print(groups, pixels_in_group,receiver['ip'])
+            print(f"[DMXSender] Groups: {groups} pixel_counts: {pixels_in_group} ip: {receiver['ip']}")
 
 # The rest of the code (generate_frame_data and main function) remains the same
 

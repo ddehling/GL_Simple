@@ -1,3 +1,13 @@
+"""Pure timed-event queue and shared state dict (the blackboard).
+
+TimedEvent: a single scheduled action with timing bookkeeping.
+EventScheduler: a min-heap queue that promotes events when their start time
+arrives and drives them each tick. Owns the ``state`` dict that shader
+effects and the pipeline read/write during every frame.
+
+Has no renderer, audio, or network dependencies.
+"""
+
 import time
 import heapq
 import numpy as np
@@ -43,7 +53,7 @@ class TimedEvent:
 
     def closeevent(self, outstate):
         median_duration = np.median(self.frame_duration) if self.frame_duration else 0
-        print(f"Event closed: {self.name} Length:{median_duration:.6f}s")
+        print(f"[EventScheduler] Event closed: {self.name} Length:{median_duration:.6f}s")
         self.state['count'] = -1
         self.action(self.state, outstate, *self.args, **self.kwargs)
 
@@ -69,7 +79,7 @@ class EventScheduler:
         if any(event.action == action for event in self.active_events) or \
            any(event.action == action for event in self.event_queue):
             action_name = action.__name__ if hasattr(action, '__name__') else str(action)
-            print(f"Skipping duplicate event: {action_name} (already running or queued)")
+            print(f"[EventScheduler] Skipping duplicate event: {action_name} (already running or queued)")
             return None
 
         event_time = time.time() + delay

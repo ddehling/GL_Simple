@@ -1,3 +1,10 @@
+"""Ambient audio cross-fade controller.
+
+Manages the single looping ambient track that plays during a weather state.
+Handles fade-out of the outgoing track and fade-in of the incoming one on a
+background thread so the render loop is never blocked.
+"""
+
 import time
 import threading
 from pathlib import Path
