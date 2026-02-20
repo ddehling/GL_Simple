@@ -350,60 +350,13 @@ class EnvironmentalSystem:
                 return
 
             # Normal transition within current set
-            current_preset = self.weather_state.weather_presets[self.weather_state.current_weather]
-            possible_states = [WeatherState(state) for state in current_preset["possible_transitions"]]
+            new_weather = self.weather_state.select_next_weather(
+                self.weather_state.current_weather,
+                self.weather_set.get_set_states(),
+                self.season,
+                self.weather_set.get_season_extremity(),
+            )
 
-            # Filter to only states in current set
-            set_states = self.weather_set.get_set_states()
-            possible_states = [state for state in possible_states if state in set_states]
-
-            if not possible_states:
-                # If no valid transitions in set, pick random state from set
-                possible_states = set_states
-                base_weights = [1.0] * len(possible_states)
-            else:
-                # Use weights from preset, but only for states in the set
-                base_weights = []
-                for state in possible_states:
-                    # Find the weight for this state
-                    try:
-                        idx = current_preset["possible_transitions"].index(state.value)
-                        base_weights.append(current_preset["transition_weights"][idx])
-                    except (ValueError, IndexError):
-                        base_weights.append(1.0)
-
-            # Apply seasonal modifiers to weights
-            season_extremity = self.weather_set.get_season_extremity()
-            adjusted_weights = []
-            for i, state in enumerate(possible_states):
-                # Get the season preference for this weather state
-                target_season_pref = self.weather_state.weather_presets[state].get("season_preference", 0.375)
-
-                # Calculate seasonal multiplier (modified by extremity)
-                season_multiplier = WeatherStateController.calculate_seasonal_weight_multiplier(target_season_pref, self.season)
-                
-                # Apply extremity: interpolate between 1.0 (no effect) and season_multiplier
-                # Use max to ensure we never go below a small positive value
-                if season_extremity > 0:
-                    season_multiplier = 1.0 + (season_multiplier - 1.0) * season_extremity
-                    season_multiplier = max(0.01, season_multiplier)  # Ensure non-negative
-                else:
-                    season_multiplier = 1.0  # No seasonal effect
-                
-                # Apply the seasonal modifier to the base weight
-                adjusted_weight = base_weights[i] * season_multiplier
-                adjusted_weights.append(adjusted_weight)
-            
-            # Normalize weights
-            adjusted_weights = np.array(adjusted_weights)
-            if np.sum(adjusted_weights) > 0:
-                adjusted_weights = adjusted_weights / np.sum(adjusted_weights)
-            else:
-                adjusted_weights = np.ones(len(adjusted_weights)) / len(adjusted_weights)
-            
-            # Choose new weather state
-            new_weather = np.random.choice(possible_states, p=adjusted_weights)
-            
             # Find the transition duration
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
