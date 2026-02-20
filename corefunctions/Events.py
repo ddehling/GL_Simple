@@ -3,7 +3,7 @@ import heapq
 import numpy as np
 import lib.audio_engine as sound
 import lib.dmx_sender as imdmx
-from corefunctions.shader_renderer import ShaderRenderer
+from renderer.shader_renderer import ShaderRenderer
 import threading
 
 class TimedEvent:

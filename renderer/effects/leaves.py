@@ -6,14 +6,7 @@ import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
-import sys
-from pathlib import Path
-
-# Add parent path for imports
-ParentPath = Path(__file__).parent.parent
-sys.path.insert(0, str(ParentPath))
-
-from corefunctions.shader_effects.base import ShaderEffect
+from renderer.effects.base import ShaderEffect
 
 # ============================================================================
 # Event Wrapper Functions - Integrate with EventScheduler

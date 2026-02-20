@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from lib.midi_controller import KorgNanoKontrol2
 from corefunctions.Events import EventScheduler
-from corefunctions import shader_effects as fx
+from renderer import effects as fx
 
 
 def integrate_midi_controller():
