@@ -12,7 +12,7 @@ from lib.weather_state import WeatherStateController
 from lib.weather_set import WeatherSetManager
 from corefunctions.shader_effects.celestial_bodies import CELESTIAL_BODIES
 from corefunctions import shader_effects as fx
-from corefunctions.web_controller import WebController
+from web.web_controller import WebController
 
 class EnvironmentalSystem:
     def __init__(self):
