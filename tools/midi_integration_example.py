@@ -7,7 +7,7 @@ Shows how to use MIDI controller to control shader effects and weather
 import time
 from pathlib import Path
 from lib.midi_controller import KorgNanoKontrol2
-from corefunctions.Events import EventScheduler
+from engine.render_pipeline import RenderPipeline
 from renderer import effects as fx
 
 
