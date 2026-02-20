@@ -6,7 +6,7 @@ This system provides a web-based interface for controlling GL_Simple environment
 
 The web control system consists of three main components:
 
-1. **WebController** (`corefunctions/web_controller.py`) - Flask-based web server
+1. **WebController** (`web/web_controller.py`) - Flask-based web server
 2. **Control Panel HTML** (`templates/control_panel.html`) - Web interface
 3. **Integration** (`Stories_OGL.py`) - Connected to the main application
 
@@ -121,7 +121,7 @@ web_controller.add_control(
 
 ### WebController Class
 
-Located in `corefunctions/web_controller.py`:
+Located in `web/web_controller.py`:
 
 - Manages a shared dictionary (`control_dict`) with thread-safe access
 - Provides REST API endpoints for reading/writing values

@@ -49,17 +49,17 @@ class EnvironmentalSystem:
                 {
                     'ip': '192.168.68.111',
                     'pixel_count': 2019,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitA.txt"),
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt"),
                 },
                 {
                     'ip': '192.168.68.125',
                     'pixel_count': 1777,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitB.txt"),
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt"),
                 },
                 {
                     'ip': '192.168.68.124',
                     'pixel_count': 1793,
-                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitC.txt"),
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt"),
                 },
             ],
         ]

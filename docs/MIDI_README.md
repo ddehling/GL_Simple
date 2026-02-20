@@ -30,7 +30,7 @@ pip install -r requirements.txt
 ### Basic Usage
 
 ```python
-from corefunctions.midi_controller import KorgNanoKontrol2
+from lib.midi_controller import KorgNanoKontrol2
 
 # Create and connect to controller
 midi = KorgNanoKontrol2(auto_connect=True)
@@ -129,7 +129,7 @@ Transport controls:
 ### Example 1: Control Shader Parameters
 
 ```python
-from corefunctions.midi_controller import KorgNanoKontrol2
+from lib.midi_controller import KorgNanoKontrol2
 
 # Setup
 midi = KorgNanoKontrol2()
@@ -334,13 +334,13 @@ Some buttons send Note On messages instead of CC. The handler supports both, but
 Run the standalone test:
 
 ```bash
-python corefunctions/midi_controller.py
+python lib/midi_controller.py
 ```
 
 Or run the integration example:
 
 ```bash
-python corefunctions/midi_integration_example.py
+python tools/midi_integration_example.py
 ```
 
 Move controls on your nanoKontrol2 to see real-time updates.

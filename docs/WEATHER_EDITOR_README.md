@@ -100,8 +100,8 @@ Each weather state has numerous configurable parameters:
 - **Weather Sets**: Collections of weather states with their own characteristics
 
 ### File Location
-- Original: `corefunctions/weather_params.py`
-- Backup: `corefunctions/weather_params.py.backup`
+- Original: `lib/weather_params.py`
+- Backup: `lib/weather_params.py.backup`
 
 ## Parameter Reference
 
@@ -130,7 +130,7 @@ Each weather state has numerous configurable parameters:
 
 **Changes not saving**:
 - Click "Validate" first to check for errors
-- Check you have write permissions to corefunctions/ folder
+- Check you have write permissions to lib/ folder
 - Review error messages in status bar
 
 **Application doesn't reflect changes**:
