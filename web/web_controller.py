@@ -42,7 +42,7 @@ class WebController:
         self._cache_duration = 0.1  # Cache for 100ms
         
         self.app = Flask(__name__, 
-                        template_folder=str(Path(__file__).parent.parent / 'templates'))
+                        template_folder=str(Path(__file__).parent / 'templates'))
         
         # Configure Flask session with a secret key
         self.app.secret_key = secrets.token_hex(32)
