@@ -11,8 +11,12 @@ class AudioCache:
     def __init__(self):
         self._cache = {}
 
-    def get(self, filename, duration, sample_rate, channels, skip_time=0,volume=1):
-        cache_key = f"{filename}_{skip_time}"
+    def get(self, filename, duration, sample_rate, channels, skip_time=0, volume=1):
+        """Load and cache audio data.
+
+        duration: seconds to keep, or None to load the full file.
+        """
+        cache_key = f"{filename}_{skip_time}_{duration}"
         if cache_key not in self._cache:
             print(f"Loading {cache_key} into cache")
             # Load the audio file
@@ -25,22 +29,22 @@ class AudioCache:
                 audio_data, _ = sf.read(filename, dtype='float32')
                 if audio_data.ndim == 1:
                     audio_data = np.column_stack((audio_data, audio_data))
-
             elif Path(filename).exists():
                 audio_data, _ = sf.read(filename, dtype='float32')
                 if audio_data.ndim == 1:
                     audio_data = np.column_stack((audio_data, audio_data))
             else:
                 print('File not found:', filename)
-                audio_data = np.zeros((int(sample_rate * duration), channels), dtype=np.float32)
+                n = int(sample_rate * (duration or 1))
+                audio_data = np.zeros((n, channels), dtype=np.float32)
 
-            # Apply skip time and trim to the required duration
+            # Apply skip time and optional duration trim
             skip_samples = int(sample_rate * skip_time)
-            total_samples = int(sample_rate * (duration + skip_time))
             if skip_samples > 0 and skip_samples < len(audio_data):
-                audio_data = audio_data[skip_samples:total_samples]*volume
-            audio_data = audio_data[:int(sample_rate * duration)]*volume
-            self._cache[cache_key] = audio_data
+                audio_data = audio_data[skip_samples:]
+            if duration is not None:
+                audio_data = audio_data[:int(sample_rate * duration)]
+            self._cache[cache_key] = (audio_data * volume).astype(np.float32)
 
         return np.copy(self._cache[cache_key])
     
@@ -92,8 +96,38 @@ class AudioEngine:
             return False
         return True
 
-    def load_audio(self, filename, duration, skip_time=0,volume=1):
-        return self.audio_cache.get(filename, duration, self.sample_rate, self.channels, skip_time,volume)
+    def load_audio(self, filename, duration, skip_time=0, volume=1):
+        return self.audio_cache.get(filename, duration, self.sample_rate, self.channels, skip_time, volume)
+
+    def play_oneshot(self, filepath, volume=1.0):
+        """Play a sound file once without blocking the caller.
+
+        The file is loaded (or retrieved from cache) on a background thread.
+        Subsequent calls with the same file are served instantly from cache.
+        Intended for short event sounds (thunder, creature calls, UI feedback).
+        For files longer than ~30 s use StreamingPlayer instead.
+        """
+        filepath = Path(filepath)
+        event = AudioEvent(filepath, time.time(), duration=0)
+        with self.lock:
+            heapq.heappush(self.event_heap, event)
+            self.event_dict[event.id] = event
+
+        def _load():
+            try:
+                event.audio_data = self.audio_cache.get(
+                    filepath, duration=None,
+                    sample_rate=self.sample_rate, channels=self.channels,
+                    volume=volume,
+                )
+            except Exception as e:
+                print(f"[AudioEngine] play_oneshot failed to load {filepath.name}: {e}")
+                with self.lock:
+                    self.event_dict.pop(event.id, None)
+                    self.active_events.discard(event.id)
+
+        threading.Thread(target=_load, daemon=True, name=f"load-{filepath.name}").start()
+        return event.id
 
     def push_stream_audio(self, audio_chunk):
         """Push audio chunk for streaming playback (thread-safe)
@@ -159,8 +193,7 @@ class AudioEngine:
                     
                 event = self.event_dict[event_id]
                 if event.audio_data is None:
-                    events_to_remove.add(event_id)
-                    continue
+                    continue  # still loading in background — check next frame
 
                 # Check if event should still be playing
                 if not event.is_looping and event.position >= len(event.audio_data):
@@ -235,7 +268,7 @@ class AudioEngine:
                         pass  # audio_buffer already zero-filled at start
                     
                     # Don't mark inactive when buffer empties - new chunks will arrive from streaming thread
-            
+
             # Normalize if needed
             max_val = np.max(np.abs(self.audio_buffer))
             if max_val > 1:
@@ -309,6 +342,50 @@ class ThreadedAudioEngine(AudioEngine):
             self.thread.join()
             self.stream.stop()
             self.stream.close()
+
+class StreamingPlayer:
+    """Stream audio from disk using pygame.mixer.music.
+
+    The library handles all buffering, device callbacks, and format decoding.
+    Supports looping, volume, fade-in, and fade-out without any manual chunking.
+
+    Supported formats: MP3, WAV, OGG, FLAC.
+    Only one StreamingPlayer can be active at a time (pygame.mixer.music limit).
+    """
+
+    def __init__(self, engine=None, filepath=None, name="ambient",
+                 loop=False, volume=1.0, fade_in=0.0, skip_time=0.0):
+        import pygame
+        self.filepath = Path(filepath)
+        self.name = name
+        self.loop = loop
+        self.volume = float(volume)
+        self.fade_in = float(fade_in)
+        self.skip_time = float(skip_time)
+        # engine kept for API compatibility; sample_rate used for mixer init
+        sr = engine.sample_rate if engine else 44100
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=sr, size=-16, channels=2, buffer=4096)
+
+    def start(self):
+        import pygame
+        pygame.mixer.music.load(str(self.filepath))
+        pygame.mixer.music.set_volume(self.volume)
+        loops = -1 if self.loop else 0
+        fade_ms = int(self.fade_in * 1000) if self.fade_in > 0 else 0
+        pygame.mixer.music.play(loops=loops, start=self.skip_time, fade_ms=fade_ms)
+        print(f"[StreamingPlayer:{self.name}] Started: {self.filepath.name}")
+
+    def stop(self):
+        import pygame
+        pygame.mixer.music.stop()
+        print(f"[StreamingPlayer:{self.name}] Stopped")
+
+    def fade_out(self, duration):
+        import pygame
+        pygame.mixer.music.fadeout(int(duration * 1000))
+        print(f"[StreamingPlayer:{self.name}] Fading out over {duration}s")
+
 
 if __name__ == "__main__":
     engine = ThreadedAudioEngine()

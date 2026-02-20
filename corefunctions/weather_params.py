@@ -600,7 +600,7 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_KELP_FOREST: {
         "ARI": 42,
-        "ambient_sound": "10 Sea from cliff top.mp3",
+        "ambient_sound": "one-hour-waves.mp3",
         "bioluminescence": 0.1,
         "bubble_density": 0.2,
         "celestial_visibility": 0.7,
