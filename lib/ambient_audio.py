@@ -3,7 +3,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from corefunctions.soundtestthreaded import StreamingPlayer
+from lib.audio_engine import StreamingPlayer
 
 
 class AmbientAudioController:

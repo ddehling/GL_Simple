@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 from corefunctions.Events import EventScheduler
 
-from corefunctions.soundinput import MicrophoneAnalyzer
+from lib.audio_analyzer import MicrophoneAnalyzer
 from lib.ambient_audio import AmbientAudioController
 from lib.weather_params import (
     WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET

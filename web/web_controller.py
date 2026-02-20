@@ -405,7 +405,7 @@ class WebController:
             """Save modified weather data back to weather_params.py."""
             try:
                 data = request.json
-                from corefunctions.weather_editor_utils import save_weather_params
+                from lib.weather_editor_utils import save_weather_params
                 
                 result = save_weather_params(
                     weather_states=data.get('weather_states', []),
@@ -455,7 +455,7 @@ class WebController:
             """Validate weather data without saving."""
             try:
                 data = request.json
-                from corefunctions.weather_editor_utils import validate_weather_params
+                from lib.weather_editor_utils import validate_weather_params
                 
                 result = validate_weather_params(
                     weather_states=data.get('weather_states', []),
