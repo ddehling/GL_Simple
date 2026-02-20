@@ -208,8 +208,8 @@ class RenderPipeline:
         last = state['last_logged_divisor']
         if state['divisor'] > 1.001:
             frame_corrected = frame_corrected / state['divisor']
-            # Log when limiting starts or value shifts by more than 5%
-            if last <= 1.001 or abs(state['divisor'] - last) > 0.05:
+            # Log when limiting starts or value shifts by more than 20%
+            if last <= 1.001 or abs(state['divisor'] - last) > 0.2:
                 print(f"[RenderPipeline] Brightness limiting active: divisor={state['divisor']:.3f} (display {frame_index})")
                 state['last_logged_divisor'] = state['divisor']
         elif last > 1.001:
