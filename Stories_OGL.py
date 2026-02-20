@@ -177,11 +177,11 @@ class EnvironmentalSystem:
             immediate: If True, change immediately. If False, queue for next transition.
         """
         if not self.weather_set.is_valid_set(new_set_name):
-            print(f"⚠️ Unknown weather set: {new_set_name}")
+            print(f"[WEATHER] Unknown weather set: {new_set_name}")
             return False
 
         if new_set_name == self.weather_set.current_set:
-            print(f"Already in set '{new_set_name}'")
+            print(f"[WEATHER] Already in set '{new_set_name}', skipping")
             return True
 
         if immediate:
@@ -197,7 +197,7 @@ class EnvironmentalSystem:
             # Pick a random weather from the new set
             set_states = self.weather_set.get_set_states()
             new_weather = np.random.choice(set_states)
-            print(f"   Starting with: {new_weather.value}")
+            print(f"[WEATHER]   Starting with: {new_weather.value}")
 
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
@@ -206,7 +206,7 @@ class EnvironmentalSystem:
             # Queue for next transition
             self.weather_set.queue_set_change(new_set_name)
             print(f"[WEATHER] Weather set change queued: '{self.weather_set.current_set}' -> '{new_set_name}'")
-            print(f"   Will transition on next weather change...")
+            print(f"[WEATHER]   Will transition on next weather change...")
         
         return True
     
@@ -230,7 +230,7 @@ class EnvironmentalSystem:
         """Schedule an event from the event map"""
         entry = self.weather_set.resolve_event(event_name)
         if entry is None:
-            print(f"   ⚠️ Unknown event: {event_name}")
+            print(f"[WEATHER] Unknown event: {event_name}")
             return None
 
         effect_func, params = entry
@@ -239,7 +239,6 @@ class EnvironmentalSystem:
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
         target_params = self.weather_state.start_transition(new_weather, transition_duration, time.time())
-        print(self.weather_state.target_weather)
         
         # Schedule events based on on_transition_events in weather preset
         on_transition_events = target_params.get("on_transition_events", [])
@@ -247,10 +246,10 @@ class EnvironmentalSystem:
             if isinstance(event_config, tuple) and len(event_config) >= 2:
                 event_name, duration = event_config[:2]
                 frame_id = event_config[2] if len(event_config) > 2 else 0
-                print(f"   🎬 Transition event: {event_name} ({duration}s)")
+                print(f"[WEATHER]   Transition event: {event_name} ({duration}s)")
                 self._schedule_event_from_map(event_name, 0, duration, frame_id=frame_id)
             else:
-                print(f"   ⚠️ Invalid on_transition_event format: {event_config}")
+                print(f"[WEATHER]   Invalid on_transition_event format: {event_config}")
 
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
         volume = target_params.get("Sound_volume", 1.0)
@@ -388,7 +387,7 @@ class EnvironmentalSystem:
                 # Pick a random weather from the new set
                 set_states = self.weather_set.get_set_states()
                 new_weather = np.random.choice(set_states)
-                print(f"   Starting with: {new_weather.value}")
+                print(f"[WEATHER]   Starting with: {new_weather.value}")
 
                 new_weather_params = self.weather_state.get_weather_params(new_weather)
                 t_duration = new_weather_params["transition_duration"]

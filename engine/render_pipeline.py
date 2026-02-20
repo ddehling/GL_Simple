@@ -84,7 +84,7 @@ class RenderPipeline:
             'smoothing': 0.05,
         }
         self.brightness_state = [
-            {'divisor': 1.0, 'bright_factor': 0.0}
+            {'divisor': 1.0, 'bright_factor': 0.0, 'last_logged_divisor': 0.0}
             for _ in frame_dimensions
         ]
 
@@ -205,9 +205,16 @@ class RenderPipeline:
         alpha = cfg['smoothing']
         state['divisor'] = alpha * target_divisor + (1 - alpha) * state['divisor']
 
+        last = state['last_logged_divisor']
         if state['divisor'] > 1.001:
             frame_corrected = frame_corrected / state['divisor']
-            print(f"[RenderPipeline] Brightness divisor: {state['divisor']:.3f}")
+            # Log when limiting starts or value shifts by more than 5%
+            if last <= 1.001 or abs(state['divisor'] - last) > 0.05:
+                print(f"[RenderPipeline] Brightness limiting active: divisor={state['divisor']:.3f} (display {frame_index})")
+                state['last_logged_divisor'] = state['divisor']
+        elif last > 1.001:
+            print(f"[RenderPipeline] Brightness limiting off (display {frame_index})")
+            state['last_logged_divisor'] = state['divisor']
 
         return np.clip(frame_corrected, 0, 255).astype(np.uint8)
 

@@ -31,7 +31,7 @@ class ShaderRenderer:
             available_height = monitor_height - 100 if not headless else monitor_height
             calculated_mag = max(1, int(available_height / base_height))
             self.magnification = calculated_mag
-            print(f"Auto-calculated magnification: {self.magnification}x (monitor height: {monitor_height}px, available: {available_height}px)")
+            print(f"[ShaderRenderer] Auto-calculated magnification: {self.magnification}x (monitor height: {monitor_height}px, available: {available_height}px)")
         else:
             self.magnification = max(1, int(magnification))  # Ensure integer >= 1
         
@@ -48,12 +48,12 @@ class ShaderRenderer:
                 self.magnification = max(1, int((monitor_height - 100) / base_height))
                 self.window_width = base_width * self.magnification
                 self.window_height = base_height * self.magnification
-                print(f"Adjusted magnification from {old_mag}x to {self.magnification}x to fit monitor")
+                print(f"[ShaderRenderer] Adjusted magnification from {old_mag}x to {self.magnification}x to fit monitor")
         
         if self.magnification > 1:
-            print(f"Window size: {self.window_width}x{self.window_height} ({self.magnification}x magnification of {base_width}x{base_height})")
+            print(f"[ShaderRenderer] Window: {self.window_width}x{self.window_height} ({self.magnification}x magnification of {base_width}x{base_height})")
         else:
-            print(f"Window size: {self.window_width}x{self.window_height} (viewport 0 native size)")
+            print(f"[ShaderRenderer] Window: {self.window_width}x{self.window_height} (native size)")
         
         self.create_window()
         
@@ -67,13 +67,13 @@ class ShaderRenderer:
         glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
         
         if IS_RASPBERRY_PI:
-            print("Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
+            print("[ShaderRenderer] Configuring for Raspberry Pi (OpenGL ES 3.1 + EGL)")
             glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
             glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
             glfw.window_hint(glfw.CONTEXT_CREATION_API, glfw.EGL_CONTEXT_API)
         else:
-            print("Configuring for Desktop (OpenGL ES 3.1)")
+            print("[ShaderRenderer] Configuring for Desktop (OpenGL ES 3.1)")
             glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
             glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
@@ -92,10 +92,10 @@ class ShaderRenderer:
                     _, yscale = glfw.get_monitor_content_scale(monitor)
                     logical_height = int(physical_height / yscale)
                     if yscale != 1.0:
-                        print(f"Monitor content scale: {yscale}x (physical: {physical_height}px, logical: {logical_height}px)")
+                        print(f"[ShaderRenderer] Monitor content scale: {yscale}x (physical: {physical_height}px, logical: {logical_height}px)")
                     return logical_height
         except Exception as e:
-            print(f"Warning: Could not detect monitor size: {e}")
+            print(f"[ShaderRenderer] Warning: Could not detect monitor size: {e}")
 
         # Fallback to a reasonable default if detection fails
         return 1080
@@ -113,7 +113,7 @@ class ShaderRenderer:
         # (e.g. Wayland + GNOME with content scaling on Linux)
         self.fb_width, self.fb_height = glfw.get_framebuffer_size(self.window)
         if self.fb_width != self.window_width or self.fb_height != self.window_height:
-            print(f"HiDPI framebuffer: window={self.window_width}x{self.window_height}, "
+            print(f"[ShaderRenderer] HiDPI framebuffer: window={self.window_width}x{self.window_height}, "
                   f"framebuffer={self.fb_width}x{self.fb_height}")
 
         # Disable window resizing at runtime (redundant with hint, but ensures it)
@@ -131,12 +131,12 @@ class ShaderRenderer:
         
         version = glGetString(GL_VERSION)
         if version:
-            print(f"OpenGL Version: {version.decode()}")
+            print(f"[ShaderRenderer] OpenGL Version: {version.decode()}")
         glsl_version = glGetString(GL_SHADING_LANGUAGE_VERSION)
         if glsl_version:
-            print(f"GLSL Version: {glsl_version.decode()}")
-        
-        print(f"Created non-resizable OpenGL window: {self.window_width}x{self.window_height}")
+            print(f"[ShaderRenderer] GLSL Version: {glsl_version.decode()}")
+
+        print(f"[ShaderRenderer] Window created: {self.window_width}x{self.window_height}")
         self.ctx_initialized = True
         
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
@@ -161,14 +161,14 @@ class ShaderRenderer:
             y_offset = 0
         
         if not self.headless:
-            print(f"Creating viewport {frame_id}:")
-            print(f"  Framebuffer (LED): {width}x{height}")
+            print(f"[ShaderRenderer] Creating viewport {frame_id}:")
+            print(f"[ShaderRenderer]   Framebuffer (LED): {width}x{height}")
             if frame_id == 0:
-                print(f"  Display: {display_width}x{display_height} (full window)")
+                print(f"[ShaderRenderer]   Display: {display_width}x{display_height} (full window)")
             else:
-                print(f"  Display: offscreen only")
+                print(f"[ShaderRenderer]   Display: offscreen only")
         else:
-            print(f"Creating viewport {frame_id}: {width}x{height} (headless)")
+            print(f"[ShaderRenderer] Creating viewport {frame_id}: {width}x{height} (headless)")
         
         viewport = ShaderViewport(frame_id, width, height, 
                                  x_offset, y_offset, 
@@ -284,7 +284,7 @@ class ShaderViewport:
             raise RuntimeError(f"Framebuffer incomplete: {status}")
         
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        print(f"  Framebuffer created: {self.width}x{self.height}")
+        print(f"[ShaderViewport] Framebuffer created: {self.width}x{self.height} (frame {self.frame_id})")
 
     
     def add_effect(self, effect_class, **params):
@@ -294,7 +294,7 @@ class ShaderViewport:
         effect = effect_class(self, **params)
         effect.init()
         self.effects.append(effect)
-        print(f"  Added effect: {effect.__class__.__name__} to frame {self.frame_id}")
+        print(f"[ShaderViewport] Added effect: {effect.__class__.__name__} (frame {self.frame_id})")
         return effect
     
     def clear(self):

@@ -26,7 +26,7 @@ class AudioCache:
         """
         cache_key = f"{filename}_{skip_time}_{duration}"
         if cache_key not in self._cache:
-            print(f"Loading {cache_key} into cache")
+            print(f"[AudioCache] Loading {cache_key}")
             # Load the audio file
             if filename.suffix == '.mp3':
                 audio_data, _ = librosa.load(filename, sr=sample_rate, mono=False)
@@ -42,7 +42,7 @@ class AudioCache:
                 if audio_data.ndim == 1:
                     audio_data = np.column_stack((audio_data, audio_data))
             else:
-                print('File not found:', filename)
+                print(f"[AudioCache] File not found: {filename}")
                 n = int(sample_rate * (duration or 1))
                 audio_data = np.zeros((n, channels), dtype=np.float32)
 
@@ -100,7 +100,7 @@ class AudioEngine:
     def safe_lock(self, timeout=1.0):
         acquired = self.lock.acquire(timeout=timeout)
         if not acquired:
-            print("Warning: Lock acquisition timed out")
+            print("[AudioEngine] Warning: Lock acquisition timed out")
             return False
         return True
 
@@ -170,7 +170,7 @@ class AudioEngine:
 
     def audio_callback(self, outdata, frames, time, status):
         if status:
-            print(status)
+            print(f"[AudioEngine] Stream error: {status}")
         with self.lock:
             self.update_audio_buffer()
             outdata[:] = self.audio_buffer
@@ -328,7 +328,7 @@ class AudioEngine:
             while self.running:
                 time.sleep(1 / self.fps)
         except KeyboardInterrupt:
-            print("Stopping the audio engine...")
+            print("[AudioEngine] Stopping...")
         finally:
             self.running = False
             self.stream.stop()
