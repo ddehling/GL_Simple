@@ -1,11 +1,10 @@
 import numpy as np
 import time
-import threading
 from pathlib import Path
 from corefunctions.Events import EventScheduler
-from corefunctions.soundtestthreaded import StreamingPlayer
 
 from corefunctions.soundinput import MicrophoneAnalyzer
+from lib.ambient_audio import AmbientAudioController
 from lib.weather_params import (
     WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 )
@@ -57,7 +56,7 @@ class EnvironmentalSystem:
         self.scheduler.state["skyfull"] = False
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
         self.active_effects = {"world": None, "ambient_sound": None}
-        self._ambient_player = None   # active StreamingPlayer for ambient sound
+        self._ambient_audio = AmbientAudioController()
         # Event map - maps event names to shader effects and their parameters
         # This is used for both background events and on-transition events
         # Format: "event_name": (shader_function, {params_dict})
@@ -207,33 +206,11 @@ class EnvironmentalSystem:
             else:
                 print(f"   ⚠️ Invalid on_transition_event format: {event_config}")
 
-        # Handle ambient sound transition — run on a background thread so
-        # pygame.mixer.music.load() / fadeout() never block the render loop.
-        old_player = self._ambient_player
-        self._ambient_player = None
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
         volume = target_params.get("Sound_volume", 1.0)
         skip_time = target_params.get("skiptime", 0.0)
         engine = self.scheduler.state["soundengine"]
-
-        def _audio_transition():
-            if old_player is not None:
-                old_player.fade_out(2.0)
-                time.sleep(2.0)          # let the fade complete before loading new music
-            new_player = StreamingPlayer(
-                engine=engine,
-                filepath=sound_path,
-                name="ambient",
-                loop=True,
-                volume=volume,
-                fade_in=5.0,
-                skip_time=skip_time,
-            )
-            new_player.start()
-            self._ambient_player = new_player
-
-        threading.Thread(target=_audio_transition, daemon=True,
-                         name="audio-transition").start()
+        self._ambient_audio.transition(sound_path, volume, skip_time, engine)
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
     def apply_web_controls(self):
@@ -434,9 +411,7 @@ class EnvironmentalSystem:
 
     def shutdown(self):
         """Stop all audio and background threads cleanly."""
-        if self._ambient_player is not None:
-            self._ambient_player.stop()
-            self._ambient_player = None
+        self._ambient_audio.stop()
         self.analyzer.stop()
 
     def update(self):
