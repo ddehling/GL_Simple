@@ -23,7 +23,6 @@ except ImportError:
         MOVIEPY_AVAILABLE = True
     except ImportError:
         MOVIEPY_AVAILABLE = False
-        print("WARNING: moviepy not available - audio playback disabled")
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
