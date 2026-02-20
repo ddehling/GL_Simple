@@ -1,7 +1,8 @@
 import numpy as np
 import time
 from pathlib import Path
-from corefunctions.Events import EventScheduler
+from engine.render_pipeline import RenderPipeline
+import lib.dmx_sender as imdmx
 
 from lib.audio_analyzer import MicrophoneAnalyzer
 from lib.ambient_audio import AmbientAudioController
@@ -17,13 +18,58 @@ from web.web_controller import WebController
 class EnvironmentalSystem:
     def __init__(self):
         frame_dimensions = [
-            (128 , 300),   # Frame 0 (primary/main display)
-              # Frame 1 (secondary display)
+            (128, 300),   # Frame 0 (primary/main display)
         ]
-        self.scheduler = EventScheduler(
-        use_shader_renderer=True,
-        headless=False,frames=frame_dimensions, magnification=0  # 0 = auto-scale to monitor
-    )
+
+        # Hardware receiver configuration — one list per frame
+        receivers = [
+            [
+                {
+                    'ip': '192.168.68.140',
+                    'pixel_count': 300 * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 0),
+                },
+                {
+                    'ip': '192.168.68.141',
+                    'pixel_count': 300 * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 32),
+                },
+                {
+                    'ip': '192.168.68.142',
+                    'pixel_count': 300 * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 64),
+                },
+                {
+                    'ip': '192.168.68.143',
+                    'pixel_count': 300 * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 96),
+                },
+            ],
+            [
+                {
+                    'ip': '192.168.68.111',
+                    'pixel_count': 2019,
+                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitA.txt"),
+                },
+                {
+                    'ip': '192.168.68.125',
+                    'pixel_count': 1777,
+                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitB.txt"),
+                },
+                {
+                    'ip': '192.168.68.124',
+                    'pixel_count': 1793,
+                    'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitC.txt"),
+                },
+            ],
+        ]
+
+        self.scheduler = RenderPipeline(
+            frame_dimensions=frame_dimensions,
+            receivers=receivers,
+            magnification=0,  # 0 = auto-scale to monitor
+            headless=False,
+        )
         self.weather_state = WeatherStateController()
         self.season = 0.0  # Initialize season value
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
