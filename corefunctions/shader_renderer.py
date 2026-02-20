@@ -79,40 +79,55 @@ class ShaderRenderer:
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
     
     def get_monitor_height(self):
-        """Get the height of the primary monitor"""
+        """Get the logical height of the primary monitor (in screen coordinates)"""
         try:
             monitor = glfw.get_primary_monitor()
             if monitor:
                 video_mode = glfw.get_video_mode(monitor)
                 if video_mode:
-                    return video_mode.size[1]  # Return height
+                    physical_height = video_mode.size[1]
+                    # On HiDPI displays (Wayland/Linux), video mode may return physical
+                    # pixels while windows are sized in logical coords. Divide by content
+                    # scale to get the usable logical height.
+                    _, yscale = glfw.get_monitor_content_scale(monitor)
+                    logical_height = int(physical_height / yscale)
+                    if yscale != 1.0:
+                        print(f"Monitor content scale: {yscale}x (physical: {physical_height}px, logical: {logical_height}px)")
+                    return logical_height
         except Exception as e:
             print(f"Warning: Could not detect monitor size: {e}")
-        
+
         # Fallback to a reasonable default if detection fails
         return 1080
         
     def create_window(self):
         """Create a visible OpenGL window"""
-        self.window = glfw.create_window(self.window_width, self.window_height, 
+        self.window = glfw.create_window(self.window_width, self.window_height,
                                         "LED Renderer", None, None)
         if not self.window:
             raise RuntimeError("Failed to create OpenGL window")
-            
+
         glfw.make_context_current(self.window)
-        
+
+        # Get actual framebuffer size — differs from window size on HiDPI displays
+        # (e.g. Wayland + GNOME with content scaling on Linux)
+        self.fb_width, self.fb_height = glfw.get_framebuffer_size(self.window)
+        if self.fb_width != self.window_width or self.fb_height != self.window_height:
+            print(f"HiDPI framebuffer: window={self.window_width}x{self.window_height}, "
+                  f"framebuffer={self.fb_width}x{self.fb_height}")
+
         # Disable window resizing at runtime (redundant with hint, but ensures it)
         glfw.set_window_attrib(self.window, glfw.RESIZABLE, glfw.FALSE)
-        
+
         # OpenGL setup for depth-based rendering
         glEnable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE)  # ENABLE depth writes for proper occlusion
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_SCISSOR_TEST)
-        
-        # Set viewport to ensure full frame is displayed
-        glViewport(0, 0, self.window_width, self.window_height)
+
+        # Use actual framebuffer size for the GL viewport (not logical window size)
+        glViewport(0, 0, self.fb_width, self.fb_height)
         
         version = glGetString(GL_VERSION)
         if version:
@@ -133,8 +148,9 @@ class ShaderRenderer:
         
         # Only viewport 0 is displayed in the window
         if frame_id == 0:
-            display_width = self.window_width
-            display_height = self.window_height
+            # Use framebuffer size for GL operations, not logical window size
+            display_width = self.fb_width
+            display_height = self.fb_height
             x_offset = 0
             y_offset = 0
         else:
@@ -187,8 +203,8 @@ class ShaderRenderer:
     def clear_window(self):
         """Clear the entire window"""
         glfw.make_context_current(self.window)
-        glViewport(0, 0, self.window_width, self.window_height)
-        glScissor(0, 0, self.window_width, self.window_height)
+        glViewport(0, 0, self.fb_width, self.fb_height)
+        glScissor(0, 0, self.fb_width, self.fb_height)
         glClearColor(0.1, 0.1, 0.1, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
     

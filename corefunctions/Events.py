@@ -66,6 +66,7 @@ class EventScheduler:
         self.active_events = []
         self.state = {}
         self.should_exit = False
+        self._cleaned_up = False
         
 
         frame_dimensions = frames
@@ -413,19 +414,23 @@ class EventScheduler:
 
     def cleanup(self):
         """Clean up all resources"""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+
         print("Cleaning up EventScheduler...")
-        
+
         # Cancel all events
         self.cancel_all_events()
-        
+
         # Clean up renderer
         if self.use_shader_renderer:
             self.shader_renderer.cleanup()
-        
+
         # Clean up sound engine
         if hasattr(self.state.get('soundengine'), 'stop'):
             self.state['soundengine'].stop()
-        
+
         print("[OK] Cleanup complete")
     
     def __del__(self):

@@ -76,7 +76,7 @@ class AudioEngine:
         self.fps = 30
         self.channels = 2
         self.sample_rate = 44100
-        self.buffer_size = 1024
+        self.buffer_size = 2048
         self.audio_buffer = np.zeros((self.buffer_size, self.channels), dtype=np.float32)
         self.event_heap = []
         self.event_dict = {}
