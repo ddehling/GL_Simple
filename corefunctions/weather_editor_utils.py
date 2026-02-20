@@ -85,9 +85,9 @@ def save_weather_params(weather_states, weather_presets, weather_sets, global_pa
                 "error": "Validation failed: " + "; ".join(validation["errors"])
             }
         
-        # Get the path to weather_params.py
-        current_dir = Path(__file__).parent
-        weather_params_path = current_dir / "weather_params.py"
+        # Get the path to weather_params.py (now lives in lib/)
+        current_dir = Path(__file__).parent.parent
+        weather_params_path = current_dir / "lib" / "weather_params.py"
         
         # Create backup
         backup_path = weather_params_path.with_suffix('.py.backup')
@@ -347,7 +347,7 @@ def get_current_weather_params():
         dict: {"weather_states": list, "weather_presets": dict, "weather_sets": dict}
     """
     try:
-        from corefunctions.weather_params import (
+        from lib.weather_params import (
             WeatherState, WEATHER_PRESETS, WEATHER_SETS
         )
         

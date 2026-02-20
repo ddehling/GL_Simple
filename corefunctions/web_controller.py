@@ -337,8 +337,8 @@ class WebController:
             
             # Cache this expensive operation (but allow refresh)
             if not hasattr(self, '_weather_data_cache') or refresh:
-                from corefunctions.weather_params import (
-                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS, 
+                from lib.weather_params import (
+                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS,
                     GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS, AVAILABLE_BACKGROUND_EVENTS
                 )
                 import numpy as np
@@ -433,7 +433,7 @@ class WebController:
             """Reload the weather_params module to reflect saved changes."""
             try:
                 import importlib
-                from corefunctions import weather_params
+                from lib import weather_params
                 importlib.reload(weather_params)
                 
                 # Clear cache since module has been reloaded
