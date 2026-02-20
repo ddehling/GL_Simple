@@ -392,7 +392,7 @@ if __name__ == "__main__":
     engine.start()
     
     # Test cases
-    engine.schedule_event("C:\\Users\\diete\\Desktop\\devel-local\\LED-Sign\\media\\sounds\\Rain Into Puddle.wav", time.time() + 1, 5,repeat_interval=4,inname='toot')  # Single play
+    engine.schedule_event("media/sounds/Rain Into Puddle EDITED.wav", time.time() + 1, 5,repeat_interval=4,inname='toot')  # Single play
     
     try:
         while True:

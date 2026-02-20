@@ -1,3 +1,4 @@
+# Standalone tool: audio waveform editor and clip trimmer (not part of the main app).
 """
 Modern Sound Editor Utility
 Features:

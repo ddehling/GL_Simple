@@ -5,8 +5,6 @@ import corefunctions.soundtestthreaded as sound
 import corefunctions.ImageToDMX as imdmx
 from corefunctions.shader_renderer import ShaderRenderer
 import threading
-import queue
-import socket
 
 class TimedEvent:
     def __init__(self, start_time, duration, action, args=(), kwargs={}, name=None, frame_id=None):
@@ -67,6 +65,7 @@ class EventScheduler:
         self.event_queue = []
         self.active_events = []
         self.state = {}
+        self.should_exit = False
         
 
         frame_dimensions = frames
@@ -166,28 +165,6 @@ class EventScheduler:
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
                 },
             ],
-            # [
-            #     {
-            #         'ip': '192.168.68.113',
-            #         'pixel_count': 300*32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,0)
-            #     },  
-            #                              {
-            #         'ip': '192.168.68.114',
-            #         'pixel_count': 300*32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,32)
-            #     },      
-            #                              {
-            #         'ip': '192.168.68.115',
-            #         'pixel_count': 300*32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,64)
-            #     },
-            #                                     {
-            #         'ip': '192.168.68.116',
-            #         'pixel_count': 300*32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32,300,96)
-            #     },
-            # ]
             # Primary display receivers (frame 0)
             [
                 {
@@ -206,24 +183,6 @@ class EventScheduler:
                     'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitC.txt")
                 }
             ],
-            # # Secondary display receivers (frame 1)
-            # [
-            #     {
-            #         'ip': '192.168.68.130',
-            #         'pixel_count': 2160,
-            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitD.txt")
-            #     },
-            #     {
-            #         'ip': '192.168.68.131',
-            #         'pixel_count': 2040,
-            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitE.txt")
-            #     },
-            #     {
-            #         'ip': '192.168.68.132',
-            #         'pixel_count': 2520,
-            #         'addressing_array': imdmx.make_indicesHS(r"./DMXconfig/UnitF.txt")
-            #     }
-            # ]
         ]
         
         # Create pixel senders for each display
@@ -299,8 +258,8 @@ class EventScheduler:
             if self.shader_renderer.should_close():
                 print("Window closed by user")
                 self.cleanup()
-                import sys
-                sys.exit(0)
+                self.should_exit = True
+                return
 
         self.state['current_time'] = time.time()
         
@@ -392,74 +351,6 @@ class EventScheduler:
         # Swap OpenGL buffers if using shader renderer
         if self.use_shader_renderer:
             self.shader_renderer.swap_buffers()
-
-    def _generate_test_pattern(self, height, width, pattern_type=0):
-        """
-        Generate test patterns for debugging
-        
-        Args:
-            height: Frame height in pixels
-            width: Frame width in pixels
-            pattern_type: Which pattern to generate
-                0: Color bars (RGBCMYW)
-                1: Gradient (left to right)
-                2: Checkerboard
-                3: Solid red
-                4: Solid green
-                5: Solid blue
-                6: Solid white
-        """
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        
-        if pattern_type == 0:  # Color bars
-            bar_width = width // 7
-            # Red, Green, Blue, Cyan, Magenta, Yellow, White
-            colors = [
-                [255, 0, 0],    # Red
-                [0, 255, 0],    # Green
-                [0, 0, 255],    # Blue
-                [0, 255, 255],  # Cyan
-                [255, 0, 255],  # Magenta
-                [255, 255, 0],  # Yellow
-                [255, 255, 255] # White
-            ]
-            for i, color in enumerate(colors):
-                x_start = i * bar_width
-                x_end = min((i + 1) * bar_width, width)
-                frame[:, x_start:x_end] = color
-                
-        elif pattern_type == 1:  # Horizontal gradient (left to right)
-            gradient = np.linspace(0, 255, width, dtype=np.uint8)
-            frame[:, :, 0] = gradient  # Red channel
-            frame[:, :, 1] = gradient  # Green channel
-            frame[:, :, 2] = gradient  # Blue channel
-            
-        elif pattern_type == 2:  # Checkerboard
-            checker_size = 8
-            for y in range(height):
-                for x in range(width):
-                    if ((x // checker_size) + (y // checker_size)) % 2 == 0:
-                        frame[y, x] = [255, 255, 255]
-                        
-        elif pattern_type == 3:  # Solid red
-            frame[:, :] = [255, 0, 0]
-            
-        elif pattern_type == 4:  # Solid green
-            frame[:, :] = [0, 255, 0]
-            
-        elif pattern_type == 5:  # Solid blue
-            frame[:, :] = [0, 0, 255]
-            
-        elif pattern_type == 6:  # Solid white
-            frame[:, :] = [255, 255, 255]
-            
-        else:  # Default: diagonal gradient
-            for y in range(height):
-                for x in range(width):
-                    value = int((x + y) / (width + height) * 255)
-                    frame[y, x] = [value, value, value]
-        
-        return frame
 
     def _apply_brightness_limiting(self, frame_corrected, frame_index):
         """Apply brightness limiting to prevent total brightness from exceeding setpoint.

@@ -10,11 +10,7 @@ from corefunctions.weather_params import (
     WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
     WEATHER_SETS, DEFAULT_WEATHER_SET
 )
-from corefunctions.shader_effects.shader_fog import ShaderFog
-from corefunctions.shader_effects.celestial_bodies import (
-     shader_celestial_bodies, 
-     CELESTIAL_BODIES
- )
+from corefunctions.shader_effects.celestial_bodies import CELESTIAL_BODIES
 from corefunctions import shader_effects as fx
 from corefunctions.web_controller import WebController
 
@@ -41,7 +37,6 @@ class EnvironmentalSystem:
         self.season = 0.0  # Initialize season value
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
         self.analyzer.start()
-        #self.specdat = np.zeros([513, 1000])
         self.scale = 0.2
         
         # Initialize web control system (set to False to disable for max performance)
@@ -77,20 +72,6 @@ class EnvironmentalSystem:
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
         self.active_effects = {"world": None, "ambient_sound": None}
         self._ambient_player = None   # active StreamingPlayer for ambient sound
-        corners_frame0 = [
-        (-18, 18),  # Top-left
-        (18, 18),   # Top-right
-        (18, 0),    # Bottom-right
-        (-18, 0)    # Bottom-left
-    ]
-    
-    # Define corners for frame 1 (upward-facing view)
-        corners_frame1 = [
-        (-0, 40),  # Top-left
-        (180, 40),   # Top-right
-        (180, 80),   # Bottom-right
-        (-0, 80)   # Bottom-left
-    ]
         # Event map - maps event names to shader effects and their parameters
         # This is used for both background events and on-transition events
         # Format: "event_name": (shader_function, {params_dict})
@@ -150,9 +131,6 @@ class EnvironmentalSystem:
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
         
-        # Schedule world rendering events for each frame, keeping the original function names
-        #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
-        #self.active_effects["secondary_world"] = self.scheduler.schedule_event(0, 999999999, secondary_multilayer_world, frame_id=1) # noqa: F405
         self.whompcount = 0
 
     def get_weather_params(self, weather_state: WeatherState):
@@ -313,14 +291,6 @@ class EnvironmentalSystem:
         
         return multiplier
 
-    # def get_whomp(self):
-    #     thresh = 1.0
-    #     maxsound = 6
-    #     # loud = self.analyzer.get_sound()
-    #     loud = self.analyzer.get_all_sound()
-    #     swloud = (loud > thresh) * 1
-    #     self.whomp = swloud * (np.clip(loud, 0, maxsound) - thresh) / (maxsound - thresh)
-
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
         # Skip entirely if web control is disabled
@@ -361,17 +331,6 @@ class EnvironmentalSystem:
                 self.web_controller._dict_lock.release()
             self._last_status_update = self.current_time
         
-        # Read control values (only when we actually check)
-        weather_intensity = self.web_controller.get('weather_intensity')
-        if weather_intensity is not None:
-            # Apply intensity to weather effects
-            pass
-            
-        fog_strength = self.web_controller.get('fog_strength')
-        if fog_strength is not None:
-            # Update fog strength in real-time
-            pass
-            
         audio_sensitivity = self.web_controller.get('audio_sensitivity')
         if audio_sensitivity is not None:
             # Adjust audio sensitivity
@@ -469,17 +428,10 @@ class EnvironmentalSystem:
             self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
         
         if (randcheck < self.weather_params["tree_prob"] / 10000):
-            # self.scheduler.schedule_event(0, 100, secondary_tree, frame_id=1) # noqa: F405
             self.scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0) # noqa: F405
-        
-        # Wolf howl
-        # if (randcheck < (self.weather_params["Wolfy"] + self.weather_params["spookyness"] / 10) / 2000):
-        #     self.scheduler.schedule_event(0, 10, Awooo_Wolf_Howl, frame_id=0) # noqa: F405
 
-        # # Giant auroras in the sky
         if randcheck < self.weather_params["Aurora_probability"] / 1000:
             self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
-        #     #self.scheduler.schedule_event(0, 50, secondary_Aurora, frame_id=1) # noqa: F405
 
         if randcheck < self.weather_params["lightning_probability"] / 500:
             self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
@@ -597,19 +549,20 @@ class EnvironmentalSystem:
             t_duration = new_weather_params["transition_duration"]
             self.transition_to_weather(new_weather, transition_duration=t_duration)
 
+    def shutdown(self):
+        """Stop all audio and background threads cleanly."""
+        if self._ambient_player is not None:
+            self._ambient_player.stop()
+            self._ambient_player = None
+        self.analyzer.stop()
+
     def update(self):
         """Update the environmental system - should be called each frame"""
-        #self.get_whomp()
         self.current_time = time.time()
-        
+
         # Apply web control values
         self.apply_web_controls()
-       
-        # OSC handling
-        #messages = self.scheduler.get_osc_messages()
-        #if messages != []:
-        #    print(messages)  # Eventually want to pass these to the scheduler
-            
+
         # Handle transitions
         self.transition_update()
 
@@ -635,14 +588,6 @@ if __name__ == "__main__":
     #change to a specific weather set on startup
     env_system.change_weather_set("ocean", immediate=True)
     env_system.transition_to_weather(WeatherState.OCEAN_KELP_FOREST)
-    # env_system.scheduler.schedule_event(0, 160, fx.shader_pixel_spots, 
-    #     # 0=red, 0.33=green, 0.66=blue
-    #                     frame_id=0)
-    #env_system.scheduler.schedule_event(0, 900, fx.shader_bubbles, frame_id=0)
-    # env_system.scheduler.schedule_event(0, 900, fx.shader_ocean_waves,frame_id=0)
-    # env_system.scheduler.schedule_event(0, 900, fx.shader_bioluminescence, frame_id=0)
-    #env_system.scheduler.schedule_event(10, 20, fx.shader_gameoflife,frame_id=0)  # noqa: F405
-    #env_system.scheduler.schedule_event(0, 500, fx.shader_meteor,frame_id=0)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()
@@ -659,13 +604,16 @@ if __name__ == "__main__":
     try:
         while True:
             frame_start = time.perf_counter()
-            
+
             # Update environmental system (includes scheduler.update())
             env_system.update()
 
+            if env_system.scheduler.should_exit:
+                break
+
             # Calculate time taken
             frame_time = time.perf_counter() - frame_start
-            
+
             # Sleep to maintain target framerate (busy-wait for last 1ms for precision)
             sleep_time = FRAME_TIME - frame_time
             if sleep_time > 0.001:
@@ -673,16 +621,15 @@ if __name__ == "__main__":
                 # Busy wait for the last millisecond for precision
                 while time.perf_counter() - frame_start < FRAME_TIME:
                     pass
-            
+
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 50 frames
                 current_time = time.time()
                 actual_fps = 500.0 / (current_time - fps_start_time)
                 fps_start_time = current_time
-                #print(f"FPS: {actual_fps:.1f}, Frame time: {frame_time*1000:.1f}ms, Active events: {len(scheduler.active_events)}")
-            # Print stats if needed
-            # print(["%.2f" % (1/(time.time()-lasttime)), "%.2f" % len(scheduler.active_events), len(scheduler.event_queue),"%.3f" %((lasttime-first_time)/3600)])
-            #last_time = time.time()
 
     except KeyboardInterrupt:
+        pass
+    finally:
+        env_system.shutdown()
         print("Done!")

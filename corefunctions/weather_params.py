@@ -142,7 +142,7 @@ WEATHER_PRESETS = {
     WeatherState.ASTEROID: {
         "ARI": 40,
         "Switch_rate": 3,
-        "ambient_sound": "toot.toot",
+        "ambient_sound": "one-hour-waves.mp3",
         "celestial_visibility": 1,
         "meteor_rate": 0.2,
         "possible_transitions": ["clear"],
@@ -320,7 +320,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_NEON_DRIZZLE: {
         "ARI": 35,
-        "ambient_sound": "Rain Light EDITED.wav",
+        "ambient_sound": "01 Rain Light EDITED.wav",
         "celestial_visibility": 0.05,
         "fog": 0.2,
         "fog_color": np.array([0.1, 0.3, 0.6]),

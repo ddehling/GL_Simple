@@ -36,10 +36,10 @@ source venv/Scripts/activate
 python Stories_OGL.py
 
 # Audio device configuration utility
-python sound_editor.py
+python tools/sound_editor.py
 
 # Shader testing / alternate renderer
-python computer.py
+python tools/computer.py
 
 # Install / reinstall dependencies
 pip install -r info/requirements.txt
@@ -61,7 +61,7 @@ corefunctions/
   weather_params.py         # Weather states, presets, environmental params
   shader_effects/           # 40+ individual shader effect modules
     base.py                 # ShaderEffect base class — all effects extend this
-sceneutils/                 # Scene/biome-level event compositions
+tools/                      # Standalone utilities: sound_editor, computer, midi_integration_example, gl_test, wleddetect
 templates/                  # Flask HTML templates for web UI
 DMXconfig/                  # DMX universe and fixture definitions (Unit*.txt)
 media/                      # Audio files (sounds/) and images (images/)
@@ -84,7 +84,7 @@ info/                       # Documentation (see below)
 
 1. Create a new file in `corefunctions/shader_effects/` extending `ShaderEffect` from `base.py`
 2. Implement `__init__`, `update(dt, audio_data)`, and `render()` methods
-3. Register it in the appropriate scene file under `sceneutils/` or directly in `Stories_OGL.py`
+3. Register it in `Stories_OGL.py`'s `event_map` or schedule it directly in the `__main__` block
 
 ## Weather Sets
 
@@ -96,7 +96,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `DMXco
 
 ## Audio Input
 
-`soundinput.py` captures microphone input and extracts frequency bands. `shader_effects/audio_*.py` effects subscribe to this data. Run `sound_editor.py` to identify the correct device name if audio isn't working.
+`soundinput.py` captures microphone input and extracts frequency bands. `shader_effects/audio_*.py` effects subscribe to this data. Run `tools/sound_editor.py` to identify the correct device name if audio isn't working.
 
 ## Documentation
 
