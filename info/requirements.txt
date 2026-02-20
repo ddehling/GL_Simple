@@ -12,6 +12,7 @@ PyOpenGL
 sacn
 scipy
 scikit-image
+miniaudio
 sounddevice
 soundfile
 zeroconf

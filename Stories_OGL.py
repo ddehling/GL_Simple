@@ -1,7 +1,9 @@
 import numpy as np
 import time
+import threading
 from pathlib import Path
 from corefunctions.Events import EventScheduler
+from corefunctions.soundtestthreaded import StreamingPlayer
 
 from corefunctions.soundinput import MicrophoneAnalyzer
 from corefunctions.weather_params import (
@@ -74,7 +76,7 @@ class EnvironmentalSystem:
         self.scheduler.state["skyfull"] = False
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
         self.active_effects = {"world": None, "ambient_sound": None}
-        self._prewarm_audio_cache()
+        self._ambient_player = None   # active StreamingPlayer for ambient sound
         corners_frame0 = [
         (-18, 18),  # Top-left
         (18, 18),   # Top-right
@@ -152,24 +154,6 @@ class EnvironmentalSystem:
         #self.active_effects["world"] = self.scheduler.schedule_event(0, 999999999, multilayer_world, frame_id=0) # noqa: F405
         #self.active_effects["secondary_world"] = self.scheduler.schedule_event(0, 999999999, secondary_multilayer_world, frame_id=1) # noqa: F405
         self.whompcount = 0
-
-    def _prewarm_audio_cache(self):
-        """Pre-warm the audio cache with all weather sound effects"""
-        print("Pre-warming audio cache...")
-        for weather_state, params in self.weather_presets.items():
-            if "ambient_sound" in params:
-                sound_path = Path("media") / Path("sounds") / params["ambient_sound"]
-                duration = self.get_weather_params(weather_state).get("ARI", 40)
-                skip_time = self.get_weather_params(weather_state).get("skiptime", 0)
-                volume = self.get_weather_params(weather_state).get("Sound_volume", 0)
-                try:
-                    # This will automatically cache the audio in AudioCache
-                    self.scheduler.state["soundengine"].load_audio(
-                        sound_path, duration, skip_time, volume
-                    )
-                    print(f"Cached: {sound_path.name}")
-                except Exception as e:
-                    print(f"Failed to cache {sound_path.name}: {str(e)}")
 
     def get_weather_params(self, weather_state: WeatherState):
         """Get the complete set of parameters for a weather state by combining with defaults"""
@@ -281,23 +265,34 @@ class EnvironmentalSystem:
             else:
                 print(f"   ⚠️ Invalid on_transition_event format: {event_config}")
 
-        # Handle ambient sound transition
-        if self.active_effects["ambient_sound"]:
-            # Fade out the currently playing sound
-            self.scheduler.state["soundengine"].fade_out_audio(self.active_effects["ambient_sound"], 5)
-
-        # Schedule new ambient sound
+        # Handle ambient sound transition — run on a background thread so
+        # pygame.mixer.music.load() / fadeout() never block the render loop.
+        old_player = self._ambient_player
+        self._ambient_player = None
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
+        volume = target_params.get("Sound_volume", 1.0)
+        skip_time = target_params.get("skiptime", 0.0)
+        engine = self.scheduler.state["soundengine"]
+
+        def _audio_transition():
+            if old_player is not None:
+                old_player.fade_out(2.0)
+                time.sleep(2.0)          # let the fade complete before loading new music
+            new_player = StreamingPlayer(
+                engine=engine,
+                filepath=sound_path,
+                name="ambient",
+                loop=True,
+                volume=volume,
+                fade_in=5.0,
+                skip_time=skip_time,
+            )
+            new_player.start()
+            self._ambient_player = new_player
+
+        threading.Thread(target=_audio_transition, daemon=True,
+                         name="audio-transition").start()
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
-        self.scheduler.state["soundengine"].schedule_event(
-            sound_path,
-            time.time(),
-            target_params["ARI"],
-            repeat_interval=target_params["ARI"],
-            inname=self.active_effects["ambient_sound"],
-            fade_in_duration=5.0,
-            skip_time=target_params["skiptime"],
-        )
 
     def calculate_seasonal_weight_multiplier(self, season_preference, current_season):
         """
