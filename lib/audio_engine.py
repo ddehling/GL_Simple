@@ -1,3 +1,11 @@
+"""Audio playback engine: streaming player and one-shot sample cache.
+
+ThreadedAudioEngine drives a sounddevice output stream from a thread-safe
+priority queue of AudioClip objects. StreamingPlayer provides looping ambient
+playback with fade-in/out. AudioCache loads and caches audio files in RAM for
+low-latency one-shot playback.
+"""
+
 import numpy as np
 import sounddevice as sd
 import time

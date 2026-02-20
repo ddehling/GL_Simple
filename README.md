@@ -24,11 +24,11 @@ OpenGL-based DMX lighting control system with real-time GPU shader effects, audi
 ```bash
 # First-time setup: creates venv, installs deps, launches app
 ./bin/setup_and_run.sh        # Linux/macOS
-setup_and_run.bat         # Windows (double-click or run in cmd)
+bin\setup_and_run.bat         # Windows (double-click or run in cmd)
 
 # Quick launch after first setup
 ./bin/quick_run.sh            # Linux/macOS
-quick_run.bat             # Windows
+bin\quick_run.bat             # Windows
 ```
 
 On Linux, make scripts executable first:
@@ -154,7 +154,7 @@ WEATHER_SETS = {
 }
 ```
 
-Then update `templates/weather_sets.html` to add its icon and description card.
+Then update `web/templates/weather_sets.html` to add its icon and description card.
 
 ### Weather State Parameters
 
@@ -342,7 +342,7 @@ midi.connect()
 **Test standalone:**
 ```bash
 python lib/midi_controller.py
-python midi_integration_example.py
+python tools/midi_integration_example.py
 ```
 
 ---
@@ -512,7 +512,7 @@ self._schedule_event_from_map("fog_beings", start_time=0, duration=60, frame_id=
 Ensure Python is installed and on PATH. Verify with `python --version`. Restart terminal after installing.
 
 ### "Module not found"
-Run `pip install -r requirements.txt` with the venv activated. Or re-run `setup_and_run.bat` / `bin/setup_and_run.sh`.
+Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\setup_and_run.bat` / `./bin/setup_and_run.sh`.
 
 ### Audio device not found
 - Run `sound_editor.py` to list available devices
@@ -563,28 +563,37 @@ Check terminal for "Weather set change queued". The change applies on the next w
 
 1. Create a new file in `renderer/effects/` that extends `ShaderEffect` from `base.py`
 2. Name the wrapper function with `shader_` prefix and the class with `Effect` suffix — they are auto-discovered
-3. See `info/shader_info.txt` for the full guide covering: depth/alpha blending system, horizontal wrapping, event wrapper pattern, fade in/out, audio reactivity, and a complete template
+3. See `docs/shader_info.txt` for the full guide covering: depth/alpha blending system, horizontal wrapping, event wrapper pattern, fade in/out, audio reactivity, and a complete template
 
 ### Project Structure
 
 ```
 Stories_OGL.py              # Entry point — wires everything together
 lib/
+  ambient_audio.py          # Cross-fade ambient track controller
+  audio_analyzer.py         # Microphone capture and frequency analysis
+  audio_engine.py           # Audio playback engine (streaming + one-shot)
+  dmx_sender.py             # sACN/E1.31 DMX pixel sender
+  event_scheduler.py        # Pure timed event queue and shared state dict
+  midi_controller.py        # Korg nanoKontrol2 MIDI integration
+  weather_params.py         # Weather states, presets, and set configs
+  weather_set.py            # Active set, event map, and per-set config access
+  weather_state.py          # State interpolation and seasonal transitions
+renderer/
   shader_renderer.py        # GLFW window + OpenGL rendering loop
-  Events.py                 # Timed event scheduler, frame orchestration
-  soundinput.py             # Microphone capture and frequency analysis
-  ImageToDMX.py             # Converts rendered frames to DMX channel data
-  web_controller.py         # Flask web control panel
-  midi_controller.py        # Korg nanoKontrol2 integration
-  weather_params.py         # Weather states, presets, set configs
-  shader_effects/           # 40+ individual shader effect modules
+  effects/                  # 40+ individual shader effect modules
     base.py                 # ShaderEffect base class
-sceneutils/                 # Scene/biome-level event compositions
-templates/                  # Flask HTML templates
-config/                  # DMX universe and fixture definitions
+engine/
+  render_pipeline.py        # Hardware integration: renderer + audio + DMX + per-frame loop
+web/
+  web_controller.py         # Flask web control panel
+  templates/                # Flask HTML templates
+config/                     # DMX universe and fixture definitions (Unit*.txt)
+tools/                      # Standalone utilities: sound_editor, midi_integration_example, etc.
 media/sounds/               # Ambient audio files
 media/images/               # Image assets
-info/                       # Documentation and notes
+docs/                       # Documentation
+bin/                        # Setup and launch scripts
 ```
 
 ### Audio Data (`outstate['sound']`)
@@ -600,5 +609,5 @@ Frequency ranges: Bass `[0:8]`, Mids `[8:20]`, Highs `[20:32]`.
 
 ### Design Documents
 
-- `info/CYBERPUNK_EVENTS.md` — Planned effects and events for the Cyberpunk weather set
-- `info/shader_info.txt` — Full shader development guide with templates
+- `docs/CYBERPUNK_EVENTS.md` — Planned effects and events for the Cyberpunk weather set
+- `docs/shader_info.txt` — Full shader development guide with templates
