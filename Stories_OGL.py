@@ -10,6 +10,7 @@ from lib.weather_params import (
     WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 )
 from lib.weather_state import WeatherStateController
+from lib.weather_set import WeatherSetManager
 from corefunctions.shader_effects.celestial_bodies import CELESTIAL_BODIES
 from corefunctions import shader_effects as fx
 from corefunctions.web_controller import WebController
@@ -24,11 +25,6 @@ class EnvironmentalSystem:
         use_shader_renderer=True,
         headless=False,frames=frame_dimensions, magnification=0  # 0 = auto-scale to monitor
     )
-        # Weather set management
-        self.current_set = DEFAULT_WEATHER_SET
-        self.target_set = None  # For pending set changes
-        self.weather_sets = WEATHER_SETS
-        
         self.weather_state = WeatherStateController()
         self.season = 0.0  # Initialize season value
         self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
@@ -41,7 +37,7 @@ class EnvironmentalSystem:
         
         if self.enable_web_control:
             self.web_controls = {
-                "current_weather_set": self.current_set,
+                "current_weather_set": DEFAULT_WEATHER_SET,
                 "available_sets": list(WEATHER_SETS.keys()),
             }
             self.web_controller = WebController(
@@ -109,30 +105,25 @@ class EnvironmentalSystem:
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
         }
         
-        # Pass event_map keys to web controller if enabled
-        # Both all events and background events come from the same event_map
+        # WeatherSetManager owns the event_map from here on
+        self.weather_set = WeatherSetManager(self.event_map)
+        del self.event_map  # WeatherSetManager is the single owner
+
+        # Pass event names to web controller if enabled
         if self.enable_web_control:
-            event_list = list(self.event_map.keys())
+            event_list = self.weather_set.get_event_names()
             self.web_controller.set_available_events(
                 all_events=event_list,
                 background_events=event_list
             )
+            # Sync initial set name now that WeatherSetManager is ready
+            self.web_controller.set("current_weather_set", self.weather_set.current_set)
         
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
         
         self.whompcount = 0
 
-    def get_current_set_config(self):
-        """Get the configuration for the current weather set"""
-        return self.weather_sets[self.current_set]
-    
-    def get_set_states(self, set_name=None):
-        """Get list of weather states in a set"""
-        if set_name is None:
-            set_name = self.current_set
-        return [WeatherState(state) for state in self.weather_sets[set_name]["states"]]
-    
     def change_weather_set(self, new_set_name: str, immediate: bool = False):
         """Request a change to a different weather set
         
@@ -140,27 +131,26 @@ class EnvironmentalSystem:
             new_set_name: Name of the weather set to change to
             immediate: If True, change immediately. If False, queue for next transition.
         """
-        if new_set_name not in self.weather_sets:
+        if not self.weather_set.is_valid_set(new_set_name):
             print(f"⚠️ Unknown weather set: {new_set_name}")
             return False
-        
-        if new_set_name == self.current_set:
+
+        if new_set_name == self.weather_set.current_set:
             print(f"Already in set '{new_set_name}'")
             return True
-        
+
         if immediate:
             # Apply the change immediately
-            print(f"[WEATHER] Switching weather set immediately: '{self.current_set}' -> '{new_set_name}'")
-            self.current_set = new_set_name
-            self.target_set = None
+            print(f"[WEATHER] Switching weather set immediately: '{self.weather_set.current_set}' -> '{new_set_name}'")
+            self.weather_set.commit_set_change(new_set_name)
             if self.enable_web_control:
-                self.web_controller.set("current_weather_set", self.current_set)
-            
+                self.web_controller.set("current_weather_set", self.weather_set.current_set)
+
             # Cancel all existing events and start new background events for the set
             self._initialize_weather_set_events()
-            
+
             # Pick a random weather from the new set
-            set_states = self.get_set_states()
+            set_states = self.weather_set.get_set_states()
             new_weather = np.random.choice(set_states)
             print(f"   Starting with: {new_weather.value}")
 
@@ -169,41 +159,36 @@ class EnvironmentalSystem:
             self.transition_to_weather(new_weather, transition_duration=t_duration)
         else:
             # Queue for next transition
-            self.target_set = new_set_name
-            print(f"[WEATHER] Weather set change queued: '{self.current_set}' -> '{new_set_name}'")
+            self.weather_set.queue_set_change(new_set_name)
+            print(f"[WEATHER] Weather set change queued: '{self.weather_set.current_set}' -> '{new_set_name}'")
             print(f"   Will transition on next weather change...")
         
         return True
     
     def _initialize_weather_set_events(self):
         """Cancel all events and start background events for the current weather set"""
-        print(f"[WEATHER] Initializing events for weather set: '{self.current_set}'")
-        
+        print(f"[WEATHER] Initializing events for weather set: '{self.weather_set.current_set}'")
+
         # Cancel all active events
         self.scheduler.cancel_all_events()
-        
-        # Get the background events for this set
-        set_config = self.get_current_set_config()
-        background_events = set_config.get("background_events", [])
-        
+
         # Schedule the permanent background events based on set configuration
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
-        
-        # Schedule background events for this set
-        for event_name in background_events:
+
+        for event_name in self.weather_set.get_background_events():
             print(f"   [EVENT] Scheduling background event: {event_name}")
             self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
-        
-        print(f"[OK] Background events initialized for '{self.current_set}'")
+
+        print(f"[OK] Background events initialized for '{self.weather_set.current_set}'")
     
     def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
         """Schedule an event from the event map"""
-        if event_name not in self.event_map:
+        entry = self.weather_set.resolve_event(event_name)
+        if entry is None:
             print(f"   ⚠️ Unknown event: {event_name}")
             return None
-        
-        # Unpack the pre-stored tuple (no lambda call needed)
-        effect_func, params = self.event_map[event_name]
+
+        effect_func, params = entry
         return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
 
     def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
@@ -272,7 +257,7 @@ class EnvironmentalSystem:
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
         
-        if new_set is not None and new_set != self.current_set:
+        if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
         
         # Update status values every 0.5 seconds
@@ -283,7 +268,7 @@ class EnvironmentalSystem:
             # Batch update to minimize lock acquisitions
             self.web_controller._dict_lock.acquire()
             try:
-                self.web_controller.control_dict['current_weather_set'] = self.current_set
+                self.web_controller.control_dict['current_weather_set'] = self.weather_set.current_set
                 self.web_controller.control_dict['current_weather'] = self.weather_state.current_weather.value
                 self.web_controller.control_dict['season'] = float(self.season)
                 self.web_controller._values_cache = None  # Invalidate cache
@@ -297,12 +282,7 @@ class EnvironmentalSystem:
             self.analyzer.sensitivity = audio_sensitivity
     
     def send_variables(self):
-        # Apply season speed from current weather set (cache to avoid repeated lookups)
-        if not hasattr(self, '_cached_set_config') or self._cached_set_config[0] != self.current_set:
-            self._cached_set_config = (self.current_set, self.get_current_set_config())
-        
-        set_config = self._cached_set_config[1]
-        season_speed = set_config.get("season_speed", 1.0)
+        season_speed = self.weather_set.get_season_speed()
         self.season = ((time.time() / 1800) * season_speed) % 1
         
         state = self.scheduler.state
@@ -316,9 +296,7 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
         
         # Random events from current weather set configuration
-        set_config = self.get_current_set_config()
-        random_events = set_config.get("random_events", [])
-        random_event_rate = set_config.get("random_event_rate", 0.0001)
+        random_events, random_event_rate = self.weather_set.get_random_events_config()
         
         # Check if a random event should trigger based on the set's rate
         if random_events and randcheck < random_event_rate:
@@ -367,33 +345,28 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
                 
     def random_state_change(self):
-        # Apply set-specific transition speed (use cached config)
-        if not hasattr(self, '_cached_set_config') or self._cached_set_config[0] != self.current_set:
-            self._cached_set_config = (self.current_set, self.get_current_set_config())
-        
-        set_config = self._cached_set_config[1]
-        transition_speed_mult = set_config.get("transition_speed", 1.0)
-        
+        transition_speed_mult = self.weather_set.get_transition_speed()
+
         randcheck = np.random.random()
         if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 0.99):
             self.weather_state.progress = 0
 
             # Check if we need to change weather sets
-            if self.target_set is not None:
-                print(f"[WEATHER] Switching weather set: '{self.current_set}' -> '{self.target_set}'")
-                self.current_set = self.target_set
-                self.target_set = None
+            if self.weather_set.has_pending_set_change():
+                old_set = self.weather_set.current_set
+                new_set_name = self.weather_set.consume_pending_set()
+                print(f"[WEATHER] Switching weather set: '{old_set}' -> '{new_set_name}'")
                 if self.enable_web_control:
-                    self.web_controller.set("current_weather_set", self.current_set)
-                
+                    self.web_controller.set("current_weather_set", self.weather_set.current_set)
+
                 # Cancel all existing events and start new background events for the set
                 self._initialize_weather_set_events()
-                
+
                 # Pick a random weather from the new set
-                set_states = self.get_set_states()
+                set_states = self.weather_set.get_set_states()
                 new_weather = np.random.choice(set_states)
                 print(f"   Starting with: {new_weather.value}")
-                
+
                 new_weather_params = self.weather_state.get_weather_params(new_weather)
                 t_duration = new_weather_params["transition_duration"]
                 self.transition_to_weather(new_weather, transition_duration=t_duration)
@@ -402,11 +375,11 @@ class EnvironmentalSystem:
             # Normal transition within current set
             current_preset = self.weather_state.weather_presets[self.weather_state.current_weather]
             possible_states = [WeatherState(state) for state in current_preset["possible_transitions"]]
-            
+
             # Filter to only states in current set
-            set_states = self.get_set_states()
+            set_states = self.weather_set.get_set_states()
             possible_states = [state for state in possible_states if state in set_states]
-            
+
             if not possible_states:
                 # If no valid transitions in set, pick random state from set
                 possible_states = set_states
@@ -421,9 +394,9 @@ class EnvironmentalSystem:
                         base_weights.append(current_preset["transition_weights"][idx])
                     except (ValueError, IndexError):
                         base_weights.append(1.0)
-            
+
             # Apply seasonal modifiers to weights
-            season_extremity = set_config.get("season_extremity", 1.0)
+            season_extremity = self.weather_set.get_season_extremity()
             adjusted_weights = []
             for i, state in enumerate(possible_states):
                 # Get the season preference for this weather state
