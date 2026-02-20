@@ -106,6 +106,61 @@ class WeatherStateController:
             "kelp_density": self.weather_params.get("kelp_density", 0.0),
         }
 
+    def select_next_weather(
+        self,
+        current_weather: WeatherState,
+        set_states: list,
+        season: float,
+        season_extremity: float,
+    ) -> WeatherState:
+        """Choose the next weather state using transition weights adjusted for season.
+
+        Args:
+            current_weather: The state we are transitioning away from.
+            set_states: WeatherState values valid in the current set.
+            season: Current season value in [0, 1).
+            season_extremity: Scalar that controls how strongly season biases selection.
+
+        Returns:
+            A WeatherState chosen probabilistically from the candidates.
+        """
+        current_preset = self.weather_presets[current_weather]
+        possible_states = [WeatherState(s) for s in current_preset["possible_transitions"]]
+
+        # Restrict to states that exist in the active set
+        possible_states = [s for s in possible_states if s in set_states]
+
+        if not possible_states:
+            possible_states = set_states
+            base_weights = [1.0] * len(possible_states)
+        else:
+            base_weights = []
+            for state in possible_states:
+                try:
+                    idx = current_preset["possible_transitions"].index(state.value)
+                    base_weights.append(current_preset["transition_weights"][idx])
+                except (ValueError, IndexError):
+                    base_weights.append(1.0)
+
+        adjusted_weights = []
+        for i, state in enumerate(possible_states):
+            season_pref = self.weather_presets[state].get("season_preference", 0.375)
+            multiplier = self.calculate_seasonal_weight_multiplier(season_pref, season)
+            if season_extremity > 0:
+                multiplier = 1.0 + (multiplier - 1.0) * season_extremity
+                multiplier = max(0.01, multiplier)
+            else:
+                multiplier = 1.0
+            adjusted_weights.append(base_weights[i] * multiplier)
+
+        adjusted_weights = np.array(adjusted_weights)
+        if np.sum(adjusted_weights) > 0:
+            adjusted_weights /= np.sum(adjusted_weights)
+        else:
+            adjusted_weights = np.ones(len(adjusted_weights)) / len(adjusted_weights)
+
+        return np.random.choice(possible_states, p=adjusted_weights)
+
     @staticmethod
     def calculate_seasonal_weight_multiplier(
         season_preference: float, current_season: float
