@@ -258,10 +258,10 @@ class EnvironmentalSystem:
                 print(f"[WEATHER]   Invalid on_transition_event format: {event_config!r}")
 
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
-        volume = target_params.get("Sound_volume", 1.0)
         skip_time = target_params.get("skiptime", 0.0)
+        ari = target_params.get("ARI", 40)
         engine = self.scheduler.state["soundengine"]
-        self._ambient_audio.transition(sound_path, volume, skip_time, engine)
+        self._ambient_audio.transition(sound_path, skip_time, ari, engine)
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
     def apply_web_controls(self):
