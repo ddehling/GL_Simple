@@ -29,30 +29,36 @@ class AudioCache:
             print(f"[AudioCache] Loading {cache_key}")
             # Load the audio file
             if filename.suffix == '.mp3':
-                audio_data, _ = librosa.load(filename, sr=sample_rate, mono=False)
+                # Pass offset and duration directly to librosa so it decodes
+                # only the needed slice — avoids loading the entire file for
+                # long ambient tracks (e.g. a 1-hour ocean MP3 trimmed to 40 s).
+                load_duration = float(duration) if duration is not None else None
+                audio_data, _ = librosa.load(
+                    filename, sr=sample_rate, mono=False,
+                    offset=float(skip_time), duration=load_duration,
+                )
                 audio_data = np.transpose(audio_data)
                 if audio_data.ndim == 1:
                     audio_data = np.column_stack((audio_data, audio_data))
-            elif filename.suffix == '.flac':
-                audio_data, _ = sf.read(filename, dtype='float32')
-                if audio_data.ndim == 1:
-                    audio_data = np.column_stack((audio_data, audio_data))
-            elif Path(filename).exists():
-                audio_data, _ = sf.read(filename, dtype='float32')
-                if audio_data.ndim == 1:
-                    audio_data = np.column_stack((audio_data, audio_data))
+                # librosa already applied offset/duration; skip post-processing
+                self._cache[cache_key] = (audio_data * volume).astype(np.float32)
             else:
-                print(f"[AudioCache] File not found: {filename}")
-                n = int(sample_rate * (duration or 1))
-                audio_data = np.zeros((n, channels), dtype=np.float32)
+                if filename.suffix == '.flac' or Path(filename).exists():
+                    audio_data, _ = sf.read(filename, dtype='float32')
+                else:
+                    print(f"[AudioCache] File not found: {filename}")
+                    n = int(sample_rate * (duration or 1))
+                    audio_data = np.zeros((n, channels), dtype=np.float32)
+                if audio_data.ndim == 1:
+                    audio_data = np.column_stack((audio_data, audio_data))
 
-            # Apply skip time and optional duration trim
-            skip_samples = int(sample_rate * skip_time)
-            if skip_samples > 0 and skip_samples < len(audio_data):
-                audio_data = audio_data[skip_samples:]
-            if duration is not None:
-                audio_data = audio_data[:int(sample_rate * duration)]
-            self._cache[cache_key] = (audio_data * volume).astype(np.float32)
+                # Apply skip time and optional duration trim
+                skip_samples = int(sample_rate * skip_time)
+                if skip_samples > 0 and skip_samples < len(audio_data):
+                    audio_data = audio_data[skip_samples:]
+                if duration is not None:
+                    audio_data = audio_data[:int(sample_rate * duration)]
+                self._cache[cache_key] = (audio_data * volume).astype(np.float32)
 
         return np.copy(self._cache[cache_key])
     
