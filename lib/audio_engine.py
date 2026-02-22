@@ -1,9 +1,9 @@
-"""Audio playback engine: streaming player and one-shot sample cache.
+"""Audio playback engine: multi-event mixer and one-shot sample cache.
 
 ThreadedAudioEngine drives a sounddevice output stream from a thread-safe
-priority queue of AudioClip objects. StreamingPlayer provides looping ambient
-playback with fade-in/out. AudioCache loads and caches audio files in RAM for
-low-latency one-shot playback.
+priority queue of AudioEvent objects. Multiple events (ambient loops, one-shot
+sounds) are mixed simultaneously in the callback. AudioCache loads and caches
+audio file slices in RAM for low-latency playback.
 """
 
 import numpy as np
@@ -119,7 +119,7 @@ class AudioEngine:
         The file is loaded (or retrieved from cache) on a background thread.
         Subsequent calls with the same file are served instantly from cache.
         Intended for short event sounds (thunder, creature calls, UI feedback).
-        For files longer than ~30 s use StreamingPlayer instead.
+        For looping ambient tracks use schedule_event() with repeat_interval.
         """
         filepath = Path(filepath)
         event = AudioEvent(filepath, time.time(), duration=0)
@@ -356,49 +356,6 @@ class ThreadedAudioEngine(AudioEngine):
             self.thread.join()
             self.stream.stop()
             self.stream.close()
-
-class StreamingPlayer:
-    """Stream audio from disk using pygame.mixer.music.
-
-    The library handles all buffering, device callbacks, and format decoding.
-    Supports looping, volume, fade-in, and fade-out without any manual chunking.
-
-    Supported formats: MP3, WAV, OGG, FLAC.
-    Only one StreamingPlayer can be active at a time (pygame.mixer.music limit).
-    """
-
-    def __init__(self, engine=None, filepath=None, name="ambient",
-                 loop=False, volume=1.0, fade_in=0.0, skip_time=0.0):
-        import pygame
-        self.filepath = Path(filepath)
-        self.name = name
-        self.loop = loop
-        self.volume = float(volume)
-        self.fade_in = float(fade_in)
-        self.skip_time = float(skip_time)
-        # engine kept for API compatibility; sample_rate used for mixer init
-        sr = engine.sample_rate if engine else 44100
-        if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=sr, size=-16, channels=2, buffer=4096)
-
-    def start(self):
-        import pygame
-        pygame.mixer.music.load(str(self.filepath))
-        pygame.mixer.music.set_volume(self.volume)
-        loops = -1 if self.loop else 0
-        fade_ms = int(self.fade_in * 1000) if self.fade_in > 0 else 0
-        pygame.mixer.music.play(loops=loops, start=self.skip_time, fade_ms=fade_ms)
-        print(f"[StreamingPlayer:{self.name}] Started: {self.filepath.name}")
-
-    def stop(self):
-        import pygame
-        pygame.mixer.music.stop()
-        print(f"[StreamingPlayer:{self.name}] Stopped")
-
-    def fade_out(self, duration):
-        import pygame
-        pygame.mixer.music.fadeout(int(duration * 1000))
-        print(f"[StreamingPlayer:{self.name}] Fading out over {duration}s")
 
 
 if __name__ == "__main__":
