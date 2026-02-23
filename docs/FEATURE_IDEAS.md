@@ -19,3 +19,13 @@ Currently `play_ambient` enforces a single ambient slot — the mixer already su
 
 ### Seamless loop crossfade
 Short crossfade (e.g. 100ms overlap) at the loop boundary so files that don't start/end at silence don't produce an audible click when they loop.
+
+### Movie playback with audio
+`renderer/effects/movie.py` was removed. It used OpenCV for video frames and pushed decoded audio chunks manually to the engine to maintain A/V sync — a complex approach that was never wired up to any weather state.
+
+If re-implemented, the clean approach with the current audio engine:
+1. Extract the audio track from the video file to a temp WAV at load time (moviepy or ffmpeg)
+2. Call `engine.schedule_event(temp_wav, skip_seconds=start_time)` at the same moment video playback begins
+3. Both run on independent clocks at the same sample/frame rate — sync stays naturally tight
+
+This eliminates all chunk-pushing logic. The video side stays as OpenCV frames uploaded to an OpenGL texture, same as before.
