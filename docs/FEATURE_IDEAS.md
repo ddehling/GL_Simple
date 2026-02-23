@@ -6,6 +6,13 @@ Loose collection of ideas to revisit. Not prioritized.
 
 ## Audio
 
+### Multi-speaker support
+From Dieter:
+
+I think another thing you should consider, is how to output from a large number of unique speakers
+Thats not something we do now, but we will probably want to get there.
+So we can do shit like positional audio
+
 ### Named ambient layers
 Allow multiple simultaneous ambient tracks in independent named slots, so e.g. a base environment sound and a weather overlay can be controlled separately without interfering.
 
