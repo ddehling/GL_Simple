@@ -1,0 +1,9 @@
+1) The current program to run the system is Stories.py
+2) On Linux, there was an issue with the networking stack that required expanding the allocated network buffer (or something).
+    The problem appeared as some of the reciever boxes updating at a very slow frame rate. 
+    The ethernet data was clearly not being sent at full speed.
+    Add the following lines to /etc/sysctl.conf:
+        net.core.wmem_max=16777216
+        net.core.wmem_default=16777216
+3) In Stories.py, the rendering window can be disabled by setting self.scheduler.state["simulate"] to False
+4) If getting port audio errors on linux use sudo apt-get install portaudio19-dev
