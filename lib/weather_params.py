@@ -142,7 +142,7 @@ WEATHER_PRESETS = {
     WeatherState.ASTEROID: {
         "ARI": 40,
         "Switch_rate": 3,
-        "ambient_sound": "one-hour-waves.mp3",
+        "ambient_sound": "toot.toot",
         "celestial_visibility": 1,
         "meteor_rate": 0.2,
         "possible_transitions": ["clear"],
@@ -600,7 +600,7 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_KELP_FOREST: {
         "ARI": 42,
-        "ambient_sound": "one-hour-waves.mp3",
+        "ambient_sound": "10 Sea from cliff top.mp3",
         "bioluminescence": 0.1,
         "bubble_density": 0.2,
         "celestial_visibility": 0.7,
