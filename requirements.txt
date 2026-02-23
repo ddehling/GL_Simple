@@ -1,5 +1,4 @@
 glfw
-librosa
 matplotlib
 numba
 numpy

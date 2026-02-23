@@ -1,378 +1,270 @@
-"""Audio playback engine: multi-event mixer and one-shot sample cache.
+"""Streaming audio engine using miniaudio.
 
-ThreadedAudioEngine drives a sounddevice output stream from a thread-safe
-priority queue of AudioEvent objects. Multiple events (ambient loops, one-shot
-sounds) are mixed simultaneously in the callback. AudioCache loads and caches
-audio file slices in RAM for low-latency playback.
+All audio streams directly from disk — no files are preloaded into RAM.
+Looping, crossfades, and mixing happen inside a single generator that feeds
+miniaudio's PlaybackDevice callback thread.
+
+Thread safety: all mutable track state lives inside _mixer(), which runs on
+the audio thread. Callers communicate via a SimpleQueue of command tuples —
+no locks needed anywhere.
 """
 
+import queue
 import numpy as np
-import sounddevice as sd
-import time
-import threading
-import heapq
-import soundfile as sf
+import miniaudio
 from pathlib import Path
-import librosa
 
-class AudioCache:
-    def __init__(self):
-        self._cache = {}
+SAMPLE_RATE   = 44100
+CHANNELS      = 2
+FORMAT        = miniaudio.SampleFormat.FLOAT32
+CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
 
-    def get(self, filename, duration, sample_rate, channels, skip_time=0, volume=1):
-        """Load and cache audio data.
 
-        duration: seconds to keep, or None to load the full file.
-        """
-        cache_key = f"{filename}_{skip_time}_{duration}"
-        if cache_key not in self._cache:
-            print(f"[AudioCache] Loading {cache_key}")
-            # Load the audio file
-            if filename.suffix == '.mp3':
-                # Pass offset and duration directly to librosa so it decodes
-                # only the needed slice — avoids loading the entire file for
-                # long ambient tracks (e.g. a 1-hour ocean MP3 trimmed to 40 s).
-                load_duration = float(duration) if duration is not None else None
-                audio_data, _ = librosa.load(
-                    filename, sr=sample_rate, mono=False,
-                    offset=float(skip_time), duration=load_duration,
-                )
-                audio_data = np.transpose(audio_data)
-                if audio_data.ndim == 1:
-                    audio_data = np.column_stack((audio_data, audio_data))
-                # librosa already applied offset/duration; skip post-processing
-                self._cache[cache_key] = (audio_data * volume).astype(np.float32)
-            else:
-                if filename.suffix == '.flac' or Path(filename).exists():
-                    audio_data, _ = sf.read(filename, dtype='float32')
+class _Track:
+    """Single streaming audio source with loop and linear fade support."""
+
+    def __init__(self, path: Path, *, loop: bool = False, skip: float = 0.0,
+                 fade_in: float = 0.0, volume: float = 1.0,
+                 duration: float = 0.0, is_ambient: bool = False):
+        self.is_ambient       = is_ambient
+        self.done             = False
+        self._path            = path
+        self._loop            = loop
+        self._skip            = skip
+        self.volume           = volume
+        self._gen             = self._open(skip)
+        self._buf             = np.zeros((0, CHANNELS), dtype=np.float32)
+        self._fade_in_frames  = int(fade_in * SAMPLE_RATE)
+        self._max_frames      = int(duration * SAMPLE_RATE) if duration > 0 else 0
+        self._pos             = 0   # total frames read (drives fade-in and duration cap)
+        self._fading_out      = False
+        self._fade_out_frames = 0
+        self._fade_out_pos    = 0
+
+    def _open(self, skip: float):
+        return miniaudio.stream_file(
+            str(self._path),
+            output_format=FORMAT,
+            nchannels=CHANNELS,
+            sample_rate=SAMPLE_RATE,
+            frames_to_read=CHUNK_FRAMES,
+            seek_frame=int(skip * SAMPLE_RATE),
+        )
+
+    def fade_out(self, duration: float):
+        self._fading_out      = True
+        self._fade_out_frames = max(1, int(duration * SAMPLE_RATE))
+        self._fade_out_pos    = 0
+        self._loop            = False
+
+    def read(self, n_frames: int):
+        # Fill internal buffer until we have enough frames (or hit EOF).
+        while len(self._buf) < n_frames and not self.done:
+            try:
+                raw = next(self._gen)
+                new = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
+                self._buf = np.concatenate([self._buf, new])
+            except StopIteration:
+                if self._loop:
+                    self._gen = self._open(self._skip)
                 else:
-                    print(f"[AudioCache] File not found: {filename}")
-                    n = int(sample_rate * (duration or 1))
-                    audio_data = np.zeros((n, channels), dtype=np.float32)
-                if audio_data.ndim == 1:
-                    audio_data = np.column_stack((audio_data, audio_data))
+                    self.done = True
 
-                # Apply skip time and optional duration trim
-                skip_samples = int(sample_rate * skip_time)
-                if skip_samples > 0 and skip_samples < len(audio_data):
-                    audio_data = audio_data[skip_samples:]
-                if duration is not None:
-                    audio_data = audio_data[:int(sample_rate * duration)]
-                self._cache[cache_key] = (audio_data * volume).astype(np.float32)
+        if len(self._buf) == 0:
+            return None
 
-        return np.copy(self._cache[cache_key])
-    
-class AudioEvent:
-    def __init__(self, sound_file, execution_time, duration, repeat_interval=None, name=None, skip_time=0):
-        self.sound_file = sound_file
-        self.execution_time = execution_time
-        self.duration = duration
-        self.skip_time = skip_time
-        self.audio_data = None
-        self.position = 0
-        self.repeat_interval = repeat_interval
-        self.id = id(self)
-        self.next_id = 0
-        self.is_active = False
-        self.name = name
-        self.fade = None
-        self.fade_remaining = 0
-        self.fade_in = None
-        self.fade_in_remaining = 0
-        self.is_looping = repeat_interval is not None
+        # Cap to duration limit if set.
+        if self._max_frames > 0:
+            n_frames = min(n_frames, self._max_frames - self._pos)
+            if n_frames <= 0:
+                self.done = True
+                return None
 
-    def __lt__(self, other):
-        return self.execution_time < other.execution_time
+        n     = min(n_frames, len(self._buf))
+        chunk = self._buf[:n].copy()
+        self._buf = self._buf[n:]
+
+        # Fade-in: linear ramp from 0→1 over the first _fade_in_frames samples.
+        if self._fade_in_frames > 0 and self._pos < self._fade_in_frames:
+            start = self._pos
+            end   = min(start + n, self._fade_in_frames)
+            ramp  = np.linspace(start / self._fade_in_frames,
+                                end   / self._fade_in_frames,
+                                end - start, dtype=np.float32)
+            chunk[:end - start] *= ramp[:, np.newaxis]
+        self._pos += n
+
+        # Fade-out: linear ramp from 1→0 over _fade_out_frames samples.
+        if self._fading_out:
+            remaining = self._fade_out_frames - self._fade_out_pos
+            if remaining <= 0:
+                self.done = True
+                return None
+            fade_len = min(n, remaining)
+            s    = 1.0 - self._fade_out_pos / self._fade_out_frames
+            e    = 1.0 - (self._fade_out_pos + fade_len) / self._fade_out_frames
+            ramp = np.linspace(s, e, fade_len, dtype=np.float32)
+            chunk[:fade_len] *= ramp[:, np.newaxis]
+            if fade_len < n:
+                chunk[fade_len:] = 0.0
+            self._fade_out_pos += fade_len
+
+        return chunk * self.volume
+
+
+class _PushTrack:
+    """Track fed by externally pushed audio chunks (e.g. movie playback)."""
+
+    is_ambient = False
+    done       = False
+
+    def __init__(self):
+        self._q   = queue.SimpleQueue()
+        self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
+
+    def push(self, chunk: np.ndarray):
+        if chunk.ndim == 1:
+            chunk = np.column_stack([chunk, chunk])
+        self._q.put(chunk.astype(np.float32))
+
+    def read(self, n_frames: int) -> np.ndarray:
+        while len(self._buf) < n_frames:
+            try:
+                self._buf = np.concatenate([self._buf, self._q.get_nowait()])
+            except queue.Empty:
+                break
+        n     = min(n_frames, len(self._buf))
+        chunk = self._buf[:n].copy()
+        self._buf = self._buf[n:]
+        if n < n_frames:
+            chunk = np.vstack([chunk,
+                               np.zeros((n_frames - n, CHANNELS), dtype=np.float32)])
+        return chunk
+
 
 class AudioEngine:
+    """Streaming multi-track audio mixer — no files loaded into RAM.
+
+    All public methods are thread-safe: they post command tuples to a
+    SimpleQueue that is drained on the audio thread inside _mixer().
+    """
+
+    FADE_IN  = 5.0   # seconds
+    FADE_OUT = 5.0   # seconds
+
     def __init__(self):
-        self.running = True
-        self.fps = 30
-        self.channels = 2
-        self.sample_rate = 44100
-        self.buffer_size = 2048
-        self.audio_buffer = np.zeros((self.buffer_size, self.channels), dtype=np.float32)
-        self.event_heap = []
-        self.event_dict = {}
-        self.active_events = set()
-        self.lock = threading.RLock()
-        self.audio_cache = AudioCache()
-        
-        # Streaming audio support (for movie audio, etc.)
-        self.stream_buffer = []
-        self.stream_buffer_lock = threading.Lock()
-        self.stream_active = False
+        self._cmds: queue.SimpleQueue = queue.SimpleQueue()
+        self._device = None
 
-    def safe_lock(self, timeout=1.0):
-        acquired = self.lock.acquire(timeout=timeout)
-        if not acquired:
-            print("[AudioEngine] Warning: Lock acquisition timed out")
-            return False
-        return True
-
-    def load_audio(self, filename, duration, skip_time=0, volume=1):
-        return self.audio_cache.get(filename, duration, self.sample_rate, self.channels, skip_time, volume)
-
-    def play_oneshot(self, filepath, volume=1.0):
-        """Play a sound file once without blocking the caller.
-
-        The file is loaded (or retrieved from cache) on a background thread.
-        Subsequent calls with the same file are served instantly from cache.
-        Intended for short event sounds (thunder, creature calls, UI feedback).
-        For looping ambient tracks use schedule_event() with repeat_interval.
-        """
-        filepath = Path(filepath)
-        event = AudioEvent(filepath, time.time(), duration=0)
-        with self.lock:
-            heapq.heappush(self.event_heap, event)
-            self.event_dict[event.id] = event
-
-        def _load():
-            try:
-                event.audio_data = self.audio_cache.get(
-                    filepath, duration=None,
-                    sample_rate=self.sample_rate, channels=self.channels,
-                    volume=volume,
-                )
-            except Exception as e:
-                print(f"[AudioEngine] play_oneshot failed to load {filepath.name}: {e}")
-                with self.lock:
-                    self.event_dict.pop(event.id, None)
-                    self.active_events.discard(event.id)
-
-        threading.Thread(target=_load, daemon=True, name=f"load-{filepath.name}").start()
-        return event.id
-
-    def push_stream_audio(self, audio_chunk):
-        """Push audio chunk for streaming playback (thread-safe)
-        
-        Args:
-            audio_chunk: numpy array of audio samples, shape (n_samples,) or (n_samples, channels)
-        """
-        with self.stream_buffer_lock:
-            # Convert mono to stereo if needed
-            if audio_chunk.ndim == 1:
-                audio_chunk = np.column_stack((audio_chunk, audio_chunk))
-            
-            self.stream_buffer.append(audio_chunk.astype(np.float32))
-            if not self.stream_active:
-                print(f"[AudioEngine] Stream activated with first chunk: {audio_chunk.shape}")
-            self.stream_active = True
-
-    def clear_stream_audio(self):
-        """Clear streaming audio buffer"""
-        with self.stream_buffer_lock:
-            self.stream_buffer = []
-            self.stream_active = False
-
-    def start_audio_stream(self):
-        self.stream = sd.OutputStream(
-            channels=self.channels,
-            samplerate=self.sample_rate,
-            callback=self.audio_callback,
-            blocksize=self.buffer_size
-        )
-        self.stream.start()
-
-    def audio_callback(self, outdata, frames, time, status):
-        if status:
-            print(f"[AudioEngine] Stream error: {status}")
-        with self.lock:
-            self.update_audio_buffer()
-            outdata[:] = self.audio_buffer
-
-
-    def update_audio_buffer(self):
-        if not self.safe_lock():
-            return
-            
-        try:
-            self.audio_buffer.fill(0)
-            current_time = time.time()
-            
-            # Start new events
-            while self.event_heap and self.event_heap[0].execution_time <= current_time:
-                event = heapq.heappop(self.event_heap)
-                if event.id in self.event_dict:
-                    event.is_active = True
-                    self.active_events.add(event.id)
-            
-            # Process active events
-            events_to_remove = set()
-            
-            for event_id in list(self.active_events):
-                if event_id not in self.event_dict:
-                    events_to_remove.add(event_id)
-                    continue
-                    
-                event = self.event_dict[event_id]
-                if event.audio_data is None:
-                    continue  # still loading in background — check next frame
-
-                # Check if event should still be playing
-                if not event.is_looping and event.position >= len(event.audio_data):
-                    events_to_remove.add(event_id)
-                    continue
-
-                # Handle looping audio
-                if event.is_looping and event.position >= len(event.audio_data):
-                    event.position = 0
-
-                # Get the audio chunk
-                remaining = len(event.audio_data) - event.position
-                chunk_size = min(self.buffer_size, remaining)
-                
-                if chunk_size <= 0:
-                    events_to_remove.add(event_id)
-                    continue
-                    
-                chunk = np.copy(event.audio_data[event.position:event.position + chunk_size])
-                
-                # Apply fades if needed
-                if event.fade_remaining > 0:
-                    fade_factor = event.fade_remaining / event.fade
-                    chunk *= fade_factor
-                    event.fade_remaining -= chunk_size/self.sample_rate
-                    if event.fade_remaining <= 0:
-                        events_to_remove.add(event_id)
-                        continue
-                
-                if event.fade_in_remaining > 0:
-                    progress = (event.fade_in - event.fade_in_remaining) / event.fade_in
-                    chunk *= progress
-                    event.fade_in_remaining -= chunk_size/self.sample_rate
-                
-                self.audio_buffer[:len(chunk)] += chunk
-                event.position += chunk_size
-            
-            # Clean up completed events
-            for event_id in events_to_remove:
-                self.active_events.discard(event_id)
-                if event_id in self.event_dict:
-                    del self.event_dict[event_id]
-                    #print(f"Event {event_id} cancelled")
-                    #print(f"After cancellation - Active events: {len(self.active_events)}, Event dict: {len(self.event_dict)}",len(self.event_heap))
-            
-            # Mix in streaming audio (e.g., from movie playback)
-            if self.stream_active:
-                with self.stream_buffer_lock:
-                    samples_needed = self.buffer_size
-                    samples_filled = 0
-                    
-                    while samples_filled < samples_needed and self.stream_buffer:
-                        chunk = self.stream_buffer[0]
-                        samples_available = len(chunk)
-                        samples_to_use = min(samples_needed - samples_filled, samples_available)
-                        
-                        # Mix chunk into buffer
-                        self.audio_buffer[samples_filled:samples_filled + samples_to_use] += chunk[:samples_to_use]
-                        
-                        samples_filled += samples_to_use
-                        
-                        # Remove used samples from chunk
-                        if samples_to_use >= samples_available:
-                            self.stream_buffer.pop(0)
-                        else:
-                            self.stream_buffer[0] = chunk[samples_to_use:]
-                    
-                    # Check for buffer underrun (crackling indicator)
-                    if samples_filled < samples_needed:
-                        # Fill remainder with silence to prevent crackling
-                        # This indicates we need more audio pushed from source
-                        pass  # audio_buffer already zero-filled at start
-                    
-                    # Don't mark inactive when buffer empties - new chunks will arrive from streaming thread
-
-            # Normalize if needed
-            max_val = np.max(np.abs(self.audio_buffer))
-            if max_val > 1:
-                self.audio_buffer /= max_val
-                
-        finally:
-            self.lock.release()
-
-    def schedule_event(self, sound_file, execution_time, duration, repeat_interval=None, inname=None, fade_in_duration=None, skip_time=0):
-        event = AudioEvent(sound_file, execution_time, duration, repeat_interval, name=inname, skip_time=skip_time)
-        # Pre-load the audio data from cache
-        event.audio_data = self.load_audio(event.sound_file, duration, skip_time)
-        if fade_in_duration is not None:
-            event.fade_in = fade_in_duration
-            event.fade_in_remaining = fade_in_duration
-        with self.lock:
-            heapq.heappush(self.event_heap, event)
-            self.event_dict[event.id] = event
-        return event.id
-
-    def fade_out_audio(self, event_name, duration=5):
-        if not self.safe_lock():
-            return
-            
-        try:
-            #print(f"Fading out audio for {event_name}")
-            for event in list(self.event_dict.values()):
-                if event.name == event_name:
-                    #print(f"Applying fade to event {event.id}")
-                    # Calculate remaining audio duration
-                    remaining_time = max((len(event.audio_data) - event.position) / self.sample_rate,0)
-                    fade_duration = min(duration, remaining_time)
-                    
-                    # Stop looping and apply fade
-                    event.is_looping = False
-                    event.fade = fade_duration
-                    event.fade_remaining = fade_duration
-                    
-        finally:
-            self.lock.release()
-
-
-
-
-
-    def run(self):
-        self.start_audio_stream()
-        try:
-            while self.running:
-                time.sleep(1 / self.fps)
-        except KeyboardInterrupt:
-            print("[AudioEngine] Stopping...")
-        finally:
-            self.running = False
-            self.stream.stop()
-            self.stream.close()
-
-class ThreadedAudioEngine(AudioEngine):
-    def __init__(self):
-        super().__init__()
-        self.thread = None
+    # ------------------------------------------------------------------
+    # Public API (safe to call from any thread)
+    # ------------------------------------------------------------------
 
     def start(self):
-        self.thread = threading.Thread(target=self.run)
-        self.thread.daemon = True
-        self.thread.start()
+        self._device = miniaudio.PlaybackDevice(
+            output_format=FORMAT,
+            nchannels=CHANNELS,
+            sample_rate=SAMPLE_RATE,
+            buffersize_msec=200,
+        )
+        gen = self._mixer()
+        next(gen)   # advance to first yield so miniaudio can send(framecount)
+        self._device.start(gen)
 
     def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join()
-            self.stream.stop()
-            self.stream.close()
+        if self._device:
+            self._device.stop()
+            self._device.close()
+            self._device = None
 
+    def play_ambient(self, path, skip_seconds: float = 0.0,
+                     fade_in: float = FADE_IN, fade_out: float = FADE_OUT):
+        """Cross-fade to a new looping ambient track."""
+        self._cmds.put(("ambient", Path(path), skip_seconds, fade_in, fade_out))
 
-if __name__ == "__main__":
-    engine = ThreadedAudioEngine()
-    engine.start()
-    
-    # Test cases
-    engine.schedule_event("media/sounds/Rain Into Puddle EDITED.wav", time.time() + 1, 5,repeat_interval=4,inname='toot')  # Single play
-    
-    try:
+    def stop_ambient(self, duration: float = FADE_OUT):
+        """Fade out the current ambient track."""
+        self._cmds.put(("stop_ambient", duration))
+
+    def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0):
+        """Play a sound file once. duration>0 caps playback to that many seconds."""
+        self._cmds.put(("oneshot", Path(path), volume, duration))
+
+    def push_stream_audio(self, chunk: np.ndarray):
+        """Push a decoded audio chunk for streaming playback (e.g. movie)."""
+        self._cmds.put(("push", chunk))
+
+    def clear_stream_audio(self):
+        """Discard all buffered stream audio."""
+        self._cmds.put(("clear_stream",))
+
+    # ------------------------------------------------------------------
+    # Mixer — runs entirely on miniaudio's audio callback thread.
+    # `tracks` is only ever mutated here, so no locking is needed.
+    # ------------------------------------------------------------------
+
+    def _mixer(self):
+        tracks: dict = {}
+        required_frames = yield b""   # miniaudio handshake
+
         while True:
-            time.sleep(15)
-            #engine.stop_repeating_by_name('toot')
-            print("event stopped")
-            engine.fade_out_audio('toot')
-            time.sleep(40)
-            engine.stop()
-            break
-    except KeyboardInterrupt:
-        engine.stop()
+            # Drain pending commands from other threads.
+            try:
+                while True:
+                    cmd  = self._cmds.get_nowait()
+                    kind = cmd[0]
+
+                    if kind == "ambient":
+                        _, path, skip, fi, fo = cmd
+                        for t in tracks.values():
+                            if t.is_ambient:
+                                t.fade_out(fo)
+                        tracks[f"ambient_{path.name}"] = _Track(
+                            path, loop=True, skip=skip,
+                            fade_in=fi, is_ambient=True)
+                        print(f"[AudioEngine] Ambient → {path.name}")
+
+                    elif kind == "stop_ambient":
+                        _, fo = cmd
+                        for t in tracks.values():
+                            if t.is_ambient:
+                                t.fade_out(fo)
+
+                    elif kind == "oneshot":
+                        _, path, vol, dur = cmd
+                        tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
+                                                         duration=dur)
+
+                    elif kind == "push":
+                        _, chunk = cmd
+                        if "_stream_" not in tracks:
+                            tracks["_stream_"] = _PushTrack()
+                        tracks["_stream_"].push(chunk)
+
+                    elif kind == "clear_stream":
+                        tracks.pop("_stream_", None)
+
+            except queue.Empty:
+                pass
+
+            # Mix all active tracks.
+            buf  = np.zeros((required_frames, CHANNELS), dtype=np.float32)
+            dead = []
+            for key, track in tracks.items():
+                chunk = track.read(required_frames)
+                if chunk is None or track.done:
+                    dead.append(key)
+                else:
+                    buf[:len(chunk)] += chunk
+            for key in dead:
+                del tracks[key]
+
+            peak = np.max(np.abs(buf))
+            if peak > 1.0:
+                buf /= peak
+
+            required_frames = yield buf.tobytes()
+
+
+# Backward-compatibility alias — render_pipeline.py instantiates this name.
+ThreadedAudioEngine = AudioEngine

@@ -5,7 +5,6 @@ from engine.render_pipeline import RenderPipeline
 import lib.dmx_sender as imdmx
 
 from lib.audio_analyzer import MicrophoneAnalyzer
-from lib.ambient_audio import AmbientAudioController
 from lib.weather_params import (
     WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 )
@@ -102,7 +101,6 @@ class EnvironmentalSystem:
         self.scheduler.state["skyfull"] = False
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
         self.active_effects = {"world": None, "ambient_sound": None}
-        self._ambient_audio = AmbientAudioController()
         # Event map - maps event names to shader effects and their parameters
         # This is used for both background events and on-transition events
         # Format: "event_name": (shader_function, {params_dict})
@@ -259,9 +257,8 @@ class EnvironmentalSystem:
 
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
         skip_time = target_params.get("skiptime", 0.0)
-        ari = target_params.get("ARI", 40)
         engine = self.scheduler.state["soundengine"]
-        self._ambient_audio.transition(sound_path, skip_time, ari, engine)
+        engine.play_ambient(sound_path, skip_seconds=skip_time)
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
     def apply_web_controls(self):
@@ -415,7 +412,9 @@ class EnvironmentalSystem:
 
     def shutdown(self):
         """Stop all audio and background threads cleanly."""
-        self._ambient_audio.stop()
+        engine = self.scheduler.state.get("soundengine")
+        if engine:
+            engine.stop_ambient()
         self.analyzer.stop()
 
     def update(self):
