@@ -112,35 +112,6 @@ class _Track:
         return chunk * self.volume
 
 
-class _PushTrack:
-    """Track fed by externally pushed audio chunks (e.g. movie playback)."""
-
-    is_ambient = False
-    done       = False
-
-    def __init__(self):
-        self._q   = queue.SimpleQueue()
-        self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
-
-    def push(self, chunk: np.ndarray):
-        if chunk.ndim == 1:
-            chunk = np.column_stack([chunk, chunk])
-        self._q.put(chunk.astype(np.float32))
-
-    def read(self, n_frames: int) -> np.ndarray:
-        while len(self._buf) < n_frames:
-            try:
-                self._buf = np.concatenate([self._buf, self._q.get_nowait()])
-            except queue.Empty:
-                break
-        n     = min(n_frames, len(self._buf))
-        chunk = self._buf[:n].copy()
-        self._buf = self._buf[n:]
-        if n < n_frames:
-            chunk = np.vstack([chunk,
-                               np.zeros((n_frames - n, CHANNELS), dtype=np.float32)])
-        return chunk
-
 
 class AudioEngine:
     """Streaming multi-track audio mixer — no files loaded into RAM.
@@ -190,13 +161,6 @@ class AudioEngine:
         """Play a sound file once. duration>0 caps playback to that many seconds."""
         self._cmds.put(("oneshot", Path(path), volume, duration))
 
-    def push_stream_audio(self, chunk: np.ndarray):
-        """Push a decoded audio chunk for streaming playback (e.g. movie)."""
-        self._cmds.put(("push", chunk))
-
-    def clear_stream_audio(self):
-        """Discard all buffered stream audio."""
-        self._cmds.put(("clear_stream",))
 
     # ------------------------------------------------------------------
     # Mixer — runs entirely on miniaudio's audio callback thread.
@@ -235,14 +199,6 @@ class AudioEngine:
                         tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
                                                          duration=dur)
 
-                    elif kind == "push":
-                        _, chunk = cmd
-                        if "_stream_" not in tracks:
-                            tracks["_stream_"] = _PushTrack()
-                        tracks["_stream_"].push(chunk)
-
-                    elif kind == "clear_stream":
-                        tracks.pop("_stream_", None)
 
             except queue.Empty:
                 pass
