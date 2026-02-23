@@ -118,11 +118,7 @@ def shader_meteor(state, outstate):
                 sound_path = parent_path / 'media' / 'sounds'
                 whoosh_path = sound_path / 'Whoosh By 04.wav'
                 if 'soundengine' in outstate and whoosh_path.exists():
-                    outstate['soundengine'].schedule_event(
-                        whoosh_path,
-                        time.time(),
-                        2
-                    )
+                    outstate['soundengine'].schedule_event(whoosh_path, duration=2.0)
         
         # Update meteor positions
         new_meteors = []

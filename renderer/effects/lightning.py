@@ -477,11 +477,7 @@ def shader_lightning(state, outstate, bolt_interval=2.0, bolt_duration=0.3,
         parent_path = Path(__file__).parent.parent.parent
         sound_path = parent_path / 'media' / 'sounds'
         boom_path = sound_path / spath
-        outstate['soundengine'].schedule_event(
-                boom_path,
-                time.time(),
-                4
-            )
+        outstate['soundengine'].schedule_event(boom_path, duration=10.0)
         try:
             effect = viewport.add_effect(
                 LightningEffect,
