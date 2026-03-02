@@ -10,6 +10,7 @@ no locks needed anywhere.
 """
 
 import queue
+import time
 import numpy as np
 import miniaudio
 from pathlib import Path
@@ -25,7 +26,8 @@ class _Track:
 
     def __init__(self, path: Path, *, loop: bool = False, skip: float = 0.0,
                  fade_in: float = 0.0, volume: float = 1.0,
-                 duration: float = 0.0, is_ambient: bool = False):
+                 duration: float = 0.0, loop_length: float = 0.0,
+                 is_ambient: bool = False):
         self.is_ambient       = is_ambient
         self.done             = False
         self._path            = path
@@ -36,7 +38,10 @@ class _Track:
         self._buf             = np.zeros((0, CHANNELS), dtype=np.float32)
         self._fade_in_frames  = int(fade_in * SAMPLE_RATE)
         self._max_frames      = int(duration * SAMPLE_RATE) if duration > 0 else 0
-        self._pos             = 0   # total frames read (drives fade-in and duration cap)
+        # loop_length: if >0, restart from skip every N seconds instead of at EOF.
+        self._loop_frames     = int(loop_length * SAMPLE_RATE) if loop_length > 0 else 0
+        self._pos             = 0   # monotonic total frames (drives fade-in and duration cap only)
+        self._loop_pos        = 0   # position within the current ARI window (resets on each loop)
         self._fading_out      = False
         self._fade_out_frames = 0
         self._fade_out_pos    = 0
@@ -58,6 +63,17 @@ class _Track:
         self._loop            = False
 
     def read(self, n_frames: int):
+        # ARI loop boundary: restart from skip_time when the window expires.
+        # Uses _loop_pos (not _pos) so fade-in fires only once at track start.
+        if self._loop_frames > 0:
+            remaining = self._loop_frames - self._loop_pos
+            if remaining <= 0:
+                self._loop_pos = 0
+                self._gen = self._open(self._skip)
+                self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
+                remaining = self._loop_frames
+            n_frames = min(n_frames, remaining)
+
         # Fill internal buffer until we have enough frames (or hit EOF).
         while len(self._buf) < n_frames and not self.done:
             try:
@@ -92,7 +108,8 @@ class _Track:
                                 end   / self._fade_in_frames,
                                 end - start, dtype=np.float32)
             chunk[:end - start] *= ramp[:, np.newaxis]
-        self._pos += n
+        self._pos      += n
+        self._loop_pos += n
 
         # Fade-out: linear ramp from 1→0 over _fade_out_frames samples.
         if self._fading_out:
@@ -149,9 +166,13 @@ class AudioEngine:
             self._device = None
 
     def play_ambient(self, path, skip_seconds: float = 0.0,
-                     fade_in: float = FADE_IN, fade_out: float = FADE_OUT):
-        """Cross-fade to a new looping ambient track."""
-        self._cmds.put(("ambient", Path(path), skip_seconds, fade_in, fade_out))
+                     fade_in: float = FADE_IN, fade_out: float = FADE_OUT,
+                     ari: float = 0.0):
+        """Cross-fade to a new looping ambient track.
+
+        ari: seconds to play from skip_seconds before looping back. 0 = loop at EOF.
+        """
+        self._cmds.put(("ambient", Path(path), skip_seconds, fade_in, fade_out, ari))
 
     def stop_ambient(self, duration: float = FADE_OUT):
         """Fade out the current ambient track."""
@@ -179,13 +200,13 @@ class AudioEngine:
                     kind = cmd[0]
 
                     if kind == "ambient":
-                        _, path, skip, fi, fo = cmd
+                        _, path, skip, fi, fo, ari = cmd
                         for t in tracks.values():
                             if t.is_ambient:
                                 t.fade_out(fo)
-                        tracks[f"ambient_{path.name}"] = _Track(
+                        tracks[f"ambient_{path.name}_{time.monotonic():.6f}"] = _Track(
                             path, loop=True, skip=skip,
-                            fade_in=fi, is_ambient=True)
+                            fade_in=fi, loop_length=ari, is_ambient=True)
                         print(f"[AudioEngine] Ambient → {path.name}")
 
                     elif kind == "stop_ambient":

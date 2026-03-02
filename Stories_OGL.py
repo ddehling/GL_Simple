@@ -166,6 +166,30 @@ class EnvironmentalSystem:
         self._initialize_weather_set_events()
         
         self.whompcount = 0
+    
+    def update(self):
+        """Update the environmental system - should be called each frame"""
+        self.current_time = time.time()
+
+        # Apply web control values
+        self.apply_web_controls()
+
+        # Handle transitions
+        self.weather_state.update(self.current_time)
+
+        # Update celestial bodies
+        for body in self.celestial_bodies:
+            body.update(self.current_time)
+            
+        # Apply current parameters to scheduler state
+        self.send_variables()
+        
+        # Random events
+        self.random_events()
+        self.random_state_change()
+        
+        # Update the scheduler
+        self.scheduler.update()
 
     def change_weather_set(self, new_set_name: str, immediate: bool = False,
                            initial_weather: WeatherState = None):
@@ -257,8 +281,9 @@ class EnvironmentalSystem:
 
         sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
         skip_time = target_params.get("skiptime", 0.0)
+        ari = target_params.get("ARI", 0.0)
         engine = self.scheduler.state["soundengine"]
-        engine.play_ambient(sound_path, skip_seconds=skip_time)
+        engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
     def apply_web_controls(self):
@@ -417,34 +442,12 @@ class EnvironmentalSystem:
             engine.stop_ambient()
         self.analyzer.stop()
 
-    def update(self):
-        """Update the environmental system - should be called each frame"""
-        self.current_time = time.time()
-
-        # Apply web control values
-        self.apply_web_controls()
-
-        # Handle transitions
-        self.weather_state.update(self.current_time)
-
-        # Update celestial bodies
-        for body in self.celestial_bodies:
-            body.update(self.current_time)
-            
-        # Apply current parameters to scheduler state
-        self.send_variables()
-        
-        # Random events
-        self.random_events()
-        self.random_state_change()
-        
-        # Update the scheduler
-        self.scheduler.update()
-
 
 # Main execution
 if __name__ == "__main__":
     env_system = EnvironmentalSystem()
+
+    #TODO: A way to set a weather state independently of set for testing
 
     # Change to a specific weather set and state on startup
     env_system.change_weather_set("ocean", immediate=True,
