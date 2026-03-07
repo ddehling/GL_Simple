@@ -277,6 +277,12 @@
                     <option value="">Loading...</option>
                 </select>
             </div>
+            <div style="margin-top: 15px;">
+                <label class="control-label" style="margin-bottom: 10px;">Switch to Weather:</label>
+                <select id="weather-state-selector" style="width: 100%; padding: 10px; font-size: 1em; border-radius: 5px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.3);">
+                    <option value="">Loading...</option>
+                </select>
+            </div>
         </div>
         
         <div id="controls-container" class="controls-grid">
@@ -544,26 +550,35 @@
             "desert_realm": "🏜️ Desert Realm",
             "ethereal_mist": "🌫️ Ethereal Mist",
             "cosmic_night": "🌌 Cosmic Night",
-            "full_spectrum": "🌈 Full Spectrum"
+            "full_spectrum": "🌈 Full Spectrum",
+            "cyberpunk": "🌆 Cyberpunk",
+            "ocean": "🌊 Ocean",
+            "test": "🔧 Test"
         };
-        
+
+        function formatStateName(state) {
+            return state.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        let _lastWeatherSet = null;
+
         async function loadWeatherSetInfo() {
             try {
                 const response = await fetch('/api/weather_set/info');
                 const data = await response.json();
-                
+
                 // Update display
                 const setName = WEATHER_SET_NAMES[data.current_set] || data.current_set;
                 document.getElementById('current-weather-set').textContent = setName;
-                document.getElementById('current-weather').textContent = data.current_weather;
-                
+                document.getElementById('current-weather').textContent = formatStateName(data.current_weather);
+
                 const seasonPercent = (data.season * 100).toFixed(1);
                 document.getElementById('season-display').textContent = seasonPercent + '%';
-                
-                // Populate selector if not already done
-                const selector = document.getElementById('weather-set-selector');
-                if (selector.options.length <= 1 && data.available_sets) {
-                    selector.innerHTML = '<option value="">-- Select a set --</option>';
+
+                // Populate set selector if not already done
+                const setSelector = document.getElementById('weather-set-selector');
+                if (setSelector.options.length <= 1 && data.available_sets) {
+                    setSelector.innerHTML = '<option value="">-- Select a set --</option>';
                     data.available_sets.forEach(setKey => {
                         const option = document.createElement('option');
                         option.value = setKey;
@@ -572,30 +587,40 @@
                             option.textContent += ' (current)';
                             option.selected = true;
                         }
-                        selector.appendChild(option);
+                        setSelector.appendChild(option);
+                    });
+                }
+
+                // Repopulate weather state selector when set changes
+                const stateSelector = document.getElementById('weather-state-selector');
+                if (data.current_set !== _lastWeatherSet && data.available_weather_states) {
+                    _lastWeatherSet = data.current_set;
+                    stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
+                    data.available_weather_states.forEach(state => {
+                        const option = document.createElement('option');
+                        option.value = state;
+                        option.textContent = formatStateName(state);
+                        stateSelector.appendChild(option);
                     });
                 }
             } catch (error) {
                 console.error('Failed to load weather set info:', error);
             }
         }
-        
+
         // Handle weather set change
         document.addEventListener('DOMContentLoaded', () => {
-            const selector = document.getElementById('weather-set-selector');
-            selector.addEventListener('change', async (e) => {
+            const setSelector = document.getElementById('weather-set-selector');
+            setSelector.addEventListener('change', async (e) => {
                 const newSet = e.target.value;
                 if (!newSet) return;
-                
+
                 try {
                     const response = await fetch('/api/weather_set/change', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ set_name: newSet })
                     });
-                    
                     const result = await response.json();
                     if (!result.success) {
                         alert('Error: ' + result.error);
@@ -605,7 +630,30 @@
                     alert('Failed to change weather set');
                 }
             });
-            
+
+            // Handle weather state change
+            const stateSelector = document.getElementById('weather-state-selector');
+            stateSelector.addEventListener('change', async (e) => {
+                const newState = e.target.value;
+                if (!newState) return;
+
+                try {
+                    const response = await fetch('/api/weather_state/change', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ state_name: newState })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        alert('Error: ' + result.error);
+                        e.target.value = '';
+                    }
+                } catch (error) {
+                    console.error('Failed to change weather state:', error);
+                    alert('Failed to change weather state');
+                }
+            });
+
             // Load weather set info initially and refresh every 2 seconds
             loadWeatherSetInfo();
             setInterval(loadWeatherSetInfo, 2000);

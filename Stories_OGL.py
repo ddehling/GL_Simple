@@ -83,6 +83,7 @@ class EnvironmentalSystem:
             self.web_controls = {
                 "current_weather_set": DEFAULT_WEATHER_SET,
                 "available_sets": list(WEATHER_SETS.keys()),
+                "available_weather_states": list(WEATHER_SETS[DEFAULT_WEATHER_SET]["states"]),
             }
             self.web_controller = WebController(
                 self.web_controls, 
@@ -302,13 +303,22 @@ class EnvironmentalSystem:
         
         self._last_web_check = self.current_time
         
-        # Check for weather set change requests (only if present)
-        # Read and clear atomically to avoid race conditions
+        # Check for weather set/state change requests (read and clear atomically)
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
-        
+            new_state = self.web_controller.control_dict.pop('request_weather_state', None)
+
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
+
+        if new_state is not None:
+            valid_states = [s.value for s in self.weather_set.get_set_states()]
+            if new_state in valid_states:
+                state_enum = WeatherState(new_state)
+                t_duration = self.weather_state.get_weather_params(state_enum)["transition_duration"]
+                self.transition_to_weather(state_enum, transition_duration=t_duration)
+            else:
+                print(f"[WEATHER] Requested state '{new_state}' not in current set")
         
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
@@ -319,6 +329,7 @@ class EnvironmentalSystem:
             self.web_controller._dict_lock.acquire()
             try:
                 self.web_controller.control_dict['current_weather_set'] = self.weather_set.current_set
+                self.web_controller.control_dict['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
                 self.web_controller.control_dict['current_weather'] = self.weather_state.current_weather.value
                 self.web_controller.control_dict['season'] = float(self.season)
                 self.web_controller._values_cache = None  # Invalidate cache
