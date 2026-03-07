@@ -317,6 +317,32 @@ class WebController:
                 "set_name": new_set
             })
         
+        @self.app.route('/api/weather_state/change', methods=['POST'])
+        def change_weather_state():
+            """Request a weather state change."""
+            data = request.json
+            new_state = data.get('state_name')
+
+            if not new_state:
+                return jsonify({"success": False, "error": "No state_name provided"}), 400
+
+            with self._dict_lock:
+                available_states = self.control_dict.get('available_weather_states', [])
+
+            if new_state not in available_states:
+                return jsonify({"success": False, "error": f"Unknown state: {new_state}"}), 400
+
+            with self._dict_lock:
+                self.control_dict['request_weather_state'] = new_state
+
+            self._values_cache = None
+
+            return jsonify({
+                "success": True,
+                "message": f"Weather state change to '{new_state}' queued",
+                "state_name": new_state
+            })
+
         @self.app.route('/api/weather_set/info')
         def weather_set_info():
             """Get current weather set information."""
@@ -324,6 +350,7 @@ class WebController:
                 info = {
                     "current_set": self.control_dict.get('current_weather_set', 'unknown'),
                     "available_sets": self.control_dict.get('available_sets', []),
+                    "available_weather_states": self.control_dict.get('available_weather_states', []),
                     "current_weather": self.control_dict.get('current_weather', 'unknown'),
                     "season": self.control_dict.get('season', 0.0)
                 }
