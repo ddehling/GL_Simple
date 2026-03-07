@@ -86,6 +86,7 @@ class EnvironmentalSystem:
                 "available_weather_states": list(WEATHER_SETS[DEFAULT_WEATHER_SET]["states"]),
                 "all_weather_states": [s.value for s in WeatherState],
                 "state_switch_locked": True,
+                "weather_state_locked": False,
             }
             self.web_controller = WebController(
                 self.web_controls, 
@@ -335,6 +336,7 @@ class EnvironmentalSystem:
                 self.web_controller.control_dict['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
                 self.web_controller.control_dict['current_weather'] = self.weather_state.current_weather.value
                 self.web_controller.control_dict['season'] = float(self.season)
+                self.web_controller.control_dict['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
                 self.web_controller._dict_lock.release()
@@ -409,6 +411,9 @@ class EnvironmentalSystem:
         randcheck = np.random.random()
                 
     def random_state_change(self):
+        if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
+            return
+
         transition_speed_mult = self.weather_set.get_transition_speed()
 
         randcheck = np.random.random()

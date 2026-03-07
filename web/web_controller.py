@@ -363,6 +363,21 @@ class WebController:
 
             return jsonify({"success": True, "locked": bool(locked)})
 
+        @self.app.route('/api/weather_state/set_state_locked', methods=['POST'])
+        def set_state_locked():
+            """Lock or unlock automatic weather state transitions."""
+            data = request.json
+            locked = data.get('locked')
+            if locked is None:
+                return jsonify({"success": False, "error": "No 'locked' value provided"}), 400
+
+            with self._dict_lock:
+                self.control_dict['weather_state_locked'] = bool(locked)
+
+            self._values_cache = None
+
+            return jsonify({"success": True, "locked": bool(locked)})
+
         @self.app.route('/api/weather_set/info')
         def weather_set_info():
             """Get current weather set information."""
@@ -375,6 +390,8 @@ class WebController:
                     "current_weather": self.control_dict.get('current_weather', 'unknown'),
                     "season": self.control_dict.get('season', 0.0),
                     "state_switch_locked": self.control_dict.get('state_switch_locked', True),
+                    "weather_state_locked": self.control_dict.get('weather_state_locked', False),
+                    "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                 }
             return jsonify(info)
         
