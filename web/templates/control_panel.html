@@ -270,6 +270,14 @@
                 <span class="info-label">Season:</span>
                 <span class="info-value" id="season-display">0%</span>
             </div>
+            <div class="info-row">
+                <span class="info-label">Brightness Limiting:</span>
+                <span class="info-value" id="brightness-limiting-display">1.00</span>
+            </div>
+            <div class="info-row" style="align-items: center;">
+                <span class="info-label">Lock Weather State:</span>
+                <button id="weather-state-locked-btn" onclick="toggleWeatherStateLocked()" style="flex: none; width: auto; padding: 4px 12px; font-size: 0.85em;">Off</button>
+            </div>
             
             <div style="margin-top: 15px;">
                 <label class="control-label" style="margin-bottom: 10px;">Switch to Set:</label>
@@ -602,6 +610,41 @@
             }
         }
 
+        let _weatherStateLocked = false;
+
+        function updateStateLockButton(locked) {
+            const btn = document.getElementById('weather-state-locked-btn');
+            if (locked) {
+                btn.textContent = 'On';
+                btn.style.background = 'rgba(255, 200, 0, 0.2)';
+                btn.style.borderColor = 'rgba(255, 200, 0, 0.7)';
+                btn.style.color = 'rgba(255, 220, 100, 1)';
+            } else {
+                btn.textContent = 'Off';
+                btn.style.background = 'rgba(255, 255, 255, 0.1)';
+                btn.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+                btn.style.color = '#fff';
+            }
+        }
+
+        async function toggleWeatherStateLocked() {
+            const newLocked = !_weatherStateLocked;
+            try {
+                const response = await fetch('/api/weather_state/set_state_locked', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ locked: newLocked })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    _weatherStateLocked = result.locked;
+                    updateStateLockButton(result.locked);
+                }
+            } catch (error) {
+                console.error('Failed to toggle state lock:', error);
+            }
+        }
+
         function populateStateSelector(states) {
             const stateSelector = document.getElementById('weather-state-selector');
             stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
@@ -626,6 +669,11 @@
                 const seasonPercent = (data.season * 100).toFixed(1);
                 document.getElementById('season-display').textContent = seasonPercent + '%';
 
+                const factor = data.brightness_limiting_factor ?? 1.0;
+                const bEl = document.getElementById('brightness-limiting-display');
+                bEl.textContent = factor.toFixed(3);
+                bEl.style.color = factor > 1.001 ? 'rgb(255, 200, 80)' : '#00ffff';
+
                 // Populate set selector if not already done
                 const setSelector = document.getElementById('weather-set-selector');
                 if (setSelector.options.length <= 1 && data.available_sets) {
@@ -642,10 +690,12 @@
                     });
                 }
 
-                // Sync lock button on first load
+                // Sync lock buttons on first load
                 if (_lastLocked === null) {
                     _lastLocked = data.state_switch_locked;
                     updateLockButton(data.state_switch_locked);
+                    _weatherStateLocked = data.weather_state_locked;
+                    updateStateLockButton(data.weather_state_locked);
                 }
 
                 // Repopulate state dropdown when set or lock state changes
