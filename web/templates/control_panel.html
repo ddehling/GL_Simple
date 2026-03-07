@@ -278,7 +278,10 @@
                 </select>
             </div>
             <div style="margin-top: 15px;">
-                <label class="control-label" style="margin-bottom: 10px;">Switch to Weather:</label>
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                    <label class="control-label" style="margin-bottom: 0;">Switch to Weather:</label>
+                    <button id="weather-state-lock-btn" onclick="toggleWeatherStateLock()" style="flex: none; width: auto; padding: 4px 12px; font-size: 0.85em;">🔒 Locked</button>
+                </div>
                 <select id="weather-state-selector" style="width: 100%; padding: 10px; font-size: 1em; border-radius: 5px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.3);">
                     <option value="">Loading...</option>
                 </select>
@@ -561,6 +564,54 @@
         }
 
         let _lastWeatherSet = null;
+        let _lastLocked = null;
+
+        function updateLockButton(locked) {
+            const btn = document.getElementById('weather-state-lock-btn');
+            if (locked) {
+                btn.textContent = '🔒 Locked';
+                btn.style.background = 'rgba(255, 100, 100, 0.2)';
+                btn.style.borderColor = 'rgba(255, 100, 100, 0.6)';
+                btn.style.color = 'rgba(255, 180, 180, 1)';
+            } else {
+                btn.textContent = '🔓 Unlocked';
+                btn.style.background = 'rgba(100, 255, 100, 0.2)';
+                btn.style.borderColor = 'rgba(100, 255, 100, 0.6)';
+                btn.style.color = 'rgba(180, 255, 180, 1)';
+            }
+        }
+
+        async function toggleWeatherStateLock() {
+            const currentlyLocked = _lastLocked !== false;
+            const newLocked = !currentlyLocked;
+            try {
+                const response = await fetch('/api/weather_state/set_lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ locked: newLocked })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    _lastLocked = result.locked;
+                    _lastWeatherSet = null; // force dropdown repopulate
+                    updateLockButton(result.locked);
+                    await loadWeatherSetInfo();
+                }
+            } catch (error) {
+                console.error('Failed to toggle lock:', error);
+            }
+        }
+
+        function populateStateSelector(states) {
+            const stateSelector = document.getElementById('weather-state-selector');
+            stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
+            states.forEach(state => {
+                const option = document.createElement('option');
+                option.value = state;
+                option.textContent = formatStateName(state);
+                stateSelector.appendChild(option);
+            });
+        }
 
         async function loadWeatherSetInfo() {
             try {
@@ -591,17 +642,20 @@
                     });
                 }
 
-                // Repopulate weather state selector when set changes
-                const stateSelector = document.getElementById('weather-state-selector');
-                if (data.current_set !== _lastWeatherSet && data.available_weather_states) {
+                // Sync lock button on first load
+                if (_lastLocked === null) {
+                    _lastLocked = data.state_switch_locked;
+                    updateLockButton(data.state_switch_locked);
+                }
+
+                // Repopulate state dropdown when set or lock state changes
+                const locked = data.state_switch_locked;
+                if (data.current_set !== _lastWeatherSet || locked !== _lastLocked) {
                     _lastWeatherSet = data.current_set;
-                    stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
-                    data.available_weather_states.forEach(state => {
-                        const option = document.createElement('option');
-                        option.value = state;
-                        option.textContent = formatStateName(state);
-                        stateSelector.appendChild(option);
-                    });
+                    _lastLocked = locked;
+                    updateLockButton(locked);
+                    const states = locked ? data.available_weather_states : data.all_weather_states;
+                    if (states) populateStateSelector(states);
                 }
             } catch (error) {
                 console.error('Failed to load weather set info:', error);

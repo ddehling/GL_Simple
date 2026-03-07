@@ -327,9 +327,14 @@ class WebController:
                 return jsonify({"success": False, "error": "No state_name provided"}), 400
 
             with self._dict_lock:
-                available_states = self.control_dict.get('available_weather_states', [])
+                locked = self.control_dict.get('state_switch_locked', True)
+                valid_states = (
+                    self.control_dict.get('available_weather_states', [])
+                    if locked
+                    else self.control_dict.get('all_weather_states', [])
+                )
 
-            if new_state not in available_states:
+            if new_state not in valid_states:
                 return jsonify({"success": False, "error": f"Unknown state: {new_state}"}), 400
 
             with self._dict_lock:
@@ -343,6 +348,21 @@ class WebController:
                 "state_name": new_state
             })
 
+        @self.app.route('/api/weather_state/set_lock', methods=['POST'])
+        def set_weather_state_lock():
+            """Set the weather state switch lock."""
+            data = request.json
+            locked = data.get('locked')
+            if locked is None:
+                return jsonify({"success": False, "error": "No 'locked' value provided"}), 400
+
+            with self._dict_lock:
+                self.control_dict['state_switch_locked'] = bool(locked)
+
+            self._values_cache = None
+
+            return jsonify({"success": True, "locked": bool(locked)})
+
         @self.app.route('/api/weather_set/info')
         def weather_set_info():
             """Get current weather set information."""
@@ -351,8 +371,10 @@ class WebController:
                     "current_set": self.control_dict.get('current_weather_set', 'unknown'),
                     "available_sets": self.control_dict.get('available_sets', []),
                     "available_weather_states": self.control_dict.get('available_weather_states', []),
+                    "all_weather_states": self.control_dict.get('all_weather_states', []),
                     "current_weather": self.control_dict.get('current_weather', 'unknown'),
-                    "season": self.control_dict.get('season', 0.0)
+                    "season": self.control_dict.get('season', 0.0),
+                    "state_switch_locked": self.control_dict.get('state_switch_locked', True),
                 }
             return jsonify(info)
         

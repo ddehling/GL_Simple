@@ -84,6 +84,8 @@ class EnvironmentalSystem:
                 "current_weather_set": DEFAULT_WEATHER_SET,
                 "available_sets": list(WEATHER_SETS.keys()),
                 "available_weather_states": list(WEATHER_SETS[DEFAULT_WEATHER_SET]["states"]),
+                "all_weather_states": [s.value for s in WeatherState],
+                "state_switch_locked": True,
             }
             self.web_controller = WebController(
                 self.web_controls, 
@@ -312,13 +314,14 @@ class EnvironmentalSystem:
             self.change_weather_set(new_set, immediate=True)
 
         if new_state is not None:
-            valid_states = [s.value for s in self.weather_set.get_set_states()]
-            if new_state in valid_states:
+            locked = self.web_controller.get('state_switch_locked', True)
+            all_states = [s.value for s in WeatherState]
+            if new_state in all_states and (not locked or new_state in [s.value for s in self.weather_set.get_set_states()]):
                 state_enum = WeatherState(new_state)
                 t_duration = self.weather_state.get_weather_params(state_enum)["transition_duration"]
                 self.transition_to_weather(state_enum, transition_duration=t_duration)
             else:
-                print(f"[WEATHER] Requested state '{new_state}' not in current set")
+                print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
         
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
