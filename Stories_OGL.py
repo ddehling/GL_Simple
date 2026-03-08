@@ -44,23 +44,23 @@ class EnvironmentalSystem:
                     'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 96),
                 },
             ],
-            [
-                {
-                    'ip': '192.168.68.111',
-                    'pixel_count': 2019,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt"),
-                },
-                {
-                    'ip': '192.168.68.125',
-                    'pixel_count': 1777,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt"),
-                },
-                {
-                    'ip': '192.168.68.124',
-                    'pixel_count': 1793,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt"),
-                },
-            ],
+            # [
+            #     {
+            #         'ip': '192.168.68.111',
+            #         'pixel_count': 2019,
+            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt"),
+            #     },
+            #     {
+            #         'ip': '192.168.68.125',
+            #         'pixel_count': 1777,
+            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt"),
+            #     },
+            #     {
+            #         'ip': '192.168.68.124',
+            #         'pixel_count': 1793,
+            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt"),
+            #     },
+            # ],
         ]
 
         self.scheduler = RenderPipeline(
@@ -144,6 +144,7 @@ class EnvironmentalSystem:
                 "color_hue": 0.5
             }),
             "pixel_spots": (fx.shader_pixel_spots, {}),
+            "vortex": (fx.shader_vortex, {}),
             "ocean_waves": (fx.shader_ocean_waves, {}),
             "kelp": (fx.shader_kelp, {}),
             "Bioluminescence": (fx.shader_bioluminescence, {}),
