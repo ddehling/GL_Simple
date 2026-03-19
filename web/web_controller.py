@@ -648,7 +648,7 @@ class WebController:
 
         def emitter_loop():
             state_interval = 0.2    # 200ms for state updates (5 Hz)
-            audio_interval = 0.1    # 100ms for audio updates (10 Hz)
+            audio_interval = 0.033 # ~33ms for audio updates (30 Hz)
             last_state_push = 0
             last_audio_push = 0
             last_weather = None
@@ -707,7 +707,7 @@ class WebController:
                         print(f"[WebController] Emitter audio error: {e}")
 
                 # Sleep a short interval to avoid busy-waiting
-                time.sleep(0.05)
+                time.sleep(0.015)
 
         self._emitter_thread = threading.Thread(target=emitter_loop, daemon=True)
         self._emitter_thread.start()
