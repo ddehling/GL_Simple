@@ -332,6 +332,22 @@ class EnvironmentalSystem:
             audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
         self.analyzer.sensitivity = audio_sens
 
+        # Update audio summary frequently (every web check = 0.2s / 5 Hz)
+        # This is lightweight: just 32 floats + 2 numbers
+        try:
+            current_bands = self.analyzer.get_current_bands(normalize='long')
+            if current_bands is not None:
+                audio_summary = {
+                    "bands": current_bands.tolist(),
+                    "peak_band": int(np.argmax(current_bands)),
+                    "total_power": float(np.sum(current_bands)),
+                    "sensitivity": self.analyzer.sensitivity,
+                }
+                with self.web_controller._dict_lock:
+                    self.web_controller.control_dict['audio_summary'] = audio_summary
+        except Exception:
+            pass
+
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
             self._last_status_update = 0
@@ -345,20 +361,6 @@ class EnvironmentalSystem:
                 "progress": float(self.weather_state.progress) if hasattr(self.weather_state, 'progress') else 1.0,
                 "transitioning": transitioning,
             }
-
-            # Build lightweight audio summary (current 32 bands only)
-            audio_summary = {}
-            try:
-                current_bands = self.analyzer.get_current_bands(normalize='long')
-                if current_bands is not None:
-                    audio_summary = {
-                        "bands": current_bands.tolist(),
-                        "peak_band": int(np.argmax(current_bands)),
-                        "total_power": float(np.sum(current_bands)),
-                        "sensitivity": self.analyzer.sensitivity,
-                    }
-            except Exception:
-                pass
 
             # Use the last frame's output values (post-override, what effects see)
             # Falls back to raw weather_params on first frame
@@ -388,7 +390,6 @@ class EnvironmentalSystem:
                 d['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)
                 d['weather_params_snapshot'] = params_snapshot
                 d['transition_state'] = transition_state
-                d['audio_summary'] = audio_summary
                 d['active_overrides'] = dict(self.web_controller.web_param_overrides)
                 d['global_modifiers'] = dict(self.web_controller.global_modifiers)
                 d['fps'] = getattr(self, '_current_fps', 0)
