@@ -1,12 +1,15 @@
 """
 Web-based control system for GL_Simple environmental effects.
-Provides a Flask web server with real-time control interface.
+Provides a Flask web server with real-time WebSocket control interface.
 """
 import threading
 import socket
 import hashlib
 import secrets
+import time
+import copy
 from flask import Flask, render_template, jsonify, request, session
+from flask_socketio import SocketIO, emit
 from pathlib import Path
 import json
 from zeroconf import Zeroconf, ServiceInfo
@@ -41,91 +44,67 @@ class WebController:
         self._values_cache_time = 0
         self._cache_duration = 0.1  # Cache for 100ms
         
-        self.app = Flask(__name__, 
-                        template_folder=str(Path(__file__).parent / 'templates'))
-        
+        self.app = Flask(__name__,
+                        template_folder=str(Path(__file__).parent / 'templates'),
+                        static_folder=str(Path(__file__).parent / 'static'),
+                        static_url_path='/static')
+
         # Configure Flask session with a secret key
         self.app.secret_key = secrets.token_hex(32)
-        
+
+        # Initialize SocketIO with threading async mode
+        self.socketio = SocketIO(self.app, async_mode='threading',
+                                 cors_allowed_origins='*', logger=False,
+                                 engineio_logger=False)
+
         # Hash the admin password if provided
         self.available_events = []  # Will be set by EnvironmentalSystem
         self.admin_password_hash = None
         if admin_password:
             self.admin_password_hash = hashlib.sha256(admin_password.encode()).hexdigest()
-        
+
         self.server_thread = None
         self.zeroconf = None
         self.service_info = None
+        self._emitter_thread = None
+        self._emitter_running = False
         self._setup_routes()
-        
-        # Default control schema - defines what controls are available
-        self.control_schema = {
+        self._setup_socketio_events()
+
+        # Global modifiers — multiplicative scalers (0.0–2.0, default 1.0)
+        self.global_modifiers = {
+            "weather_intensity": 1.0,
+            "effect_speed": 1.0,
+            "audio_sensitivity": 1.0,
+            "brightness": 1.0,
+        }
+
+        # Global modifier metadata for UI generation
+        self.global_modifier_schema = {
             "weather_intensity": {
-                "type": "slider",
-                "min": 0.0,
-                "max": 2.0,
-                "step": 0.1,
-                "default": 1.0,
-                "label": "Weather Intensity"
-            },
-            "fog_strength": {
-                "type": "slider",
-                "min": 0.0,
-                "max": 1.0,
-                "step": 0.05,
-                "default": 0.3,
-                "label": "Fog Strength"
-            },
-            "rain_amount": {
-                "type": "slider",
-                "min": 0.0,
-                "max": 1.0,
-                "step": 0.05,
-                "default": 0.5,
-                "label": "Rain Amount"
-            },
-            "audio_sensitivity": {
-                "type": "slider",
-                "min": 0.1,
-                "max": 3.0,
-                "step": 0.1,
-                "default": 1.0,
-                "label": "Audio Sensitivity"
-            },
-            "enable_fireflies": {
-                "type": "checkbox",
-                "default": True,
-                "label": "Enable Fireflies"
-            },
-            "enable_stars": {
-                "type": "checkbox",
-                "default": True,
-                "label": "Enable Stars"
-            },
-            "color_mode": {
-                "type": "select",
-                "options": ["default", "warm", "cool", "monochrome"],
-                "default": "default",
-                "label": "Color Mode"
+                "label": "Weather Intensity",
+                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
+                "description": "Scales dramatic weather effects (rain, wind, lightning, etc.)"
             },
             "effect_speed": {
-                "type": "slider",
-                "min": 0.1,
-                "max": 5.0,
-                "step": 0.1,
-                "default": 1.0,
-                "label": "Effect Speed Multiplier"
-            }
+                "label": "Effect Speed",
+                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
+                "description": "Scales animation and transition timing"
+            },
+            "audio_sensitivity": {
+                "label": "Audio Sensitivity",
+                "min": 0.1, "max": 3.0, "step": 0.05, "default": 1.0,
+                "description": "Scales how much audio input affects visuals"
+            },
+            "brightness": {
+                "label": "Brightness",
+                "min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0,
+                "description": "Global brightness dimmer (cannot exceed power limiter)"
+            },
         }
-        
-        # Initialize control_dict with defaults
-        self._init_defaults()
-    
-    def _init_defaults(self):
-        """Initialize control dictionary with default values from schema."""
-        for key, config in self.control_schema.items():
-            if key not in self.control_dict:
-                self.control_dict[key] = config["default"]
+
+        # Weather parameter overrides — direct value overrides (param_name -> value)
+        self.web_param_overrides = {}
     
     def _setup_routes(self):
         """Setup Flask routes for the web interface."""
@@ -209,84 +188,110 @@ class WebController:
             
             return jsonify(info)
         
-        @self.app.route('/api/schema')
-        def get_schema():
-            """Return the control schema for dynamic UI generation."""
-            return jsonify(self.control_schema)
-        
-        @self.app.route('/api/values')
-        def get_values():
-            """Return current values of all controls."""
-            # Use cached values if available and fresh
+        @self.app.route('/api/globals/schema')
+        def get_globals_schema():
+            """Return the global modifier schema for UI generation."""
+            return jsonify(self.global_modifier_schema)
+
+        @self.app.route('/api/globals/values')
+        def get_globals_values():
+            """Return current global modifier values."""
+            with self._dict_lock:
+                return jsonify(dict(self.global_modifiers))
+
+        @self.app.route('/api/globals/update', methods=['POST'])
+        def update_global():
+            """Update a global modifier value."""
+            data = request.json
+            modifier = data.get('modifier')
+            value = data.get('value')
+
+            if modifier not in self.global_modifier_schema:
+                return jsonify({"success": False, "error": f"Unknown modifier: {modifier}"}), 400
+
+            schema = self.global_modifier_schema[modifier]
+            value = max(schema["min"], min(schema["max"], float(value)))
+
+            with self._dict_lock:
+                self.global_modifiers[modifier] = value
+            self._values_cache = None
+
+            return jsonify({"success": True, "modifier": modifier, "value": value})
+
+        @self.app.route('/api/params/override', methods=['POST'])
+        def set_param_override():
+            """Set a weather parameter override (direct value)."""
+            data = request.json
+            param = data.get('param')
+            value = data.get('value')
+
+            if param is None or value is None:
+                return jsonify({"success": False, "error": "Must provide 'param' and 'value'"}), 400
+
+            with self._dict_lock:
+                self.web_param_overrides[param] = float(value)
+            self._values_cache = None
+
+            return jsonify({"success": True, "param": param, "value": float(value)})
+
+        @self.app.route('/api/params/clear_override', methods=['POST'])
+        def clear_param_override():
+            """Remove a weather parameter override."""
+            data = request.json
+            param = data.get('param')
+
+            with self._dict_lock:
+                removed = self.web_param_overrides.pop(param, None)
+            self._values_cache = None
+
+            return jsonify({"success": True, "param": param, "was_overridden": removed is not None})
+
+        @self.app.route('/api/params/clear_all_overrides', methods=['POST'])
+        def clear_all_overrides():
+            """Remove all weather parameter overrides."""
+            with self._dict_lock:
+                count = len(self.web_param_overrides)
+                self.web_param_overrides.clear()
+            self._values_cache = None
+
+            return jsonify({"success": True, "cleared": count})
+
+        @self.app.route('/api/state/snapshot')
+        def get_state_snapshot():
+            """Return current system state: weather params, globals, transition, audio."""
             import time
             current_time = time.time()
-            
-            if (self._values_cache is not None and 
+
+            if (self._values_cache is not None and
                 current_time - self._values_cache_time < self._cache_duration):
                 return self._values_cache
-            
-            # Create a snapshot with lock to avoid holding it during JSON serialization
+
             with self._dict_lock:
-                values_snapshot = self.control_dict.copy()
-            
-            # Serialize outside the lock
-            response = jsonify(values_snapshot)
-            
-            # Cache the response
+                snapshot = {
+                    "global_modifiers": dict(self.global_modifiers),
+                    "active_overrides": dict(self.web_param_overrides),
+                    "weather_params": self.control_dict.get('weather_params_snapshot', {}),
+                    "transition": self.control_dict.get('transition_state', {}),
+                    "audio_summary": self.control_dict.get('audio_summary', {}),
+                    "fps": self.control_dict.get('fps', 0),
+                    "current_weather_set": self.control_dict.get('current_weather_set', 'unknown'),
+                    "current_weather": self.control_dict.get('current_weather', 'unknown'),
+                    "season": self.control_dict.get('season', 0.0),
+                    "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
+                    "active_effects": self.control_dict.get('active_effects', []),
+                }
+
+            response = jsonify(snapshot)
             self._values_cache = response
             self._values_cache_time = current_time
-            
             return response
-        
-        @self.app.route('/api/update', methods=['POST'])
-        def update_value():
-            """Update a control value."""
-            data = request.json
-            key = data.get('key')
-            value = data.get('value')
-            
-            if key in self.control_schema:
-                # Convert value to appropriate type
-                schema_type = self.control_schema[key]["type"]
-                if schema_type == "checkbox":
-                    value = bool(value)
-                elif schema_type in ["slider", "number"]:
-                    value = float(value)
-                
-                with self._dict_lock:
-                    self.control_dict[key] = value
-                
-                # Invalidate cache
-                self._values_cache = None
-                
-                return jsonify({"success": True, "key": key, "value": value})
-            
-            return jsonify({"success": False, "error": "Unknown key"}), 400
-        
-        @self.app.route('/api/batch_update', methods=['POST'])
-        def batch_update():
-            """Update multiple control values at once."""
-            data = request.json
-            updated = {}
-            
-            # Prepare updates outside lock
-            for key, value in data.items():
-                if key in self.control_schema:
-                    schema_type = self.control_schema[key]["type"]
-                    if schema_type == "checkbox":
-                        value = bool(value)
-                    elif schema_type in ["slider", "number"]:
-                        value = float(value)
-                    updated[key] = value
-            
-            # Apply all updates at once under lock
+
+        @self.app.route('/api/values')
+        def get_values():
+            """Return current values from the control dictionary."""
             with self._dict_lock:
-                self.control_dict.update(updated)
-            
-            # Invalidate cache
-            self._values_cache = None
-            
-            return jsonify({"success": True, "updated": updated})
+                values_snapshot = self.control_dict.copy()
+            return jsonify(values_snapshot)
         
         @self.app.route('/api/weather_set/change', methods=['POST'])
         def change_weather_set():
@@ -392,6 +397,7 @@ class WebController:
                     "state_switch_locked": self.control_dict.get('state_switch_locked', True),
                     "weather_state_locked": self.control_dict.get('weather_state_locked', False),
                     "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
+                    "active_effects": self.control_dict.get('active_effects', []),
                 }
             return jsonify(info)
         
@@ -541,37 +547,171 @@ class WebController:
         """Clear cached weather data (call after saving changes)."""
         if hasattr(self, '_weather_data_cache'):
             delattr(self, '_weather_data_cache')
-    
-    def add_control(self, key, control_type, label, **kwargs):
-        """
-        Add a new control to the schema.
-        
-        Args:
-            key: Unique identifier for the control
-            control_type: Type of control ('slider', 'checkbox', 'select', 'number')
-            label: Display label for the control
-            **kwargs: Additional parameters (min, max, step, default, options, etc.)
-        """
-        self.control_schema[key] = {
-            "type": control_type,
-            "label": label,
-            **kwargs
-        }
-        
-        # Set default value if provided and not already in dict
-        if "default" in kwargs and key not in self.control_dict:
-            self.control_dict[key] = kwargs["default"]
-    
+
+    def _setup_socketio_events(self):
+        """Register WebSocket event handlers for real-time client communication."""
+
+        @self.socketio.on('connect')
+        def handle_connect():
+            # Send initial state snapshot on connect
+            with self._dict_lock:
+                snapshot = {
+                    "global_modifiers": dict(self.global_modifiers),
+                    "active_overrides": dict(self.web_param_overrides),
+                    "weather_params": self.control_dict.get('weather_params_snapshot', {}),
+                    "transition": self.control_dict.get('transition_state', {}),
+                    "audio_summary": self.control_dict.get('audio_summary', {}),
+                    "fps": self.control_dict.get('fps', 0),
+                    "current_weather_set": self.control_dict.get('current_weather_set', 'unknown'),
+                    "current_weather": self.control_dict.get('current_weather', 'unknown'),
+                    "season": self.control_dict.get('season', 0.0),
+                    "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
+                    "active_effects": self.control_dict.get('active_effects', []),
+                }
+            emit('state_update', snapshot)
+
+        @self.socketio.on('update_global')
+        def handle_update_global(data):
+            modifier = data.get('modifier')
+            value = data.get('value')
+            if modifier in self.global_modifier_schema:
+                schema = self.global_modifier_schema[modifier]
+                value = max(schema["min"], min(schema["max"], float(value)))
+                with self._dict_lock:
+                    self.global_modifiers[modifier] = value
+                self._values_cache = None
+
+        @self.socketio.on('set_override')
+        def handle_set_override(data):
+            param = data.get('param')
+            value = data.get('value')
+            if param is not None and value is not None:
+                with self._dict_lock:
+                    self.web_param_overrides[param] = float(value)
+                self._values_cache = None
+
+        @self.socketio.on('clear_override')
+        def handle_clear_override(data):
+            param = data.get('param')
+            with self._dict_lock:
+                self.web_param_overrides.pop(param, None)
+            self._values_cache = None
+
+        @self.socketio.on('clear_all_overrides')
+        def handle_clear_all_overrides(data=None):
+            with self._dict_lock:
+                self.web_param_overrides.clear()
+            self._values_cache = None
+
+        @self.socketio.on('change_weather_set')
+        def handle_change_set(data):
+            new_set = data.get('set_name')
+            if new_set:
+                with self._dict_lock:
+                    available = self.control_dict.get('available_sets', [])
+                if new_set in available:
+                    with self._dict_lock:
+                        self.control_dict['request_weather_set'] = new_set
+                    self._values_cache = None
+
+        @self.socketio.on('change_weather_state')
+        def handle_change_state(data):
+            new_state = data.get('state_name')
+            if new_state:
+                with self._dict_lock:
+                    locked = self.control_dict.get('state_switch_locked', True)
+                    valid_states = (
+                        self.control_dict.get('available_weather_states', [])
+                        if locked
+                        else self.control_dict.get('all_weather_states', [])
+                    )
+                if new_state in valid_states:
+                    with self._dict_lock:
+                        self.control_dict['request_weather_state'] = new_state
+                    self._values_cache = None
+
+    def _start_emitter(self):
+        """Start the background thread that pushes state updates via WebSocket."""
+        self._emitter_running = True
+
+        def emitter_loop():
+            state_interval = 0.2    # 200ms for state updates (5 Hz)
+            audio_interval = 0.1    # 100ms for audio updates (10 Hz)
+            last_state_push = 0
+            last_audio_push = 0
+            last_weather = None
+            last_set = None
+
+            while self._emitter_running:
+                now = time.time()
+
+                # Push state updates at 5 Hz
+                if now - last_state_push >= state_interval:
+                    last_state_push = now
+                    try:
+                        with self._dict_lock:
+                            snapshot = {
+                                "global_modifiers": dict(self.global_modifiers),
+                                "active_overrides": dict(self.web_param_overrides),
+                                "weather_params": copy.copy(self.control_dict.get('weather_params_snapshot', {})),
+                                "transition": copy.copy(self.control_dict.get('transition_state', {})),
+                                "fps": self.control_dict.get('fps', 0),
+                                "current_weather_set": self.control_dict.get('current_weather_set', 'unknown'),
+                                "current_weather": self.control_dict.get('current_weather', 'unknown'),
+                                "season": self.control_dict.get('season', 0.0),
+                                "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
+                            }
+
+                        # Emit to all connected clients
+                        self.socketio.emit('state_update', snapshot)
+
+                        # Detect weather set/state changes for event-driven push
+                        cur_weather = snapshot.get('current_weather')
+                        cur_set = snapshot.get('current_weather_set')
+                        if cur_weather != last_weather or cur_set != last_set:
+                            if last_weather is not None:  # skip initial
+                                self.socketio.emit('weather_changed', {
+                                    'weather': cur_weather,
+                                    'set': cur_set,
+                                    'previous_weather': last_weather,
+                                    'previous_set': last_set,
+                                })
+                            last_weather = cur_weather
+                            last_set = cur_set
+
+                    except Exception as e:
+                        pass  # Don't crash emitter on transient errors
+
+                # Push audio updates at 10 Hz
+                if now - last_audio_push >= audio_interval:
+                    last_audio_push = now
+                    try:
+                        with self._dict_lock:
+                            audio = copy.copy(self.control_dict.get('audio_summary', {}))
+                        if audio:
+                            self.socketio.emit('audio_update', audio)
+                    except Exception:
+                        pass
+
+                # Sleep a short interval to avoid busy-waiting
+                time.sleep(0.05)
+
+        self._emitter_thread = threading.Thread(target=emitter_loop, daemon=True)
+        self._emitter_thread.start()
+
     def start(self, threaded=True):
         """
         Start the web server.
-        
+
         Args:
             threaded: If True, run server in a separate thread (non-blocking)
         """
         # Register mDNS service
         self._register_mdns()
-        
+
+        # Start the WebSocket emitter thread
+        self._start_emitter()
+
         if threaded:
             self.server_thread = threading.Thread(
                 target=self._run_server,
@@ -583,15 +723,16 @@ class WebController:
             print(f"[WebController]   http://{self.service_name}.local:{self.port}")
         else:
             self._run_server()
-    
+
     def _run_server(self):
-        """Internal method to run the Flask server."""
+        """Internal method to run the Flask+SocketIO server."""
         # Disable Flask request logging
         import logging
         log = logging.getLogger('werkzeug')
         log.setLevel(logging.ERROR)
-        
-        self.app.run(host='0.0.0.0', port=self.port, debug=False, use_reloader=False)
+
+        self.socketio.run(self.app, host='0.0.0.0', port=self.port,
+                          debug=False, use_reloader=False, log_output=False)
     
     def _register_mdns(self):
         """Register the service with mDNS/Bonjour for easy discovery."""
@@ -641,7 +782,8 @@ class WebController:
         mdns_thread = threading.Thread(target=register_async, daemon=True)
         mdns_thread.start()
     def stop(self):
-        """Stop the web server and unregister mDNS service."""
+        """Stop the web server, emitter, and unregister mDNS service."""
+        self._emitter_running = False
         if self.zeroconf and self.service_info:
             try:
                 self.zeroconf.unregister_service(self.service_info)
@@ -694,17 +836,6 @@ if __name__ == "__main__":
     # Example usage
     control_dict = {}
     controller = WebController(control_dict)
-    
-    # Add custom controls
-    controller.add_control(
-        "custom_param",
-        "slider",
-        "Custom Parameter",
-        min=0,
-        max=100,
-        step=1,
-        default=50
-    )
-    
+
     # Start the server (blocking mode for standalone testing)
     controller.start(threaded=False)

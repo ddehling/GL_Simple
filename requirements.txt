@@ -16,3 +16,4 @@ sounddevice
 soundfile
 zeroconf
 flask
+flask-socketio
