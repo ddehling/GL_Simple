@@ -672,6 +672,7 @@ class WebController:
                                 "current_weather": self.control_dict.get('current_weather', 'unknown'),
                                 "season": self.control_dict.get('season', 0.0),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
+                                "active_effects": list(self.control_dict.get('active_effects', [])),
                             }
 
                         # Emit to all connected clients
