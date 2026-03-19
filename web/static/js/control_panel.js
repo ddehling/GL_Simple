@@ -316,6 +316,7 @@ function clearOverride(param) {
     if (socket && socket.connected) {
         socket.emit('clear_override', { param });
     }
+    renderWeatherParams();
 }
 
 function clearAllOverrides() {
@@ -323,6 +324,7 @@ function clearAllOverrides() {
     if (socket && socket.connected) {
         socket.emit('clear_all_overrides', {});
     }
+    renderWeatherParams();
 }
 
 // ---- Performance Panel ----

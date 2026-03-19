@@ -603,13 +603,16 @@ class WebController:
                 self.web_param_overrides.clear()
             self._values_cache = None
 
+        # Allowed keys for the set_flag WebSocket event
+        ALLOWED_FLAGS = {'instant_transitions'}
+
         @self.socketio.on('set_flag')
         def handle_set_flag(data):
             key = data.get('key')
             value = data.get('value')
-            if key is not None:
+            if key in ALLOWED_FLAGS:
                 with self._dict_lock:
-                    self.control_dict[key] = value
+                    self.control_dict[key] = bool(value)
                 self._values_cache = None
 
         @self.socketio.on('change_weather_set')
@@ -689,7 +692,7 @@ class WebController:
                             last_set = cur_set
 
                     except Exception as e:
-                        pass  # Don't crash emitter on transient errors
+                        print(f"[WebController] Emitter state error: {e}")
 
                 # Push audio updates at 10 Hz
                 if now - last_audio_push >= audio_interval:
@@ -699,8 +702,8 @@ class WebController:
                             audio = copy.copy(self.control_dict.get('audio_summary', {}))
                         if audio:
                             self.socketio.emit('audio_update', audio)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[WebController] Emitter audio error: {e}")
 
                 # Sleep a short interval to avoid busy-waiting
                 time.sleep(0.05)
