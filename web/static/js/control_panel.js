@@ -13,6 +13,23 @@ let audioSummary = {};
 let transitionState = {};
 let socket = null;
 
+// Interaction cooldown: after user changes a value, ignore server updates
+// for that control briefly to prevent snapping back
+const interactionCooldowns = {};  // key -> timestamp
+const COOLDOWN_MS = 1500;  // 1.5 seconds
+
+function setInteractionCooldown(key) {
+    interactionCooldowns[key] = Date.now();
+}
+
+function isOnCooldown(key) {
+    const ts = interactionCooldowns[key];
+    if (!ts) return false;
+    if (Date.now() - ts < COOLDOWN_MS) return true;
+    delete interactionCooldowns[key];
+    return false;
+}
+
 // Weather param categories for grouping in the UI
 const PARAM_CATEGORIES = {
     "Atmosphere": ["fog_strength", "fog_color", "cloudyness", "starryness", "celestial_visibility"],
@@ -76,8 +93,9 @@ function connectSocket() {
         weatherParams = data.weather_params || {};
         transitionState = data.transition || {};
 
-        // Sync global sliders (if not being dragged)
+        // Sync global sliders (skip if user recently interacted)
         for (const [key, val] of Object.entries(globalModifiers)) {
+            if (isOnCooldown(`global-${key}`)) continue;
             const slider = document.getElementById(`global-${key}`);
             const display = document.getElementById(`global-val-${key}`);
             if (slider && !slider.matches(':active')) slider.value = val;
@@ -164,6 +182,7 @@ function renderGlobals() {
 function onGlobalChange(modifier, value) {
     value = parseFloat(value);
     globalModifiers[modifier] = value;
+    setInteractionCooldown(`global-${modifier}`);
     const display = document.getElementById(`global-val-${modifier}`);
     if (display) display.textContent = value.toFixed(2) + 'x';
 
@@ -202,10 +221,11 @@ function updateTransitionDisplay() {
 function renderWeatherParams() {
     const container = document.getElementById('params-container');
 
+    // Merge weather params with override values (overrides take precedence for display)
     const numericParams = {};
     for (const [key, val] of Object.entries(weatherParams)) {
         if (typeof val === 'number') {
-            numericParams[key] = val;
+            numericParams[key] = (key in activeOverrides) ? activeOverrides[key] : val;
         }
     }
 
@@ -237,10 +257,16 @@ function renderWeatherParams() {
         html += '</div></div>';
     }
 
-    if (!document.querySelector('.param-slider:active')) {
+    // Check if any param slider is being dragged or on cooldown
+    const anyActive = document.querySelector('.param-slider:active');
+    const anyCooldown = Object.keys(numericParams).some(k => isOnCooldown(`param-${k}`));
+
+    if (!anyActive && !anyCooldown) {
         container.innerHTML = html;
     } else {
+        // Just update value displays without re-rendering sliders
         for (const [key, val] of Object.entries(numericParams)) {
+            if (isOnCooldown(`param-${key}`)) continue;
             const display = document.getElementById(`param-val-${key}`);
             if (display) display.textContent = val.toFixed(3);
         }
@@ -273,6 +299,7 @@ function buildParamCard(key, value) {
 function onParamOverride(param, value) {
     value = parseFloat(value);
     activeOverrides[param] = value;
+    setInteractionCooldown(`param-${param}`);
     const display = document.getElementById(`param-val-${param}`);
     if (display) display.textContent = value.toFixed(3);
 
