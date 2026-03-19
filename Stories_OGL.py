@@ -321,6 +321,8 @@ class EnvironmentalSystem:
             if new_state in all_states and (not locked or new_state in [s.value for s in self.weather_set.get_set_states()]):
                 state_enum = WeatherState(new_state)
                 t_duration = self.weather_state.get_weather_params(state_enum)["transition_duration"]
+                if self.web_controller.get('instant_transitions', False):
+                    t_duration = 0.01
                 self.transition_to_weather(state_enum, transition_duration=t_duration)
             else:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
