@@ -372,8 +372,9 @@ class EnvironmentalSystem:
 
             # Build active effects list (snapshot to avoid race with scheduler thread)
             try:
-                active_effects = [e.name for e in list(self.scheduler.active_events)]
-            except Exception:
+                active_effects = [e.name for e in list(self.scheduler._scheduler.active_events)]
+            except Exception as e:
+                print(f"[WebController] Error reading active_events: {e}")
                 active_effects = []
 
             # Batch update to minimize lock acquisitions
