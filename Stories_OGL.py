@@ -370,13 +370,11 @@ class EnvironmentalSystem:
                 elif isinstance(v, (int, float, str, bool, list)):
                     params_snapshot[k] = v
 
-            # Build active effects list
-            active_effects = []
+            # Build active effects list (snapshot to avoid race with scheduler thread)
             try:
-                for event in self.scheduler.active_events:
-                    active_effects.append(event.name)
+                active_effects = [e.name for e in list(self.scheduler.active_events)]
             except Exception:
-                pass
+                active_effects = []
 
             # Batch update to minimize lock acquisitions
             self.web_controller._dict_lock.acquire()
@@ -520,6 +518,8 @@ class EnvironmentalSystem:
 
                 new_weather_params = self.weather_state.get_weather_params(new_weather)
                 t_duration = new_weather_params["transition_duration"]
+                if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                    t_duration = 0.01
                 self.transition_to_weather(new_weather, transition_duration=t_duration)
                 return
 
@@ -534,6 +534,8 @@ class EnvironmentalSystem:
             # Find the transition duration
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
+            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                t_duration = 0.01
             self.transition_to_weather(new_weather, transition_duration=t_duration)
 
     def shutdown(self):
