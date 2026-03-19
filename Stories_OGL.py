@@ -358,9 +358,11 @@ class EnvironmentalSystem:
             except Exception:
                 pass
 
-            # Build weather params snapshot (JSON-safe copy)
+            # Use the last frame's output values (post-override, what effects see)
+            # Falls back to raw weather_params on first frame
             params_snapshot = {}
-            for k, v in self.weather_state.weather_params.items():
+            source = getattr(self, '_last_web_output', self.weather_state.weather_params)
+            for k, v in source.items():
                 if isinstance(v, np.ndarray):
                     params_snapshot[k] = v.tolist()
                 elif isinstance(v, (int, float, str, bool, list)):
@@ -426,6 +428,9 @@ class EnvironmentalSystem:
             # Store brightness modifier in state for render pipeline to apply
             # after the hardware limiter (can only dim, never brighten past limiter)
             state["web_brightness"] = brightness_mod
+
+            # Cache the final output for the web UI snapshot (post-overrides)
+            self._last_web_output = output
 
         state.update(output)
         state["season"] = self.season
