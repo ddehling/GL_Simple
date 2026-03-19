@@ -603,6 +603,15 @@ class WebController:
                 self.web_param_overrides.clear()
             self._values_cache = None
 
+        @self.socketio.on('set_flag')
+        def handle_set_flag(data):
+            key = data.get('key')
+            value = data.get('value')
+            if key is not None:
+                with self._dict_lock:
+                    self.control_dict[key] = value
+                self._values_cache = None
+
         @self.socketio.on('change_weather_set')
         def handle_change_set(data):
             new_set = data.get('set_name')

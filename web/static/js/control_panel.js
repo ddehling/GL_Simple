@@ -495,6 +495,31 @@ async function toggleWeatherStateLocked() {
     }
 }
 
+let _instantTransitions = false;
+
+function updateInstantTransitionButton(enabled) {
+    const btn = document.getElementById('instant-transition-btn');
+    if (enabled) {
+        btn.textContent = 'On';
+        btn.style.background = 'rgba(255, 200, 0, 0.2)';
+        btn.style.borderColor = 'rgba(255, 200, 0, 0.7)';
+        btn.style.color = 'rgba(255, 220, 100, 1)';
+    } else {
+        btn.textContent = 'Off';
+        btn.style.background = 'rgba(255, 255, 255, 0.1)';
+        btn.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+        btn.style.color = '#fff';
+    }
+}
+
+function toggleInstantTransitions() {
+    _instantTransitions = !_instantTransitions;
+    updateInstantTransitionButton(_instantTransitions);
+    if (socket && socket.connected) {
+        socket.emit('set_flag', { key: 'instant_transitions', value: _instantTransitions });
+    }
+}
+
 function populateStateSelector(states) {
     const stateSelector = document.getElementById('weather-state-selector');
     stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
