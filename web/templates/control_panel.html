@@ -4,239 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GL_Simple Control Panel</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: #fff;
-            padding: 20px;
-            min-height: 100vh;
-        }
-        
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-        
-        header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            padding: 5px 15px;
-            background: rgba(0, 255, 0, 0.2);
-            border: 1px solid #0f0;
-            border-radius: 20px;
-            font-size: 0.9em;
-        }
-        
-        .status-dot {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            background: #0f0;
-            border-radius: 50%;
-            margin-right: 5px;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .controls-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        
-        .control-card {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            padding: 20px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        
-        .control-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-        }
-        
-        .control-label {
-            display: block;
-            font-weight: bold;
-            margin-bottom: 10px;
-            font-size: 1.1em;
-        }
-        
-        .control-value {
-            float: right;
-            color: #00ffff;
-            font-weight: bold;
-        }
-        
-        input[type="range"] {
-            width: 100%;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 5px;
-            outline: none;
-            -webkit-appearance: none;
-        }
-        
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            background: #00ffff;
-            cursor: pointer;
-            border-radius: 50%;
-            box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
-        }
-        
-        input[type="range"]::-moz-range-thumb {
-            width: 20px;
-            height: 20px;
-            background: #00ffff;
-            cursor: pointer;
-            border-radius: 50%;
-            border: none;
-            box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
-        }
-        
-        select {
-            width: 100%;
-            padding: 10px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 5px;
-            color: #fff;
-            font-size: 1em;
-            cursor: pointer;
-        }
-        
-        select option {
-            background: #2a5298;
-            color: #fff;
-        }
-        
-        .checkbox-container {
-            display: flex;
-            align-items: center;
-            cursor: pointer;
-        }
-        
-        input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
-            margin-right: 10px;
-            cursor: pointer;
-            accent-color: #00ffff;
-        }
-        
-        .info-panel {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            padding: 20px;
-            margin-top: 20px;
-        }
-        
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .info-row:last-child {
-            border-bottom: none;
-        }
-        
-        .info-label {
-            font-weight: bold;
-            opacity: 0.8;
-        }
-        
-        .info-value {
-            color: #00ffff;
-        }
-        
-        .button-group {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        
-        button {
-            flex: 1;
-            padding: 12px;
-            background: rgba(0, 255, 255, 0.2);
-            border: 1px solid #00ffff;
-            border-radius: 5px;
-            color: #00ffff;
-            font-size: 1em;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        button:hover {
-            background: rgba(0, 255, 255, 0.4);
-            box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
-        }
-        
-        button:active {
-            transform: scale(0.98);
-        }
-        
-        .tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
-        }
-        
-        .tab {
-            padding: 15px 30px;
-            background: rgba(255, 255, 255, 0.1);
-            border: none;
-            border-radius: 10px 10px 0 0;
-            color: #fff;
-            font-size: 1.1em;
-            cursor: pointer;
-            transition: all 0.3s;
-            text-decoration: none;
-            display: inline-block;
-        }
-        
-        .tab:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-        
-        .tab.active {
-            background: rgba(0, 255, 255, 0.2);
-            border-bottom: 3px solid #00ffff;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <link rel="stylesheet" href="/static/css/control_panel.css">
 </head>
 <body>
     <div class="container">
@@ -244,20 +13,22 @@
             <h1>GL_Simple Control Panel</h1>
             <div class="status-indicator">
                 <span class="status-dot"></span>
-                <span id="status-text">Connected</span>
+                <span id="status-text">Connecting...</span>
             </div>
         </header>
-        
+
         <div class="tabs">
             <a href="/" class="tab active">Controls</a>
-
-            <a href="/weather_editor" class="tab">⚙️ Editor</a>
+            <a href="/weather_editor" class="tab">Editor</a>
             <a href="/admin" class="tab" id="admin-tab">Admin</a>
         </div>
-        
+
         <!-- Weather Set Info Panel -->
-        <div class="info-panel" style="margin-bottom: 20px;">
-            <h3 style="margin-bottom: 15px;">🌦️ Weather Set</h3>
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Weather</h3>
+                <span id="fps-display" style="font-size: 0.85em; opacity: 0.7;">-- FPS</span>
+            </div>
             <div class="info-row">
                 <span class="info-label">Current Set:</span>
                 <span class="info-value" id="current-weather-set">Loading...</span>
@@ -266,526 +37,109 @@
                 <span class="info-label">Current Weather:</span>
                 <span class="info-value" id="current-weather">Loading...</span>
             </div>
+            <div id="transition-row" class="info-row" style="display: none;">
+                <span class="info-label">Transitioning to:</span>
+                <span class="info-value" id="transition-target">--</span>
+            </div>
+            <div id="transition-bar-row" style="display: none;">
+                <div class="transition-bar-container" style="display: block;">
+                    <div class="transition-bar-fill" id="transition-bar" style="width: 0%;"></div>
+                </div>
+            </div>
             <div class="info-row">
                 <span class="info-label">Season:</span>
                 <span class="info-value" id="season-display">0%</span>
             </div>
             <div class="info-row">
                 <span class="info-label">Brightness Limiting:</span>
-                <span class="info-value" id="brightness-limiting-display">1.00</span>
+                <span class="info-value" id="brightness-limiting-display">1.000</span>
             </div>
             <div class="info-row" style="align-items: center;">
                 <span class="info-label">Lock Weather State:</span>
-                <button id="weather-state-locked-btn" onclick="toggleWeatherStateLocked()" style="flex: none; width: auto; padding: 4px 12px; font-size: 0.85em;">Off</button>
+                <button id="weather-state-locked-btn" onclick="toggleWeatherStateLocked()" class="btn-small">Off</button>
             </div>
-            
+
             <div style="margin-top: 15px;">
-                <label class="control-label" style="margin-bottom: 10px;">Switch to Set:</label>
-                <select id="weather-set-selector" style="width: 100%; padding: 10px; font-size: 1em; border-radius: 5px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.3);">
+                <label class="control-label" style="margin-bottom: 10px;"><span>Switch to Set:</span></label>
+                <select id="weather-set-selector">
                     <option value="">Loading...</option>
                 </select>
             </div>
             <div style="margin-top: 15px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                    <label class="control-label" style="margin-bottom: 0;">Switch to Weather:</label>
-                    <button id="weather-state-lock-btn" onclick="toggleWeatherStateLock()" style="flex: none; width: auto; padding: 4px 12px; font-size: 0.85em;">🔒 Locked</button>
+                    <label style="font-weight: bold;">Switch to Weather:</label>
+                    <button id="weather-state-lock-btn" onclick="toggleWeatherStateLock()" class="btn-small">Locked</button>
                 </div>
-                <select id="weather-state-selector" style="width: 100%; padding: 10px; font-size: 1em; border-radius: 5px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.3);">
+                <select id="weather-state-selector">
                     <option value="">Loading...</option>
                 </select>
             </div>
         </div>
-        
-        <div id="controls-container" class="controls-grid">
-            <!-- Controls will be dynamically generated here -->
+
+        <!-- Global Modifiers -->
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Global Modifiers</h3>
+                <button onclick="resetGlobals()" class="btn-small">Reset All</button>
+            </div>
+            <div id="globals-container" class="controls-grid">
+            </div>
         </div>
-        
-        <div class="info-panel">
-            <h3 style="margin-bottom: 15px;">System Information</h3>
-            <div class="info-row">
-                <span class="info-label">Server Address:</span>
-                <span class="info-value" id="server-address">Loading...</span>
+
+        <!-- Weather Parameters -->
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Weather Parameters</h3>
+                <div>
+                    <span id="override-count" style="font-size: 0.85em; opacity: 0.7; margin-right: 10px;">0 overrides</span>
+                    <button onclick="clearAllOverrides()" class="btn-small btn-warn">Release All</button>
+                </div>
+            </div>
+            <div id="params-container">
+            </div>
+        </div>
+
+        <!-- Audio Visualization -->
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Audio</h3>
+                <span id="audio-power" style="font-size: 0.85em; opacity: 0.7;">--</span>
+            </div>
+            <canvas id="audio-canvas"></canvas>
+        </div>
+
+        <!-- Performance & Debug -->
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Performance</h3>
             </div>
             <div class="info-row">
-                <span class="info-label">Last Update:</span>
-                <span class="info-value" id="last-update">Never</span>
+                <span class="info-label">FPS:</span>
+                <span class="info-value" id="perf-fps">--</span>
             </div>
             <div class="info-row">
-                <span class="info-label">Active Controls:</span>
-                <span class="info-value" id="active-controls">0</span>
+                <span class="info-label">Active Effects:</span>
+                <span class="info-value" id="perf-effect-count">0</span>
             </div>
-            
-            <div class="button-group">
-                <button onclick="resetToDefaults()">Reset to Defaults</button>
-                <button onclick="refreshValues()">Refresh Values</button>
+            <div class="info-row">
+                <span class="info-label">Brightness Limiter:</span>
+                <span class="info-value" id="perf-brightness">1.000</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Web Brightness:</span>
+                <span class="info-value" id="perf-web-brightness">1.00x</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <div class="params-category-header">Active Effects</div>
+                <div id="perf-effects-list" style="font-size: 0.85em; opacity: 0.8; line-height: 1.6;">
+                    <span style="opacity: 0.5;">None</span>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script>
-        let schema = {};
-        let values = {};
-        
-        // Load schema and values on page load
-        async function init() {
-            await loadSchema();
-            await loadValues();
-            renderControls();
-            updateServerAddress();
-            
-            // Poll for updates every 2 seconds
-            setInterval(loadValues, 2000);
-        }
-        
-        async function loadSchema() {
-            try {
-                const response = await fetch('/api/schema');
-                schema = await response.json();
-            } catch (error) {
-                console.error('Failed to load schema:', error);
-            }
-        }
-        
-        async function loadValues() {
-            try {
-                const response = await fetch('/api/values');
-                const newValues = await response.json();
-                
-                // Update values and UI
-                for (const [key, value] of Object.entries(newValues)) {
-                    values[key] = value;
-                    updateControlDisplay(key, value);
-                }
-                
-                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-            } catch (error) {
-                console.error('Failed to load values:', error);
-                document.getElementById('status-text').textContent = 'Disconnected';
-            }
-        }
-        
-        function renderControls() {
-            const container = document.getElementById('controls-container');
-            container.innerHTML = '';
-            
-            let count = 0;
-            for (const [key, config] of Object.entries(schema)) {
-                const card = createControlCard(key, config);
-                container.appendChild(card);
-                count++;
-            }
-            
-            document.getElementById('active-controls').textContent = count;
-        }
-        
-        function createControlCard(key, config) {
-            const card = document.createElement('div');
-            card.className = 'control-card';
-            
-            const label = document.createElement('label');
-            label.className = 'control-label';
-            label.textContent = config.label;
-            
-            const valueDisplay = document.createElement('span');
-            valueDisplay.className = 'control-value';
-            valueDisplay.id = `value-${key}`;
-            label.appendChild(valueDisplay);
-            
-            card.appendChild(label);
-            
-            let control;
-            
-            if (config.type === 'slider') {
-                control = createSlider(key, config);
-            } else if (config.type === 'checkbox') {
-                control = createCheckbox(key, config);
-            } else if (config.type === 'select') {
-                control = createSelect(key, config);
-            }
-            
-            if (control) {
-                card.appendChild(control);
-            }
-            
-            return card;
-        }
-        
-        function createSlider(key, config) {
-            const slider = document.createElement('input');
-            slider.type = 'range';
-            slider.id = `control-${key}`;
-            slider.min = config.min;
-            slider.max = config.max;
-            slider.step = config.step;
-            slider.value = values[key] || config.default;
-            
-            slider.addEventListener('input', (e) => {
-                updateValue(key, parseFloat(e.target.value));
-            });
-            
-            updateControlDisplay(key, slider.value);
-            return slider;
-        }
-        
-        function createCheckbox(key, config) {
-            const container = document.createElement('div');
-            container.className = 'checkbox-container';
-            
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.id = `control-${key}`;
-            checkbox.checked = values[key] !== undefined ? values[key] : config.default;
-            
-            checkbox.addEventListener('change', (e) => {
-                updateValue(key, e.target.checked);
-            });
-            
-            const label = document.createElement('span');
-            label.textContent = config.label;
-            
-            container.appendChild(checkbox);
-            container.appendChild(label);
-            
-            updateControlDisplay(key, checkbox.checked);
-            return container;
-        }
-        
-        function createSelect(key, config) {
-            const select = document.createElement('select');
-            select.id = `control-${key}`;
-            
-            config.options.forEach(option => {
-                const optionElement = document.createElement('option');
-                optionElement.value = option;
-                optionElement.textContent = option.charAt(0).toUpperCase() + option.slice(1);
-                select.appendChild(optionElement);
-            });
-            
-            select.value = values[key] || config.default;
-            
-            select.addEventListener('change', (e) => {
-                updateValue(key, e.target.value);
-            });
-            
-            updateControlDisplay(key, select.value);
-            return select;
-        }
-        
-        function updateControlDisplay(key, value) {
-            const display = document.getElementById(`value-${key}`);
-            if (display) {
-                if (typeof value === 'boolean') {
-                    display.textContent = value ? 'ON' : 'OFF';
-                } else if (typeof value === 'number') {
-                    display.textContent = value.toFixed(2);
-                } else {
-                    display.textContent = value;
-                }
-            }
-            
-            // Update control element
-            const control = document.getElementById(`control-${key}`);
-            if (control) {
-                if (control.type === 'checkbox') {
-                    control.checked = value;
-                } else {
-                    control.value = value;
-                }
-            }
-        }
-        
-        async function updateValue(key, value) {
-            try {
-                const response = await fetch('/api/update', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ key, value }),
-                });
-                
-                const result = await response.json();
-                if (result.success) {
-                    values[key] = value;
-                    updateControlDisplay(key, value);
-                    document.getElementById('status-text').textContent = 'Connected';
-                }
-            } catch (error) {
-                console.error('Failed to update value:', error);
-                document.getElementById('status-text').textContent = 'Update Failed';
-            }
-        }
-        
-        function resetToDefaults() {
-            const updates = {};
-            for (const [key, config] of Object.entries(schema)) {
-                updates[key] = config.default;
-            }
-            batchUpdate(updates);
-        }
-        
-        async function batchUpdate(updates) {
-            try {
-                const response = await fetch('/api/batch_update', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(updates),
-                });
-                
-                const result = await response.json();
-                if (result.success) {
-                    await loadValues();
-                }
-            } catch (error) {
-                console.error('Failed to batch update:', error);
-            }
-        }
-        
-        function refreshValues() {
-            loadValues();
-        }
-        
-        function updateServerAddress() {
-            document.getElementById('server-address').textContent = window.location.origin;
-        }
-        
-        // Initialize on page load
-        init();
-        
-        // Weather set management
-        const WEATHER_SET_NAMES = {
-            "peaceful_forest": "🌲 Peaceful Forest",
-            "storm_world": "⛈️ Storm World",
-            "desert_realm": "🏜️ Desert Realm",
-            "ethereal_mist": "🌫️ Ethereal Mist",
-            "cosmic_night": "🌌 Cosmic Night",
-            "full_spectrum": "🌈 Full Spectrum",
-            "cyberpunk": "🌆 Cyberpunk",
-            "ocean": "🌊 Ocean",
-            "test": "🔧 Test"
-        };
 
-        function formatStateName(state) {
-            return state.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        }
-
-        let _lastWeatherSet = null;
-        let _lastLocked = null;
-
-        function updateLockButton(locked) {
-            const btn = document.getElementById('weather-state-lock-btn');
-            if (locked) {
-                btn.textContent = '🔒 Locked';
-                btn.style.background = 'rgba(255, 100, 100, 0.2)';
-                btn.style.borderColor = 'rgba(255, 100, 100, 0.6)';
-                btn.style.color = 'rgba(255, 180, 180, 1)';
-            } else {
-                btn.textContent = '🔓 Unlocked';
-                btn.style.background = 'rgba(100, 255, 100, 0.2)';
-                btn.style.borderColor = 'rgba(100, 255, 100, 0.6)';
-                btn.style.color = 'rgba(180, 255, 180, 1)';
-            }
-        }
-
-        async function toggleWeatherStateLock() {
-            const currentlyLocked = _lastLocked !== false;
-            const newLocked = !currentlyLocked;
-            try {
-                const response = await fetch('/api/weather_state/set_lock', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ locked: newLocked })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    _lastLocked = result.locked;
-                    _lastWeatherSet = null; // force dropdown repopulate
-                    updateLockButton(result.locked);
-                    await loadWeatherSetInfo();
-                }
-            } catch (error) {
-                console.error('Failed to toggle lock:', error);
-            }
-        }
-
-        let _weatherStateLocked = false;
-
-        function updateStateLockButton(locked) {
-            const btn = document.getElementById('weather-state-locked-btn');
-            if (locked) {
-                btn.textContent = 'On';
-                btn.style.background = 'rgba(255, 200, 0, 0.2)';
-                btn.style.borderColor = 'rgba(255, 200, 0, 0.7)';
-                btn.style.color = 'rgba(255, 220, 100, 1)';
-            } else {
-                btn.textContent = 'Off';
-                btn.style.background = 'rgba(255, 255, 255, 0.1)';
-                btn.style.borderColor = 'rgba(255, 255, 255, 0.3)';
-                btn.style.color = '#fff';
-            }
-        }
-
-        async function toggleWeatherStateLocked() {
-            const newLocked = !_weatherStateLocked;
-            try {
-                const response = await fetch('/api/weather_state/set_state_locked', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ locked: newLocked })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    _weatherStateLocked = result.locked;
-                    updateStateLockButton(result.locked);
-                }
-            } catch (error) {
-                console.error('Failed to toggle state lock:', error);
-            }
-        }
-
-        function populateStateSelector(states) {
-            const stateSelector = document.getElementById('weather-state-selector');
-            stateSelector.innerHTML = '<option value="">-- Select a weather --</option>';
-            states.forEach(state => {
-                const option = document.createElement('option');
-                option.value = state;
-                option.textContent = formatStateName(state);
-                stateSelector.appendChild(option);
-            });
-        }
-
-        async function loadWeatherSetInfo() {
-            try {
-                const response = await fetch('/api/weather_set/info');
-                const data = await response.json();
-
-                // Update display
-                const setName = WEATHER_SET_NAMES[data.current_set] || data.current_set;
-                document.getElementById('current-weather-set').textContent = setName;
-                document.getElementById('current-weather').textContent = formatStateName(data.current_weather);
-
-                const seasonPercent = (data.season * 100).toFixed(1);
-                document.getElementById('season-display').textContent = seasonPercent + '%';
-
-                const factor = data.brightness_limiting_factor ?? 1.0;
-                const bEl = document.getElementById('brightness-limiting-display');
-                bEl.textContent = factor.toFixed(3);
-                bEl.style.color = factor > 1.001 ? 'rgb(255, 200, 80)' : '#00ffff';
-
-                // Populate set selector if not already done
-                const setSelector = document.getElementById('weather-set-selector');
-                if (setSelector.options.length <= 1 && data.available_sets) {
-                    setSelector.innerHTML = '<option value="">-- Select a set --</option>';
-                    data.available_sets.forEach(setKey => {
-                        const option = document.createElement('option');
-                        option.value = setKey;
-                        option.textContent = WEATHER_SET_NAMES[setKey] || setKey;
-                        if (setKey === data.current_set) {
-                            option.textContent += ' (current)';
-                            option.selected = true;
-                        }
-                        setSelector.appendChild(option);
-                    });
-                }
-
-                // Sync lock buttons on first load
-                if (_lastLocked === null) {
-                    _lastLocked = data.state_switch_locked;
-                    updateLockButton(data.state_switch_locked);
-                    _weatherStateLocked = data.weather_state_locked;
-                    updateStateLockButton(data.weather_state_locked);
-                }
-
-                // Repopulate state dropdown when set or lock state changes
-                const locked = data.state_switch_locked;
-                if (data.current_set !== _lastWeatherSet || locked !== _lastLocked) {
-                    _lastWeatherSet = data.current_set;
-                    _lastLocked = locked;
-                    updateLockButton(locked);
-                    const states = locked ? data.available_weather_states : data.all_weather_states;
-                    if (states) populateStateSelector(states);
-                }
-            } catch (error) {
-                console.error('Failed to load weather set info:', error);
-            }
-        }
-
-        // Handle weather set change
-        document.addEventListener('DOMContentLoaded', () => {
-            const setSelector = document.getElementById('weather-set-selector');
-            setSelector.addEventListener('change', async (e) => {
-                const newSet = e.target.value;
-                if (!newSet) return;
-
-                try {
-                    const response = await fetch('/api/weather_set/change', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ set_name: newSet })
-                    });
-                    const result = await response.json();
-                    if (!result.success) {
-                        alert('Error: ' + result.error);
-                    }
-                } catch (error) {
-                    console.error('Failed to change weather set:', error);
-                    alert('Failed to change weather set');
-                }
-            });
-
-            // Handle weather state change
-            const stateSelector = document.getElementById('weather-state-selector');
-            stateSelector.addEventListener('change', async (e) => {
-                const newState = e.target.value;
-                if (!newState) return;
-
-                try {
-                    const response = await fetch('/api/weather_state/change', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ state_name: newState })
-                    });
-                    const result = await response.json();
-                    if (!result.success) {
-                        alert('Error: ' + result.error);
-                        e.target.value = '';
-                    }
-                } catch (error) {
-                    console.error('Failed to change weather state:', error);
-                    alert('Failed to change weather state');
-                }
-            });
-
-            // Load weather set info initially and refresh every 2 seconds
-            loadWeatherSetInfo();
-            setInterval(loadWeatherSetInfo, 2000);
-        });
-        
-        // Check if admin panel is available
-        async function checkAdminAvailability() {
-            try {
-                const response = await fetch('/api/admin/check');
-                const data = await response.json();
-                
-                if (!data.admin_enabled) {
-                    // Hide admin tab if not enabled
-                    const adminTab = document.getElementById('admin-tab');
-                    if (adminTab) {
-                        adminTab.style.display = 'none';
-                    }
-                }
-            } catch (error) {
-                // If endpoint doesn't exist, hide admin tab
-                const adminTab = document.getElementById('admin-tab');
-                if (adminTab) {
-                    adminTab.style.display = 'none';
-                }
-            }
-        }
-        
-        checkAdminAvailability();
-    </script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="/static/js/socket-client.js"></script>
+    <script src="/static/js/control_panel.js"></script>
 </body>
 </html>
