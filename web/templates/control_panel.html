@@ -95,6 +95,7 @@
             <div class="section-header">
                 <h3>Weather Parameters</h3>
                 <div>
+                    <button id="toggle-all-params-btn" onclick="toggleShowAllParams()" class="btn-small" style="margin-right: 6px;">Show All</button>
                     <span id="override-count" style="font-size: 0.85em; opacity: 0.7; margin-right: 10px;">0 overrides</span>
                     <button onclick="clearAllOverrides()" class="btn-small btn-warn">Release All</button>
                 </div>
@@ -108,6 +109,10 @@
             <div class="section-header">
                 <h3>Audio</h3>
                 <span id="audio-power" style="font-size: 0.85em; opacity: 0.7;">--</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Ambient Sound:</span>
+                <span class="info-value" id="ambient-sound-display" style="opacity: 0.7;">--</span>
             </div>
             <canvas id="audio-canvas"></canvas>
         </div>

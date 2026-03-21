@@ -279,6 +279,7 @@ class WebController:
                     "season": self.control_dict.get('season', 0.0),
                     "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                     "active_effects": self.control_dict.get('active_effects', []),
+                    "allowed_output_params": self.control_dict.get('allowed_output_params'),
                 }
 
             response = jsonify(snapshot)
@@ -673,6 +674,8 @@ class WebController:
                                 "season": self.control_dict.get('season', 0.0),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
+                                "ambient_sound": self.control_dict.get('ambient_sound'),
+                                "allowed_output_params": self.control_dict.get('allowed_output_params'),
                             }
 
                         # Emit to all connected clients

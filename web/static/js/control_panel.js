@@ -18,6 +18,11 @@ let socket = null;
 const interactionCooldowns = {};  // key -> timestamp
 const COOLDOWN_MS = 1500;  // 1.5 seconds
 
+// Release cooldown: after releasing overrides, briefly ignore server override state
+// to prevent the UI flickering back before the server processes the clear
+let releaseCooldownUntil = 0;
+const RELEASE_COOLDOWN_MS = 2000;
+
 function setInteractionCooldown(key) {
     interactionCooldowns[key] = Date.now();
 }
@@ -29,6 +34,10 @@ function isOnCooldown(key) {
     delete interactionCooldowns[key];
     return false;
 }
+
+// Whether to show all params or only those relevant to the current weather set
+let showAllParams = false;
+let allowedOutputParams = null;  // null = show all, Set = filter
 
 // Weather param categories for grouping in the UI
 const PARAM_CATEGORIES = {
@@ -89,9 +98,19 @@ function connectSocket() {
     // State updates from server (5 Hz)
     socket.on('state_update', (data) => {
         globalModifiers = data.global_modifiers || {};
-        activeOverrides = data.active_overrides || {};
+        // Respect release cooldown: don't restore server overrides right after a release
+        if (Date.now() < releaseCooldownUntil) {
+            // Keep local activeOverrides (empty after release)
+        } else {
+            activeOverrides = data.active_overrides || {};
+        }
         weatherParams = data.weather_params || {};
         transitionState = data.transition || {};
+
+        // Track allowed output params for filtering
+        if (data.allowed_output_params) {
+            allowedOutputParams = new Set(data.allowed_output_params);
+        }
 
         // Sync global sliders (skip if user recently interacted)
         for (const [key, val] of Object.entries(globalModifiers)) {
@@ -114,6 +133,18 @@ function connectSocket() {
         bEl.style.color = factor > 1.001 ? 'rgb(255, 200, 80)' : '#00ffff';
 
         document.getElementById('fps-display').textContent = (data.fps || '--') + ' FPS';
+
+        // Update ambient sound display
+        const ambientEl = document.getElementById('ambient-sound-display');
+        if (data.ambient_sound) {
+            // Strip file extension and clean up the name
+            const name = data.ambient_sound.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+            ambientEl.textContent = name;
+            ambientEl.style.opacity = '1';
+        } else {
+            ambientEl.textContent = '--';
+            ambientEl.style.opacity = '0.7';
+        }
 
         updateTransitionDisplay();
         renderWeatherParams();
@@ -225,6 +256,11 @@ function renderWeatherParams() {
     const numericParams = {};
     for (const [key, val] of Object.entries(weatherParams)) {
         if (typeof val === 'number') {
+            // Filter by allowed params unless showing all
+            if (!showAllParams && allowedOutputParams && !allowedOutputParams.has(key)) {
+                // Still show if it has an active override
+                if (!(key in activeOverrides)) continue;
+            }
             numericParams[key] = (key in activeOverrides) ? activeOverrides[key] : val;
         }
     }
@@ -313,6 +349,7 @@ function onParamOverride(param, value) {
 
 function clearOverride(param) {
     delete activeOverrides[param];
+    releaseCooldownUntil = Date.now() + RELEASE_COOLDOWN_MS;
     if (socket && socket.connected) {
         socket.emit('clear_override', { param });
     }
@@ -321,9 +358,17 @@ function clearOverride(param) {
 
 function clearAllOverrides() {
     activeOverrides = {};
+    releaseCooldownUntil = Date.now() + RELEASE_COOLDOWN_MS;
     if (socket && socket.connected) {
         socket.emit('clear_all_overrides', {});
     }
+    renderWeatherParams();
+}
+
+function toggleShowAllParams() {
+    showAllParams = !showAllParams;
+    const btn = document.getElementById('toggle-all-params-btn');
+    btn.textContent = showAllParams ? 'Show Set Only' : 'Show All';
     renderWeatherParams();
 }
 

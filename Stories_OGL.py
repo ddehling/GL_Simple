@@ -394,6 +394,8 @@ class EnvironmentalSystem:
                 d['global_modifiers'] = dict(self.web_controller.global_modifiers)
                 d['fps'] = getattr(self, '_current_fps', 0)
                 d['active_effects'] = active_effects
+                d['ambient_sound'] = self.active_effects.get("ambient_sound")
+                d['allowed_output_params'] = self._get_allowed_output_params()
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
                 self.web_controller._dict_lock.release()
@@ -401,6 +403,31 @@ class EnvironmentalSystem:
     
     # Output keys from get_state_output() that weather_intensity should scale
     WEATHER_INTENSITY_KEYS = {"rain", "wind", "sand_density", "volcano_level"}
+
+    # Maps allowed_parameters input names → output keys from get_state_output()
+    # Parameters not in this map pass through with the same name
+    _INPUT_TO_OUTPUT_PARAM = {
+        "fog": "fog_strength",
+        "wind_speed": "wind",
+        "rain_rate": "rain",
+        "tree_prob": "tree_growth",
+    }
+
+    def _get_allowed_output_params(self):
+        """Return the set of output param keys allowed for the current weather set."""
+        set_config = WEATHER_SETS.get(self.weather_set.current_set, {})
+        allowed_input = set_config.get("allowed_parameters", [])
+        if not allowed_input:
+            return None  # No restrictions (e.g. test set)
+        result = set()
+        for inp in allowed_input:
+            out = self._INPUT_TO_OUTPUT_PARAM.get(inp, inp)
+            result.add(out)
+        # cloudyness is always derived from multiple params, include it if any contributor is allowed
+        cloud_contributors = {"fog", "wind_speed", "rain_rate", "starryness", "celestial_visibility"}
+        if cloud_contributors & set(allowed_input):
+            result.add("cloudyness")
+        return list(result)
 
     def send_variables(self):
         season_speed = self.weather_set.get_season_speed()
