@@ -296,17 +296,17 @@ class EnvironmentalSystem:
         # Skip entirely if web control is disabled
         if not self.enable_web_control or self.web_controller is None:
             return
-        
+
         # Only check web controls occasionally - not every frame!
         if not hasattr(self, '_last_web_check'):
             self._last_web_check = 0
-        
+
         # Only check every 0.2 seconds instead of every frame (reduces from 30Hz to 5Hz)
         if self.current_time - self._last_web_check < 0.2:
             return
-        
+
         self._last_web_check = self.current_time
-        
+
         # Check for weather set/state change requests (read and clear atomically)
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
@@ -321,39 +321,147 @@ class EnvironmentalSystem:
             if new_state in all_states and (not locked or new_state in [s.value for s in self.weather_set.get_set_states()]):
                 state_enum = WeatherState(new_state)
                 t_duration = self.weather_state.get_weather_params(state_enum)["transition_duration"]
+                if self.web_controller.get('instant_transitions', False):
+                    t_duration = 0.01
                 self.transition_to_weather(state_enum, transition_duration=t_duration)
             else:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
-        
+
+        # Apply audio sensitivity from global modifiers
+        with self.web_controller._dict_lock:
+            audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
+        self.analyzer.sensitivity = audio_sens
+
+        # Update audio summary frequently (every web check = 0.2s / 5 Hz)
+        # This is lightweight: just 32 floats + 2 numbers
+        try:
+            current_bands = self.analyzer.get_current_bands(normalize='long')
+            if current_bands is not None:
+                audio_summary = {
+                    "bands": current_bands.tolist(),
+                    "peak_band": int(np.argmax(current_bands)),
+                    "total_power": float(np.sum(current_bands)),
+                    "sensitivity": self.analyzer.sensitivity,
+                }
+                with self.web_controller._dict_lock:
+                    self.web_controller.control_dict['audio_summary'] = audio_summary
+        except Exception:
+            pass
+
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
             self._last_status_update = 0
-        
+
         if self.current_time - self._last_status_update > 0.5:
+            # Build transition state info
+            transitioning = self.weather_state.current_weather != self.weather_state.target_weather
+            transition_state = {
+                "current": self.weather_state.current_weather.value,
+                "target": self.weather_state.target_weather.value,
+                "progress": float(self.weather_state.progress) if hasattr(self.weather_state, 'progress') else 1.0,
+                "transitioning": transitioning,
+            }
+
+            # Use the last frame's output values (post-override, what effects see)
+            # Falls back to raw weather_params on first frame
+            params_snapshot = {}
+            source = getattr(self, '_last_web_output', self.weather_state.weather_params)
+            for k, v in source.items():
+                if isinstance(v, np.ndarray):
+                    params_snapshot[k] = v.tolist()
+                elif isinstance(v, (int, float, str, bool, list)):
+                    params_snapshot[k] = v
+
+            # Build active effects list (snapshot to avoid race with scheduler thread)
+            try:
+                active_effects = [e.name for e in list(self.scheduler._scheduler.active_events)]
+            except Exception as e:
+                print(f"[WebController] Error reading active_events: {e}")
+                active_effects = []
+
             # Batch update to minimize lock acquisitions
             self.web_controller._dict_lock.acquire()
             try:
-                self.web_controller.control_dict['current_weather_set'] = self.weather_set.current_set
-                self.web_controller.control_dict['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
-                self.web_controller.control_dict['current_weather'] = self.weather_state.current_weather.value
-                self.web_controller.control_dict['season'] = float(self.season)
-                self.web_controller.control_dict['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)
+                d = self.web_controller.control_dict
+                d['current_weather_set'] = self.weather_set.current_set
+                d['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
+                d['current_weather'] = self.weather_state.current_weather.value
+                d['season'] = float(self.season)
+                d['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)
+                d['weather_params_snapshot'] = params_snapshot
+                d['transition_state'] = transition_state
+                d['active_overrides'] = dict(self.web_controller.web_param_overrides)
+                d['global_modifiers'] = dict(self.web_controller.global_modifiers)
+                d['fps'] = getattr(self, '_current_fps', 0)
+                d['active_effects'] = active_effects
+                d['ambient_sound'] = self.active_effects.get("ambient_sound")
+                d['allowed_output_params'] = self._get_allowed_output_params()
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
                 self.web_controller._dict_lock.release()
             self._last_status_update = self.current_time
-        
-        audio_sensitivity = self.web_controller.get('audio_sensitivity')
-        if audio_sensitivity is not None:
-            # Adjust audio sensitivity
-            self.analyzer.sensitivity = audio_sensitivity
     
+    # Output keys from get_state_output() that weather_intensity should scale
+    WEATHER_INTENSITY_KEYS = {"rain", "wind", "sand_density", "volcano_level"}
+
+    # Maps allowed_parameters input names → output keys from get_state_output()
+    # Parameters not in this map pass through with the same name
+    _INPUT_TO_OUTPUT_PARAM = {
+        "fog": "fog_strength",
+        "wind_speed": "wind",
+        "rain_rate": "rain",
+        "tree_prob": "tree_growth",
+    }
+
+    def _get_allowed_output_params(self):
+        """Return the set of output param keys allowed for the current weather set."""
+        set_config = WEATHER_SETS.get(self.weather_set.current_set, {})
+        allowed_input = set_config.get("allowed_parameters", [])
+        if not allowed_input:
+            return None  # No restrictions (e.g. test set)
+        result = set()
+        for inp in allowed_input:
+            out = self._INPUT_TO_OUTPUT_PARAM.get(inp, inp)
+            result.add(out)
+        # cloudyness is always derived from multiple params, include it if any contributor is allowed
+        cloud_contributors = {"fog", "wind_speed", "rain_rate", "starryness", "celestial_visibility"}
+        if cloud_contributors & set(allowed_input):
+            result.add("cloudyness")
+        return list(result)
+
     def send_variables(self):
         season_speed = self.weather_set.get_season_speed()
         self.season = ((time.time() / 1800) * season_speed) % 1
-        
+
         state = self.scheduler.state
-        state.update(self.weather_state.get_state_output(self.season, self.current_time))
+        output = self.weather_state.get_state_output(self.season, self.current_time)
+
+        # Apply global modifiers and overrides to the output (not to weather_params)
+        if self.enable_web_control and self.web_controller is not None:
+            with self.web_controller._dict_lock:
+                intensity = self.web_controller.global_modifiers.get('weather_intensity', 1.0)
+                brightness_mod = self.web_controller.global_modifiers.get('brightness', 1.0)
+                overrides = dict(self.web_controller.web_param_overrides)
+
+            # Scale weather intensity on output keys
+            if intensity != 1.0:
+                for key in self.WEATHER_INTENSITY_KEYS:
+                    if key in output:
+                        output[key] = output[key] * intensity
+
+            # Apply direct overrides to output (these replace values entirely)
+            for param, value in overrides.items():
+                if param in output:
+                    output[param] = value
+
+            # Store brightness modifier in state for render pipeline to apply
+            # after the hardware limiter (can only dim, never brighten past limiter)
+            state["web_brightness"] = brightness_mod
+
+            # Cache the final output for the web UI snapshot (post-overrides)
+            self._last_web_output = output
+
+        state.update(output)
         state["season"] = self.season
         state["scale"] = self.scale
         state["sound"] = self.analyzer.get_extended_analysis()
@@ -439,6 +547,8 @@ class EnvironmentalSystem:
 
                 new_weather_params = self.weather_state.get_weather_params(new_weather)
                 t_duration = new_weather_params["transition_duration"]
+                if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                    t_duration = 0.01
                 self.transition_to_weather(new_weather, transition_duration=t_duration)
                 return
 
@@ -453,6 +563,8 @@ class EnvironmentalSystem:
             # Find the transition duration
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
+            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                t_duration = 0.01
             self.transition_to_weather(new_weather, transition_duration=t_duration)
 
     def shutdown(self):
@@ -507,9 +619,10 @@ if __name__ == "__main__":
                     pass
 
             frame_count += 1
-            if frame_count % 500 == 0:  # Print FPS every 50 frames
+            if frame_count % 500 == 0:  # Print FPS every 500 frames
                 current_time = time.time()
                 actual_fps = 500.0 / (current_time - fps_start_time)
+                env_system._current_fps = round(actual_fps, 1)
                 fps_start_time = current_time
 
     except KeyboardInterrupt:

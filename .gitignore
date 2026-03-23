@@ -29,6 +29,9 @@ dmypy.json
 # Jupyter Notebook
 .ipynb_checkpoints/
 
+# AI tools
+.claude/
+
 # IDEs and Editors
 .vscode/
 .idea/

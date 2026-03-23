@@ -216,6 +216,11 @@ class RenderPipeline:
             print(f"[RenderPipeline] Brightness limiting off (display {frame_index})")
             state['last_logged_divisor'] = state['divisor']
 
+        # Apply web brightness modifier (can only dim, never exceed hardware limiter)
+        web_brightness = self.state.get("web_brightness", 1.0)
+        if web_brightness < 1.0:
+            frame_corrected = frame_corrected * max(web_brightness, 0.0)
+
         return np.clip(frame_corrected, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------
