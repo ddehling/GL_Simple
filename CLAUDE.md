@@ -103,17 +103,11 @@ docs/                       # Documentation (see below)
 bin/                        # Launch scripts (setup_and_run, quick_run)
 ```
 
-## Key Configuration (in Stories_OGL.py)
+## Key Configuration
 
-| Lines | Setting |
-|-------|---------|
-| 22–25 | Frame dimensions and magnification |
-| 40    | Audio input device name |
-| 49    | Enable/disable web control |
-| 57    | Web control port |
-| 59    | Admin password |
-| 639   | Initial weather set |
-| 640   | Initial weather state |
+Main settings are in `config.yaml` at the project root (display dimensions, headless mode, audio device, web port/password). Falls back to defaults if the file is missing.
+
+Weather set/state defaults and DMX receiver config remain in `Stories_OGL.py`.
 
 ## Adding a Shader Effect
 
