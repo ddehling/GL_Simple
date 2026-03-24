@@ -13,9 +13,10 @@ class FanSmooth(DisplayMode):
 precision highp float;
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
+uniform float uZoom;
 out vec2 vTexCoord;
 void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
+    gl_Position = vec4(aPosition * uZoom, 0.0, 1.0);
     vTexCoord = aTexCoord;
 }
 """
@@ -51,6 +52,7 @@ void main() {
             frag = shaders.compileShader(self._FRAG, GL_FRAGMENT_SHADER)
             self._shader = shaders.compileProgram(vert, frag)
             self._tex_loc = glGetUniformLocation(self._shader, "uTexture")
+            self._zoom_loc = glGetUniformLocation(self._shader, "uZoom")
 
         # Clean up old buffers if re-initializing
         if self._vao:
@@ -97,6 +99,7 @@ void main() {
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, viewport.color_texture)
         glUniform1i(self._tex_loc, 0)
+        glUniform1f(self._zoom_loc, viewport.zoom)
 
         glBindVertexArray(self._vao)
         glDrawElements(GL_TRIANGLES, self._index_count, GL_UNSIGNED_INT, None)
