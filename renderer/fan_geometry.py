@@ -1,7 +1,7 @@
 """Pure-numpy fan/polar geometry for the LED semicircle display.
 
 Computes vertex positions, instance data, and dot radii for all four
-display modes (flat/fan × continuous/dots).  No OpenGL dependency —
+display modes (flat/fan × smooth/LED).  No OpenGL dependency —
 the arrays are consumed by ShaderViewport for GL upload and by the
 web preview client via ``to_json()``.
 """
