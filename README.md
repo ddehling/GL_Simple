@@ -69,21 +69,29 @@ Key packages: `glfw`, `PyOpenGL`, `numpy`, `scipy`, `opencv-python`, `sounddevic
 
 ## Configuration
 
-All main settings are in `Stories_OGL.py`:
+Main settings live in `config.yaml` at the project root:
 
-| Lines  | Setting |
-|--------|---------|
-| 22–25  | Frame dimensions and magnification |
-| 40     | Audio input device name |
-| 49     | Enable/disable web control |
-| 57     | Web control port (default 5000) |
-| 59     | Admin password |
-| 639    | Initial weather set |
-| 640    | Initial weather state |
+```yaml
+display:
+  width: 128          # LED strips (framebuffer columns)
+  height: 300         # LEDs per strip (framebuffer rows)
+  magnification: 0    # Window magnification (0 = auto-scale to monitor)
+  headless: false     # true = no desktop window, web preview only
+
+audio:
+  device_name: "TONOR"  # Mic device (run tools/sound_editor.py to find yours)
+
+web:
+  enabled: true
+  port: 5000
+  admin_password: "admin123"
+```
+
+If `config.yaml` is missing, the app starts with these defaults.
 
 **DMX universes and fixtures**: edit files in `config/`.
 
-**Disable the render window**: set `self.scheduler.state["simulate"] = False` in `Stories_OGL.py`.
+**Weather set / state defaults**: configured in `Stories_OGL.py` (search for `DEFAULT_WEATHER_SET`).
 
 ### Linux-Specific Setup
 
