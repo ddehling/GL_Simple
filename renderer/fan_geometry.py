@@ -27,9 +27,19 @@ class FanGeometry:
     """
 
     def __init__(self, num_strips: int, num_leds: int, display_aspect: float,
-                 inner_r: float = 0.05, outer_r: float = 0.95):
+                 inner_r: float = None, outer_r: float = 0.95):
         self.num_strips = num_strips
         self.num_leds = num_leds
+
+        # Compute inner_r so the angular gap at the innermost ring equals
+        # the radial gap between LEDs.  This prevents dot overlap while
+        # keeping uniform spacing:
+        #   inner_r * pi / (num_strips - 1) == (outer_r - inner_r) / (num_leds - 1)
+        if inner_r is None:
+            ns1 = max(num_strips - 1, 1)
+            nl1 = max(num_leds - 1, 1)
+            inner_r = outer_r / (1.0 + math.pi * nl1 / ns1)
+
         self.inner_r = inner_r
         self.outer_r = outer_r
 
@@ -126,13 +136,11 @@ class FanGeometry:
                 instances[idx] = (x, y, u, t)
                 idx += 1
 
-        # Dot radius from average spacing
-        avg_r = (self.inner_r + self.outer_r) / 2.0
-        arc_per_strip = avg_r * math.pi / ns
+        # Dot radius: half the radial spacing between LEDs (in clip-space Y units).
+        # Since inner_r is set so angular spacing == radial spacing at the
+        # inner ring, this guarantees no overlap anywhere.
         radial_per_led = (self.outer_r - self.inner_r) / nl
-        avg_spacing = min(arc_per_strip / self.a_half * self.fit_scale,
-                          radial_per_led * 2.0 * self.fit_scale)
-        dot_radius = avg_spacing * 0.45
+        dot_radius = radial_per_led * self.fit_scale * 0.9
 
         return instances, dot_radius
 
