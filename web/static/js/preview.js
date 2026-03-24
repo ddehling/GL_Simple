@@ -1,8 +1,8 @@
 /**
  * GL_Simple — WebGL2 live preview renderer
  *
- * Receives JPEG frames via Socket.IO and renders them in four display modes:
- *   flat-continuous, fan-continuous, flat-dots, fan-dots
+ * Receives PNG frames via Socket.IO and renders them in four display modes:
+ *   flat-smooth, fan-smooth, flat-led, fan-led
  *
  * Geometry data (fan mesh, dot positions) is fetched once from the server
  * and used to build WebGL buffers.
@@ -13,7 +13,7 @@
 
     // ---- State ----
     let gl, canvas;
-    let mode = "flat-continuous";
+    let mode = "flat-smooth";
     let geometry = null;      // from /api/preview/geometry
     let frameTexture = null;  // WebGL texture updated each frame
     let frameCount = 0;
@@ -155,9 +155,9 @@ void main() {
         gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
         gl.bindVertexArray(null);
 
-        programs["flat-continuous"] = prog;
-        vaos["flat-continuous"] = vao;
-        buffers["flat-continuous"] = { count: 6 };
+        programs["flat-smooth"] = prog;
+        vaos["flat-smooth"] = vao;
+        buffers["flat-smooth"] = { count: 6 };
     }
 
     function buildFanMesh(geo) {
@@ -182,9 +182,9 @@ void main() {
 
         gl.bindVertexArray(null);
 
-        programs["fan-continuous"] = prog;
-        vaos["fan-continuous"] = vao;
-        buffers["fan-continuous"] = { indexCount: indices.length };
+        programs["fan-smooth"] = prog;
+        vaos["fan-smooth"] = vao;
+        buffers["fan-smooth"] = { indexCount: indices.length };
     }
 
     function buildDots(geo, modeName, instanceData, dotRadius) {
@@ -226,8 +226,8 @@ void main() {
     function buildAllGeometry(geo) {
         buildFlatQuad();
         buildFanMesh(geo);
-        buildDots(geo, "flat-dots", geo.flat_dots.instances, geo.flat_dots.dot_radius);
-        buildDots(geo, "fan-dots", geo.fan_dots.instances, geo.fan_dots.dot_radius);
+        buildDots(geo, "flat-led", geo.flat_dots.instances, geo.flat_dots.dot_radius);
+        buildDots(geo, "fan-led", geo.fan_dots.instances, geo.fan_dots.dot_radius);
     }
 
     // ---- Render ----
@@ -289,7 +289,7 @@ void main() {
         // Flat modes: geometry fills [-1,1] in both axes, canvas
         // aspect matches frame aspect via CSS, so no correction needed
 
-        if (mode === "flat-continuous" || mode === "fan-continuous") {
+        if (mode === "flat-smooth" || mode === "fan-smooth") {
             const prog = programs[mode];
             const vao = vaos[mode];
             const info = buffers[mode];
@@ -298,7 +298,7 @@ void main() {
             gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
             gl.bindVertexArray(vao);
 
-            if (mode === "fan-continuous") {
+            if (mode === "fan-smooth") {
                 gl.drawElements(gl.TRIANGLES, info.indexCount, gl.UNSIGNED_INT, 0);
             } else {
                 gl.drawArrays(gl.TRIANGLES, 0, info.count);
