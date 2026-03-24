@@ -13,6 +13,7 @@ from flask_socketio import SocketIO, emit
 from pathlib import Path
 import json
 from zeroconf import Zeroconf, ServiceInfo
+from renderer.fan_geometry import FanGeometry
 
 
 class WebController:
@@ -105,6 +106,11 @@ class WebController:
 
         # Weather parameter overrides — direct value overrides (param_name -> value)
         self.web_param_overrides = {}
+
+        # Preview frame streaming
+        self._preview_clients = 0
+        self._preview_lock = threading.Lock()
+        self._geometry_json = None  # cached FanGeometry JSON
     
     def _setup_routes(self):
         """Setup Flask routes for the web interface."""
@@ -124,6 +130,23 @@ class WebController:
             """Serve the weather set editor page."""
             return render_template('weather_editor.html')
         
+        @self.app.route('/preview')
+        def preview():
+            """Serve the live preview page."""
+            return render_template('preview.html')
+
+        @self.app.route('/api/preview/geometry')
+        def preview_geometry():
+            """Return fan geometry JSON (fetched once by the WebGL client)."""
+            if self._geometry_json is None:
+                # Build geometry using LED dimensions from control_dict
+                w = self.control_dict.get('led_width', 128)
+                h = self.control_dict.get('led_height', 300)
+                # Use the fan window aspect ratio (900x500)
+                geo = FanGeometry(w, h, 900 / 500)
+                self._geometry_json = geo.to_json()
+            return jsonify(self._geometry_json)
+
         @self.app.route('/admin')
         def admin_panel():
             """Serve the admin panel page."""
@@ -571,6 +594,23 @@ class WebController:
                 }
             emit('state_update', snapshot)
 
+        @self.socketio.on('subscribe_preview')
+        def handle_subscribe_preview():
+            with self._preview_lock:
+                self._preview_clients += 1
+            print(f"[WebController] Preview client connected ({self._preview_clients} total)")
+
+        @self.socketio.on('unsubscribe_preview')
+        def handle_unsubscribe_preview():
+            with self._preview_lock:
+                self._preview_clients = max(0, self._preview_clients - 1)
+
+        @self.socketio.on('disconnect')
+        def handle_disconnect():
+            # Decrement preview counter on any disconnect (safe even if not subscribed)
+            with self._preview_lock:
+                self._preview_clients = max(0, self._preview_clients - 1)
+
         @self.socketio.on('update_global')
         def handle_update_global(data):
             modifier = data.get('modifier')
@@ -649,9 +689,11 @@ class WebController:
 
         def emitter_loop():
             state_interval = 0.2    # 200ms for state updates (5 Hz)
-            audio_interval = 0.033 # ~33ms for audio updates (30 Hz)
+            audio_interval = 0.033  # ~33ms for audio updates (30 Hz)
+            frame_interval = 0.066  # ~66ms for frame updates (15 Hz)
             last_state_push = 0
             last_audio_push = 0
+            last_frame_push = 0
             last_weather = None
             last_set = None
 
@@ -708,6 +750,16 @@ class WebController:
                             self.socketio.emit('audio_update', audio)
                     except Exception as e:
                         print(f"[WebController] Emitter audio error: {e}")
+
+                # Push preview frames at 15 Hz (only if clients are subscribed)
+                if self._preview_clients > 0 and now - last_frame_push >= frame_interval:
+                    last_frame_push = now
+                    try:
+                        frame_png = self.control_dict.get('_frame_png')
+                        if frame_png is not None:
+                            self.socketio.emit('frame', frame_png)
+                    except Exception as e:
+                        print(f"[WebController] Emitter frame error: {e}")
 
                 # Sleep a short interval to avoid busy-waiting
                 time.sleep(0.015)
