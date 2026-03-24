@@ -146,7 +146,7 @@ class ShaderRenderer:
         self._fan_window_width = 900
         self._fan_window_height = 500
 
-        # Keyboard callback — F=flat/fan, D=continuous/dots, ESC=quit
+        # Keyboard callback — F=flat/fan, D=smooth/LED, ESC=quit
         renderer_self = self
         def _key_callback(window, key, scancode, action, mods):
             if action != glfw.PRESS:
@@ -163,7 +163,7 @@ class ShaderRenderer:
         glfw.set_key_callback(self.window, _key_callback)
 
         print(f"[ShaderRenderer] Window created: {self.window_width}x{self.window_height}")
-        print(f"[ShaderRenderer] Keys: F=flat/fan, D=continuous/dots, ESC=quit")
+        print(f"[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit")
         self.ctx_initialized = True
         
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
@@ -245,8 +245,8 @@ class ShaderRenderer:
         if not vp:
             return
         view = 'Fan' if vp.fan_mode else 'Flat'
-        style = 'Dots' if vp.dot_mode else 'Continuous'
-        title = f"LED Renderer — {view} {style} [F=view, D=dots]"
+        style = 'LED' if vp.dot_mode else 'Smooth'
+        title = f"LED Renderer — {view} {style} [F=view, D=style]"
         glfw.set_window_title(self.window, title)
 
     def poll_events(self):
