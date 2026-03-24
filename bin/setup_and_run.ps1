@@ -52,19 +52,32 @@ function Install-Python {
 Write-Host "[1/5] Checking Python installation..." -ForegroundColor Yellow
 
 # Try multiple Python commands and locations
+# Prefer Python 3.12 via the py launcher (3.13+ drops distutils and breaks some packages)
 $pythonCmd = $null
-$pythonCmds = @("python", "python3", "py")
 
-foreach ($cmd in $pythonCmds) {
-    try {
-        $testVersion = & $cmd --version 2>&1 | Out-String
-        if ($testVersion -match "Python \d+\.\d+\.\d+" -and $testVersion -notlike "*Microsoft Store*") {
-            $pythonCmd = $cmd
-            $pythonVersion = $testVersion
-            break
+try {
+    $testVersion = & py -3.12 --version 2>&1 | Out-String
+    if ($testVersion -match "Python 3\.12\.\d+") {
+        $pythonCmd = "py"
+        $global:PY_ARGS = @("-3.12")
+        $pythonVersion = $testVersion
+    }
+} catch {}
+
+if (-not $pythonCmd) {
+    $pythonCmds = @("python", "python3", "py")
+    foreach ($cmd in $pythonCmds) {
+        try {
+            $testVersion = & $cmd --version 2>&1 | Out-String
+            if ($testVersion -match "Python \d+\.\d+\.\d+" -and $testVersion -notlike "*Microsoft Store*") {
+                $pythonCmd = $cmd
+                $global:PY_ARGS = @()
+                $pythonVersion = $testVersion
+                break
+            }
+        } catch {
+            continue
         }
-    } catch {
-        continue
     }
 }
 
@@ -141,6 +154,7 @@ try {
 
 # Store the Python command for later use
 $global:PYTHON_CMD = $pythonCmd
+if (-not $global:PY_ARGS) { $global:PY_ARGS = @() }
 
 # Check Python version
 $versionString = $pythonVersion.Trim() -replace 'Python ', ''
@@ -170,7 +184,7 @@ if (Test-Path $venvPath) {
     Write-Host "  Virtual environment already exists" -ForegroundColor Green
 } else {
     Write-Host "  Creating new virtual environment..." -ForegroundColor Cyan
-    & $global:PYTHON_CMD -m venv venv
+    & $global:PYTHON_CMD @global:PY_ARGS -m venv venv
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Failed to create virtual environment!" -ForegroundColor Red
         Read-Host "Press Enter to exit"
@@ -192,10 +206,10 @@ if (Test-Path $activateScript) {
     exit 1
 }
 
-# Upgrade pip
+# Upgrade pip (use venv's python now that it's activated)
 Write-Host ""
 Write-Host "[4/5] Upgrading pip..." -ForegroundColor Yellow
-& $global:PYTHON_CMD -m pip install --upgrade pip --quiet
+& python -m pip install --upgrade pip --quiet
 Write-Host "  pip upgraded successfully" -ForegroundColor Green
 
 # Install dependencies
@@ -217,14 +231,14 @@ if (Test-Path $requirementsPath) {
         Write-Host "  Attempting to verify critical packages..." -ForegroundColor Yellow
         
         # Try to verify numpy is installed
-        & $global:PYTHON_CMD -c "import numpy" 2>$null
+        & python -c "import numpy" 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  ERROR: Critical packages failed to install!" -ForegroundColor Red
             Write-Host "  Trying to install packages one more time..." -ForegroundColor Yellow
             & pip install -r $requirementsPath --no-cache-dir
             
             # Check again
-            & $global:PYTHON_CMD -c "import numpy" 2>$null
+            & python -c "import numpy" 2>$null
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  ERROR: Installation failed. Please check the errors above." -ForegroundColor Red
                 Read-Host "Press Enter to exit"
@@ -259,7 +273,7 @@ Start-Sleep -Seconds 2
 
 # Run the main application
 try {
-    & $global:PYTHON_CMD Stories_OGL.py
+    & python Stories_OGL.py
 } catch {
     Write-Host ""
     Write-Host "Application terminated" -ForegroundColor Yellow
