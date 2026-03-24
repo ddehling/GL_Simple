@@ -38,6 +38,11 @@ class WeatherState(Enum):
     OCEAN_JELLYFISH_BLOOM = "ocean_jellyfish_bloom"
     OCEAN_MIDNIGHT_OPEN_WATER = "ocean_midnight_open_water"
     OCEAN_MAELSTROM = "ocean_maelstrom"
+    BARTIKI_PEAK_HOUR = "bartiki_peak_hour"
+    BARTIKI_OFF_PEAK  = "bartiki_off_peak"
+    BARTIKI_LATE_NIGHT = "bartiki_late_night"
+    BARTIKI_WEEKEND   = "bartiki_weekend"
+    BARTIKI_DISRUPTED = "bartiki_disrupted"
 
 # Global parameters that are always available in every weather set
 # These cannot be removed from sets but their values can be customized per weather state
@@ -66,6 +71,8 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
+    'bart_map',
+    'highway_traffic',
 ]
 
 # Parameter definitions for the weather editor
@@ -107,6 +114,9 @@ PARAMETER_DEFINITIONS = {
     'tree_prob': {'type': 'number', 'step': 0.1},
     'volcano_level': {'type': 'number', 'step': 0.1},
     'wind_speed': {'type': 'number', 'step': 0.1},
+    'train_speed': {'type': 'number', 'step': 0.05},
+    'train_density': {'type': 'number', 'step': 0.1},
+    'traffic_density': {'type': 'number', 'step': 0.05},
 }
 
 # Default weather parameters
@@ -792,6 +802,80 @@ WEATHER_PRESETS = {
         "wind_speed": 1.5,
     },
 
+    # ---------------------------------------------------------------
+    # BarTiki — BART system map states
+    # ---------------------------------------------------------------
+
+    # train_speed is a real-time multiplier:
+    #   1.0 = wall-clock real (trains barely visible moving)
+    #   8.0 = 8× speedup — current default (~20s between stations)
+    #   DWELL_TIME_SEC (20s real) becomes 2.5s animation at 8×
+
+    WeatherState.BARTIKI_PEAK_HOUR: {
+        "ARI": 0,
+        "Switch_rate": 1.0,
+        "fog": 0.0,
+        "fog_color": np.array([0.1, 0.1, 0.2]),
+        "possible_transitions": ["bartiki_off_peak", "bartiki_disrupted"],
+        "season_preference": 0.5,
+        "traffic_density": 0.85,
+        "train_density": 1.0,
+        "train_speed": 8.0,
+        "transition_weights": [1.0, 0.2],
+    },
+
+    WeatherState.BARTIKI_OFF_PEAK: {
+        "ARI": 0,
+        "Switch_rate": 1.0,
+        "fog": 0.0,
+        "fog_color": np.array([0.1, 0.1, 0.2]),
+        "possible_transitions": ["bartiki_peak_hour", "bartiki_late_night", "bartiki_weekend"],
+        "season_preference": 0.5,
+        "traffic_density": 0.45,
+        "train_density": 1.0,
+        "train_speed": 8.0,
+        "transition_weights": [1.0, 0.5, 0.5],
+    },
+
+    WeatherState.BARTIKI_LATE_NIGHT: {
+        "ARI": 0,
+        "Switch_rate": 0.8,
+        "fog": 0.0,
+        "fog_color": np.array([0.05, 0.05, 0.15]),
+        "possible_transitions": ["bartiki_off_peak"],
+        "season_preference": 0.9,
+        "traffic_density": 0.10,
+        "train_density": 1.0,
+        "train_speed": 8.0,
+        "transition_weights": [1.0],
+    },
+
+    WeatherState.BARTIKI_WEEKEND: {
+        "ARI": 0,
+        "Switch_rate": 1.0,
+        "fog": 0.0,
+        "fog_color": np.array([0.1, 0.1, 0.2]),
+        "possible_transitions": ["bartiki_off_peak", "bartiki_peak_hour"],
+        "season_preference": 0.5,
+        "traffic_density": 0.35,
+        "train_density": 1.0,
+        "train_speed": 8.0,
+        "transition_weights": [1.0, 0.6],
+    },
+
+    WeatherState.BARTIKI_DISRUPTED: {
+        "ARI": 0,
+        "Switch_rate": 1.2,
+        "fog": 0.0,
+        "fog_color": np.array([0.2, 0.1, 0.05]),
+        "possible_transitions": ["bartiki_off_peak", "bartiki_peak_hour"],
+        "season_preference": 0.5,
+        "traffic_density": 0.95,  # gridlock — people driving because BART is down
+        "train_density": 1.0,
+        "train_speed": 2.4,       # ~30% of normal — trains visibly delayed
+        "transition_weights": [1.0, 0.3],
+    },
+
 }
 
 # Weather Sets - Mutually exclusive collections of weather states
@@ -898,6 +982,29 @@ WEATHER_SETS = {
         "season_speed": 1.5,
         "states": ["windy_night", "heavy_rain", "thunderstorm", "foggy", "spooky"],
         "transition_speed": 1.5,
+    },
+
+    "bartiki": {
+        "allowed_parameters": [
+            "train_speed", "train_density", "traffic_density",
+            "fog", "fog_color", "Switch_rate", "ARI",
+            "possible_transitions", "transition_weights", "season_preference",
+        ],
+        "background_events": ["highway_traffic", "bart_map", "narrative_player"],
+        "description": "Bay Area BART system map with simulated real-time trains",
+        "name": "BarTiki",
+        "random_event_rate": 0.0,
+        "random_events": [],
+        "season_extremity": 0.5,
+        "season_speed": 0.5,
+        "states": [
+            "bartiki_peak_hour",
+            "bartiki_off_peak",
+            "bartiki_late_night",
+            "bartiki_weekend",
+            "bartiki_disrupted",
+        ],
+        "transition_speed": 1.0,
     },
 
     "test": {

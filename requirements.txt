@@ -16,3 +16,5 @@ sounddevice
 soundfile
 zeroconf
 flask
+dearpygui
+elevenlabs

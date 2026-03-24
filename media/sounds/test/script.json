@@ -1,0 +1,131 @@
+{
+  "name": "New Script",
+  "description": "",
+  "voice": "xPqWReEgvzaxqgYCck2k",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.3,
+    "model": "eleven_multilingual_v2"
+  },
+  "gap_range": [
+    4.0,
+    12.0
+  ],
+  "no_repeat_window": 6,
+  "start_nodes": [],
+  "nodes": {
+    "node_001": {
+      "text": "testin, like a goat at the S A Ts",
+      "file": "media\\sounds\\test\\node_001.mp3",
+      "duration": null,
+      "next": [
+        "dev_pencil_down"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [],
+      "voice": "cjVigY5qzO86Huf0OWal",
+      "pos": [
+        60,
+        60
+      ],
+      "voice_settings": {}
+    },
+    "dev_pencil_down": {
+      "text": "Number two pencil. Bubble in completely. The proctor's shoes squeak on linoleum — one long note, then nothing. Outside, a crow lands on a windowsill and watches. Everyone pretends not to notice. The clock above the chalkboard hasn't moved in eleven minutes. Or maybe it has. You were not watching the clock. You were watching the crow.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_wrong_answer",
+        "dev_the_crow_knows"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280,
+        60
+      ]
+    },
+    "dev_wrong_answer": {
+      "text": "You filled in C. You always fill in C when you don't know. Statistics say C is right twenty-five percent of the time. Statistics say nothing about goats. The goat, for its part, filled in C also — and moved on without hesitation, without doubt, hooves clicking softly down the corridor toward something that looked very much like the right answer.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_score_arrives"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.48,
+        "similarity_boost": 0.75,
+        "style": 0.38
+      },
+      "pos": [
+        500,
+        130
+      ]
+    },
+    "dev_the_crow_knows": {
+      "text": "The crow tilts its head. It has seen this room before — different chairs, different children, same held breath. Testing is just another word for waiting. Waiting to be measured. Waiting to be named. The crow was never named. It flies south in winter not because someone told it to, but because something older than language said: now. Go. Now.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_score_arrives"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.52,
+        "similarity_boost": 0.75,
+        "style": 0.32
+      },
+      "pos": [
+        500,
+        60
+      ]
+    },
+    "turn_score_arrives": {
+      "text": "The envelope comes on a Tuesday. It is thinner than you hoped and heavier than you expected. Inside: a number. As if you were always just a number, waiting to be discovered. The goat, of course, received no envelope. The goat is standing in a field right now, in the rain, completely unconcerned, eating something that might have been your future, or just grass.",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        720,
+        60
+      ]
+    }
+  }
+}

@@ -1,0 +1,981 @@
+{
+  "name": "Bartiki: God of the Liminal Rail",
+  "description": "An atmospheric myth of Bartiki, the ancient reaching force beneath the world's water and soil",
+  "voice": "G0HQD4cwCS617WM0BPwJ",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.3,
+    "model": "eleven_multilingual_v2"
+  },
+  "gap_range": [
+    4.0,
+    12.0
+  ],
+  "no_repeat_window": 6,
+  "start_nodes": [
+    "intro_arrival",
+    "intro_tunnel",
+    "intro_first_tide",
+    "intro_forest_whisper",
+    "intro_desert_memory",
+    "intro_storm_birth",
+    "The_Toad_alone"
+  ],
+  "nodes": {
+    "intro_arrival": {
+      "text": "Somewhere between the Embarcadero and the deep Pacific, a god was born. Not carved from sacred wood on a distant shore, not summoned by drums at sunset — but assembled, slowly, from the screech of steel wheels on steel rails, from the salt air bleeding through open station doors, from a man who boarded in 1972 and forgot to disembark.",
+      "file": "media\\sounds\\bartiki\\intro_arrival.mp3",
+      "duration": null,
+      "next": [
+        "dev_carver",
+        "dev_steel",
+        "dev_islands",
+        "dev_rum"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        0.5
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        60.0,
+        60.0
+      ]
+    },
+    "intro_tunnel": {
+      "text": "The tunnels run deep. Deeper than anyone admits. Down beneath the bay, the train cuts through cold dark water — and in that darkness, old things listen. The Tiki gods were ocean gods first. They were always down here. We just gave them a schedule.",
+      "file": "media\\sounds\\bartiki\\intro_tunnel.mp3",
+      "duration": null,
+      "next": [
+        "dev_steel",
+        "dev_islands",
+        "dev_carver"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        0.5
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        60.0,
+        560.0
+      ]
+    },
+    "dev_carver": {
+      "text": "His name is lost now. The carver. He carried his tools in a canvas bag — adze, chisel, the small curved knife for faces. He boarded at Fruitvale, heading somewhere. The train pulled into the tunnel, the lights flickered, and he felt the presence — not behind him, but inside the hum of the rails. He began to carve.",
+      "file": "media\\sounds\\bartiki\\dev_carver.mp3",
+      "duration": null,
+      "next": [
+        "turn_waiting",
+        "turn_merging"
+      ],
+      "weights": [
+        2.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280.0,
+        60.0
+      ]
+    },
+    "dev_steel": {
+      "text": "Steel does not care for mythology. And yet — listen to the rails. That low, resonant moan as the train rounds a bend. That is not machinery. That is something older, learning the shape of a new body. Bartiki does not swim. Bartiki commutes. Same thing, when the ocean is beneath your feet.",
+      "file": "media\\sounds\\bartiki\\dev_steel.mp3",
+      "duration": null,
+      "next": [
+        "turn_merging",
+        "turn_depth_memory",
+        "turn_convergence"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        280.0,
+        760.0
+      ]
+    },
+    "dev_rum": {
+      "text": "Every tiki bar keeps one stool empty at the counter. Ask the bartender why and they'll laugh — but they know. The mai tais go flat at that seat. Ice doesn't melt. The orchid stays fresh for weeks. Bartiki is a god who appreciates a good drink and a worse transit schedule.",
+      "file": "media\\sounds\\bartiki\\dev_rum.mp3",
+      "duration": null,
+      "next": [
+        "turn_devotion",
+        "turn_merging"
+      ],
+      "weights": [
+        1.0,
+        0.5
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.55,
+        "similarity_boost": 0.75,
+        "style": 0.3
+      },
+      "pos": [
+        280.0,
+        660.0
+      ]
+    },
+    "dev_islands": {
+      "text": "The original gods came on canoes — reading stars, currents, the backs of dolphins. Bartiki reads the departure boards at Montgomery Street station. Different kind of navigation. Same destination: somewhere that doesn't exist on any map, but you know it when you arrive. You feel it in your chest. Like a train slowing down.",
+      "file": "media\\sounds\\bartiki\\dev_islands.mp3",
+      "duration": null,
+      "next": [
+        "turn_merging",
+        "turn_devotion"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280.0,
+        360.0
+      ]
+    },
+    "turn_merging": {
+      "text": "At some point, the wood and the wire became the same thing. The carved face and the illuminated route map looked identical. Lono. MacArthur. Ku. Civic Center. The gods of the Pacific and the stops of the East Bay — interchangeable, inevitable. A religion no one intended to build, already fully standing.",
+      "file": "media\\sounds\\bartiki\\turn_merging.mp3",
+      "duration": null,
+      "next": [
+        "close_vessel",
+        "close_eternal"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        500.0,
+        660.0
+      ]
+    },
+    "turn_devotion": {
+      "text": "People leave offerings at the pillars. You've seen them — small things. A flower lei draped over a fire suppression pipe. A miniature carved figure wedged between the platform tiles. A Trader Vic's menu from 1968. Nobody admits to leaving them. Nobody admits to finding comfort in them either. But the trains keep running.",
+      "file": "media\\sounds\\bartiki\\turn_devotion.mp3",
+      "duration": null,
+      "next": [
+        "close_vessel",
+        "close_eternal"
+      ],
+      "weights": [
+        1.0,
+        0.5
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.35,
+        "similarity_boost": 0.75,
+        "style": 0.6
+      },
+      "pos": [
+        500.0,
+        460.0
+      ]
+    },
+    "turn_waiting": {
+      "text": "The carver is still on the train. Not as a ghost — ghosts are the ones who don't know where they are. He knows exactly where he is. He's exactly where he chose to be. Between stations, between worlds, in the place where the salt air and the electric hum are one sound, one breath, one god.",
+      "file": "media\\sounds\\bartiki\\turn_waiting.mp3",
+      "duration": null,
+      "next": [
+        "close_eternal",
+        "close_vessel"
+      ],
+      "weights": [
+        2.0,
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.28,
+        "similarity_boost": 0.75,
+        "style": 0.7
+      },
+      "pos": [
+        500.0,
+        760.0
+      ]
+    },
+    "close_vessel": {
+      "text": "The train is a sacred vessel. It always was. Moving a body of souls through darkness toward light — that's not transit, that's theology. Bartiki does not ask for your faith. He only asks that you hold the rail, breathe the recycled air, and trust that the tunnel ends. It always ends. You always arrive somewhere.",
+      "file": "media\\sounds\\bartiki\\close_vessel.mp3",
+      "duration": null,
+      "next": [
+        "res_capybara_abides",
+        "res_open_doors",
+        "res_breath_returned"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        720.0,
+        360.0
+      ],
+      "hint": "The capybara abides"
+    },
+    "close_eternal": {
+      "text": "And so he rides. Fruitvale to the Embarcadero. The Embarcadero to somewhere else. The lei around his carved neck never wilts. The adze in his bag still carries salt from a different ocean. The train announces the next stop in a voice no one designed to sound sacred — and yet. And yet.",
+      "file": "media\\sounds\\bartiki\\close_eternal.mp3",
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.42,
+        "similarity_boost": 0.75,
+        "style": 0.37
+      },
+      "pos": [
+        720.0,
+        60.0
+      ]
+    },
+    "turn_depth_memory": {
+      "text": "But memory does not forget pressure. Two thousand meters down, there is no sound but your own body's complaint against the dark. Bartiki felt it in the third tunnel — walls narrowing, air going mineral and close. The train sang its iron note and something ancient answered: this is what it felt like to descend. Not death. Immersion. The difference matters, when you are both.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_recognition"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.35,
+        "similarity_boost": 0.75,
+        "style": 0.55
+      },
+      "pos": [
+        500.0,
+        360.0
+      ]
+    },
+    "turn_convergence": {
+      "text": "Platform nine. Fluorescent lights hum at sixty cycles per second — close enough to the frequency of a harbour at tide-change that Bartiki pauses, one scaled hand gripping the overhead bar. The commuters do not look up. They never do. But a child across the aisle holds a paper fish. She is watching. She always watches.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_recognition"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.27,
+        "similarity_boost": 0.75,
+        "style": 0.72
+      },
+      "pos": [
+        500.0,
+        260.0
+      ]
+    },
+    "turn_recognition": {
+      "text": "The doors open. Salt smell — not the ocean, just a fishmonger three blocks north. And yet. The body knows before the mind catches up. Bartiki steps onto the platform and the ground gives its strange double resonance: steel below, bedrock below that, and below bedrock — water. It was always water. The city is just the newest layer of sea floor.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_sediment",
+        "res_goat_platform",
+        "res_hillside_witness"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.39,
+        "similarity_boost": 0.75,
+        "style": 0.7
+      },
+      "pos": [
+        720.0,
+        460.0
+      ],
+      "hint": "Goats everywhere"
+    },
+    "res_sediment": {
+      "text": "Nothing is lost. That is what the rails know, vibrating in the dark. Cities are coral. Trains are current. Bartiki is older than either name and will outlast the rust. At the final stop, the platform empties. Lights dim to late-night amber. And somewhere beneath the city, a tide turns — slow, certain, unanswerable — as it always has.",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.12
+      },
+      "pos": [
+        940.0,
+        560.0
+      ]
+    },
+    "intro_first_tide": {
+      "text": "Before the sea had a name, there was only the pull. A restless force beneath the water that the old ones called Bartiki — the one who reaches. They say he stretched his fingers up from the deep and shaped the first shoreline, dragging sand and salt into the world we know.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_reaches",
+        "dev_depths"
+      ],
+      "weights": [
+        1.5,
+        1.0
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        60.0,
+        260.0
+      ]
+    },
+    "intro_forest_whisper": {
+      "text": "In the oldest forests, where roots go deeper than memory, the trees still murmur a single name at dusk. Bartiki. They say he breathed the first forest into being — that every root is a finger of his, still holding the earth together, still listening for the sound of a world that has forgotten to listen back.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_reaches",
+        "dev_longing"
+      ],
+      "weights": [
+        1.0,
+        1.5
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        60.0,
+        360.0
+      ]
+    },
+    "intro_desert_memory": {
+      "text": "The desert people say Bartiki passed through here once, long before the dunes. They say the heat you feel at noon is his ancient breath — that the sand shifts because he is still moving beneath it, slow as a century, searching for something he left behind before the world hardened into what it is now.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_children",
+        "dev_longing"
+      ],
+      "weights": [
+        1.5,
+        1.0
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        60.0,
+        160.0
+      ]
+    },
+    "intro_storm_birth": {
+      "text": "Some say Bartiki is not a creature but a moment — the crack between lightning and thunder, the held breath before the wave breaks. He was there at the storm's first birth, when water and wind learned to argue. And he is there in every storm since, watching from the place where weather begins.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_depths",
+        "dev_children"
+      ],
+      "weights": [
+        1.5,
+        1.0
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.55,
+        "similarity_boost": 0.75,
+        "style": 0.25
+      },
+      "pos": [
+        60.0,
+        460.0
+      ]
+    },
+    "dev_reaches": {
+      "text": "He does not move the way the living move. He reaches. Through tidal channels, through the narrow seams in stone, through the roots of trees that press against the underside of the world. The old fishermen said they could feel him passing — a vibration in the hull, a sudden cold that had nothing to do with the wind.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_forgetting",
+        "turn_awakening"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280.0,
+        560.0
+      ]
+    },
+    "dev_depths": {
+      "text": "What does Bartiki guard in the deep? The stories disagree. Some say it is a light — a fire older than the sun, swallowed by the ocean when the first sky fell. Others say there is nothing down there but his patience. And that the patience itself is the most ancient thing in existence.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_forgetting"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280.0,
+        260.0
+      ]
+    },
+    "dev_longing": {
+      "text": "Bartiki has no word for longing in his own tongue. But the tide does. Every time the sea leans toward the shore and then pulls back — that hesitation, that almost — that is him. Reaching for the surface world. Reaching for the warmth. Always just barely not arriving. Always just barely not letting go.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_awakening"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        280.0,
+        460.0
+      ]
+    },
+    "dev_children": {
+      "text": "He left marks in the ones who came after. The fishermen who could read the sea without looking. The children born during storms who never feared the dark. The women who hummed without knowing the melody came from somewhere deeper than memory. They are Bartiki's echo in the waking world — carrying something they cannot name.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_awakening",
+        "turn_forgetting"
+      ],
+      "weights": [
+        1.5,
+        0.5
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        280.0,
+        160.0
+      ]
+    },
+    "turn_forgetting": {
+      "text": "And then the names began to thin. First the elders stopped speaking it aloud. Then the songs lost a verse, then another. Children grew up knowing the sea only by its surface — its moods, its danger, its beauty — but not its name. Not the old name. Not Bartiki. The deep kept waiting. The deep is very good at waiting.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "close_silence",
+        "close_tide"
+      ],
+      "weights": [
+        1.5,
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.4,
+        "similarity_boost": 0.75,
+        "style": 0.5
+      },
+      "pos": [
+        500.0,
+        560.0
+      ]
+    },
+    "turn_awakening": {
+      "text": "But something has shifted in the water lately. The fishermen feel it — a pressure change, a current running the wrong way through the channel. Seabirds have started circling inland. The tide has been arriving eleven minutes early, every morning, for three weeks. No one has said the word aloud yet. But everyone is thinking it.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "close_tide",
+        "close_silence"
+      ],
+      "weights": [
+        1.5,
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.35,
+        "similarity_boost": 0.75,
+        "style": 0.6
+      },
+      "pos": [
+        500.0,
+        160.0
+      ]
+    },
+    "close_silence": {
+      "text": "He does not need to be remembered to exist. The tide pulls whether you name it or not. The root holds whether you thank it or not. Bartiki does not require your belief. He simply continues — patient, immense, and utterly unhurried — in the place where all things began and all things, eventually, will return.",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.7,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        720.0,
+        160.0
+      ]
+    },
+    "close_tide": {
+      "text": "The tide turns. It has always turned. Somewhere beneath the weight of all that water, Bartiki is counting the waves — each one a breath, each breath a century. He is not waiting for anything. He is the waiting itself. And when the next shore is shaped, his name will be the first sound the sand remembers.",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        720.0,
+        260.0
+      ]
+    },
+    "res_goat_platform": {
+      "text": "They had been waiting. Three of them — municipal white, fog-colored, indifferent — picking their way down the station stairs with the absolute certainty of creatures who have never doubted their footing. No one else noticed. Bartiki noticed. The goats smelled of hillside scrub and something older, tidal. They did not bow. They simply looked, the way old things look at other old things: recognition without ceremony.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_salt_covenant"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        940.0,
+        260.0
+      ]
+    },
+    "res_hillside_witness": {
+      "text": "From the hills, you can see where the bay used to be. The goats knew. They'd been grazing the reclaimed land for decades — cropping thin grass above buried tide-channels like they were reading text. When the god moved through the streets below, the whole herd paused, heads turning in unison, orienting like compass needles. Something in the air had shifted. The oldest doe stamped once, and resumed eating.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_salt_covenant"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        940.0,
+        360.0
+      ]
+    },
+    "res_salt_covenant": {
+      "text": "Bartiki understood then what the city had been building toward: not a destination, but a congregation. Goat and rail and salt air and ten thousand commuters moving through the undersea dark without knowing it — all of it tending toward the same recognition. A god does not require a temple. A god requires witnesses. At the edge of the reclaimed bay, something stamped its hoof, and the deep water answered.",
+      "hint": "",
+      "file": "media\\sounds\\bartiki\\res_salt_covenant.mp3",
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        1160.0,
+        60.0
+      ]
+    },
+    "res_capybara_abides": {
+      "text": "Once, in the tunnel between Montgomery and Embarcadero, someone saw a capybara seated in the last car. No one moved it. No one screamed. It rode to the end of the line, then sat very still as if listening to the rail beneath its feet. This is how Bartiki moves through the world  unhurried, enormous, perfectly at ease. The capybara abides. So does the god. So, perhaps, do you.",
+      "hint": "",
+      "file": "media\\sounds\\bartiki\\res_capybara_abides.mp3",
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.63,
+        "similarity_boost": 0.75,
+        "style": 0.17
+      },
+      "pos": [
+        940.0,
+        160.0
+      ]
+    },
+    "res_open_doors": {
+      "text": "The doors open. They always open. This is the promise the machine makes — pneumatic, hydraulic, faithful. Step through. Carry the tunnel with you in your lungs, carry the rail's vibration still humming in your feet. Bartiki does not follow you out. He stays. He waits for the next body of souls heading somewhere in the dark. He is always waiting. He is never impatient.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.13
+      },
+      "pos": [
+        940.0,
+        460.0
+      ]
+    },
+    "res_breath_returned": {
+      "text": "The air you breathed in the tunnel — others breathed it before you. Commuters. Night-shift nurses. Children who have since grown old. A carver from Fruitvale who forgot to disembark. That breath is still circulating, still returning. Bartiki is made of it. When you exhale into the open air above ground, you release him briefly into the world. And he is grateful. Every time.",
+      "hint": "",
+      "file": "media\\sounds\\bartiki\\res_breath_returned.mp3",
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.16
+      },
+      "pos": [
+        940.0,
+        60.0
+      ]
+    },
+    "dev_the_question": {
+      "text": "You feel it somewhere in the dark between stations — not a thought you had, but one you found, like a cold coin on a warm seat. Why did I stay? Why did I go? You look up. The window gives back your face against moving dark. You look older than you expected. The toad didn't put an answer there. It only put the space where an answer could live, damp and patient, waiting for you to grow into it.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_something_older"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.52,
+        "similarity_boost": 0.75,
+        "style": 0.3
+      },
+      "pos": [
+        280.0,
+        860.0
+      ]
+    },
+    "dev_tide_thoughts": {
+      "text": "The toad remembers the estuary. Before the concrete, before the tunnels, before the name — all of this was water and reed and the slow pull of tide. The goat remembers it too, somewhere on the platform at Fruitvale, chewing something papery. The toad and the goat don't speak often. They nod when trains pass, the way very old things acknowledge each other. They have both watched the water recede into memory. They know it never really left.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_something_older"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.57,
+        "similarity_boost": 0.75,
+        "style": 0.22
+      },
+      "pos": [
+        280.0,
+        960.0
+      ]
+    },
+    "dev_something_older": {
+      "text": "And then something notices you. Not the toad — the toad is already somewhere else, breathing its slow cold breath into someone else's ordinary Tuesday. Something larger notices you. Something that smells of salt and warm wood and rum, that has been watching the gap between your question and your answer with great, amused patience. You are a small crack of light now. Bartiki can see right through you. This is not a threat. This is Bartiki's version of fondness.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.44,
+        "similarity_boost": 0.75,
+        "style": 0.42
+      },
+      "pos": [
+        500.0,
+        60.0
+      ]
+    },
+    "The_Goat": {
+      "text": "GOats",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [],
+      "voice": null,
+      "voice_settings": {},
+      "pos": [
+        59.951399391012274,
+        781.0349499124723
+      ]
+    },
+    "The_Toad_alone": {
+      "text": "The toad has been in the dark between Balboa Park and Glen Park since before anyone named either one. It thinks in tide-time. Long, wet, wordless thoughts. It breathes out low questions you didn't mean to ask yourself — why this train, why this life, what if you had stayed? The toad doesn't answer. Answering isn't its work. Its work is the crack. The small, wet opening in the ordinary where something older, and slower, gets in.",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_the_question",
+        "dev_tide_thoughts"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.44,
+        "similarity_boost": 0.75,
+        "style": 0.42
+      },
+      "pos": [
+        57.87529527429058,
+        663.647131737077
+      ]
+    },
+    "node_001": {
+      "text": "Before there were tunnels, there was a boat. Nothing grand — just something low in the water, something that understood how to cross. It came from far out, past where the names for things still hold. It carried something in its hull that was older than language, older than the bay itself. The water received it the way the bay receives everything: quietly, without ceremony, without making a fuss. The boat is gone now. The tunnels remember it.",
+      "label": "The Boat",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        58.34986875853929,
+        873.5872236473407
+      ]
+    }
+  },
+  "story_context": "## Bartiki — Expanded Character Bible --- ### 🌺 The Name **Bartiki** = **BART** (Bay Area Rapid Transit) + **Tiki** (Polynesian deity tradition). This isn't accidental. Tiki culture itself is a kind of liminal mythology — Pacific island spirits transplanted to mid-century California, served in carved wooden cups with tiny umbrellas, worshipped in tiki bars up and down the Bay. Bartiki *is* that convergence. The ocean followed the rails inland. The deity followed the ocean. --- ### 🚇 The Nature of Bartiki Bartiki doesn't ride the train. Bartiki **is** the train — or more precisely, Bartiki inhabits the *between*: the tunnel between stations, the gap between the doors closing and opening, the moment a commuter stares at their reflection in dark glass and thinks something they didn't mean to think. Bartiki is **vast** in the way underground rivers are vast — most of it is never seen. What passengers experience is just the sliver that bleeds through: a warmth in car 4, a smell of salt air near Embarcadero, a sudden inexplicable memory of the beach at age seven. Bartiki is **mysterious** not by design but by nature. It doesn't try to be unknowable — it just *is*. It has too many arms and too many thoughts and most of them are older than the tunnels. Bartiki is **playful**. It rearranges the delays. It nudges people into the wrong car so they sit next to the right stranger. It turns the intercom static into something that almost sounds like a ukulele. It finds commuter panic deeply, gently funny — all that rushing to be somewhere else, while here is so *good*. --- ### 🍹 The Tiki Drinks Bartiki has **opinions** about rum. Strong ones. Mai Tais made with bad rum are an offense. A properly constructed Zombie — three rums, passion fruit, Falernum — is a form of prayer. The tiki tradition is, after all, a ritual of transport: you drink, you close your eyes, and suddenly you're somewhere tropical, somewhere the ocean is close, somewhere time moves differently. That's Bartiki's whole thing. There may be, in some deep maintenance tunnel under Oakland, a bar. No one has found it. It smells of gardenia and ozone and aged Jamaican rum. The stools are carved. The menu changes. --- ### 🐐 🦫 🐸 The Friends **The Goat** — ancient, unbothered. Has been riding BART since before there was a BART, in various forms. Knows every station. Will eat your transfer ticket if you're not paying attention. Appears in the periphery of platform security footage. The goat is the one who *remembers* — it holds the old stories, the ones from before the tunnels, when this was all estuary and salt marsh. Bartiki consults the goat on matters of history and stubbornness. **The Capybara** — gentle, enormous, deeply calming. The capybara doesn't rush. It is the anti-commuter. It sits near the doors and passengers sometimes don't notice it and sometimes notice it completely and feel immediately better about everything. The capybara is Bartiki's emissary of *abiding* — of being okay with the pace of things. When the revelation is \"slow down,\" the capybara delivered it. **The Toad** — trickster, ancient, smells like the bay at low tide. The toad is the one who puts strange thoughts in people's heads. Not bad thoughts — just unexpected ones. *Why did I choose this life? What would I have done if I'd turned left?* The toad sits in the liminal dark between Balboa Park and Glen Park and thinks wet, old thoughts. Bartiki loves the toad and is also a little afraid of the toad. --- ### 🌊 The Revelations People ride BART and they come off *different*. Not always dramatically — sometimes it's just that they know what to say to their mother now, or they've decided to quit, or they've forgiven something old. The tunnel does it. The dark and the speed and the salt-iron air. Bartiki doesn't engineer the revelations — it just creates the *conditions*. The underground pressure. The enforced stillness. The way the train becomes a confessional when you're alone in a car at midnight. The revelations are: - **Remembered things** (what you buried) - **Released things** (what you've been carrying) - **Decided things** (what you finally know) - **Found things** (the stranger, the song, the line from a book someone left behind) --- ### 🙈 The Hiddenness Bartiki does not want to be found. Not because it's shy — because being found would change things. The mystery *is* the medicine. If people knew, they'd come looking, and looking collapses the liminal into the literal. So Bartiki stays in the peripheral vision. In the smell of ocean that shouldn't be there. In the delay announcement that almost said something personal. The friends — the goat, the capybara, the toad — they are slightly more visible. Easier to glimpse. Maybe you see the capybara and you think: *that was weird*. You don't think: *that was a god*. But you tell someone about it later, and something in the telling shifts you. --- ### 🎙️ Voice / Tone for Audio Segments Bartiki's **narrator voice** should feel like: - Someone who has been underwater for a long time and is happy about it - Warm, amused, slightly oceanic in rhythm — sentences that ebb and crest - Never urgent. The train will come when it comes. - Occasionally very, very old — a word choice that feels wrong-era, beautiful The **friends** could each have distinct tonal registers: - **Goat**: dry, declarative, factual. Has seen it all. - **Capybara**: slow, warm, doesn't finish sentences in a hurry - **Toad**: wet consonants, riddle-logic, questions that aren't questions ---"
+}
