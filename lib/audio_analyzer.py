@@ -262,6 +262,9 @@ class MicrophoneAnalyzer:
         
         print("-" * 80 + "\n")
         
+        # Sensitivity multiplier (controlled via web UI)
+        self._sensitivity = 1.0
+
         # Audio parameters
         self.CHUNK = 4096  # FFT size for good frequency resolution
         self.CALLBACK_BLOCKSIZE = 512  # Even smaller blocks for smoother updates (11.6ms at 44.1kHz)
@@ -422,6 +425,15 @@ class MicrophoneAnalyzer:
 
 
 
+    @property
+    def sensitivity(self):
+        """Audio sensitivity multiplier (0.1–3.0). Scales band power output."""
+        return self._sensitivity
+
+    @sensitivity.setter
+    def sensitivity(self, value):
+        self._sensitivity = max(0.1, min(3.0, float(value)))
+
     def get_spectrum_history(self):
         """Get spectrum history (most recent first)"""
         history = self.spectrum_history.get_ordered()
@@ -506,6 +518,14 @@ class MicrophoneAnalyzer:
         # Calculate ReLU(norm_long - 1) - highlights when bands are above long-term average
         norm_long_relu = np.maximum(0, norm_long - 1)
         
+        # Apply sensitivity multiplier to raw and normalized bands
+        s = self._sensitivity
+        if s != 1.0:
+            raw = raw * s
+            norm_short = norm_short * s
+            norm_long = norm_long * s
+            norm_long_relu = norm_long_relu * s
+
         return {
             'raw_bands': raw,
             'norm_short': norm_short,
@@ -514,7 +534,8 @@ class MicrophoneAnalyzer:
             'band_centers': self.band_centers.copy(),
             'band_edges': self.band_edges.copy(),
             'timestamp': time.time(),
-            'averaging_method': 'exponential' if self.use_exponential else 'mean'
+            'averaging_method': 'exponential' if self.use_exponential else 'mean',
+            'sensitivity': self._sensitivity
         }
 
     
