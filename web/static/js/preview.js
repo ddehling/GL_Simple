@@ -25,6 +25,14 @@
     const buffers = {};
     let flatQuadVAO = null;
 
+    // Pan/zoom state (fan modes only)
+    let zoom = 1.0;
+    let panX = 0.0;
+    let panY = 0.0;
+    let dragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
     // ---- WebGL init ----
 
     function initGL() {
@@ -83,8 +91,11 @@ layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
 out vec2 vUV;
 uniform vec2 uAspect;
+uniform float uZoom;
+uniform vec2 uPan;
 void main() {
-    gl_Position = vec4(aPosition * uAspect, 0.0, 1.0);
+    vec2 pos = aPosition * uAspect * uZoom + uPan;
+    gl_Position = vec4(pos, 0.0, 1.0);
     vUV = aTexCoord;
 }`;
 
@@ -109,10 +120,12 @@ layout(location = 2) in vec2 iTexCoord;
 out vec2 vQuad;
 flat out vec2 vUV;
 uniform float uRadius;
-uniform vec2 uAspect;  // (1.0, 1.0) or aspect correction
+uniform vec2 uAspect;
+uniform float uZoom;
+uniform vec2 uPan;
 void main() {
     vec2 world = iPos + aQuad * uRadius;
-    gl_Position = vec4(world * uAspect, 0.0, 1.0);
+    gl_Position = vec4(world * uAspect * uZoom + uPan, 0.0, 1.0);
     vQuad = aQuad;
     vUV = iTexCoord;
 }`;
@@ -289,6 +302,12 @@ void main() {
         // Flat modes: geometry fills [-1,1] in both axes, canvas
         // aspect matches frame aspect via CSS, so no correction needed
 
+        // Only apply pan/zoom in fan modes
+        const isFanMode = mode.startsWith("fan");
+        const z = isFanMode ? zoom : 1.0;
+        const px = isFanMode ? panX : 0.0;
+        const py = isFanMode ? panY : 0.0;
+
         if (mode === "flat-smooth" || mode === "fan-smooth") {
             const prog = programs[mode];
             const vao = vaos[mode];
@@ -296,6 +315,8 @@ void main() {
             gl.useProgram(prog);
             gl.uniform1i(gl.getUniformLocation(prog, "uTexture"), 0);
             gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
+            gl.uniform1f(gl.getUniformLocation(prog, "uZoom"), z);
+            gl.uniform2f(gl.getUniformLocation(prog, "uPan"), px, py);
             gl.bindVertexArray(vao);
 
             if (mode === "fan-smooth") {
@@ -314,6 +335,8 @@ void main() {
             gl.uniform1i(gl.getUniformLocation(prog, "uTexture"), 0);
             gl.uniform1f(gl.getUniformLocation(prog, "uRadius"), info.dotRadius);
             gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
+            gl.uniform1f(gl.getUniformLocation(prog, "uZoom"), z);
+            gl.uniform2f(gl.getUniformLocation(prog, "uPan"), px, py);
             gl.bindVertexArray(vao);
             gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, info.nInstances);
             gl.disable(gl.BLEND);
@@ -352,9 +375,76 @@ void main() {
             btn.addEventListener("click", () => {
                 document.querySelectorAll(".mode-btn").forEach(b => b.classList.remove("active"));
                 btn.classList.add("active");
+                const oldMode = mode;
                 mode = btn.dataset.mode;
+                // Reset pan/zoom when switching between flat and fan
+                if (oldMode.startsWith("fan") !== mode.startsWith("fan")) {
+                    zoom = 1.0;
+                    panX = 0.0;
+                    panY = 0.0;
+                }
             });
         });
+    }
+
+    // ---- Pan/zoom mouse controls (fan modes) ----
+
+    function setupPanZoom() {
+        // Scroll to zoom (centered on cursor)
+        canvas.addEventListener("wheel", (e) => {
+            if (!mode.startsWith("fan")) return;
+            e.preventDefault();
+
+            const rect = canvas.getBoundingClientRect();
+            const clipX = ((e.clientX - rect.left) / rect.width) * 2.0 - 1.0;
+            const clipY = 1.0 - ((e.clientY - rect.top) / rect.height) * 2.0;
+
+            const oldZoom = zoom;
+            const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            const newZoom = Math.max(0.5, Math.min(20.0, oldZoom * factor));
+
+            // Adjust pan so the point under cursor stays fixed
+            panX = clipX - (clipX - panX) * newZoom / oldZoom;
+            panY = clipY - (clipY - panY) * newZoom / oldZoom;
+            zoom = newZoom;
+        }, { passive: false });
+
+        // Drag to pan
+        canvas.addEventListener("mousedown", (e) => {
+            if (e.button === 0) {
+                dragging = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                canvas.style.cursor = "grabbing";
+            } else if (e.button === 1) {
+                // Middle click resets
+                e.preventDefault();
+                zoom = 1.0;
+                panX = 0.0;
+                panY = 0.0;
+            }
+        });
+
+        window.addEventListener("mousemove", (e) => {
+            if (!dragging || !mode.startsWith("fan")) return;
+            const rect = canvas.getBoundingClientRect();
+            const dx = (e.clientX - lastMouseX) / rect.width * 2.0;
+            const dy = -(e.clientY - lastMouseY) / rect.height * 2.0;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            panX += dx;
+            panY += dy;
+        });
+
+        window.addEventListener("mouseup", (e) => {
+            if (e.button === 0) {
+                dragging = false;
+                canvas.style.cursor = "";
+            }
+        });
+
+        // Prevent context menu on middle click
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     }
 
     // ---- Bootstrap ----
@@ -362,6 +452,7 @@ void main() {
     function init() {
         if (!initGL()) return;
         setupModeButtons();
+        setupPanZoom();
 
         const socket = createSocket();
 
