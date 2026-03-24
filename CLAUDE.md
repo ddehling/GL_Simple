@@ -51,10 +51,13 @@ Web control panel runs at `http://localhost:5000` when started.
 
 The OpenGL window supports four view modes, toggled with keyboard shortcuts:
 
-| Key | Action |
-|-----|--------|
-| F   | Toggle flat/fan view |
-| D   | Toggle smooth/LED style |
+| Key / Input | Action |
+|-------------|--------|
+| F | Toggle flat/fan view |
+| D | Toggle smooth/LED style |
+| Scroll wheel | Zoom in/out (fan modes, centered on cursor) |
+| Left-click drag | Pan the view (fan modes) |
+| Middle-click | Reset zoom and pan |
 | ESC | Quit |
 
 The four resulting modes:

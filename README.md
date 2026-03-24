@@ -284,6 +284,9 @@ The OpenGL window and web preview support four view modes:
 |-----|--------|
 | **F** | Toggle flat / fan view |
 | **D** | Toggle smooth / LED style |
+| **Scroll wheel** | Zoom in/out (fan modes, centered on cursor) |
+| **Left-click drag** | Pan the view (fan modes) |
+| **Middle-click** | Reset zoom and pan |
 | **ESC** | Quit |
 
 ### Web Preview

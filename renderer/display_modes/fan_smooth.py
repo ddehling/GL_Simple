@@ -14,9 +14,10 @@ precision highp float;
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
 uniform float uZoom;
+uniform vec2 uPan;
 out vec2 vTexCoord;
 void main() {
-    gl_Position = vec4(aPosition * uZoom, 0.0, 1.0);
+    gl_Position = vec4(aPosition * uZoom + uPan, 0.0, 1.0);
     vTexCoord = aTexCoord;
 }
 """
@@ -53,6 +54,7 @@ void main() {
             self._shader = shaders.compileProgram(vert, frag)
             self._tex_loc = glGetUniformLocation(self._shader, "uTexture")
             self._zoom_loc = glGetUniformLocation(self._shader, "uZoom")
+            self._pan_loc = glGetUniformLocation(self._shader, "uPan")
 
         # Clean up old buffers if re-initializing
         if self._vao:
@@ -100,6 +102,7 @@ void main() {
         glBindTexture(GL_TEXTURE_2D, viewport.color_texture)
         glUniform1i(self._tex_loc, 0)
         glUniform1f(self._zoom_loc, viewport.zoom)
+        glUniform2f(self._pan_loc, viewport.pan_x, viewport.pan_y)
 
         glBindVertexArray(self._vao)
         glDrawElements(GL_TRIANGLES, self._index_count, GL_UNSIGNED_INT, None)
