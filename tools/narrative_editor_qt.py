@@ -1300,7 +1300,20 @@ class PropertiesPanel(QWidget):
     def _autosave_text(self):
         if self._blocking or not self._node_id or not self._script:
             return
-        self._script.update_text(self._node_id, self.text_edit.toPlainText())
+        raw       = self.text_edit.toPlainText()
+        sanitized = _sanitize_tts(raw)
+        if sanitized != raw:
+            # Replace bad chars in the editor without moving the cursor far
+            cursor = self.text_edit.textCursor()
+            pos    = cursor.position()
+            self._blocking = True
+            try:
+                self.text_edit.setPlainText(sanitized)
+                cursor.setPosition(min(pos, len(sanitized)))
+                self.text_edit.setTextCursor(cursor)
+            finally:
+                self._blocking = False
+        self._script.update_text(self._node_id, sanitized)
         self.node_modified.emit(self._node_id)
 
     def _autosave_hint(self):
@@ -1441,7 +1454,7 @@ class PropertiesPanel(QWidget):
             return
 
         nd = self._script.nodes.get(self._node_id, {})
-        text = nd.get("text", "").strip()
+        text = _sanitize_tts(nd.get("text", "").strip())
         if not text:
             self.audio_status.setText("No text to generate")
             return
