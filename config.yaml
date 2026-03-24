@@ -8,6 +8,7 @@ display:
   headless: false     # true = no desktop window, web preview only
 
 audio:
+  enabled: true         # Set false to run without microphone (e.g. remote/headless)
   device_name: "TONOR"  # Microphone device name (run tools/sound_editor.py to find yours)
 
 web:
