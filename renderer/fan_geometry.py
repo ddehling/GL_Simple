@@ -23,22 +23,22 @@ class FanGeometry:
         Width / height of the display window (used to keep the
         semicircle visually circular).
     inner_r, outer_r : float
-        Normalised inner / outer radii of the fan.  Default 0.05 / 0.95.
+        Normalised inner / outer radii of the fan.  Defaults match the
+        physical installation: 4 ft inner, 20.6 ft outer.
     """
+
+    # Physical dimensions of the installation (feet)
+    PHYSICAL_INNER_FT = 4.0
+    PHYSICAL_OUTER_FT = 20.6
 
     def __init__(self, num_strips: int, num_leds: int, display_aspect: float,
                  inner_r: float = None, outer_r: float = 0.95):
         self.num_strips = num_strips
         self.num_leds = num_leds
 
-        # Compute inner_r so the angular gap at the innermost ring equals
-        # the radial gap between LEDs.  This prevents dot overlap while
-        # keeping uniform spacing:
-        #   inner_r * pi / (num_strips - 1) == (outer_r - inner_r) / (num_leds - 1)
+        # Default inner_r from physical installation ratio (4ft / 20.6ft)
         if inner_r is None:
-            ns1 = max(num_strips - 1, 1)
-            nl1 = max(num_leds - 1, 1)
-            inner_r = outer_r / (1.0 + math.pi * nl1 / ns1)
+            inner_r = outer_r * (self.PHYSICAL_INNER_FT / self.PHYSICAL_OUTER_FT)
 
         self.inner_r = inner_r
         self.outer_r = outer_r
@@ -136,11 +136,12 @@ class FanGeometry:
                 instances[idx] = (x, y, u, t)
                 idx += 1
 
-        # Dot radius: half the radial spacing between LEDs (in clip-space Y units).
-        # Since inner_r is set so angular spacing == radial spacing at the
-        # inner ring, this guarantees no overlap anywhere.
-        radial_per_led = (self.outer_r - self.inner_r) / nl
-        dot_radius = radial_per_led * self.fit_scale * 0.9
+        # Dot radius: based on the smaller of radial spacing and the
+        # tightest angular spacing (at the inner ring).  This prevents
+        # overlap everywhere on the fan.
+        radial_gap = (self.outer_r - self.inner_r) / nl
+        angular_gap = self.inner_r * math.pi / max(ns - 1, 1)
+        dot_radius = min(radial_gap, angular_gap) * self.fit_scale * 0.9
 
         return instances, dot_radius
 
