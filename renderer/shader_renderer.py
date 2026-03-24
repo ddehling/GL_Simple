@@ -161,8 +161,16 @@ class ShaderRenderer:
 
         glfw.set_key_callback(self.window, _key_callback)
 
+        # Scroll callback -- zoom in/out on fan view
+        def _scroll_callback(window, xoffset, yoffset):
+            for vp in renderer_self.viewports:
+                if vp.fan_mode:
+                    vp.zoom = max(0.5, min(5.0, vp.zoom * (1.1 ** yoffset)))
+
+        glfw.set_scroll_callback(self.window, _scroll_callback)
+
         print(f"[ShaderRenderer] Window created: {self.window_width}x{self.window_height}")
-        print(f"[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit")
+        print(f"[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit, Scroll=zoom")
         self.ctx_initialized = True
 
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
@@ -311,6 +319,7 @@ class ShaderViewport:
         # --- Display mode state ---
         self.fan_mode = False    # False = flat, True = fan (semicircle)
         self.dot_mode = False    # False = smooth, True = LED (instanced circles)
+        self.zoom = 1.0          # Fan view zoom level (scroll wheel)
 
         # --- Shared geometry (FanGeometry, rebuilt when aspect changes) ---
         self._geometry = None
