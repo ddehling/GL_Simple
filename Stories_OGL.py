@@ -87,6 +87,8 @@ class EnvironmentalSystem:
                 "all_weather_states": [s.value for s in WeatherState],
                 "state_switch_locked": True,
                 "weather_state_locked": False,
+                "led_width": frame_dimensions[0][0],
+                "led_height": frame_dimensions[0][1],
             }
             self.web_controller = WebController(
                 self.web_controls, 
@@ -202,6 +204,12 @@ class EnvironmentalSystem:
         
         # Update the scheduler
         self.scheduler.update()
+
+        # Copy PNG frame to web controller for preview streaming
+        if hasattr(self, 'web_controller'):
+            png = self.scheduler.state.get('_frame_png')
+            if png is not None:
+                self.web_controller.control_dict['_frame_png'] = png
 
     def change_weather_set(self, new_set_name: str, immediate: bool = False,
                            initial_weather: WeatherState = None):

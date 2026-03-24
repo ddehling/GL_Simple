@@ -1,5 +1,4 @@
 import ctypes
-import math
 
 import glfw
 from OpenGL.GL import *
@@ -8,6 +7,7 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 import platform
 from renderer.effects.base import ShaderEffect
+from renderer.fan_geometry import FanGeometry
 # Detect platform
 IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
@@ -320,6 +320,9 @@ class ShaderViewport:
         self._fan_index_count = 0
         self._fan_tex_loc = None
 
+        # Shared geometry helper (created on first use, rebuilt on aspect change)
+        self._geometry = None
+
         # Instanced LED dot rendering
         self._dot_initialized = False
         self._dot_shader = None
@@ -330,6 +333,12 @@ class ShaderViewport:
         self._dot_tex_loc = None
         self._dot_radius_loc = None
         
+
+    def _ensure_geometry(self):
+        """Create or rebuild FanGeometry for the current display aspect."""
+        aspect = self.display_width / max(self.display_height, 1)
+        if self._geometry is None or abs(self._geometry.aspect - aspect) > 0.01:
+            self._geometry = FanGeometry(self.led_width, self.led_height, aspect)
 
     def init_framebuffer(self):
         """Create framebuffer for offscreen rendering (for LED output)"""
@@ -485,50 +494,11 @@ void main() {
     def _init_fan_view(self):
         """Build the fan mesh and compile the shader (called once on first toggle)."""
         glfw.make_context_current(self.glfw_window)
+        self._ensure_geometry()
 
-        num_strips = self.led_width   # 128 strips
-        num_radial = self.led_height  # 300 LEDs per strip
-
-        inner_r = 0.05
-        outer_r = 0.95
-
-        # Aspect ratio correction so the semicircle stays circular
-        aspect = self.display_width / max(self.display_height, 1)
-        a_half = max(aspect * 0.5, 0.01)
-
-        # Scale to fit within clip space [-1, 1]
-        max_x = outer_r / a_half
-        fit_scale = min(1.0, 0.98 / max_x)
-
-        # Build vertices: (x, y, u, v) per vertex
-        verts = []
-        for i in range(num_strips):
-            theta = math.pi - (i / max(num_strips - 1, 1)) * math.pi
-            u = i / max(num_strips - 1, 1)
-            cos_t = math.cos(theta)
-            sin_t = math.sin(theta)
-            for j in range(num_radial + 1):
-                t = j / num_radial
-                r = inner_r + t * (outer_r - inner_r)
-                x = r * cos_t / a_half * fit_scale
-                y = (r * sin_t * 2.0 - 0.9) * fit_scale
-                v = t
-                verts.extend([x, y, u, v])
-
-        # Build indices: two triangles per quad
-        indices = []
-        stride = num_radial + 1
-        for i in range(num_strips - 1):
-            for j in range(num_radial):
-                tl = i * stride + j
-                tr = (i + 1) * stride + j
-                bl = tl + 1
-                br = tr + 1
-                indices.extend([tl, bl, tr, bl, br, tr])
-
-        verts_np = np.array(verts, dtype=np.float32)
-        indices_np = np.array(indices, dtype=np.uint32)
-        self._fan_index_count = len(indices)
+        verts_2d, indices_np = self._geometry.compute_fan_mesh()
+        verts_np = verts_2d.flatten()
+        self._fan_index_count = len(indices_np)
 
         # Compile shader
         vert = shaders.compileShader(self._FAN_VERT, GL_VERTEX_SHADER)
@@ -557,7 +527,7 @@ void main() {
 
         glBindVertexArray(0)
         self._fan_initialized = True
-        print(f"[ShaderViewport] Fan mesh: {num_strips} strips x {num_radial} LEDs, "
+        print(f"[ShaderViewport] Fan mesh: {self.led_width} strips x {self.led_height} LEDs, "
               f"{self._fan_index_count // 3} triangles")
 
     def _render_fan_to_window(self):
@@ -625,42 +595,15 @@ void main() {
     def _init_dot_view(self):
         """Build instanced LED dot geometry for the current view mode."""
         glfw.make_context_current(self.glfw_window)
+        self._ensure_geometry()
 
-        num_strips = self.led_width
-        num_leds = self.led_height
-        self._dot_n_instances = num_strips * num_leds
-
-        # Build per-LED instance data: (clip_x, clip_y, u, v)
-        instances = []
         if self.fan_mode:
-            inner_r = 0.05
-            outer_r = 0.95
-            aspect = self.display_width / max(self.display_height, 1)
-            a_half = max(aspect * 0.5, 0.01)
-            max_x = outer_r / a_half
-            fit_scale = min(1.0, 0.98 / max_x)
-            for i in range(num_strips):
-                theta = math.pi - (i / max(num_strips - 1, 1)) * math.pi
-                u = i / max(num_strips - 1, 1)
-                cos_t = math.cos(theta)
-                sin_t = math.sin(theta)
-                for j in range(num_leds):
-                    t = (j + 0.5) / num_leds
-                    r = inner_r + t * (outer_r - inner_r)
-                    x = r * cos_t / a_half * fit_scale
-                    y = (r * sin_t * 2.0 - 0.9) * fit_scale
-                    instances.extend([x, y, u, t])
+            inst_2d, self._dot_radius = self._geometry.compute_fan_dots()
         else:
-            # Flat grid: map LED positions to clip space [-1, 1]
-            for i in range(num_strips):
-                u = (i + 0.5) / num_strips
-                x = u * 2.0 - 1.0
-                for j in range(num_leds):
-                    v = (j + 0.5) / num_leds
-                    y = v * 2.0 - 1.0
-                    instances.extend([x, y, u, v])
+            inst_2d, self._dot_radius = self._geometry.compute_flat_dots()
 
-        inst_np = np.array(instances, dtype=np.float32)
+        inst_np = inst_2d.flatten()
+        self._dot_n_instances = self.led_width * self.led_height
 
         # Compile shader (only once — reuse across re-inits)
         if self._dot_shader is None:
@@ -703,17 +646,6 @@ void main() {
 
         glBindVertexArray(0)
         self._dot_initialized = True
-
-        # Compute dot radius
-        if self.fan_mode:
-            avg_r = (inner_r + outer_r) / 2.0
-            arc_per_strip = avg_r * math.pi / num_strips
-            radial_per_led = (outer_r - inner_r) / num_leds
-            avg_spacing = min(arc_per_strip / a_half * fit_scale,
-                              radial_per_led * 2.0 * fit_scale)
-            self._dot_radius = avg_spacing * 0.45
-        else:
-            self._dot_radius = (1.0 / max(num_strips, num_leds)) * 0.9
 
         mode = 'fan' if self.fan_mode else 'flat'
         print(f"[ShaderViewport] LED dots ({mode}): {self._dot_n_instances} instances, "
