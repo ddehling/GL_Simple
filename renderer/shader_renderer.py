@@ -140,8 +140,10 @@ class ShaderRenderer:
         # Store original window dimensions for toggling back from fan mode
         self._orig_window_width = self.window_width
         self._orig_window_height = self.window_height
-        self._fan_window_width = 900
-        self._fan_window_height = 500
+        # Fan window sized to fill most of the monitor
+        monitor_h = self.get_monitor_height()
+        self._fan_window_height = monitor_h - 100
+        self._fan_window_width = int(self._fan_window_height * 1.8)
 
         # Keyboard callback -- F=flat/fan, D=smooth/LED, ESC=quit
         renderer_self = self
