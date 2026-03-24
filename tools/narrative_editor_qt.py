@@ -54,8 +54,8 @@ NODE_PREVIEW_LEN = 60   # chars shown inside a node box
 
 # Characters that break TTS and their plain-text replacements.
 _TTS_REPLACEMENTS = [
-    ('\u2014', ' - '),   # em dash  —
-    ('\u2013', ' - '),   # en dash  –
+    ('\u2014', ', '),    # em dash  —
+    ('\u2013', ', '),    # en dash  –
     ('\u2026', '...'),   # ellipsis …
     ('\u2018', "'"),     # left single quote  '
     ('\u2019', "'"),     # right single quote '
@@ -63,13 +63,16 @@ _TTS_REPLACEMENTS = [
     ('\u201d', '"'),     # right double quote "
     ('\u00a0', ' '),     # non-breaking space
     ('\u200b', ''),      # zero-width space
-    ('\u2022', '-'),     # bullet •
+    ('\u2022', ' '),     # bullet •
+    ('-', ' '),          # hyphen / dash
 ]
 
 def _sanitize_tts(text: str) -> str:
     """Replace characters that confuse TTS engines with safe equivalents."""
     for bad, good in _TTS_REPLACEMENTS:
         text = text.replace(bad, good)
+    # Collapse any runs of spaces left by replacements
+    text = re.sub(r'  +', ' ', text)
     return text
 
 SCRIPT_TEMPLATE = {
@@ -417,7 +420,7 @@ class ScriptData:
             data = json.load(f)
         sd = cls(data)
         sd.path = Path(path)
-        # Ensure all nodes have required fields
+        # Ensure all nodes have required fields; sanitize spoken text on load
         for node in sd._data["nodes"].values():
             node.setdefault("pos",      [100, 100])
             node.setdefault("next",     [])
@@ -427,6 +430,8 @@ class ScriptData:
             node.setdefault("duration", None)
             node.setdefault("voice",          None)
             node.setdefault("voice_settings", {})
+            if node.get("text"):
+                node["text"] = _sanitize_tts(node["text"])
         return sd
 
     @staticmethod
