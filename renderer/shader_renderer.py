@@ -1,5 +1,9 @@
+import ctypes
+import math
+
 import glfw
 from OpenGL.GL import *
+from OpenGL.GL import shaders
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 import platform
@@ -136,7 +140,30 @@ class ShaderRenderer:
         if glsl_version:
             print(f"[ShaderRenderer] GLSL Version: {glsl_version.decode()}")
 
+        # Store original window dimensions for toggling back from fan mode
+        self._orig_window_width = self.window_width
+        self._orig_window_height = self.window_height
+        self._fan_window_width = 900
+        self._fan_window_height = 500
+
+        # Keyboard callback — F=flat/fan, D=continuous/dots, ESC=quit
+        renderer_self = self
+        def _key_callback(window, key, scancode, action, mods):
+            if action != glfw.PRESS:
+                return
+            if key == glfw.KEY_F:
+                renderer_self._toggle_fan_mode()
+            elif key == glfw.KEY_D:
+                for vp in renderer_self.viewports:
+                    vp.dot_mode = not vp.dot_mode
+                renderer_self._update_window_title()
+            elif key == glfw.KEY_ESCAPE:
+                glfw.set_window_should_close(window, True)
+
+        glfw.set_key_callback(self.window, _key_callback)
+
         print(f"[ShaderRenderer] Window created: {self.window_width}x{self.window_height}")
+        print(f"[ShaderRenderer] Keys: F=flat/fan, D=continuous/dots, ESC=quit")
         self.ctx_initialized = True
         
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
@@ -187,6 +214,41 @@ class ShaderRenderer:
                 return vp
         return None
     
+    def _toggle_fan_mode(self):
+        """Toggle fan view and resize the window accordingly."""
+        entering_fan = not any(vp.fan_mode for vp in self.viewports)
+
+        if entering_fan:
+            new_w, new_h = self._fan_window_width, self._fan_window_height
+        else:
+            new_w, new_h = self._orig_window_width, self._orig_window_height
+
+        glfw.set_window_size(self.window, new_w, new_h)
+        self.window_width = new_w
+        self.window_height = new_h
+        self.fb_width, self.fb_height = glfw.get_framebuffer_size(self.window)
+
+        for vp in self.viewports:
+            if vp.display_width > 0:
+                vp.display_width = self.fb_width
+                vp.display_height = self.fb_height
+                # Force re-init of fan mesh/dots with new aspect ratio
+                if vp._fan_initialized:
+                    vp._fan_initialized = False
+                if vp._dot_initialized:
+                    vp._dot_initialized = False
+            vp.toggle_fan_mode()
+        self._update_window_title()
+
+    def _update_window_title(self):
+        vp = self.viewports[0] if self.viewports else None
+        if not vp:
+            return
+        view = 'Fan' if vp.fan_mode else 'Flat'
+        style = 'Dots' if vp.dot_mode else 'Continuous'
+        title = f"LED Renderer — {view} {style} [F=view, D=dots]"
+        glfw.set_window_title(self.window, title)
+
     def poll_events(self):
         """Poll GLFW events"""
         glfw.poll_events()
@@ -223,26 +285,50 @@ class ShaderRenderer:
 
 
 class ShaderViewport:
-    """Individual viewport with shader effect pipeline and framebuffer for LED output"""
-    def __init__(self, frame_id: int, width: int, height: int, 
-                 window_x: int, window_y: int, 
+    """Individual viewport with shader effect pipeline and framebuffer for LED output."""
+
+    def __init__(self, frame_id: int, width: int, height: int,
+                 window_x: int, window_y: int,
                  display_width: int, display_height: int,
                  glfw_window, headless=False):
         self.frame_id = frame_id
-        self.width = width  # Actual framebuffer size (for LED output)
+        self.width = width        # Render at native LED resolution
         self.height = height
-        self.window_x = window_x  # Position in window
+        self.led_width = width    # Aliases for fan/dot code
+        self.led_height = height
+        self.window_x = window_x
         self.window_y = window_y
-        self.display_width = display_width  # Display size in window (0 for offscreen only)
+        self.display_width = display_width
         self.display_height = display_height
         self.glfw_window = glfw_window
         self.headless = headless
         self.effects = []
-        
-        # Framebuffer for LED output (separate from window rendering)
+
+        # Framebuffer for LED output
         self.fbo = None
         self.color_texture = None
         self.depth_texture = None
+
+        # View modes
+        self.fan_mode = False
+        self.dot_mode = False
+        self._fan_initialized = False
+        self._fan_shader = None
+        self._fan_vao = None
+        self._fan_vbo = None
+        self._fan_ebo = None
+        self._fan_index_count = 0
+        self._fan_tex_loc = None
+
+        # Instanced LED dot rendering
+        self._dot_initialized = False
+        self._dot_shader = None
+        self._dot_vao = None
+        self._dot_quad_vbo = None
+        self._dot_inst_vbo = None
+        self._dot_n_instances = 0
+        self._dot_tex_loc = None
+        self._dot_radius_loc = None
         
 
     def init_framebuffer(self):
@@ -344,24 +430,319 @@ class ShaderViewport:
             self._blit_framebuffer_to_window()
 
     def _blit_framebuffer_to_window(self):
-        """Copy framebuffer contents to window with proper scaling"""
-        # Disable scissor test for blit operation
+        """Copy framebuffer contents to window with proper scaling."""
+        if self.dot_mode:
+            # Instanced dots — works in both flat and fan mode
+            if not self._dot_initialized:
+                self._init_dot_view()
+            self._render_dots_to_window()
+            return
+
+        if self.fan_mode:
+            # Fan continuous
+            if not self._fan_initialized:
+                self._init_fan_view()
+            self._render_fan_to_window()
+            return
+
+        # Flat continuous — simple blit
         glDisable(GL_SCISSOR_TEST)
-        
         glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
-        
-        # Set viewport for the destination (window)
         glViewport(0, 0, self.display_width, self.display_height)
-        
-        # Blit the entire framebuffer to the entire window
         glBlitFramebuffer(
-            0, 0, self.width, self.height,           # Source (framebuffer)
-            0, 0, self.display_width, self.display_height,  # Destination (window)
-            GL_COLOR_BUFFER_BIT, GL_NEAREST          # Use NEAREST for pixelated scaling
+            0, 0, self.width, self.height,
+            0, 0, self.display_width, self.display_height,
+            GL_COLOR_BUFFER_BIT, GL_NEAREST,
         )
-        
-        # Re-enable scissor test
+        glEnable(GL_SCISSOR_TEST)
+
+    # ------------------------------------------------------------------
+    # Fan view preview
+    # ------------------------------------------------------------------
+
+    _FAN_VERT = """#version 310 es
+precision highp float;
+layout(location = 0) in vec2 aPosition;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 vTexCoord;
+void main() {
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+    vTexCoord = aTexCoord;
+}
+"""
+
+    _FAN_FRAG = """#version 310 es
+precision highp float;
+in vec2 vTexCoord;
+uniform sampler2D uTexture;
+out vec4 outColor;
+void main() {
+    outColor = texture(uTexture, vTexCoord);
+}
+"""
+
+    def _init_fan_view(self):
+        """Build the fan mesh and compile the shader (called once on first toggle)."""
+        glfw.make_context_current(self.glfw_window)
+
+        num_strips = self.led_width   # 128 strips
+        num_radial = self.led_height  # 300 LEDs per strip
+
+        inner_r = 0.05
+        outer_r = 0.95
+
+        # Aspect ratio correction so the semicircle stays circular
+        aspect = self.display_width / max(self.display_height, 1)
+        a_half = max(aspect * 0.5, 0.01)
+
+        # Scale to fit within clip space [-1, 1]
+        max_x = outer_r / a_half
+        fit_scale = min(1.0, 0.98 / max_x)
+
+        # Build vertices: (x, y, u, v) per vertex
+        verts = []
+        for i in range(num_strips):
+            theta = math.pi - (i / max(num_strips - 1, 1)) * math.pi
+            u = i / max(num_strips - 1, 1)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            for j in range(num_radial + 1):
+                t = j / num_radial
+                r = inner_r + t * (outer_r - inner_r)
+                x = r * cos_t / a_half * fit_scale
+                y = (r * sin_t * 2.0 - 0.9) * fit_scale
+                v = t
+                verts.extend([x, y, u, v])
+
+        # Build indices: two triangles per quad
+        indices = []
+        stride = num_radial + 1
+        for i in range(num_strips - 1):
+            for j in range(num_radial):
+                tl = i * stride + j
+                tr = (i + 1) * stride + j
+                bl = tl + 1
+                br = tr + 1
+                indices.extend([tl, bl, tr, bl, br, tr])
+
+        verts_np = np.array(verts, dtype=np.float32)
+        indices_np = np.array(indices, dtype=np.uint32)
+        self._fan_index_count = len(indices)
+
+        # Compile shader
+        vert = shaders.compileShader(self._FAN_VERT, GL_VERTEX_SHADER)
+        frag = shaders.compileShader(self._FAN_FRAG, GL_FRAGMENT_SHADER)
+        self._fan_shader = shaders.compileProgram(vert, frag)
+        self._fan_tex_loc = glGetUniformLocation(self._fan_shader, "uTexture")
+
+        # VAO / VBO / EBO
+        self._fan_vao = glGenVertexArrays(1)
+        glBindVertexArray(self._fan_vao)
+
+        self._fan_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._fan_vbo)
+        glBufferData(GL_ARRAY_BUFFER, verts_np.nbytes, verts_np, GL_STATIC_DRAW)
+
+        # position: location 0, 2 floats, stride 16, offset 0
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(0))
+        # texcoord: location 1, 2 floats, stride 16, offset 8
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(8))
+
+        self._fan_ebo = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self._fan_ebo)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_np.nbytes, indices_np, GL_STATIC_DRAW)
+
+        glBindVertexArray(0)
+        self._fan_initialized = True
+        print(f"[ShaderViewport] Fan mesh: {num_strips} strips x {num_radial} LEDs, "
+              f"{self._fan_index_count // 3} triangles")
+
+    def _render_fan_to_window(self):
+        """Draw the fan mesh textured with the FBO contents."""
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, self.display_width, self.display_height)
+        glDisable(GL_SCISSOR_TEST)
+        glDisable(GL_DEPTH_TEST)
+
+        glClearColor(0.05, 0.05, 0.05, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT)
+
+        glUseProgram(self._fan_shader)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self.color_texture)
+        glUniform1i(self._fan_tex_loc, 0)
+
+        glBindVertexArray(self._fan_vao)
+        glDrawElements(GL_TRIANGLES, self._fan_index_count, GL_UNSIGNED_INT, None)
+        glBindVertexArray(0)
+
+        glUseProgram(0)
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_SCISSOR_TEST)
+
+    def toggle_fan_mode(self):
+        self.fan_mode = not self.fan_mode
+        print(f"[ShaderViewport] Fan view: {'ON' if self.fan_mode else 'OFF'}")
+
+    # ------------------------------------------------------------------
+    # Instanced LED dot rendering
+    # ------------------------------------------------------------------
+
+    _DOT_VERT = """#version 310 es
+precision highp float;
+layout(location = 0) in vec2 aQuad;
+layout(location = 1) in vec2 iPos;
+layout(location = 2) in vec2 iTexCoord;
+out vec2 vQuad;
+flat out vec2 vUV;
+uniform float uRadius;
+void main() {
+    vec2 world = iPos + aQuad * uRadius;
+    gl_Position = vec4(world, 0.0, 1.0);
+    vQuad = aQuad;
+    vUV = iTexCoord;
+}
+"""
+
+    _DOT_FRAG = """#version 310 es
+precision highp float;
+in vec2 vQuad;
+flat in vec2 vUV;
+uniform sampler2D uTexture;
+out vec4 outColor;
+void main() {
+    float d = length(vQuad);
+    if (d > 1.0) discard;
+    float alpha = smoothstep(1.0, 0.7, d);
+    vec4 color = texture(uTexture, vUV);
+    outColor = vec4(color.rgb * alpha, alpha);
+}
+"""
+
+    def _init_dot_view(self):
+        """Build instanced LED dot geometry for the current view mode."""
+        glfw.make_context_current(self.glfw_window)
+
+        num_strips = self.led_width
+        num_leds = self.led_height
+        self._dot_n_instances = num_strips * num_leds
+
+        # Build per-LED instance data: (clip_x, clip_y, u, v)
+        instances = []
+        if self.fan_mode:
+            inner_r = 0.05
+            outer_r = 0.95
+            aspect = self.display_width / max(self.display_height, 1)
+            a_half = max(aspect * 0.5, 0.01)
+            max_x = outer_r / a_half
+            fit_scale = min(1.0, 0.98 / max_x)
+            for i in range(num_strips):
+                theta = math.pi - (i / max(num_strips - 1, 1)) * math.pi
+                u = i / max(num_strips - 1, 1)
+                cos_t = math.cos(theta)
+                sin_t = math.sin(theta)
+                for j in range(num_leds):
+                    t = (j + 0.5) / num_leds
+                    r = inner_r + t * (outer_r - inner_r)
+                    x = r * cos_t / a_half * fit_scale
+                    y = (r * sin_t * 2.0 - 0.9) * fit_scale
+                    instances.extend([x, y, u, t])
+        else:
+            # Flat grid: map LED positions to clip space [-1, 1]
+            for i in range(num_strips):
+                u = (i + 0.5) / num_strips
+                x = u * 2.0 - 1.0
+                for j in range(num_leds):
+                    v = (j + 0.5) / num_leds
+                    y = v * 2.0 - 1.0
+                    instances.extend([x, y, u, v])
+
+        inst_np = np.array(instances, dtype=np.float32)
+
+        # Compile shader (only once — reuse across re-inits)
+        if self._dot_shader is None:
+            vert = shaders.compileShader(self._DOT_VERT, GL_VERTEX_SHADER)
+            frag = shaders.compileShader(self._DOT_FRAG, GL_FRAGMENT_SHADER)
+            self._dot_shader = shaders.compileProgram(vert, frag)
+            self._dot_tex_loc = glGetUniformLocation(self._dot_shader, "uTexture")
+            self._dot_radius_loc = glGetUniformLocation(self._dot_shader, "uRadius")
+
+        # Unit quad (6 vertices, 2 triangles)
+        quad = np.array([-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1],
+                        dtype=np.float32)
+
+        # Clean up old buffers if re-initializing
+        if self._dot_vao:
+            glDeleteVertexArrays(1, [self._dot_vao])
+        if self._dot_quad_vbo:
+            glDeleteBuffers(1, [self._dot_quad_vbo])
+        if self._dot_inst_vbo:
+            glDeleteBuffers(1, [self._dot_inst_vbo])
+
+        self._dot_vao = glGenVertexArrays(1)
+        glBindVertexArray(self._dot_vao)
+
+        self._dot_quad_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._dot_quad_vbo)
+        glBufferData(GL_ARRAY_BUFFER, quad.nbytes, quad, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
+
+        self._dot_inst_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._dot_inst_vbo)
+        glBufferData(GL_ARRAY_BUFFER, inst_np.nbytes, inst_np, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(0))
+        glVertexAttribDivisor(1, 1)
+        glEnableVertexAttribArray(2)
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 16, ctypes.c_void_p(8))
+        glVertexAttribDivisor(2, 1)
+
+        glBindVertexArray(0)
+        self._dot_initialized = True
+
+        # Compute dot radius
+        if self.fan_mode:
+            avg_r = (inner_r + outer_r) / 2.0
+            arc_per_strip = avg_r * math.pi / num_strips
+            radial_per_led = (outer_r - inner_r) / num_leds
+            avg_spacing = min(arc_per_strip / a_half * fit_scale,
+                              radial_per_led * 2.0 * fit_scale)
+            self._dot_radius = avg_spacing * 0.45
+        else:
+            self._dot_radius = (1.0 / max(num_strips, num_leds)) * 0.9
+
+        mode = 'fan' if self.fan_mode else 'flat'
+        print(f"[ShaderViewport] LED dots ({mode}): {self._dot_n_instances} instances, "
+              f"radius={self._dot_radius:.4f}")
+
+    def _render_dots_to_window(self):
+        """Draw instanced LED dots textured with FBO contents."""
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, self.display_width, self.display_height)
+        glDisable(GL_SCISSOR_TEST)
+        glDisable(GL_DEPTH_TEST)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        glClearColor(0.02, 0.02, 0.02, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT)
+
+        glUseProgram(self._dot_shader)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self.color_texture)
+        glUniform1i(self._dot_tex_loc, 0)
+        glUniform1f(self._dot_radius_loc, self._dot_radius)
+
+        glBindVertexArray(self._dot_vao)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, self._dot_n_instances)
+        glBindVertexArray(0)
+
+        glUseProgram(0)
+        glEnable(GL_DEPTH_TEST)
         glEnable(GL_SCISSOR_TEST)
 
     def get_frame(self) -> np.ndarray:
@@ -390,3 +771,21 @@ class ShaderViewport:
             glDeleteTextures([self.color_texture])
         if self.depth_texture:
             glDeleteTextures([self.depth_texture])
+        # Fan view resources
+        if self._fan_vao:
+            glDeleteVertexArrays(1, [self._fan_vao])
+        if self._fan_vbo:
+            glDeleteBuffers(1, [self._fan_vbo])
+        if self._fan_ebo:
+            glDeleteBuffers(1, [self._fan_ebo])
+        if self._fan_shader:
+            glDeleteProgram(self._fan_shader)
+        # Instanced dot resources
+        if self._dot_vao:
+            glDeleteVertexArrays(1, [self._dot_vao])
+        if self._dot_quad_vbo:
+            glDeleteBuffers(1, [self._dot_quad_vbo])
+        if self._dot_inst_vbo:
+            glDeleteBuffers(1, [self._dot_inst_vbo])
+        if self._dot_shader:
+            glDeleteProgram(self._dot_shader)
