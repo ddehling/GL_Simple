@@ -20,7 +20,7 @@ def load_config():
     config_path = Path(__file__).parent / "config.yaml"
     defaults = {
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
-        "audio": {"device_name": "TONOR"},
+        "audio": {"enabled": True, "device_name": "TONOR"},
         "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
     }
     if config_path.exists():
@@ -81,8 +81,15 @@ class EnvironmentalSystem:
         )
         self.weather_state = WeatherStateController()
         self.season = 0.0
-        self.analyzer = MicrophoneAnalyzer(device_name=audio_cfg["device_name"])
-        self.analyzer.start()
+        self.analyzer = None
+        if audio_cfg.get("enabled", True):
+            try:
+                self.analyzer = MicrophoneAnalyzer(device_name=audio_cfg["device_name"])
+                self.analyzer.start()
+            except Exception as e:
+                print(f"[Audio] Failed to initialize microphone: {e}")
+                print("[Audio] Continuing without audio input")
+                self.analyzer = None
         self.scale = 0.2
 
         # Initialize web control system
@@ -164,6 +171,7 @@ class EnvironmentalSystem:
             "fish": (fx.shader_fish, {}),
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
+            "bart_map_fan": (fx.shader_bart_map_fan, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 "script_path": "media/sounds/bartiki/script.json",
@@ -355,14 +363,15 @@ class EnvironmentalSystem:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
 
         # Apply audio sensitivity from global modifiers
-        with self.web_controller._dict_lock:
-            audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
-        self.analyzer.sensitivity = audio_sens
+        if self.analyzer:
+            with self.web_controller._dict_lock:
+                audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
+            self.analyzer.sensitivity = audio_sens
 
         # Update audio summary frequently (every web check = 0.2s / 5 Hz)
         # This is lightweight: just 32 floats + 2 numbers
         try:
-            current_bands = self.analyzer.get_current_bands(normalize='long')
+            current_bands = self.analyzer.get_current_bands(normalize='long') if self.analyzer else None
             if current_bands is not None:
                 audio_summary = {
                     "bands": current_bands.tolist(),
@@ -491,7 +500,7 @@ class EnvironmentalSystem:
         state.update(output)
         state["season"] = self.season
         state["scale"] = self.scale
-        state["sound"] = self.analyzer.get_extended_analysis()
+        state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):
@@ -599,7 +608,8 @@ class EnvironmentalSystem:
         engine = self.scheduler.state.get("soundengine")
         if engine:
             engine.stop_ambient()
-        self.analyzer.stop()
+        if self.analyzer:
+            self.analyzer.stop()
 
 
 # Main execution
@@ -609,8 +619,8 @@ if __name__ == "__main__":
     #TODO: A way to set a weather state independently of set for testing
 
     # Change to a specific weather set and state on startup
-    env_system.change_weather_set("ocean", immediate=True,
-                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
+    env_system.change_weather_set("bartiki", immediate=True,
+                                  initial_weather=WeatherState.BARTIKI_PEAK_HOUR)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()
