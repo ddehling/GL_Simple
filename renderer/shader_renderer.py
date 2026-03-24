@@ -161,16 +161,77 @@ class ShaderRenderer:
 
         glfw.set_key_callback(self.window, _key_callback)
 
-        # Scroll callback -- zoom in/out on fan view
+        # --- Mouse state for pan/zoom ---
+        self._dragging = False
+        self._last_mouse_x = 0.0
+        self._last_mouse_y = 0.0
+
+        # Scroll callback -- zoom centered on cursor
         def _scroll_callback(window, xoffset, yoffset):
             for vp in renderer_self.viewports:
-                if vp.fan_mode:
-                    vp.zoom = max(0.5, min(5.0, vp.zoom * (1.1 ** yoffset)))
+                if not vp.fan_mode:
+                    continue
+                # Get cursor in clip space [-1, 1]
+                mx, my = glfw.get_cursor_pos(window)
+                w = renderer_self.window_width or 1
+                h = renderer_self.window_height or 1
+                clip_x = (mx / w) * 2.0 - 1.0
+                clip_y = 1.0 - (my / h) * 2.0  # flip Y
+
+                old_zoom = vp.zoom
+                new_zoom = max(0.5, min(10.0, old_zoom * (1.15 ** yoffset)))
+                # Adjust pan so the point under cursor stays fixed
+                # clip_pos = world_pos * zoom + pan
+                # world_pos = (clip_pos - pan) / zoom  (same before and after)
+                # (clip_x - pan_x) / old_zoom == (clip_x - new_pan_x) / new_zoom
+                # new_pan_x = clip_x - (clip_x - pan_x) * new_zoom / old_zoom
+                vp.pan_x = clip_x - (clip_x - vp.pan_x) * new_zoom / old_zoom
+                vp.pan_y = clip_y - (clip_y - vp.pan_y) * new_zoom / old_zoom
+                vp.zoom = new_zoom
 
         glfw.set_scroll_callback(self.window, _scroll_callback)
 
+        # Mouse button callback -- start/stop drag for panning
+        def _mouse_button_callback(window, button, action, mods):
+            if button == glfw.MOUSE_BUTTON_LEFT:
+                if action == glfw.PRESS:
+                    renderer_self._dragging = True
+                    renderer_self._last_mouse_x, renderer_self._last_mouse_y = glfw.get_cursor_pos(window)
+                elif action == glfw.RELEASE:
+                    renderer_self._dragging = False
+            elif button == glfw.MOUSE_BUTTON_MIDDLE and action == glfw.PRESS:
+                # Middle click resets zoom and pan
+                for vp in renderer_self.viewports:
+                    vp.zoom = 1.0
+                    vp.pan_x = 0.0
+                    vp.pan_y = 0.0
+
+        glfw.set_mouse_button_callback(self.window, _mouse_button_callback)
+
+        # Cursor position callback -- drag to pan
+        def _cursor_pos_callback(window, xpos, ypos):
+            if not renderer_self._dragging:
+                return
+            dx = xpos - renderer_self._last_mouse_x
+            dy = ypos - renderer_self._last_mouse_y
+            renderer_self._last_mouse_x = xpos
+            renderer_self._last_mouse_y = ypos
+
+            w = renderer_self.window_width or 1
+            h = renderer_self.window_height or 1
+            # Convert pixel delta to clip space delta
+            clip_dx = (dx / w) * 2.0
+            clip_dy = -(dy / h) * 2.0  # flip Y
+
+            for vp in renderer_self.viewports:
+                if vp.fan_mode:
+                    vp.pan_x += clip_dx
+                    vp.pan_y += clip_dy
+
+        glfw.set_cursor_pos_callback(self.window, _cursor_pos_callback)
+
         print(f"[ShaderRenderer] Window created: {self.window_width}x{self.window_height}")
-        print(f"[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit, Scroll=zoom")
+        print(f"[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit, Scroll=zoom, Drag=pan, MClick=reset")
         self.ctx_initialized = True
 
     def create_viewport(self, frame_id: int) -> 'ShaderViewport':
@@ -319,7 +380,9 @@ class ShaderViewport:
         # --- Display mode state ---
         self.fan_mode = False    # False = flat, True = fan (semicircle)
         self.dot_mode = False    # False = smooth, True = LED (instanced circles)
-        self.zoom = 1.0          # Fan view zoom level (scroll wheel)
+        self.zoom = 1.0          # View zoom level (scroll wheel)
+        self.pan_x = 0.0         # Pan offset in clip space
+        self.pan_y = 0.0
 
         # --- Shared geometry (FanGeometry, rebuilt when aspect changes) ---
         self._geometry = None
