@@ -44,9 +44,8 @@ out vec4 outColor;
 void main() {
     float d = length(vQuad);
     if (d > 1.0) discard;
-    float alpha = smoothstep(1.0, 0.7, d);
     vec4 color = texture(uTexture, vUV);
-    outColor = vec4(color.rgb * alpha, alpha);
+    outColor = color;
 }
 """
 
