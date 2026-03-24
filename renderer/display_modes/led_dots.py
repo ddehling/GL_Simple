@@ -22,8 +22,9 @@ layout(location = 2) in vec2 iTexCoord;
 out vec2 vQuad;
 flat out vec2 vUV;
 uniform float uRadius;
+uniform float uZoom;
 void main() {
-    vec2 world = iPos + aQuad * uRadius;
+    vec2 world = (iPos + aQuad * uRadius) * uZoom;
     gl_Position = vec4(world, 0.0, 1.0);
     vQuad = aQuad;
     vUV = iTexCoord;
@@ -75,6 +76,7 @@ void main() {
             self._shader = shaders.compileProgram(vert, frag)
             self._tex_loc = glGetUniformLocation(self._shader, "uTexture")
             self._radius_loc = glGetUniformLocation(self._shader, "uRadius")
+            self._zoom_loc = glGetUniformLocation(self._shader, "uZoom")
 
         # Unit quad (6 vertices, 2 triangles)
         quad = np.array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1],
@@ -130,6 +132,7 @@ void main() {
         glBindTexture(GL_TEXTURE_2D, viewport.color_texture)
         glUniform1i(self._tex_loc, 0)
         glUniform1f(self._radius_loc, self._dot_radius)
+        glUniform1f(self._zoom_loc, viewport.zoom if self.fan else 1.0)
 
         glBindVertexArray(self._vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, self._n_instances)
