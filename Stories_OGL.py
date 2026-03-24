@@ -151,6 +151,13 @@ class EnvironmentalSystem:
             "bubbles": (fx.shader_bubbles, {}),
             "fish": (fx.shader_fish, {}),
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
+            "bart_map": (fx.shader_bart_map, {}),
+            "highway_traffic": (fx.shader_highway_traffic, {}),
+            "narrative_player": (fx.shader_narrative_player, {
+                "script_path": "media/sounds/bartiki/script.json",
+                "node_delay": 3.0,
+                "restart_delay": 10.0,
+            }),
         }
         
         # WeatherSetManager owns the event_map from here on
@@ -284,11 +291,13 @@ class EnvironmentalSystem:
             else:
                 print(f"[WEATHER]   Invalid on_transition_event format: {event_config!r}")
 
-        sound_path = Path("media") / Path("sounds") / target_params["ambient_sound"]
+        ambient_sound = target_params.get("ambient_sound")
         skip_time = target_params.get("skiptime", 0.0)
         ari = target_params.get("ARI", 0.0)
         engine = self.scheduler.state["soundengine"]
-        engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
+        if ambient_sound:
+            sound_path = Path("media") / Path("sounds") / ambient_sound
+            engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
         self.active_effects["ambient_sound"] = target_params["ambient_sound"]
 
     def apply_web_controls(self):
