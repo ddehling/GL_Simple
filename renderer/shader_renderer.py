@@ -1,3 +1,23 @@
+"""OpenGL renderer for the LED semicircle display.
+
+Rendering pipeline (per frame):
+  1. Effects write to a 128×300 FBO at native LED resolution
+  2. get_frame() reads the FBO for DMX output (sACN to physical LEDs)
+  3. The FBO is also displayed in the desktop window in one of four
+     view modes (toggled with F and D keys):
+
+       Flat Smooth  — magnified pixel blit (default)
+       Flat LED     — instanced circles, one per physical LED
+       Fan Smooth   — semicircular mesh simulating the physical fan layout
+       Fan LED      — instanced circles arranged in the fan semicircle
+
+The same FBO data is streamed as PNG to the web preview at /preview.
+
+Classes:
+  ShaderRenderer  — owns the GLFW window and manages viewports
+  ShaderViewport  — FBO + effect pipeline + display mode rendering
+"""
+
 import ctypes
 
 import glfw
@@ -8,11 +28,12 @@ from typing import List, Tuple, Dict, Optional
 import platform
 from renderer.effects.base import ShaderEffect
 from renderer.fan_geometry import FanGeometry
-# Detect platform
+
 IS_RASPBERRY_PI = platform.machine() in ['aarch64', 'armv7l', 'armv8']
 
+
 class ShaderRenderer:
-    """GPU-based renderer with visible OpenGL window (single viewport only)"""
+    """Owns the GLFW window, creates viewports, and handles keyboard input."""
     def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False, magnification=1):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
@@ -285,33 +306,40 @@ class ShaderRenderer:
 
 
 class ShaderViewport:
-    """Individual viewport with shader effect pipeline and framebuffer for LED output."""
+    """One LED panel's render target and display pipeline.
+
+    Owns a 128×300 FBO where shader effects draw each frame.  The FBO
+    is read by get_frame() for DMX output, and displayed in the GLFW
+    window via one of four view modes (flat/fan × smooth/LED).
+    """
 
     def __init__(self, frame_id: int, width: int, height: int,
                  window_x: int, window_y: int,
                  display_width: int, display_height: int,
                  glfw_window, headless=False):
         self.frame_id = frame_id
-        self.width = width        # Render at native LED resolution
-        self.height = height
-        self.led_width = width    # Aliases for fan/dot code
+        self.width = width            # FBO width  (= number of LED strips, e.g. 128)
+        self.height = height          # FBO height (= LEDs per strip, e.g. 300)
+        self.led_width = width        # Alias used by FanGeometry
         self.led_height = height
-        self.window_x = window_x
+        self.window_x = window_x      # Position in the GLFW window (always 0)
         self.window_y = window_y
-        self.display_width = display_width
+        self.display_width = display_width    # Window pixel size (may differ from FBO)
         self.display_height = display_height
         self.glfw_window = glfw_window
         self.headless = headless
         self.effects = []
 
-        # Framebuffer for LED output
+        # --- FBO (render target at native LED resolution) ---
         self.fbo = None
         self.color_texture = None
         self.depth_texture = None
 
-        # View modes
-        self.fan_mode = False
-        self.dot_mode = False
+        # --- Display mode state ---
+        self.fan_mode = False    # False = flat, True = fan (semicircle)
+        self.dot_mode = False    # False = smooth, True = LED (instanced circles)
+
+        # --- Fan smooth view (textured semicircle mesh) ---
         self._fan_initialized = False
         self._fan_shader = None
         self._fan_vao = None
@@ -320,10 +348,10 @@ class ShaderViewport:
         self._fan_index_count = 0
         self._fan_tex_loc = None
 
-        # Shared geometry helper (created on first use, rebuilt on aspect change)
+        # --- Shared geometry (FanGeometry, rebuilt when aspect changes) ---
         self._geometry = None
 
-        # Instanced LED dot rendering
+        # --- LED dot view (instanced circles, used in both flat and fan) ---
         self._dot_initialized = False
         self._dot_shader = None
         self._dot_vao = None
@@ -439,22 +467,22 @@ class ShaderViewport:
             self._blit_framebuffer_to_window()
 
     def _blit_framebuffer_to_window(self):
-        """Copy framebuffer contents to window with proper scaling."""
+        """Display the FBO in the GLFW window using the current view mode."""
         if self.dot_mode:
-            # Instanced dots — works in both flat and fan mode
+            # LED mode — instanced circles (works in both flat and fan)
             if not self._dot_initialized:
                 self._init_dot_view()
             self._render_dots_to_window()
             return
 
         if self.fan_mode:
-            # Fan continuous
+            # Fan smooth — textured semicircle mesh
             if not self._fan_initialized:
                 self._init_fan_view()
             self._render_fan_to_window()
             return
 
-        # Flat continuous — simple blit
+        # Flat smooth — magnified pixel blit
         glDisable(GL_SCISSOR_TEST)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)

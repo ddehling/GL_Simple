@@ -257,6 +257,33 @@ The server runs in a background thread and updates the shared `web_controls` dic
 
 ---
 
+## Display Modes
+
+The physical installation is 128 LED strips arranged as a semicircle (fan), fanning out from a center point. Each strip has 300 LEDs. The renderer's FBO is 128×300 pixels — one column per strip, one row per LED.
+
+The OpenGL window and web preview support four view modes:
+
+| Mode | Description |
+|------|-------------|
+| **Flat Smooth** | Magnified pixel blit of the FBO (default) |
+| **Flat LED** | Instanced circles showing individual LED values on a grid |
+| **Fan Smooth** | Textured semicircle mesh simulating the physical fan layout |
+| **Fan LED** | Instanced circles arranged in the physical fan semicircle |
+
+### Keyboard Shortcuts (OpenGL window)
+
+| Key | Action |
+|-----|--------|
+| **F** | Toggle flat / fan view |
+| **D** | Toggle smooth / LED style |
+| **ESC** | Quit |
+
+### Web Preview
+
+Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. The same four view modes are available via buttons. Frames are streamed as lossless PNG at 15 Hz over Socket.IO. Works when the app is running in headless mode (no desktop window).
+
+---
+
 ## MIDI Controller
 
 Supports the **Korg nanoKontrol2** via pygame MIDI. Requires `pygame` (included in `requirements.txt`).
@@ -580,14 +607,17 @@ lib/
   weather_set.py            # Active set, event map, and per-set config access
   weather_state.py          # State interpolation and seasonal transitions
 renderer/
-  shader_renderer.py        # GLFW window + OpenGL rendering loop
+  shader_renderer.py        # GLFW window + OpenGL rendering loop + display modes
+  fan_geometry.py           # Pure-numpy fan/polar geometry (shared by GL and web)
   effects/                  # 40+ individual shader effect modules
     base.py                 # ShaderEffect base class
 engine/
   render_pipeline.py        # Hardware integration: renderer + audio + DMX + per-frame loop
 web/
-  web_controller.py         # Flask web control panel
-  templates/                # Flask HTML templates
+  web_controller.py         # Flask web control panel + preview frame streaming
+  templates/                # Flask HTML templates (control, editor, preview, admin)
+  static/js/preview.js      # WebGL2 live preview client
+  static/css/preview.css    # Preview page styles
 config/                     # DMX universe and fixture definitions (Unit*.txt)
 tools/                      # Standalone utilities: sound_editor, midi_integration_example, etc.
 media/sounds/               # Ambient audio files
