@@ -79,14 +79,8 @@ A UI in the web control panel to create, edit, and save weather sets and states 
 
 ## Web Control Panel
 
-### Live Preview Thumbnail
-Capture a screenshot of the rendered frame every few seconds and display it as a thumbnail in the web UI. Lets operators see what's on screen without being in the room.
-
 ### Effect Sequencer / Show Playlist
 A drag-and-drop timeline in the web UI to queue effects with durations — a simple show playlist. Integrates with `EventScheduler` to fire cues at the right times.
-
-### Mobile-Friendly Layout
-Responsive / touch-optimized layout for the web control panel. Better touch targets, larger sliders, swipe gestures — designed to be used from a phone while moving around a venue.
 
 ### OSC Input
 Receive Open Sound Control (OSC) messages from Ableton Live, QLab, or other show control software. Map OSC addresses to weather state changes, effect triggers, or parameter updates for tight show integration.
