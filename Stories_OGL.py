@@ -1,6 +1,7 @@
 import numpy as np
 import time
 from pathlib import Path
+import yaml
 from engine.render_pipeline import RenderPipeline
 import lib.dmx_sender as imdmx
 
@@ -14,10 +15,36 @@ from renderer.effects.celestial_bodies import CELESTIAL_BODIES
 from renderer import effects as fx
 from web.web_controller import WebController
 
+def load_config():
+    """Load config.yaml, falling back to defaults if missing."""
+    config_path = Path(__file__).parent / "config.yaml"
+    defaults = {
+        "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
+        "audio": {"device_name": "TONOR"},
+        "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
+    }
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            loaded = yaml.safe_load(f) or {}
+        # Merge: loaded sections override defaults
+        for section in defaults:
+            if section in loaded:
+                defaults[section].update(loaded[section])
+        print(f"[Config] Loaded from {config_path}")
+    else:
+        print(f"[Config] {config_path} not found, using defaults")
+    return defaults
+
+
 class EnvironmentalSystem:
     def __init__(self):
+        cfg = load_config()
+        disp = cfg["display"]
+        audio_cfg = cfg["audio"]
+        web_cfg = cfg["web"]
+
         frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
+            (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
         ]
 
         # Hardware receiver configuration — one list per frame
@@ -25,60 +52,43 @@ class EnvironmentalSystem:
             [
                 {
                     'ip': '192.168.68.140',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 0),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
                 },
                 {
                     'ip': '192.168.68.141',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 32),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
                 },
                 {
                     'ip': '192.168.68.142',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 64),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
                 },
                 {
                     'ip': '192.168.68.143',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 96),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
                 },
             ],
-            # [
-            #     {
-            #         'ip': '192.168.68.111',
-            #         'pixel_count': 2019,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt"),
-            #     },
-            #     {
-            #         'ip': '192.168.68.125',
-            #         'pixel_count': 1777,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt"),
-            #     },
-            #     {
-            #         'ip': '192.168.68.124',
-            #         'pixel_count': 1793,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt"),
-            #     },
-            # ],
         ]
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
             receivers=receivers,
-            magnification=0,  # 0 = auto-scale to monitor
-            headless=False,
+            magnification=disp["magnification"],
+            headless=disp["headless"],
         )
         self.weather_state = WeatherStateController()
-        self.season = 0.0  # Initialize season value
-        self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
+        self.season = 0.0
+        self.analyzer = MicrophoneAnalyzer(device_name=audio_cfg["device_name"])
         self.analyzer.start()
         self.scale = 0.2
-        
-        # Initialize web control system (set to False to disable for max performance)
-        self.enable_web_control = True
+
+        # Initialize web control system
+        self.enable_web_control = web_cfg["enabled"]
         self.web_controller = None
-        
+
         if self.enable_web_control:
             self.web_controls = {
                 "current_weather_set": DEFAULT_WEATHER_SET,
@@ -91,10 +101,10 @@ class EnvironmentalSystem:
                 "led_height": frame_dimensions[0][1],
             }
             self.web_controller = WebController(
-                self.web_controls, 
-                port=5000, 
+                self.web_controls,
+                port=web_cfg["port"],
                 service_name="glsimple",
-                admin_password="admin123"  # Change this to your desired password
+                admin_password=web_cfg["admin_password"],
             )
             self.web_controller.start(threaded=True)
         
