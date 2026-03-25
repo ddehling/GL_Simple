@@ -20,7 +20,8 @@
     "intro_forest_whisper",
     "intro_desert_memory",
     "intro_storm_birth",
-    "The_Toad_alone"
+    "The_Toad_alone",
+    "node_002"
   ],
   "nodes": {
     "intro_arrival": {
@@ -50,7 +51,7 @@
       },
       "pos": [
         60.0,
-        60.0
+        160.0
       ]
     },
     "intro_tunnel": {
@@ -78,7 +79,7 @@
       },
       "pos": [
         60.0,
-        560.0
+        660.0
       ]
     },
     "dev_carver": {
@@ -210,7 +211,7 @@
       },
       "pos": [
         500.0,
-        660.0
+        1060.0
       ]
     },
     "turn_devotion": {
@@ -236,7 +237,7 @@
       },
       "pos": [
         500.0,
-        460.0
+        860.0
       ]
     },
     "turn_waiting": {
@@ -262,7 +263,7 @@
       },
       "pos": [
         500.0,
-        760.0
+        1160.0
       ]
     },
     "close_vessel": {
@@ -335,7 +336,7 @@
       },
       "pos": [
         500.0,
-        360.0
+        760.0
       ]
     },
     "turn_convergence": {
@@ -359,7 +360,7 @@
       },
       "pos": [
         500.0,
-        260.0
+        660.0
       ]
     },
     "turn_recognition": {
@@ -387,7 +388,7 @@
       },
       "pos": [
         720.0,
-        460.0
+        1060.0
       ],
       "hint": "Goats everywhere"
     },
@@ -408,7 +409,7 @@
       },
       "pos": [
         940.0,
-        560.0
+        1260.0
       ]
     },
     "intro_first_tide": {
@@ -434,7 +435,7 @@
       },
       "pos": [
         60.0,
-        260.0
+        360.0
       ]
     },
     "intro_forest_whisper": {
@@ -460,7 +461,7 @@
       },
       "pos": [
         60.0,
-        360.0
+        460.0
       ]
     },
     "intro_desert_memory": {
@@ -486,7 +487,7 @@
       },
       "pos": [
         60.0,
-        160.0
+        260.0
       ]
     },
     "intro_storm_birth": {
@@ -512,7 +513,7 @@
       },
       "pos": [
         60.0,
-        460.0
+        560.0
       ]
     },
     "dev_reaches": {
@@ -638,7 +639,7 @@
       },
       "pos": [
         500.0,
-        560.0
+        960.0
       ]
     },
     "turn_awakening": {
@@ -664,7 +665,7 @@
       },
       "pos": [
         500.0,
-        160.0
+        560.0
       ]
     },
     "close_silence": {
@@ -719,7 +720,7 @@
         1.0
       ],
       "tags": [
-        "resolution"
+        "turn"
       ],
       "voice": null,
       "voice_settings": {
@@ -729,7 +730,7 @@
       },
       "pos": [
         940.0,
-        260.0
+        960.0
       ]
     },
     "res_hillside_witness": {
@@ -754,7 +755,7 @@
       },
       "pos": [
         940.0,
-        360.0
+        1060.0
       ]
     },
     "res_salt_covenant": {
@@ -775,7 +776,7 @@
       },
       "pos": [
         1160.0,
-        60.0
+        560.0
       ]
     },
     "res_capybara_abides": {
@@ -783,8 +784,16 @@
       "hint": "",
       "file": "media\\sounds\\bartiki\\res_capybara_abides.mp3",
       "duration": null,
-      "next": [],
-      "weights": [],
+      "next": [
+        "res_still_water",
+        "res_toad_last_word",
+        "res_goat_remembers"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
       "tags": [
         "resolution"
       ],
@@ -796,7 +805,7 @@
       },
       "pos": [
         940.0,
-        160.0
+        860.0
       ]
     },
     "res_open_doors": {
@@ -816,8 +825,8 @@
         "style": 0.13
       },
       "pos": [
-        938.0648480328275,
-        460.0
+        940.0,
+        1160.0
       ]
     },
     "res_breath_returned": {
@@ -838,7 +847,7 @@
       },
       "pos": [
         940.0,
-        60.0
+        760.0
       ]
     },
     "dev_the_question": {
@@ -935,8 +944,8 @@
         "style": 0.42
       },
       "pos": [
-        57.87529527429058,
-        663.647131737077
+        60.0,
+        60.0
       ]
     },
     "node_001": {
@@ -945,22 +954,1553 @@
       "hint": "",
       "file": null,
       "duration": null,
-      "next": [],
-      "weights": [],
+      "next": [
+        "open_the_cargo",
+        "open_the_bay_receives",
+        "open_hull_memory",
+        "open_tidal_names",
+        "open_toad_aside",
+        "open_goat_declares"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
       "tags": [
         "intro"
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.65,
+        "stability": 0.85,
         "similarity_boost": 0.75,
         "style": 0.15
       },
       "pos": [
-        58.34986875853929,
-        873.5872236473407
+        60.0,
+        760.0
+      ]
+    },
+    "open_the_cargo": {
+      "text": "What the boat carried had no clean word in any language spoken on these shores. Not a spirit, exactly. Not a god, in the way gods are usually counted. Something that had learned, over a very long time, that the space between shores is where the interesting things happen. It had crossed many waters before this one. When it felt the bay , all that salt ambivalence, all those tidal reversals , it recognized something. It stayed.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_the_tunnels_inherit"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        280.0,
+        1460.0
+      ]
+    },
+    "open_the_bay_receives": {
+      "text": "The bay has always been a collector. Sediment. Sorrow. Occasional container ships. Things arrive and the bay folds them in, adds them to the gray green accounting. Before the bridges, before the railroads, this was all estuary , salt marsh, tule reed, the long patience of herons standing in shallows. Something arrived that remembered all of it. That remembers it still. It surfaces sometimes, in the smell of salt near Embarcadero. In the way the platform tiles stay damp.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_the_tunnels_inherit"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.22
+      },
+      "pos": [
+        280.0,
+        1360.0
+      ]
+    },
+    "open_the_tunnels_inherit": {
+      "text": "When they dug the tunnels, they were not the first to go under. The bay floor holds older passages , channels worn by current, by the quiet industry of things that appear in no contractor's report. The boring machines found them. Something was already waiting in the dark when they broke through, and it recognized the shape of the new path the way old water recognizes a new vessel: completely, without hesitation, without making a sound.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_first_settling",
+        "dev_old_channels"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.55,
+        "similarity_boost": 0.75,
+        "style": 0.25
+      },
+      "pos": [
+        500.0,
+        460.0
+      ]
+    },
+    "dev_first_settling": {
+      "text": "It did not move in. It expanded , the way water finds all the low places without choosing them. One morning the welders noticed their torches burned a slightly different color in tunnel four. The surveyors' instruments developed opinions. The first trains felt, to their drivers, inexplicably like boats , that particular bob and list of something very old beneath you, patient, holding you up not out of obligation but out of something that might, generously, be called affection.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_first_riders"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.52,
+        "similarity_boost": 0.75,
+        "style": 0.33
+      },
+      "pos": [
+        720.0,
+        560.0
+      ]
+    },
+    "dev_old_channels": {
+      "text": "What wore those older channels? The goat knows. The goat was there, in an earlier body, when this was all marsh and estuary and the bay was still deciding its edges. Something moved back and forth across the soft floor of things , not going anywhere, just going. The drilling machines broke through and that something looked up, unhurried, and resumed its going. It goes through the tunnels now. It is still not going anywhere.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_first_riders",
+        "deep_goat_remembers",
+        "deep_the_going"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.48,
+        "similarity_boost": 0.75,
+        "style": 0.38
+      },
+      "pos": [
+        720.0,
+        860.0
+      ]
+    },
+    "dev_first_riders": {
+      "text": "The first passengers felt it as warmth. Unexplained. Car four, always. A smell like the coast at low tide , not unpleasant, something older than the category of unpleasant. A few looked up from their newspapers. One man thought of his grandmother's kitchen, though she had never lived near the ocean. One woman suddenly knew she should call her sister. She didn't know why. She called. It helped. This is how it always begins.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_the_threshold"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        940.0,
+        460.0
+      ]
+    },
+    "deep_the_threshold": {
+      "text": "Now every station is a threshold. Not a metaphor , an actual place where the pressure changes, where a certain kind of thought becomes possible that isn't possible above ground. The riders sit with their phones, their coffee, their appointments, and the tunnel works on them anyway. Old water is patient. It has been making thresholds for a very long time. It will keep making them long after the trains are gone.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_what_loosens",
+        "bridge_toad_between"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.46
+      },
+      "pos": [
+        1160.0,
+        260.0
+      ]
+    },
+    "bridge_what_loosens": {
+      "text": "The threshold takes things from you. Not cruelly , the way deep water takes held breath. What you've been gripping since Tuesday. The argument you've been rehearsing. The name you haven't said in years. The tunnel is not interested in these. It is interested in what's underneath them. It waits for the loosening the way salt waits for iron. Patiently. Chemically. Without judgment. You don't always notice what you've left behind until you're back above ground, blinking in ordinary light.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_the_knowing"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "bridge"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.47,
+        "similarity_boost": 0.75,
+        "style": 0.38
+      },
+      "pos": [
+        1380.0,
+        160.0
+      ]
+    },
+    "bridge_toad_between": {
+      "text": "Between Balboa Park and Glen Park there is a stretch of dark the toad finds particularly useful. The toad is very old. It has wet, layered thoughts , compressed by centuries of being underground, being overlooked, being mistaken for a rock. The toad asks questions that feel like your own. *What would you have done, if you'd turned left?* It doesn't wait for answers. It already knows them. The asking is the point. The question is the door.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_the_knowing"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "bridge"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.42,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        1380.0,
+        60.0
+      ]
+    },
+    "turn_the_knowing": {
+      "text": "Somewhere in the dark , between the question and the station, between the loosening and the light , the thing you know becomes available to you. Not delivered. *Available.* Like a frequency your body was always capable of receiving. You look up. The car is half empty. A stranger is reading a book you once loved. The train moves through old water. You know what you're going to do. You knew before you boarded. The tunnel just made room for you to notice.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "desc_below_the_bar"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "turn"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.32,
+        "similarity_boost": 0.75,
+        "style": 0.62
+      },
+      "pos": [
+        1600.0,
+        360.0
+      ]
+    },
+    "desc_below_the_bar": {
+      "text": "In a maintenance corridor under Oakland , somewhere between the manifest world and whatever is adjacent to it , there is a bar. The stools are carved. The rum is very old. No one has found it by looking. Some people find it anyway: a wrong turn, a door that should have opened onto a utility closet. The menu is handwritten and changes. The drinks taste like the particular ocean you needed. The bartender has too many arms and excellent taste.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_it_stays"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "descent"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.28,
+        "similarity_boost": 0.75,
+        "style": 0.68
+      },
+      "pos": [
+        1820.0,
+        60.0
+      ]
+    },
+    "res_it_stays": {
+      "text": "Bartiki does not want to be found. This is not shyness. The mystery is the medicine , the not knowing is what keeps the threshold open. If you came searching, you would find only a warm car, a smell of salt, a delay that meant nothing. But if you ride without searching, someday in a tunnel, in the pressured dark, something old and patient will notice you. Will hold you up. Not out of obligation. Out of something that might, generously, be called affection.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_after_noticing",
+        "res_toad_coda",
+        "res_capybara_still",
+        "res_salt_return"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.12
+      },
+      "pos": [
+        2040.0,
+        60.0
+      ]
+    },
+    "deep_goat_remembers": {
+      "text": "The goat ate tule grass on the edge of what is now Coliseum station, before the concrete, before the gravel, before the idea of a platform. It watched the channels deepen over years that had no names. It does not remember this fondly or otherwise , memory, for the goat, is just inventory. The channels were there. Something used them. The goat noted this the way it notes everything: completely, without opinion, while chewing.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_salt_in_tunnel"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.48,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        940.0,
+        160.0
+      ]
+    },
+    "deep_the_going": {
+      "text": "There is a kind of movement that is not going somewhere. The tide doesn't go somewhere. The current doesn't go somewhere. They just go. This thing in the channels , it goes the same way. It is not restless. It is not lost. It has simply made its nature into motion. The tunnels are new. The going is old. The train runs above it, through it, and passengers feel something , not the going, exactly. The shape the going leaves.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_salt_in_tunnel"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.44,
+        "similarity_boost": 0.75,
+        "style": 0.48
+      },
+      "pos": [
+        940.0,
+        260.0
+      ]
+    },
+    "bridge_salt_in_tunnel": {
+      "text": "Near Embarcadero, sometimes, between the platform and the train , just in the gap, just at the threshold , there is salt air that shouldn't be there. The bay is close but not that close. The ventilation doesn't explain it. The goat knows what it is. The something that goes is going through that exact spot, in that exact moment, carrying the old smell of the marsh it has been carrying since before the bay had a name. You breathe it. Something in you recognizes it without knowing why.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "bridge"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.41
+      },
+      "pos": [
+        1160.0,
+        60.0
+      ]
+    },
+    "res_still_water": {
+      "text": "You have been sitting very still without knowing it. That is the capybara's gift , to make stillness seem like the only reasonable response to being alive. The god does not require your movement. The god does not require your understanding. Only this: the sound of iron on iron, fading now. The salt air. A brief and enormous warmth at your shoulder, then gone.",
+      "label": "",
+      "hint": "The capy bara is the most important thing here.",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_end_of_line",
+        "res_capybara_weight",
+        "res_capybara_eyes",
+        "res_capybara_breath",
+        "res_capybara_remains",
+        "res_door_opens",
+        "res_warmth_carried"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.47
+      },
+      "pos": [
+        1160.0,
+        660.0
+      ]
+    },
+    "res_toad_last_word": {
+      "text": "The toad says: every ending is a tunnel that opens somewhere else. This is not philosophy. This is just what happens. He speaks in wet syllables, like a word you can't quite remember but almost can. He speaks from the gap between the doors, to the back of your neck, as the train slows. You feel it more than hear it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_end_of_line"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.55,
+        "similarity_boost": 0.75,
+        "style": 0.22
+      },
+      "pos": [
+        1160.0,
+        760.0
+      ]
+    },
+    "res_goat_remembers": {
+      "text": "The goat, at the end, says only this: the carver made the face. The face made the name. The name opened something. That something became the train, became the between place, became the warmth you cannot account for. He states it flatly, with no ceremony. Old things do not perform their oldness. They just continue. You are allowed to continue also.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_end_of_line"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        1160.0,
+        460.0
+      ]
+    },
+    "res_end_of_line": {
+      "text": "Embarcadero. The doors open. The bay is close , you can smell it even here, even underground, the brine and old wood of the piers. Bartiki recedes like a tide. Not leaving. Receding. This is different. What was warm grows ordinary. The fluorescent hum returns. You step out carrying nothing new. You carry everything different. The god does not wave goodbye. He was never there to begin with. He was always here.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.11
+      },
+      "pos": [
+        1380.0,
+        960.0
+      ]
+    },
+    "res_capybara_weight": {
+      "text": "The capybara's weight is not metaphorical. It is literal and enormous and kind. When it settles beside you on the bench, the whole car tilts slightly toward it, the way water tilts toward stone. You are pulled, gently, into its orbit. This is what the old ones called grace , not the light kind, the heavy kind. The kind that holds.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_capybara_departure"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "bridge"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.7,
+        "similarity_boost": 0.75,
+        "style": 0.38
+      },
+      "pos": [
+        2480.0,
+        60.0
+      ]
+    },
+    "res_capybara_eyes": {
+      "text": "Its eyes are not watching you exactly. They are watching the space you occupy, the shape of your sitting, the quality of your particular silence. This is different from being seen. This is being included. The capybara has included you in its view of the world, which is mostly quiet and smells of water and seems to have no emergency in it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_capybara_knowing"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1380.0,
+        660.0
+      ]
+    },
+    "res_capybara_breath": {
+      "text": "Listen: the capybara breathes in a time signature you don't have a name for. Slower than four four. Slower than three. Something the body knows before the mind counts it. Your own breathing begins to follow, without your permission. This is not meditation , the capybara is not teaching you. It is only breathing. And you are only, gratefully, nearby.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_iron_salt"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        1380.0,
+        560.0
+      ]
+    },
+    "res_capybara_departure": {
+      "text": "At some point it will not be there. You will notice this the way you notice that rain has stopped , the absence arriving before the fact of it registers. The bench will weigh its usual amount again. The air will smell of tunnel and not of river. You will carry the shape of that warmth at your shoulder the rest of the way. This is enough. This has always been enough.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.12
+      },
+      "pos": [
+        2700.0,
+        60.0
+      ]
+    },
+    "res_capybara_knowing": {
+      "text": "The capybara knows something. You understand this without understanding what it knows. Perhaps it has always lived at the edge of things , marshland, tunnel, the borderline between waking and sleep , and in that edgeland accumulated a patience that looks like wisdom and may simply be patience. It does not offer this to you. It only has it. Nearby. For now. Which is its own kind of offering.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.63,
+        "similarity_boost": 0.75,
+        "style": 0.13
+      },
+      "pos": [
+        1600.0,
+        160.0
+      ]
+    },
+    "res_iron_salt": {
+      "text": "The iron fades. The salt remains longest , it always does. Then the salt too. What remains is the warmth, which is not a smell or a sound, which is only a fact about your shoulder, a parenthesis in your body where something vast and gentle rested briefly. The train moves on. You are still sitting in the shape of that moment.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        1600.0,
+        260.0
+      ]
+    },
+    "open_hull_memory": {
+      "text": "What the boat carried wasn't cargo in any ordinary sense. It was more like a held breath , the kind that knows how to wait. Down in the hull, in the dark where water sweats through old wood, something settled into the shape of waiting. It has been waiting since. You can feel it, sometimes, when the train slows between stations and the tunnel does that thing tunnels do: holds you, briefly, without explanation.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_salt_below"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        280.0,
+        1160.0
+      ]
+    },
+    "open_tidal_names": {
+      "text": "There is a line, out past the headlands, where the names run out. The charts go blank. Not empty , the water is still there, still cold, still moving , but the human project of naming has simply stopped, the way a sentence sometimes stops before it means to. The boat came from past that line. It knew something about being past the line. It brought that knowing here, and left it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_salt_below"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        280.0,
+        1560.0
+      ]
+    },
+    "open_toad_aside": {
+      "text": "Here is a thought that arrived sideways, as thoughts do when the tunnel curves: what if the boat didn't arrive at all? What if the bay simply , remembered , a boat? The bay is old enough. It has held enough crossings that one more might just surface. From underneath. Like a word you didn't know you knew until your mouth was already making the shape of it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_capybara_still"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.55,
+        "similarity_boost": 0.75,
+        "style": 0.28
+      },
+      "pos": [
+        280.0,
+        1660.0
+      ]
+    },
+    "open_goat_declares": {
+      "text": "The boat had a name. This is not a guess. Every boat has a name, even the ones that crossed before naming was a habit. The name was not in any language that transfers well. It was more of a position , a location in sound. The goat knows this. The goat holds it the way old things are held: carefully, without display, without being asked.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_capybara_still"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.63,
+        "similarity_boost": 0.75,
+        "style": 0.16
+      },
+      "pos": [
+        280.0,
+        1060.0
+      ]
+    },
+    "open_salt_below": {
+      "text": "Salt air underground , you've noticed it, if you've been paying attention. Near Embarcadero, when the doors open, something cuts through the ozone and old iron. That's not nothing. That's the bay remembering it has a floor, and the floor remembering the hull, and the hull remembering whatever it carried , all the way down through the fill and the sediment and the shored up dark, still crossing, still mid crossing, still low in the water.",
+      "label": "",
+      "hint": "Bring back the toad",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.23
+      },
+      "pos": [
+        500.0,
+        360.0
+      ]
+    },
+    "open_capybara_still": {
+      "text": "The capybara arrived, as capybaras tend to, without announcement. It settled at the end of the car, enormous and unhurried, in the way that something very large can be very still. It had been on the boat, or something like the boat, or something that was to the boat what a memory is to an event. It was not performing calm. It simply had nowhere else it needed to be, and neither, briefly, did you.",
+      "label": "",
+      "hint": "Big Capybara energy",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_weight_of_it",
+        "dev_capybara_eyes"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.14
+      },
+      "pos": [
+        500.0,
+        160.0
+      ]
+    },
+    "dev_weight_of_it": {
+      "text": "The car had adjusted to it. Not visibly , the seats did not bow, the floor did not confess , but something in the air pressure changed, the way a room changes when someone enters who has no need of the room's approval. The capybara displaced presence, not space. You found yourself breathing more slowly, as though matching something you hadn't noticed you'd forgotten.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_together_nowhere"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        720.0,
+        960.0
+      ]
+    },
+    "dev_capybara_eyes": {
+      "text": "Its eyes were amber, set wide in that enormous head, and they held the particular quality of something that has been watching rivers for a very long time. Not watching for anything. Just watching. The tunnel light passed across them and the capybara did not blink, or did not blink in the way that requires effort. Whatever it saw, it had made peace with it before you arrived.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_together_nowhere"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.48,
+        "similarity_boost": 0.75,
+        "style": 0.38
+      },
+      "pos": [
+        720.0,
+        460.0
+      ]
+    },
+    "dev_together_nowhere": {
+      "text": "There is a specific kind of rest that is not tiredness. The capybara knew it. You were beginning to remember it , the way the body unclenches when it understands no one is keeping score. The train hummed its iron hum. Stations came and went, or the idea of stations did. The capybara's breathing set a tempo that made the tunnel feel like a held breath, slowly released.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_capybara_old"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.52,
+        "similarity_boost": 0.75,
+        "style": 0.32
+      },
+      "pos": [
+        940.0,
+        660.0
+      ]
+    },
+    "dev_capybara_old": {
+      "text": "It had the age of something that had outlasted its own origin story. Not ancient in the way of monuments , ancient in the way of water, which does not remember being ice but holds the cold in it still. You thought: this creature has never once been in a hurry. And then, quieter: neither has anything worth arriving at.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_cold_holds",
+        "deep_score_forgotten",
+        "deep_tunnel_hum"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.47,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1160.0,
+        360.0
+      ]
+    },
+    "deep_cold_holds": {
+      "text": "The capybara's coat held things , not obviously, not as a museum holds things, labeled and lit, but the way old wood holds the smell of rain. You found yourself wondering what you held without knowing. The car passed into a longer dark. Somewhere between stations you caught a trace of something , salt, or iron, or gardenia , and could not place it in the world outside.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_glass_door"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        1380.0,
+        260.0
+      ]
+    },
+    "deep_score_forgotten": {
+      "text": "The city beyond the windows had places to be. It always did. The platforms blurred with people moving in the efficient manner of those who have been convinced that arrival is the point. The capybara regarded them, or did not regard them , it was difficult to tell. Its breathing was a different kind of calendar. You felt, briefly, that you had been keeping the wrong time.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_glass_door"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.47,
+        "similarity_boost": 0.75,
+        "style": 0.43
+      },
+      "pos": [
+        1380.0,
+        360.0
+      ]
+    },
+    "deep_tunnel_hum": {
+      "text": "There is a frequency the tunnels make that isn't quite sound , more like what sound remembers when the train has passed. You had heard it before without hearing it. Now, in the particular quiet around the capybara, it surfaced: a low chord that the walls held between them like a secret they had agreed long ago not to tell. Ancient speaking to ancient. You, somewhere in the middle, listening.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_glass_door"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.43,
+        "similarity_boost": 0.75,
+        "style": 0.5
+      },
+      "pos": [
+        1380.0,
+        460.0
+      ]
+    },
+    "bridge_glass_door": {
+      "text": "The dark glass between cars showed you something that almost wasn't you. The reflection delayed , barely, but enough. In the gap between what moved and what the glass showed moving, a warmth pooled, vast and unhurried, like something very large breathing slowly in the space below thought. The capybara did not look at the glass. It already knew what the glass was trying to say.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "bridge"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1600.0,
+        60.0
+      ]
+    },
+    "node_002": {
+      "text": "The toad arrived the way most important things do , sideways, through the wrong pocket of weather, onto a train that had no business stopping. There was standing water in the tunnel near 19th Street that night. Something moved through it that wasn't a rat. Older than the tunnels, older than the city's long habit of desire. The toad had been waiting here before here existed , which is, properly speaking, how tricksters work. They do not arrive. They simply allow themselves to be seen.",
+      "label": "Intro_Toad",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_toad_seen",
+        "open_salt_bleeding"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "intro"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        60.0,
+        860.0
+      ]
+    },
+    "open_toad_seen": {
+      "text": "Someone noticed the moisture first , not the toad, never the toad directly. They noticed their shoes were wet though the car had been dry for three stops. A smell like creek stone and old intention. The toad sat between a discarded Chronicle and a sleeping man's elbow, thoroughly visible, utterly unremarked. This is the second way tricksters work: they make themselves obvious in the wrong direction. You cannot look at them straight. You can only catch them in the peripheral truth.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_goat_platform"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.22
+      },
+      "pos": [
+        280.0,
+        1760.0
+      ]
+    },
+    "open_salt_bleeding": {
+      "text": "Between Powell and Montgomery the air changed. Not everyone felt it. A woman doing the crossword paused at fourteen across , ancient body, four letters , and set her pen down without finishing. Something vast moved beneath the tracks, unhurried as a tide that has not decided whether to arrive. Salt. Gardenia. The faint metallic sweetness of a very old kindness. Bartiki does not announce. Bartiki simply is, and is, and is , a wide underground patience that cannot fully surface but cannot help touching the edges of things.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "open_goat_platform"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        280.0,
+        1260.0
+      ]
+    },
+    "open_goat_platform": {
+      "text": "The goat was on the platform at 24th Street, which is exactly where you would expect and nowhere you would have looked. Dry. Declarative. It had been telling someone a story about a flood from before the word for flood existed, and it finished the story at the precise moment the doors opened. Nobody remembered hearing a goat. Everybody remembered, suddenly, that their grandmother had been right about something they'd long dismissed. The goat held old stories the way old stones hold heat , quietly, and for a very long time.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_grandmother_right",
+        "dev_flood_memory"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        500.0,
+        260.0
+      ]
+    },
+    "dev_grandmother_right": {
+      "text": "Not the same grandmother. That was the thing. Each person on that platform recalled a different woman, a different kitchen, a different warning gone unharvested. One had said: do not trust a door that opens too easily. One had said: the old things know where the water was. One had said nothing at all , only pointed twice at the ceiling , and now, standing at 24th Street with the doors open, they understood exactly what she had meant.",
+      "label": "",
+      "hint": "Bring back the toad",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_goat_moves",
+        "deep_toad_ceiling",
+        "deep_door_easy"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        720.0,
+        760.0
+      ]
+    },
+    "dev_flood_memory": {
+      "text": "The flood had been more decision than disaster , this was the hardest part of the story to carry. The water came because something older than water had grown tired of waiting. The goat had been there, or something that would become the goat, and it remembered the smell: copper and cedar and the particular silence of animals who have decided to trust the current. Some knowledge lives only in the body. The body had been listening, there, on the platform.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_goat_moves"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.47,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        720.0,
+        660.0
+      ]
+    },
+    "dev_goat_moves": {
+      "text": "The goat crossed between cars the way old knowledge does , without announcement, without the door fully catching. Someone felt warmth along their left arm, the kind that comes from sitting beside someone who has been a long time in the sun. The tunnel deepened. The goat was several understandings ahead of the train itself, moving toward Embarcadero where the salt was thickest, where Bartiki's edges were nearest to the surface. The old stories were looking for somewhere to settle.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "development"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.51,
+        "similarity_boost": 0.75,
+        "style": 0.32
+      },
+      "pos": [
+        940.0,
+        560.0
+      ]
+    },
+    "deep_toad_ceiling": {
+      "text": "The toad was on the ceiling. Not literally , though later, several people would check. What the grandmother had meant: the toad precedes the understanding. It had been here before the doors opened, before the goat finished its flood story, before anyone's shoes were wet. The toad is always already above you, watching the situation ripen. That's not surveillance. That's patience. The ceiling is just the nearest metaphor it fits.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_old_water"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.43,
+        "similarity_boost": 0.75,
+        "style": 0.5
+      },
+      "pos": [
+        940.0,
+        360.0
+      ]
+    },
+    "deep_door_easy": {
+      "text": "The door at 24th Street had opened easily. The toad had noted this , you could tell by the angle of its throat, that small pulse, considering. Do not trust a door that opens too easily, the grandmother had said. Which was not a warning against entry, but against assuming nothing had already come through before you. The toad was that something. It had been through several times. It was very relaxed about it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_old_water"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        940.0,
+        60.0
+      ]
+    },
+    "deep_old_water": {
+      "text": "The old things know where the water was. The toad had always known. This part of the tunnel: tidal marsh, once. Before the concrete, before the trains, before the grandmothers who were not the same grandmother. The toad carried that water in its skin , not metaphorically; you could feel the cold of the old bay rising off it if you stood close enough. The goat said nothing. Some floods are too old to explain. Only to confirm.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "deepening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.47,
+        "similarity_boost": 0.75,
+        "style": 0.42
+      },
+      "pos": [
+        1160.0,
+        160.0
+      ]
+    },
+    "res_capybara_remains": {
+      "text": "The capybara does not need you to believe in it. It was here before the tunnels were dug, before the trains were named, before the city learned to be a city. It will be here when the last car runs dark and quiet back to the yard. You have sat beside a god. Most people never know. You knew, for a moment. That is enough. That has always been enough.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "capybara",
+        "stillness",
+        "revelation",
+        "god"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.18
+      },
+      "pos": [
+        1380.0,
+        760.0
+      ]
+    },
+    "res_door_opens": {
+      "text": "The doors will open. They always open. You will step onto the platform carrying something you cannot name — not the salt, not the warmth, but the shape left by both. The capybara does not follow. It does not need to follow. You have already learned what stillness feels like from the inside. The platform will be loud. That is fine. You know now where the quiet lives.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "capybara",
+        "platform",
+        "stillness"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.12
+      },
+      "pos": [
+        1380.0,
+        860.0
+      ]
+    },
+    "res_warmth_carried": {
+      "text": "Later, on an ordinary Tuesday, standing in a line that is taking too long, you will feel it — a brief warmth at your left shoulder, and you will know to stop fighting the length of the line. The capybara does not visit. You carry it now. You have been carrying it since the moment you stopped moving without being asked. This is what the gods between stations leave behind.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "capybara",
+        "stillness",
+        "memory"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1380.0,
+        1060.0
+      ]
+    },
+    "res_after_noticing": {
+      "text": "You will not remember it as a moment. It comes back as a temperature — a shift in the pressure behind your sternum, the sense that the car was briefly breathing with you. Not with you. Around you. You will try to tell someone. The words will come out wrong. That is correct. Some things are not stories. They are what stories gesture toward, from a great distance, in the dark.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "memory",
+        "revelation",
+        "stillness"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.62,
+        "similarity_boost": 0.75,
+        "style": 0.14
+      },
+      "pos": [
+        2260.0,
+        60.0
+      ]
+    },
+    "res_toad_coda": {
+      "text": "The toad, if you asked, would say: affection is how the very old things stay interested in being. Without it, why bother with the wet and the dark and the maintenance of thresholds? But you didn't ask. You were on your phone, or almost asleep, or thinking about Tuesday. That is fine. You were held all the same. The threshold does not require your attention. Only your passage.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_goat_aside",
+        "res_capybara_weight"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "resolution",
+        "toad",
+        "memory",
+        "god"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.58,
+        "similarity_boost": 0.75,
+        "style": 0.22
+      },
+      "pos": [
+        2260.0,
+        360.0
+      ]
+    },
+    "res_capybara_still": {
+      "text": "The capybara does not explain. It sits at the edge of something very large and is content. When you return to the platform — blinking in ordinary fluorescence — you may feel for a moment what the capybara always feels: the comfortable weight of existing. The world offers no apology for its strangeness. Neither does it ask for yours. You step through the turnstile. Something travels with you, quiet as ballast.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "turn",
+        "capybara",
+        "stillness",
+        "platform"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        2260.0,
+        160.0
+      ]
+    },
+    "res_salt_return": {
+      "text": "The salt smell fades just past Embarcadero. The ozone lifts. The world reconstitutes itself in ordinary textures — coffee, concrete, someone's music bleeding through headphones. But the body remembers differently than the mind. For days afterward, maybe longer, something in you will tilt toward the underground. Toward the held-breath dark between stations. The way you tilt, still, toward a place where you were once, briefly, known.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "salt",
+        "memory",
+        "stillness",
+        "platform"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.16
+      },
+      "pos": [
+        2260.0,
+        260.0
+      ]
+    },
+    "res_goat_aside": {
+      "text": "The goat, if you pressed her, would add: the old stories don't need to be told to be true. They move underground like water, through dark stone, arriving at your feet as damp and as certain. She has been carrying the same seven stories since before this tunnel existed. She will carry them after. You don't need to receive them. Something in you already has.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_released"
+      ],
+      "weights": [
+        1.0
+      ],
+      "tags": [
+        "resolution",
+        "goat",
+        "memory",
+        "stillness"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        2480.0,
+        160.0
+      ]
+    },
+    "res_released": {
+      "text": "The doors open. You step out. There is a smell of salt, or almost-salt — ozone, maybe, the memory of tide. The threshold closes behind you. Bartiki settles, vast and patient, back into whatever it inhabits between trains. The toad blinks. The goat remembers. The capybara breathes. And the day receives you — ordinary, specific, held. You are out in it now. That is the whole thing. That is the whole thing.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "salt",
+        "stillness",
+        "toad",
+        "god"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        2700.0,
+        160.0
       ]
     }
   },
-  "story_context": "## Bartiki — Expanded Character Bible --- ### 🌺 The Name **Bartiki** = **BART** (Bay Area Rapid Transit) + **Tiki** (Polynesian deity tradition). This isn't accidental. Tiki culture itself is a kind of liminal mythology — Pacific island spirits transplanted to mid-century California, served in carved wooden cups with tiny umbrellas, worshipped in tiki bars up and down the Bay. Bartiki *is* that convergence. The ocean followed the rails inland. The deity followed the ocean. --- ### 🚇 The Nature of Bartiki Bartiki doesn't ride the train. Bartiki **is** the train — or more precisely, Bartiki inhabits the *between*: the tunnel between stations, the gap between the doors closing and opening, the moment a commuter stares at their reflection in dark glass and thinks something they didn't mean to think. Bartiki is **vast** in the way underground rivers are vast — most of it is never seen. What passengers experience is just the sliver that bleeds through: a warmth in car 4, a smell of salt air near Embarcadero, a sudden inexplicable memory of the beach at age seven. Bartiki is **mysterious** not by design but by nature. It doesn't try to be unknowable — it just *is*. It has too many arms and too many thoughts and most of them are older than the tunnels. Bartiki is **playful**. It rearranges the delays. It nudges people into the wrong car so they sit next to the right stranger. It turns the intercom static into something that almost sounds like a ukulele. It finds commuter panic deeply, gently funny — all that rushing to be somewhere else, while here is so *good*. --- ### 🍹 The Tiki Drinks Bartiki has **opinions** about rum. Strong ones. Mai Tais made with bad rum are an offense. A properly constructed Zombie — three rums, passion fruit, Falernum — is a form of prayer. The tiki tradition is, after all, a ritual of transport: you drink, you close your eyes, and suddenly you're somewhere tropical, somewhere the ocean is close, somewhere time moves differently. That's Bartiki's whole thing. There may be, in some deep maintenance tunnel under Oakland, a bar. No one has found it. It smells of gardenia and ozone and aged Jamaican rum. The stools are carved. The menu changes. --- ### 🐐 🦫 🐸 The Friends **The Goat** — ancient, unbothered. Has been riding BART since before there was a BART, in various forms. Knows every station. Will eat your transfer ticket if you're not paying attention. Appears in the periphery of platform security footage. The goat is the one who *remembers* — it holds the old stories, the ones from before the tunnels, when this was all estuary and salt marsh. Bartiki consults the goat on matters of history and stubbornness. **The Capybara** — gentle, enormous, deeply calming. The capybara doesn't rush. It is the anti-commuter. It sits near the doors and passengers sometimes don't notice it and sometimes notice it completely and feel immediately better about everything. The capybara is Bartiki's emissary of *abiding* — of being okay with the pace of things. When the revelation is \"slow down,\" the capybara delivered it. **The Toad** — trickster, ancient, smells like the bay at low tide. The toad is the one who puts strange thoughts in people's heads. Not bad thoughts — just unexpected ones. *Why did I choose this life? What would I have done if I'd turned left?* The toad sits in the liminal dark between Balboa Park and Glen Park and thinks wet, old thoughts. Bartiki loves the toad and is also a little afraid of the toad. --- ### 🌊 The Revelations People ride BART and they come off *different*. Not always dramatically — sometimes it's just that they know what to say to their mother now, or they've decided to quit, or they've forgiven something old. The tunnel does it. The dark and the speed and the salt-iron air. Bartiki doesn't engineer the revelations — it just creates the *conditions*. The underground pressure. The enforced stillness. The way the train becomes a confessional when you're alone in a car at midnight. The revelations are: - **Remembered things** (what you buried) - **Released things** (what you've been carrying) - **Decided things** (what you finally know) - **Found things** (the stranger, the song, the line from a book someone left behind) --- ### 🙈 The Hiddenness Bartiki does not want to be found. Not because it's shy — because being found would change things. The mystery *is* the medicine. If people knew, they'd come looking, and looking collapses the liminal into the literal. So Bartiki stays in the peripheral vision. In the smell of ocean that shouldn't be there. In the delay announcement that almost said something personal. The friends — the goat, the capybara, the toad — they are slightly more visible. Easier to glimpse. Maybe you see the capybara and you think: *that was weird*. You don't think: *that was a god*. But you tell someone about it later, and something in the telling shifts you. --- ### 🎙️ Voice / Tone for Audio Segments Bartiki's **narrator voice** should feel like: - Someone who has been underwater for a long time and is happy about it - Warm, amused, slightly oceanic in rhythm — sentences that ebb and crest - Never urgent. The train will come when it comes. - Occasionally very, very old — a word choice that feels wrong-era, beautiful The **friends** could each have distinct tonal registers: - **Goat**: dry, declarative, factual. Has seen it all. - **Capybara**: slow, warm, doesn't finish sentences in a hurry - **Toad**: wet consonants, riddle-logic, questions that aren't questions ---"
+  "story_context": "## Bartiki — Expanded Character Bible --- ### 🌺 The Name **Bartiki** = **BART** (Bay Area Rapid Transit) + **Tiki** (Polynesian deity tradition). This isn't accidental. Tiki culture itself is a kind of liminal mythology — Pacific island spirits transplanted to mid-century California, served in carved wooden cups with tiny umbrellas, worshipped in tiki bars up and down the Bay. Bartiki *is* that convergence. The ocean followed the rails inland. The deity followed the ocean. --- ### 🚇 The Nature of Bartiki Bartiki doesn't ride the train. Bartiki **is** the train — or more precisely, Bartiki inhabits the *between*: the tunnel between stations, the gap between the doors closing and opening, the moment a commuter stares at their reflection in dark glass and thinks something they didn't mean to think. Bartiki is **vast** in the way underground rivers are vast — most of it is never seen. What passengers experience is just the sliver that bleeds through: a warmth in car 4, a smell of salt air near Embarcadero, a sudden inexplicable memory of the beach at age seven. Bartiki is **mysterious** not by design but by nature. It doesn't try to be unknowable — it just *is*. It has too many arms and too many thoughts and most of them are older than the tunnels. Bartiki is **playful**. It rearranges the delays. It nudges people into the wrong car so they sit next to the right stranger. It turns the intercom static into something that almost sounds like a ukulele. It finds commuter panic deeply, gently funny — all that rushing to be somewhere else, while here is so *good*. --- ### 🍹 The Tiki Drinks Bartiki has **opinions** about rum. Strong ones. Mai Tais made with bad rum are an offense. A properly constructed Zombie — three rums, passion fruit, Falernum — is a form of prayer. The tiki tradition is, after all, a ritual of transport: you drink, you close your eyes, and suddenly you're somewhere tropical, somewhere the ocean is close, somewhere time moves differently. That's Bartiki's whole thing. There may be, in some deep maintenance tunnel under Oakland, a bar. No one has found it. It smells of gardenia and ozone and aged Jamaican rum. The stools are carved. The menu changes. --- ### 🐐 🦫 🐸 The Friends **The Goat** — ancient, unbothered. Has been riding BART since before there was a BART, in various forms. Knows every station. Will eat your transfer ticket if you're not paying attention. Appears in the periphery of platform security footage. The goat is the one who *remembers* — it holds the old stories, the ones from before the tunnels, when this was all estuary and salt marsh. Bartiki consults the goat on matters of history and stubbornness. **The Capybara** — gentle, enormous, deeply calming. The capybara doesn't rush. It is the anti-commuter. It sits near the doors and passengers sometimes don't notice it and sometimes notice it completely and feel immediately better about everything. The capybara is Bartiki's emissary of *abiding* — of being okay with the pace of things. When the revelation is \"slow down,\" the capybara delivered it. **The Toad** — trickster, ancient, smells like the bay at low tide. The toad is the one who puts strange thoughts in people's heads. Not bad thoughts — just unexpected ones. *Why did I choose this life? What would I have done if I'd turned left?* The toad sits in the liminal dark between Balboa Park and Glen Park and thinks wet, old thoughts. Bartiki loves the toad and is also a little afraid of the toad. --- ### 🌊 The Revelations People ride BART and they come off *different*. Not always dramatically — sometimes it's just that they know what to say to their mother now, or they've decided to quit, or they've forgiven something old. The tunnel does it. The dark and the speed and the salt-iron air. Bartiki doesn't engineer the revelations — it just creates the *conditions*. The underground pressure. The enforced stillness. The way the train becomes a confessional when you're alone in a car at midnight. The revelations are: - **Remembered things** (what you buried) - **Released things** (what you've been carrying) - **Decided things** (what you finally know) - **Found things** (the stranger, the song, the line from a book someone left behind) --- ### 🙈 The Hiddenness Bartiki does not want to be found. Not because it's shy — because being found would change things. The mystery *is* the medicine. If people knew, they'd come looking, and looking collapses the liminal into the literal. So Bartiki stays in the peripheral vision. In the smell of ocean that shouldn't be there. In the delay announcement that almost said something personal. The friends — the goat, the capybara, the toad — they are slightly more visible. Easier to glimpse. Maybe you see the capybara and you think: *that was weird*. You don't think: *that was a god*. But you tell someone about it later, and something in the telling shifts you. --- ### 🎙️ Voice / Tone for Audio Segments Bartiki's **narrator voice** should feel like: - Someone who has been underwater for a long time and is happy about it - Warm, amused, slightly oceanic in rhythm — sentences that ebb and crest - Never urgent. The train will come when it comes. - Occasionally very, very old — a word choice that feels wrong-era, beautiful The **friends** could each have distinct tonal registers: - **Goat**: dry, declarative, factual. Has seen it all. - **Capybara**: slow, warm, doesn't finish sentences in a hurry - **Toad**: wet consonants, riddle-logic, questions that aren't questions ---",
+  "story_context_focused": "Bartiki inhabits the between-spaces of BART — tunnels, closing doors, dark glass reflections. Vast like an underground river, mostly unseen; what bleeds through is warmth in one car, salt air near Embarcadero, an unbidden beach memory. Ancient, playful, not performing mystery — structurally too large and too old to fully surface. Creates conditions for revelation without engineering them. Three companions move through the margins: a goat (dry, declarative, holds old stories), a capybara (slow, enormous, calming), a toad (trickster, wet consonants, thoughts that arrive sideways). Narrator voice is warm, oceanic, unhurried — sentences ebb and crest. Occasionally a word choice lands wrong-era, beautiful. Sensory anchors: salt air underground, ozone, aged rum, gardenia, iron tunnel wind, intercom static that almost resolves into ukulele."
 }
