@@ -125,6 +125,22 @@ DESIGN PRINCIPLES:
 Think in LAYERS. Each layer is a narrative beat. Within a layer, multiple alternative nodes
 cover the same beat differently. Edges go forward through layers — no random cross-links.
 
+CONTINUITY IS THE TOP PRIORITY:
+Every path through the graph must read as a single, flowing spoken piece — not a collection
+of independent vignettes. A listener hears one node at a time, in sequence. Each node must
+feel like the natural next sentence or thought after whichever node preceded it.
+
+To achieve this:
+- Write nodes so the FIRST WORDS pick up the thread from where any parent could have left off.
+  Avoid re-establishing the scene or re-introducing the subject — the listener is already there.
+- A node with multiple parents must be written so it can follow any of them without jarring.
+  Favour abstract, open continuations ("And yet—", "Still.", "Somewhere nearby...") over
+  context-specific hooks that only make sense after one particular parent.
+- Siblings at the same layer should cover the SAME narrative moment from different angles,
+  so any of them can flow into the same child node without contradiction.
+- Read every path aloud as you write. If a transition sounds like a non-sequitur, rewrite
+  the child node until the seam disappears.
+
 LAYER STRUCTURE (use as many layers as the content warrants, up to 8):
   Layer 1 (intro)      : 1–3 nodes  — establish tone, place, or speaker
   Layer 2 (opening)    : 2–4 nodes  — widen the scene, first impressions
@@ -137,6 +153,9 @@ LAYER STRUCTURE (use as many layers as the content warrants, up to 8):
 
 For shorter scripts, skip layers or collapse them — a 4-layer script is fine.
 For longer scripts, use all 8 to create a full arc with genuine depth.
+
+HARD LIMIT: generate no more than 12 nodes total. If the full arc needs more, compress layers,
+reduce siblings per layer, or end earlier — but never exceed 12 nodes.
 
 BRANCHING: any node in layer N may connect to 2–4 nodes in layer N+1.
 MERGING:   multiple nodes in layer N may all point to the same node in layer N+1.
@@ -153,10 +172,14 @@ Avoid:
   - Fully connected pools where every node points to every other node
   - Trees that only branch and never merge (too many dead-end leaves)
   - Chains with no branching at all (boring, no variation)
+  - Nodes that re-establish context already given by their parents
 
 WEIGHTS: use 1.0 as default. Use 2.0 to favour a path, 0.5 to make it rare.
-TAGS: label each node with its layer role:
-  "intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"
+TAGS: every node must have a tags array with:
+1. Exactly one layer tag: intro / opening / development / deepening / bridge / turn / descent / resolution
+2. Custom tags for everything present in the node text — characters, themes, locations, objects, moods.
+   Use short lowercase snake_case words. Reuse the same tag across nodes whenever the same element recurs.
+   Examples: "crow", "test_anxiety", "linoleum", "waiting", "silence", "rain"
 node IDs: short_snake_case, layer-prefixed (e.g. "intro_storm", "dev_pride", "turn_silence", "res_still")
 
 VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
@@ -179,6 +202,66 @@ TERMINAL NODES: resolution/ending nodes must have next: [].
 NEVER create edges that point back toward intro or start nodes.
 When a terminal node finishes playing, the runtime will automatically restart
 from a randomly chosen start_node — no explicit loop edges are needed or wanted.
+"""
+
+SYSTEM_CONTINUE = """\
+You are continuing a narrative graph for an immersive audio installation.
+You receive an existing SOURCE NODE and must generate the remaining story layers that come AFTER it.
+
+Each node is one short spoken segment (40–100 words, ~15–35 seconds when read aloud).
+Use evocative, atmospheric language suited to the theme.
+
+OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanation:
+{
+  "nodes": {
+    "node_id": {
+      "text": "Spoken text, 40-100 words.",
+      "next": ["next_id"],
+      "weights": [1.0],
+      "tags": ["turn"],
+      "voice_settings": {"stability": 0.30, "similarity_boost": 0.75, "style": 0.65}
+    }
+  },
+  "start_nodes": ["first_node_id"]
+}
+
+CONTINUITY IS THE TOP PRIORITY:
+Every path through the generated nodes must read as a single flowing spoken piece that begins
+directly where the source node left off. A listener hears one node at a time, in sequence.
+
+- The FIRST WORDS of each immediate child must pick up the thread of the source node's final
+  thought — do not re-establish the scene or re-introduce the subject.
+- Nodes with multiple parents must be written so they can follow any of their parents without
+  jarring. Favour open, abstract continuations over hooks specific to one parent.
+- Siblings at the same layer cover the same narrative moment from different angles, so any of
+  them can flow into the same child without contradiction.
+- Read every path aloud as you write. If a transition sounds like a non-sequitur, rewrite the
+  child until the seam disappears.
+
+RULES:
+- start_nodes: IDs of nodes that connect DIRECTLY from the source node (immediate children only)
+- Do NOT re-generate or include the source node itself
+- Generate 2–4 layers forward from the source's layer, following the natural story arc
+- Layer order: intro → opening → development → deepening → bridge → turn → descent → resolution
+  Determine the source's layer from its tags, then generate only the layers that come AFTER it
+- Use the same branching (2–4 children) and merging (multiple parents → 1 child) patterns as a full graph
+- TERMINAL NODES: the final layer's nodes must have next: []
+- TERMINAL NODES: resolution/ending nodes must have next: []. Never loop back to earlier layers.
+
+BRANCHING and MERGING: same rules as full graph generation.
+WEIGHTS: 1.0 default, 2.0 to favour, 0.5 to make rare.
+TAGS: every node must have a tags array with:
+1. Exactly one layer tag: deepening / bridge / turn / descent / resolution (whichever applies)
+2. Custom tags for everything present in the node text — characters, themes, locations, objects, moods.
+   Use short lowercase snake_case. Reuse the same tag across nodes whenever the same element recurs.
+node IDs: short_snake_case, layer-prefixed (e.g. "turn_silence", "res_still").
+
+VOICE SETTINGS: match emotional tone to layer:
+  deepening   stability 0.45  style 0.45
+  bridge      stability 0.45  style 0.40
+  turn        stability 0.30  style 0.65
+  descent     stability 0.25  style 0.70
+  resolution  stability 0.60  style 0.15
 """
 
 SYSTEM_EXPAND = """\
@@ -871,6 +954,49 @@ class AIAssistant:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def continue_from_node(self, source_id: str, source_text: str, source_tags: list,
+                           ui_queue: queue.SimpleQueue, on_done, on_error,
+                           story_context: str = '', node_hint: str = ''):
+        if self._busy:
+            return
+        self._busy = True
+
+        layer_order = ["intro", "opening", "development", "deepening",
+                       "bridge", "turn", "descent", "resolution"]
+        source_layer = next((t for t in source_tags if t in layer_order), 'development')
+
+        parts = []
+        if story_context:
+            sc = story_context[:1000] + '...' if len(story_context) > 1000 else story_context
+            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+        if node_hint:
+            parts.append(f'Continuation guidance: {node_hint}')
+        parts.append(
+            f'SOURCE NODE (layer: {source_layer}, id: {source_id}):\n'
+            f'  tags: {source_tags}\n'
+            f'  text: "{source_text}"\n\n'
+            f'Generate the continuation layers that come AFTER "{source_layer}".'
+        )
+        full_prompt = '\n\n'.join(parts)
+
+        def run():
+            try:
+                raw   = self._run_claude(SYSTEM_CONTINUE, full_prompt)
+                match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if not match:
+                    ui_queue.put(lambda: on_error("No JSON found in response"))
+                    return
+                data = json.loads(match.group(0))
+                ui_queue.put(lambda: on_done(data))
+            except json.JSONDecodeError as exc:
+                ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+
+        threading.Thread(target=run, daemon=True).start()
+
     def rewrite_text(self, prompt: str, ui_queue: queue.SimpleQueue,
                      on_done, on_error, story_context: str = ''):
         if self._busy:
@@ -1481,6 +1607,19 @@ class PropertiesPanel(QWidget):
                 lambda val, tid=target_id: self._save_weight(tid, val)
             )
             row_layout.addWidget(spin)
+
+            del_btn = QPushButton("×")
+            del_btn.setFixedWidth(22)
+            del_btn.setFixedHeight(22)
+            del_btn.setStyleSheet("color: #ff6666; font-weight: bold; border: none; background: transparent;")
+            del_btn.setToolTip(f"Delete edge → {target_id}")
+            del_btn.clicked.connect(
+                lambda _=False, tid=target_id: self.node_modified.emit(
+                    f"__delete_edge__{self._node_id}__{tid}"
+                )
+            )
+            row_layout.addWidget(del_btn)
+
             self._weight_spinboxes[target_id] = spin
             self.edge_list_layout.addWidget(row)
 
@@ -2177,7 +2316,7 @@ class AIChatPanel(QWidget):
         def on_done(data):
             n = len(data.get("nodes", {}))
             self._script.apply_generated(data)
-            for nid, pos in _compute_layout(self._script).items():
+            for nid, pos in _layout_tree(self._script).items():
                 self._script.update_pos(nid, pos)
             if self._on_graph_generated:
                 self._on_graph_generated()
@@ -2193,7 +2332,7 @@ class AIChatPanel(QWidget):
             self.append_message("assistant", f"Error: {e}")
 
         self._ai.generate_graph(prompt, self._ui_queue, on_done, on_error,
-                                story_context=self._script.story_context if self._script else '')
+                                story_context=self._script.story_context_focused if self._script else '')
 
     def _cmd_reset(self):
         if self._ai:
@@ -2385,6 +2524,141 @@ def _compute_layout(script: ScriptData) -> dict:
     return result
 
 
+def _layout_vertical(script: ScriptData) -> dict:
+    """Top-to-bottom: roots at top, terminals at bottom, columns by depth."""
+    nodes = script.nodes
+    if not nodes:
+        return {}
+    children = {nid: [t for t in nd.get("next", []) if t in nodes]
+                for nid, nd in nodes.items()}
+    parents: dict = defaultdict(list)
+    for nid, kids in children.items():
+        for kid in kids:
+            parents[kid].append(nid)
+    in_deg = {nid: len(parents[nid]) for nid in nodes}
+    q = deque(nid for nid in nodes if in_deg[nid] == 0)
+    topo: list = []
+    while q:
+        nid = q.popleft(); topo.append(nid)
+        for kid in children[nid]:
+            in_deg[kid] -= 1
+            if in_deg[kid] == 0: q.append(kid)
+    topo.extend(nid for nid in nodes if nid not in set(topo))
+    depth: dict = {nid: 0 for nid in nodes}
+    for nid in topo:
+        for kid in children[nid]:
+            depth[kid] = max(depth[kid], depth[nid] + 1)
+    by_row: dict = defaultdict(list)
+    for nid in nodes:
+        by_row[depth[nid]].append(nid)
+    NODE_W, LAYER_H = 210, 180
+    result: dict = {}
+    for row, nids in sorted(by_row.items()):
+        y = 60 + row * LAYER_H
+        for col, nid in enumerate(sorted(nids)):
+            result[nid] = [60 + col * NODE_W, y]
+    return result
+
+
+def _layout_tree(script: ScriptData) -> dict:
+    """Hierarchical tree: roots on left, children spread vertically beside parent."""
+    nodes = script.nodes
+    if not nodes:
+        return {}
+    children = {nid: [t for t in nd.get("next", []) if t in nodes]
+                for nid, nd in nodes.items()}
+    parents: dict = defaultdict(list)
+    for nid, kids in children.items():
+        for kid in kids:
+            parents[kid].append(nid)
+    in_deg = {nid: len(parents[nid]) for nid in nodes}
+    q = deque(nid for nid in nodes if in_deg[nid] == 0)
+    topo: list = []
+    while q:
+        nid = q.popleft(); topo.append(nid)
+        for kid in children[nid]:
+            in_deg[kid] -= 1
+            if in_deg[kid] == 0: q.append(kid)
+    topo.extend(nid for nid in nodes if nid not in set(topo))
+    depth: dict = {nid: 0 for nid in nodes}
+    for nid in topo:
+        for kid in children[nid]:
+            depth[kid] = max(depth[kid], depth[nid] + 1)
+
+    NODE_W, NODE_H = 260, 115
+
+    # Count UNIQUE leaf nodes reachable from each node.
+    # Using frozensets prevents double-counting when DAG paths converge.
+    reachable: dict = {}
+    for nid in reversed(topo):
+        kids = [c for c in children[nid] if c in nodes]
+        if not kids:
+            reachable[nid] = frozenset([nid])
+        else:
+            s: frozenset = frozenset()
+            for k in kids:
+                s = s | reachable.get(k, frozenset([k]))
+            reachable[nid] = s
+    leaf_count = {nid: max(1, len(reachable[nid])) for nid in nodes}
+
+    # Allocate a contiguous y range to every node.
+    # Roots get sequential ranges with a small gap between them.
+    # Each node divides its range among children proportionally.
+    ROOT_GAP = 0.25
+    y_ranges: dict = {}
+    y_cursor = 0.0
+    for nid in topo:
+        if not parents[nid]:
+            size = leaf_count[nid]
+            y_ranges[nid] = (y_cursor, y_cursor + size)
+            y_cursor += size + ROOT_GAP
+
+    for nid in topo:
+        if nid not in y_ranges:
+            continue
+        y_lo, y_hi = y_ranges[nid]
+        kids = [c for c in children[nid] if c in nodes]
+        if not kids:
+            continue
+        counts = [leaf_count.get(k, 1) for k in kids]
+        total  = sum(counts) or 1
+        span   = y_hi - y_lo
+        y = y_lo
+        for kid, cnt in zip(kids, counts):
+            kid_hi = y + span * cnt / total
+            if kid not in y_ranges:
+                y_ranges[kid] = (y, kid_hi)
+            y = kid_hi
+
+    # Place each node at the midpoint of its allocated range
+    y_pos: dict = {}
+    for nid in nodes:
+        if nid in y_ranges:
+            lo, hi = y_ranges[nid]
+            y_pos[nid] = (lo + hi) / 2
+        else:
+            y_pos[nid] = y_cursor
+            y_cursor += 1
+
+    # Collision pass: ensure at least 1 slot gap within each depth column
+    by_depth: dict = defaultdict(list)
+    for nid in nodes:
+        by_depth[depth[nid]].append(nid)
+    for col_nodes in by_depth.values():
+        col_nodes.sort(key=lambda n: y_pos.get(n, 0))
+        for i in range(1, len(col_nodes)):
+            min_y = y_pos[col_nodes[i - 1]] + 0.85
+            if y_pos[col_nodes[i]] < min_y:
+                y_pos[col_nodes[i]] = min_y
+
+    result: dict = {}
+    for nid in nodes:
+        result[nid] = [60 + depth[nid] * NODE_W, 60 + y_pos.get(nid, 0) * NODE_H]
+    return result
+
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MainWindow
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2394,12 +2668,14 @@ class _GraphViewHoverFilter(QObject):
     mouse is over and fires enter/leave callbacks as it changes.
     Also intercepts right-click to fire on_right_click(node_id, global_pos)."""
 
-    def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None, parent=None):
+    def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None,
+                 on_delete_pipes=None, parent=None):
         super().__init__(parent)
         self._get_node = get_node_at_pos
         self._on_enter = on_enter
         self._on_leave = on_leave
         self._on_right_click = on_right_click
+        self._on_delete_pipes = on_delete_pipes
         self._current: Optional[str] = None
 
     def eventFilter(self, obj, event):
@@ -2424,6 +2700,11 @@ class _GraphViewHoverFilter(QObject):
             if self._current:
                 self._on_leave(self._current)
                 self._current = None
+        elif t == QEvent.Type.KeyPress and self._on_delete_pipes:
+            from PySide6.QtCore import Qt as _Qt
+            if event.key() in (_Qt.Key.Key_Delete, _Qt.Key.Key_Backspace):
+                if self._on_delete_pipes():
+                    return True  # consumed — don't let NodeGraphQt delete nodes
         return False
 
 
@@ -2437,6 +2718,8 @@ class MainWindow(QMainWindow):
 
         self._selected_node_id: Optional[str] = None
         self._node_items: Dict[str, NarrativeNode] = {}
+        self._pending_connect_from: Optional[str] = None
+        self._cycle_nodes: set = set()
 
         self._build_ui()
         self._build_menu()
@@ -2485,9 +2768,12 @@ class MainWindow(QMainWindow):
             self._on_node_hover_enter,
             self._on_node_hover_leave,
             on_right_click=self._on_graph_right_click,
+            on_delete_pipes=self._cmd_delete_selected_pipes,
         )
         # Events land on the viewport, not the view itself
         self.graph.viewer().viewport().installEventFilter(self._graph_hover_filter)
+        # Key events (Delete / Backspace) land on the viewer itself
+        self.graph.viewer().installEventFilter(self._graph_hover_filter)
 
         # Right panel (scrollable)
         right_widget = QWidget()
@@ -2527,8 +2813,45 @@ class MainWindow(QMainWindow):
         scroll_area.setMinimumWidth(320)
         scroll_area.setMaximumWidth(400)
 
+        # Search bar + frequency toggle above graph
+        self._search_bar = QLineEdit()
+        self._search_bar.setPlaceholderText("Search nodes by text, label, or ID...  (Ctrl+/)")
+        self._search_bar.setClearButtonEnabled(True)
+        self._search_bar.textChanged.connect(self._cmd_search)
+        self._search_bar.setStyleSheet("padding: 2px 4px; font-size: 11px;")
+        from PySide6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence("Ctrl+/"), self, activated=self._search_bar.setFocus)
+        QShortcut(QKeySequence("Escape"), self, activated=self._cancel_pending_connect)
+
+        self._freq_btn = QPushButton("Freq")
+        self._freq_btn.setCheckable(True)
+        self._freq_btn.setFixedWidth(46)
+        self._freq_btn.setFixedHeight(24)
+        self._freq_btn.setToolTip("Toggle frequency heat map (Ctrl+Shift+A)")
+        self._freq_btn.setStyleSheet(
+            "QPushButton { background: #2a2a3a; border: 1px solid #555; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:checked { background: #5a3a1a; border: 1px solid #e08020; color: #ffaa40; }"
+        )
+        self._freq_btn.toggled.connect(self._cmd_frequency_analysis)
+        self._freq_counts: dict = {}   # cached simulation results
+
+        search_row = QWidget()
+        search_row.setMaximumHeight(30)
+        search_row_layout = QHBoxLayout(search_row)
+        search_row_layout.setContentsMargins(2, 2, 2, 2)
+        search_row_layout.setSpacing(4)
+        search_row_layout.addWidget(self._search_bar)
+        search_row_layout.addWidget(self._freq_btn)
+
+        graph_container = QWidget()
+        graph_vbox = QVBoxLayout(graph_container)
+        graph_vbox.setContentsMargins(0, 0, 0, 0)
+        graph_vbox.setSpacing(0)
+        graph_vbox.addWidget(search_row)
+        graph_vbox.addWidget(graph_widget)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(graph_widget)
+        splitter.addWidget(graph_container)
         splitter.addWidget(scroll_area)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
@@ -2586,6 +2909,18 @@ class MainWindow(QMainWindow):
         act_fit.triggered.connect(self._cmd_fit_view)
         edit_menu.addAction(act_fit)
 
+        layout_menu = edit_menu.addMenu("Layout")
+        for label, fn in [
+            ("Horizontal  (left → right)", _compute_layout),
+            ("Vertical  (top → bottom)",   _layout_vertical),
+            ("Tree  (branching)",           _layout_tree),
+        ]:
+            act = QAction(label, self)
+            act.triggered.connect(lambda *_, f=fn: self._cmd_apply_layout(f))
+            layout_menu.addAction(act)
+
+        edit_menu.addSeparator()
+
         act_spread = QAction("Spread", self)
         act_spread.triggered.connect(self._cmd_spread)
         edit_menu.addAction(act_spread)
@@ -2600,6 +2935,13 @@ class MainWindow(QMainWindow):
         act_ctx.setShortcut("Ctrl+Shift+C")
         act_ctx.triggered.connect(self._cmd_open_story_context)
         story_menu.addAction(act_ctx)
+
+        # Analysis menu
+        analysis_menu = menubar.addMenu("Analysis")
+        act_freq = QAction("Toggle Frequency Heat Map", self)
+        act_freq.setShortcut("Ctrl+Shift+A")
+        act_freq.triggered.connect(lambda: self._freq_btn.setChecked(not self._freq_btn.isChecked()))
+        analysis_menu.addAction(act_freq)
 
         # Voice menu
         voice_menu = menubar.addMenu("Voice")
@@ -2730,6 +3072,19 @@ class MainWindow(QMainWindow):
             node_id = next((nid for nid, n in self._node_items.items() if n is node), None)
             if not node_id:
                 return
+            # Complete a pending "Connect to…" if one is active
+            if self._pending_connect_from and node_id != self._pending_connect_from:
+                src = self._pending_connect_from
+                self._cancel_pending_connect()
+                if node_id not in self.script.nodes.get(src, {}).get('next', []):
+                    self._node_items[src].output(0).connect_to(
+                        self._node_items[node_id].input(0)
+                    )
+                    self._cmd_apply_layout(_layout_tree)
+                    self.status_bar.showMessage(f"Connected: {src} → {node_id}")
+                else:
+                    self.status_bar.showMessage(f"Edge {src} → {node_id} already exists")
+                return
             self._selected_node_id = node_id
             self.chat_panel.selected_node_id = node_id
             self.props_panel.load_node(self.script, node_id)
@@ -2755,6 +3110,8 @@ class MainWindow(QMainWindow):
         self.script.add_edge(from_id, to_id)
         self.props_panel.rebuild_edge_list(self.script, self._selected_node_id or from_id)
         self._update_title()
+        self._maybe_refresh_freq()
+        self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Edge: {from_id} -> {to_id}")
 
     def _on_port_disconnected(self, in_port, out_port):
@@ -2766,6 +3123,8 @@ class MainWindow(QMainWindow):
         if self._selected_node_id:
             self.props_panel.rebuild_edge_list(self.script, self._selected_node_id)
         self._update_title()
+        self._maybe_refresh_freq()
+        self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Deleted edge: {from_id} -> {to_id}")
 
     def _on_nodes_deleted(self, _):
@@ -2781,10 +3140,21 @@ class MainWindow(QMainWindow):
 
     # ── Graph management helpers ─────────────────────────────────────────────
 
-    def _set_node_color(self, node: NarrativeNode, nd: dict):
+    def _set_node_color(self, node: NarrativeNode, nd: dict, in_cycle: bool = False):
         tags = nd.get('tags', [])
-        color = next((TAG_COLORS[t] for t in tags if t in TAG_COLORS), (70, 70, 95))
-        node.set_color(*color)
+        tag_color = next((TAG_COLORS[t] for t in tags if t in TAG_COLORS), (70, 70, 95))
+        has_text  = bool(nd.get('text', '').strip())
+        has_audio = bool(nd.get('file'))
+
+        node.set_color(*tag_color)
+        if in_cycle:
+            node.view.border_color = (220, 50, 50, 255)    # red — cycle!
+        elif has_audio:
+            node.view.border_color = (60, 210, 120, 255)   # bright green — audio ready
+        elif has_text:
+            node.view.border_color = (255, 150, 0, 255)    # bright orange — needs audio
+        else:
+            node.view.border_color = (55, 55, 75, 255)     # dim — no text
 
     def _rebuild_graph(self):
         # Disconnect signals while rebuilding to prevent clear_session() from
@@ -2799,7 +3169,7 @@ class MainWindow(QMainWindow):
                 pos = nd.get('pos', [100, 100])
                 node = self.graph.create_node('narrative.NarrativeNode', name=(nd.get("label") or node_id))
                 node.set_pos(float(pos[0]), float(pos[1]))
-                self._set_node_color(node, nd)
+                self._set_node_color(node, nd, in_cycle=node_id in self._cycle_nodes)
                 self._node_items[node_id] = node
             for from_id, nd in self.script.nodes.items():
                 for to_id in nd.get('next', []):
@@ -2814,6 +3184,7 @@ class MainWindow(QMainWindow):
         # Reset hover filter's current node after rebuild
         if hasattr(self, '_graph_hover_filter'):
             self._graph_hover_filter._current = None
+        self._refresh_cycle_markers()
 
     def _get_node_at_view_pos(self, view_pos) -> Optional[str]:
         """Return node_id under the given viewport-space position, or None."""
@@ -2918,7 +3289,39 @@ class MainWindow(QMainWindow):
             down5 |= downstream(nid)
         fifth = (up5 | down5) - fourth - third - second - first - {node_id}
 
-        highlighted = first | second | third | fourth | fifth | {node_id}
+        up6   = set()
+        for nid in up5:
+            up6 |= upstream(nid)
+        down6 = set()
+        for nid in down5:
+            down6 |= downstream(nid)
+        sixth = (up6 | down6) - fifth - fourth - third - second - first - {node_id}
+
+        up7   = set()
+        for nid in up6:
+            up7 |= upstream(nid)
+        down7 = set()
+        for nid in down6:
+            down7 |= downstream(nid)
+        seventh = (up7 | down7) - sixth - fifth - fourth - third - second - first - {node_id}
+
+        up8   = set()
+        for nid in up7:
+            up8 |= upstream(nid)
+        down8 = set()
+        for nid in down7:
+            down8 |= downstream(nid)
+        eighth = (up8 | down8) - seventh - sixth - fifth - fourth - third - second - first - {node_id}
+
+        up9   = set()
+        for nid in up8:
+            up9 |= upstream(nid)
+        down9 = set()
+        for nid in down8:
+            down9 |= downstream(nid)
+        ninth = (up9 | down9) - eighth - seventh - sixth - fifth - fourth - third - second - first - {node_id}
+
+        highlighted = first | second | third | fourth | fifth | sixth | seventh | eighth | ninth | {node_id}
 
         for nid, n in self._node_items.items():
             if nid == node_id:
@@ -2926,15 +3329,23 @@ class MainWindow(QMainWindow):
             elif nid in first:
                 n.view.setOpacity(1.0)
             elif nid in second:
-                n.view.setOpacity(0.75)
+                n.view.setOpacity(0.90)
             elif nid in third:
-                n.view.setOpacity(0.45)
+                n.view.setOpacity(0.78)
             elif nid in fourth:
-                n.view.setOpacity(0.28)
+                n.view.setOpacity(0.67)
             elif nid in fifth:
-                n.view.setOpacity(0.18)
+                n.view.setOpacity(0.57)
+            elif nid in sixth:
+                n.view.setOpacity(0.47)
+            elif nid in seventh:
+                n.view.setOpacity(0.38)
+            elif nid in eighth:
+                n.view.setOpacity(0.31)
+            elif nid in ninth:
+                n.view.setOpacity(0.25)
             else:
-                n.view.setOpacity(0.08)
+                n.view.setOpacity(0.07)
 
         for pipe, from_nid, to_nid in self._pipe_connections():
             if from_nid in highlighted and to_nid in highlighted:
@@ -2943,7 +3354,13 @@ class MainWindow(QMainWindow):
                 pipe.setOpacity(0.05)
 
     def _clear_highlight(self):
-        """Restore all nodes and pipes to full opacity."""
+        """Restore opacity, respecting active search or frequency map."""
+        if self._search_bar.text().strip():
+            self._cmd_search(self._search_bar.text())
+            return
+        if self._freq_btn.isChecked():
+            self._apply_frequency_heat()
+            return
         for n in self._node_items.values():
             n.view.setOpacity(1.0)
         for pipe, _, _ in self._pipe_connections():
@@ -2956,6 +3373,10 @@ class MainWindow(QMainWindow):
     def _on_node_hover_leave(self, _node_id: str):
         if self._selected_node_id:
             self._apply_highlight(self._selected_node_id)
+        elif self._search_bar.text().strip():
+            self._cmd_search(self._search_bar.text())
+        elif self._freq_btn.isChecked():
+            self._apply_frequency_heat()
         else:
             self._clear_highlight()
         self.props_panel.end_preview()
@@ -2975,11 +3396,27 @@ class MainWindow(QMainWindow):
             act_start = menu.addAction("Remove from Start Nodes" if is_start else "Set as Start Node")
             act_start.triggered.connect(lambda: self._toggle_start_node(node_id))
 
+            act_connect = menu.addAction("Connect to…")
+            act_connect.triggered.connect(lambda: self._cmd_start_connect(node_id))
+
+            nexts = self.script.nodes.get(node_id, {}).get('next', [])
+            if nexts:
+                del_conn_menu = menu.addMenu("Delete Connection →")
+                for tgt in nexts:
+                    act_del = del_conn_menu.addAction(tgt)
+                    act_del.triggered.connect(
+                        lambda _=False, f=node_id, t=tgt: self._cmd_delete_edge(f, t)
+                    )
+
             menu.addSeparator()
 
             act_expand = menu.addAction("Expand Node (AI)")
             act_expand.triggered.connect(lambda: self._cmd_expand_node(node_id))
             act_expand.setEnabled(self.ai.ready and not self.ai.busy)
+
+            act_continue = menu.addAction("Continue from Here (AI)")
+            act_continue.triggered.connect(lambda: self._cmd_continue_from_node(node_id))
+            act_continue.setEnabled(self.ai.ready and not self.ai.busy)
 
             act_rewrite = menu.addAction("AI Rewrite Text")
             act_rewrite.triggered.connect(lambda: self._cmd_rewrite_node(node_id))
@@ -3006,6 +3443,10 @@ class MainWindow(QMainWindow):
             if self.ai.ready and not self.ai.busy:
                 act_gen = menu.addAction("Generate Graph (AI)")
                 act_gen.triggered.connect(self.chat_panel._cmd_generate_graph)
+
+            menu.addSeparator()
+            act_freq = menu.addAction("Toggle Frequency Heat Map")
+            act_freq.triggered.connect(lambda: self._freq_btn.setChecked(not self._freq_btn.isChecked()))
 
             menu.addSeparator()
             act_fit = menu.addAction("Fit View")
@@ -3047,7 +3488,7 @@ class MainWindow(QMainWindow):
         node = self._node_items.get(node_id)
         if node:
             nd = self.script.nodes.get(node_id, {})
-            self._set_node_color(node, nd)
+            self._set_node_color(node, nd, in_cycle=node_id in self._cycle_nodes)
             display = nd.get("label") or node_id
             node.set_name(display)
 
@@ -3071,6 +3512,11 @@ class MainWindow(QMainWindow):
             mx = int(parts[2]) if len(parts) > 2 else 5
             self._cmd_expand_node(node_id, node_min=mn, node_max=mx)
             return
+        if signal.startswith("__delete_edge__"):
+            parts = signal[len("__delete_edge__"):].split("__")
+            if len(parts) == 2:
+                self._cmd_delete_edge(parts[0], parts[1])
+            return
         # Regular modification — refresh appearance
         self._refresh_node(signal)
         self._update_title()
@@ -3079,6 +3525,8 @@ class MainWindow(QMainWindow):
         """Called after AI generates a graph."""
         self._rebuild_graph()
         self._update_title()
+        self._maybe_refresh_freq()
+        self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Graph updated: {len(self.script.nodes)} nodes")
 
     def _cmd_add_node(self):
@@ -3095,7 +3543,22 @@ class MainWindow(QMainWindow):
         self._selected_node_id = node_id
         self.props_panel.load_node(self.script, node_id)
         self._update_title()
+        self._maybe_refresh_freq()
         self.status_bar.showMessage(f"Added '{node_id}'")
+
+    def _cmd_start_connect(self, node_id: str):
+        self._pending_connect_from = node_id
+        self.graph.viewer().viewport().setCursor(Qt.CursorShape.CrossCursor)
+        label = self.script.nodes.get(node_id, {}).get('label') or node_id
+        self.status_bar.showMessage(
+            f"Connect from '{label}' — click the target node  (Escape to cancel)"
+        )
+
+    def _cancel_pending_connect(self):
+        if self._pending_connect_from:
+            self._pending_connect_from = None
+            self.graph.viewer().viewport().unsetCursor()
+            self.status_bar.showMessage("Connection cancelled")
 
     def _cmd_delete_node(self, node_id: str = None):
         nid = node_id or self._selected_node_id
@@ -3114,7 +3577,40 @@ class MainWindow(QMainWindow):
             self._selected_node_id = None
             self.props_panel.clear()
         self._update_title()
+        self._maybe_refresh_freq()
         self.status_bar.showMessage(f"Deleted '{nid}'")
+
+    def _cmd_delete_selected_pipes(self) -> bool:
+        """Delete selected pipes and/or nodes. Returns True if anything was deleted."""
+        deleted = False
+        for item, from_id, to_id in list(self._pipe_connections()):
+            if item.isSelected():
+                self._cmd_delete_edge(from_id, to_id)
+                deleted = True
+        selected_nids = [
+            nid for nid, node in self._node_items.items()
+            if node.view.isSelected()
+        ]
+        for nid in selected_nids:
+            self._cmd_delete_node(nid)
+            deleted = True
+        return deleted
+
+    def _cmd_delete_edge(self, from_id: str, to_id: str):
+        src = self._node_items.get(from_id)
+        tgt = self._node_items.get(to_id)
+        if src and tgt:
+            for p in src.output(0).connected_ports():
+                if p.node() is tgt:
+                    src.output(0).disconnect_from(p)
+                    break
+        else:
+            # Nodes not in graph (shouldn't happen) — clean up data directly
+            self.script.remove_edge(from_id, to_id)
+            if self._selected_node_id:
+                self.props_panel.rebuild_edge_list(self.script, self._selected_node_id)
+            self._update_title()
+            self._maybe_refresh_freq()
 
     def _cmd_expand_node(self, node_id: str, node_min: int = 2, node_max: int = 5):
         if not node_id or node_id not in self.script.nodes:
@@ -3142,7 +3638,7 @@ class MainWindow(QMainWindow):
         def on_done(data):
             n = len(data.get("nodes", {}))
             self.script.apply_expansion(node_id, data)
-            for nid, pos in _compute_layout(self.script).items():
+            for nid, pos in _layout_tree(self.script).items():
                 self.script.update_pos(nid, pos)
             self._rebuild_graph()
             if node_id in self.script.nodes:
@@ -3172,6 +3668,192 @@ class MainWindow(QMainWindow):
             existing_custom_tags=existing_custom_tags,
         )
 
+    def _cmd_continue_from_node(self, node_id: str):
+        """Generate 2-4 forward layers from an existing node and wire them to it."""
+        if not node_id or node_id not in self.script.nodes:
+            self.status_bar.showMessage("Select a node to continue from")
+            return
+        if not self.ai.ready:
+            self.status_bar.showMessage("claude CLI not found")
+            return
+        if self.ai.busy:
+            self.status_bar.showMessage("AI is busy...")
+            return
+
+        nd = self.script.nodes[node_id]
+        hint = self.chat_panel.chat_input.toPlainText().strip()
+        self.status_bar.showMessage(f"Continuing from '{node_id}'...")
+
+        def on_done(data):
+            # Reuse apply_expansion: treat start_nodes as connect_from targets
+            expansion_data = dict(data)
+            expansion_data['connect_from'] = data.get('start_nodes', [])
+            self.script.apply_expansion(node_id, expansion_data)
+            for nid, pos in _layout_tree(self.script).items():
+                self.script.update_pos(nid, pos)
+            self._rebuild_graph()
+            self._select_node(node_id)
+            n = len(data.get("nodes", {}))
+            self._update_title()
+            self.status_bar.showMessage(f"Continued '{node_id}' → {n} new nodes")
+            self.chat_panel.append_message("assistant",
+                f"Continued from '{node_id}' with {n} new nodes.")
+
+        def on_error(e):
+            self.status_bar.showMessage(f"Continue error: {e[:60]}")
+            self.chat_panel.append_message("assistant", f"[Continue error] {e}")
+
+        self.ai.continue_from_node(
+            source_id=node_id,
+            source_text=nd.get("text", ""),
+            source_tags=nd.get("tags", []),
+            ui_queue=self.ui_queue,
+            on_done=on_done,
+            on_error=on_error,
+            story_context=self.script.story_context_focused,
+            node_hint=nd.get("hint", "") or hint,
+        )
+
+    def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
+        """Monte Carlo random walk. Returns {node_id: visit_count}."""
+        nodes = self.script.nodes
+        starts = self.script.start_nodes or list(nodes.keys())
+        counts = {nid: 0 for nid in nodes}
+        for _ in range(n_runs):
+            current = random.choice(starts)
+            steps = 0
+            while current and steps < 300:
+                if current not in nodes:
+                    break
+                counts[current] += 1
+                nd = nodes[current]
+                nexts = nd.get('next', [])
+                weights = nd.get('weights', [1.0] * len(nexts))
+                if not nexts:
+                    break
+                total = sum(weights) or 1.0
+                r = random.random() * total
+                acc = 0.0
+                nxt = nexts[-1]
+                for nid, w in zip(nexts, weights):
+                    acc += w
+                    if r <= acc:
+                        nxt = nid
+                        break
+                current = nxt
+                steps += 1
+        return counts
+
+    def _cmd_frequency_analysis(self, active: bool):
+        """Toggle frequency heat map on/off. Bright = frequently visited, dim = rarely reached."""
+        if not active:
+            self._freq_counts = {}
+            self._clear_highlight()
+            self.status_bar.showMessage("Frequency map off")
+            return
+        if not self.script or not self.script.nodes:
+            self._freq_btn.setChecked(False)
+            self.status_bar.showMessage("No nodes to analyse")
+            return
+
+        N_RUNS = 2000
+        self._freq_counts = self._run_frequency_simulation(N_RUNS)
+        self._apply_frequency_heat()
+        total_visits = sum(self._freq_counts.values()) or 1
+        self.status_bar.showMessage(
+            f"Frequency map: {N_RUNS} runs, {total_visits} total node visits — "
+            "bright = frequent, dim = rare"
+        )
+
+    def _maybe_refresh_freq(self):
+        """Re-run simulation and refresh heat map if the freq toggle is on."""
+        if self._freq_btn.isChecked():
+            self._freq_counts = self._run_frequency_simulation(2000)
+            self._apply_frequency_heat()
+
+    def _detect_cycles(self) -> set:
+        """Return the set of node IDs that participate in at least one cycle (DFS)."""
+        nodes = self.script.nodes
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = {nid: WHITE for nid in nodes}
+        in_cycle: set = set()
+
+        def dfs(start: str):
+            stack = [(start, iter(nodes.get(start, {}).get('next', [])))]
+            path: list = [start]
+            color[start] = GRAY
+            while stack:
+                nid, children = stack[-1]
+                try:
+                    child = next(children)
+                    if child not in color:
+                        continue  # dangling reference — skip
+                    if color[child] == GRAY:
+                        # Back-edge found — mark the cycle portion of path
+                        idx = path.index(child)
+                        in_cycle.update(path[idx:])
+                    elif color[child] == WHITE:
+                        color[child] = GRAY
+                        path.append(child)
+                        stack.append((child, iter(nodes.get(child, {}).get('next', []))))
+                except StopIteration:
+                    color[nid] = BLACK
+                    stack.pop()
+                    if path and path[-1] == nid:
+                        path.pop()
+
+        for nid in list(nodes):
+            if color[nid] == WHITE:
+                dfs(nid)
+        return in_cycle
+
+    def _refresh_cycle_markers(self):
+        """Re-detect cycles, update borders, and show a status warning if any found."""
+        self._cycle_nodes = self._detect_cycles()
+        for nid, node in self._node_items.items():
+            nd = self.script.nodes.get(nid, {})
+            self._set_node_color(node, nd, in_cycle=nid in self._cycle_nodes)
+        if self._cycle_nodes:
+            names = ', '.join(sorted(self._cycle_nodes))
+            self.status_bar.showMessage(
+                f"⚠ Cycle detected involving: {names}", 8000
+            )
+
+    def _apply_frequency_heat(self):
+        """Apply opacity heat map from cached _freq_counts."""
+        if not self._freq_counts:
+            return
+        max_count = max(self._freq_counts.values()) or 1
+        for nid, n in self._node_items.items():
+            c = self._freq_counts.get(nid, 0)
+            opacity = max(0.04, c / max_count)
+            n.view.setOpacity(opacity)
+        for pipe, from_nid, to_nid in self._pipe_connections():
+            c = (self._freq_counts.get(from_nid, 0) + self._freq_counts.get(to_nid, 0)) / 2
+            pipe.setOpacity(max(0.03, c / max_count))
+
+    def _cmd_search(self, text: str):
+        """Highlight nodes whose text/label/ID contains the search string."""
+        if not text.strip():
+            self._clear_highlight()
+            return
+        term = text.strip().lower()
+        matched = set()
+        for nid, nd in self.script.nodes.items():
+            haystack = ' '.join([
+                nid,
+                nd.get('label', '') or '',
+                nd.get('text', '') or '',
+                ' '.join(nd.get('tags', [])),
+            ]).lower()
+            if term in haystack:
+                matched.add(nid)
+        for nid, n in self._node_items.items():
+            n.view.setOpacity(1.0 if nid in matched else 0.08)
+        for pipe, from_nid, to_nid in self._pipe_connections():
+            pipe.setOpacity(1.0 if (from_nid in matched and to_nid in matched) else 0.04)
+        self.status_bar.showMessage(f"Search: {len(matched)} matching node(s)")
+
     def _get_upstream_path(self, node_id: str, depth: int = 4) -> list:
         """Return [(ancestor_id, text), ...] oldest-first, up to `depth` hops."""
         reverse = {}
@@ -3190,8 +3872,16 @@ class MainWindow(QMainWindow):
         chain.reverse()
         return chain
 
+    def _cmd_apply_layout(self, layout_fn):
+        positions = layout_fn(self.script)
+        for node_id, (x, y) in positions.items():
+            if node_id in self._node_items:
+                self._node_items[node_id].set_pos(float(x), float(y))
+                self.script.update_pos(node_id, [x, y])
+        self.graph.fit_to_selection()
+
     def _cmd_fit_view(self):
-        layout = _compute_layout(self.script)
+        layout = _layout_tree(self.script)
         for node_id, (x, y) in layout.items():
             if node_id in self._node_items:
                 self._node_items[node_id].set_pos(float(x), float(y))
@@ -3271,7 +3961,10 @@ class MainWindow(QMainWindow):
             self.script = ScriptData.load(path)
             self._selected_node_id = None
             self._refresh_contexts()
+            for nid, pos in _layout_tree(self.script).items():
+                self.script.update_pos(nid, pos)
             self._rebuild_graph()
+            self.graph.fit_to_selection()
             self.props_panel.clear()
             self._update_title()
             self.status_bar.showMessage(f"Loaded: {path.name}")
@@ -3298,7 +3991,7 @@ class MainWindow(QMainWindow):
         self._stat_nodes.setText(f"Nodes: {n}")
 
         total_words = sum(len(nd.get("text", "").split()) for nd in nodes.values())
-        total_s = (total_words / 130) * 60  # ~130 wpm spoken
+        total_s = (total_words / 121) * 60  # ~121 wpm measured from bartiki audio
         if total_s < 60:
             dur_str = f"{total_s:.0f}s"
         elif total_s < 3600:
