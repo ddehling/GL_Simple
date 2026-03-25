@@ -79,6 +79,7 @@ SCRIPT_TEMPLATE = {
     "name": "New Script",
     "description": "",
     "story_context": "",
+    "story_context_focused": "",
     "voice": "Rachel",
     "voice_settings": {
         "stability": 0.5,
@@ -124,18 +125,26 @@ DESIGN PRINCIPLES:
 Think in LAYERS. Each layer is a narrative beat. Within a layer, multiple alternative nodes
 cover the same beat differently. Edges go forward through layers — no random cross-links.
 
-LAYER STRUCTURE (adapt depth to the content):
-  Layer 1 (opening)   : 1–3 nodes  — establish tone/setting
-  Layer 2 (development): 3–6 nodes — explore the theme, each from a different angle
-  Layer 3 (turn)      : 2–4 nodes  — complication, deepening, or shift in feeling
-  Layer 4 (resolution): 1–3 nodes  — landing, conclusion, or open question
+LAYER STRUCTURE (use as many layers as the content warrants, up to 8):
+  Layer 1 (intro)      : 1–3 nodes  — establish tone, place, or speaker
+  Layer 2 (opening)    : 2–4 nodes  — widen the scene, first impressions
+  Layer 3 (development): 3–6 nodes  — explore the theme from different angles
+  Layer 4 (deepening)  : 2–5 nodes  — go further, add texture or contrast
+  Layer 5 (bridge)     : 2–4 nodes  — transitional energy, shift is coming
+  Layer 6 (turn)       : 2–4 nodes  — complication, revelation, or emotional shift
+  Layer 7 (descent)    : 1–3 nodes  — lean into the change, consequences felt
+  Layer 8 (resolution) : 1–3 nodes  — landing, conclusion, or open question
+
+For shorter scripts, skip layers or collapse them — a 4-layer script is fine.
+For longer scripts, use all 8 to create a full arc with genuine depth.
 
 BRANCHING: any node in layer N may connect to 2–4 nodes in layer N+1.
 MERGING:   multiple nodes in layer N may all point to the same node in layer N+1.
            This creates convergence points — moments every path passes through.
 
 Good pattern:
-  intro → [dev_a, dev_b, dev_c]        ← branch
+  intro → [open_a, open_b]             ← branch early
+  open_a, open_b → [dev_a, dev_b, dev_c]
   dev_a, dev_b → [turn_x]              ← merge
   dev_c        → [turn_y]
   turn_x, turn_y → [close_a, close_b]  ← merge then branch again
@@ -146,8 +155,9 @@ Avoid:
   - Chains with no branching at all (boring, no variation)
 
 WEIGHTS: use 1.0 as default. Use 2.0 to favour a path, 0.5 to make it rare.
-TAGS: label each node's layer role: "intro", "development", "turn", "resolution", "bridge"
-node IDs: short_snake_case, layer-prefixed (e.g. "intro_storm", "dev_pride", "close_silence")
+TAGS: label each node with its layer role:
+  "intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"
+node IDs: short_snake_case, layer-prefixed (e.g. "intro_storm", "dev_pride", "turn_silence", "res_still")
 
 VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
   stability      0.0–1.0  lower = more expressive/varied delivery
@@ -155,10 +165,13 @@ VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
   style          0.0–1.0  higher = more dramatic/theatrical
 
   Layer defaults:
-    intro       stability 0.65  style 0.15  (calm, scene-setting)
+    intro       stability 0.65  style 0.10  (calm, orienting)
+    opening     stability 0.60  style 0.20  (settling in, atmospheric)
     development stability 0.50  style 0.35  (engaged, exploring)
+    deepening   stability 0.45  style 0.45  (more invested, richer)
     bridge      stability 0.45  style 0.40  (transitional energy)
     turn        stability 0.30  style 0.65  (tense, expressive)
+    descent     stability 0.25  style 0.70  (intense, committed)
     resolution  stability 0.60  style 0.15  (settled, reflective)
   Adjust within layer if the content is notably more or less intense than usual.
 
@@ -173,7 +186,16 @@ You are expanding a single node in a narrative graph for an immersive audio inst
 You will receive one existing node and must generate new nodes that continue FROM it.
 
 Each new node is a short spoken segment (40–100 words, ~15–35 seconds when read aloud).
-Use evocative, atmospheric language consistent with the source node's tone and theme.
+
+THEMATIC CONTINUITY — this is the most important rule:
+The daughter nodes must feel like they are in the same room as the parent node.
+- Keep the same specific imagery, sensory details, and atmosphere.
+- If the parent mentions a specific character, place, or object, the daughters should
+  stay in that world. Do not introduce unrelated new concepts.
+- A listener should hear a daughter node immediately after the parent and feel continuity,
+  not a scene change.
+- The arc may deepen, shift in feeling, or reveal something new — but the SUBJECT stays close.
+- Think of it as zooming in or turning a corner, not cutting to a new location.
 
 Respond with ONLY a JSON object — no markdown fences, no explanation:
 {
@@ -182,30 +204,39 @@ Respond with ONLY a JSON object — no markdown fences, no explanation:
       "text": "Spoken text, 40-100 words.",
       "next": [],
       "weights": [],
-      "tags": ["development"],
+      "tags": ["development", "toad", "revelation"],
       "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35}
     }
   },
   "connect_from": ["new_node_id_1", "new_node_id_2"]
 }
 
+TAGGING RULES — every node must have a tags array with:
+1. Exactly one layer tag (intro/opening/development/deepening/bridge/turn/descent/resolution)
+2. Custom tags for everything present in the node text — characters, themes, locations, objects.
+   Any custom tag from the parent node should appear in daughters where that element is present.
+   Prefer tags already used in the script (a list will be provided).
+
 "connect_from": the new node IDs that the SOURCE node should gain edges to.
 All other edges are between the new nodes themselves.
 
-Layer progression rules:
-- Determine the source node's layer from its tags (intro→development→turn→resolution)
-- New nodes should be in the NEXT layer
+Layer progression rules (secondary to thematic continuity):
+- Layer order: intro → opening → development → deepening → bridge → turn → descent → resolution
+- Determine the source node's layer from its tags, then place new nodes in the NEXT layer(s)
+- You may skip layers if the content calls for it, or span multiple layers in one expansion
 - You may branch (source → multiple new nodes) or chain (source → A → B → C → ...)
 - Branching then merging is encouraged: source → [A, B] and both A, B → C
-- 2–5 new nodes is typical; more for a rich expansion, fewer for a tight chain
-- node IDs: short_snake_case, layer-prefixed (e.g. "dev_kelp_drift", "turn_silence")
+- The prompt will specify an exact node count range — generate that many new nodes, no more, no fewer
+- node IDs: short_snake_case, layer-prefixed (e.g. "dev_kelp_drift", "turn_silence", "res_still")
 - Weights default to 1.0 unless you have reason to favour one path
-- Terminal nodes (resolution/end) must have next: [] — NEVER link back to intro or start nodes.
+- Terminal nodes (resolution/descent end) must have next: [] — NEVER link back to intro or start nodes.
   The runtime restarts automatically from a random start node when a terminal finishes.
 
 VOICE SETTINGS: set voice_settings on every node (stability 0-1, similarity_boost 0.75, style 0-1).
-  intro stability~0.65 style~0.15 | development stability~0.50 style~0.35
-  turn  stability~0.30 style~0.65 | resolution  stability~0.60 style~0.15
+  intro   stab~0.65 style~0.10 | opening  stab~0.60 style~0.20
+  develop stab~0.50 style~0.35 | deepen   stab~0.45 style~0.45
+  bridge  stab~0.45 style~0.40 | turn     stab~0.30 style~0.65
+  descent stab~0.25 style~0.70 | resolut  stab~0.60 style~0.15
   Adjust within the layer to match the specific emotional intensity of the node's text.
 """
 
@@ -224,12 +255,25 @@ Rules for voice_settings (ElevenLabs):
 - stability 0–1: higher = more consistent/calm, lower = more expressive/varied
 - similarity_boost: keep at 0.75
 - style 0–1: higher = more emotionally performed
-- Layer guidance: intro stability~0.65 style~0.15 | development stability~0.50 style~0.35
-                  turn stability~0.30 style~0.65 | resolution stability~0.60 style~0.15
+- Layer guidance:
+    intro   stab~0.65 style~0.10 | opening  stab~0.60 style~0.20
+    develop stab~0.50 style~0.35 | deepen   stab~0.45 style~0.45
+    bridge  stab~0.45 style~0.40 | turn     stab~0.30 style~0.65
+    descent stab~0.25 style~0.70 | resolut  stab~0.60 style~0.15
 - Adjust to match the specific emotional intensity of the rewritten text
 
 Respond with ONLY a JSON object in this exact format, no other text:
-{"text": "...", "voice_settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.3}}
+{
+  "text": "...",
+  "tags": ["development", "toad", "revelation"],
+  "voice_settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.3}
+}
+
+TAGGING RULES — same as for expansion:
+1. Exactly one layer tag (intro/opening/development/deepening/bridge/turn/descent/resolution)
+2. Custom tags for characters, themes, locations, objects actually present in the rewritten text.
+   Keep any existing custom tags that still apply. Add new ones if the rewrite introduces them.
+   A list of existing script tags will be provided in the prompt — prefer those.
 """
 
 SYSTEM_CHAT = """\
@@ -274,8 +318,15 @@ class ScriptData:
     @property
     def story_context(self) -> str: return self._data.get("story_context", "")
 
+    @property
+    def story_context_focused(self) -> str: return self._data.get("story_context_focused", "")
+
     def set_story_context(self, text: str):
         self._data["story_context"] = text
+        self.dirty = True
+
+    def set_story_context_focused(self, text: str):
+        self._data["story_context_focused"] = text
         self.dirty = True
 
     def summary(self, max_text: int = 80) -> str:
@@ -449,22 +500,51 @@ class ScriptData:
             clean[safe_id] = safe_nd
         return clean
 
+    def _dedupe_ids(self, incoming: dict) -> dict:
+        """Return a copy of `incoming` nodes with any IDs that collide with the
+        existing script renamed (e.g. dev_kelp → dev_kelp_2, dev_kelp_3, …).
+        All internal next-references are updated to match the new names."""
+        taken = set(self._data["nodes"].keys())
+        remap = {}
+        for nid in list(incoming.keys()):
+            new_id = nid
+            if new_id in taken:
+                counter = 2
+                while f"{nid}_{counter}" in taken:
+                    counter += 1
+                new_id = f"{nid}_{counter}"
+            remap[nid] = new_id
+            taken.add(new_id)
+
+        # Build renamed dict with updated next references
+        result = {}
+        for old_id, nd in incoming.items():
+            new_id = remap[old_id]
+            new_nd = dict(nd)
+            new_nd['next'] = [remap.get(n, n) for n in nd.get('next', [])]
+            result[new_id] = new_nd
+        return result, remap
+
     def apply_generated(self, generated: dict):
         """Merge AI-generated graph into current script (additive).
 
         Positions nodes left-to-right by layer using tag hints:
-        intro < development < bridge < turn < resolution
+        intro < opening < development < deepening < bridge < turn < descent < resolution
         Nodes within a layer are stacked vertically.
         """
         generated = dict(generated)
-        generated['nodes']       = self._sanitize_nodes(generated.get('nodes', {}))
-        generated['start_nodes'] = [self._sanitize_id(n) for n in generated.get('start_nodes', [])]
+        generated['nodes'] = self._sanitize_nodes(generated.get('nodes', {}))
+        generated['nodes'], remap = self._dedupe_ids(generated['nodes'])
+        generated['start_nodes'] = [
+            remap.get(self._sanitize_id(n), self._sanitize_id(n))
+            for n in generated.get('start_nodes', [])
+        ]
         if self._data["name"] == "New Script" and generated.get("name"):
             self._data["name"] = generated["name"]
         if generated.get("description"):
             self._data["description"] = generated["description"]
 
-        LAYER_ORDER = ["intro", "development", "bridge", "turn", "resolution"]
+        LAYER_ORDER = ["intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"]
         LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
         LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
 
@@ -474,9 +554,6 @@ class ScriptData:
         new_nodes = generated.get("nodes", {})
 
         for nid, ndata in new_nodes.items():
-            # Never overwrite an existing node
-            if nid in self._data["nodes"]:
-                continue
 
             tags  = ndata.get("tags", [])
             layer = next((t for t in tags if t in LAYER_ORDER), "_default")
@@ -505,9 +582,13 @@ class ScriptData:
     def apply_expansion(self, source_id: str, expansion: dict):
         """Add expansion nodes and wire them from source_id."""
         expansion = dict(expansion)
-        expansion['nodes']        = self._sanitize_nodes(expansion.get('nodes', {}))
-        expansion['connect_from'] = [self._sanitize_id(n) for n in expansion.get('connect_from', [])]
-        LAYER_ORDER = ["intro", "development", "bridge", "turn", "resolution"]
+        expansion['nodes'] = self._sanitize_nodes(expansion.get('nodes', {}))
+        expansion['nodes'], remap = self._dedupe_ids(expansion['nodes'])
+        expansion['connect_from'] = [
+            remap.get(self._sanitize_id(n), self._sanitize_id(n))
+            for n in expansion.get('connect_from', [])
+        ]
+        LAYER_ORDER = ["intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"]
         LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
         LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
 
@@ -518,10 +599,6 @@ class ScriptData:
                     layer_counts[tag] = layer_counts.get(tag, 0) + 1
 
         for nid, ndata in expansion.get("nodes", {}).items():
-            # Never overwrite an existing node — the AI may echo back the source node
-            if nid in self._data["nodes"]:
-                continue
-
             tags  = ndata.get("tags", [])
             layer = next((t for t in tags if t in LAYER_ORDER), "_default")
             x     = LAYER_X[layer]
@@ -704,28 +781,76 @@ class AIAssistant:
     def expand_node(self, source_id: str, source_text: str, source_tags: list,
                     hint: str, ui_queue: queue.SimpleQueue, on_done, on_error,
                     story_context: str = '', node_hint: str = '',
-                    upstream_path: list = None):
+                    upstream_path: list = None,
+                    node_min: int = 2, node_max: int = 5,
+                    existing_custom_tags: list = None):
         if self._busy:
             return
         self._busy = True
 
+        # Prompt is ordered lowest→highest weight so the most important content
+        # is closest to the generation point (recency bias).
         parts = []
+
+        # ── Background: story context (lowest weight, read first / least recent) ──
         if story_context:
-            parts.append(f'Story context:\n{story_context}\n')
+            sc = story_context[:1000] + '...' if len(story_context) > 1000 else story_context
+            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+
+        if existing_custom_tags:
+            parts.append(f'EXISTING CUSTOM TAGS in this script (prefer these when applicable): {", ".join(sorted(existing_custom_tags))}')
+
+        # ── Ancestor context: oldest first, least influential ────────────────
+        ANCESTOR_LABELS = [
+            ('EARLIER CONTEXT (faint background)',     40),
+            ('GREAT-GRANDPARENT (minimal influence)',  60),
+            ('GRANDPARENT (light influence)',         100),
+            ('DIRECT PARENT (moderate influence)',    200),
+        ]
         if upstream_path:
-            path_str = '\n'.join(f'  [{nid}]: "{text}"'
-                                 for nid, text in upstream_path)
-            parts.append(f'Upstream path leading to source node:\n{path_str}\n')
-        parts.append(
-            f'Source node: "{source_id}"\n'
-            f'Tags: {source_tags}\n'
-            f'Text: "{source_text}"'
-        )
+            parts.append('\nANCESTOR CONTEXT (for arc continuity only — do not let this pull the theme away from the source node):')
+            for i, (nid, text) in enumerate(upstream_path):  # oldest first
+                label, max_chars = ANCESTOR_LABELS[i] if i < len(ANCESTOR_LABELS) else ANCESTOR_LABELS[0]
+                excerpt = text[:max_chars] + '...' if len(text) > max_chars else text
+                parts.append(f'  {label}\n  [{nid}]: "{excerpt}"')
+
+        # ── Node intent / guidance (near-primary) ────────────────────────────
         if node_hint:
-            parts.append(f'\nNode hint: {node_hint}')
+            parts.append(
+                f'\nNODE INTENT (author direction — high weight):\n  {node_hint}'
+            )
         if hint:
-            parts.append(f'\nGuidance: {hint}')
-        parts.append('\nGenerate continuation nodes branching from this node.')
+            parts.append(f'GUIDANCE: {hint}')
+
+        # ── Source node (highest weight — closest to generation) ─────────────
+        layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+        custom_tags = [t for t in source_tags if t not in layer_tags]
+
+        words = re.findall(r"\b[a-zA-Z]{4,}\b", source_text)
+        stopwords = {"that","this","with","from","have","they","their","there",
+                     "when","what","which","will","been","were","then","than",
+                     "just","into","like","over","some","each","only","also"}
+        anchors = list(dict.fromkeys(
+            w.lower() for w in words if w.lower() not in stopwords
+        ))[:12]
+
+        source_block = (
+            f'\nSOURCE NODE — stay close to this:\n'
+            f'  ID: {source_id}\n'
+            f'  Tags: {source_tags}\n'
+            f'  Text: "{source_text}"'
+        )
+        if custom_tags:
+            source_block += (
+                f'\n  Custom tags to carry into daughters: {", ".join(custom_tags)}'
+            )
+        if anchors:
+            source_block += (
+                f'\n  Key imagery to remain present: {", ".join(anchors)}'
+            )
+        parts.append(source_block)
+
+        parts.append(f'\nGenerate {node_min}–{node_max} continuation nodes branching from this node.')
         prompt = '\n'.join(parts)
 
         def run():
@@ -771,6 +896,33 @@ class AIAssistant:
             finally:
                 self._busy = False
 
+        threading.Thread(target=run, daemon=True).start()
+
+    def generate_focused_context(self, full_context: str,
+                                  ui_queue: queue.SimpleQueue, on_done, on_error):
+        if self._busy:
+            return
+        self._busy = True
+        system = (
+            "You distill a detailed story/character bible into a focused AI context "
+            "for use during node expansion in a narrative audio script.\n\n"
+            "Rules:\n"
+            "- Output plain text only — no JSON, no markdown, no headers\n"
+            "- Maximum 800 characters\n"
+            "- Keep: core character nature, tone/voice guidance, key sensory anchors\n"
+            "- Drop: backstory detail, lists, repeated ideas, anything decorative\n"
+            "- Write in present tense, dense and specific\n"
+            "- This text will be labeled 'background flavour' so it must not overpower "
+            "the node being expanded — keep it atmospheric, not directive"
+        )
+        def run():
+            try:
+                result = self._run_claude(system, full_context)
+                ui_queue.put(lambda r=result: on_done(r.strip()))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
         threading.Thread(target=run, daemon=True).start()
 
 
@@ -973,9 +1125,12 @@ def _playback_loop(play_script: "ScriptData", stop_event: threading.Event,
 
 TAG_COLORS = {
     'intro':       (60,  100, 180),
+    'opening':     (60,  130, 160),
     'development': (50,  140, 70),
-    'bridge':      (140, 100, 50),
+    'deepening':   (80,  130, 60),
+    'bridge':      (140, 120, 50),
     'turn':        (180, 80,  50),
+    'descent':     (160, 50,  60),
     'resolution':  (120, 60,  150),
 }
 
@@ -1041,8 +1196,8 @@ class PropertiesPanel(QWidget):
         # Text
         layout.addWidget(QLabel("Text:"))
         self.text_edit = QTextEdit()
-        self.text_edit.setMinimumHeight(80)
-        self.text_edit.setMaximumHeight(150)
+        self.text_edit.setMinimumHeight(240)
+        self.text_edit.setMaximumHeight(450)
         self.text_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         self.text_edit.textChanged.connect(self._autosave_text)
         layout.addWidget(self.text_edit)
@@ -1060,14 +1215,62 @@ class PropertiesPanel(QWidget):
         self.rewrite_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
         layout.addWidget(self.rewrite_status)
 
-        # Tags
-        tags_row = QHBoxLayout()
-        tags_row.addWidget(QLabel("Tags:"))
+        # Node hint
+        lbl_hint = QLabel("Node Hint (for AI):")
+        lbl_hint.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        layout.addWidget(lbl_hint)
+        self.hint_edit = QTextEdit()
+        self.hint_edit.setPlaceholderText("Optional context for AI expand/rewrite on this node...")
+        self.hint_edit.setMinimumHeight(50)
+        self.hint_edit.setMaximumHeight(80)
+        self.hint_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        self.hint_edit.textChanged.connect(self._autosave_hint)
+        layout.addWidget(self.hint_edit)
+
+        # Expand button + node count
+        expand_row = QHBoxLayout()
+        expand_btn = QPushButton("Expand Node (AI)")
+        expand_btn.clicked.connect(self._cmd_expand)
+        expand_row.addWidget(expand_btn)
+        expand_row.addWidget(QLabel("nodes:"))
+        self.expand_min = QDoubleSpinBox()
+        self.expand_min.setDecimals(0)
+        self.expand_min.setRange(1, 20)
+        self.expand_min.setValue(2)
+        self.expand_min.setFixedWidth(44)
+        self.expand_min.setToolTip("Min nodes to generate")
+        expand_row.addWidget(self.expand_min)
+        expand_row.addWidget(QLabel("–"))
+        self.expand_max = QDoubleSpinBox()
+        self.expand_max.setDecimals(0)
+        self.expand_max.setRange(1, 20)
+        self.expand_max.setValue(5)
+        self.expand_max.setFixedWidth(44)
+        self.expand_max.setToolTip("Max nodes to generate")
+        expand_row.addWidget(self.expand_max)
+        layout.addLayout(expand_row)
+
+        # Layer tag (dropdown)
+        layer_row = QHBoxLayout()
+        layer_row.addWidget(QLabel("Layer:"))
+        self.layer_combo = QComboBox()
+        self.layer_combo.addItem("(none)", "")
+        for _lt in ["intro", "opening", "development", "deepening",
+                    "bridge", "turn", "descent", "resolution"]:
+            self.layer_combo.addItem(_lt, _lt)
+        self.layer_combo.currentIndexChanged.connect(self._autosave_tags)
+        layer_row.addWidget(self.layer_combo)
+        layout.addLayout(layer_row)
+
+        # Custom tags
+        custom_row = QHBoxLayout()
+        custom_row.addWidget(QLabel("Tags:"))
         self.tags_edit = QLineEdit()
-        self.tags_edit.setPlaceholderText("intro, development, ...")
+        self.tags_edit.setPlaceholderText("goat, toad, revelation, ...")
+        self.tags_edit.setToolTip("Custom tags: characters, themes, locations — comma separated")
         self.tags_edit.textChanged.connect(self._autosave_tags)
-        tags_row.addWidget(self.tags_edit)
-        layout.addLayout(tags_row)
+        custom_row.addWidget(self.tags_edit)
+        layout.addLayout(custom_row)
 
         # Is start
         self.is_start_cb = QCheckBox("Start node")
@@ -1139,32 +1342,12 @@ class PropertiesPanel(QWidget):
 
         self._audio_stop_event: Optional[threading.Event] = None
 
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("color: #555;")
-        layout.addWidget(sep2)
-
-        lbl_hint = QLabel("Node Hint (for AI):")
-        lbl_hint.setStyleSheet("color: #aaaaaa; font-size: 10px;")
-        layout.addWidget(lbl_hint)
-        self.hint_edit = QTextEdit()
-        self.hint_edit.setPlaceholderText("Optional context for AI expand/rewrite on this node...")
-        self.hint_edit.setMinimumHeight(50)
-        self.hint_edit.setMaximumHeight(80)
-        self.hint_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        self.hint_edit.textChanged.connect(self._autosave_hint)
-        layout.addWidget(self.hint_edit)
-
-        expand_btn = QPushButton("Expand Node (AI)")
-        expand_btn.clicked.connect(self._cmd_expand)
-        layout.addWidget(expand_btn)
+        layout.addStretch(1)
 
         del_btn = QPushButton("Delete Node")
         del_btn.setStyleSheet("background-color: #8B2222; color: white;")
         del_btn.clicked.connect(self._cmd_delete)
         layout.addWidget(del_btn)
-
-        layout.addStretch(1)
 
         self.setEnabled(False)
 
@@ -1179,7 +1362,13 @@ class PropertiesPanel(QWidget):
             self.label_edit.setText(nd.get("label") or node_id)
             self.text_edit.setPlainText(nd.get("text", ""))
             self.hint_edit.setPlainText(nd.get("hint", ""))
-            self.tags_edit.setText(", ".join(nd.get("tags", [])))
+            all_tags   = nd.get("tags", [])
+            layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+            layer_tag  = next((t for t in all_tags if t in layer_tags), "")
+            custom_tags = [t for t in all_tags if t not in layer_tags]
+            idx = self.layer_combo.findData(layer_tag)
+            self.layer_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.tags_edit.setText(", ".join(custom_tags))
             self.is_start_cb.setChecked(node_id in script.start_nodes)
 
             vs = nd.get("voice_settings", {})
@@ -1211,6 +1400,23 @@ class PropertiesPanel(QWidget):
 
         self.setEnabled(True)
 
+    def preview_node(self, script: ScriptData, node_id: str):
+        """Show another node's data without changing the active _node_id.
+        All autosave signals are blocked so nothing gets overwritten."""
+        if not node_id or node_id not in script.nodes:
+            return
+        saved_id = self._node_id
+        self._node_id = None          # block autosave during load
+        self.load_node(script, node_id)
+        self._node_id = saved_id      # restore so saves still go to selected node
+
+    def end_preview(self):
+        """Restore the panel to the currently selected node (or clear if none)."""
+        if self._node_id and self._script:
+            self.load_node(self._script, self._node_id)
+        else:
+            self.clear()
+
     def clear(self):
         self._node_id = None
         self._blocking = True
@@ -1219,6 +1425,7 @@ class PropertiesPanel(QWidget):
             self.label_edit.setText("")
             self.text_edit.setPlainText("")
             self.hint_edit.setPlainText("")
+            self.layer_combo.setCurrentIndex(0)
             self.tags_edit.setText("")
             self.is_start_cb.setChecked(False)
             self.stability_spin.setValue(0.5)
@@ -1335,9 +1542,10 @@ class PropertiesPanel(QWidget):
     def _autosave_tags(self):
         if self._blocking or not self._node_id or not self._script:
             return
-        raw = self.tags_edit.text()
-        self._script.update_tags(self._node_id,
-                                  [t.strip() for t in raw.split(",") if t.strip()])
+        layer = self.layer_combo.currentData() or ""
+        custom = [t.strip() for t in self.tags_edit.text().split(",") if t.strip()]
+        tags = ([layer] if layer else []) + custom
+        self._script.update_tags(self._node_id, tags)
         self.node_modified.emit(self._node_id)
 
     def _autosave_start(self):
@@ -1393,7 +1601,20 @@ class PropertiesPanel(QWidget):
         if parent_lines:
             parts.append("PRECEDING NODES:\n" + "\n".join(parent_lines))
         parts.append(f"CURRENT NODE [{self._node_id}]:\n{current or '(empty)'}")
-        parts.append(f"NODE TAGS: {', '.join(nd.get('tags', [])) or 'none'}")
+        all_tags = nd.get('tags', [])
+        layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+        layer_tag  = next((t for t in all_tags if t in layer_tags), "none")
+        custom_tags = [t for t in all_tags if t not in layer_tags]
+        parts.append(f"LAYER: {layer_tag}")
+        if custom_tags:
+            parts.append(f"CURRENT CUSTOM TAGS (keep those that still apply): {', '.join(custom_tags)}")
+        all_script_tags = sorted({
+            t for n in self._script.nodes.values()
+            for t in n.get("tags", [])
+            if t not in layer_tags
+        })
+        if all_script_tags:
+            parts.append(f"EXISTING SCRIPT TAGS (prefer these when applicable): {', '.join(all_script_tags)}")
         if hint:
             parts.append(f"GUIDANCE: {hint}")
         parts.append("Rewrite the spoken text for this node based on the above context and guidance.")
@@ -1404,30 +1625,37 @@ class PropertiesPanel(QWidget):
         node_id = self._node_id
 
         def on_done(data):
-            new_text = data.get("text", "").strip()
-            vs       = data.get("voice_settings", {})
+            new_text  = data.get("text", "").strip()
+            vs        = data.get("voice_settings", {})
+            new_tags  = data.get("tags", [])
             if self._script and node_id in self._script.nodes:
                 self._script.update_text(node_id, new_text)
-                if self._node_id == node_id:
-                    self._blocking = True
-                    try:
-                        self.text_edit.setPlainText(new_text)
-                    finally:
-                        self._blocking = False
+                if new_tags:
+                    self._script.update_tags(node_id, new_tags)
                 if vs:
                     self._script.update_node_voice_settings(node_id, {
                         "stability":        vs.get("stability",        0.5),
                         "similarity_boost": vs.get("similarity_boost", 0.75),
                         "style":            vs.get("style",            0.3),
                     })
-                    if self._node_id == node_id:
-                        self._blocking = True
-                        try:
+                if self._node_id == node_id:
+                    self._blocking = True
+                    try:
+                        self.text_edit.setPlainText(new_text)
+                        if new_tags:
+                            _lt = {"intro","opening","development","deepening",
+                                   "bridge","turn","descent","resolution"}
+                            lt  = next((t for t in new_tags if t in _lt), "")
+                            ct  = [t for t in new_tags if t not in _lt]
+                            idx = self.layer_combo.findData(lt)
+                            self.layer_combo.setCurrentIndex(idx if idx >= 0 else 0)
+                            self.tags_edit.setText(", ".join(ct))
+                        if vs:
                             self.stability_spin.setValue(vs.get("stability", 0.5))
                             self.similarity_spin.setValue(vs.get("similarity_boost", 0.75))
                             self.style_spin.setValue(vs.get("style", 0.3))
-                        finally:
-                            self._blocking = False
+                    finally:
+                        self._blocking = False
             self.rewrite_status.setText("Done")
             self.rewrite_status.setStyleSheet("color: #88ee88; font-size: 10px;")
             self.node_modified.emit(node_id)
@@ -1437,13 +1665,15 @@ class PropertiesPanel(QWidget):
             self.rewrite_status.setStyleSheet("color: #ff5555; font-size: 10px;")
 
         self._ai.rewrite_text(prompt, self._ui_queue, on_done, on_error,
-                              story_context=self._script.story_context)
+                              story_context=self._script.story_context_focused)
 
     def _cmd_expand(self):
         if not self._node_id or not self._script or not self._ai or not self._ui_queue:
             return
-        # Signal parent to handle expansion
-        self.node_modified.emit(f"__expand__{self._node_id}")
+        mn = int(self.expand_min.value())
+        mx = int(self.expand_max.value())
+        mx = max(mx, mn)
+        self.node_modified.emit(f"__expand__{self._node_id}__{mn}__{mx}")
 
     def _cmd_delete(self):
         if not self._node_id:
@@ -1913,7 +2143,7 @@ class AIChatPanel(QWidget):
         self._ai.chat(
             msg, self._ui_queue,
             script_summary=self._build_script_context(),
-            story_context=self._script.story_context if self._script else '',
+            story_context=self._script.story_context_focused if self._script else '',
             on_reply=lambda r: (
                 self.append_message("assistant", r),
                 self.status_label.setText("Claude replied"),
@@ -2310,6 +2540,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+        self._stat_nodes = QLabel("")
+        self._stat_nodes.setStyleSheet("color: #aaaaaa; padding-right: 16px;")
+        self._stat_duration = QLabel("")
+        self._stat_duration.setStyleSheet("color: #aaaaaa; padding-right: 8px;")
+        self.status_bar.addPermanentWidget(self._stat_nodes)
+        self.status_bar.addPermanentWidget(self._stat_duration)
+
     def _build_menu(self):
         menubar = self.menuBar()
 
@@ -2374,23 +2611,94 @@ class MainWindow(QMainWindow):
     def _cmd_open_story_context(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("Story Context")
-        dlg.setMinimumWidth(480)
-        dlg.setMinimumHeight(300)
+        dlg.setMinimumWidth(820)
+        dlg.setMinimumHeight(460)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(10, 10, 10, 10)
-        lbl = QLabel("Global story context — visible to all AI operations (expand, rewrite, generate):")
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
-        layout.addWidget(lbl)
-        edit = QTextEdit()
-        edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        edit.setPlainText(self.script.story_context)
-        layout.addWidget(edit)
-        btn = QPushButton("Save & Close")
-        btn.clicked.connect(dlg.accept)
-        layout.addWidget(btn)
+        layout.setSpacing(8)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # ── Left: full context (not sent to AI) ─────────────────────────────
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_lbl = QLabel("Full Context  (reference only — not seen by AI)")
+        left_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px; font-weight: bold;")
+        left_layout.addWidget(left_lbl)
+        full_edit = QTextEdit()
+        full_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        full_edit.setPlainText(self.script.story_context)
+        left_layout.addWidget(full_edit)
+        full_char_lbl = QLabel(f"{len(self.script.story_context)} characters")
+        full_char_lbl.setStyleSheet("color: #888888; font-size: 10px;")
+        full_edit.textChanged.connect(
+            lambda: full_char_lbl.setText(f"{len(full_edit.toPlainText())} characters"))
+        left_layout.addWidget(full_char_lbl)
+        splitter.addWidget(left)
+
+        # ── Right: focused context (sent to AI) ─────────────────────────────
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_lbl = QLabel("Focused Context  (seen by AI — keep under 1000 characters)")
+        right_lbl.setStyleSheet("color: #aaddaa; font-size: 10px; font-weight: bold;")
+        right_layout.addWidget(right_lbl)
+        focused_edit = QTextEdit()
+        focused_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        focused_edit.setPlainText(self.script.story_context_focused)
+        right_layout.addWidget(focused_edit)
+        focused_char_lbl = QLabel(f"{len(self.script.story_context_focused)} characters")
+        focused_char_lbl.setStyleSheet("color: #888888; font-size: 10px;")
+        focused_edit.textChanged.connect(
+            lambda: focused_char_lbl.setText(f"{len(focused_edit.toPlainText())} characters"))
+        right_layout.addWidget(focused_char_lbl)
+
+        gen_btn = QPushButton("Generate Focused Context from Full (AI)")
+        gen_btn.setToolTip("Use Claude to distill the full context into a focused ~800-char version")
+        right_layout.addWidget(gen_btn)
+        splitter.addWidget(right)
+
+        splitter.setSizes([400, 400])
+        layout.addWidget(splitter)
+
+        btn_row = QHBoxLayout()
+        status_lbl = QLabel("")
+        status_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        btn_row.addWidget(status_lbl)
+        btn_row.addStretch()
+        save_btn = QPushButton("Save & Close")
+        save_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+        def on_generate():
+            full = full_edit.toPlainText().strip()
+            if not full:
+                status_lbl.setText("Full context is empty.")
+                return
+            if not self.ai.ready:
+                status_lbl.setText("Claude CLI not found.")
+                return
+            if self.ai.busy:
+                status_lbl.setText("AI is busy...")
+                return
+            gen_btn.setEnabled(False)
+            status_lbl.setText("Generating...")
+            def on_done(text):
+                focused_edit.setPlainText(text)
+                gen_btn.setEnabled(True)
+                status_lbl.setText("Done.")
+            def on_error(e):
+                gen_btn.setEnabled(True)
+                status_lbl.setText(f"Error: {e[:60]}")
+            self.ai.generate_focused_context(full, self.ui_queue, on_done, on_error)
+
+        gen_btn.clicked.connect(on_generate)
+
         dlg.exec()
-        self.script.set_story_context(edit.toPlainText())
+        self.script.set_story_context(full_edit.toPlainText())
+        self.script.set_story_context_focused(focused_edit.toPlainText())
         self._update_title()
 
     def _cmd_open_voice_settings(self):
@@ -2594,7 +2902,23 @@ class MainWindow(QMainWindow):
             down3 |= downstream(nid)
         third = (up3 | down3) - second - first - {node_id}
 
-        highlighted = first | second | third | {node_id}
+        up4   = set()
+        for nid in up3:
+            up4 |= upstream(nid)
+        down4 = set()
+        for nid in down3:
+            down4 |= downstream(nid)
+        fourth = (up4 | down4) - third - second - first - {node_id}
+
+        up5   = set()
+        for nid in up4:
+            up5 |= upstream(nid)
+        down5 = set()
+        for nid in down4:
+            down5 |= downstream(nid)
+        fifth = (up5 | down5) - fourth - third - second - first - {node_id}
+
+        highlighted = first | second | third | fourth | fifth | {node_id}
 
         for nid, n in self._node_items.items():
             if nid == node_id:
@@ -2605,14 +2929,18 @@ class MainWindow(QMainWindow):
                 n.view.setOpacity(0.75)
             elif nid in third:
                 n.view.setOpacity(0.45)
+            elif nid in fourth:
+                n.view.setOpacity(0.28)
+            elif nid in fifth:
+                n.view.setOpacity(0.18)
             else:
-                n.view.setOpacity(0.12)
+                n.view.setOpacity(0.08)
 
         for pipe, from_nid, to_nid in self._pipe_connections():
             if from_nid in highlighted and to_nid in highlighted:
                 pipe.setOpacity(1.0)
             else:
-                pipe.setOpacity(0.08)
+                pipe.setOpacity(0.05)
 
     def _clear_highlight(self):
         """Restore all nodes and pipes to full opacity."""
@@ -2623,13 +2951,14 @@ class MainWindow(QMainWindow):
 
     def _on_node_hover_enter(self, node_id: str):
         self._apply_highlight(node_id)
+        self.props_panel.preview_node(self.script, node_id)
 
     def _on_node_hover_leave(self, _node_id: str):
-        # On mouse leave, restore to selection-based highlight if a node is selected
         if self._selected_node_id:
             self._apply_highlight(self._selected_node_id)
         else:
             self._clear_highlight()
+        self.props_panel.end_preview()
 
     def _on_graph_right_click(self, node_id: Optional[str], global_pos):
         from PySide6.QtWidgets import QMenu
@@ -2736,8 +3065,11 @@ class MainWindow(QMainWindow):
             self._cmd_delete_node(node_id)
             return
         if signal.startswith("__expand__"):
-            node_id = signal[len("__expand__"):]
-            self._cmd_expand_node(node_id)
+            parts = signal[len("__expand__"):].split("__")
+            node_id = parts[0]
+            mn = int(parts[1]) if len(parts) > 1 else 2
+            mx = int(parts[2]) if len(parts) > 2 else 5
+            self._cmd_expand_node(node_id, node_min=mn, node_max=mx)
             return
         # Regular modification — refresh appearance
         self._refresh_node(signal)
@@ -2752,8 +3084,9 @@ class MainWindow(QMainWindow):
     def _cmd_add_node(self):
         node_id = _next_node_id(self.script)
         existing = [nd.get("pos", [0, 0]) for nd in self.script.nodes.values()]
-        max_x = max((p[0] for p in existing), default=60)
-        pos = [max_x + 220, 60]
+        col_x = 60
+        max_y = max((p[1] for p in existing if p[0] < col_x + 150), default=-40)
+        pos = [col_x, max_y + 140]
         self.script.add_node(node_id, pos=pos)
         node = self.graph.create_node('narrative.NarrativeNode', name=node_id)
         node.set_pos(float(pos[0]), float(pos[1]))
@@ -2783,7 +3116,7 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.status_bar.showMessage(f"Deleted '{nid}'")
 
-    def _cmd_expand_node(self, node_id: str):
+    def _cmd_expand_node(self, node_id: str, node_min: int = 2, node_max: int = 5):
         if not node_id or node_id not in self.script.nodes:
             self.status_bar.showMessage("Select a node to expand")
             return
@@ -2797,6 +3130,13 @@ class MainWindow(QMainWindow):
         nd = self.script.nodes[node_id]
         hint = self.chat_panel.chat_input.toPlainText().strip()
 
+        _layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+        existing_custom_tags = sorted({
+            t for n in self.script.nodes.values()
+            for t in n.get("tags", [])
+            if t not in _layer_tags
+        })
+
         self.status_bar.showMessage(f"Expanding '{node_id}'...")
 
         def on_done(data):
@@ -2805,9 +3145,8 @@ class MainWindow(QMainWindow):
             for nid, pos in _compute_layout(self.script).items():
                 self.script.update_pos(nid, pos)
             self._rebuild_graph()
-            # Re-select same node
             if node_id in self.script.nodes:
-                self.props_panel.load_node(self.script, node_id)
+                self._select_node(node_id)
             self._update_title()
             self.status_bar.showMessage(f"Expanded '{node_id}' -> {n} new nodes")
             self.chat_panel.append_message("assistant",
@@ -2825,9 +3164,12 @@ class MainWindow(QMainWindow):
             ui_queue=self.ui_queue,
             on_done=on_done,
             on_error=on_error,
-            story_context=self.script.story_context,
+            story_context=self.script.story_context_focused,
             node_hint=nd.get("hint", ""),
             upstream_path=self._get_upstream_path(node_id),
+            node_min=node_min,
+            node_max=node_max,
+            existing_custom_tags=existing_custom_tags,
         )
 
     def _get_upstream_path(self, node_id: str, depth: int = 4) -> list:
@@ -2950,6 +3292,20 @@ class MainWindow(QMainWindow):
             name = self.script.name or "New Script"
         dirty = "*" if self.script.dirty else ""
         self.setWindowTitle(f"Narrative Editor — {name}{dirty}")
+
+        nodes = self.script.nodes
+        n = len(nodes)
+        self._stat_nodes.setText(f"Nodes: {n}")
+
+        total_words = sum(len(nd.get("text", "").split()) for nd in nodes.values())
+        total_s = (total_words / 130) * 60  # ~130 wpm spoken
+        if total_s < 60:
+            dur_str = f"{total_s:.0f}s"
+        elif total_s < 3600:
+            dur_str = f"{int(total_s // 60)}m {int(total_s % 60)}s"
+        else:
+            dur_str = f"{int(total_s // 3600)}h {int((total_s % 3600) // 60)}m"
+        self._stat_duration.setText(f"~{dur_str} speech")
 
     def closeEvent(self, event):
         if self.script.dirty:
