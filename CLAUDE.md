@@ -47,6 +47,32 @@ pip install -r requirements.txt
 
 Web control panel runs at `http://localhost:5000` when started.
 
+## Display Modes & Keyboard Shortcuts
+
+The OpenGL window supports four view modes, toggled with keyboard shortcuts:
+
+| Key / Input | Action |
+|-------------|--------|
+| F | Toggle flat/fan view |
+| D | Toggle smooth/LED style |
+| Scroll wheel | Zoom in/out (fan modes, centered on cursor) |
+| Left-click drag | Pan the view (fan modes) |
+| Middle-click | Reset zoom and pan |
+| ESC | Quit |
+
+The four resulting modes:
+
+| Mode | Description |
+|------|-------------|
+| Flat Smooth | Magnified pixel blit of the 128×300 FBO (default) |
+| Flat LED | Instanced circles showing individual LED values |
+| Fan Smooth | Textured semicircle mesh simulating the physical fan layout |
+| Fan LED | Instanced circles arranged in the physical fan semicircle |
+
+## Web Preview
+
+Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. Supports the same four view modes via buttons. Frames are streamed as lossless PNG at 15 Hz via Socket.IO. Works in headless mode (no GLFW window needed).
+
 ## Architecture
 
 ```
@@ -65,11 +91,14 @@ lib/
   weather_set.py            # WeatherSetManager — active set + event registry
 renderer/
   shader_renderer.py        # GLFW window + OpenGL rendering loop
+  fan_geometry.py           # Pure-numpy fan/polar geometry (shared by GL and web preview)
   effects/                  # 40+ individual shader effect modules
     base.py                 # ShaderEffect base class — all effects extend this
 web/
-  web_controller.py         # Flask web control panel
+  web_controller.py         # Flask web control panel + preview frame streaming
   templates/                # Flask HTML templates for web UI
+  static/js/preview.js      # WebGL2 live preview client
+  static/css/preview.css    # Preview page styles
 tools/                      # Standalone utilities: sound_editor, computer, midi_integration_example, gl_test, wleddetect
 config/                     # DMX universe and fixture definitions (Unit*.txt)
 media/                      # Audio files (sounds/) and images (images/)
@@ -77,17 +106,11 @@ docs/                       # Documentation (see below)
 bin/                        # Launch scripts (setup_and_run, quick_run)
 ```
 
-## Key Configuration (in Stories_OGL.py)
+## Key Configuration
 
-| Lines | Setting |
-|-------|---------|
-| 22–25 | Frame dimensions and magnification |
-| 40    | Audio input device name |
-| 49    | Enable/disable web control |
-| 57    | Web control port |
-| 59    | Admin password |
-| 639   | Initial weather set |
-| 640   | Initial weather state |
+Main settings are in `config.yaml` at the project root (display dimensions, headless mode, audio device, web port/password). Falls back to defaults if the file is missing.
+
+Weather set/state defaults and DMX receiver config remain in `Stories_OGL.py`.
 
 ## Adding a Shader Effect
 

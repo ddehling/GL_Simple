@@ -1,6 +1,7 @@
 import numpy as np
 import time
 from pathlib import Path
+import yaml
 from engine.render_pipeline import RenderPipeline
 import lib.dmx_sender as imdmx
 
@@ -14,10 +15,36 @@ from renderer.effects.celestial_bodies import CELESTIAL_BODIES
 from renderer import effects as fx
 from web.web_controller import WebController
 
+def load_config():
+    """Load config.yaml, falling back to defaults if missing."""
+    config_path = Path(__file__).parent / "config.yaml"
+    defaults = {
+        "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
+        "audio": {"enabled": True, "device_name": "TONOR"},
+        "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
+    }
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            loaded = yaml.safe_load(f) or {}
+        # Merge: loaded sections override defaults
+        for section in defaults:
+            if section in loaded:
+                defaults[section].update(loaded[section])
+        print(f"[Config] Loaded from {config_path}")
+    else:
+        print(f"[Config] {config_path} not found, using defaults")
+    return defaults
+
+
 class EnvironmentalSystem:
     def __init__(self):
+        cfg = load_config()
+        disp = cfg["display"]
+        audio_cfg = cfg["audio"]
+        web_cfg = cfg["web"]
+
         frame_dimensions = [
-            (128, 300),   # Frame 0 (primary/main display)
+            (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
         ]
 
         # Hardware receiver configuration — one list per frame
@@ -25,60 +52,50 @@ class EnvironmentalSystem:
             [
                 {
                     'ip': '192.168.68.140',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 0),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
                 },
                 {
                     'ip': '192.168.68.141',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 32),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
                 },
                 {
                     'ip': '192.168.68.142',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 64),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
                 },
                 {
                     'ip': '192.168.68.143',
-                    'pixel_count': 300 * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, 300, 96),
+                    'pixel_count': disp["height"] * 32,
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
                 },
             ],
-            # [
-            #     {
-            #         'ip': '192.168.68.111',
-            #         'pixel_count': 2019,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt"),
-            #     },
-            #     {
-            #         'ip': '192.168.68.125',
-            #         'pixel_count': 1777,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt"),
-            #     },
-            #     {
-            #         'ip': '192.168.68.124',
-            #         'pixel_count': 1793,
-            #         'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt"),
-            #     },
-            # ],
         ]
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
             receivers=receivers,
-            magnification=0,  # 0 = auto-scale to monitor
-            headless=False,
+            magnification=disp["magnification"],
+            headless=disp["headless"],
         )
         self.weather_state = WeatherStateController()
-        self.season = 0.0  # Initialize season value
-        self.analyzer = MicrophoneAnalyzer(device_name="TONOR")
-        self.analyzer.start()
+        self.season = 0.0
+        self.analyzer = None
+        if audio_cfg.get("enabled", True):
+            try:
+                self.analyzer = MicrophoneAnalyzer(device_name=audio_cfg["device_name"])
+                self.analyzer.start()
+            except Exception as e:
+                print(f"[Audio] Failed to initialize microphone: {e}")
+                print("[Audio] Continuing without audio input")
+                self.analyzer = None
         self.scale = 0.2
-        
-        # Initialize web control system (set to False to disable for max performance)
-        self.enable_web_control = True
+
+        # Initialize web control system
+        self.enable_web_control = web_cfg["enabled"]
         self.web_controller = None
-        
+
         if self.enable_web_control:
             self.web_controls = {
                 "current_weather_set": DEFAULT_WEATHER_SET,
@@ -87,12 +104,14 @@ class EnvironmentalSystem:
                 "all_weather_states": [s.value for s in WeatherState],
                 "state_switch_locked": True,
                 "weather_state_locked": False,
+                "led_width": frame_dimensions[0][0],
+                "led_height": frame_dimensions[0][1],
             }
             self.web_controller = WebController(
-                self.web_controls, 
-                port=5000, 
+                self.web_controls,
+                port=web_cfg["port"],
                 service_name="glsimple",
-                admin_password="admin123"  # Change this to your desired password
+                admin_password=web_cfg["admin_password"],
             )
             self.web_controller.start(threaded=True)
         
@@ -152,6 +171,7 @@ class EnvironmentalSystem:
             "fish": (fx.shader_fish, {}),
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
+            "bart_map_fan": (fx.shader_bart_map_fan, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 "script_path": "media/sounds/bartiki/script.json",
@@ -202,6 +222,12 @@ class EnvironmentalSystem:
         
         # Update the scheduler
         self.scheduler.update()
+
+        # Copy PNG frame to web controller for preview streaming
+        if hasattr(self, 'web_controller'):
+            png = self.scheduler.state.get('_frame_png')
+            if png is not None:
+                self.web_controller.control_dict['_frame_png'] = png
 
     def change_weather_set(self, new_set_name: str, immediate: bool = False,
                            initial_weather: WeatherState = None):
@@ -337,14 +363,15 @@ class EnvironmentalSystem:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
 
         # Apply audio sensitivity from global modifiers
-        with self.web_controller._dict_lock:
-            audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
-        self.analyzer.sensitivity = audio_sens
+        if self.analyzer:
+            with self.web_controller._dict_lock:
+                audio_sens = self.web_controller.global_modifiers.get('audio_sensitivity', 1.0)
+            self.analyzer.sensitivity = audio_sens
 
         # Update audio summary frequently (every web check = 0.2s / 5 Hz)
         # This is lightweight: just 32 floats + 2 numbers
         try:
-            current_bands = self.analyzer.get_current_bands(normalize='long')
+            current_bands = self.analyzer.get_current_bands(normalize='long') if self.analyzer else None
             if current_bands is not None:
                 audio_summary = {
                     "bands": current_bands.tolist(),
@@ -473,7 +500,7 @@ class EnvironmentalSystem:
         state.update(output)
         state["season"] = self.season
         state["scale"] = self.scale
-        state["sound"] = self.analyzer.get_extended_analysis()
+        state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):
@@ -581,7 +608,8 @@ class EnvironmentalSystem:
         engine = self.scheduler.state.get("soundengine")
         if engine:
             engine.stop_ambient()
-        self.analyzer.stop()
+        if self.analyzer:
+            self.analyzer.stop()
 
 
 # Main execution
@@ -591,8 +619,8 @@ if __name__ == "__main__":
     #TODO: A way to set a weather state independently of set for testing
 
     # Change to a specific weather set and state on startup
-    env_system.change_weather_set("ocean", immediate=True,
-                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
+    env_system.change_weather_set("bartiki", immediate=True,
+                                  initial_weather=WeatherState.BARTIKI_PEAK_HOUR)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()

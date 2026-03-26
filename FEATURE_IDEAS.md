@@ -1,8 +1,48 @@
 # Feature Ideas
 
+## Prioritized for Unscruz
+
+- Stories work
+  - Narration system should be wired in with a specific volume control
+  - Being able to scale its volume in comparison to everything else
+- Bartiki theme
+  - No sounds
+  - Droning of the bartiki mythos
+  - Bart announcements, clipper, trains flying around
+  - Work on the map where it is more dense
+- Existing sets
+  - Ocean: sounds are bad
+  - Full Spectrum
+- Making existing shaders aware of r/theta
+  - Momentum
+  - Sizing
+- Physical build stuff
+  - Cut chains
+  - Finish lightstrips
+  - Test build
+- Label each box
+    - 1, 2, 3, 4
+    - Unique IP addresses
+    - Make sure the code sends to the right boxes
+- Go to the things we wanna play, play them for a while and just test that it all works
+- Confirmed pixels go out of every line; haven't confirmed they are the right pixels
+    - Make a test pattern that goes on a gradient down the pattern, next box more along the gradient, etc...
+    - Data to this box, change appropriate on line 1 and line 32
+- Control box
+  - Computer
+  - Router
+  - Network cables
+  - Don't have to assemble it on the box necessarily for Unscruz
+  
+## Backlog
+
 Brainstormed feature candidates for GL_Simple. Not prioritized — use this as a backlog to draw from.
 
 ---
+
+### Multi-display
+
+Revisit the idea of multiple things rendering as part of one installation. Not one giant surface, but different surfaces like the Bean and Lucifera
 
 ## Audio / Reactivity
 
@@ -79,14 +119,8 @@ A UI in the web control panel to create, edit, and save weather sets and states 
 
 ## Web Control Panel
 
-### Live Preview Thumbnail
-Capture a screenshot of the rendered frame every few seconds and display it as a thumbnail in the web UI. Lets operators see what's on screen without being in the room.
-
 ### Effect Sequencer / Show Playlist
 A drag-and-drop timeline in the web UI to queue effects with durations — a simple show playlist. Integrates with `EventScheduler` to fire cues at the right times.
-
-### Mobile-Friendly Layout
-Responsive / touch-optimized layout for the web control panel. Better touch targets, larger sliders, swipe gestures — designed to be used from a phone while moving around a venue.
 
 ### OSC Input
 Receive Open Sound Control (OSC) messages from Ableton Live, QLab, or other show control software. Map OSC addresses to weather state changes, effect triggers, or parameter updates for tight show integration.

@@ -12,6 +12,7 @@ at init time and read by shader effects each frame.
 
 import time
 import numpy as np
+import cv2
 
 import lib.audio_engine as sound
 import lib.dmx_sender as imdmx
@@ -143,6 +144,11 @@ class RenderPipeline:
 
         frames = self._render_shader(dt)
         self._send_to_displays(frames)
+
+        # PNG-encode first frame for web preview (stored in state for web controller)
+        if frames:
+            _, png_buf = cv2.imencode('.png', frames[0][:, :, ::-1])
+            self.state['_frame_png'] = png_buf.tobytes()
 
     def _render_shader(self, dt: float) -> list:
         self._shader_renderer.clear_window()
