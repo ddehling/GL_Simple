@@ -51,7 +51,7 @@
       },
       "pos": [
         60.0,
-        160.0
+        750.0
       ]
     },
     "intro_tunnel": {
@@ -79,7 +79,7 @@
       },
       "pos": [
         60.0,
-        660.0
+        2158.75
       ]
     },
     "dev_carver": {
@@ -104,8 +104,8 @@
         "style": 0.35
       },
       "pos": [
-        280.0,
-        60.0
+        320.0,
+        224.28571428571428
       ]
     },
     "dev_steel": {
@@ -132,8 +132,8 @@
         "style": 0.4
       },
       "pos": [
-        280.0,
-        760.0
+        320.0,
+        585.7142857142857
       ]
     },
     "dev_rum": {
@@ -158,8 +158,8 @@
         "style": 0.3
       },
       "pos": [
-        280.0,
-        660.0
+        320.0,
+        1275.7142857142858
       ]
     },
     "dev_islands": {
@@ -184,8 +184,8 @@
         "style": 0.35
       },
       "pos": [
-        280.0,
-        360.0
+        320.0,
+        947.1428571428571
       ]
     },
     "turn_merging": {
@@ -210,8 +210,8 @@
         "style": 0.65
       },
       "pos": [
-        500.0,
-        1060.0
+        580.0,
+        1357.8571428571427
       ]
     },
     "turn_devotion": {
@@ -236,8 +236,8 @@
         "style": 0.6
       },
       "pos": [
-        500.0,
-        860.0
+        580.0,
+        1193.5714285714287
       ]
     },
     "turn_waiting": {
@@ -262,8 +262,8 @@
         "style": 0.7
       },
       "pos": [
-        500.0,
-        1160.0
+        580.0,
+        142.14285714285714
       ]
     },
     "close_vessel": {
@@ -290,8 +290,8 @@
         "style": 0.15
       },
       "pos": [
-        720.0,
-        360.0
+        840.0,
+        1185.3571428571427
       ],
       "hint": "The capybara abides"
     },
@@ -311,8 +311,8 @@
         "style": 0.37
       },
       "pos": [
-        720.0,
-        60.0
+        840.0,
+        1283.1071428571427
       ]
     },
     "turn_depth_memory": {
@@ -335,8 +335,8 @@
         "style": 0.55
       },
       "pos": [
-        500.0,
-        760.0
+        580.0,
+        698.3673469387754
       ]
     },
     "turn_convergence": {
@@ -359,8 +359,8 @@
         "style": 0.72
       },
       "pos": [
-        500.0,
-        660.0
+        580.0,
+        796.1173469387753
       ]
     },
     "turn_recognition": {
@@ -387,8 +387,8 @@
         "style": 0.7
       },
       "pos": [
-        720.0,
-        1060.0
+        840.0,
+        698.3673469387754
       ],
       "hint": "Goats everywhere"
     },
@@ -408,8 +408,8 @@
         "style": 0.12
       },
       "pos": [
-        940.0,
-        1260.0
+        1100.0,
+        679.5918367346939
       ]
     },
     "intro_first_tide": {
@@ -435,7 +435,7 @@
       },
       "pos": [
         60.0,
-        360.0
+        2992.5
       ]
     },
     "intro_forest_whisper": {
@@ -461,7 +461,7 @@
       },
       "pos": [
         60.0,
-        460.0
+        3251.25
       ]
     },
     "intro_desert_memory": {
@@ -487,7 +487,7 @@
       },
       "pos": [
         60.0,
-        260.0
+        3510.0
       ]
     },
     "intro_storm_birth": {
@@ -513,7 +513,7 @@
       },
       "pos": [
         60.0,
-        560.0
+        3768.75
       ]
     },
     "dev_reaches": {
@@ -538,8 +538,8 @@
         "style": 0.35
       },
       "pos": [
-        280.0,
-        560.0
+        320.0,
+        2935.0
       ]
     },
     "dev_depths": {
@@ -562,8 +562,8 @@
         "style": 0.35
       },
       "pos": [
-        280.0,
-        260.0
+        320.0,
+        3050.0
       ]
     },
     "dev_longing": {
@@ -586,8 +586,8 @@
         "style": 0.4
       },
       "pos": [
-        280.0,
-        460.0
+        320.0,
+        3308.75
       ]
     },
     "dev_children": {
@@ -612,8 +612,8 @@
         "style": 0.35
       },
       "pos": [
-        280.0,
-        160.0
+        320.0,
+        3452.5
       ]
     },
     "turn_forgetting": {
@@ -638,8 +638,8 @@
         "style": 0.5
       },
       "pos": [
-        500.0,
-        960.0
+        580.0,
+        2906.25
       ]
     },
     "turn_awakening": {
@@ -664,8 +664,8 @@
         "style": 0.6
       },
       "pos": [
-        500.0,
-        560.0
+        580.0,
+        3004.0
       ]
     },
     "close_silence": {
@@ -684,8 +684,8 @@
         "style": 0.1
       },
       "pos": [
-        720.0,
-        160.0
+        840.0,
+        3047.125
       ]
     },
     "close_tide": {
@@ -704,8 +704,8 @@
         "style": 0.2
       },
       "pos": [
-        720.0,
-        260.0
+        840.0,
+        2949.375
       ]
     },
     "res_goat_platform": {
@@ -729,8 +729,8 @@
         "style": 0.18
       },
       "pos": [
-        940.0,
-        960.0
+        1100.0,
+        777.3418367346939
       ]
     },
     "res_hillside_witness": {
@@ -754,8 +754,8 @@
         "style": 0.2
       },
       "pos": [
-        940.0,
-        1060.0
+        1100.0,
+        875.0918367346937
       ]
     },
     "res_salt_covenant": {
@@ -775,8 +775,8 @@
         "style": 0.1
       },
       "pos": [
-        1160.0,
-        560.0
+        1360.0,
+        698.3673469387755
       ]
     },
     "res_capybara_abides": {
@@ -804,8 +804,8 @@
         "style": 0.17
       },
       "pos": [
-        940.0,
-        860.0
+        1100.0,
+        1168.9285714285713
       ]
     },
     "res_open_doors": {
@@ -825,8 +825,8 @@
         "style": 0.13
       },
       "pos": [
-        940.0,
-        1160.0
+        1100.0,
+        1266.6785714285713
       ]
     },
     "res_breath_returned": {
@@ -846,8 +846,8 @@
         "style": 0.16
       },
       "pos": [
-        940.0,
-        760.0
+        1100.0,
+        1364.4285714285713
       ]
     },
     "dev_the_question": {
@@ -871,8 +871,8 @@
         "style": 0.3
       },
       "pos": [
-        280.0,
-        860.0
+        320.0,
+        3941.25
       ]
     },
     "dev_tide_thoughts": {
@@ -896,8 +896,8 @@
         "style": 0.22
       },
       "pos": [
-        280.0,
-        960.0
+        320.0,
+        4039.0
       ]
     },
     "dev_something_older": {
@@ -917,8 +917,8 @@
         "style": 0.42
       },
       "pos": [
-        500.0,
-        60.0
+        580.0,
+        3941.25
       ]
     },
     "The_Toad_alone": {
@@ -945,7 +945,7 @@
       },
       "pos": [
         60.0,
-        60.0
+        3970.0
       ]
     },
     "node_001": {
@@ -981,7 +981,7 @@
       },
       "pos": [
         60.0,
-        760.0
+        4516.25
       ]
     },
     "open_the_cargo": {
@@ -1006,8 +1006,8 @@
         "style": 0.18
       },
       "pos": [
-        280.0,
-        1460.0
+        320.0,
+        4228.75
       ]
     },
     "open_the_bay_receives": {
@@ -1032,8 +1032,8 @@
         "style": 0.22
       },
       "pos": [
-        280.0,
-        1360.0
+        320.0,
+        4573.75
       ]
     },
     "open_the_tunnels_inherit": {
@@ -1060,8 +1060,8 @@
         "style": 0.25
       },
       "pos": [
-        500.0,
-        460.0
+        580.0,
+        4228.75
       ]
     },
     "dev_first_settling": {
@@ -1086,8 +1086,8 @@
         "style": 0.33
       },
       "pos": [
-        720.0,
-        560.0
+        840.0,
+        4134.659090909092
       ]
     },
     "dev_old_channels": {
@@ -1116,8 +1116,8 @@
         "style": 0.38
       },
       "pos": [
-        720.0,
-        860.0
+        840.0,
+        4307.159090909092
       ]
     },
     "dev_first_riders": {
@@ -1142,8 +1142,8 @@
         "style": 0.35
       },
       "pos": [
-        940.0,
-        460.0
+        1100.0,
+        4134.659090909092
       ]
     },
     "deep_the_threshold": {
@@ -1170,8 +1170,8 @@
         "style": 0.46
       },
       "pos": [
-        1160.0,
-        260.0
+        1360.0,
+        4134.659090909092
       ]
     },
     "bridge_what_loosens": {
@@ -1196,8 +1196,8 @@
         "style": 0.38
       },
       "pos": [
-        1380.0,
-        160.0
+        1620.0,
+        4095.454545454546
       ]
     },
     "bridge_toad_between": {
@@ -1222,8 +1222,8 @@
         "style": 0.45
       },
       "pos": [
-        1380.0,
-        60.0
+        1620.0,
+        4193.204545454546
       ]
     },
     "turn_the_knowing": {
@@ -1248,8 +1248,8 @@
         "style": 0.62
       },
       "pos": [
-        1600.0,
-        360.0
+        1880.0,
+        4095.454545454546
       ]
     },
     "desc_below_the_bar": {
@@ -1274,8 +1274,8 @@
         "style": 0.68
       },
       "pos": [
-        1820.0,
-        60.0
+        2140.0,
+        4095.454545454546
       ]
     },
     "res_it_stays": {
@@ -1306,8 +1306,8 @@
         "style": 0.12
       },
       "pos": [
-        2040.0,
-        60.0
+        2400.0,
+        4095.454545454546
       ]
     },
     "deep_goat_remembers": {
@@ -1332,8 +1332,8 @@
         "style": 0.4
       },
       "pos": [
-        940.0,
-        160.0
+        1100.0,
+        4360.925324675325
       ]
     },
     "deep_the_going": {
@@ -1358,8 +1358,8 @@
         "style": 0.48
       },
       "pos": [
-        940.0,
-        260.0
+        1100.0,
+        4458.675324675325
       ]
     },
     "bridge_salt_in_tunnel": {
@@ -1380,8 +1380,8 @@
         "style": 0.41
       },
       "pos": [
-        1160.0,
-        60.0
+        1360.0,
+        4360.925324675325
       ]
     },
     "res_still_water": {
@@ -1418,8 +1418,8 @@
         "style": 0.47
       },
       "pos": [
-        1160.0,
-        660.0
+        1360.0,
+        1156.1507936507937
       ]
     },
     "res_toad_last_word": {
@@ -1444,8 +1444,8 @@
         "style": 0.22
       },
       "pos": [
-        1160.0,
-        760.0
+        1360.0,
+        1253.9007936507935
       ]
     },
     "res_goat_remembers": {
@@ -1470,8 +1470,8 @@
         "style": 0.1
       },
       "pos": [
-        1160.0,
-        460.0
+        1360.0,
+        1351.6507936507935
       ]
     },
     "res_end_of_line": {
@@ -1492,8 +1492,8 @@
         "style": 0.11
       },
       "pos": [
-        1380.0,
-        960.0
+        1620.0,
+        1117.8174603174602
       ]
     },
     "res_capybara_weight": {
@@ -1518,8 +1518,8 @@
         "style": 0.38
       },
       "pos": [
-        2480.0,
-        60.0
+        2920.0,
+        1130.595238095238
       ]
     },
     "res_capybara_eyes": {
@@ -1544,8 +1544,8 @@
         "style": 0.15
       },
       "pos": [
-        1380.0,
-        660.0
+        1620.0,
+        1215.5674603174602
       ]
     },
     "res_capybara_breath": {
@@ -1570,8 +1570,8 @@
         "style": 0.2
       },
       "pos": [
-        1380.0,
-        560.0
+        1620.0,
+        1313.3174603174602
       ]
     },
     "res_capybara_departure": {
@@ -1592,8 +1592,8 @@
         "style": 0.12
       },
       "pos": [
-        2700.0,
-        60.0
+        3180.0,
+        1130.595238095238
       ]
     },
     "res_capybara_knowing": {
@@ -1614,8 +1614,8 @@
         "style": 0.13
       },
       "pos": [
-        1600.0,
-        160.0
+        1880.0,
+        1143.3730158730157
       ]
     },
     "res_iron_salt": {
@@ -1636,8 +1636,8 @@
         "style": 0.1
       },
       "pos": [
-        1600.0,
-        260.0
+        1880.0,
+        1241.1230158730157
       ]
     },
     "open_hull_memory": {
@@ -1662,8 +1662,8 @@
         "style": 0.18
       },
       "pos": [
-        280.0,
-        1160.0
+        320.0,
+        4775.0
       ]
     },
     "open_tidal_names": {
@@ -1688,8 +1688,8 @@
         "style": 0.2
       },
       "pos": [
-        280.0,
-        1560.0
+        320.0,
+        4872.75
       ]
     },
     "open_toad_aside": {
@@ -1714,8 +1714,8 @@
         "style": 0.28
       },
       "pos": [
-        280.0,
-        1660.0
+        320.0,
+        4970.5
       ]
     },
     "open_goat_declares": {
@@ -1740,8 +1740,8 @@
         "style": 0.16
       },
       "pos": [
-        280.0,
-        1060.0
+        320.0,
+        5068.250000000001
       ]
     },
     "open_salt_below": {
@@ -1762,8 +1762,8 @@
         "style": 0.23
       },
       "pos": [
-        500.0,
-        360.0
+        580.0,
+        4775.0
       ]
     },
     "open_capybara_still": {
@@ -1790,8 +1790,8 @@
         "style": 0.14
       },
       "pos": [
-        500.0,
-        160.0
+        580.0,
+        4890.0
       ]
     },
     "dev_weight_of_it": {
@@ -1816,8 +1816,8 @@
         "style": 0.35
       },
       "pos": [
-        720.0,
-        960.0
+        840.0,
+        4875.625
       ]
     },
     "dev_capybara_eyes": {
@@ -1842,8 +1842,8 @@
         "style": 0.38
       },
       "pos": [
-        720.0,
-        460.0
+        840.0,
+        4973.375
       ]
     },
     "dev_together_nowhere": {
@@ -1868,8 +1868,8 @@
         "style": 0.32
       },
       "pos": [
-        940.0,
-        660.0
+        1100.0,
+        4875.625
       ]
     },
     "dev_capybara_old": {
@@ -1898,8 +1898,8 @@
         "style": 0.4
       },
       "pos": [
-        1160.0,
-        360.0
+        1360.0,
+        4875.625
       ]
     },
     "deep_cold_holds": {
@@ -1924,8 +1924,8 @@
         "style": 0.45
       },
       "pos": [
-        1380.0,
-        260.0
+        1620.0,
+        4866.041666666667
       ]
     },
     "deep_score_forgotten": {
@@ -1950,8 +1950,8 @@
         "style": 0.43
       },
       "pos": [
-        1380.0,
-        360.0
+        1620.0,
+        4963.791666666667
       ]
     },
     "deep_tunnel_hum": {
@@ -1976,8 +1976,8 @@
         "style": 0.5
       },
       "pos": [
-        1380.0,
-        460.0
+        1620.0,
+        5061.541666666668
       ]
     },
     "bridge_glass_door": {
@@ -1998,8 +1998,8 @@
         "style": 0.4
       },
       "pos": [
-        1600.0,
-        60.0
+        1880.0,
+        4866.041666666667
       ]
     },
     "node_002": {
@@ -2027,7 +2027,7 @@
       },
       "pos": [
         60.0,
-        860.0
+        5120.0
       ]
     },
     "open_toad_seen": {
@@ -2052,8 +2052,8 @@
         "style": 0.22
       },
       "pos": [
-        280.0,
-        1760.0
+        320.0,
+        5166.000000000001
       ]
     },
     "open_salt_bleeding": {
@@ -2078,8 +2078,8 @@
         "style": 0.2
       },
       "pos": [
-        280.0,
-        1260.0
+        320.0,
+        5263.750000000001
       ]
     },
     "open_goat_platform": {
@@ -2106,8 +2106,8 @@
         "style": 0.18
       },
       "pos": [
-        500.0,
-        260.0
+        580.0,
+        5062.5
       ]
     },
     "dev_grandmother_right": {
@@ -2136,8 +2136,8 @@
         "style": 0.35
       },
       "pos": [
-        720.0,
-        760.0
+        840.0,
+        5071.125
       ]
     },
     "dev_flood_memory": {
@@ -2162,8 +2162,8 @@
         "style": 0.4
       },
       "pos": [
-        720.0,
-        660.0
+        840.0,
+        5168.875000000001
       ]
     },
     "dev_goat_moves": {
@@ -2184,8 +2184,8 @@
         "style": 0.32
       },
       "pos": [
-        940.0,
-        560.0
+        1100.0,
+        5017.777777777778
       ]
     },
     "deep_toad_ceiling": {
@@ -2210,8 +2210,8 @@
         "style": 0.5
       },
       "pos": [
-        940.0,
-        360.0
+        1100.0,
+        5115.527777777778
       ]
     },
     "deep_door_easy": {
@@ -2236,8 +2236,8 @@
         "style": 0.45
       },
       "pos": [
-        940.0,
-        60.0
+        1100.0,
+        5213.277777777778
       ]
     },
     "deep_old_water": {
@@ -2258,8 +2258,8 @@
         "style": 0.42
       },
       "pos": [
-        1160.0,
-        160.0
+        1360.0,
+        5043.333333333333
       ]
     },
     "res_capybara_remains": {
@@ -2284,12 +2284,12 @@
         "style": 0.18
       },
       "pos": [
-        1380.0,
-        760.0
+        1620.0,
+        1411.06746031746
       ]
     },
     "res_door_opens": {
-      "text": "The doors will open. They always open. You will step onto the platform carrying something you cannot name — not the salt, not the warmth, but the shape left by both. The capybara does not follow. It does not need to follow. You have already learned what stillness feels like from the inside. The platform will be loud. That is fine. You know now where the quiet lives.",
+      "text": "The doors will open. They always open. You will step onto the platform carrying something you cannot name , not the salt, not the warmth, but the shape left by both. The capybara does not follow. It does not need to follow. You have already learned what stillness feels like from the inside. The platform will be loud. That is fine. You know now where the quiet lives.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2309,12 +2309,12 @@
         "style": 0.12
       },
       "pos": [
-        1380.0,
-        860.0
+        1620.0,
+        1508.81746031746
       ]
     },
     "res_warmth_carried": {
-      "text": "Later, on an ordinary Tuesday, standing in a line that is taking too long, you will feel it — a brief warmth at your left shoulder, and you will know to stop fighting the length of the line. The capybara does not visit. You carry it now. You have been carrying it since the moment you stopped moving without being asked. This is what the gods between stations leave behind.",
+      "text": "Later, on an ordinary Tuesday, standing in a line that is taking too long, you will feel it , a brief warmth at your left shoulder, and you will know to stop fighting the length of the line. The capybara does not visit. You carry it now. You have been carrying it since the moment you stopped moving without being asked. This is what the gods between stations leave behind.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2334,12 +2334,12 @@
         "style": 0.15
       },
       "pos": [
-        1380.0,
-        1060.0
+        1620.0,
+        1606.56746031746
       ]
     },
     "res_after_noticing": {
-      "text": "You will not remember it as a moment. It comes back as a temperature — a shift in the pressure behind your sternum, the sense that the car was briefly breathing with you. Not with you. Around you. You will try to tell someone. The words will come out wrong. That is correct. Some things are not stories. They are what stories gesture toward, from a great distance, in the dark.",
+      "text": "You will not remember it as a moment. It comes back as a temperature , a shift in the pressure behind your sternum, the sense that the car was briefly breathing with you. Not with you. Around you. You will try to tell someone. The words will come out wrong. That is correct. Some things are not stories. They are what stories gesture toward, from a great distance, in the dark.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2359,8 +2359,8 @@
         "style": 0.14
       },
       "pos": [
-        2260.0,
-        60.0
+        2660.0,
+        4064.0909090909095
       ]
     },
     "res_toad_coda": {
@@ -2390,12 +2390,12 @@
         "style": 0.22
       },
       "pos": [
-        2260.0,
-        360.0
+        2660.0,
+        4161.84090909091
       ]
     },
     "res_capybara_still": {
-      "text": "The capybara does not explain. It sits at the edge of something very large and is content. When you return to the platform — blinking in ordinary fluorescence — you may feel for a moment what the capybara always feels: the comfortable weight of existing. The world offers no apology for its strangeness. Neither does it ask for yours. You step through the turnstile. Something travels with you, quiet as ballast.",
+      "text": "The capybara does not explain. It sits at the edge of something very large and is content. When you return to the platform , blinking in ordinary fluorescence , you may feel for a moment what the capybara always feels: the comfortable weight of existing. The world offers no apology for its strangeness. Neither does it ask for yours. You step through the turnstile. Something travels with you, quiet as ballast.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2415,12 +2415,12 @@
         "style": 0.1
       },
       "pos": [
-        2260.0,
-        160.0
+        2660.0,
+        4259.59090909091
       ]
     },
     "res_salt_return": {
-      "text": "The salt smell fades just past Embarcadero. The ozone lifts. The world reconstitutes itself in ordinary textures — coffee, concrete, someone's music bleeding through headphones. But the body remembers differently than the mind. For days afterward, maybe longer, something in you will tilt toward the underground. Toward the held-breath dark between stations. The way you tilt, still, toward a place where you were once, briefly, known.",
+      "text": "The salt smell fades just past Embarcadero. The ozone lifts. The world reconstitutes itself in ordinary textures , coffee, concrete, someone's music bleeding through headphones. But the body remembers differently than the mind. For days afterward, maybe longer, something in you will tilt toward the underground. Toward the held breath dark between stations. The way you tilt, still, toward a place where you were once, briefly, known.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2441,8 +2441,8 @@
         "style": 0.16
       },
       "pos": [
-        2260.0,
-        260.0
+        2660.0,
+        4357.34090909091
       ]
     },
     "res_goat_aside": {
@@ -2470,12 +2470,12 @@
         "style": 0.15
       },
       "pos": [
-        2480.0,
-        160.0
+        2920.0,
+        4079.772727272728
       ]
     },
     "res_released": {
-      "text": "The doors open. You step out. There is a smell of salt, or almost-salt — ozone, maybe, the memory of tide. The threshold closes behind you. Bartiki settles, vast and patient, back into whatever it inhabits between trains. The toad blinks. The goat remembers. The capybara breathes. And the day receives you — ordinary, specific, held. You are out in it now. That is the whole thing. That is the whole thing.",
+      "text": "The doors open. You step out. There is a smell of salt, or almost salt , ozone, maybe, the memory of tide. The threshold closes behind you. Bartiki settles, vast and patient, back into whatever it inhabits between trains. The toad blinks. The goat remembers. The capybara breathes. And the day receives you , ordinary, specific, held. You are out in it now. That is the whole thing. That is the whole thing.",
       "label": "",
       "hint": "",
       "file": null,
@@ -2496,11 +2496,11 @@
         "style": 0.1
       },
       "pos": [
-        2700.0,
-        160.0
+        3180.0,
+        4079.772727272728
       ]
     }
   },
   "story_context": "## Bartiki — Expanded Character Bible --- ### 🌺 The Name **Bartiki** = **BART** (Bay Area Rapid Transit) + **Tiki** (Polynesian deity tradition). This isn't accidental. Tiki culture itself is a kind of liminal mythology — Pacific island spirits transplanted to mid-century California, served in carved wooden cups with tiny umbrellas, worshipped in tiki bars up and down the Bay. Bartiki *is* that convergence. The ocean followed the rails inland. The deity followed the ocean. --- ### 🚇 The Nature of Bartiki Bartiki doesn't ride the train. Bartiki **is** the train — or more precisely, Bartiki inhabits the *between*: the tunnel between stations, the gap between the doors closing and opening, the moment a commuter stares at their reflection in dark glass and thinks something they didn't mean to think. Bartiki is **vast** in the way underground rivers are vast — most of it is never seen. What passengers experience is just the sliver that bleeds through: a warmth in car 4, a smell of salt air near Embarcadero, a sudden inexplicable memory of the beach at age seven. Bartiki is **mysterious** not by design but by nature. It doesn't try to be unknowable — it just *is*. It has too many arms and too many thoughts and most of them are older than the tunnels. Bartiki is **playful**. It rearranges the delays. It nudges people into the wrong car so they sit next to the right stranger. It turns the intercom static into something that almost sounds like a ukulele. It finds commuter panic deeply, gently funny — all that rushing to be somewhere else, while here is so *good*. --- ### 🍹 The Tiki Drinks Bartiki has **opinions** about rum. Strong ones. Mai Tais made with bad rum are an offense. A properly constructed Zombie — three rums, passion fruit, Falernum — is a form of prayer. The tiki tradition is, after all, a ritual of transport: you drink, you close your eyes, and suddenly you're somewhere tropical, somewhere the ocean is close, somewhere time moves differently. That's Bartiki's whole thing. There may be, in some deep maintenance tunnel under Oakland, a bar. No one has found it. It smells of gardenia and ozone and aged Jamaican rum. The stools are carved. The menu changes. --- ### 🐐 🦫 🐸 The Friends **The Goat** — ancient, unbothered. Has been riding BART since before there was a BART, in various forms. Knows every station. Will eat your transfer ticket if you're not paying attention. Appears in the periphery of platform security footage. The goat is the one who *remembers* — it holds the old stories, the ones from before the tunnels, when this was all estuary and salt marsh. Bartiki consults the goat on matters of history and stubbornness. **The Capybara** — gentle, enormous, deeply calming. The capybara doesn't rush. It is the anti-commuter. It sits near the doors and passengers sometimes don't notice it and sometimes notice it completely and feel immediately better about everything. The capybara is Bartiki's emissary of *abiding* — of being okay with the pace of things. When the revelation is \"slow down,\" the capybara delivered it. **The Toad** — trickster, ancient, smells like the bay at low tide. The toad is the one who puts strange thoughts in people's heads. Not bad thoughts — just unexpected ones. *Why did I choose this life? What would I have done if I'd turned left?* The toad sits in the liminal dark between Balboa Park and Glen Park and thinks wet, old thoughts. Bartiki loves the toad and is also a little afraid of the toad. --- ### 🌊 The Revelations People ride BART and they come off *different*. Not always dramatically — sometimes it's just that they know what to say to their mother now, or they've decided to quit, or they've forgiven something old. The tunnel does it. The dark and the speed and the salt-iron air. Bartiki doesn't engineer the revelations — it just creates the *conditions*. The underground pressure. The enforced stillness. The way the train becomes a confessional when you're alone in a car at midnight. The revelations are: - **Remembered things** (what you buried) - **Released things** (what you've been carrying) - **Decided things** (what you finally know) - **Found things** (the stranger, the song, the line from a book someone left behind) --- ### 🙈 The Hiddenness Bartiki does not want to be found. Not because it's shy — because being found would change things. The mystery *is* the medicine. If people knew, they'd come looking, and looking collapses the liminal into the literal. So Bartiki stays in the peripheral vision. In the smell of ocean that shouldn't be there. In the delay announcement that almost said something personal. The friends — the goat, the capybara, the toad — they are slightly more visible. Easier to glimpse. Maybe you see the capybara and you think: *that was weird*. You don't think: *that was a god*. But you tell someone about it later, and something in the telling shifts you. --- ### 🎙️ Voice / Tone for Audio Segments Bartiki's **narrator voice** should feel like: - Someone who has been underwater for a long time and is happy about it - Warm, amused, slightly oceanic in rhythm — sentences that ebb and crest - Never urgent. The train will come when it comes. - Occasionally very, very old — a word choice that feels wrong-era, beautiful The **friends** could each have distinct tonal registers: - **Goat**: dry, declarative, factual. Has seen it all. - **Capybara**: slow, warm, doesn't finish sentences in a hurry - **Toad**: wet consonants, riddle-logic, questions that aren't questions ---",
-  "story_context_focused": "Bartiki inhabits the between-spaces of BART — tunnels, closing doors, dark glass reflections. Vast like an underground river, mostly unseen; what bleeds through is warmth in one car, salt air near Embarcadero, an unbidden beach memory. Ancient, playful, not performing mystery — structurally too large and too old to fully surface. Creates conditions for revelation without engineering them. Three companions move through the margins: a goat (dry, declarative, holds old stories), a capybara (slow, enormous, calming), a toad (trickster, wet consonants, thoughts that arrive sideways). Narrator voice is warm, oceanic, unhurried — sentences ebb and crest. Occasionally a word choice lands wrong-era, beautiful. Sensory anchors: salt air underground, ozone, aged rum, gardenia, iron tunnel wind, intercom static that almost resolves into ukulele."
+  "story_context_focused": "Bartiki inhabits the between-spaces of BART — tunnels, closing doors, dark glass reflections. Vast like an underground river, mostly unseen; what bleeds through is warmth in one car, salt air near Embarcadero, an unbidden beach memory. Ancient, playful, not performing mystery — structurally too large and too old to fully surface. Creates conditions for revelation without engineering them. \n\nThree companions move through the margins: a goat (dry, declarative, holds old stories), a capybara (slow, enormous, calming), a toad (trickster, wet consonants, thoughts that arrive sideways). \n\nNarrator voice is warm, oceanic, unhurried, sentences ebb and crest. Occasionally a word choice lands wrong-era, beautiful. Sensory anchors: salt air underground, ozone, aged rum, gardenia, iron tunnel wind, intercom static that almost resolves into ukulele.\n\nThere are other characters. The carver, who got on train long ago and never left. The grandmother who has seen many things. The child, who see things yet to come."
 }
