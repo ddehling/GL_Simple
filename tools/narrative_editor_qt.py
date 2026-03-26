@@ -574,12 +574,14 @@ class ScriptData:
 
     @staticmethod
     def _sanitize_nodes(nodes: dict) -> dict:
-        """Return a copy of `nodes` with all node IDs and next-references de-dashed."""
+        """Return a copy of `nodes` with IDs de-dashed and text TTS-sanitized."""
         clean = {}
         for nid, nd in nodes.items():
             safe_id = ScriptData._sanitize_id(nid)
             safe_nd = dict(nd)
             safe_nd['next'] = [ScriptData._sanitize_id(n) for n in nd.get('next', [])]
+            if safe_nd.get('text'):
+                safe_nd['text'] = _sanitize_tts(safe_nd['text'])
             clean[safe_id] = safe_nd
         return clean
 
@@ -2669,18 +2671,26 @@ class _GraphViewHoverFilter(QObject):
     Also intercepts right-click to fire on_right_click(node_id, global_pos)."""
 
     def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None,
-                 on_delete_pipes=None, parent=None):
+                 on_delete_pipes=None, on_mouse_move=None, parent=None):
         super().__init__(parent)
         self._get_node = get_node_at_pos
         self._on_enter = on_enter
         self._on_leave = on_leave
         self._on_right_click = on_right_click
         self._on_delete_pipes = on_delete_pipes
+        self._on_mouse_move = on_mouse_move
         self._current: Optional[str] = None
 
     def eventFilter(self, obj, event):
         t = event.type()
         if t == QEvent.Type.MouseMove:
+            if self._on_mouse_move:
+                viewer = obj.parent() if hasattr(obj, 'parent') else None
+                try:
+                    scene_pos = obj.parent().mapToScene(event.position().toPoint())
+                    self._on_mouse_move(scene_pos)
+                except Exception:
+                    pass
             node_id = self._get_node(event.position().toPoint())
             if node_id != self._current:
                 if self._current:
@@ -2719,10 +2729,31 @@ class MainWindow(QMainWindow):
         self._selected_node_id: Optional[str] = None
         self._node_items: Dict[str, NarrativeNode] = {}
         self._pending_connect_from: Optional[str] = None
+        self._pending_connect_line = None   # QGraphicsLineItem rubber-band
         self._cycle_nodes: set = set()
 
         self._build_ui()
         self._build_menu()
+
+        # Block Ctrl+Z/Y at the application level so NodeGraphQt's internal
+        # undo/redo never fires.  Must be installed AFTER the graph is created
+        # because NodeGraphQt registers its own shortcuts during widget init.
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QObject, QEvent, Qt as _Qt
+
+        class _BlockUndoKeys(QObject):
+            def eventFilter(self_, obj, event):
+                if event.type() in (QEvent.Type.KeyPress,
+                                    QEvent.Type.ShortcutOverride):
+                    key  = event.key()
+                    ctrl = bool(event.modifiers() & _Qt.KeyboardModifier.ControlModifier)
+                    if ctrl and key in (_Qt.Key.Key_Z, _Qt.Key.Key_Y):
+                        event.accept()  # claim it so QAction shortcuts don't fire
+                        return True     # also swallow the key event
+                return False
+
+        self._block_undo = _BlockUndoKeys(parent=self)
+        QApplication.instance().installEventFilter(self._block_undo)
 
         # Connect NodeGraph signals
         self.graph.node_selected.connect(self._on_node_selected)
@@ -2769,6 +2800,7 @@ class MainWindow(QMainWindow):
             self._on_node_hover_leave,
             on_right_click=self._on_graph_right_click,
             on_delete_pipes=self._cmd_delete_selected_pipes,
+            on_mouse_move=self._on_graph_mouse_move,
         )
         # Events land on the viewport, not the view itself
         self.graph.viewer().viewport().installEventFilter(self._graph_hover_filter)
@@ -3061,9 +3093,14 @@ class MainWindow(QMainWindow):
         while True:
             try:
                 fn = self.ui_queue.get_nowait()
-                fn()
             except queue.Empty:
                 break
+            try:
+                fn()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self.status_bar.showMessage(f"Error: {exc}")
 
     # ── NodeGraph signal handlers ────────────────────────────────────────────
 
@@ -3080,7 +3117,6 @@ class MainWindow(QMainWindow):
                     self._node_items[src].output(0).connect_to(
                         self._node_items[node_id].input(0)
                     )
-                    self._cmd_apply_layout(_layout_tree)
                     self.status_bar.showMessage(f"Connected: {src} → {node_id}")
                 else:
                     self.status_bar.showMessage(f"Edge {src} → {node_id} already exists")
@@ -3553,12 +3589,44 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Connect from '{label}' — click the target node  (Escape to cancel)"
         )
+        # Create a rubber-band line starting at the source node's output port
+        try:
+            from PySide6.QtWidgets import QGraphicsLineItem
+            from PySide6.QtGui import QPen, QColor
+            from PySide6.QtCore import Qt as _Qt2
+            out_port = self._node_items[node_id].output(0)
+            origin = out_port.view.scenePos()
+            pen = QPen(QColor(200, 200, 200), 2, _Qt2.PenStyle.DashLine)
+            line = QGraphicsLineItem(origin.x(), origin.y(), origin.x(), origin.y())
+            line.setPen(pen)
+            line.setZValue(1000)
+            self.graph.scene().addItem(line)
+            self._pending_connect_line = line
+        except Exception:
+            self._pending_connect_line = None
+
+    def _on_graph_mouse_move(self, scene_pos):
+        """Update rubber-band line endpoint as the mouse moves over the graph."""
+        if self._pending_connect_line is None:
+            return
+        try:
+            l = self._pending_connect_line.line()
+            self._pending_connect_line.setLine(l.x1(), l.y1(),
+                                               scene_pos.x(), scene_pos.y())
+        except Exception:
+            pass
 
     def _cancel_pending_connect(self):
         if self._pending_connect_from:
             self._pending_connect_from = None
             self.graph.viewer().viewport().unsetCursor()
             self.status_bar.showMessage("Connection cancelled")
+        if self._pending_connect_line is not None:
+            try:
+                self.graph.scene().removeItem(self._pending_connect_line)
+            except Exception:
+                pass
+            self._pending_connect_line = None
 
     def _cmd_delete_node(self, node_id: str = None):
         nid = node_id or self._selected_node_id
@@ -3964,8 +4032,13 @@ class MainWindow(QMainWindow):
             for nid, pos in _layout_tree(self.script).items():
                 self.script.update_pos(nid, pos)
             self._rebuild_graph()
-            self.graph.fit_to_selection()
             self.props_panel.clear()
+            from PySide6.QtCore import QTimer
+            def _fit():
+                nodes = self.graph.all_nodes()
+                if nodes:
+                    self.graph.viewer().zoom_to_nodes([n.view for n in nodes])
+            QTimer.singleShot(0, _fit)
             self._update_title()
             self.status_bar.showMessage(f"Loaded: {path.name}")
         except Exception as exc:
