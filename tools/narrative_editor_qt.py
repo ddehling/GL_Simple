@@ -50,7 +50,8 @@ from NodeGraphQt import NodeGraph, BaseNode
 REPO_ROOT  = Path(__file__).parent.parent
 SOUNDS_DIR = REPO_ROOT / "media" / "sounds"
 
-NODE_PREVIEW_LEN = 60   # chars shown inside a node box
+NODE_PREVIEW_LEN = 60        # chars shown inside a node box
+FOCUSED_CONTEXT_MAX = 1500  # max chars of story_context_focused sent to AI
 
 # Characters that break TTS and their plain-text replacements.
 _TTS_REPLACEMENTS = [
@@ -1035,7 +1036,7 @@ class AIAssistant:
 
         parts = []
         if story_context:
-            sc = story_context[:1500] + '...' if len(story_context) > 1500 else story_context
+            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
             parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
         if node_hint:
             parts.append(f'Continuation guidance: {node_hint}')
@@ -3176,17 +3177,22 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(4, 0, 0, 0)
-        right_lbl = QLabel("Focused Context  (seen by AI — keep under 1000 characters)")
+        right_lbl = QLabel(f"Focused Context  (seen by AI — max {FOCUSED_CONTEXT_MAX} characters)")
         right_lbl.setStyleSheet("color: #aaddaa; font-size: 10px; font-weight: bold;")
         right_layout.addWidget(right_lbl)
         focused_edit = QTextEdit()
         focused_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         focused_edit.setPlainText(self.script.story_context_focused)
         right_layout.addWidget(focused_edit)
-        focused_char_lbl = QLabel(f"{len(self.script.story_context_focused)} characters")
-        focused_char_lbl.setStyleSheet("color: #888888; font-size: 10px;")
-        focused_edit.textChanged.connect(
-            lambda: focused_char_lbl.setText(f"{len(focused_edit.toPlainText())} characters"))
+
+        def _focused_char_text():
+            n = len(focused_edit.toPlainText())
+            color = "#ff7777" if n > FOCUSED_CONTEXT_MAX else "#888888"
+            return f'<span style="color:{color};font-size:10px;">{n} / {FOCUSED_CONTEXT_MAX} characters</span>'
+
+        focused_char_lbl = QLabel(_focused_char_text())
+        focused_char_lbl.setTextFormat(Qt.TextFormat.RichText)
+        focused_edit.textChanged.connect(lambda: focused_char_lbl.setText(_focused_char_text()))
         right_layout.addWidget(focused_char_lbl)
 
         gen_btn = QPushButton("Generate Focused Context from Full (AI)")
