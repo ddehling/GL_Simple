@@ -171,7 +171,6 @@ class EnvironmentalSystem:
             "fish": (fx.shader_fish, {}),
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
-            "bart_map_fan": (fx.shader_bart_map_fan, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 "script_path": "media/sounds/bartiki/script.json",
