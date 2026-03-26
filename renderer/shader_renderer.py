@@ -145,8 +145,21 @@ class ShaderRenderer:
         self._fan_window_height = monitor_h - 100
         self._fan_window_width = int(self._fan_window_height * 1.8)
 
-        # Keyboard callback -- F=flat/fan, D=smooth/LED, ESC=quit
+        # Framebuffer size callback -- handles async resize on Linux/Wayland
         renderer_self = self
+
+        def _framebuffer_size_callback(window, width, height):
+            renderer_self.fb_width = width
+            renderer_self.fb_height = height
+            for vp in renderer_self.viewports:
+                if vp.display_width > 0:
+                    vp.display_width = width
+                    vp.display_height = height
+                    vp.mark_display_modes_dirty()
+
+        glfw.set_framebuffer_size_callback(self.window, _framebuffer_size_callback)
+
+        # Keyboard callback -- F=flat/fan, D=smooth/LED, ESC=quit
         def _key_callback(window, key, scancode, action, mods):
             if action != glfw.PRESS:
                 return
@@ -290,13 +303,8 @@ class ShaderRenderer:
         glfw.set_window_size(self.window, new_w, new_h)
         self.window_width = new_w
         self.window_height = new_h
-        self.fb_width, self.fb_height = glfw.get_framebuffer_size(self.window)
 
         for vp in self.viewports:
-            if vp.display_width > 0:
-                vp.display_width = self.fb_width
-                vp.display_height = self.fb_height
-                vp.mark_display_modes_dirty()
             vp.toggle_fan_mode()
         self._update_window_title()
 
