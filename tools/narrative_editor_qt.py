@@ -1035,7 +1035,7 @@ class AIAssistant:
 
         parts = []
         if story_context:
-            sc = story_context[:1000] + '...' if len(story_context) > 1000 else story_context
+            sc = story_context[:1500] + '...' if len(story_context) > 1500 else story_context
             parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
         if node_hint:
             parts.append(f'Continuation guidance: {node_hint}')
