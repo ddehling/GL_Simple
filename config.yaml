@@ -1,0 +1,17 @@
+# GL_Simple configuration
+# Edit this file to change application settings without modifying code.
+
+display:
+  width: 128          # LED strips (framebuffer columns)
+  height: 300         # LEDs per strip (framebuffer rows)
+  magnification: 0    # Window magnification (0 = auto-scale to monitor)
+  headless: false     # true = no desktop window, web preview only
+
+audio:
+  enabled: true         # Set false to run without microphone (e.g. remote/headless)
+  device_name: "TONOR"  # Microphone device name (run tools/sound_editor.py to find yours)
+
+web:
+  enabled: true
+  port: 5000
+  admin_password: "admin123"
