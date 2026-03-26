@@ -204,6 +204,38 @@ When a terminal node finishes playing, the runtime will automatically restart
 from a randomly chosen start_node — no explicit loop edges are needed or wanted.
 """
 
+SYSTEM_GENERATE_SEED = """\
+You are a narrative script writer for an immersive audio installation.
+Scripts play as atmospheric spoken audio layered over weather and lighting effects.
+
+Each node is one short spoken segment (40–100 words, ~15–35 seconds when read aloud).
+Use evocative, atmospheric language suited to the theme.
+
+Generate ONLY the intro layer — 1 to 3 opening nodes that establish the tone and world.
+These are the first words the audience will hear. Leave "next" as [] for ALL nodes —
+subsequent layers will be generated separately in a follow-up step.
+
+OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanation:
+{
+  "name": "Script name",
+  "description": "One-line description",
+  "start_nodes": ["intro_a"],
+  "nodes": {
+    "intro_a": {
+      "text": "Spoken text, 40-100 words.",
+      "next": [],
+      "weights": [],
+      "tags": ["intro"],
+      "voice_settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.10}
+    }
+  }
+}
+
+Node IDs: short_snake_case, intro-prefixed (e.g. "intro_storm", "intro_silence").
+TAGS: "intro" plus custom content tags — characters, themes, locations, moods.
+VOICE SETTINGS: stability 0.65, similarity_boost 0.75, style 0.10 (calm, orienting).
+"""
+
 SYSTEM_CONTINUE = """\
 You are continuing a narrative graph for an immersive audio installation.
 You receive an existing SOURCE NODE and must generate the remaining story layers that come AFTER it.
@@ -856,6 +888,40 @@ class AIAssistant:
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda: on_error(f"JSON parse error: {exc}"))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def generate_seed(self, prompt: str, ui_queue: queue.SimpleQueue,
+                      on_done, on_error, story_context: str = ''):
+        """Generate only the intro layer — no children. Used to seed iterative generation."""
+        if self._busy:
+            return
+        self._busy = True
+
+        context = self._transcript(limit=6)
+        parts = []
+        if story_context:
+            parts.append(f'Story context:\n{story_context}')
+        parts.append(prompt)
+        if context:
+            parts.append(context)
+        full_prompt = '\n\n'.join(parts)
+
+        def run():
+            try:
+                raw   = self._run_claude(SYSTEM_GENERATE_SEED, full_prompt)
+                match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if not match:
+                    ui_queue.put(lambda: on_error("No JSON found in response"))
+                    return
+                data = json.loads(match.group(0))
+                ui_queue.put(lambda: on_done(data))
+            except json.JSONDecodeError as exc:
+                ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
             except Exception as exc:
                 ui_queue.put(lambda e=exc: on_error(str(e)))
             finally:
@@ -2135,15 +2201,18 @@ class AIChatPanel(QWidget):
         self._ai: Optional[AIAssistant] = None
         self._ui_queue: Optional[queue.SimpleQueue] = None
         self._on_graph_generated = None
+        self._on_nodes_incremental = None  # (new_node_ids: set) -> None
         self.selected_node_id: Optional[str] = None
         self._build_ui()
 
     def set_context(self, script: ScriptData, ai: AIAssistant,
-                    ui_queue: queue.SimpleQueue, on_graph_generated):
+                    ui_queue: queue.SimpleQueue, on_graph_generated,
+                    on_nodes_incremental=None):
         self._script = script
         self._ai = ai
         self._ui_queue = ui_queue
         self._on_graph_generated = on_graph_generated
+        self._on_nodes_incremental = on_nodes_incremental
 
     def _build_script_context(self) -> str:
         """Return a focused context string for the AI chat prompt."""
@@ -2312,29 +2381,119 @@ class AIChatPanel(QWidget):
             prompt = "Generate a narrative graph based on our conversation so far."
         self.chat_input.setPlainText("")
         self.append_message("user", f"[Generate graph]: {prompt}")
-        self.status_label.setText("Generating graph...")
+        self.status_label.setText("Generating seed nodes...")
         self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;")
 
-        def on_done(data):
-            n = len(data.get("nodes", {}))
+        def on_seed_done(data):
+            before = set(self._script.nodes.keys())
             self._script.apply_generated(data)
-            for nid, pos in _layout_tree(self._script).items():
-                self._script.update_pos(nid, pos)
-            if self._on_graph_generated:
-                self._on_graph_generated()
-            self.status_label.setText(f"Added {n} nodes")
-            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
-            self.append_message("assistant",
-                f"Generated {n} nodes: " +
-                ", ".join(list(data.get("nodes", {}).keys())[:8]))
+            after  = set(self._script.nodes.keys())
+            seed_ids = after - before
+            if seed_ids and self._on_nodes_incremental:
+                try:
+                    self._on_nodes_incremental(seed_ids)
+                except Exception as exc:
+                    import traceback; traceback.print_exc()
+                    self.status_label.setText(f"Graph update error: {exc}")
+            names = ', '.join(sorted(seed_ids))
+            self.append_message("assistant", f"Seed: {names}")
+            self.status_label.setText(f"Seed done ({len(seed_ids)} nodes). Expanding...")
+            self._expand_leaves(set(), 0, generation_set=seed_ids)
 
-        def on_error(e):
+        def on_seed_error(e):
             self.status_label.setText(f"Error: {e[:50]}")
             self.status_label.setStyleSheet("color: #ff5555; font-size: 10px;")
-            self.append_message("assistant", f"Error: {e}")
+            self.append_message("assistant", f"Seed error: {e}")
 
-        self._ai.generate_graph(prompt, self._ui_queue, on_done, on_error,
-                                story_context=self._script.story_context_focused if self._script else '')
+        self._ai.generate_seed(
+            prompt, self._ui_queue, on_seed_done, on_seed_error,
+            story_context=self._script.story_context_focused if self._script else '',
+        )
+
+    def _expand_leaves(self, expanded_ids: set, total_calls: int, generation_set: set = None):
+        """Expand one unexpanded leaf node within generation_set, then recurse."""
+        TERMINAL_LAYERS = {'resolution', 'descent'}
+        MAX_CALLS = 10
+
+        if total_calls >= MAX_CALLS:
+            self.status_label.setText("Generation complete (call limit).")
+            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
+            return
+
+        # Only consider nodes created in this generation session
+        candidate_ids = generation_set if generation_set is not None else set(self._script.nodes.keys())
+
+        leaves = [
+            nid for nid in candidate_ids
+            if nid in self._script.nodes
+            and not self._script.nodes[nid].get('next')
+            and nid not in expanded_ids
+            and not any(t in TERMINAL_LAYERS for t in self._script.nodes[nid].get('tags', []))
+        ]
+
+        if not leaves:
+            count = len(generation_set) if generation_set is not None else len(self._script.nodes)
+            self.status_label.setText(f"Complete — {count} new nodes, {total_calls} expansions.")
+            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
+            self.append_message("assistant",
+                f"Graph complete: {count} new nodes across {total_calls} expansions.")
+            # Final full rebuild to sync everything cleanly
+            if self._on_graph_generated:
+                self._on_graph_generated()
+            return
+
+        nid = leaves[0]
+        nd  = self._script.nodes[nid]
+        self.status_label.setText(
+            f"Expanding '{nid}'... ({total_calls + 1}/{MAX_CALLS})"
+        )
+
+        layer_tags = {"intro","opening","development","deepening",
+                      "bridge","turn","descent","resolution"}
+        existing_custom_tags = list({
+            t for n in self._script.nodes.values()
+            for t in n.get('tags', []) if t not in layer_tags
+        })
+
+        def on_done(data):
+            before = set(self._script.nodes.keys())
+            # Only allow new nodes to connect to each other, not to pre-existing nodes.
+            new_node_ids = set(data.get('nodes', {}).keys())
+            for nd_data in data.get('nodes', {}).values():
+                nd_data['next'] = [n for n in nd_data.get('next', [])
+                                   if n in new_node_ids]
+            self._script.apply_expansion(nid, data)
+            after   = set(self._script.nodes.keys())
+            new_ids = after - before
+            # Incremental update: only add the new nodes/edges to the live graph.
+            if new_ids and self._on_nodes_incremental:
+                try:
+                    self._on_nodes_incremental(new_ids)
+                except Exception as exc:
+                    import traceback; traceback.print_exc()
+                    self.status_label.setText(f"Graph update error: {exc}")
+            self.append_message("assistant",
+                f"  '{nid}' → {', '.join(sorted(new_ids)) or '(no new nodes)'}")
+            self._expand_leaves(
+                expanded_ids | {nid}, total_calls + 1,
+                generation_set=(generation_set | new_ids) if generation_set is not None else None,
+            )
+
+        def on_error(e):
+            self.status_label.setText(f"Error expanding '{nid}': {e[:40]}")
+            self.append_message("assistant", f"  Error on '{nid}': {e[:60]}")
+            self._expand_leaves(expanded_ids | {nid}, total_calls + 1, generation_set=generation_set)
+
+        self._ai.expand_node(
+            nid, nd.get('text', ''), nd.get('tags', []),
+            hint='',
+            ui_queue=self._ui_queue,
+            on_done=on_done,
+            on_error=on_error,
+            story_context=self._script.story_context_focused if self._script else '',
+            node_min=2, node_max=3,
+            existing_custom_tags=existing_custom_tags,
+        )
 
     def _cmd_reset(self):
         if self._ai:
@@ -2765,7 +2924,9 @@ class MainWindow(QMainWindow):
         # Set contexts
         self.props_panel.set_context(self.script, self.vm, self.ai, self.ui_queue)
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
-        self.chat_panel.set_context(self.script, self.ai, self.ui_queue, self._on_graph_generated)
+        self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
+                                    self._on_graph_generated,
+                                    on_nodes_incremental=self._add_nodes_incremental)
         self.play_panel.set_context(self.script, self.ui_queue)
 
         # Connect props signals
@@ -3565,6 +3726,55 @@ class MainWindow(QMainWindow):
         self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Graph updated: {len(self.script.nodes)} nodes")
 
+    def _add_nodes_incremental(self, new_node_ids: set):
+        """Add only newly-created nodes/edges to the live graph without a full rebuild.
+        Used during iterative generation to avoid repeated clear_session() calls."""
+        self.graph.port_connected.disconnect(self._on_port_connected)
+        self.graph.port_disconnected.disconnect(self._on_port_disconnected)
+        try:
+            for node_id in new_node_ids:
+                if node_id in self._node_items:
+                    continue   # already present
+                nd = self.script.nodes.get(node_id)
+                if not nd:
+                    continue
+                pos  = nd.get('pos', [100, 100])
+                node = self.graph.create_node('narrative.NarrativeNode',
+                                              name=(nd.get('label') or node_id))
+                node.set_pos(float(pos[0]), float(pos[1]))
+                self._set_node_color(node, nd, in_cycle=node_id in self._cycle_nodes)
+                self._node_items[node_id] = node
+            # Wire only edges that touch the new nodes
+            for node_id in new_node_ids:
+                nd = self.script.nodes.get(node_id)
+                if not nd:
+                    continue
+                for to_id in nd.get('next', []):
+                    if to_id in self._node_items and node_id in self._node_items:
+                        try:
+                            self._node_items[node_id].output(0).connect_to(
+                                self._node_items[to_id].input(0)
+                            )
+                        except Exception:
+                            pass
+            # Also wire edges FROM existing nodes TO new nodes (parent → new child)
+            for from_id, nd in self.script.nodes.items():
+                if from_id in new_node_ids:
+                    continue
+                for to_id in nd.get('next', []):
+                    if to_id in new_node_ids and from_id in self._node_items:
+                        try:
+                            self._node_items[from_id].output(0).connect_to(
+                                self._node_items[to_id].input(0)
+                            )
+                        except Exception:
+                            pass
+        finally:
+            self.graph.port_connected.connect(self._on_port_connected)
+            self.graph.port_disconnected.connect(self._on_port_disconnected)
+        self._update_title()
+        self._refresh_cycle_markers()
+
     def _cmd_add_node(self):
         node_id = _next_node_id(self.script)
         existing = [nd.get("pos", [0, 0]) for nd in self.script.nodes.values()]
@@ -4048,7 +4258,9 @@ class MainWindow(QMainWindow):
         """Re-wire all panels after script is replaced."""
         self.props_panel.set_context(self.script, self.vm, self.ai, self.ui_queue)
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
-        self.chat_panel.set_context(self.script, self.ai, self.ui_queue, self._on_graph_generated)
+        self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
+                                    self._on_graph_generated,
+                                    on_nodes_incremental=self._add_nodes_incremental)
         self.play_panel.set_context(self.script, self.ui_queue)
 
     def _update_title(self):
