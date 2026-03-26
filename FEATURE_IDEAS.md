@@ -28,6 +28,7 @@
 - Confirmed pixels go out of every line; haven't confirmed they are the right pixels
     - Make a test pattern that goes on a gradient down the pattern, next box more along the gradient, etc...
     - Data to this box, change appropriate on line 1 and line 32
+- Ensure we haven't broken the underlying 2d array rendering
 - Control box
   - Computer
   - Router
