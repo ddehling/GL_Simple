@@ -5,6 +5,11 @@ Walks a narrative script JSON, plays each node's audio file via the main
 AudioEngine, waits for playback to complete, applies a configurable
 inter-node delay, then advances to the next node via weighted random selection.
 
+Story variables defined in the script are interpolated linearly over a
+configurable ramp duration whenever a new node starts, and ramped to zero
+when the story reaches a terminal node.  Current values are injected into
+the shared state dict every frame so other effects can read them.
+
 No OpenGL resources are used.  All logic lives in update(); render() is a no-op.
 
 Usage — add to event_map in Stories_OGL.py:
@@ -49,14 +54,25 @@ def _audio_duration(path: Path) -> float:
             return 0.0
 
 
-def _weighted_choice(nexts: list, weights: list) -> Optional[str]:
-    """Pick a node ID from nexts using the corresponding weights."""
+def _weighted_choice(nexts: list, weights: list,
+                     recency: dict = None) -> Optional[str]:
+    """Pick a node ID from nexts using weights, penalised by recency counters.
+
+    Each node's effective weight is  w * 2^(-counter).  A counter of 1 halves
+    the probability; 2 quarters it, etc.  Counters decay toward 0 over time
+    so the penalty fades after roughly an hour.
+    """
     if not nexts:
         return None
-    total = sum(weights) or 1.0
+    effective = []
+    for nid, w in zip(nexts, weights):
+        if recency and nid in recency:
+            w *= 2.0 ** (-recency[nid])
+        effective.append(w)
+    total = sum(effective) or 1.0
     r = random.random() * total
     acc = 0.0
-    for nid, w in zip(nexts, weights):
+    for nid, w in zip(nexts, effective):
         acc += w
         if r <= acc:
             return nid
@@ -76,6 +92,10 @@ class NarrativePlayer(ShaderEffect):
         play    → phase_elapsed >= audio_duration → delay
         delay   → phase_elapsed >= delay → pick next node → play  (or restart)
         restart → phase_elapsed >= restart_delay → idle
+
+    Story variables are linearly interpolated from their current values to the
+    new node's target values over ``var_ramp_duration`` seconds.  When a
+    terminal node finishes (no next[]), all variables ramp to 0.
     """
 
     IDLE    = 'idle'
@@ -84,10 +104,11 @@ class NarrativePlayer(ShaderEffect):
     RESTART = 'restart'
 
     def __init__(self, viewport, script_path: str = '', delay: float = 3.0,
-                 restart_delay: float = 10.0):
+                 restart_delay: float = 10.0, var_ramp_duration: float = 10.0):
         super().__init__(viewport)
-        self.delay         = delay          # seconds between nodes
-        self.restart_delay = restart_delay  # seconds to wait before looping
+        self.delay             = delay            # seconds between nodes
+        self.restart_delay     = restart_delay    # seconds before looping
+        self.var_ramp_duration = var_ramp_duration  # seconds for variable transitions
 
         self._phase:         str            = self.IDLE
         self._phase_elapsed: float          = 0.0
@@ -98,15 +119,41 @@ class NarrativePlayer(ShaderEffect):
         self._start_nodes: list = []
         self._audio_dir:   Path = Path('.')
 
+        # ── Story variable interpolation state ───────────────────────────
+        self._var_defs:    list = []   # [{"name": ..., "description": ...}, ...]
+        self._var_current: dict = {}   # name -> current interpolated value
+        self._var_start:   dict = {}   # name -> value at ramp start
+        self._var_target:  dict = {}   # name -> ramp target value
+        self._var_elapsed: float = 0.0 # time since ramp started
+        self._var_ramping: bool  = False
+
+        # ── Recency suppression (avoids repeating the same nodes) ─────
+        # Maps node_id -> float counter.  Incremented by 1 each time a node
+        # plays; decays by 1/hour continuously.  Effective weight is
+        # original_weight * 2^(-counter).
+        self._recency: dict = {}   # node_id -> float
+        self._DECAY_PER_SEC: float = 1.0 / 3600.0  # lose 1 count per hour
+
         p = Path(script_path)
         if p.exists():
             data              = json.loads(p.read_text(encoding='utf-8'))
             self._nodes       = data.get('nodes', {})
             self._start_nodes = data.get('start_nodes', [])
+            self._var_defs    = data.get('variables', [])
             self._audio_dir   = p.parent
+
+            # Initialise all variables to 0
+            for v in self._var_defs:
+                name = v['name']
+                self._var_current[name] = 0.0
+                self._var_start[name]   = 0.0
+                self._var_target[name]  = 0.0
+
+            var_names = [v['name'] for v in self._var_defs]
             print(f'[NarrativePlayer] Loaded {p.name}  '
                   f'({len(self._nodes)} nodes, '
-                  f'{len(self._start_nodes)} start nodes)')
+                  f'{len(self._start_nodes)} start nodes'
+                  f'{", vars: " + ", ".join(var_names) if var_names else ""})')
         else:
             print(f'[NarrativePlayer] Script not found: {script_path}')
             self.enabled = False
@@ -114,6 +161,44 @@ class NarrativePlayer(ShaderEffect):
     def init(self):
         """No shaders or GPU buffers needed."""
         print('    [OK] NarrativePlayer initialised')
+
+    # ── Variable interpolation ───────────────────────────────────────────
+
+    def _start_var_ramp(self, target_vars: dict) -> None:
+        """Begin a linear ramp from current values to *target_vars*."""
+        if not self._var_defs:
+            return
+        for v in self._var_defs:
+            name = v['name']
+            self._var_start[name]  = self._var_current[name]
+            self._var_target[name] = float(target_vars.get(name, 0.0))
+        self._var_elapsed = 0.0
+        self._var_ramping = True
+
+    def _ramp_to_zero(self) -> None:
+        """Begin a linear ramp of all variables to 0."""
+        self._start_var_ramp({})
+
+    def _update_var_ramp(self, dt: float) -> None:
+        """Advance the variable ramp by *dt* seconds."""
+        if not self._var_ramping or not self._var_defs:
+            return
+        self._var_elapsed += dt
+        progress = min(1.0, self._var_elapsed / self.var_ramp_duration) \
+                   if self.var_ramp_duration > 0 else 1.0
+        for v in self._var_defs:
+            name = v['name']
+            start  = self._var_start[name]
+            target = self._var_target[name]
+            self._var_current[name] = start + (target - start) * progress
+        if progress >= 1.0:
+            self._var_ramping = False
+
+    def _inject_vars(self, state: Dict) -> None:
+        """Write current variable values into the shared state dict."""
+        for v in self._var_defs:
+            name = v['name']
+            state[f'story_{name}'] = self._var_current[name]
 
     # ── Internal state-machine helpers ──────────────────────────────────────
 
@@ -127,6 +212,13 @@ class NarrativePlayer(ShaderEffect):
         self._current_node  = node_id
         self._phase_elapsed = 0.0
 
+        # Record play for recency suppression
+        prev_count = self._recency.get(node_id, 0.0)
+        self._recency[node_id] = prev_count + 1.0
+
+        # Start variable ramp toward this node's values
+        self._start_var_ramp(nd.get('vars', {}))
+
         audio_file = self._audio_dir / f'{node_id}.mp3'
         if audio_file.exists():
             self._audio_dur = _audio_duration(audio_file)
@@ -136,9 +228,9 @@ class NarrativePlayer(ShaderEffect):
                     str(audio_file), volume=1.0,
                     duration=self._audio_dur + 0.5,
                 )
-            print(f'[NarrativePlayer] ▶ {node_id}  ({self._audio_dur:.1f}s)')
+            print(f'[NarrativePlayer] ▶ {node_id}  ({self._audio_dur:.1f}s)  recency={prev_count:.2f}')
         else:
-            print(f'[NarrativePlayer] ▶ {node_id}  (no audio — skipping)')
+            print(f'[NarrativePlayer] ▶ {node_id}  (no audio — skipping)  recency={prev_count:.2f}')
             self._audio_dur = 0.0
 
         self._phase = self.PLAY
@@ -148,10 +240,12 @@ class NarrativePlayer(ShaderEffect):
         nd      = self._nodes.get(self._current_node, {})
         nexts   = nd.get('next', [])
         weights = nd.get('weights', [1.0] * len(nexts))
-        nxt = _weighted_choice(nexts, weights)
+        nxt = _weighted_choice(nexts, weights, self._recency)
         if nxt:
             self._play_node(nxt, engine)
         else:
+            # Terminal node — ramp all variables to zero
+            self._ramp_to_zero()
             print(f'[NarrativePlayer] Script complete — restarting in {self.restart_delay:.0f}s.')
             self._phase         = self.RESTART
             self._phase_elapsed = 0.0
@@ -165,10 +259,23 @@ class NarrativePlayer(ShaderEffect):
         self._phase_elapsed += dt
         engine = state.get('soundengine')
 
+        # Decay recency counters (1 count per hour)
+        if self._recency:
+            decay = self._DECAY_PER_SEC * dt
+            to_remove = []
+            for nid in self._recency:
+                self._recency[nid] -= decay
+                if self._recency[nid] <= 0.0:
+                    to_remove.append(nid)
+            for nid in to_remove:
+                del self._recency[nid]
+
         if self._phase == self.IDLE:
             starts = self._start_nodes or list(self._nodes.keys())
             if starts:
-                self._play_node(random.choice(starts), engine)
+                pick = _weighted_choice(starts, [1.0] * len(starts),
+                                        self._recency)
+                self._play_node(pick or starts[0], engine)
             else:
                 self._phase = self.DONE
 
@@ -188,6 +295,11 @@ class NarrativePlayer(ShaderEffect):
                 self._phase         = self.IDLE
                 self._phase_elapsed = 0.0
 
+        # Interpolate variables and inject into shared state every frame
+        self._update_var_ramp(dt)
+        self._inject_vars(state)
+
+
     def render(self, state: Dict) -> None:
         pass  # no OpenGL output
 
@@ -203,6 +315,7 @@ def shader_narrative_player(state: dict, outstate: dict,
                              script_path: str = '',
                              node_delay: float = 3.0,
                              restart_delay: float = 10.0,
+                             var_ramp_duration: float = 10.0,
                              frame_id: int = 0) -> None:
     """
     Event-map wrapper for NarrativePlayer.
@@ -220,7 +333,8 @@ def shader_narrative_player(state: dict, outstate: dict,
         viewport.add_effect(NarrativePlayer,
                             script_path=script_path,
                             delay=node_delay,
-                            restart_delay=restart_delay)
+                            restart_delay=restart_delay,
+                            var_ramp_duration=var_ramp_duration)
         state['effect'] = viewport.effects[-1]
         print('[shader_narrative_player] Started')
 
