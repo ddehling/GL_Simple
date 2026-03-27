@@ -237,6 +237,54 @@ TAGS: "intro" plus custom content tags — characters, themes, locations, moods.
 VOICE SETTINGS: stability 0.65, similarity_boost 0.75, style 0.10 (calm, orienting).
 """
 
+SYSTEM_GENERATE_LAYER = """\
+You are writing one layer of a narrative graph for an immersive audio installation.
+You receive multiple SOURCE NODES — the current frontier — and must generate the next layer.
+
+Each node is a short spoken segment (40–100 words, ~15–35 seconds when read aloud).
+
+OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanation:
+{
+  "nodes": {
+    "node_id": {
+      "text": "Spoken text, 40-100 words.",
+      "connect_from": ["source_id_a"],
+      "next": [],
+      "weights": [],
+      "tags": ["development"],
+      "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35}
+    }
+  }
+}
+
+"connect_from": which existing SOURCE NODE IDs lead into this new node.
+  - One connect_from = this node continues from that one source
+  - Multiple connect_from = convergence — multiple sources all lead here
+  - Every source node must appear in at least one connect_from
+  - Generate 2–5 total new nodes across the whole layer
+
+BRANCHING AND MERGING: vary the structure. Do not produce a 1:1 mapping of source→child.
+  source_a → [new_x, new_y]     (branch)
+  source_b → [new_y, new_z]     (source_b shares new_y with source_a — merge)
+
+LAYER PROGRESSION:
+  intro → opening → development → deepening → bridge → turn → descent → resolution
+  Determine the source nodes' layer from their tags. All new nodes go in the NEXT layer.
+  If source nodes are in "turn" or "descent", generate resolution nodes with next: [].
+
+CONTINUITY: every new node must follow naturally from its source(s). The first words pick
+  up the thread of whichever source led there. Shared convergence nodes must work after
+  any of their sources without jarring.
+
+THEMATIC CONTINUITY: stay in the same world, imagery, and atmosphere as the source nodes.
+
+node IDs: short_snake_case, layer-prefixed (e.g. "dev_kelp", "turn_silence", "res_still")
+TAGS: one layer tag + custom content tags (carry forward tags from source nodes where applicable)
+VOICE SETTINGS per layer: intro stab~0.65 style~0.10 | opening stab~0.60 style~0.20
+  develop stab~0.50 style~0.35 | deepen stab~0.45 style~0.45 | bridge stab~0.45 style~0.40
+  turn stab~0.30 style~0.65    | descent stab~0.25 style~0.70 | resolut stab~0.60 style~0.15
+"""
+
 SYSTEM_CONTINUE = """\
 You are continuing a narrative graph for an immersive audio installation.
 You receive an existing SOURCE NODE and must generate the remaining story layers that come AFTER it.
@@ -401,6 +449,10 @@ Keep individual segments in mind — each will be ~15–35 seconds of spoken aud
 
 When the user clicks "Generate Graph", you will produce the actual JSON structure.
 Until then, focus on ideas, themes, tone, and story development.
+
+IMPORTANT — when a "Story context" block is provided, treat it as BACKGROUND ATMOSPHERE ONLY
+(voice, tone, setting). It must NEVER override the subject of the user's actual message.
+The user's message defines the topic. Always stay on that topic.
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -747,6 +799,57 @@ class ScriptData:
 
         self.dirty = True
 
+    def apply_layer(self, layer_data: dict):
+        """Apply a batch layer expansion where each new node declares its connect_from sources."""
+        layer_data = dict(layer_data)
+        raw_nodes = layer_data.get('nodes', {})
+        if not isinstance(raw_nodes, dict):
+            return  # malformed — nothing to apply
+        # Drop any node entries that aren't dicts
+        raw_nodes = {k: v for k, v in raw_nodes.items() if isinstance(v, dict)}
+        layer_data['nodes'] = self._sanitize_nodes(raw_nodes)
+        layer_data['nodes'], remap = self._dedupe_ids(layer_data['nodes'])
+
+        LAYER_ORDER = ["intro", "opening", "development", "deepening",
+                       "bridge", "turn", "descent", "resolution"]
+        LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
+        LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
+        layer_counts: dict = {}
+        for nd in self._data["nodes"].values():
+            for tag in nd.get("tags", []):
+                if tag in LAYER_ORDER:
+                    layer_counts[tag] = layer_counts.get(tag, 0) + 1
+
+        for nid, ndata in layer_data['nodes'].items():
+            tags  = ndata.get("tags", [])
+            layer = next((t for t in tags if t in LAYER_ORDER), "_default")
+            x     = LAYER_X[layer]
+            y_idx = layer_counts.get(layer, 0)
+            layer_counts[layer] = y_idx + 1
+
+            self._data["nodes"][nid] = {
+                "text":           ndata.get("text", ""),
+                "label":          "",
+                "hint":           "",
+                "file":           None,
+                "duration":       None,
+                "next":           ndata.get("next", []),
+                "weights":        ndata.get("weights", [1.0] * len(ndata.get("next", []))),
+                "tags":           tags,
+                "voice":          ndata.get("voice", None),
+                "voice_settings": ndata.get("voice_settings", {}),
+                "pos":            [x, 80 + y_idx * 170],
+            }
+
+            # Wire each declared source node to point to this new node
+            for src_id in ndata.get("connect_from", []):
+                src = self._data["nodes"].get(src_id)
+                if src and nid not in src["next"]:
+                    src["next"].append(nid)
+                    src["weights"].append(1.0)
+
+        self.dirty = True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI Assistant
@@ -841,7 +944,7 @@ class AIAssistant:
 
         parts = []
         if story_context:
-            parts.append(f"Story context:\n{story_context}")
+            parts.append(f"BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this override the topic of the user's message):\n{story_context}")
         if script_summary:
             parts.append(f"Current script:\n{script_summary}")
         transcript = self._transcript()
@@ -869,13 +972,10 @@ class AIAssistant:
             return
         self._busy = True
 
-        context = self._transcript(limit=6)
         parts = []
         if story_context:
-            parts.append(f'Story context:\n{story_context}')
-        parts.append(prompt)
-        if context:
-            parts.append(context)
+            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
+        parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
 
         def run():
@@ -903,18 +1003,62 @@ class AIAssistant:
             return
         self._busy = True
 
-        context = self._transcript(limit=6)
         parts = []
         if story_context:
-            parts.append(f'Story context:\n{story_context}')
-        parts.append(prompt)
-        if context:
-            parts.append(context)
+            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
+        parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
 
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_GENERATE_SEED, full_prompt)
+                match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if not match:
+                    ui_queue.put(lambda: on_error("No JSON found in response"))
+                    return
+                data = json.loads(match.group(0))
+                ui_queue.put(lambda: on_done(data))
+            except json.JSONDecodeError as exc:
+                ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def generate_layer(self, frontier: list, ui_queue: queue.SimpleQueue,
+                       on_done, on_error, story_context: str = '',
+                       existing_custom_tags: list = None):
+        """Generate the next layer for all frontier nodes in one AI call.
+
+        frontier: list of (node_id, node_data) for all current leaf nodes.
+        """
+        if self._busy:
+            return
+        self._busy = True
+
+        parts = []
+        if story_context:
+            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
+            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do NOT let this dilute or override the topic defined by the source nodes):\n  {sc}')
+        if existing_custom_tags:
+            parts.append(f'EXISTING TAGS (reuse where applicable): {", ".join(sorted(existing_custom_tags))}')
+
+        source_block = 'SOURCE NODES (generate the next layer continuing from all of these):'
+        for nid, nd in frontier:
+            tags_str = ', '.join(nd.get('tags', []))
+            text     = nd.get('text', '')[:200]
+            source_block += f'\n  [{nid}] tags: {tags_str}\n  "{text}"'
+        parts.append(source_block)
+
+        n_new = max(2, min(5, len(frontier) + 1))
+        parts.append(f'Generate {n_new}–{n_new + 1} new nodes. Every source node must appear in at least one connect_from.')
+        full_prompt = '\n\n'.join(parts)
+
+        def run():
+            try:
+                raw   = self._run_claude(SYSTEM_GENERATE_LAYER, full_prompt)
                 match = re.search(r'\{.*\}', raw, re.DOTALL)
                 if not match:
                     ui_queue.put(lambda: on_error("No JSON found in response"))
@@ -2390,16 +2534,10 @@ class AIChatPanel(QWidget):
             self._script.apply_generated(data)
             after  = set(self._script.nodes.keys())
             seed_ids = after - before
-            if seed_ids and self._on_nodes_incremental:
-                try:
-                    self._on_nodes_incremental(seed_ids)
-                except Exception as exc:
-                    import traceback; traceback.print_exc()
-                    self.status_label.setText(f"Graph update error: {exc}")
             names = ', '.join(sorted(seed_ids))
             self.append_message("assistant", f"Seed: {names}")
             self.status_label.setText(f"Seed done ({len(seed_ids)} nodes). Expanding...")
-            self._expand_leaves(set(), 0, generation_set=seed_ids)
+            self._expand_frontier(0, generation_set=seed_ids)
 
         def on_seed_error(e):
             self.status_label.setText(f"Error: {e[:50]}")
@@ -2411,43 +2549,38 @@ class AIChatPanel(QWidget):
             story_context=self._script.story_context_focused if self._script else '',
         )
 
-    def _expand_leaves(self, expanded_ids: set, total_calls: int, generation_set: set = None):
-        """Expand one unexpanded leaf node within generation_set, then recurse."""
+    def _expand_frontier(self, total_calls: int, generation_set: set = None):
+        """Expand the entire current frontier in one AI call, then recurse layer by layer."""
         TERMINAL_LAYERS = {'resolution', 'descent'}
-        MAX_CALLS = 10
+        MAX_LAYERS = 8  # seed + 8 layer expansions covers the full 8-layer arc
 
-        if total_calls >= MAX_CALLS:
-            self.status_label.setText("Generation complete (call limit).")
+        if total_calls >= MAX_LAYERS:
+            self.status_label.setText("Generation complete (layer limit).")
             self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
-            return
-
-        # Only consider nodes created in this generation session
-        candidate_ids = generation_set if generation_set is not None else set(self._script.nodes.keys())
-
-        leaves = [
-            nid for nid in candidate_ids
-            if nid in self._script.nodes
-            and not self._script.nodes[nid].get('next')
-            and nid not in expanded_ids
-            and not any(t in TERMINAL_LAYERS for t in self._script.nodes[nid].get('tags', []))
-        ]
-
-        if not leaves:
-            count = len(generation_set) if generation_set is not None else len(self._script.nodes)
-            self.status_label.setText(f"Complete — {count} new nodes, {total_calls} expansions.")
-            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
-            self.append_message("assistant",
-                f"Graph complete: {count} new nodes across {total_calls} expansions.")
-            # Final full rebuild to sync everything cleanly
             if self._on_graph_generated:
                 self._on_graph_generated()
             return
 
-        nid = leaves[0]
-        nd  = self._script.nodes[nid]
-        self.status_label.setText(
-            f"Expanding '{nid}'... ({total_calls + 1}/{MAX_CALLS})"
-        )
+        candidate_ids = generation_set if generation_set is not None else set(self._script.nodes.keys())
+
+        # All non-terminal leaves in this generation session form the frontier
+        frontier = [
+            (nid, self._script.nodes[nid])
+            for nid in candidate_ids
+            if nid in self._script.nodes
+            and not self._script.nodes[nid].get('next')
+            and not any(t in TERMINAL_LAYERS for t in self._script.nodes[nid].get('tags', []))
+        ]
+
+        if not frontier:
+            count = len(generation_set) if generation_set is not None else len(self._script.nodes)
+            self.status_label.setText(f"Complete — {count} new nodes, {total_calls} layers.")
+            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
+            self.append_message("assistant",
+                f"Graph complete: {count} new nodes across {total_calls} layer expansions.")
+            if self._on_graph_generated:
+                self._on_graph_generated()
+            return
 
         layer_tags = {"intro","opening","development","deepening",
                       "bridge","turn","descent","resolution"}
@@ -2456,43 +2589,63 @@ class AIChatPanel(QWidget):
             for t in n.get('tags', []) if t not in layer_tags
         })
 
+        frontier_names = ', '.join(nid for nid, _ in frontier)
+        self.status_label.setText(
+            f"Layer {total_calls + 1}/{MAX_LAYERS}: expanding [{frontier_names}]..."
+        )
+
         def on_done(data):
-            before = set(self._script.nodes.keys())
-            # Only allow new nodes to connect to each other, not to pre-existing nodes.
-            new_node_ids = set(data.get('nodes', {}).keys())
-            for nd_data in data.get('nodes', {}).values():
-                nd_data['next'] = [n for n in nd_data.get('next', [])
-                                   if n in new_node_ids]
-            self._script.apply_expansion(nid, data)
-            after   = set(self._script.nodes.keys())
-            new_ids = after - before
-            # Incremental update: only add the new nodes/edges to the live graph.
-            if new_ids and self._on_nodes_incremental:
-                try:
-                    self._on_nodes_incremental(new_ids)
-                except Exception as exc:
-                    import traceback; traceback.print_exc()
-                    self.status_label.setText(f"Graph update error: {exc}")
-            self.append_message("assistant",
-                f"  '{nid}' → {', '.join(sorted(new_ids)) or '(no new nodes)'}")
-            self._expand_leaves(
-                expanded_ids | {nid}, total_calls + 1,
-                generation_set=(generation_set | new_ids) if generation_set is not None else None,
-            )
+            import traceback as _tb
+            try:
+                # Validate structure — LLM sometimes returns nodes as a list
+                nodes = data.get('nodes', {}) if isinstance(data, dict) else {}
+                if not isinstance(nodes, dict):
+                    raise ValueError(f"'nodes' is {type(nodes).__name__}, expected dict")
+
+                allowed_sources = candidate_ids | (generation_set or set())
+                before = set(self._script.nodes.keys())
+
+                for nd_data in nodes.values():
+                    if not isinstance(nd_data, dict):
+                        continue
+                    # Strip connect_from refs outside this generation session
+                    nd_data['connect_from'] = [
+                        s for s in nd_data.get('connect_from', [])
+                        if isinstance(s, str) and s in allowed_sources
+                    ]
+                    nd_data['next'] = []   # new nodes start with no children
+
+                self._script.apply_layer(data)
+                after   = set(self._script.nodes.keys())
+                new_ids = after - before
+
+                self.append_message("assistant",
+                    f"  Layer {total_calls + 1}: {', '.join(sorted(new_ids)) or '(no new nodes)'}")
+                self._expand_frontier(
+                    total_calls + 1,
+                    generation_set=(generation_set | new_ids) if generation_set is not None else new_ids,
+                )
+            except Exception as exc:
+                _tb.print_exc()
+                self.status_label.setText(f"Layer {total_calls + 1} parse error: {exc}")
+                self.status_label.setStyleSheet("color: #ff7777; font-size: 10px;")
+                self.append_message("assistant", f"  Layer {total_calls + 1} error: {exc}")
+                if self._on_graph_generated:
+                    self._on_graph_generated()
 
         def on_error(e):
-            self.status_label.setText(f"Error expanding '{nid}': {e[:40]}")
-            self.append_message("assistant", f"  Error on '{nid}': {e[:60]}")
-            self._expand_leaves(expanded_ids | {nid}, total_calls + 1, generation_set=generation_set)
+            self.status_label.setText(f"Layer {total_calls + 1} error: {e[:50]}")
+            self.status_label.setStyleSheet("color: #ff7777; font-size: 10px;")
+            self.append_message("assistant", f"  Layer error: {e[:80]}")
+            if self._on_graph_generated:
+                self._on_graph_generated()
 
-        self._ai.expand_node(
-            nid, nd.get('text', ''), nd.get('tags', []),
-            hint='',
+        self._ai.generate_layer(
+            frontier,
             ui_queue=self._ui_queue,
             on_done=on_done,
             on_error=on_error,
             story_context=self._script.story_context_focused if self._script else '',
-            node_min=2, node_max=3,
             existing_custom_tags=existing_custom_tags,
         )
 
@@ -3652,6 +3805,9 @@ class MainWindow(QMainWindow):
             act_freq.triggered.connect(lambda: self._freq_btn.setChecked(not self._freq_btn.isChecked()))
 
             menu.addSeparator()
+            act_tree = menu.addAction("Apply Tree Layout")
+            act_tree.triggered.connect(self._cmd_apply_tree_layout)
+
             act_fit = menu.addAction("Fit View")
             act_fit.triggered.connect(self._cmd_fit_view)
 
@@ -3921,10 +4077,18 @@ class MainWindow(QMainWindow):
 
         def on_done(data):
             n = len(data.get("nodes", {}))
+            before = set(self.script.nodes.keys())
             self.script.apply_expansion(node_id, data)
+            after = set(self.script.nodes.keys())
+            new_ids = after - before
             for nid, pos in _layout_tree(self.script).items():
                 self.script.update_pos(nid, pos)
-            self._rebuild_graph()
+            # Reposition existing nodes in the display without a full rebuild
+            for nid, node_item in list(self._node_items.items()):
+                pos = self.script.nodes.get(nid, {}).get('pos', [100, 100])
+                node_item.set_pos(float(pos[0]), float(pos[1]))
+            # Add only new nodes/edges — avoids clear_session() crash on large graphs
+            self._add_nodes_incremental(new_ids)
             if node_id in self.script.nodes:
                 self._select_node(node_id)
             self._update_title()
@@ -3972,10 +4136,18 @@ class MainWindow(QMainWindow):
             # Reuse apply_expansion: treat start_nodes as connect_from targets
             expansion_data = dict(data)
             expansion_data['connect_from'] = data.get('start_nodes', [])
+            before = set(self.script.nodes.keys())
             self.script.apply_expansion(node_id, expansion_data)
+            after = set(self.script.nodes.keys())
+            new_ids = after - before
             for nid, pos in _layout_tree(self.script).items():
                 self.script.update_pos(nid, pos)
-            self._rebuild_graph()
+            # Reposition existing nodes in the display without a full rebuild
+            for nid, node_item in list(self._node_items.items()):
+                pos = self.script.nodes.get(nid, {}).get('pos', [100, 100])
+                node_item.set_pos(float(pos[0]), float(pos[1]))
+            # Add only new nodes/edges — avoids clear_session() crash on large graphs
+            self._add_nodes_incremental(new_ids)
             self._select_node(node_id)
             n = len(data.get("nodes", {}))
             self._update_title()
@@ -4171,6 +4343,15 @@ class MainWindow(QMainWindow):
                 self._node_items[node_id].set_pos(float(x), float(y))
                 self.script.update_pos(node_id, [x, y])
         self.graph.fit_to_selection()
+
+    def _cmd_apply_tree_layout(self):
+        """Rearrange nodes into tree layout without changing zoom/pan."""
+        layout = _layout_tree(self.script)
+        for node_id, (x, y) in layout.items():
+            if node_id in self._node_items:
+                self._node_items[node_id].set_pos(float(x), float(y))
+                self.script.update_pos(node_id, [x, y])
+        self.status_bar.showMessage("Tree layout applied")
 
     def _cmd_spread(self):
         self._scale_positions(1.3)
