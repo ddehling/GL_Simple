@@ -3642,5 +3642,19 @@
       "chat_history": []
     }
   },
-  "active_arc_id": "arc_001"
+  "active_arc_id": "arc_001",
+  "variables": [
+    {
+      "name": "Mystery",
+      "description": "How Mysterious are things?"
+    },
+    {
+      "name": "Bartiki",
+      "description": "Is Bartiki around or near?"
+    },
+    {
+      "name": "Companions",
+      "description": "Are the companions present?"
+    }
+  ]
 }
