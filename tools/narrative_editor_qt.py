@@ -36,7 +36,7 @@ from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, Q
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QLineEdit,
+    QFrame, QGraphicsItem, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QStatusBar, QTextEdit, QVBoxLayout, QWidget,
@@ -3145,7 +3145,8 @@ class _GraphViewHoverFilter(QObject):
     Also intercepts right-click to fire on_right_click(node_id, global_pos)."""
 
     def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None,
-                 on_delete_pipes=None, on_mouse_move=None, parent=None):
+                 on_delete_pipes=None, on_mouse_move=None, on_deselect=None,
+                 get_selected=None, on_restore_selection=None, parent=None):
         super().__init__(parent)
         self._get_node = get_node_at_pos
         self._on_enter = on_enter
@@ -3153,6 +3154,9 @@ class _GraphViewHoverFilter(QObject):
         self._on_right_click = on_right_click
         self._on_delete_pipes = on_delete_pipes
         self._on_mouse_move = on_mouse_move
+        self._on_deselect = on_deselect
+        self._get_selected = get_selected
+        self._on_restore_selection = on_restore_selection
         self._current: Optional[str] = None
 
     def eventFilter(self, obj, event):
@@ -3177,9 +3181,27 @@ class _GraphViewHoverFilter(QObject):
                 node_id = self._get_node(event.position().toPoint())
                 self._on_right_click(node_id, event.globalPosition().toPoint())
                 return True  # suppress NodeGraphQt's built-in right-click menu
+            if event.button() == Qt.MouseButton.LeftButton:
+                node_id = self._get_node(event.position().toPoint())
+                if not node_id:
+                    # Suppress single left-click on empty canvas — require double-click to deselect
+                    return True
+            if event.button() == Qt.MouseButton.MiddleButton:
+                node_id = self._get_node(event.position().toPoint())
+                if not node_id and self._on_restore_selection and self._get_selected:
+                    # Capture the selected node ID NOW before Qt clears selection,
+                    # then restore it after the middle-click event is fully processed.
+                    nid = self._get_selected()
+                    if nid:
+                        QTimer.singleShot(0, lambda _nid=nid: self._on_restore_selection(_nid))
             if self._current:
                 self._on_leave(self._current)
                 self._current = None
+        elif t == QEvent.Type.MouseButtonDblClick:
+            if event.button() == Qt.MouseButton.LeftButton:
+                node_id = self._get_node(event.position().toPoint())
+                if not node_id and self._on_deselect:
+                    self._on_deselect()
         elif t == QEvent.Type.Leave:
             if self._current:
                 self._on_leave(self._current)
@@ -3611,8 +3633,8 @@ class ArcEditorDialog(QDialog):
         super().closeEvent(event)
 
 
-class _CrosshatchItem(QGraphicsItem):
-    """Prominent crosshatch overlay drawn on top of a node to indicate a search match."""
+class _SearchBorderItem(QGraphicsItem):
+    """Glowing border drawn around a node to indicate a search match."""
 
     def __init__(self, parent_item):
         super().__init__(parent_item)
@@ -3623,31 +3645,35 @@ class _CrosshatchItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
 
     def boundingRect(self):
-        return self._rect
+        return self._rect.adjusted(-4, -4, 4, 4)
 
     def paint(self, painter, option, widget=None):
         painter.save()
-        painter.setClipRect(self._rect)
-        pen = QPen(QColor(0, 230, 255, 255), 4.5)
-        pen.setStyle(Qt.PenStyle.SolidLine)
-        painter.setPen(pen)
-        r = self._rect
-        spacing = 10
-        # Extend range so diagonals cover the full rect even at corners
-        span = r.width() + r.height()
-        x = r.left() - r.height()
-        while x < r.right() + r.height():
-            # Forward diagonal (\)
-            painter.drawLine(
-                int(x), int(r.top()),
-                int(x + r.height()), int(r.bottom()),
-            )
-            # Backward diagonal (/)
-            painter.drawLine(
-                int(x + r.height()), int(r.top()),
-                int(x), int(r.bottom()),
-            )
-            x += spacing
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        r = self._rect.adjusted(2, 2, -2, -2)
+        dash = [4.0, 4.0]   # 4px on, 4px off
+        width = 16.0
+
+        # White dashes
+        p1 = QPen(QColor(0, 230, 255, 255), width)
+        p1.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p1.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        p1.setStyle(Qt.PenStyle.CustomDashLine)
+        p1.setDashPattern(dash)
+        p1.setDashOffset(0)
+        painter.setPen(p1)
+        painter.drawRect(r)
+
+        # Black dashes — offset by half a dash to fill the gaps
+        p2 = QPen(QColor(255, 0, 220, 255), width)
+        p2.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p2.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        p2.setStyle(Qt.PenStyle.CustomDashLine)
+        p2.setDashPattern(dash)
+        p2.setDashOffset(4.0)
+        painter.setPen(p2)
+        painter.drawRect(r)
+
         painter.restore()
 
 
@@ -3737,6 +3763,9 @@ class MainWindow(QMainWindow):
             on_right_click=self._on_graph_right_click,
             on_delete_pipes=self._cmd_delete_selected_pipes,
             on_mouse_move=self._on_graph_mouse_move,
+            on_deselect=self.graph.clear_selection,
+            get_selected=lambda: self._selected_node_id,
+            on_restore_selection=self._select_node,
         )
         # Events land on the viewport, not the view itself
         self.graph.viewer().viewport().installEventFilter(self._graph_hover_filter)
@@ -4361,7 +4390,7 @@ class MainWindow(QMainWindow):
         # Add overlays for newly matching nodes
         for nid in matched:
             if nid not in self._search_overlays and nid in self._node_items:
-                self._search_overlays[nid] = _CrosshatchItem(self._node_items[nid].view)
+                self._search_overlays[nid] = _SearchBorderItem(self._node_items[nid].view)
 
     def _clear_search_overlays(self):
         """Remove all active search crosshatch overlays."""
