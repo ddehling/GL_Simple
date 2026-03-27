@@ -1,6 +1,6 @@
 {
   "name": "Bartiki: God of the Liminal Rail",
-  "description": "An atmospheric myth of Bartiki, the ancient reaching force beneath the world's water and soil",
+  "description": "Bill Barley — married over a hundred times, all out of love — boards the train, and something ancient in the tunnels stirs.",
   "voice": "G0HQD4cwCS617WM0BPwJ",
   "voice_settings": {
     "stability": 0.5,
@@ -21,7 +21,8 @@
     "intro_desert_memory",
     "intro_storm_birth",
     "The_Toad_alone",
-    "node_002"
+    "node_002",
+    "intro_bill_boards"
   ],
   "nodes": {
     "intro_arrival": {
@@ -2499,8 +2500,1147 @@
         3180.0,
         4079.772727272728
       ]
+    },
+    "intro_bill_boards": {
+      "text": "Some people step onto the train and the train simply carries them. Bill Barley stepped onto the train and the train leaned in. He had been married one hundred and seventeen times , each one genuine, each one total. Love was not something Bill practiced. It was something he radiated, the way warm coal holds fire long after the flame has gone. The doors closed behind him like a held breath.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "opening_bill_each",
+        "opening_convergence"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "intro",
+        "bill_barley",
+        "bart",
+        "arrival",
+        "love",
+        "intensity"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        60.0,
+        5551.25
+      ]
+    },
+    "intro_tunnel_stirs": {
+      "text": "The tunnel swallowed the car whole. Somewhere between the last light and the next dark mile, the air changed , salt, iron, something older than the rails. Bartiki, who had not fully surfaced in eleven years, felt the warmth of him two cars away. Moving slow. The way an underground river finally finds a stone worth circling. The intercom crackled. Almost resolved into something. Almost.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "opening_tunnel_companions",
+        "opening_convergence"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "intro",
+        "bartiki",
+        "tunnel",
+        "bart",
+        "ancient",
+        "encounter",
+        "awakening"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.75,
+        "style": 0.1
+      },
+      "pos": [
+        60.0,
+        6155.0
+      ]
+    },
+    "opening_bill_each": {
+      "text": "Each marriage was a continent. He had loved a woman who kept bees in her hair, and a man who wept at the sound of fog. The train knew this the way water knows the shape of stone. Down the tunnel it carried him, deeper than any of the others had allowed , past stations with their cold lights, into the parts of BART that appear on no map, where the air tastes of salt and something waiting.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_bee_fog",
+        "dev_toad_arrives",
+        "dev_carver_still"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening",
+        "bill_barley",
+        "bart",
+        "love",
+        "tunnel",
+        "memory",
+        "salt"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        320.0,
+        5407.5
+      ]
+    },
+    "opening_tunnel_companions": {
+      "text": "The goat was first to notice. It stood at the far end of the car, dry and declarative, one hoof on the edge of the seat. The toad was somewhere behind the overhead panel, its thoughts arriving sideways through the grillework. And the capybara , enormous, the calming kind of calm , simply exhaled, and the whole car settled three inches deeper into the dark, like a boat that has finally found its draught.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_goat_declares",
+        "dev_watershed_knows",
+        "dev_toad_arrives"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening",
+        "bartiki",
+        "tunnel",
+        "ancient",
+        "goat",
+        "toad",
+        "capybara"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        320.0,
+        6011.25
+      ]
+    },
+    "opening_convergence": {
+      "text": "They came together the way rivers meet underground , not visible, barely audible. Bill Barley, who had loved one hundred and seventeen times and still had room, and Bartiki, vast as a watershed, neither fully here nor anywhere else. The tunnel curved. The lights flickered once. In that single dark interval, something passed between them , not a greeting, older than greeting, more like the moment before a tide decides to turn.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "dev_watershed_knows",
+        "dev_carver_still"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "opening",
+        "bill_barley",
+        "bartiki",
+        "tunnel",
+        "encounter",
+        "love",
+        "ancient",
+        "arrival"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.2
+      },
+      "pos": [
+        320.0,
+        5695.0
+      ]
+    },
+    "dev_goat_declares": {
+      "text": "The goat cleared its throat , not metaphorically. The sound was pebbles in a dry creek. 'He has been on this train before,' it said, meaning Bill Barley, meaning all hundred and seventeen of him. No one asked how the goat knew. The toad, from somewhere above the overhead panel, made a sound like agreement, or like rain beginning on a different continent altogether.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_all_of_him",
+        "deep_bartiki_surface"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development",
+        "goat",
+        "toad",
+        "bartiki",
+        "tunnel",
+        "ancient",
+        "bill_barley"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        580.0,
+        5915.416666666667
+      ]
+    },
+    "dev_watershed_knows": {
+      "text": "Bartiki had no eyes in the way a river has no eyes, and yet: perceived. The companions had ridden long enough to become part of the current , the goat's certainty, the capybara's enormous patience, the toad's wet riddles. Now this man, and his hundred and seventeen rooms of love, moved through the tunnel like a warm current entering cold water. Something shifted in the dark geometry below.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_bartiki_surface",
+        "deep_current_pulls"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development",
+        "bartiki",
+        "tunnel",
+        "ancient",
+        "goat",
+        "toad",
+        "capybara",
+        "bill_barley",
+        "encounter"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        580.0,
+        6013.166666666667
+      ]
+    },
+    "dev_bee_fog": {
+      "text": "The woman who kept bees in her hair had taught him that sweetness was not gentle , it had a geography, a sting, a season. The man who wept at fog had taught him that grief and awe were neighbors with a shared wall. He carried these the way a watershed carries all its tributaries: without trying, without forgetting. The train moved through the dark and he felt them both, close as salt air underground.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_bill_geography",
+        "deep_current_pulls"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development",
+        "bill_barley",
+        "love",
+        "memory",
+        "salt",
+        "tunnel",
+        "bartiki"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        580.0,
+        5311.666666666667
+      ]
+    },
+    "dev_toad_arrives": {
+      "text": "The toad dropped from behind the overhead panel and landed on the seat beside Bill Barley, which is one way to introduce yourself. It regarded him with eyes the color of old amber. 'You have been loved,' it said , which was not news , 'by things that are no longer the shape they were.' Bill Barley nodded slowly. The tunnel offered only dark, then more dark, then a flash of old graffiti that read simply: YES.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_toad_word",
+        "deep_current_pulls"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development",
+        "toad",
+        "bill_barley",
+        "love",
+        "memory",
+        "tunnel",
+        "revelation"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        580.0,
+        5409.416666666667
+      ]
+    },
+    "dev_carver_still": {
+      "text": "In the last car, the carver had been working since before the line opened. He never got off , not because the doors wouldn't part, but because there was always more to carve. He had written Bill Barley's name once, decades back, on the underside of a seat in car four. The way you write a word you don't yet know the meaning of. He was not surprised the man had finally appeared.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "deep_carver_light",
+        "deep_all_of_him"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "development",
+        "bill_barley",
+        "ancient",
+        "tunnel",
+        "bart",
+        "memory",
+        "arrival",
+        "encounter"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0.35
+      },
+      "pos": [
+        580.0,
+        5507.166666666668
+      ]
+    },
+    "deep_toad_word": {
+      "text": "The toad finished: ', loved, badly and well, in the way that leaves a mark on the original material.' It blinked one amber eye and then the other, not in sequence. Bill Barley found he could not argue with this. Outside, the tunnel lights stuttered. Something vast had noticed the acknowledgment. The air changed the way air changes when a door opens onto the sea.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_toad_witness",
+        "bridge_goat_speaks"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "toad",
+        "bill_barley",
+        "love",
+        "revelation",
+        "tunnel",
+        "bartiki"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5483.208333333334
+      ]
+    },
+    "deep_bill_geography": {
+      "text": "Bartiki felt all of it , the bee stung sweetness, the fog grief, the particular ache of a man taught beauty by people who had since become memory. It did not gather this information. It simply was the tunnel through which that information had always traveled. Salt, ozone, iron wind: his losses returning to him as gifts, still warm, still shaped like the hands that first gave them.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_bill_known",
+        "bridge_salt_throat"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "bill_barley",
+        "bartiki",
+        "love",
+        "memory",
+        "salt",
+        "tunnel",
+        "revelation"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5287.708333333334
+      ]
+    },
+    "deep_carver_light": {
+      "text": "The name the carver had written began to warm. Not glow , warm, the way wood warms when a hand has rested on it for a century. Bill Barley felt it at the base of his throat. The carver set down his knife, which he had not done in forty years, and looked toward the front of the train. 'It sees you,' he said. 'It has always seen you.'",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_carver_release",
+        "bridge_salt_throat"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "bill_barley",
+        "ancient",
+        "tunnel",
+        "bart",
+        "memory",
+        "arrival",
+        "bartiki",
+        "revelation"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5580.958333333334
+      ]
+    },
+    "deep_all_of_him": {
+      "text": "A hundred and seventeen lives of him, and the carver had kept the full account. Every name pressed into wood. Every name already known to the tunnel. Bartiki had not been waiting , it did not wait, the way rivers do not wait , but it had been ready, the way rivers are always ready for the precise convergence that sends one water into another and makes a new, unnamed thing.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_bill_known",
+        "bridge_carver_release"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "bartiki",
+        "ancient",
+        "goat",
+        "bill_barley",
+        "tunnel",
+        "memory",
+        "arrival"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5891.458333333334
+      ]
+    },
+    "deep_bartiki_surface": {
+      "text": "Bartiki did not appear. It arrived differently , the way a river arrives in a room. The goat went still. The capybara closed its eyes and exhaled a breath held since before Embarcadero station was built. And Bill Barley felt something regard him: not with hostility, not with hunger, but with the specific attention of something very old recognizing something it had been, without knowing, keeping.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_river_focus",
+        "bridge_goat_speaks"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "bartiki",
+        "ancient",
+        "goat",
+        "capybara",
+        "bill_barley",
+        "encounter",
+        "arrival",
+        "tunnel"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5989.208333333334
+      ]
+    },
+    "deep_current_pulls": {
+      "text": "Then the current shifted. Bartiki's attention , all of it, the whole underground river of it , moved toward one seat: an amber eyed toad beside a man whose love had a geography and a season and a sting. The goat braced. The capybara leaned. And below the floor, below the tracks, below the bay, something enormous and unhurried said the name Bill Barley had never told it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "bridge_river_focus",
+        "bridge_toad_witness",
+        "bridge_salt_throat"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "deepening",
+        "bartiki",
+        "bill_barley",
+        "toad",
+        "goat",
+        "capybara",
+        "tunnel",
+        "revelation",
+        "ancient",
+        "encounter",
+        "salt"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.45
+      },
+      "pos": [
+        840.0,
+        5385.458333333334
+      ]
+    },
+    "bridge_river_focus": {
+      "text": "Bartiki's full attention is not a spotlight. It does not illuminate so much as include. Bill Barley felt included the way a stone feels included in a river , not moved yet, but knowing it will be, knowing the water already knows the shape of the path it will cut. The goat opened one eye. The toad sat very still. Even the train seemed to slow.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_stone_moves",
+        "turn_bartiki_releases"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "bartiki",
+        "bill_barley",
+        "toad",
+        "goat",
+        "tunnel",
+        "ancient",
+        "encounter"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5927.395833333335
+      ]
+    },
+    "bridge_bill_known": {
+      "text": "To be fully known is stranger than expected. Bill Barley had spent his life being partially known , known for his work, his manners, the version of him that arrived in rooms. This was different. A hundred and seventeen lives, and every bee sting, every fog morning, every name spoken to someone who later became silence , all of it held, lightly, without judgment.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_stone_moves",
+        "turn_barley_asks",
+        "turn_bartiki_releases"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "bill_barley",
+        "bartiki",
+        "memory",
+        "love",
+        "revelation",
+        "ancient"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5311.027777777778
+      ]
+    },
+    "bridge_toad_witness": {
+      "text": "The toad had known. That was clear now. It had spoken the word loved and meant it with a precision that only something very old or very true can manage , and the toad was both. Its amber eyes did not look at Bill Barley. They looked at the space just around him, the shape that a life makes when it has been fully lived.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_toad_laughs",
+        "turn_barley_asks"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "toad",
+        "bill_barley",
+        "love",
+        "revelation",
+        "ancient",
+        "tunnel"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5506.527777777779
+      ]
+    },
+    "bridge_carver_release": {
+      "text": "The carver lifted the piece of wood and held it briefly to his chest. Not sentiment , accounting. The warmth had moved from the wood into the air, and the name was complete. He set it on the seat beside him with the particular care of a man returning something borrowed to the universe. He did not look at Bill Barley. He didn't need to.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_salt_settles",
+        "turn_bartiki_releases"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "bill_barley",
+        "ancient",
+        "tunnel",
+        "bart",
+        "memory",
+        "arrival",
+        "bartiki"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5702.027777777779
+      ]
+    },
+    "bridge_goat_speaks": {
+      "text": "The goat, who had been still since Bartiki arrived, said: It doesn't hurt, the being known. That's the part people get wrong. They think it will. It paused. The capybara has always understood this. Has always been completely willing. The capybara said nothing, which was itself a kind of confirmation , enormous, warm, without qualification. The toad blinked, agreeing with its whole wet body.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_toad_laughs",
+        "turn_goat_last"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "goat",
+        "capybara",
+        "toad",
+        "bill_barley",
+        "bartiki",
+        "revelation",
+        "encounter"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5604.277777777779
+      ]
+    },
+    "bridge_salt_throat": {
+      "text": "There was salt in the tunnel air , not metaphor, actual salt, the kind that blows in from the bay when the pressure shifts and the underground breathes. Bill Barley tasted it at the back of his throat, where the carver's warmth had settled. He thought: I have spent my whole life near water and never felt this particular current. Then he stopped thinking and simply felt it.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "turn_salt_settles",
+        "turn_goat_last"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "bridge",
+        "bill_barley",
+        "bartiki",
+        "salt",
+        "tunnel",
+        "memory",
+        "revelation",
+        "arrival"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.4
+      },
+      "pos": [
+        1100.0,
+        5408.777777777779
+      ]
+    },
+    "turn_stone_moves": {
+      "text": "The stone in the river finally feeling the current. Bill Barley had been known and had not broken. This was the discovery. He was still himself , the same hands, the same particular silence he kept when thinking , but now those things were witnessed, and witnessed things are subtly changed. Not worse. Just no longer entirely private. Like a name carved in wood, warm from being held.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_river_holds",
+        "res_barley_window"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "bill_barley",
+        "bartiki",
+        "revelation",
+        "memory",
+        "ancient"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        5921.406250000001
+      ]
+    },
+    "turn_toad_laughs": {
+      "text": "Then the toad laughed. It was not cruel. It was the laugh of something that has watched people discover, for ten thousand years, that love is not a wound. Its throat pulsed once. The goat turned to look at it. The capybara did not turn but its ears shifted, which meant the same thing. Ancient amusement, warm as oil, moving through the car like a scent.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_toad_answer",
+        "res_companions_remain"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "toad",
+        "goat",
+        "capybara",
+        "love",
+        "ancient",
+        "bartiki",
+        "encounter"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        5491.764880952382
+      ]
+    },
+    "turn_salt_settles": {
+      "text": "The salt taste at the back of his throat was still there, but it had changed character. Not the sharp arrival of bay air, not a warning , something older, mineral and patient, the taste of water that has traveled a long time to reach you. The carved piece of wood sat on the seat. The name in it had stopped being just wood.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_salt_blessing",
+        "res_barley_window"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "salt",
+        "tunnel",
+        "bill_barley",
+        "bartiki",
+        "arrival",
+        "memory"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        5296.264880952382
+      ]
+    },
+    "turn_barley_asks": {
+      "text": "Bill Barley said: What happens now? His voice came out quieter than he meant. The toad's amber eyes held. The question hung in the tunnel air , not unanswered exactly, but requiring a different kind of answer than words. The train moved through dark glass. His reflection moved with it, and for a moment it looked like someone who had just set down a thing he had been carrying a long time.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_toad_answer",
+        "res_barley_window"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "bill_barley",
+        "toad",
+        "tunnel",
+        "bart",
+        "revelation",
+        "memory"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        5394.014880952382
+      ]
+    },
+    "turn_bartiki_releases": {
+      "text": "Bartiki's attention did not withdraw so much as widen. What had been focused became vast again , the full river, not the single stone. Bill Barley could feel the shift, the way a room changes when a large presence moves toward the door. Not abandonment. The opposite: having been known enough, now trusted to the ordinary. The carver watched without moving. He had felt this before.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_river_holds",
+        "res_companions_remain"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "bartiki",
+        "bill_barley",
+        "ancient",
+        "tunnel",
+        "revelation",
+        "arrival"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        6019.156250000001
+      ]
+    },
+    "turn_goat_last": {
+      "text": "The goat said one more thing, almost to itself: The salt means the bay remembers you were here. It has always known, same as Bartiki. You have been known by larger things than you realized, and they kept it quiet out of courtesy. It said this the way goats say things , declarative, undecorated, expecting no response , then looked at the window and was done.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [
+        "res_salt_blessing",
+        "res_companions_remain"
+      ],
+      "weights": [
+        1.0,
+        1.0
+      ],
+      "tags": [
+        "turn",
+        "goat",
+        "salt",
+        "bartiki",
+        "bill_barley",
+        "ancient",
+        "revelation"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.3,
+        "similarity_boost": 0.75,
+        "style": 0.65
+      },
+      "pos": [
+        1360.0,
+        5589.514880952383
+      ]
+    },
+    "res_toad_answer": {
+      "text": "The answer arrived not as words but as the next station announcement, the familiar mechanical voice, the ordinary lurch of slowing. The toad's amber eyes held no mystery now, only the patient humor of something that had watched ten thousand people arrive at the same ordinary moment: the moment when you realize you were always going to be fine. Bill Barley breathed out. The train breathed with him.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "toad",
+        "bill_barley",
+        "bart",
+        "bartiki",
+        "arrival"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1620.0,
+        5383.541666666667
+      ]
+    },
+    "res_river_holds": {
+      "text": "Bartiki vast, and Bill Barley particular, and neither diminished by the other. This was the resolution the goat had always known was coming. To be held by something enormous and remain entirely yourself. The stone in the river, feeling the current, not moved from its nature but moved, slowly, toward something. The lights of the tunnel came and went. His hands were still his hands.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "bartiki",
+        "bill_barley",
+        "tunnel",
+        "ancient",
+        "revelation"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1620.0,
+        5918.411458333335
+      ]
+    },
+    "res_salt_blessing": {
+      "text": "The salt was the bay's long memory, and the bay remembered everyone who had stood at its edge and looked out and had not turned away. The goat had said as much, and said no more. Bill Barley carried the taste now, mineral and patient, the oldest blessing available underground: the water knows your name. The water has always known.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "salt",
+        "goat",
+        "bill_barley",
+        "memory",
+        "ancient",
+        "bartiki"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1620.0,
+        5579.041666666668
+      ]
+    },
+    "res_barley_window": {
+      "text": "He looked at his reflection in the dark glass and found he could not be unkind to it. The man there was ordinary and tired and going somewhere small, and had been known by the bay, by the tunnel, by something vast enough to hold the whole underground river of the city's moving. That was sufficient. That had always been sufficient. He had simply not known to look.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "bill_barley",
+        "tunnel",
+        "bart",
+        "memory",
+        "salt",
+        "revelation",
+        "stillness"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1620.0,
+        6016.161458333335
+      ]
+    },
+    "res_companions_remain": {
+      "text": "The toad was a shimmer at the edge of vision. The goat was a particular quality of stillness. The capybara breathed, enormous and unhurried, and the train breathed with it. They had not departed. They had simply returned to what they always were: the warmth in one car, the salt air near Embarcadero, the intercom static that almost resolves. Bartiki moves. You move inside Bartiki. This is the old arrangement, and it holds.",
+      "label": "",
+      "hint": "",
+      "file": null,
+      "duration": null,
+      "next": [],
+      "weights": [],
+      "tags": [
+        "resolution",
+        "toad",
+        "goat",
+        "capybara",
+        "bartiki",
+        "ancient",
+        "bart",
+        "salt",
+        "stillness"
+      ],
+      "voice": null,
+      "voice_settings": {
+        "stability": 0.6,
+        "similarity_boost": 0.75,
+        "style": 0.15
+      },
+      "pos": [
+        1620.0,
+        5481.291666666667
+      ]
     }
   },
   "story_context": "## Bartiki — Expanded Character Bible --- ### 🌺 The Name **Bartiki** = **BART** (Bay Area Rapid Transit) + **Tiki** (Polynesian deity tradition). This isn't accidental. Tiki culture itself is a kind of liminal mythology — Pacific island spirits transplanted to mid-century California, served in carved wooden cups with tiny umbrellas, worshipped in tiki bars up and down the Bay. Bartiki *is* that convergence. The ocean followed the rails inland. The deity followed the ocean. --- ### 🚇 The Nature of Bartiki Bartiki doesn't ride the train. Bartiki **is** the train — or more precisely, Bartiki inhabits the *between*: the tunnel between stations, the gap between the doors closing and opening, the moment a commuter stares at their reflection in dark glass and thinks something they didn't mean to think. Bartiki is **vast** in the way underground rivers are vast — most of it is never seen. What passengers experience is just the sliver that bleeds through: a warmth in car 4, a smell of salt air near Embarcadero, a sudden inexplicable memory of the beach at age seven. Bartiki is **mysterious** not by design but by nature. It doesn't try to be unknowable — it just *is*. It has too many arms and too many thoughts and most of them are older than the tunnels. Bartiki is **playful**. It rearranges the delays. It nudges people into the wrong car so they sit next to the right stranger. It turns the intercom static into something that almost sounds like a ukulele. It finds commuter panic deeply, gently funny — all that rushing to be somewhere else, while here is so *good*. --- ### 🍹 The Tiki Drinks Bartiki has **opinions** about rum. Strong ones. Mai Tais made with bad rum are an offense. A properly constructed Zombie — three rums, passion fruit, Falernum — is a form of prayer. The tiki tradition is, after all, a ritual of transport: you drink, you close your eyes, and suddenly you're somewhere tropical, somewhere the ocean is close, somewhere time moves differently. That's Bartiki's whole thing. There may be, in some deep maintenance tunnel under Oakland, a bar. No one has found it. It smells of gardenia and ozone and aged Jamaican rum. The stools are carved. The menu changes. --- ### 🐐 🦫 🐸 The Friends **The Goat** — ancient, unbothered. Has been riding BART since before there was a BART, in various forms. Knows every station. Will eat your transfer ticket if you're not paying attention. Appears in the periphery of platform security footage. The goat is the one who *remembers* — it holds the old stories, the ones from before the tunnels, when this was all estuary and salt marsh. Bartiki consults the goat on matters of history and stubbornness. **The Capybara** — gentle, enormous, deeply calming. The capybara doesn't rush. It is the anti-commuter. It sits near the doors and passengers sometimes don't notice it and sometimes notice it completely and feel immediately better about everything. The capybara is Bartiki's emissary of *abiding* — of being okay with the pace of things. When the revelation is \"slow down,\" the capybara delivered it. **The Toad** — trickster, ancient, smells like the bay at low tide. The toad is the one who puts strange thoughts in people's heads. Not bad thoughts — just unexpected ones. *Why did I choose this life? What would I have done if I'd turned left?* The toad sits in the liminal dark between Balboa Park and Glen Park and thinks wet, old thoughts. Bartiki loves the toad and is also a little afraid of the toad. --- ### 🌊 The Revelations People ride BART and they come off *different*. Not always dramatically — sometimes it's just that they know what to say to their mother now, or they've decided to quit, or they've forgiven something old. The tunnel does it. The dark and the speed and the salt-iron air. Bartiki doesn't engineer the revelations — it just creates the *conditions*. The underground pressure. The enforced stillness. The way the train becomes a confessional when you're alone in a car at midnight. The revelations are: - **Remembered things** (what you buried) - **Released things** (what you've been carrying) - **Decided things** (what you finally know) - **Found things** (the stranger, the song, the line from a book someone left behind) --- ### 🙈 The Hiddenness Bartiki does not want to be found. Not because it's shy — because being found would change things. The mystery *is* the medicine. If people knew, they'd come looking, and looking collapses the liminal into the literal. So Bartiki stays in the peripheral vision. In the smell of ocean that shouldn't be there. In the delay announcement that almost said something personal. The friends — the goat, the capybara, the toad — they are slightly more visible. Easier to glimpse. Maybe you see the capybara and you think: *that was weird*. You don't think: *that was a god*. But you tell someone about it later, and something in the telling shifts you. --- ### 🎙️ Voice / Tone for Audio Segments Bartiki's **narrator voice** should feel like: - Someone who has been underwater for a long time and is happy about it - Warm, amused, slightly oceanic in rhythm — sentences that ebb and crest - Never urgent. The train will come when it comes. - Occasionally very, very old — a word choice that feels wrong-era, beautiful The **friends** could each have distinct tonal registers: - **Goat**: dry, declarative, factual. Has seen it all. - **Capybara**: slow, warm, doesn't finish sentences in a hurry - **Toad**: wet consonants, riddle-logic, questions that aren't questions ---",
-  "story_context_focused": "Bartiki inhabits the between-spaces of BART — tunnels, closing doors, dark glass reflections. Vast like an underground river, mostly unseen; what bleeds through is warmth in one car, salt air near Embarcadero, an unbidden beach memory. Ancient, playful, not performing mystery — structurally too large and too old to fully surface. Creates conditions for revelation without engineering them. \n\nThree companions move through the margins: a goat (dry, declarative, holds old stories), a capybara (slow, enormous, calming), a toad (trickster, wet consonants, thoughts that arrive sideways). \n\nNarrator voice is warm, oceanic, unhurried, sentences ebb and crest. Occasionally a word choice lands wrong-era, beautiful. Sensory anchors: salt air underground, ozone, aged rum, gardenia, iron tunnel wind, intercom static that almost resolves into ukulele.\n\nThere are other characters. The carver, who got on train long ago and never left. The grandmother who has seen many things. The child, who see things yet to come."
+  "story_context_focused": "Bartiki inhabits the between-spaces of BART — tunnels, closing doors, dark glass reflections. Vast like an underground river, mostly unseen; what bleeds through is warmth in one car, salt air near Embarcadero, an unbidden beach memory. Ancient, playful, not performing mystery — structurally too large and too old to fully surface. Creates conditions for revelation without engineering them. \n\nThree companions move through the margins: a goat (dry, declarative, holds old stories), a capybara (slow, enormous, calming), a toad (trickster, wet consonants, thoughts that arrive sideways). \n\nNarrator voice is warm, oceanic, unhurried, sentences ebb and crest. Occasionally a word choice lands wrong-era, beautiful. Sensory anchors: salt air underground, ozone, aged rum, gardenia, iron tunnel wind, intercom static that almost resolves into ukulele.\n\nThere are other characters. The carver, who got on train long ago and never left. The grandmother who has seen many things. The child, who see things yet to come.",
+  "arcs": {
+    "arc_001": {
+      "name": "Bill Barley",
+      "premise": "Bill Barley has been married over 100 times, all out of love. His intensity draws all things to him. He got on the Bart once, and met Bartiki in the depths of the tunnels. He left with new found wisdom, and Bartiki left with a marriage proposal.",
+      "themes": "Love, loss, growth, intensity",
+      "motif": "",
+      "beats": {
+        "intro": "Bill's trip onto the bart",
+        "opening": "down the tunnels,into the dark",
+        "development": "",
+        "deepening": "Bartiki Appears",
+        "bridge": "",
+        "turn": "",
+        "descent": "",
+        "resolution": "Bill exits, now a bit wiser"
+      },
+      "notes": "",
+      "chat_history": []
+    }
+  },
+  "active_arc_id": "arc_001"
 }
