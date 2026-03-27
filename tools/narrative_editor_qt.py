@@ -35,7 +35,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent
 from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
-    QDoubleSpinBox, QFileDialog, QFormLayout,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QFrame, QGraphicsItem, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
@@ -1024,7 +1024,12 @@ class AIAssistant:
         lines = ['STORY VARIABLES — set "vars" on every node (each value 0.0–1.0):']
         for v in variables:
             lines.append(f'  "{v["name"]}": {v["description"]}')
-        lines.append('0 = absent/none, 1 = maximum. Base values on the node\'s text content.')
+        lines.append('CRITICAL: Use the FULL range. Default is 0.0 — use 0.0 when the variable\'s '
+                      'quality is NOT meaningfully present in the node text. Only use values above 0 '
+                      'when the text explicitly contains elements described by the variable. '
+                      'Most nodes should be 0.0 for most variables. '
+                      'Reserve 0.8–1.0 for nodes where that quality is the dominant force. '
+                      'Avoid clustering everything in the 0.2–0.6 range — be decisive.')
         lines.append('Include "vars": {"name": value, ...} in every node object.')
         return '\n'.join(lines)
 
@@ -4858,6 +4863,8 @@ class MainWindow(QMainWindow):
             self.graph.port_disconnected.connect(self._on_port_disconnected)
         self._update_title()
         self._refresh_cycle_markers()
+        if self._search_bar.text().strip():
+            self._cmd_search(self._search_bar.text())
 
     def _cmd_add_node(self):
         node_id = _next_node_id(self.script)
@@ -4874,6 +4881,8 @@ class MainWindow(QMainWindow):
         self.props_panel.load_node(self.script, node_id)
         self._update_title()
         self._maybe_refresh_freq()
+        if self._search_bar.text().strip():
+            self._cmd_search(self._search_bar.text())
         self.status_bar.showMessage(f"Added '{node_id}'")
 
     def _cmd_start_connect(self, node_id: str):
