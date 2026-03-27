@@ -32,12 +32,13 @@ from typing import Dict, List, Optional
 os.environ['QT_API'] = 'pyside6'
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent
-from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor
+from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPushButton, QScrollArea, QSplitter,
+    QFrame, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QStatusBar, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -270,7 +271,8 @@ BRANCHING AND MERGING: vary the structure. Do not produce a 1:1 mapping of sourc
 LAYER PROGRESSION:
   intro → opening → development → deepening → bridge → turn → descent → resolution
   Determine the source nodes' layer from their tags. All new nodes go in the NEXT layer.
-  If source nodes are in "turn" or "descent", generate resolution nodes with next: [].
+  If source nodes are in "descent", generate resolution nodes with next: [].
+  If source nodes are in "turn", generate descent nodes.
 
 CONTINUITY: every new node must follow naturally from its source(s). The first words pick
   up the thread of whichever source led there. Shared convergence nodes must work after
@@ -455,6 +457,21 @@ IMPORTANT — when a "Story context" block is provided, treat it as BACKGROUND A
 The user's message defines the topic. Always stay on that topic.
 """
 
+SYSTEM_ARC_CHAT = """\
+You are helping an author develop a story arc for an immersive audio installation.
+Story arcs are used to guide generation of a narrative node graph — each arc has a premise,
+recurring themes/motifs, and a beat for each of the 8 story layers (intro through resolution).
+
+Each node will become ~15–35 seconds of spoken audio. The full arc plays out over 8 layers.
+
+Your role: help the author refine their premise, suggest beats for specific layers,
+develop themes and recurring motifs, identify character voices, and deepen the emotional arc.
+
+When arc fields are shown, treat them as the current state. Respond conversationally.
+Keep suggestions practical and grounded in the established tone.
+Be specific — suggest actual text or directions, not just abstract advice.
+"""
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Model
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +513,56 @@ class ScriptData:
     def set_story_context_focused(self, text: str):
         self._data["story_context_focused"] = text
         self.dirty = True
+
+    # ── Arc management ──────────────────────────────────────────────────────
+
+    @property
+    def arcs(self) -> dict:
+        return self._data.setdefault('arcs', {})
+
+    @property
+    def active_arc_id(self) -> str:
+        return self._data.get('active_arc_id', '')
+
+    def active_arc(self) -> Optional[dict]:
+        aid = self.active_arc_id
+        return self.arcs.get(aid) if aid else None
+
+    def set_active_arc(self, arc_id: str):
+        self._data['active_arc_id'] = arc_id
+        self.dirty = True
+
+    def add_arc(self) -> str:
+        existing = set(self.arcs.keys())
+        i = 1
+        while f'arc_{i:03d}' in existing:
+            i += 1
+        arc_id = f'arc_{i:03d}'
+        self.arcs[arc_id] = {
+            'name': 'New Arc',
+            'premise': '',
+            'themes': '',
+            'motif': '',
+            'beats': {k: '' for k in [
+                'intro', 'opening', 'development', 'deepening',
+                'bridge', 'turn', 'descent', 'resolution',
+            ]},
+            'notes': '',
+            'chat_history': [],
+        }
+        self.dirty = True
+        return arc_id
+
+    def delete_arc(self, arc_id: str):
+        self.arcs.pop(arc_id, None)
+        if self._data.get('active_arc_id') == arc_id:
+            self._data['active_arc_id'] = ''
+        self.dirty = True
+
+    def save_arc(self, arc_id: str, data: dict):
+        if arc_id in self.arcs:
+            self.arcs[arc_id].update(data)
+            self.dirty = True
 
     def summary(self, max_text: int = 80) -> str:
         """Compact text description of the script for AI context."""
@@ -936,7 +1003,8 @@ class AIAssistant:
         return out
 
     def chat(self, user_msg: str, ui_queue: queue.SimpleQueue,
-             on_reply, on_error, script_summary: str = '', story_context: str = ''):
+             on_reply, on_error, script_summary: str = '', story_context: str = '',
+             _system_override: str = ''):
         if self._busy:
             return
         self._busy = True
@@ -952,10 +1020,11 @@ class AIAssistant:
             parts.append(transcript)
         parts.append(f"User: {user_msg}")
         full_prompt = "\n\n".join(parts)
+        system = _system_override or SYSTEM_CHAT
 
         def run():
             try:
-                reply = self._run_claude(SYSTEM_CHAT, full_prompt)
+                reply = self._run_claude(system, full_prompt)
                 self._history.append({"role": "assistant", "content": reply})
                 ui_queue.put(lambda: on_reply(reply))
             except Exception as exc:
@@ -997,7 +1066,8 @@ class AIAssistant:
         threading.Thread(target=run, daemon=True).start()
 
     def generate_seed(self, prompt: str, ui_queue: queue.SimpleQueue,
-                      on_done, on_error, story_context: str = ''):
+                      on_done, on_error, story_context: str = '',
+                      layer_direction: str = '', motif: str = ''):
         """Generate only the intro layer — no children. Used to seed iterative generation."""
         if self._busy:
             return
@@ -1006,6 +1076,10 @@ class AIAssistant:
         parts = []
         if story_context:
             parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
+        if layer_direction:
+            parts.append(f'INTRO LAYER DIRECTION (this is what the intro nodes must cover):\n{layer_direction}')
+        if motif:
+            parts.append(f'RECURRING MOTIF (weave this through the text naturally in every node):\n{motif}')
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
 
@@ -1029,7 +1103,8 @@ class AIAssistant:
 
     def generate_layer(self, frontier: list, ui_queue: queue.SimpleQueue,
                        on_done, on_error, story_context: str = '',
-                       existing_custom_tags: list = None):
+                       existing_custom_tags: list = None,
+                       layer_direction: str = '', motif: str = ''):
         """Generate the next layer for all frontier nodes in one AI call.
 
         frontier: list of (node_id, node_data) for all current leaf nodes.
@@ -1042,6 +1117,10 @@ class AIAssistant:
         if story_context:
             sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
             parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do NOT let this dilute or override the topic defined by the source nodes):\n  {sc}')
+        if layer_direction:
+            parts.append(f'LAYER DIRECTION (this layer must cover this — follow it precisely, override default arc guidance):\n{layer_direction}')
+        if motif:
+            parts.append(f'RECURRING MOTIF (weave this through every new node naturally):\n{motif}')
         if existing_custom_tags:
             parts.append(f'EXISTING TAGS (reuse where applicable): {", ".join(sorted(existing_custom_tags))}')
 
@@ -1539,7 +1618,17 @@ class PropertiesPanel(QWidget):
         self.text_edit.setMaximumHeight(450)
         self.text_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         self.text_edit.textChanged.connect(self._autosave_text)
+        self.text_edit.textChanged.connect(self._update_word_count)
         layout.addWidget(self.text_edit)
+
+        self._word_count_lbl = QLabel("")
+        self._word_count_lbl.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._word_count_lbl)
+
+        self._arc_beat_lbl = QLabel("")
+        self._arc_beat_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._arc_beat_lbl.setWordWrap(True)
+        layout.addWidget(self._arc_beat_lbl)
 
         # Rewrite hint
         self.rewrite_hint = QLineEdit()
@@ -1733,6 +1822,14 @@ class PropertiesPanel(QWidget):
                 self.audio_status.setText("No audio file")
                 self.audio_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
 
+            arc_beat = nd.get('arc_beat', '')
+            if arc_beat:
+                self._arc_beat_lbl.setText(
+                    f'<span style="color:#7799cc; font-size:10px;">'
+                    f'<b>Arc beat:</b> {arc_beat}</span>')
+            else:
+                self._arc_beat_lbl.setText('')
+
             self.rebuild_edge_list(script, node_id)
         finally:
             self._blocking = False
@@ -1879,6 +1976,22 @@ class PropertiesPanel(QWidget):
                 self._blocking = False
         self._script.update_text(self._node_id, sanitized)
         self.node_modified.emit(self._node_id)
+
+    def _update_word_count(self):
+        text  = self.text_edit.toPlainText().strip()
+        words = len(text.split()) if text else 0
+        if words == 0:
+            self._word_count_lbl.setText('')
+        else:
+            if words < 40:
+                color = '#ffaa44'
+            elif words > 100:
+                color = '#ff6666'
+            else:
+                color = '#888888'
+            self._word_count_lbl.setText(
+                f'<span style="color:{color}; font-size:10px;">'
+                f'{words} words&nbsp;&nbsp;(40–100)</span>')
 
     def _autosave_hint(self):
         if self._blocking or not self._node_id or not self._script:
@@ -2336,6 +2449,121 @@ class VoiceSettingsPanel(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared frontier expansion logic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_expand_frontier(script, ai, ui_queue, total_calls, generation_set,
+                         arc_beats, arc_motif, on_status, on_log, on_complete):
+    """
+    Single implementation of the iterative layer-expansion loop.
+    Used by both AIChatPanel._expand_frontier and ArcEditorDialog._arc_expand_frontier.
+
+    Callbacks:
+      on_status(msg)  — update a status label
+      on_log(msg)     — append a line to the chat/log display
+      on_complete()   — called once on success OR error (triggers graph rebuild etc.)
+    """
+    TERMINAL_LAYERS = {'resolution'}
+    MAX_LAYERS = 8
+    LAYER_NAMES = ['intro', 'opening', 'development', 'deepening',
+                   'bridge', 'turn', 'descent', 'resolution']
+    layer_key       = LAYER_NAMES[min(total_calls + 1, len(LAYER_NAMES) - 1)]
+    layer_direction = arc_beats.get(layer_key, '')
+
+    if total_calls >= MAX_LAYERS:
+        on_status("Generation complete (layer limit).")
+        on_complete()
+        return
+
+    candidate_ids = generation_set if generation_set is not None else set(script.nodes.keys())
+    frontier = [
+        (nid, script.nodes[nid])
+        for nid in candidate_ids
+        if nid in script.nodes
+        and not script.nodes[nid].get('next')
+        and not any(t in TERMINAL_LAYERS for t in script.nodes[nid].get('tags', []))
+    ]
+
+    if not frontier:
+        count = len(generation_set) if generation_set is not None else len(script.nodes)
+        on_status(f'Complete — {count} new nodes, {total_calls} layers.')
+        on_log(f'Graph complete: {count} new nodes across {total_calls} layer expansions.')
+        on_complete()
+        return
+
+    layer_tags = {'intro', 'opening', 'development', 'deepening',
+                  'bridge', 'turn', 'descent', 'resolution'}
+    existing_custom_tags = list({
+        t for n in script.nodes.values()
+        for t in n.get('tags', []) if t not in layer_tags
+    })
+
+    on_status(f'Layer {total_calls + 1}/{MAX_LAYERS}: '
+              f'expanding [{", ".join(nid for nid, _ in frontier)}]...')
+
+    def on_done(data):
+        import traceback as _tb
+        try:
+            nodes = data.get('nodes', {}) if isinstance(data, dict) else {}
+            if not isinstance(nodes, dict):
+                raise ValueError(f"'nodes' is {type(nodes).__name__}, expected dict")
+
+            allowed_sources = candidate_ids | (generation_set or set())
+            before = set(script.nodes.keys())
+
+            for nd_data in nodes.values():
+                if not isinstance(nd_data, dict):
+                    continue
+                nd_data['connect_from'] = [
+                    s for s in nd_data.get('connect_from', [])
+                    if isinstance(s, str) and s in allowed_sources
+                ]
+                nd_data['next'] = []
+
+            script.apply_layer(data)
+            after   = set(script.nodes.keys())
+            new_ids = after - before
+
+            # Tag each new node with the arc beat that guided this layer
+            if layer_direction:
+                for nid in new_ids:
+                    if nid in script.nodes:
+                        script.nodes[nid]['arc_beat'] = layer_direction
+
+            on_log(f'  Layer {total_calls + 1}: '
+                   f'{", ".join(sorted(new_ids)) or "(no new nodes)"}')
+
+            _run_expand_frontier(
+                script, ai, ui_queue,
+                total_calls + 1,
+                (generation_set | new_ids) if generation_set is not None else new_ids,
+                arc_beats, arc_motif,
+                on_status, on_log, on_complete,
+            )
+        except Exception as exc:
+            _tb.print_exc()
+            on_status(f'Layer {total_calls + 1} parse error: {exc}')
+            on_log(f'  Layer {total_calls + 1} error: {exc}')
+            on_complete()
+
+    def on_error(e):
+        on_status(f'Layer {total_calls + 1} error: {e[:50]}')
+        on_log(f'  Layer error: {e[:80]}')
+        on_complete()
+
+    ai.generate_layer(
+        frontier,
+        ui_queue=ui_queue,
+        on_done=on_done,
+        on_error=on_error,
+        story_context=script.story_context_focused,
+        existing_custom_tags=existing_custom_tags,
+        layer_direction=layer_direction,
+        motif=arc_motif,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AIChatPanel
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2529,15 +2757,25 @@ class AIChatPanel(QWidget):
         self.status_label.setText("Generating seed nodes...")
         self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;")
 
+        arc = self._script.active_arc() if self._script else None
+        arc_beats  = arc.get('beats', {}) if arc else {}
+        arc_motif  = arc.get('motif', '')  if arc else ''
+
         def on_seed_done(data):
             before = set(self._script.nodes.keys())
             self._script.apply_generated(data)
             after  = set(self._script.nodes.keys())
             seed_ids = after - before
+            intro_beat = arc_beats.get('intro', '')
+            if intro_beat:
+                for nid in seed_ids:
+                    if nid in self._script.nodes:
+                        self._script.nodes[nid]['arc_beat'] = intro_beat
             names = ', '.join(sorted(seed_ids))
             self.append_message("assistant", f"Seed: {names}")
             self.status_label.setText(f"Seed done ({len(seed_ids)} nodes). Expanding...")
-            self._expand_frontier(0, generation_set=seed_ids)
+            self._expand_frontier(0, generation_set=seed_ids,
+                                  arc_beats=arc_beats, arc_motif=arc_motif)
 
         def on_seed_error(e):
             self.status_label.setText(f"Error: {e[:50]}")
@@ -2547,106 +2785,29 @@ class AIChatPanel(QWidget):
         self._ai.generate_seed(
             prompt, self._ui_queue, on_seed_done, on_seed_error,
             story_context=self._script.story_context_focused if self._script else '',
+            layer_direction=arc_beats.get('intro', ''),
+            motif=arc_motif,
         )
 
-    def _expand_frontier(self, total_calls: int, generation_set: set = None):
-        """Expand the entire current frontier in one AI call, then recurse layer by layer."""
-        TERMINAL_LAYERS = {'resolution', 'descent'}
-        MAX_LAYERS = 8  # seed + 8 layer expansions covers the full 8-layer arc
+    def _expand_frontier(self, total_calls: int, generation_set: set = None,
+                         arc_beats: dict = None, arc_motif: str = ''):
+        def on_status(msg):
+            self.status_label.setText(msg)
+            ok = msg.startswith('Complete') or msg.startswith('Generation complete')
+            self.status_label.setStyleSheet(
+                "color: #88ee88; font-size: 10px;" if ok else "color: #cccc55; font-size: 10px;")
 
-        if total_calls >= MAX_LAYERS:
-            self.status_label.setText("Generation complete (layer limit).")
-            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
-            if self._on_graph_generated:
-                self._on_graph_generated()
-            return
-
-        candidate_ids = generation_set if generation_set is not None else set(self._script.nodes.keys())
-
-        # All non-terminal leaves in this generation session form the frontier
-        frontier = [
-            (nid, self._script.nodes[nid])
-            for nid in candidate_ids
-            if nid in self._script.nodes
-            and not self._script.nodes[nid].get('next')
-            and not any(t in TERMINAL_LAYERS for t in self._script.nodes[nid].get('tags', []))
-        ]
-
-        if not frontier:
-            count = len(generation_set) if generation_set is not None else len(self._script.nodes)
-            self.status_label.setText(f"Complete — {count} new nodes, {total_calls} layers.")
-            self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;")
-            self.append_message("assistant",
-                f"Graph complete: {count} new nodes across {total_calls} layer expansions.")
-            if self._on_graph_generated:
-                self._on_graph_generated()
-            return
-
-        layer_tags = {"intro","opening","development","deepening",
-                      "bridge","turn","descent","resolution"}
-        existing_custom_tags = list({
-            t for n in self._script.nodes.values()
-            for t in n.get('tags', []) if t not in layer_tags
-        })
-
-        frontier_names = ', '.join(nid for nid, _ in frontier)
-        self.status_label.setText(
-            f"Layer {total_calls + 1}/{MAX_LAYERS}: expanding [{frontier_names}]..."
-        )
-
-        def on_done(data):
-            import traceback as _tb
-            try:
-                # Validate structure — LLM sometimes returns nodes as a list
-                nodes = data.get('nodes', {}) if isinstance(data, dict) else {}
-                if not isinstance(nodes, dict):
-                    raise ValueError(f"'nodes' is {type(nodes).__name__}, expected dict")
-
-                allowed_sources = candidate_ids | (generation_set or set())
-                before = set(self._script.nodes.keys())
-
-                for nd_data in nodes.values():
-                    if not isinstance(nd_data, dict):
-                        continue
-                    # Strip connect_from refs outside this generation session
-                    nd_data['connect_from'] = [
-                        s for s in nd_data.get('connect_from', [])
-                        if isinstance(s, str) and s in allowed_sources
-                    ]
-                    nd_data['next'] = []   # new nodes start with no children
-
-                self._script.apply_layer(data)
-                after   = set(self._script.nodes.keys())
-                new_ids = after - before
-
-                self.append_message("assistant",
-                    f"  Layer {total_calls + 1}: {', '.join(sorted(new_ids)) or '(no new nodes)'}")
-                self._expand_frontier(
-                    total_calls + 1,
-                    generation_set=(generation_set | new_ids) if generation_set is not None else new_ids,
-                )
-            except Exception as exc:
-                _tb.print_exc()
-                self.status_label.setText(f"Layer {total_calls + 1} parse error: {exc}")
-                self.status_label.setStyleSheet("color: #ff7777; font-size: 10px;")
-                self.append_message("assistant", f"  Layer {total_calls + 1} error: {exc}")
-                if self._on_graph_generated:
-                    self._on_graph_generated()
-
-        def on_error(e):
-            self.status_label.setText(f"Layer {total_calls + 1} error: {e[:50]}")
-            self.status_label.setStyleSheet("color: #ff7777; font-size: 10px;")
-            self.append_message("assistant", f"  Layer error: {e[:80]}")
-            if self._on_graph_generated:
-                self._on_graph_generated()
-
-        self._ai.generate_layer(
-            frontier,
+        _run_expand_frontier(
+            script=self._script,
+            ai=self._ai,
             ui_queue=self._ui_queue,
-            on_done=on_done,
-            on_error=on_error,
-            story_context=self._script.story_context_focused if self._script else '',
-            existing_custom_tags=existing_custom_tags,
+            total_calls=total_calls,
+            generation_set=generation_set,
+            arc_beats=arc_beats or {},
+            arc_motif=arc_motif,
+            on_status=on_status,
+            on_log=lambda msg: self.append_message('assistant', msg),
+            on_complete=self._on_graph_generated if self._on_graph_generated else lambda: None,
         )
 
     def _cmd_reset(self):
@@ -3031,6 +3192,465 @@ class _GraphViewHoverFilter(QObject):
         return False
 
 
+class ArcEditorDialog(QDialog):
+    """Popup dialog for editing story arcs and wiring them into generation."""
+
+    LAYER_NAMES = ['intro', 'opening', 'development', 'deepening',
+                   'bridge', 'turn', 'descent', 'resolution']
+
+    def __init__(self, script: 'ScriptData', ai: 'AIAssistant',
+                 ui_queue: queue.SimpleQueue, on_graph_generated=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Story Arcs")
+        self.setMinimumSize(940, 720)
+        self.script = script
+        self._main_ai = ai
+        self.ui_queue = ui_queue
+        self._on_graph_generated = on_graph_generated
+        self._arc_ai = AIAssistant()   # separate instance for arc chat
+        self._current_arc_id: Optional[str] = None
+        self._loading = False           # suppress dirty callbacks while populating fields
+        self._build_ui()
+        self._refresh_arc_list()
+        # Manually load the first arc since _refresh_arc_list blocks signals
+        if self.script.arcs:
+            first_id = next(iter(self.script.arcs))
+            self._current_arc_id = first_id
+            self._load_arc(first_id)
+
+    # ── UI construction ──────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+
+        # ── Top: list + editor side-by-side ──────────────────────
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left: arc list
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 4, 0)
+        ll.addWidget(QLabel("Arcs"))
+        self.arc_list = QListWidget()
+        self.arc_list.setMinimumWidth(150)
+        self.arc_list.setMaximumWidth(200)
+        self.arc_list.currentRowChanged.connect(self._on_arc_selected)
+        ll.addWidget(self.arc_list)
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("+ New")
+        add_btn.clicked.connect(self._cmd_new_arc)
+        btn_row.addWidget(add_btn)
+        del_btn = QPushButton("Delete")
+        del_btn.clicked.connect(self._cmd_delete_arc)
+        btn_row.addWidget(del_btn)
+        ll.addLayout(btn_row)
+        splitter.addWidget(left)
+
+        # Right: scrollable editor
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        rw = QWidget()
+        rl = QVBoxLayout(rw)
+        rl.setSpacing(6)
+
+        form_top = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Arc name")
+        self.name_edit.textChanged.connect(self._on_field_changed)
+        form_top.addRow("Name:", self.name_edit)
+        rl.addLayout(form_top)
+
+        rl.addWidget(QLabel("Premise:"))
+        self.premise_edit = QTextEdit()
+        self.premise_edit.setPlaceholderText(
+            "What is this story about? Setting, characters, central conflict…")
+        self.premise_edit.setFixedHeight(80)
+        self.premise_edit.textChanged.connect(self._on_field_changed)
+        rl.addWidget(self.premise_edit)
+
+        form_mid = QFormLayout()
+        self.themes_edit = QLineEdit()
+        self.themes_edit.setPlaceholderText("isolation, memory, decay  (comma-separated)")
+        self.themes_edit.textChanged.connect(self._on_field_changed)
+        form_mid.addRow("Themes:", self.themes_edit)
+
+        self.motif_edit = QLineEdit()
+        self.motif_edit.setPlaceholderText(
+            "Recurring thread woven through every layer, e.g. 'always reference the bell'")
+        self.motif_edit.textChanged.connect(self._on_field_changed)
+        form_mid.addRow("Recurring motif:", self.motif_edit)
+        rl.addLayout(form_mid)
+
+        sep = QLabel("Story Beats")
+        sep.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        rl.addWidget(sep)
+        hint = QLabel(
+            "Each beat guides one generation layer. Leave blank for full AI freedom.")
+        hint.setStyleSheet("color: #888888; font-size: 10px;")
+        rl.addWidget(hint)
+
+        beat_form = QFormLayout()
+        self._beat_edits: dict = {}
+        for layer in self.LAYER_NAMES:
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"What should the {layer} layer cover?")
+            edit.textChanged.connect(self._on_field_changed)
+            self._beat_edits[layer] = edit
+            beat_form.addRow(f"{layer.capitalize()}:", edit)
+        rl.addLayout(beat_form)
+
+        rl.addWidget(QLabel("Notes:"))
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setPlaceholderText(
+            "Character details, world-building, things to remember…")
+        self.notes_edit.setFixedHeight(70)
+        self.notes_edit.textChanged.connect(self._on_field_changed)
+        rl.addWidget(self.notes_edit)
+        rl.addStretch()
+
+        scroll.setWidget(rw)
+        splitter.addWidget(scroll)
+        splitter.setSizes([170, 700])
+        root.addWidget(splitter, stretch=3)
+
+        # ── Arc development chat ──────────────────────────────────
+        chat_hdr = QLabel("Arc Development Chat")
+        chat_hdr.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        root.addWidget(chat_hdr)
+
+        self.chat_log = QTextEdit()
+        self.chat_log.setReadOnly(True)
+        self.chat_log.setStyleSheet("background:#1a1a1a; color:#cccccc; font-size:11px;")
+        root.addWidget(self.chat_log, stretch=1)
+
+        input_row = QHBoxLayout()
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("Ask AI to help develop this arc…")
+        self.chat_input.returnPressed.connect(self._cmd_arc_chat)
+        input_row.addWidget(self.chat_input)
+        send_btn = QPushButton("Send")
+        send_btn.clicked.connect(self._cmd_arc_chat)
+        input_row.addWidget(send_btn)
+        root.addLayout(input_row)
+
+        self.chat_status = QLabel("")
+        self.chat_status.setStyleSheet("color:#888888; font-size:10px;")
+        root.addWidget(self.chat_status)
+
+        # ── Bottom buttons ────────────────────────────────────────
+        bot = QHBoxLayout()
+        self.gen_btn = QPushButton("Generate Graph from Arc")
+        self.gen_btn.setStyleSheet("font-weight: bold;")
+        self.gen_btn.clicked.connect(self._cmd_generate_from_arc)
+        bot.addWidget(self.gen_btn)
+
+        bot.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        bot.addWidget(close_btn)
+        root.addLayout(bot)
+
+    # ── Arc list management ──────────────────────────────────────────────────
+
+    def _refresh_arc_list(self):
+        self.arc_list.blockSignals(True)
+        try:
+            self.arc_list.clear()
+            active_id = self.script.active_arc_id
+            for arc_id, arc in self.script.arcs.items():
+                name = arc.get('name') or arc_id
+                label = ('★ ' if arc_id == active_id else '  ') + name
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, arc_id)
+                self.arc_list.addItem(item)
+            # Restore selection while signals are still blocked
+            target = self._current_arc_id
+            for i in range(self.arc_list.count()):
+                if self.arc_list.item(i).data(Qt.ItemDataRole.UserRole) == target:
+                    self.arc_list.setCurrentRow(i)
+                    return
+            if self.arc_list.count():
+                self.arc_list.setCurrentRow(0)
+        finally:
+            self.arc_list.blockSignals(False)
+
+    def _on_arc_selected(self, row):
+        self._save_current()
+        if row < 0:
+            self._current_arc_id = None
+            self._clear_fields()
+            return
+        arc_id = self.arc_list.item(row).data(Qt.ItemDataRole.UserRole)
+        self._current_arc_id = arc_id
+        self.script.set_active_arc(arc_id)  # selected arc is always the active one
+        self._refresh_arc_list()
+        self._load_arc(arc_id)
+
+    def _load_arc(self, arc_id: str):
+        arc = self.script.arcs.get(arc_id, {})
+        self._loading = True
+        self.name_edit.setText(arc.get('name', ''))
+        self.premise_edit.setPlainText(arc.get('premise', ''))
+        self.themes_edit.setText(arc.get('themes', ''))
+        self.motif_edit.setText(arc.get('motif', ''))
+        beats = arc.get('beats', {})
+        for layer, edit in self._beat_edits.items():
+            edit.setText(beats.get(layer, ''))
+        self.notes_edit.setPlainText(arc.get('notes', ''))
+        self.chat_log.clear()
+        for entry in arc.get('chat_history', []):
+            self._append_chat(entry.get('role', 'user'), entry.get('content', ''))
+        self._loading = False
+
+    def _clear_fields(self):
+        self._loading = True
+        self.name_edit.clear()
+        self.premise_edit.clear()
+        self.themes_edit.clear()
+        self.motif_edit.clear()
+        for edit in self._beat_edits.values():
+            edit.clear()
+        self.notes_edit.clear()
+        self.chat_log.clear()
+        self._loading = False
+
+    def _save_current(self):
+        if not self._current_arc_id or self._loading:
+            return
+        arc_id = self._current_arc_id
+        if arc_id not in self.script.arcs:
+            return
+        beats = {layer: edit.text() for layer, edit in self._beat_edits.items()}
+        self.script.save_arc(arc_id, {
+            'name':    self.name_edit.text(),
+            'premise': self.premise_edit.toPlainText(),
+            'themes':  self.themes_edit.text(),
+            'motif':   self.motif_edit.text(),
+            'beats':   beats,
+            'notes':   self.notes_edit.toPlainText(),
+        })
+        self._refresh_list_item(arc_id)
+
+    def _refresh_list_item(self, arc_id: str):
+        active_id = self.script.active_arc_id
+        name = self.script.arcs.get(arc_id, {}).get('name') or arc_id
+        for i in range(self.arc_list.count()):
+            item = self.arc_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == arc_id:
+                item.setText(('★ ' if arc_id == active_id else '  ') + name)
+                return
+
+    def _on_field_changed(self):
+        if not self._loading:
+            self._save_current()
+
+    def _cmd_new_arc(self):
+        self._save_current()
+        arc_id = self.script.add_arc()
+        # If this is the first arc, seed it with whatever is already in the fields
+        if len(self.script.arcs) == 1:
+            beats = {layer: edit.text() for layer, edit in self._beat_edits.items()}
+            name = self.name_edit.text().strip() or 'New Arc'
+            self.script.save_arc(arc_id, {
+                'name':    name,
+                'premise': self.premise_edit.toPlainText(),
+                'themes':  self.themes_edit.text(),
+                'motif':   self.motif_edit.text(),
+                'beats':   beats,
+                'notes':   self.notes_edit.toPlainText(),
+            })
+        self._refresh_arc_list()
+        for i in range(self.arc_list.count()):
+            if self.arc_list.item(i).data(Qt.ItemDataRole.UserRole) == arc_id:
+                self.arc_list.setCurrentRow(i)
+                break
+
+    def _cmd_delete_arc(self):
+        if not self._current_arc_id:
+            return
+        arc_id = self._current_arc_id
+        self._current_arc_id = None
+        self.script.delete_arc(arc_id)
+        self._refresh_arc_list()
+        if not self.arc_list.count():
+            self._clear_fields()
+
+    def _cmd_generate_from_arc(self):
+        if not self._current_arc_id:
+            self.chat_status.setText("No arc selected.")
+            return
+        self._save_current()
+        arc = self.script.arcs.get(self._current_arc_id, {})
+
+        if not self._main_ai.ready:
+            self.chat_status.setText("claude CLI not found.")
+            return
+        if self._main_ai.busy:
+            self.chat_status.setText("AI is busy — wait for current task to finish.")
+            return
+
+        # Build a prompt from the arc's premise (fallback to name)
+        prompt = arc.get('premise', '').strip() or arc.get('name', 'Generate a narrative graph.')
+        arc_beats = arc.get('beats', {})
+        arc_motif = arc.get('motif', '')
+
+        self.gen_btn.setEnabled(False)
+        self.chat_status.setText("Generating seed nodes…")
+        self._append_chat('assistant', f'[Generating graph from arc: {arc.get("name", "")}]')
+
+        def on_seed_done(data):
+            before = set(self.script.nodes.keys())
+            self.script.apply_generated(data)
+            after = set(self.script.nodes.keys())
+            seed_ids = after - before
+            intro_beat = arc_beats.get('intro', '')
+            if intro_beat:
+                for nid in seed_ids:
+                    if nid in self.script.nodes:
+                        self.script.nodes[nid]['arc_beat'] = intro_beat
+            self._append_chat('assistant', f'Seed: {", ".join(sorted(seed_ids))}')
+            self.chat_status.setText(f'Seed done ({len(seed_ids)} nodes). Expanding…')
+            self._arc_expand_frontier(0, generation_set=seed_ids,
+                                      arc_beats=arc_beats, arc_motif=arc_motif)
+
+        def on_seed_error(e):
+            self.chat_status.setText(f'Seed error: {e[:60]}')
+            self.gen_btn.setEnabled(True)
+
+        self._main_ai.generate_seed(
+            prompt, self.ui_queue, on_seed_done, on_seed_error,
+            story_context=self.script.story_context_focused,
+            layer_direction=arc_beats.get('intro', ''),
+            motif=arc_motif,
+        )
+
+    def _arc_expand_frontier(self, total_calls: int, generation_set: set = None,
+                              arc_beats: dict = None, arc_motif: str = ''):
+        def on_complete():
+            self.gen_btn.setEnabled(True)
+            if self._on_graph_generated:
+                self._on_graph_generated()
+
+        _run_expand_frontier(
+            script=self.script,
+            ai=self._main_ai,
+            ui_queue=self.ui_queue,
+            total_calls=total_calls,
+            generation_set=generation_set,
+            arc_beats=arc_beats or {},
+            arc_motif=arc_motif,
+            on_status=lambda msg: self.chat_status.setText(msg),
+            on_log=lambda msg: self._append_chat('assistant', msg),
+            on_complete=on_complete,
+        )
+
+    # ── Arc chat ─────────────────────────────────────────────────────────────
+
+    def _build_arc_context(self) -> str:
+        if not self._current_arc_id:
+            return ''
+        arc = self.script.arcs.get(self._current_arc_id, {})
+        parts = []
+        if arc.get('name'):
+            parts.append(f"Arc: {arc['name']}")
+        if arc.get('premise'):
+            parts.append(f"Premise: {arc['premise']}")
+        if arc.get('themes'):
+            parts.append(f"Themes: {arc['themes']}")
+        if arc.get('motif'):
+            parts.append(f"Recurring motif: {arc['motif']}")
+        filled_beats = [(k, v) for k, v in arc.get('beats', {}).items() if v.strip()]
+        if filled_beats:
+            parts.append('Story beats:')
+            for layer, beat in filled_beats:
+                parts.append(f'  {layer}: {beat}')
+        if arc.get('notes'):
+            parts.append(f"Notes: {arc['notes']}")
+        return '\n'.join(parts)
+
+    def _append_chat(self, role: str, text: str):
+        color = '#88ccff' if role == 'assistant' else '#cccccc'
+        label = 'Claude' if role == 'assistant' else 'You'
+        self.chat_log.append(
+            f'<span style="color:{color};"><b>{label}:</b> {text}</span><br>')
+
+    def _cmd_arc_chat(self):
+        msg = self.chat_input.text().strip()
+        if not msg:
+            return
+        if not self._arc_ai.ready:
+            self.chat_status.setText("claude CLI not found")
+            return
+        if self._arc_ai.busy:
+            self.chat_status.setText("AI is busy…")
+            return
+        self.chat_input.clear()
+        self._append_chat('user', msg)
+        arc_ctx = self._build_arc_context()
+        self.chat_status.setText("Thinking…")
+
+        def on_reply(reply):
+            self._append_chat('assistant', reply)
+            self.chat_status.setText('')
+            if self._current_arc_id and self._current_arc_id in self.script.arcs:
+                hist = self.script.arcs[self._current_arc_id].setdefault('chat_history', [])
+                hist.append({'role': 'user',      'content': msg})
+                hist.append({'role': 'assistant', 'content': reply})
+                self.script.dirty = True
+
+        def on_error(e):
+            self.chat_status.setText(f'Error: {e[:80]}')
+
+        self._arc_ai.chat(msg, self.ui_queue,
+                          on_reply=on_reply, on_error=on_error,
+                          story_context=arc_ctx,
+                          _system_override=SYSTEM_ARC_CHAT)
+
+    def closeEvent(self, event):
+        self._save_current()
+        super().closeEvent(event)
+
+
+class _CrosshatchItem(QGraphicsItem):
+    """Prominent crosshatch overlay drawn on top of a node to indicate a search match."""
+
+    def __init__(self, parent_item):
+        super().__init__(parent_item)
+        self._rect = parent_item.boundingRect()
+        self.setZValue(200)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+
+    def boundingRect(self):
+        return self._rect
+
+    def paint(self, painter, option, widget=None):
+        painter.save()
+        painter.setClipRect(self._rect)
+        pen = QPen(QColor(0, 230, 255, 255), 4.5)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        r = self._rect
+        spacing = 10
+        # Extend range so diagonals cover the full rect even at corners
+        span = r.width() + r.height()
+        x = r.left() - r.height()
+        while x < r.right() + r.height():
+            # Forward diagonal (\)
+            painter.drawLine(
+                int(x), int(r.top()),
+                int(x + r.height()), int(r.bottom()),
+            )
+            # Backward diagonal (/)
+            painter.drawLine(
+                int(x + r.height()), int(r.top()),
+                int(x), int(r.bottom()),
+            )
+            x += spacing
+        painter.restore()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, script_path=None):
         super().__init__()
@@ -3044,6 +3664,7 @@ class MainWindow(QMainWindow):
         self._pending_connect_from: Optional[str] = None
         self._pending_connect_line = None   # QGraphicsLineItem rubber-band
         self._cycle_nodes: set = set()
+        self._search_overlays: dict = {}   # node_id → _CrosshatchItem for active search matches
 
         self._build_ui()
         self._build_menu()
@@ -3162,7 +3783,7 @@ class MainWindow(QMainWindow):
 
         # Search bar + frequency toggle above graph
         self._search_bar = QLineEdit()
-        self._search_bar.setPlaceholderText("Search nodes by text, label, or ID...  (Ctrl+/)")
+        self._search_bar.setPlaceholderText("Search nodes by text, tags, arc beat, ID…  (Ctrl+/)")
         self._search_bar.setClearButtonEnabled(True)
         self._search_bar.textChanged.connect(self._cmd_search)
         self._search_bar.setStyleSheet("padding: 2px 4px; font-size: 11px;")
@@ -3278,6 +3899,11 @@ class MainWindow(QMainWindow):
 
         # Story menu
         story_menu = menubar.addMenu("Story")
+        act_arcs = QAction("Story Arcs…", self)
+        act_arcs.setShortcut("Ctrl+Shift+R")
+        act_arcs.triggered.connect(self._cmd_open_arc_editor)
+        story_menu.addAction(act_arcs)
+
         act_ctx = QAction("Story Context…", self)
         act_ctx.setShortcut("Ctrl+Shift+C")
         act_ctx.triggered.connect(self._cmd_open_story_context)
@@ -3296,6 +3922,13 @@ class MainWindow(QMainWindow):
         act_voice.setShortcut("Ctrl+Shift+V")
         act_voice.triggered.connect(self._cmd_open_voice_settings)
         voice_menu.addAction(act_voice)
+
+    def _cmd_open_arc_editor(self):
+        dlg = ArcEditorDialog(self.script, self.ai, self.ui_queue,
+                              on_graph_generated=self._on_graph_generated,
+                              parent=self)
+        dlg.exec()
+        self._update_title()
 
     def _cmd_open_story_context(self):
         dlg = QDialog(self)
@@ -3541,6 +4174,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_graph_hover_filter'):
             self._graph_hover_filter._current = None
         self._refresh_cycle_markers()
+        # Node views were recreated — drop stale overlay refs and re-apply if search is active
+        self._search_overlays.clear()
+        if self._search_bar.text().strip():
+            self._cmd_search(self._search_bar.text())
 
     def _get_node_at_view_pos(self, view_pos) -> Optional[str]:
         """Return node_id under the given viewport-space position, or None."""
@@ -3709,11 +4346,36 @@ class MainWindow(QMainWindow):
             else:
                 pipe.setOpacity(0.05)
 
+    def _apply_search_overlays(self, matched: set):
+        """Add crosshatch overlays to all matched nodes; remove from nodes no longer matching."""
+        # Remove overlays for nodes that no longer match
+        for nid in list(self._search_overlays):
+            if nid not in matched:
+                item = self._search_overlays.pop(nid)
+                try:
+                    sc = item.scene()
+                    if sc:
+                        sc.removeItem(item)
+                except Exception:
+                    pass
+        # Add overlays for newly matching nodes
+        for nid in matched:
+            if nid not in self._search_overlays and nid in self._node_items:
+                self._search_overlays[nid] = _CrosshatchItem(self._node_items[nid].view)
+
+    def _clear_search_overlays(self):
+        """Remove all active search crosshatch overlays."""
+        for item in self._search_overlays.values():
+            try:
+                sc = item.scene()
+                if sc:
+                    sc.removeItem(item)
+            except Exception:
+                pass
+        self._search_overlays.clear()
+
     def _clear_highlight(self):
-        """Restore opacity, respecting active search or frequency map."""
-        if self._search_bar.text().strip():
-            self._cmd_search(self._search_bar.text())
-            return
+        """Restore opacity. Search overlays are managed separately and not touched here."""
         if self._freq_btn.isChecked():
             self._apply_frequency_heat()
             return
@@ -3729,8 +4391,6 @@ class MainWindow(QMainWindow):
     def _on_node_hover_leave(self, _node_id: str):
         if self._selected_node_id:
             self._apply_highlight(self._selected_node_id)
-        elif self._search_bar.text().strip():
-            self._cmd_search(self._search_bar.text())
         elif self._freq_btn.isChecked():
             self._apply_frequency_heat()
         else:
@@ -3883,6 +4543,7 @@ class MainWindow(QMainWindow):
     def _on_graph_generated(self):
         """Called after AI generates a graph."""
         self._rebuild_graph()
+        self._cmd_apply_tree_layout()
         self._update_title()
         self._maybe_refresh_freq()
         self._refresh_cycle_markers()
@@ -4289,9 +4950,10 @@ class MainWindow(QMainWindow):
             pipe.setOpacity(max(0.03, c / max_count))
 
     def _cmd_search(self, text: str):
-        """Highlight nodes whose text/label/ID contains the search string."""
+        """Apply crosshatch overlays to nodes matching the search term.
+        Does not change node opacity — selection highlight is fully independent."""
         if not text.strip():
-            self._clear_highlight()
+            self._clear_search_overlays()
             return
         term = text.strip().lower()
         matched = set()
@@ -4301,13 +4963,11 @@ class MainWindow(QMainWindow):
                 nd.get('label', '') or '',
                 nd.get('text', '') or '',
                 ' '.join(nd.get('tags', [])),
+                nd.get('arc_beat', '') or '',
             ]).lower()
             if term in haystack:
                 matched.add(nid)
-        for nid, n in self._node_items.items():
-            n.view.setOpacity(1.0 if nid in matched else 0.08)
-        for pipe, from_nid, to_nid in self._pipe_connections():
-            pipe.setOpacity(1.0 if (from_nid in matched and to_nid in matched) else 0.04)
+        self._apply_search_overlays(matched)
         self.status_bar.showMessage(f"Search: {len(matched)} matching node(s)")
 
     def _get_upstream_path(self, node_id: str, depth: int = 4) -> list:
@@ -4345,12 +5005,13 @@ class MainWindow(QMainWindow):
         self.graph.fit_to_selection()
 
     def _cmd_apply_tree_layout(self):
-        """Rearrange nodes into tree layout without changing zoom/pan."""
+        """Rearrange nodes into tree layout and zoom to fit."""
         layout = _layout_tree(self.script)
         for node_id, (x, y) in layout.items():
             if node_id in self._node_items:
                 self._node_items[node_id].set_pos(float(x), float(y))
                 self.script.update_pos(node_id, [x, y])
+        self.graph.fit_to_selection()
         self.status_bar.showMessage("Tree layout applied")
 
     def _cmd_spread(self):
