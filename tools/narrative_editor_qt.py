@@ -91,6 +91,7 @@ SCRIPT_TEMPLATE = {
     },
     "gap_range": [4.0, 12.0],
     "no_repeat_window": 6,
+    "variables": [],
     "start_nodes": [],
     "nodes": {},
 }
@@ -514,6 +515,16 @@ class ScriptData:
         self._data["story_context_focused"] = text
         self.dirty = True
 
+    @property
+    def variables(self) -> list:
+        """Story-level variable definitions: [{"name": ..., "description": ...}, ...]"""
+        return self._data.setdefault("variables", [])
+
+    def set_variables(self, var_list: list):
+        """Replace all variable definitions (max 4)."""
+        self._data["variables"] = list(var_list)[:4]
+        self.dirty = True
+
     # ── Arc management ──────────────────────────────────────────────────────
 
     @property
@@ -596,6 +607,7 @@ class ScriptData:
             "tags": [],
             "voice": None,
             "voice_settings": {},
+            "vars": {},
             "pos": pos or [100, 100],
         }
         self._data["nodes"][node_id] = node
@@ -853,6 +865,7 @@ class ScriptData:
                 "tags":           tags,
                 "voice":          ndata.get("voice", None),
                 "voice_settings": ndata.get("voice_settings", {}),
+                "vars":           ndata.get("vars", {}),
                 "pos":            [x, 80 + y_idx * 170],
             }
 
@@ -905,6 +918,7 @@ class ScriptData:
                 "tags":           tags,
                 "voice":          ndata.get("voice", None),
                 "voice_settings": ndata.get("voice_settings", {}),
+                "vars":           ndata.get("vars", {}),
                 "pos":            [x, 80 + y_idx * 170],
             }
 
@@ -1002,6 +1016,18 @@ class AIAssistant:
             )
         return out
 
+    @staticmethod
+    def _vars_prompt_section(variables: list) -> str:
+        """Build a prompt section telling the AI to set story variables on every node."""
+        if not variables:
+            return ''
+        lines = ['STORY VARIABLES — set "vars" on every node (each value 0.0–1.0):']
+        for v in variables:
+            lines.append(f'  "{v["name"]}": {v["description"]}')
+        lines.append('0 = absent/none, 1 = maximum. Base values on the node\'s text content.')
+        lines.append('Include "vars": {"name": value, ...} in every node object.')
+        return '\n'.join(lines)
+
     def chat(self, user_msg: str, ui_queue: queue.SimpleQueue,
              on_reply, on_error, script_summary: str = '', story_context: str = '',
              _system_override: str = ''):
@@ -1036,7 +1062,8 @@ class AIAssistant:
         threading.Thread(target=run, daemon=True).start()
 
     def generate_graph(self, prompt: str, ui_queue: queue.SimpleQueue,
-                       on_done, on_error, story_context: str = ''):
+                       on_done, on_error, story_context: str = '',
+                       variables: list = None):
         if self._busy:
             return
         self._busy = True
@@ -1044,6 +1071,9 @@ class AIAssistant:
         parts = []
         if story_context:
             parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
 
@@ -1067,7 +1097,8 @@ class AIAssistant:
 
     def generate_seed(self, prompt: str, ui_queue: queue.SimpleQueue,
                       on_done, on_error, story_context: str = '',
-                      layer_direction: str = '', motif: str = ''):
+                      layer_direction: str = '', motif: str = '',
+                      variables: list = None):
         """Generate only the intro layer — no children. Used to seed iterative generation."""
         if self._busy:
             return
@@ -1076,6 +1107,9 @@ class AIAssistant:
         parts = []
         if story_context:
             parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
         if layer_direction:
             parts.append(f'INTRO LAYER DIRECTION (this is what the intro nodes must cover):\n{layer_direction}')
         if motif:
@@ -1104,7 +1138,8 @@ class AIAssistant:
     def generate_layer(self, frontier: list, ui_queue: queue.SimpleQueue,
                        on_done, on_error, story_context: str = '',
                        existing_custom_tags: list = None,
-                       layer_direction: str = '', motif: str = ''):
+                       layer_direction: str = '', motif: str = '',
+                       variables: list = None):
         """Generate the next layer for all frontier nodes in one AI call.
 
         frontier: list of (node_id, node_data) for all current leaf nodes.
@@ -1117,6 +1152,9 @@ class AIAssistant:
         if story_context:
             sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
             parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do NOT let this dilute or override the topic defined by the source nodes):\n  {sc}')
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
         if layer_direction:
             parts.append(f'LAYER DIRECTION (this layer must cover this — follow it precisely, override default arc guidance):\n{layer_direction}')
         if motif:
@@ -1158,7 +1196,8 @@ class AIAssistant:
                     story_context: str = '', node_hint: str = '',
                     upstream_path: list = None,
                     node_min: int = 2, node_max: int = 5,
-                    existing_custom_tags: list = None):
+                    existing_custom_tags: list = None,
+                    variables: list = None):
         if self._busy:
             return
         self._busy = True
@@ -1174,6 +1213,10 @@ class AIAssistant:
 
         if existing_custom_tags:
             parts.append(f'EXISTING CUSTOM TAGS in this script (prefer these when applicable): {", ".join(sorted(existing_custom_tags))}')
+
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
 
         # ── Ancestor context: oldest first, least influential ────────────────
         ANCESTOR_LABELS = [
@@ -1248,7 +1291,8 @@ class AIAssistant:
 
     def continue_from_node(self, source_id: str, source_text: str, source_tags: list,
                            ui_queue: queue.SimpleQueue, on_done, on_error,
-                           story_context: str = '', node_hint: str = ''):
+                           story_context: str = '', node_hint: str = '',
+                           variables: list = None):
         if self._busy:
             return
         self._busy = True
@@ -1261,6 +1305,9 @@ class AIAssistant:
         if story_context:
             sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
             parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
         if node_hint:
             parts.append(f'Continuation guidance: {node_hint}')
         parts.append(
@@ -1290,13 +1337,20 @@ class AIAssistant:
         threading.Thread(target=run, daemon=True).start()
 
     def rewrite_text(self, prompt: str, ui_queue: queue.SimpleQueue,
-                     on_done, on_error, story_context: str = ''):
+                     on_done, on_error, story_context: str = '',
+                     variables: list = None):
         if self._busy:
             return
         self._busy = True
 
-        full_prompt = (f'Story context:\n{story_context}\n\n{prompt}'
-                       if story_context else prompt)
+        parts = []
+        if story_context:
+            parts.append(f'Story context:\n{story_context}')
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
+        parts.append(prompt)
+        full_prompt = '\n\n'.join(parts)
 
         def run():
             try:
@@ -1700,6 +1754,15 @@ class PropertiesPanel(QWidget):
         custom_row.addWidget(self.tags_edit)
         layout.addLayout(custom_row)
 
+        # ── Story variables (dynamic — rebuilt when definitions change) ────
+        self._vars_container = QWidget()
+        self._vars_layout = QGridLayout(self._vars_container)
+        self._vars_layout.setContentsMargins(0, 4, 0, 4)
+        self._vars_layout.setSpacing(4)
+        self._vars_spins: dict = {}   # name -> QDoubleSpinBox
+        self._vars_container.hide()
+        layout.addWidget(self._vars_container)
+
         # Is start
         self.is_start_cb = QCheckBox("Start node")
         self.is_start_cb.stateChanged.connect(self._autosave_start)
@@ -1831,6 +1894,11 @@ class PropertiesPanel(QWidget):
                 self._arc_beat_lbl.setText('')
 
             self.rebuild_edge_list(script, node_id)
+
+            # Story variables
+            node_vars = nd.get("vars", {})
+            for name, spin in self._vars_spins.items():
+                spin.setValue(node_vars.get(name, 0.0))
         finally:
             self._blocking = False
 
@@ -2019,6 +2087,58 @@ class PropertiesPanel(QWidget):
         self._script.set_start(self._node_id, self.is_start_cb.isChecked())
         self.node_modified.emit(self._node_id)
 
+    def _autosave_vars(self):
+        """Write current spinbox values back to the node's vars dict."""
+        if self._blocking or not self._node_id or not self._script:
+            return
+        nd = self._script.nodes.get(self._node_id)
+        if not nd:
+            return
+        nd.setdefault("vars", {})
+        for name, spin in self._vars_spins.items():
+            nd["vars"][name] = round(spin.value(), 2)
+        self._script.dirty = True
+
+    def refresh_variable_widgets(self):
+        """Rebuild the variable spinbox grid to match current script variable definitions."""
+        # Clear old widgets
+        while self._vars_layout.count():
+            item = self._vars_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._vars_spins.clear()
+
+        variables = self._script.variables if self._script else []
+        if not variables:
+            self._vars_container.hide()
+            return
+
+        # Header
+        hdr = QLabel("Variables")
+        hdr.setStyleSheet("color: #ccddaa; font-size: 10px; font-weight: bold;")
+        self._vars_layout.addWidget(hdr, 0, 0, 1, 4)
+
+        # 2-column grid: label + spin, label + spin
+        for i, var in enumerate(variables[:4]):
+            row = 1 + i // 2
+            col = (i % 2) * 2
+            lbl = QLabel(f"{var['name']}:")
+            lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+            lbl.setToolTip(var.get('description', ''))
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 1.0)
+            spin.setSingleStep(0.05)
+            spin.setDecimals(2)
+            spin.setFixedWidth(60)
+            spin.setToolTip(var.get('description', ''))
+            spin.valueChanged.connect(self._autosave_vars)
+            self._vars_layout.addWidget(lbl, row, col)
+            self._vars_layout.addWidget(spin, row, col + 1)
+            self._vars_spins[var['name']] = spin
+
+        self._vars_container.show()
+
     def _autosave_voice(self):
         if self._blocking or not self._node_id or not self._script:
             return
@@ -2103,6 +2223,10 @@ class PropertiesPanel(QWidget):
                         "similarity_boost": vs.get("similarity_boost", 0.75),
                         "style":            vs.get("style",            0.3),
                     })
+                new_vars = data.get("vars", {})
+                if new_vars:
+                    self._script.nodes[node_id].setdefault("vars", {}).update(new_vars)
+                    self._script.dirty = True
                 if self._node_id == node_id:
                     self._blocking = True
                     try:
@@ -2119,6 +2243,9 @@ class PropertiesPanel(QWidget):
                             self.stability_spin.setValue(vs.get("stability", 0.5))
                             self.similarity_spin.setValue(vs.get("similarity_boost", 0.75))
                             self.style_spin.setValue(vs.get("style", 0.3))
+                        if new_vars:
+                            for name, spin in self._vars_spins.items():
+                                spin.setValue(new_vars.get(name, spin.value()))
                     finally:
                         self._blocking = False
             self.rewrite_status.setText("Done")
@@ -2130,7 +2257,8 @@ class PropertiesPanel(QWidget):
             self.rewrite_status.setStyleSheet("color: #ff5555; font-size: 10px;")
 
         self._ai.rewrite_text(prompt, self._ui_queue, on_done, on_error,
-                              story_context=self._script.story_context_focused)
+                              story_context=self._script.story_context_focused,
+                              variables=self._script.variables)
 
     def _cmd_expand(self):
         if not self._node_id or not self._script or not self._ai or not self._ui_queue:
@@ -2560,6 +2688,7 @@ def _run_expand_frontier(script, ai, ui_queue, total_calls, generation_set,
         existing_custom_tags=existing_custom_tags,
         layer_direction=layer_direction,
         motif=arc_motif,
+        variables=script.variables,
     )
 
 
@@ -2787,6 +2916,7 @@ class AIChatPanel(QWidget):
             story_context=self._script.story_context_focused if self._script else '',
             layer_direction=arc_beats.get('intro', ''),
             motif=arc_motif,
+            variables=self._script.variables if self._script else [],
         )
 
     def _expand_frontier(self, total_calls: int, generation_set: set = None,
@@ -3544,6 +3674,7 @@ class ArcEditorDialog(QDialog):
             story_context=self.script.story_context_focused,
             layer_direction=arc_beats.get('intro', ''),
             motif=arc_motif,
+            variables=self.script.variables,
         )
 
     def _arc_expand_frontier(self, total_calls: int, generation_set: set = None,
@@ -3724,6 +3855,7 @@ class MainWindow(QMainWindow):
 
         # Set contexts
         self.props_panel.set_context(self.script, self.vm, self.ai, self.ui_queue)
+        self.props_panel.refresh_variable_widgets()
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
         self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
                                     self._on_graph_generated,
@@ -3938,6 +4070,11 @@ class MainWindow(QMainWindow):
         act_ctx.triggered.connect(self._cmd_open_story_context)
         story_menu.addAction(act_ctx)
 
+        act_vars = QAction("Story Variables…", self)
+        act_vars.setShortcut("Ctrl+Shift+B")
+        act_vars.triggered.connect(self._cmd_open_story_variables)
+        story_menu.addAction(act_vars)
+
         # Analysis menu
         analysis_menu = menubar.addMenu("Analysis")
         act_freq = QAction("Toggle Frequency Heat Map", self)
@@ -4056,6 +4193,101 @@ class MainWindow(QMainWindow):
         self.script.set_story_context(full_edit.toPlainText())
         self.script.set_story_context_focused(focused_edit.toPlainText())
         self._update_title()
+
+    def _cmd_open_story_variables(self):
+        """Open dialog to define up to 4 story-level variables."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Story Variables")
+        dlg.setMinimumWidth(520)
+        dlg.setMinimumHeight(250)
+        main_layout = QVBoxLayout(dlg)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+
+        info_lbl = QLabel("Define up to 4 numeric variables (0–1) tracked per node. "
+                          "AI will set values based on the description when generating nodes.")
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        main_layout.addWidget(info_lbl)
+
+        # Rows container
+        rows_widget = QWidget()
+        rows_layout = QVBoxLayout(rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
+        main_layout.addWidget(rows_widget)
+
+        row_widgets = []  # list of (name_edit, desc_edit, remove_btn, row_widget)
+
+        def add_row(name: str = '', desc: str = ''):
+            if len(row_widgets) >= 4:
+                return
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            name_edit = QLineEdit()
+            name_edit.setPlaceholderText("Name (e.g. tension)")
+            name_edit.setMaxLength(20)
+            name_edit.setFixedWidth(130)
+            name_edit.setText(name)
+            desc_edit = QLineEdit()
+            desc_edit.setPlaceholderText("Description for AI (e.g. How tense the moment feels)")
+            desc_edit.setText(desc)
+            rm_btn = QPushButton("×")
+            rm_btn.setFixedWidth(28)
+            rm_btn.setStyleSheet("color: #ff6666;")
+            rl.addWidget(name_edit)
+            rl.addWidget(desc_edit)
+            rl.addWidget(rm_btn)
+            rows_layout.addWidget(row)
+            entry = (name_edit, desc_edit, rm_btn, row)
+            row_widgets.append(entry)
+
+            def remove(e=entry):
+                row_widgets.remove(e)
+                e[3].deleteLater()
+                add_btn.setEnabled(len(row_widgets) < 4)
+
+            rm_btn.clicked.connect(remove)
+            add_btn.setEnabled(len(row_widgets) < 4)
+
+        # Add variable button
+        add_btn = QPushButton("+ Add Variable")
+        add_btn.clicked.connect(lambda: add_row())
+        main_layout.addWidget(add_btn)
+
+        main_layout.addStretch()
+
+        # Save & Close
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton("Save && Close")
+        save_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(save_btn)
+        main_layout.addLayout(btn_row)
+
+        # Populate from current data
+        for v in self.script.variables:
+            add_row(v.get('name', ''), v.get('description', ''))
+
+        if dlg.exec():
+            # Collect and save
+            new_vars = []
+            for name_edit, desc_edit, _, _ in row_widgets:
+                name = name_edit.text().strip()
+                if name:
+                    new_vars.append({
+                        'name': name,
+                        'description': desc_edit.text().strip(),
+                    })
+            self.script.set_variables(new_vars)
+            # Refresh the properties panel variable widgets
+            self.props_panel.refresh_variable_widgets()
+            # Reload current node to populate values
+            if self.props_panel._node_id and self.props_panel._script:
+                self.props_panel.load_node(self.script, self.props_panel._node_id)
+            self._update_title()
 
     def _cmd_open_voice_settings(self):
         dlg = QDialog(self)
@@ -4804,6 +5036,7 @@ class MainWindow(QMainWindow):
             node_min=node_min,
             node_max=node_max,
             existing_custom_tags=existing_custom_tags,
+            variables=self.script.variables,
         )
 
     def _cmd_continue_from_node(self, node_id: str):
@@ -4858,6 +5091,7 @@ class MainWindow(QMainWindow):
             on_error=on_error,
             story_context=self.script.story_context_focused,
             node_hint=nd.get("hint", "") or hint,
+            variables=self.script.variables,
         )
 
     def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
@@ -5134,6 +5368,7 @@ class MainWindow(QMainWindow):
     def _refresh_contexts(self):
         """Re-wire all panels after script is replaced."""
         self.props_panel.set_context(self.script, self.vm, self.ai, self.ui_queue)
+        self.props_panel.refresh_variable_widgets()
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
         self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
                                     self._on_graph_generated,
