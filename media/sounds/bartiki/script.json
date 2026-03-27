@@ -53,7 +53,12 @@
       "pos": [
         60.0,
         750.0
-      ]
+      ],
+      "vars": {
+        "Mystery": 1.0,
+        "Bartiki": 0.0,
+        "Companions": 0.0
+      }
     },
     "intro_tunnel": {
       "text": "The tunnels run deep. Deeper than anyone admits. Down beneath the bay, the train cuts through cold dark water , and in that darkness, old things listen. The Tiki gods were ocean gods first. They were always down here. We just gave them a schedule.",
@@ -81,7 +86,12 @@
       "pos": [
         60.0,
         2158.75
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 1.0,
+        "Companions": 0.0
+      }
     },
     "dev_carver": {
       "text": "His name is lost now. The carver. He carried his tools in a canvas bag , adze, chisel, the small curved knife for faces. He boarded at Fruitvale, heading somewhere. The train pulled into the tunnel, the lights flickered, and he felt the presence , not behind him, but inside the hum of the rails. He began to carve.",
@@ -437,7 +447,12 @@
       "pos": [
         60.0,
         2992.5
-      ]
+      ],
+      "vars": {
+        "Mystery": 1.0,
+        "Bartiki": 0.0,
+        "Companions": 0.0
+      }
     },
     "intro_forest_whisper": {
       "text": "In the oldest forests, where roots go deeper than memory, the trees still murmur a single name at dusk. Bartiki. They say he breathed the first forest into being , that every root is a finger of his, still holding the earth together, still listening for the sound of a world that has forgotten to listen back.",
@@ -463,7 +478,12 @@
       "pos": [
         60.0,
         3251.25
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 0.0,
+        "Companions": 1.0
+      }
     },
     "intro_desert_memory": {
       "text": "The desert people say Bartiki passed through here once, long before the dunes. They say the heat you feel at noon is his ancient breath , that the sand shifts because he is still moving beneath it, slow as a century, searching for something he left behind before the world hardened into what it is now.",
@@ -489,7 +509,12 @@
       "pos": [
         60.0,
         3510.0
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 0.0,
+        "Companions": 1.0
+      }
     },
     "intro_storm_birth": {
       "text": "Some say Bartiki is not a creature but a moment , the crack between lightning and thunder, the held breath before the wave breaks. He was there at the storm's first birth, when water and wind learned to argue. And he is there in every storm since, watching from the place where weather begins.",
@@ -515,7 +540,12 @@
       "pos": [
         60.0,
         3768.75
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 1.0,
+        "Companions": 0.0
+      }
     },
     "dev_reaches": {
       "text": "He does not move the way the living move. He reaches. Through tidal channels, through the narrow seams in stone, through the roots of trees that press against the underside of the world. The old fishermen said they could feel him passing , a vibration in the hull, a sudden cold that had nothing to do with the wind.",
@@ -947,7 +977,12 @@
       "pos": [
         60.0,
         3970.0
-      ]
+      ],
+      "vars": {
+        "Mystery": 1.0,
+        "Bartiki": 0.0,
+        "Companions": 0.0
+      }
     },
     "node_001": {
       "text": "Before there were tunnels, there was a boat. Nothing grand , just something low in the water, something that understood how to cross. It came from far out, past where the names for things still hold. It carried something in its hull that was older than language, older than the bay itself. The water received it the way the bay receives everything: quietly, without ceremony, without making a fuss. The boat is gone now. The tunnels remember it.",
@@ -983,7 +1018,12 @@
       "pos": [
         60.0,
         4516.25
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 1.0,
+        "Companions": 0.0
+      }
     },
     "open_the_cargo": {
       "text": "What the boat carried had no clean word in any language spoken on these shores. Not a spirit, exactly. Not a god, in the way gods are usually counted. Something that had learned, over a very long time, that the space between shores is where the interesting things happen. It had crossed many waters before this one. When it felt the bay , all that salt ambivalence, all those tidal reversals , it recognized something. It stayed.",
@@ -2029,7 +2069,12 @@
       "pos": [
         60.0,
         5120.0
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 0.0,
+        "Companions": 1.0
+      }
     },
     "open_toad_seen": {
       "text": "Someone noticed the moisture first , not the toad, never the toad directly. They noticed their shoes were wet though the car had been dry for three stops. A smell like creek stone and old intention. The toad sat between a discarded Chronicle and a sleeping man's elbow, thoroughly visible, utterly unremarked. This is the second way tricksters work: they make themselves obvious in the wrong direction. You cannot look at them straight. You can only catch them in the peripheral truth.",
@@ -2532,7 +2577,12 @@
       "pos": [
         60.0,
         5551.25
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 0.0,
+        "Companions": 1.0
+      }
     },
     "intro_tunnel_stirs": {
       "text": "The tunnel swallowed the car whole. Somewhere between the last light and the next dark mile, the air changed , salt, iron, something older than the rails. Bartiki, who had not fully surfaced in eleven years, felt the warmth of him two cars away. Moving slow. The way an underground river finally finds a stone worth circling. The intercom crackled. Almost resolved into something. Almost.",
@@ -2566,7 +2616,12 @@
       "pos": [
         60.0,
         6155.0
-      ]
+      ],
+      "vars": {
+        "Mystery": 0.0,
+        "Bartiki": 1.0,
+        "Companions": 0.0
+      }
     },
     "opening_bill_each": {
       "text": "Each marriage was a continent. He had loved a woman who kept bees in her hair, and a man who wept at the sound of fog. The train knew this the way water knows the shape of stone. Down the tunnel it carried him, deeper than any of the others had allowed , past stations with their cold lights, into the parts of BART that appear on no map, where the air tastes of salt and something waiting.",
