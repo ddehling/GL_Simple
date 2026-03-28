@@ -31,12 +31,12 @@ from typing import Dict, List, Optional
 # Must be set before any Qt or NodeGraphQt imports
 os.environ['QT_API'] = 'pyside6'
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent
-from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, QPen
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent, QRectF
+from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-    QFrame, QGraphicsItem, QHBoxLayout, QLabel, QLineEdit,
+    QFrame, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QStatusBar, QTextEdit, QVBoxLayout, QWidget,
@@ -456,6 +456,24 @@ Until then, focus on ideas, themes, tone, and story development.
 IMPORTANT — when a "Story context" block is provided, treat it as BACKGROUND ATMOSPHERE ONLY
 (voice, tone, setting). It must NEVER override the subject of the user's actual message.
 The user's message defines the topic. Always stay on that topic.
+"""
+
+SYSTEM_DETERMINE_VARS = """\
+You are analyzing narrative script nodes to determine story variable values.
+Given variable definitions and a list of nodes with their text, assign a value
+(0.0–1.0) for each variable on each node based on its text content.
+
+Rules:
+- 0.0 = the variable's quality is NOT meaningfully present in the node text.
+- 1.0 = the variable's quality is the dominant force in the node.
+- Be decisive. Most variables on most nodes should be 0.0.
+- Only assign non-zero values when the text explicitly contains that quality.
+- Avoid clustering everything in the 0.2–0.6 range.
+- Reserve 0.8–1.0 for nodes where that quality is unmistakably dominant.
+
+Respond with ONLY a JSON object mapping node IDs to their variable values:
+{"node_id": {"var_name": value, ...}, ...}
+No markdown fences, no explanation — just the JSON object.
 """
 
 SYSTEM_ARC_CHAT = """\
@@ -940,10 +958,21 @@ class AIAssistant:
     """Calls the `claude` CLI via subprocess — uses your Claude Code session,
     no separate API key required."""
 
-    def __init__(self):
+    DEFAULT_MODEL = 'claude-opus-4-20250514'
+
+    def __init__(self, model: str = ''):
         self._history: list = []
         self._busy = False
+        self._model: str = model or self.DEFAULT_MODEL
         self._claude_exe: Optional[str] = self._find_claude()
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @model.setter
+    def model(self, value: str):
+        self._model = value or self.DEFAULT_MODEL
 
     @staticmethod
     def _find_claude() -> Optional[str]:
@@ -994,6 +1023,7 @@ class AIAssistant:
         cmd = [
             self._claude_exe,
             "--no-session-persistence",
+            "--model", self._model,
             "--system-prompt", system,
             "--output-format", "text",
             "-p", prompt,
@@ -1400,6 +1430,56 @@ class AIAssistant:
                 ui_queue.put(lambda e=exc: on_error(str(e)))
             finally:
                 self._busy = False
+        threading.Thread(target=run, daemon=True).start()
+
+    def determine_variables(self, node_texts: list, variables: list,
+                            ui_queue: queue.SimpleQueue, on_done, on_error):
+        """Analyze node texts and assign variable values via AI.
+
+        node_texts: list of (node_id, text) tuples
+        variables:  script.variables list [{"name": ..., "description": ...}, ...]
+        on_done:    called with {node_id: {"var_name": float, ...}, ...}
+        """
+        if self._busy:
+            return
+        self._busy = True
+
+        BATCH_SIZE = 30
+
+        def run():
+            try:
+                all_results = {}
+                for i in range(0, len(node_texts), BATCH_SIZE):
+                    batch = node_texts[i:i + BATCH_SIZE]
+                    parts = ['STORY VARIABLES (each 0.0–1.0):']
+                    for v in variables:
+                        parts.append(f'  "{v["name"]}": {v["description"]}')
+                    parts.append('')
+                    parts.append(f'NODES TO ANALYZE ({len(batch)}):')
+                    for nid, text in batch:
+                        parts.append(f'  [{nid}]: "{text}"')
+                    prompt = '\n'.join(parts)
+
+                    raw = self._run_claude(SYSTEM_DETERMINE_VARS, prompt)
+                    match = re.search(r'\{.*\}', raw, re.DOTALL)
+                    if not match:
+                        continue
+                    data = json.loads(match.group(0))
+                    if isinstance(data, dict):
+                        all_results.update(data)
+
+                    batch_num = i // BATCH_SIZE + 1
+                    total_batches = (len(node_texts) + BATCH_SIZE - 1) // BATCH_SIZE
+                    if total_batches > 1:
+                        ui_queue.put(lambda b=batch_num, t=total_batches:
+                            None)  # progress tracked in status bar by caller
+
+                ui_queue.put(lambda r=all_results: on_done(r))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+
         threading.Thread(target=run, daemon=True).start()
 
 
@@ -3172,95 +3252,192 @@ def _layout_vertical(script: ScriptData) -> dict:
 
 
 def _layout_tree(script: ScriptData) -> dict:
-    """Hierarchical tree: roots on left, children spread vertically beside parent."""
+    """Hierarchical tree layout: roots on left, children beside parent.
+
+    Lays out each root's subtree independently, then stacks the subtrees
+    with visible gaps between them.  Within a subtree, parents are centered
+    on their children.  Shared nodes (merge points reached from multiple
+    roots) are assigned to their first root's subtree.
+    """
     nodes = script.nodes
     if not nodes:
         return {}
-    children = {nid: [t for t in nd.get("next", []) if t in nodes]
-                for nid, nd in nodes.items()}
-    parents: dict = defaultdict(list)
-    for nid, kids in children.items():
+
+    # ── Build graph ──
+    children_map = {nid: [t for t in nd.get("next", []) if t in nodes]
+                    for nid, nd in nodes.items()}
+    parent_map: dict = defaultdict(list)
+    for nid, kids in children_map.items():
         for kid in kids:
-            parents[kid].append(nid)
-    in_deg = {nid: len(parents[nid]) for nid in nodes}
+            parent_map[kid].append(nid)
+
+    # ── Topological sort (Kahn's) ──
+    in_deg = {nid: len(parent_map[nid]) for nid in nodes}
     q = deque(nid for nid in nodes if in_deg[nid] == 0)
     topo: list = []
     while q:
-        nid = q.popleft(); topo.append(nid)
-        for kid in children[nid]:
+        nid = q.popleft()
+        topo.append(nid)
+        for kid in children_map[nid]:
             in_deg[kid] -= 1
-            if in_deg[kid] == 0: q.append(kid)
-    topo.extend(nid for nid in nodes if nid not in set(topo))
+            if in_deg[kid] == 0:
+                q.append(kid)
+    topo_set = set(topo)
+    topo.extend(nid for nid in nodes if nid not in topo_set)
+
+    # ── Assign depth (column) — longest path from any root ──
     depth: dict = {nid: 0 for nid in nodes}
     for nid in topo:
-        for kid in children[nid]:
+        for kid in children_map[nid]:
             depth[kid] = max(depth[kid], depth[nid] + 1)
 
+    # ── Identify roots and partition into subtrees ──
+    roots = [nid for nid in topo if not parent_map[nid]]
+    if not roots:
+        roots = [topo[0]]  # cycle fallback
+
+    # BFS from each root to claim nodes into subtrees (first root wins)
+    subtree_nodes: dict = {}  # root -> [nodes in topo order]
+    claimed = set()
+    for root in roots:
+        members = []
+        visit_q = deque([root])
+        while visit_q:
+            nid = visit_q.popleft()
+            if nid in claimed or nid not in nodes:
+                continue
+            claimed.add(nid)
+            members.append(nid)
+            for kid in children_map.get(nid, []):
+                if kid not in claimed:
+                    visit_q.append(kid)
+        if members:
+            # Sort members in topo order for consistent processing
+            member_set = set(members)
+            subtree_nodes[root] = [n for n in topo if n in member_set]
+
+    # Catch any orphans not reached from any root
+    unclaimed = [nid for nid in topo if nid not in claimed]
+    if unclaimed:
+        subtree_nodes['__orphans__'] = unclaimed
+
     NODE_W, NODE_H = 260, 115
+    MIN_GAP = 1.0        # minimum vertical slots between nodes in same column
+    SUBTREE_GAP = 2.5    # extra gap between separate subtrees
 
-    # Count UNIQUE leaf nodes reachable from each node.
-    # Using frozensets prevents double-counting when DAG paths converge.
-    reachable: dict = {}
-    for nid in reversed(topo):
-        kids = [c for c in children[nid] if c in nodes]
-        if not kids:
-            reachable[nid] = frozenset([nid])
-        else:
-            s: frozenset = frozenset()
-            for k in kids:
-                s = s | reachable.get(k, frozenset([k]))
-            reachable[nid] = s
-    leaf_count = {nid: max(1, len(reachable[nid])) for nid in nodes}
+    # ── Layout helper: lay out one subtree, returns y_pos dict (0-based) ──
+    def _layout_subtree(member_list):
+        members = set(member_list)
+        sub_topo = [n for n in topo if n in members]
 
-    # Allocate a contiguous y range to every node.
-    # Roots get sequential ranges with a small gap between them.
-    # Each node divides its range among children proportionally.
-    ROOT_GAP = 0.25
-    y_ranges: dict = {}
-    y_cursor = 0.0
-    for nid in topo:
-        if not parents[nid]:
-            size = leaf_count[nid]
-            y_ranges[nid] = (y_cursor, y_cursor + size)
-            y_cursor += size + ROOT_GAP
+        # Group by depth
+        sub_by_depth = defaultdict(list)
+        for nid in sub_topo:
+            sub_by_depth[depth[nid]].append(nid)
+        sub_max_depth = max((depth[n] for n in members), default=0)
 
-    for nid in topo:
-        if nid not in y_ranges:
-            continue
-        y_lo, y_hi = y_ranges[nid]
-        kids = [c for c in children[nid] if c in nodes]
-        if not kids:
-            continue
-        counts = [leaf_count.get(k, 1) for k in kids]
-        total  = sum(counts) or 1
-        span   = y_hi - y_lo
-        y = y_lo
-        for kid, cnt in zip(kids, counts):
-            kid_hi = y + span * cnt / total
-            if kid not in y_ranges:
-                y_ranges[kid] = (y, kid_hi)
-            y = kid_hi
+        y = {}
 
-    # Place each node at the midpoint of its allocated range
+        # Place leaves first (deepest to shallowest)
+        for d in range(sub_max_depth, -1, -1):
+            col = sub_by_depth.get(d, [])
+            if not col:
+                continue
+
+            # Sort by parent position (if placed) then child index
+            def _key(nid):
+                pars = [p for p in parent_map.get(nid, []) if p in members and p in y]
+                if pars:
+                    par = pars[0]
+                    par_y = y[par]
+                    try:
+                        idx = children_map[par].index(nid)
+                    except ValueError:
+                        idx = 0
+                    return (par_y, idx)
+                return (0, sub_topo.index(nid) if nid in members else 0)
+
+            col.sort(key=_key)
+
+            for nid in col:
+                if nid in y:
+                    continue
+                kids = [k for k in children_map.get(nid, []) if k in y and k in members]
+                if kids:
+                    # Center on children
+                    y[nid] = sum(y[k] for k in kids) / len(kids)
+                else:
+                    # Stack at next available position
+                    y[nid] = 0.0
+
+            # Collision resolution for this column
+            col.sort(key=lambda n: y.get(n, 0))
+            for i in range(1, len(col)):
+                min_y = y[col[i - 1]] + MIN_GAP
+                if y[col[i]] < min_y:
+                    y[col[i]] = min_y
+
+        # Forward centroid pass — re-center parents on children
+        for d in range(sub_max_depth + 1):
+            for nid in sub_by_depth.get(d, []):
+                kids = [k for k in children_map.get(nid, []) if k in y and k in members]
+                if kids:
+                    y[nid] = sum(y[k] for k in kids) / len(kids)
+
+        # Collision resolution again
+        for d in range(sub_max_depth + 1):
+            col = sub_by_depth.get(d, [])
+            col.sort(key=lambda n: y.get(n, 0))
+            for i in range(1, len(col)):
+                min_y = y[col[i - 1]] + MIN_GAP
+                if y[col[i]] < min_y:
+                    y[col[i]] = min_y
+
+        # Backward centroid pass
+        for d in range(sub_max_depth, -1, -1):
+            for nid in sub_by_depth.get(d, []):
+                kids = [k for k in children_map.get(nid, []) if k in y and k in members]
+                if kids:
+                    y[nid] = sum(y[k] for k in kids) / len(kids)
+
+        # Final collision resolution
+        for d in range(sub_max_depth + 1):
+            col = sub_by_depth.get(d, [])
+            col.sort(key=lambda n: y.get(n, 0))
+            for i in range(1, len(col)):
+                min_y = y[col[i - 1]] + MIN_GAP
+                if y[col[i]] < min_y:
+                    y[col[i]] = min_y
+
+        # Normalize so minimum y is 0
+        if y:
+            min_val = min(y.values())
+            for nid in y:
+                y[nid] -= min_val
+
+        return y
+
+    # ── Lay out each subtree and stack with gaps ──
     y_pos: dict = {}
-    for nid in nodes:
-        if nid in y_ranges:
-            lo, hi = y_ranges[nid]
-            y_pos[nid] = (lo + hi) / 2
-        else:
-            y_pos[nid] = y_cursor
-            y_cursor += 1
+    y_offset = 0.0
 
-    # Collision pass: ensure at least 1 slot gap within each depth column
-    by_depth: dict = defaultdict(list)
+    for root in list(subtree_nodes.keys()):
+        members = subtree_nodes[root]
+        sub_y = _layout_subtree(members)
+
+        # Shift this subtree down by the current offset
+        for nid, val in sub_y.items():
+            y_pos[nid] = val + y_offset
+
+        # Advance offset past this subtree
+        if sub_y:
+            y_offset += max(sub_y.values()) + SUBTREE_GAP
+
+    # Place any still-unplaced nodes
     for nid in nodes:
-        by_depth[depth[nid]].append(nid)
-    for col_nodes in by_depth.values():
-        col_nodes.sort(key=lambda n: y_pos.get(n, 0))
-        for i in range(1, len(col_nodes)):
-            min_y = y_pos[col_nodes[i - 1]] + 0.85
-            if y_pos[col_nodes[i]] < min_y:
-                y_pos[col_nodes[i]] = min_y
+        if nid not in y_pos:
+            y_pos[nid] = y_offset
+            y_offset += MIN_GAP
 
     result: dict = {}
     for nid in nodes:
@@ -3281,7 +3458,8 @@ class _GraphViewHoverFilter(QObject):
 
     def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None,
                  on_delete_pipes=None, on_mouse_move=None, on_deselect=None,
-                 get_selected=None, on_restore_selection=None, parent=None):
+                 get_selected=None, on_restore_selection=None,
+                 on_marquee_select=None, viewer=None, parent=None):
         super().__init__(parent)
         self._get_node = get_node_at_pos
         self._on_enter = on_enter
@@ -3292,13 +3470,71 @@ class _GraphViewHoverFilter(QObject):
         self._on_deselect = on_deselect
         self._get_selected = get_selected
         self._on_restore_selection = on_restore_selection
+        self._on_marquee_select = on_marquee_select
+        self._viewer = viewer
         self._current: Optional[str] = None
+
+        # ── Marquee (rubber-band) selection state ──
+        self._marquee_origin: Optional[object] = None   # QPointF scene coords
+        self._marquee_rect: Optional[QGraphicsRectItem] = None
+
+    def _start_marquee(self, scene_pos):
+        """Begin a rubber-band selection rectangle at *scene_pos*."""
+        scene = self._viewer.scene() if self._viewer else None
+        if not scene:
+            return
+        self._marquee_origin = scene_pos
+        rect_item = QGraphicsRectItem(QRectF(scene_pos, scene_pos))
+        rect_item.setPen(QPen(QColor(100, 150, 255), 1, Qt.PenStyle.DashLine))
+        rect_item.setBrush(QBrush(QColor(100, 150, 255, 30)))
+        rect_item.setZValue(999999)
+        scene.addItem(rect_item)
+        self._marquee_rect = rect_item
+
+    def _update_marquee(self, scene_pos):
+        """Resize the marquee rectangle to the current mouse position."""
+        if self._marquee_rect and self._marquee_origin:
+            self._marquee_rect.setRect(
+                QRectF(self._marquee_origin, scene_pos).normalized()
+            )
+
+    def _finish_marquee(self):
+        """Complete the marquee drag — select enclosed nodes and clean up."""
+        if not self._marquee_rect:
+            return
+        final_rect = self._marquee_rect.rect()
+        scene = self._marquee_rect.scene()
+        if scene:
+            scene.removeItem(self._marquee_rect)
+        self._marquee_rect = None
+        self._marquee_origin = None
+
+        if self._on_marquee_select:
+            self._on_marquee_select(final_rect)
+
+    def _cancel_marquee(self):
+        """Discard an in-progress marquee without selecting."""
+        if self._marquee_rect:
+            scene = self._marquee_rect.scene()
+            if scene:
+                scene.removeItem(self._marquee_rect)
+        self._marquee_rect = None
+        self._marquee_origin = None
 
     def eventFilter(self, obj, event):
         t = event.type()
+
+        # ── Mouse move: update marquee if dragging, else do hover tracking ──
         if t == QEvent.Type.MouseMove:
+            if self._marquee_origin is not None:
+                try:
+                    scene_pos = obj.parent().mapToScene(event.position().toPoint())
+                    self._update_marquee(scene_pos)
+                except Exception:
+                    pass
+                return True  # suppress other handling while dragging marquee
+
             if self._on_mouse_move:
-                viewer = obj.parent() if hasattr(obj, 'parent') else None
                 try:
                     scene_pos = obj.parent().mapToScene(event.position().toPoint())
                     self._on_mouse_move(scene_pos)
@@ -3311,6 +3547,8 @@ class _GraphViewHoverFilter(QObject):
                 self._current = node_id
                 if node_id:
                     self._on_enter(node_id)
+
+        # ── Mouse press ──
         elif t == QEvent.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.RightButton and self._on_right_click:
                 node_id = self._get_node(event.position().toPoint())
@@ -3319,7 +3557,30 @@ class _GraphViewHoverFilter(QObject):
             if event.button() == Qt.MouseButton.LeftButton:
                 node_id = self._get_node(event.position().toPoint())
                 if not node_id:
-                    # Suppress single left-click on empty canvas — require double-click to deselect
+                    # Check if a pipe (connection line) is near the cursor
+                    pipe_item = None
+                    try:
+                        scene_pos = obj.parent().mapToScene(event.position().toPoint())
+                        # Use a small area for easier pipe clicking
+                        hit_area = QRectF(scene_pos.x() - 6, scene_pos.y() - 6, 12, 12)
+                        for item in obj.parent().scene().items(hit_area):
+                            if 'Pipe' in type(item).__name__:
+                                pipe_item = item
+                                break
+                    except Exception:
+                        pass
+                    if pipe_item:
+                        # Clear other selections and toggle this pipe
+                        for it in obj.parent().scene().selectedItems():
+                            it.setSelected(False)
+                        pipe_item.setSelected(True)
+                        return True
+                    # Empty canvas — start marquee selection
+                    try:
+                        scene_pos = obj.parent().mapToScene(event.position().toPoint())
+                        self._start_marquee(scene_pos)
+                    except Exception:
+                        pass
                     return True
             if event.button() == Qt.MouseButton.MiddleButton:
                 node_id = self._get_node(event.position().toPoint())
@@ -3332,6 +3593,13 @@ class _GraphViewHoverFilter(QObject):
             if self._current:
                 self._on_leave(self._current)
                 self._current = None
+
+        # ── Mouse release: finish marquee if active ──
+        elif t == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton and self._marquee_origin is not None:
+                self._finish_marquee()
+                return True
+
         elif t == QEvent.Type.MouseButtonDblClick:
             if event.button() == Qt.MouseButton.LeftButton:
                 node_id = self._get_node(event.position().toPoint())
@@ -3341,6 +3609,7 @@ class _GraphViewHoverFilter(QObject):
             if self._current:
                 self._on_leave(self._current)
                 self._current = None
+            self._cancel_marquee()
         elif t == QEvent.Type.KeyPress and self._on_delete_pipes:
             from PySide6.QtCore import Qt as _Qt
             if event.key() in (_Qt.Key.Key_Delete, _Qt.Key.Key_Backspace):
@@ -3661,10 +3930,12 @@ class ArcEditorDialog(QDialog):
             after = set(self.script.nodes.keys())
             seed_ids = after - before
             intro_beat = arc_beats.get('intro', '')
-            if intro_beat:
-                for nid in seed_ids:
-                    if nid in self.script.nodes:
+            for nid in seed_ids:
+                if nid in self.script.nodes:
+                    if intro_beat:
                         self.script.nodes[nid]['arc_beat'] = intro_beat
+                    # Mark seed/intro nodes as start nodes
+                    self.script.set_start(nid, True)
             self._append_chat('assistant', f'Seed: {", ".join(sorted(seed_ids))}')
             self.chat_status.setText(f'Seed done ({len(seed_ids)} nodes). Expanding…')
             self._arc_expand_frontier(0, generation_set=seed_ids,
@@ -3903,6 +4174,8 @@ class MainWindow(QMainWindow):
             on_deselect=self.graph.clear_selection,
             get_selected=lambda: self._selected_node_id,
             on_restore_selection=self._select_node,
+            on_marquee_select=self._on_marquee_select,
+            viewer=self.graph.viewer(),
         )
         # Events land on the viewport, not the view itself
         self.graph.viewer().viewport().installEventFilter(self._graph_hover_filter)
@@ -4080,6 +4353,30 @@ class MainWindow(QMainWindow):
         act_vars.triggered.connect(self._cmd_open_story_variables)
         story_menu.addAction(act_vars)
 
+        act_det_vars = QAction("Determine Variables", self)
+        act_det_vars.setShortcut("Ctrl+Shift+D")
+        act_det_vars.triggered.connect(self._cmd_determine_variables)
+        story_menu.addAction(act_det_vars)
+
+        story_menu.addSeparator()
+        model_menu = story_menu.addMenu("AI Model")
+        self._model_actions = {}
+        for model_id in [
+            'claude-sonnet-4-20250514',
+            'claude-opus-4-20250514',
+            'claude-haiku-3-5-20241022',
+        ]:
+            short = model_id.split('-')[1].capitalize()  # Sonnet / Opus / Haiku
+            act = QAction(short, self, checkable=True)
+            act.setData(model_id)
+            act.triggered.connect(lambda checked, m=model_id: self._set_ai_model(m))
+            model_menu.addAction(act)
+            self._model_actions[model_id] = act
+        # Check the default
+        default_act = self._model_actions.get(self.ai.model)
+        if default_act:
+            default_act.setChecked(True)
+
         # Analysis menu
         analysis_menu = menubar.addMenu("Analysis")
         act_freq = QAction("Toggle Frequency Heat Map", self)
@@ -4198,6 +4495,70 @@ class MainWindow(QMainWindow):
         self.script.set_story_context(full_edit.toPlainText())
         self.script.set_story_context_focused(focused_edit.toPlainText())
         self._update_title()
+
+    def _set_ai_model(self, model_id: str):
+        """Switch the AI model used for node generation."""
+        self.ai.model = model_id
+        for mid, act in self._model_actions.items():
+            act.setChecked(mid == model_id)
+        short = model_id.split('-')[1].capitalize()
+        self.status_bar.showMessage(f"AI model: {short}", 3000)
+
+    def _cmd_determine_variables(self):
+        """Use AI to infer variable values for nodes that have all-zero vars."""
+        variables = self.script.variables
+        if not variables:
+            self.status_bar.showMessage("No story variables defined — use Story → Story Variables first")
+            return
+        if not self.ai.ready:
+            self.status_bar.showMessage("Claude CLI not found")
+            return
+        if self.ai.busy:
+            self.status_bar.showMessage("AI is busy — wait for current task to finish")
+            return
+
+        var_names = [v['name'] for v in variables]
+        # Collect nodes where ALL variable values are zero (or missing)
+        candidates = []
+        for nid, nd in self.script.nodes.items():
+            node_vars = nd.get('vars', {})
+            if not any(node_vars.get(vn, 0.0) != 0.0 for vn in var_names):
+                text = nd.get('text', '').strip()
+                if text:
+                    candidates.append((nid, text))
+
+        if not candidates:
+            self.status_bar.showMessage("All nodes already have variable values set")
+            return
+
+        self.status_bar.showMessage(f"Determining variables for {len(candidates)} nodes…")
+
+        def on_done(results):
+            count = 0
+            for nid, var_vals in results.items():
+                if nid not in self.script.nodes or not isinstance(var_vals, dict):
+                    continue
+                nd = self.script.nodes[nid]
+                node_vars = nd.setdefault('vars', {})
+                for vn in var_names:
+                    val = var_vals.get(vn)
+                    if val is not None:
+                        try:
+                            node_vars[vn] = max(0.0, min(1.0, float(val)))
+                        except (ValueError, TypeError):
+                            pass
+                count += 1
+            self.script._dirty = True
+            self._update_title()
+            # Refresh properties panel if the selected node was updated
+            if self._selected_node_id and self._selected_node_id in results:
+                self.props_panel.load_node(self.script, self._selected_node_id)
+            self.status_bar.showMessage(f"Variables set for {count} nodes")
+
+        def on_error(e):
+            self.status_bar.showMessage(f"Determine variables error: {str(e)[:80]}")
+
+        self.ai.determine_variables(candidates, variables, self.ui_queue, on_done, on_error)
 
     def _cmd_open_story_variables(self):
         """Open dialog to define up to 4 story-level variables."""
@@ -4731,11 +5092,13 @@ class MainWindow(QMainWindow):
             act_freq.triggered.connect(lambda: self._freq_btn.setChecked(not self._freq_btn.isChecked()))
 
             menu.addSeparator()
-            act_tree = menu.addAction("Apply Tree Layout")
+            act_tree = QAction("Apply Tree Layout", menu)
             act_tree.triggered.connect(self._cmd_apply_tree_layout)
+            menu.addAction(act_tree)
 
-            act_fit = menu.addAction("Fit View")
+            act_fit = QAction("Fit View", menu)
             act_fit.triggered.connect(self._cmd_fit_view)
+            menu.addAction(act_fit)
 
         menu.exec(global_pos)
 
@@ -4747,6 +5110,46 @@ class MainWindow(QMainWindow):
             self.props_panel.load_node(self.script, node_id)
             self._selected_node_id = node_id
             self._apply_highlight(node_id)
+
+    def _on_marquee_select(self, scene_rect):
+        """Handle completion of a marquee drag — select all nodes and pipes within *scene_rect*."""
+        self.graph.clear_selection()
+        # Also deselect any pipes
+        for it in self.graph.viewer().scene().selectedItems():
+            it.setSelected(False)
+
+        selected_ids = []
+        for nid, node in self._node_items.items():
+            item = node.view
+            if item and scene_rect.intersects(item.sceneBoundingRect()):
+                node.set_selected(True)
+                selected_ids.append(nid)
+
+        # Select pipes (connections) that intersect the marquee
+        selected_pipes = 0
+        for item in self.graph.viewer().scene().items():
+            if 'Pipe' in type(item).__name__:
+                if scene_rect.intersects(item.sceneBoundingRect()):
+                    item.setSelected(True)
+                    selected_pipes += 1
+
+        if len(selected_ids) == 1 and selected_pipes == 0:
+            self._select_node(selected_ids[0])
+        elif selected_ids or selected_pipes:
+            self._selected_node_id = None
+            self.props_panel.clear()
+            self._clear_highlight()
+            parts = []
+            if selected_ids:
+                parts.append(f"{len(selected_ids)} node{'s' if len(selected_ids) != 1 else ''}")
+            if selected_pipes:
+                parts.append(f"{selected_pipes} connection{'s' if selected_pipes != 1 else ''}")
+            self.status_bar.showMessage(f"{' + '.join(parts)} selected — press Delete to remove")
+        else:
+            self._selected_node_id = None
+            self.props_panel.clear()
+            self._clear_highlight()
+            self.status_bar.showMessage("")
 
     def _toggle_start_node(self, node_id: str):
         is_start = node_id in self.script.start_nodes
@@ -5104,27 +5507,70 @@ class MainWindow(QMainWindow):
         )
 
     def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
-        """Monte Carlo random walk. Returns {node_id: visit_count}."""
+        """Monte Carlo random walk with recency damping.
+
+        Estimates each node's audio duration from word count (121 wpm) plus a
+        3 s inter-node delay.  Tracks simulated time so recency counters decay
+        at the same rate as the real player (1 count per 7200 s).
+        """
         nodes = self.script.nodes
         starts = self.script.start_nodes or list(nodes.keys())
         counts = {nid: 0 for nid in nodes}
+
+        INTER_NODE_DELAY = 3.0          # seconds between nodes
+        WPM              = 121.0        # measured speech rate
+        DECAY_PER_SEC    = 1.0 / 7200.0 # matches narrative_player
+
+        # Pre-compute estimated duration for each node (speech + delay)
+        node_dur = {}
+        for nid, nd in nodes.items():
+            words = len(nd.get('text', '').split())
+            node_dur[nid] = (words / WPM) * 60.0 + INTER_NODE_DELAY
+
         for _ in range(n_runs):
             current = random.choice(starts)
             steps = 0
+            recency: dict = {}
+            sim_time = 0.0
             while current and steps < 300:
                 if current not in nodes:
                     break
                 counts[current] += 1
+
+                # Advance simulated clock and decay recency
+                dt = node_dur.get(current, INTER_NODE_DELAY)
+                sim_time += dt
+                decay = DECAY_PER_SEC * dt
+                if recency:
+                    expired = []
+                    for rid in recency:
+                        recency[rid] -= decay
+                        if recency[rid] <= 0.0:
+                            expired.append(rid)
+                    for rid in expired:
+                        del recency[rid]
+
+                # Record visit
+                recency[current] = recency.get(current, 0.0) + 1.0
+
                 nd = nodes[current]
                 nexts = nd.get('next', [])
                 weights = nd.get('weights', [1.0] * len(nexts))
                 if not nexts:
                     break
-                total = sum(weights) or 1.0
+
+                # Apply recency penalty (same formula as narrative_player)
+                effective = []
+                for nid, w in zip(nexts, weights):
+                    if nid in recency:
+                        w *= 2.0 ** (-recency[nid])
+                    effective.append(w)
+
+                total = sum(effective) or 1.0
                 r = random.random() * total
                 acc = 0.0
                 nxt = nexts[-1]
-                for nid, w in zip(nexts, weights):
+                for nid, w in zip(nexts, effective):
                     acc += w
                     if r <= acc:
                         nxt = nid
