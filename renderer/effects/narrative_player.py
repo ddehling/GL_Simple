@@ -132,7 +132,7 @@ class NarrativePlayer(ShaderEffect):
         # plays; decays by 1/hour continuously.  Effective weight is
         # original_weight * 2^(-counter).
         self._recency: dict = {}   # node_id -> float
-        self._DECAY_PER_SEC: float = 1.0 / 3600.0  # lose 1 count per hour
+        self._DECAY_PER_SEC: float = 1.0 / 7200.0  # lose 1 count per 2 hours
 
         p = Path(script_path)
         if p.exists():
