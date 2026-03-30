@@ -676,7 +676,7 @@ class ScriptData:
 
     def update_text(self, node_id: str, text: str):
         if node_id in self._data["nodes"]:
-            self._data["nodes"][node_id]["text"] = text
+            self._data["nodes"][node_id]["text"] = _sanitize_tts(text)
             self.dirty = True
 
     def update_tags(self, node_id: str, tags: list):
@@ -759,6 +759,8 @@ class ScriptData:
         """Return a copy of `nodes` with IDs de-dashed and text TTS-sanitized."""
         clean = {}
         for nid, nd in nodes.items():
+            if not isinstance(nd, dict):
+                continue  # skip malformed entries
             safe_id = ScriptData._sanitize_id(nid)
             safe_nd = dict(nd)
             safe_nd['next'] = [ScriptData._sanitize_id(n) for n in nd.get('next', [])]
@@ -1018,6 +1020,36 @@ class AIAssistant:
             lines.append(f"{prefix}: {msg['content'][:500]}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_json(raw: str) -> dict:
+        """Extract the first balanced top-level JSON object from *raw* text."""
+        start = raw.find('{')
+        if start == -1:
+            raise ValueError("No JSON object found in response")
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if escape:
+                escape = False
+                continue
+            if ch == '\\' and in_string:
+                escape = True
+                continue
+            if ch == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return json.loads(raw[start:i + 1])
+        raise ValueError("Unbalanced braces in JSON response")
+
     def _run_claude(self, system: str, prompt: str) -> str:
         """Blocking call to `claude -p`. Raises on non-zero exit."""
         cmd = [
@@ -1115,11 +1147,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_GENERATE, full_prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON found in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda: on_error(f"JSON parse error: {exc}"))
@@ -1155,11 +1183,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_GENERATE_SEED, full_prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON found in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
@@ -1211,11 +1235,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_GENERATE_LAYER, full_prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON found in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
@@ -1309,11 +1329,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_EXPAND, prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON found in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
@@ -1356,11 +1372,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_CONTINUE, full_prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON found in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
@@ -1390,11 +1402,7 @@ class AIAssistant:
         def run():
             try:
                 raw   = self._run_claude(SYSTEM_REWRITE, full_prompt)
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if not match:
-                    ui_queue.put(lambda: on_error("No JSON in response"))
-                    return
-                data = json.loads(match.group(0))
+                data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
@@ -1461,10 +1469,10 @@ class AIAssistant:
                     prompt = '\n'.join(parts)
 
                     raw = self._run_claude(SYSTEM_DETERMINE_VARS, prompt)
-                    match = re.search(r'\{.*\}', raw, re.DOTALL)
-                    if not match:
+                    try:
+                        data = self._extract_json(raw)
+                    except (ValueError, json.JSONDecodeError):
                         continue
-                    data = json.loads(match.group(0))
                     if isinstance(data, dict):
                         all_results.update(data)
 
@@ -4129,6 +4137,11 @@ class MainWindow(QMainWindow):
         self.graph.nodes_deleted.connect(self._on_nodes_deleted)
         self.graph.scene().selectionChanged.connect(self._on_selection_changed)
 
+        # Autosave every 60 seconds if dirty and file has a save path
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start(60_000)
+
         # Set contexts
         self.props_panel.set_context(self.script, self.vm, self.ai, self.ui_queue)
         self.props_panel.refresh_variable_widgets()
@@ -4789,17 +4802,21 @@ class MainWindow(QMainWindow):
                 self._node_items[node_id] = node
             for from_id, nd in self.script.nodes.items():
                 for to_id in nd.get('next', []):
-                    if to_id in self._node_items:
-                        self._node_items[from_id].output(0).connect_to(
-                            self._node_items[to_id].input(0)
-                        )
+                    if to_id in self._node_items and from_id in self._node_items:
+                        try:
+                            self._node_items[from_id].output(0).connect_to(
+                                self._node_items[to_id].input(0)
+                            )
+                        except Exception:
+                            pass
         finally:
             self.graph.port_connected.connect(self._on_port_connected)
             self.graph.port_disconnected.connect(self._on_port_disconnected)
             self.graph.nodes_deleted.connect(self._on_nodes_deleted)
-        # Reset hover filter's current node after rebuild
+        # Reset hover filter state after rebuild — stale refs would segfault
         if hasattr(self, '_graph_hover_filter'):
             self._graph_hover_filter._current = None
+            self._graph_hover_filter._cancel_marquee()
         self._refresh_cycle_markers()
         # Node views were recreated — drop stale overlay refs and re-apply if search is active
         self._search_overlays.clear()
@@ -5774,6 +5791,16 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._load_script(Path(path))
+
+    def _autosave(self):
+        """Silently save if dirty and a file path exists."""
+        if self.script.dirty and self.script.path:
+            try:
+                self._sync_positions()
+                self.script.save()
+                self._update_title()
+            except Exception:
+                pass  # autosave should never interrupt the user
 
     def _cmd_save(self):
         self._sync_positions()
