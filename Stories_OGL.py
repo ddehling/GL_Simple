@@ -22,6 +22,12 @@ def load_config():
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "device_name": "TONOR"},
         "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
+        "dmx": {"receivers": [
+            {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
+            {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
+            {"ip": "192.168.68.142", "columns": 32, "column_offset": 64},
+            {"ip": "192.168.68.143", "columns": 32, "column_offset": 96},
+        ]},
     }
     if config_path.exists():
         with open(config_path, "r") as f:
@@ -42,34 +48,23 @@ class EnvironmentalSystem:
         disp = cfg["display"]
         audio_cfg = cfg["audio"]
         web_cfg = cfg["web"]
+        dmx_cfg = cfg["dmx"]
 
         frame_dimensions = [
             (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
         ]
 
-        # Hardware receiver configuration — one list per frame
+        # Hardware receiver configuration — built from config.yaml
         receivers = [
             [
                 {
-                    'ip': '192.168.68.140',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
-                },
-                {
-                    'ip': '192.168.68.141',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
-                },
-                {
-                    'ip': '192.168.68.142',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
-                },
-                {
-                    'ip': '192.168.68.143',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
-                },
+                    'ip': rx['ip'],
+                    'pixel_count': disp["height"] * rx['columns'],
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(
+                        rx['columns'], disp["height"], rx['column_offset']
+                    ),
+                }
+                for rx in dmx_cfg['receivers']
             ],
         ]
 

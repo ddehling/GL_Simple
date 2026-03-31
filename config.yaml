@@ -15,3 +15,22 @@ web:
   enabled: true
   port: 5000
   admin_password: "admin123"
+
+dmx:
+  receivers:
+    - ip: "192.168.68.140"
+      columns: 32
+      column_offset: 0
+    - ip: "192.168.68.141"
+      columns: 32
+      column_offset: 32
+    - ip: "192.168.68.142"
+      columns: 32
+      column_offset: 64
+    - ip: "192.168.68.143"
+      columns: 32
+      column_offset: 96
+    # Example: Raspberry Pi test receiver
+    # - ip: "192.168.0.155"
+    #   columns: 32
+    #   column_offset: 0
