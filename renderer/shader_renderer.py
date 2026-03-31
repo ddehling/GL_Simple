@@ -32,7 +32,7 @@ _egl_available = False
 try:
     from OpenGL import EGL as _EGL
     _egl_available = True
-except ImportError:
+except (ImportError, OSError):
     _EGL = None
 
 
