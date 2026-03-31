@@ -21,8 +21,8 @@ def load_config():
     defaults = {
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "device_name": "TONOR"},
-        "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
-        "dmx": {"receivers": [
+        "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
+        "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
             {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
             {"ip": "192.168.68.142", "columns": 32, "column_offset": 64},
@@ -73,6 +73,7 @@ class EnvironmentalSystem:
             receivers=receivers,
             magnification=disp["magnification"],
             headless=disp["headless"],
+            dmx_bind_ip=dmx_cfg.get("bind_ip", ""),
         )
         self.weather_state = WeatherStateController()
         self.season = 0.0
@@ -107,6 +108,7 @@ class EnvironmentalSystem:
                 port=web_cfg["port"],
                 service_name="glsimple",
                 admin_password=web_cfg["admin_password"],
+                bind_ip=web_cfg.get("bind_ip", ""),
             )
             self.web_controller.start(threaded=True)
         

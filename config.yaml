@@ -15,8 +15,10 @@ web:
   enabled: true
   port: 5000
   admin_password: "admin123"
+  bind_ip: "192.168.0.236"  # Advertise mDNS (glsimple.local) on this interface only
 
 dmx:
+  bind_ip: "192.168.0.236"  # Send DMX from this interface (wired network)
   receivers:
     - ip: "192.168.68.140"
       columns: 32

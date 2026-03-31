@@ -36,7 +36,8 @@ class RenderPipeline:
     """
 
     def __init__(self, frame_dimensions: list, receivers: list,
-                 magnification: int = 1, headless: bool = False):
+                 magnification: int = 1, headless: bool = False,
+                 dmx_bind_ip: str = ""):
         self._scheduler = EventScheduler()
         self.should_exit = False
         self._cleaned_up = False
@@ -97,6 +98,7 @@ class RenderPipeline:
             sender = imdmx.SACNPixelSender(
                 frame_receivers, skip_network=False,
                 use_raw_udp=True, per_receiver_universe=True,
+                bind_ip=dmx_bind_ip,
             )
             sender.enable_async_send()
             state['screens'].append(sender)
