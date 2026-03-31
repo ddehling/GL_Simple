@@ -801,7 +801,8 @@ class WebController:
         log.setLevel(logging.ERROR)
 
         self.socketio.run(self.app, host='0.0.0.0', port=self.port,
-                          debug=False, use_reloader=False, log_output=False)
+                          debug=False, use_reloader=False, log_output=False,
+                          allow_unsafe_werkzeug=True)
     
     def _register_mdns(self):
         """Register the service with mDNS/Bonjour for easy discovery."""
