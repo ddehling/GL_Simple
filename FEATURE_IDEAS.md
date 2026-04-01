@@ -2,38 +2,36 @@
 
 ## Prioritized for Unscruz
 
-- Stories work
-  - Narration system should be wired in with a specific volume control
-  - Being able to scale its volume in comparison to everything else
-- Bartiki theme
+- Add volume control for Stories system
+  - Slider to scale the volume of the sound of the story system
+  - Scale to 0
+- Finalize Bartiki theme
   - No sounds
   - Droning of the bartiki mythos
   - Bart announcements, clipper, trains flying around
   - Work on the map where it is more dense
-- Existing sets
-  - Ocean: sounds are bad
-  - Full Spectrum
+- Finalize Ocean theme
+  - sounds are bad
+- Finalize Full Spectrum theme
+  - Think of it a little
 - Making existing shaders aware of r/theta
   - Momentum
   - Sizing
-- Physical build stuff
-  - Cut chains
+  - Try briefly to build a translation layer, but abandon quickly
+- Finish the build
   - Finish lightstrips
   - Test build
-- Label each box
+- Validate and label the boxes and data being sent correctly
     - 1, 2, 3, 4
     - Unique IP addresses
-    - Make sure the code sends to the right boxes
-- Go to the things we wanna play, play them for a while and just test that it all works
-- Confirmed pixels go out of every line; haven't confirmed they are the right pixels
-    - Make a test pattern that goes on a gradient down the pattern, next box more along the gradient, etc...
-    - Data to this box, change appropriate on line 1 and line 32
-- Ensure we haven't broken the underlying 2d array rendering
-- Control box
-  - Computer
-  - Router
-  - Network cables
-  - Don't have to assemble it on the box necessarily for Unscruz
+    - Make a pattern that lets us validate that data is being sent correctly.
+      - e.g. Validate that Box 1, Strip 13 is receiving the correct data for that strip
+    - Ensure we haven't broken the underlying 2d array rendering
+- Validate the computer and network setup
+  - Computer connected to router connected to switch connected to boxes
+  - Ensure the router is set up with DHCP to assign correct addresses for network boxes
+  - Have Router set static IP addresses to specific MAC addresses of each box
+  - (Optional) Assemble the actual box
   
 ## Backlog
 
