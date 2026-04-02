@@ -24,7 +24,9 @@ import textwrap
 import threading
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -53,6 +55,57 @@ SOUNDS_DIR = REPO_ROOT / "media" / "sounds"
 
 NODE_PREVIEW_LEN = 60        # chars shown inside a node box
 FOCUSED_CONTEXT_MAX = 1500  # max chars of story_context_focused sent to AI
+
+PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
+
+LAYER_ORDER = ['arrival', 'presence', 'curiosity', 'discovery', 'complication',
+               'intimacy', 'turn', 'consequence', 'echo', 'stillness']
+
+# Migration map: old 8-layer names → new 10-layer names
+_LAYER_MIGRATION = {
+    'intro': 'arrival', 'opening': 'presence', 'development': 'discovery',
+    'deepening': 'complication', 'bridge': 'intimacy', 'turn': 'turn',
+    'descent': 'consequence', 'resolution': 'stillness',
+}
+
+GENERATION_PROFILES = {
+    'full': {
+        'max_depth': 10,
+        # (min, max) children per parent — but total layer is capped by layer_caps
+        'widths': {
+            'arrival': (2, 4), 'presence': (2, 4), 'curiosity': (2, 3),
+            'discovery': (3, 5), 'complication': (2, 4), 'intimacy': (2, 3),
+            'turn': (2, 3), 'consequence': (1, 2), 'echo': (1, 2),
+            'stillness': (1, 2),
+        },
+        # Hard cap on total nodes at each layer (global, across all branches)
+        # Diamond shape: 2 branches, expand through discovery, gentle taper
+        'layer_caps': {
+            'arrival': 2, 'presence': 5, 'curiosity': 7,
+            'discovery': 12, 'complication': 10, 'intimacy': 9,
+            'turn': 8, 'consequence': 7, 'echo': 5, 'stillness': 5,
+        },
+    },
+    'continue': {
+        'max_depth': 10,
+        'widths': {
+            'arrival': (2, 4), 'presence': (2, 4), 'curiosity': (2, 3),
+            'discovery': (3, 5), 'complication': (2, 4), 'intimacy': (2, 3),
+            'turn': (2, 3), 'consequence': (1, 2), 'echo': (1, 2),
+            'stillness': (1, 2),
+        },
+        'layer_caps': {
+            'arrival': 2, 'presence': 5, 'curiosity': 7,
+            'discovery': 12, 'complication': 10, 'intimacy': 9,
+            'turn': 8, 'consequence': 7, 'echo': 5, 'stillness': 5,
+        },
+    },
+    'expand': {
+        'max_depth': 2,
+        'widths': {'*': (2, 5)},
+        'layer_caps': {},
+    },
+}
 
 # Characters that break TTS and their plain-text replacements.
 _TTS_REPLACEMENTS = [
@@ -112,14 +165,14 @@ OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanatio
 {
   "name": "Script name",
   "description": "One-line description",
-  "start_nodes": ["intro_a"],
+  "start_nodes": ["arrival_a"],
   "nodes": {
     "node_id": {
       "text": "Spoken text, 40-100 words.",
       "next": ["next_id"],
       "weights": [1.0],
-      "tags": ["intro"],
-      "voice_settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.2}
+      "tags": ["arrival"],
+      "voice_settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.1}
     }
   }
 }
@@ -144,18 +197,20 @@ To achieve this:
 - Read every path aloud as you write. If a transition sounds like a non-sequitur, rewrite
   the child node until the seam disappears.
 
-LAYER STRUCTURE (use as many layers as the content warrants, up to 8):
-  Layer 1 (intro)      : 1–3 nodes  — establish tone, place, or speaker
-  Layer 2 (opening)    : 2–4 nodes  — widen the scene, first impressions
-  Layer 3 (development): 3–6 nodes  — explore the theme from different angles
-  Layer 4 (deepening)  : 2–5 nodes  — go further, add texture or contrast
-  Layer 5 (bridge)     : 2–4 nodes  — transitional energy, shift is coming
-  Layer 6 (turn)       : 2–4 nodes  — complication, revelation, or emotional shift
-  Layer 7 (descent)    : 1–3 nodes  — lean into the change, consequences felt
-  Layer 8 (resolution) : 1–3 nodes  — landing, conclusion, or open question
+LAYER STRUCTURE (use as many layers as the content warrants, up to 10):
+  Layer 1  (arrival)     : 1–3 nodes  — pure sensory immersion
+  Layer 2  (presence)    : 2–4 nodes  — someone or something is here
+  Layer 3  (curiosity)   : 2–3 nodes  — something doesn't fit, or beckons
+  Layer 4  (discovery)   : 3–6 nodes  — the thing is encountered directly
+  Layer 5  (complication): 2–5 nodes  — it's not what it seemed
+  Layer 6  (intimacy)    : 2–3 nodes  — personal stakes, vulnerability
+  Layer 7  (turn)        : 2–4 nodes  — the emotional pivot
+  Layer 8  (consequence) : 1–3 nodes  — the weight of the turn
+  Layer 9  (echo)        : 1–2 nodes  — reverberations, connections to something larger
+  Layer 10 (stillness)   : 1–3 nodes  — rest, not closure
 
 For shorter scripts, skip layers or collapse them — a 4-layer script is fine.
-For longer scripts, use all 8 to create a full arc with genuine depth.
+For longer scripts, use all 10 to create a full arc with genuine depth.
 
 HARD LIMIT: generate no more than 12 nodes total. If the full arc needs more, compress layers,
 reduce siblings per layer, or end earlier — but never exceed 12 nodes.
@@ -165,11 +220,11 @@ MERGING:   multiple nodes in layer N may all point to the same node in layer N+1
            This creates convergence points — moments every path passes through.
 
 Good pattern:
-  intro → [open_a, open_b]             ← branch early
-  open_a, open_b → [dev_a, dev_b, dev_c]
-  dev_a, dev_b → [turn_x]              ← merge
-  dev_c        → [turn_y]
-  turn_x, turn_y → [close_a, close_b]  ← merge then branch again
+  arrival → [pres_a, pres_b]             ← branch early
+  pres_a, pres_b → [disc_a, disc_b, disc_c]
+  disc_a, disc_b → [turn_x]              ← merge
+  disc_c         → [turn_y]
+  turn_x, turn_y → [still_a, still_b]    ← merge then branch again
 
 Avoid:
   - Fully connected pools where every node points to every other node
@@ -179,11 +234,11 @@ Avoid:
 
 WEIGHTS: use 1.0 as default. Use 2.0 to favour a path, 0.5 to make it rare.
 TAGS: every node must have a tags array with:
-1. Exactly one layer tag: intro / opening / development / deepening / bridge / turn / descent / resolution
+1. Exactly one layer tag: arrival / presence / curiosity / discovery / complication / intimacy / turn / consequence / echo / stillness
 2. Custom tags for everything present in the node text — characters, themes, locations, objects, moods.
    Use short lowercase snake_case words. Reuse the same tag across nodes whenever the same element recurs.
    Examples: "crow", "test_anxiety", "linoleum", "waiting", "silence", "rain"
-node IDs: short_snake_case, layer-prefixed (e.g. "intro_storm", "dev_pride", "turn_silence", "res_still")
+node IDs: short_snake_case, layer-prefixed (e.g. "arrival_storm", "disc_pride", "turn_silence", "still_rest")
 
 VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
   stability      0.0–1.0  lower = more expressive/varied delivery
@@ -191,18 +246,20 @@ VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
   style          0.0–1.0  higher = more dramatic/theatrical
 
   Layer defaults:
-    intro       stability 0.65  style 0.10  (calm, orienting)
-    opening     stability 0.60  style 0.20  (settling in, atmospheric)
-    development stability 0.50  style 0.35  (engaged, exploring)
-    deepening   stability 0.45  style 0.45  (more invested, richer)
-    bridge      stability 0.45  style 0.40  (transitional energy)
+    arrival     stability 0.65  style 0.10  (calm, orienting)
+    presence    stability 0.60  style 0.15  (settling in, atmospheric)
+    curiosity   stability 0.55  style 0.25  (drawn in, questioning)
+    discovery   stability 0.50  style 0.35  (engaged, exploring)
+    complication stability 0.45  style 0.45  (more invested, richer)
+    intimacy    stability 0.40  style 0.50  (personal, vulnerable)
     turn        stability 0.30  style 0.65  (tense, expressive)
-    descent     stability 0.25  style 0.70  (intense, committed)
-    resolution  stability 0.60  style 0.15  (settled, reflective)
+    consequence stability 0.25  style 0.70  (intense, committed)
+    echo        stability 0.35  style 0.55  (resonant, reflective)
+    stillness   stability 0.60  style 0.15  (settled, at rest)
   Adjust within layer if the content is notably more or less intense than usual.
 
-TERMINAL NODES: resolution/ending nodes must have next: [].
-NEVER create edges that point back toward intro or start nodes.
+TERMINAL NODES: stillness/ending nodes must have next: [].
+NEVER create edges that point back toward arrival or start nodes.
 When a terminal node finishes playing, the runtime will automatically restart
 from a randomly chosen start_node — no explicit loop edges are needed or wanted.
 """
@@ -214,7 +271,8 @@ Scripts play as atmospheric spoken audio layered over weather and lighting effec
 Each node is one short spoken segment (40–100 words, ~15–35 seconds when read aloud).
 Use evocative, atmospheric language suited to the theme.
 
-Generate ONLY the intro layer — 1 to 3 opening nodes that establish the tone and world.
+Generate ONLY the arrival layer — exactly 2 opening nodes that establish pure sensory immersion.
+Each node should set up a DISTINCT story branch — different perspectives, locations, or characters.
 These are the first words the audience will hear. Leave "next" as [] for ALL nodes —
 subsequent layers will be generated separately in a follow-up step.
 
@@ -222,20 +280,20 @@ OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanatio
 {
   "name": "Script name",
   "description": "One-line description",
-  "start_nodes": ["intro_a"],
+  "start_nodes": ["arrival_a"],
   "nodes": {
-    "intro_a": {
+    "arrival_a": {
       "text": "Spoken text, 40-100 words.",
       "next": [],
       "weights": [],
-      "tags": ["intro"],
+      "tags": ["arrival"],
       "voice_settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.10}
     }
   }
 }
 
-Node IDs: short_snake_case, intro-prefixed (e.g. "intro_storm", "intro_silence").
-TAGS: "intro" plus custom content tags — characters, themes, locations, moods.
+Node IDs: short_snake_case, arrival-prefixed (e.g. "arrival_storm", "arrival_silence").
+TAGS: "arrival" plus custom content tags — characters, themes, locations, moods.
 VOICE SETTINGS: stability 0.65, similarity_boost 0.75, style 0.10 (calm, orienting).
 """
 
@@ -253,7 +311,7 @@ OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanatio
       "connect_from": ["source_id_a"],
       "next": [],
       "weights": [],
-      "tags": ["development"],
+      "tags": ["discovery"],
       "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35}
     }
   }
@@ -270,10 +328,10 @@ BRANCHING AND MERGING: vary the structure. Do not produce a 1:1 mapping of sourc
   source_b → [new_y, new_z]     (source_b shares new_y with source_a — merge)
 
 LAYER PROGRESSION:
-  intro → opening → development → deepening → bridge → turn → descent → resolution
+  arrival → presence → curiosity → discovery → complication → intimacy → turn → consequence → echo → stillness
   Determine the source nodes' layer from their tags. All new nodes go in the NEXT layer.
-  If source nodes are in "descent", generate resolution nodes with next: [].
-  If source nodes are in "turn", generate descent nodes.
+  If source nodes are in "echo", generate stillness nodes with next: [].
+  If source nodes are in "turn", generate consequence nodes.
 
 CONTINUITY: every new node must follow naturally from its source(s). The first words pick
   up the thread of whichever source led there. Shared convergence nodes must work after
@@ -281,11 +339,14 @@ CONTINUITY: every new node must follow naturally from its source(s). The first w
 
 THEMATIC CONTINUITY: stay in the same world, imagery, and atmosphere as the source nodes.
 
-node IDs: short_snake_case, layer-prefixed (e.g. "dev_kelp", "turn_silence", "res_still")
+node IDs: short_snake_case, layer-prefixed (e.g. "disc_kelp", "turn_silence", "still_rest")
 TAGS: one layer tag + custom content tags (carry forward tags from source nodes where applicable)
-VOICE SETTINGS per layer: intro stab~0.65 style~0.10 | opening stab~0.60 style~0.20
-  develop stab~0.50 style~0.35 | deepen stab~0.45 style~0.45 | bridge stab~0.45 style~0.40
-  turn stab~0.30 style~0.65    | descent stab~0.25 style~0.70 | resolut stab~0.60 style~0.15
+VOICE SETTINGS per layer:
+  arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
+  curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
+  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
+  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
 """
 
 SYSTEM_CONTINUE = """\
@@ -326,26 +387,31 @@ RULES:
 - start_nodes: IDs of nodes that connect DIRECTLY from the source node (immediate children only)
 - Do NOT re-generate or include the source node itself
 - Generate 2–4 layers forward from the source's layer, following the natural story arc
-- Layer order: intro → opening → development → deepening → bridge → turn → descent → resolution
+- Layer order: arrival → presence → curiosity → discovery → complication → intimacy → turn → consequence → echo → stillness
   Determine the source's layer from its tags, then generate only the layers that come AFTER it
 - Use the same branching (2–4 children) and merging (multiple parents → 1 child) patterns as a full graph
 - TERMINAL NODES: the final layer's nodes must have next: []
-- TERMINAL NODES: resolution/ending nodes must have next: []. Never loop back to earlier layers.
+- TERMINAL NODES: stillness/ending nodes must have next: []. Never loop back to earlier layers.
 
 BRANCHING and MERGING: same rules as full graph generation.
 WEIGHTS: 1.0 default, 2.0 to favour, 0.5 to make rare.
 TAGS: every node must have a tags array with:
-1. Exactly one layer tag: deepening / bridge / turn / descent / resolution (whichever applies)
+1. Exactly one layer tag: arrival / presence / curiosity / discovery / complication / intimacy / turn / consequence / echo / stillness (whichever applies)
 2. Custom tags for everything present in the node text — characters, themes, locations, objects, moods.
    Use short lowercase snake_case. Reuse the same tag across nodes whenever the same element recurs.
-node IDs: short_snake_case, layer-prefixed (e.g. "turn_silence", "res_still").
+node IDs: short_snake_case, layer-prefixed (e.g. "turn_silence", "still_rest").
 
 VOICE SETTINGS: match emotional tone to layer:
-  deepening   stability 0.45  style 0.45
-  bridge      stability 0.45  style 0.40
+  arrival     stability 0.65  style 0.10
+  presence    stability 0.60  style 0.15
+  curiosity   stability 0.55  style 0.25
+  discovery   stability 0.50  style 0.35
+  complication stability 0.45  style 0.45
+  intimacy    stability 0.40  style 0.50
   turn        stability 0.30  style 0.65
-  descent     stability 0.25  style 0.70
-  resolution  stability 0.60  style 0.15
+  consequence stability 0.25  style 0.70
+  echo        stability 0.35  style 0.55
+  stillness   stability 0.60  style 0.15
 """
 
 SYSTEM_EXPAND = """\
@@ -371,7 +437,7 @@ Respond with ONLY a JSON object — no markdown fences, no explanation:
       "text": "Spoken text, 40-100 words.",
       "next": [],
       "weights": [],
-      "tags": ["development", "toad", "revelation"],
+      "tags": ["discovery", "toad", "revelation"],
       "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35}
     }
   },
@@ -379,7 +445,7 @@ Respond with ONLY a JSON object — no markdown fences, no explanation:
 }
 
 TAGGING RULES — every node must have a tags array with:
-1. Exactly one layer tag (intro/opening/development/deepening/bridge/turn/descent/resolution)
+1. Exactly one layer tag (arrival/presence/curiosity/discovery/complication/intimacy/turn/consequence/echo/stillness)
 2. Custom tags for everything present in the node text — characters, themes, locations, objects.
    Any custom tag from the parent node should appear in daughters where that element is present.
    Prefer tags already used in the script (a list will be provided).
@@ -388,23 +454,82 @@ TAGGING RULES — every node must have a tags array with:
 All other edges are between the new nodes themselves.
 
 Layer progression rules (secondary to thematic continuity):
-- Layer order: intro → opening → development → deepening → bridge → turn → descent → resolution
+- Layer order: arrival → presence → curiosity → discovery → complication → intimacy → turn → consequence → echo → stillness
 - Determine the source node's layer from its tags, then place new nodes in the NEXT layer(s)
 - You may skip layers if the content calls for it, or span multiple layers in one expansion
 - You may branch (source → multiple new nodes) or chain (source → A → B → C → ...)
 - Branching then merging is encouraged: source → [A, B] and both A, B → C
 - The prompt will specify an exact node count range — generate that many new nodes, no more, no fewer
-- node IDs: short_snake_case, layer-prefixed (e.g. "dev_kelp_drift", "turn_silence", "res_still")
+- node IDs: short_snake_case, layer-prefixed (e.g. "disc_kelp_drift", "turn_silence", "still_rest")
 - Weights default to 1.0 unless you have reason to favour one path
-- Terminal nodes (resolution/descent end) must have next: [] — NEVER link back to intro or start nodes.
+- Terminal nodes (stillness/echo end) must have next: [] — NEVER link back to arrival or start nodes.
   The runtime restarts automatically from a random start node when a terminal finishes.
 
 VOICE SETTINGS: set voice_settings on every node (stability 0-1, similarity_boost 0.75, style 0-1).
-  intro   stab~0.65 style~0.10 | opening  stab~0.60 style~0.20
-  develop stab~0.50 style~0.35 | deepen   stab~0.45 style~0.45
-  bridge  stab~0.45 style~0.40 | turn     stab~0.30 style~0.65
-  descent stab~0.25 style~0.70 | resolut  stab~0.60 style~0.15
+  arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
+  curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
+  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
+  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
   Adjust within the layer to match the specific emotional intensity of the node's text.
+"""
+
+SYSTEM_GENERATE_SINGLE_NODE = """\
+You are generating exactly ONE node for a narrative audio installation graph.
+The node is a short spoken segment (40–100 words, ~15–35 seconds when read aloud).
+
+THEMATIC CONTINUITY — most important rule:
+- The node must feel like it naturally follows the parent node.
+- Keep the same specific imagery, sensory details, and atmosphere.
+- The arc may deepen, shift in feeling, or reveal something new — but the SUBJECT stays close.
+- Think of it as zooming in or turning a corner, not cutting to a new location.
+
+SIBLING DIFFERENTIATION — if sibling summaries are provided:
+- Your node must take a DIFFERENT angle from already-generated siblings.
+- Cover different aspects, emotions, or imagery — avoid retreading the same ground.
+
+Respond with ONLY a JSON object — no markdown fences, no explanation:
+{
+  "node_id": "layer_prefix_descriptive_slug",
+  "text": "Spoken text, 40-100 words.",
+  "tags": ["layer_tag", "custom_tag_1", "custom_tag_2"],
+  "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35},
+  "vars": {}
+}
+
+TAGGING RULES:
+1. Exactly one layer tag (arrival/presence/curiosity/discovery/complication/intimacy/turn/consequence/echo/stillness)
+2. Custom tags for characters, themes, locations, objects present in the text.
+   Prefer tags already used in the script when applicable.
+
+node_id: short_snake_case, layer-prefixed (e.g. "disc_kelp_drift", "turn_silence")
+
+VOICE SETTINGS (stability 0-1, similarity_boost 0.75, style 0-1):
+  arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
+  curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
+  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
+  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
+  Adjust to match the specific emotional intensity of the node's text.
+"""
+
+SYSTEM_CROSS_LINK = """\
+You are analyzing nodes in a narrative audio graph to find natural cross-branch connections.
+Given a set of nodes at the same story layer and their existing children, suggest which nodes
+from DIFFERENT branches could connect to each other's children.
+
+A cross-link means: a listener who just heard node A could naturally hear node B next,
+even though B was originally written as a continuation of a different branch.
+
+Rules:
+- Only suggest links where thematic or tonal continuity genuinely exists.
+- Be conservative — fewer good links are better than many forced ones.
+- Never link a node to its own children (those edges already exist).
+- Cross-links go from a node at this layer to a child node on a different branch.
+
+Respond with ONLY a JSON object:
+{"cross_links": [{"from": "source_node_id", "to": "target_node_id"}, ...]}
+No markdown fences, no explanation.
 """
 
 SYSTEM_REWRITE = """\
@@ -423,21 +548,22 @@ Rules for voice_settings (ElevenLabs):
 - similarity_boost: keep at 0.75
 - style 0–1: higher = more emotionally performed
 - Layer guidance:
-    intro   stab~0.65 style~0.10 | opening  stab~0.60 style~0.20
-    develop stab~0.50 style~0.35 | deepen   stab~0.45 style~0.45
-    bridge  stab~0.45 style~0.40 | turn     stab~0.30 style~0.65
-    descent stab~0.25 style~0.70 | resolut  stab~0.60 style~0.15
+    arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
+    curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
+    complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
+    turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
+    echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
 - Adjust to match the specific emotional intensity of the rewritten text
 
 Respond with ONLY a JSON object in this exact format, no other text:
 {
   "text": "...",
-  "tags": ["development", "toad", "revelation"],
+  "tags": ["discovery", "toad", "revelation"],
   "voice_settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.3}
 }
 
 TAGGING RULES — same as for expansion:
-1. Exactly one layer tag (intro/opening/development/deepening/bridge/turn/descent/resolution)
+1. Exactly one layer tag (arrival/presence/curiosity/discovery/complication/intimacy/turn/consequence/echo/stillness)
 2. Custom tags for characters, themes, locations, objects actually present in the rewritten text.
    Keep any existing custom tags that still apply. Add new ones if the rewrite introduces them.
    A list of existing script tags will be provided in the prompt — prefer those.
@@ -479,9 +605,10 @@ No markdown fences, no explanation — just the JSON object.
 SYSTEM_ARC_CHAT = """\
 You are helping an author develop a story arc for an immersive audio installation.
 Story arcs are used to guide generation of a narrative node graph — each arc has a premise,
-recurring themes/motifs, and a beat for each of the 8 story layers (intro through resolution).
+recurring themes/motifs, and a beat for each of the 10 story layers (arrival through stillness).
 
-Each node will become ~15–35 seconds of spoken audio. The full arc plays out over 8 layers.
+Each node will become ~15–35 seconds of spoken audio. The full arc plays out over 10 layers:
+  arrival → presence → curiosity → discovery → complication → intimacy → turn → consequence → echo → stillness
 
 Your role: help the author refine their premise, suggest beats for specific layers,
 develop themes and recurring motifs, identify character voices, and deepen the emotional arc.
@@ -502,6 +629,29 @@ class ScriptData:
         self._data = deepcopy(data or SCRIPT_TEMPLATE)
         self.path: Optional[Path] = None
         self.dirty = False
+        self._migrate_layers()
+
+    # ── Layer migration ───────────────────────────────────────────────────
+
+    def _migrate_layers(self):
+        """Migrate old 8-layer names to new 10-layer names in nodes and arcs."""
+        if not _LAYER_MIGRATION:
+            return
+        # Migrate node tags
+        for nd in self._data.get('nodes', {}).values():
+            tags = nd.get('tags', [])
+            nd['tags'] = [_LAYER_MIGRATION.get(t, t) for t in tags]
+        # Migrate arc beat keys
+        for arc in self._data.get('arcs', {}).values():
+            beats = arc.get('beats', {})
+            new_beats = {}
+            for key, val in beats.items():
+                new_key = _LAYER_MIGRATION.get(key, key)
+                new_beats[new_key] = val
+            # Ensure all new layer keys exist
+            for layer in LAYER_ORDER:
+                new_beats.setdefault(layer, '')
+            arc['beats'] = new_beats
 
     # ── Properties ─────────────────────────────────────────────────────────
 
@@ -572,10 +722,7 @@ class ScriptData:
             'premise': '',
             'themes': '',
             'motif': '',
-            'beats': {k: '' for k in [
-                'intro', 'opening', 'development', 'deepening',
-                'bridge', 'turn', 'descent', 'resolution',
-            ]},
+            'beats': {k: '' for k in LAYER_ORDER},
             'notes': '',
             'chat_history': [],
         }
@@ -798,7 +945,7 @@ class ScriptData:
         """Merge AI-generated graph into current script (additive).
 
         Positions nodes left-to-right by layer using tag hints:
-        intro < opening < development < deepening < bridge < turn < descent < resolution
+        arrival < presence < curiosity < discovery < complication < intimacy < turn < consequence < echo < stillness
         Nodes within a layer are stacked vertically.
         """
         generated = dict(generated)
@@ -813,7 +960,6 @@ class ScriptData:
         if generated.get("description"):
             self._data["description"] = generated["description"]
 
-        LAYER_ORDER = ["intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"]
         LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
         LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
 
@@ -857,19 +1003,18 @@ class ScriptData:
             remap.get(self._sanitize_id(n), self._sanitize_id(n))
             for n in expansion.get('connect_from', [])
         ]
-        LAYER_ORDER = ["intro", "opening", "development", "deepening", "bridge", "turn", "descent", "resolution"]
         LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
         LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
 
         layer_counts: dict = {}
         for nd in self._data["nodes"].values():
             for tag in nd.get("tags", []):
-                if tag in LAYER_ORDER:
+                if tag in set(LAYER_ORDER):
                     layer_counts[tag] = layer_counts.get(tag, 0) + 1
 
         for nid, ndata in expansion.get("nodes", {}).items():
             tags  = ndata.get("tags", [])
-            layer = next((t for t in tags if t in LAYER_ORDER), "_default")
+            layer = next((t for t in tags if t in set(LAYER_ORDER)), "_default")
             x     = LAYER_X[layer]
             y_idx = layer_counts.get(layer, 0)
             layer_counts[layer] = y_idx + 1
@@ -899,6 +1044,45 @@ class ScriptData:
 
         self.dirty = True
 
+    def apply_single_node(self, parent_id: str, node_data: dict) -> Optional[str]:
+        """Add one AI-generated node to the script, wired from parent_id.
+
+        Returns the final (possibly deduped) node_id, or None on failure.
+        """
+        node_id = node_data.get('node_id', '')
+        if not node_id or not isinstance(node_data, dict):
+            return None
+
+        # Sanitize
+        single = {node_id: {
+            'text':           _sanitize_tts(node_data.get('text', '')),
+            'next':           [],
+            'weights':        [],
+            'tags':           node_data.get('tags', []),
+            'voice':          None,
+            'voice_settings': node_data.get('voice_settings', {}),
+            'vars':           node_data.get('vars', {}),
+            'duration':       None,
+        }}
+        single = self._sanitize_nodes(single)
+        single, _remap = self._dedupe_ids(single)
+        final_id = list(single.keys())[0] if single else None
+        if not final_id:
+            return None
+
+        # Add node
+        self._data['nodes'][final_id] = single[final_id]
+
+        # Wire parent → child
+        if parent_id and parent_id in self._data['nodes']:
+            parent = self._data['nodes'][parent_id]
+            if final_id not in parent.get('next', []):
+                parent.setdefault('next', []).append(final_id)
+                parent.setdefault('weights', []).append(1.0)
+
+        self.dirty = True
+        return final_id
+
     def apply_layer(self, layer_data: dict):
         """Apply a batch layer expansion where each new node declares its connect_from sources."""
         layer_data = dict(layer_data)
@@ -910,19 +1094,17 @@ class ScriptData:
         layer_data['nodes'] = self._sanitize_nodes(raw_nodes)
         layer_data['nodes'], remap = self._dedupe_ids(layer_data['nodes'])
 
-        LAYER_ORDER = ["intro", "opening", "development", "deepening",
-                       "bridge", "turn", "descent", "resolution"]
         LAYER_X     = {name: 80 + i * 310 for i, name in enumerate(LAYER_ORDER)}
         LAYER_X["_default"] = 80 + len(LAYER_ORDER) * 310
         layer_counts: dict = {}
         for nd in self._data["nodes"].values():
             for tag in nd.get("tags", []):
-                if tag in LAYER_ORDER:
+                if tag in set(LAYER_ORDER):
                     layer_counts[tag] = layer_counts.get(tag, 0) + 1
 
         for nid, ndata in layer_data['nodes'].items():
             tags  = ndata.get("tags", [])
-            layer = next((t for t in tags if t in LAYER_ORDER), "_default")
+            layer = next((t for t in tags if t in set(LAYER_ORDER)), "_default")
             x     = LAYER_X[layer]
             y_idx = layer_counts.get(layer, 0)
             layer_counts[layer] = y_idx + 1
@@ -950,6 +1132,486 @@ class ScriptData:
                     src["weights"].append(1.0)
 
         self.dirty = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parallel Node Generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class NodeTask:
+    """One pending/active/complete batch generation task.
+
+    Each task generates batch_size sibling nodes from a single parent
+    in one AI call.
+    """
+    task_id:         str
+    parent_id:       str                  # primary node to continue from
+    parent_ids:      list  = field(default_factory=list)  # ALL parents (for convergence)
+    root_id:         str   = ''           # seed node this branch descends from
+    layer_name:      str   = ''           # target layer for this node
+    layer_direction: str   = ''           # arc beat guidance
+    batch_size:      int   = 1            # how many siblings to generate in one call
+    status:          str   = 'pending'    # pending | dispatched | complete | failed
+    result:          dict  = field(default_factory=dict)
+    final_node_ids:  list  = field(default_factory=list)  # actual IDs after dedup
+
+
+class ParallelNodeOrchestrator:
+    """Generates a narrative graph in parallel, one node per AI call.
+
+    Each worker (AIAssistant instance) generates exactly one node at a time.
+    As nodes complete, their children are dispatched immediately.  Siblings
+    at the same layer run concurrently on different workers.
+    """
+
+    def __init__(self, script: 'ScriptData', ui_queue: queue.SimpleQueue,
+                 model: str = '', profile: str = 'full',
+                 story_context: str = '', motif: str = '',
+                 premise: str = '',
+                 arc_beats: dict = None, variables: list = None,
+                 on_progress=None, on_complete=None, on_node_added=None):
+        self._script       = script
+        self._ui_queue     = ui_queue
+        self._profile      = GENERATION_PROFILES.get(profile, GENERATION_PROFILES['full'])
+        self._story_context = story_context
+        self._motif        = motif
+        self._premise      = premise
+        self._arc_beats    = arc_beats or {}
+        self._variables    = variables or []
+        self._on_progress  = on_progress   # callback(status_str)
+        self._on_complete  = on_complete   # callback()
+        self._on_node_added = on_node_added  # callback(set_of_new_ids)
+
+        # Worker pool
+        self._workers = [AIAssistant(model=model) for _ in range(PARALLEL_WORKER_COUNT)]
+        self._worker_sem = threading.Semaphore(PARALLEL_WORKER_COUNT)
+        self._executor = ThreadPoolExecutor(max_workers=PARALLEL_WORKER_COUNT)
+
+        # Task tracking
+        self._lock = threading.Lock()
+        self._tasks: dict = {}          # task_id -> NodeTask
+        self._completed_by_layer: dict = defaultdict(list)  # layer -> [NodeTask]
+        self._sibling_summaries: dict = defaultdict(list)   # parent_id -> [(node_id, summary)]
+        self._node_to_root: dict = {}   # node_id -> root_id (branch lineage)
+        self._deferred_convergences: list = []  # [(parent_id, child_layer, root_id), ...]
+        self._task_counter = 0
+        self._active_count = 0
+        self._total_created = 0
+        self._total_completed = 0
+        self._cancelled = threading.Event()
+
+        # Existing tags for reuse hints
+        layer_tags = set(LAYER_ORDER)
+        self._existing_tags = list({
+            t for n in script.nodes.values()
+            for t in n.get('tags', []) if t not in layer_tags
+        })
+
+    def cancel(self):
+        """Signal cancellation. In-flight tasks finish but results are discarded."""
+        self._cancelled.set()
+
+    @property
+    def running(self) -> bool:
+        return self._active_count > 0
+
+    def start(self, seed_node_ids: list):
+        """Begin parallel generation from a list of existing seed (arrival) nodes."""
+        print(f'[Parallel] Starting with {len(seed_node_ids)} seed nodes: {seed_node_ids}')
+        print(f'[Parallel] Profile: max_depth={self._profile["max_depth"]}, workers={PARALLEL_WORKER_COUNT}')
+        print(f'[Parallel] Arc beats: {list(self._arc_beats.keys())}')
+        for nid in seed_node_ids:
+            nd = self._script.nodes.get(nid)
+            if not nd:
+                print(f'[Parallel]   {nid}: NOT FOUND in script — skipping')
+                continue
+            # Each seed is the root of its own branch
+            self._node_to_root[nid] = nid
+            tags = nd.get('tags', [])
+            layer = next((t for t in tags if t in LAYER_ORDER), 'arrival')
+            layer_idx = LAYER_ORDER.index(layer) if layer in LAYER_ORDER else 0
+            next_layer_idx = min(layer_idx + 1, len(LAYER_ORDER) - 1)
+            next_layer = LAYER_ORDER[next_layer_idx]
+            print(f'[Parallel]   {nid}: tags={tags}, layer={layer}, children→{next_layer}, branch={nid}')
+            if next_layer == layer:
+                print(f'[Parallel]   {nid}: already at stillness — no children')
+                continue
+            self._spawn_children(nid, next_layer, root_id=nid)
+
+        print(f'[Parallel] Initial tasks queued: {self._total_created}')
+        # Start coordinator thread
+        threading.Thread(target=self._coordinator_loop, daemon=True).start()
+
+    def _next_task_id(self) -> str:
+        self._task_counter += 1
+        return f'task_{self._task_counter:04d}'
+
+    def _get_width(self, layer_name: str) -> tuple:
+        widths = self._profile['widths']
+        return widths.get(layer_name, widths.get('*', (2, 3)))
+
+    def _get_layer_cap(self, layer_name: str) -> int:
+        caps = self._profile.get('layer_caps', {})
+        return caps.get(layer_name, 999)
+
+    def _count_global_layer_nodes(self, layer_name: str) -> int:
+        """Count expected nodes at a layer across ALL branches (sum of batch sizes)."""
+        return sum(t.batch_size for t in self._tasks.values() if t.layer_name == layer_name)
+
+    def _spawn_children(self, parent_id: str, child_layer: str, root_id: str = ''):
+        """Create NodeTasks for children of parent_id at child_layer.
+
+        Uses GLOBAL caps to limit total node count per layer.  When over cap,
+        converges into existing same-branch nodes (no forced child creation).
+        Cross-branch connections are handled by the cross-link AI pass.
+        """
+        if not root_id:
+            root_id = self._node_to_root.get(parent_id, parent_id)
+
+        lo, hi = self._get_width(child_layer)
+        desired = random.randint(lo, hi)
+        direction = self._arc_beats.get(child_layer, '')
+
+        with self._lock:
+            cap = self._get_layer_cap(child_layer)
+            global_count = self._count_global_layer_nodes(child_layer)
+            remaining_slots = max(0, cap - global_count)
+
+            n_to_create = min(desired, remaining_slots)
+
+            # Over global cap — converge into existing nodes at this layer
+            if n_to_create == 0:
+                # Queue a deferred convergence — will be resolved after all
+                # tasks at this layer complete
+                self._deferred_convergences.append(
+                    (parent_id, child_layer, root_id))
+                print(f'[Parallel] ↗ Deferred converge: {parent_id} → layer {child_layer} '
+                      f'({global_count}/{cap})')
+                return  # hard stop — no new nodes when over cap
+
+            print(f'[Parallel] Batch: {n_to_create} children for {parent_id} → '
+                  f'layer:{child_layer} branch:{root_id} ({global_count}+{n_to_create}/{cap})')
+
+            tid = self._next_task_id()
+            task = NodeTask(
+                task_id=tid,
+                parent_id=parent_id,
+                parent_ids=[parent_id],
+                root_id=root_id,
+                layer_name=child_layer,
+                layer_direction=direction,
+                batch_size=n_to_create,
+            )
+            self._tasks[tid] = task
+            self._total_created += n_to_create  # count expected nodes, not tasks
+
+    def _coordinator_loop(self):
+        """Dispatch ready tasks to workers until done or cancelled."""
+        print('[Parallel] Coordinator loop started')
+        while not self._cancelled.is_set():
+            with self._lock:
+                pending = [t for t in self._tasks.values() if t.status == 'pending']
+                if not pending and self._active_count == 0:
+                    break  # all done
+
+            if pending:
+                print(f'[Parallel] Dispatching {len(pending)} pending tasks '
+                      f'(active: {self._active_count}, total: {self._total_completed}/{self._total_created})')
+
+            for task in pending:
+                if self._cancelled.is_set():
+                    break
+                task.status = 'dispatched'
+                with self._lock:
+                    self._active_count += 1
+                self._worker_sem.acquire()
+                if self._cancelled.is_set():
+                    self._worker_sem.release()
+                    break
+                print(f'[Parallel]   → Dispatch {task.task_id}: parent={task.parent_id} layer={task.layer_name}')
+                self._executor.submit(self._execute_task, task)
+
+            # Brief sleep to avoid busy-waiting for new tasks from completions
+            time.sleep(0.1)
+
+        # Final: resolve deferred convergences, then cross-link passes
+        if not self._cancelled.is_set():
+            print(f'[Parallel] All tasks done ({self._total_completed} nodes).')
+            self._resolve_deferred_convergences()
+            print(f'[Parallel] Running cross-link passes...')
+            self._run_cross_link_passes()
+
+        print(f'[Parallel] Generation complete. {self._total_completed} nodes generated.')
+        self._ui_queue.put(lambda: self._on_complete() if self._on_complete else None)
+
+    def _resolve_deferred_convergences(self):
+        """Wire deferred convergences now that all tasks are complete."""
+        if not self._deferred_convergences:
+            return
+        print(f'[Parallel] Resolving {len(self._deferred_convergences)} deferred convergences...')
+        for parent_id, child_layer, root_id in self._deferred_convergences:
+            # Find completed nodes at this layer, prefer same branch
+            candidates = []
+            for t in self._tasks.values():
+                if t.layer_name == child_layer and t.final_node_ids:
+                    if t.root_id == root_id:
+                        candidates.extend(t.final_node_ids)
+            if not candidates:
+                for t in self._tasks.values():
+                    if t.layer_name == child_layer and t.final_node_ids:
+                        candidates.extend(t.final_node_ids)
+            if candidates:
+                targets = random.sample(candidates, min(2, len(candidates)))
+                for cid in targets:
+                    def _wire(pid=parent_id, c=cid):
+                        if pid in self._script.nodes and c in self._script.nodes:
+                            src = self._script.nodes[pid]
+                            if c not in src.get('next', []):
+                                src.setdefault('next', []).append(c)
+                                src.setdefault('weights', []).append(1.0)
+                                self._script.dirty = True
+                    self._ui_queue.put(_wire)
+                print(f'[Parallel]   ↗ {parent_id} → {targets}')
+            else:
+                print(f'[Parallel]   ⚠ {parent_id}: no nodes at layer {child_layer} to converge into')
+        self._deferred_convergences.clear()
+
+    def _get_ancestor_chain(self, node_id: str, depth: int = 4) -> list:
+        """Walk parents to build [(ancestor_id, text, tags), ...] oldest-first."""
+        nodes = self._script.nodes
+        # Build reverse map
+        reverse = {}
+        for nid, nd in nodes.items():
+            for child in nd.get('next', []):
+                reverse.setdefault(child, []).append(nid)
+        chain = []
+        current = node_id
+        for _ in range(depth):
+            parents = reverse.get(current, [])
+            if not parents:
+                break
+            current = parents[0]
+            nd = nodes.get(current, {})
+            chain.append((current, nd.get('text', ''), nd.get('tags', [])))
+        chain.reverse()
+        return chain
+
+    def _execute_task(self, task: NodeTask):
+        """Run a batch node generation on a worker thread."""
+        try:
+            if self._cancelled.is_set():
+                return
+
+            # Retry briefly if parent hasn't been applied to script yet
+            all_parent_ids = task.parent_ids if task.parent_ids else [task.parent_id]
+            for _retry in range(10):
+                valid_parents = [pid for pid in all_parent_ids
+                                 if pid in self._script.nodes
+                                 and self._script.nodes[pid].get('text')]
+                if valid_parents:
+                    break
+                time.sleep(0.5)
+            all_parent_ids = valid_parents if valid_parents else []
+
+            if not all_parent_ids:
+                print(f'[Parallel] ⚠ {task.task_id}: no valid parents after retries '
+                      f'(wanted: {task.parent_ids or [task.parent_id]}) — skipping')
+                task.status = 'failed'
+                return
+
+            primary_pid = all_parent_ids[0]
+            primary_nd = self._script.nodes[primary_pid]
+            ancestor_chain = self._get_ancestor_chain(primary_pid)
+
+            if len(all_parent_ids) > 1:
+                parent_texts = []
+                all_tags = []
+                for pid in all_parent_ids:
+                    nd = self._script.nodes.get(pid, {})
+                    parent_texts.append(f'[{pid}]: "{nd.get("text", "")}"')
+                    all_tags.extend(nd.get('tags', []))
+                parent_text = (
+                    f'Merging {len(all_parent_ids)} branches — write nodes that '
+                    f'naturally continue from ANY of these:\n'
+                    + '\n'.join(parent_texts)
+                )
+                parent_tags = list(dict.fromkeys(all_tags))
+            else:
+                parent_text = primary_nd.get('text', '')
+                parent_tags = primary_nd.get('tags', [])
+
+            # Calculate premise weight — 100% at layer 0, decreasing 30% per layer
+            # Layers 0-4 get premise; layer 5+ gets none
+            layer_idx = LAYER_ORDER.index(task.layer_name) if task.layer_name in LAYER_ORDER else 0
+            premise_weight = max(0.0, 1.0 - 0.3 * layer_idx) if layer_idx < 5 else 0.0
+
+            parent_label = (f'parents=[{", ".join(all_parent_ids)}]' if len(all_parent_ids) > 1
+                           else f'parent={primary_pid}')
+            premise_str = f', premise={premise_weight:.0%}' if premise_weight > 0 else ''
+            print(f'[Parallel] ▶ {task.task_id}: batch {task.batch_size}× {task.layer_name} '
+                  f'from {parent_label} (ancestors={len(ancestor_chain)}{premise_str})')
+
+            worker = self._workers[0]
+
+            result = worker.generate_batch_sync(
+                parent_id=primary_pid,
+                parent_text=parent_text,
+                parent_tags=parent_tags,
+                ancestor_chain=ancestor_chain,
+                layer_name=task.layer_name,
+                batch_size=task.batch_size,
+                layer_direction=task.layer_direction,
+                motif=self._motif,
+                story_context=self._story_context,
+                existing_custom_tags=self._existing_tags,
+                variables=self._variables,
+                premise=self._premise,
+                premise_weight=premise_weight,
+            )
+
+            if self._cancelled.is_set():
+                return
+
+            # Result is in SYSTEM_EXPAND format: {"nodes": {...}, "connect_from": [...]}
+            nodes = result.get('nodes', {})
+            if not isinstance(nodes, dict):
+                nodes = {}
+
+            n_got = len(nodes)
+            print(f'[Parallel] ✓ {task.task_id}: got {n_got} nodes')
+            for nid, nd in nodes.items():
+                text_preview = ' '.join(nd.get('text', '').split()[:12]) + '...'
+                print(f'[Parallel]   {nid}: {text_preview}')
+
+            task.result = result
+            task.status = 'complete'
+
+            # Apply all nodes to script on main thread
+            applied_event = threading.Event()
+
+            def _apply(t=task, evt=applied_event, pids=all_parent_ids, node_dict=nodes):
+                applied_ids = []
+                for nid, ndata in node_dict.items():
+                    # Build a single-node result dict for apply_single_node
+                    single = dict(ndata)
+                    single['node_id'] = nid
+                    final_id = self._script.apply_single_node(t.parent_id, single)
+                    if final_id:
+                        applied_ids.append(final_id)
+                        # Wire additional convergence parents
+                        for pid in pids[1:]:
+                            if pid in self._script.nodes:
+                                src = self._script.nodes[pid]
+                                if final_id not in src.get('next', []):
+                                    src.setdefault('next', []).append(final_id)
+                                    src.setdefault('weights', []).append(1.0)
+                        for tag in ndata.get('tags', []):
+                            if tag not in set(LAYER_ORDER) and tag not in self._existing_tags:
+                                self._existing_tags.append(tag)
+                t.final_node_ids = applied_ids
+                if applied_ids and self._on_node_added:
+                    self._on_node_added(set(applied_ids))
+                evt.set()
+
+            self._ui_queue.put(_apply)
+
+            if not applied_event.wait(timeout=30.0):
+                print(f'[Parallel] ⚠ {task.task_id}: apply timed out — skipping children')
+                task.status = 'failed'
+                return
+
+            # Record results and spawn children for each generated node
+            root_id = task.root_id
+            with self._lock:
+                self._total_completed += len(task.final_node_ids)
+                self._completed_by_layer[task.layer_name].append(task)
+                for fid in task.final_node_ids:
+                    self._node_to_root[fid] = root_id
+
+            max_depth_layers = self._profile['max_depth']
+            for final_id in task.final_node_ids:
+                nd = self._script.nodes.get(final_id, {})
+                result_tags = nd.get('tags', [])
+                actual_layer = next((t for t in result_tags if t in LAYER_ORDER), task.layer_name)
+                layer_idx = LAYER_ORDER.index(actual_layer) if actual_layer in LAYER_ORDER else 0
+                if layer_idx + 1 < len(LAYER_ORDER) and layer_idx + 1 < max_depth_layers:
+                    next_layer = LAYER_ORDER[layer_idx + 1]
+                    self._spawn_children(final_id, next_layer, root_id=root_id)
+                else:
+                    print(f'[Parallel]   {final_id} is terminal (layer={actual_layer})')
+
+            # Progress
+            msg = (f"Parallel: {self._total_completed}/{self._total_created} nodes "
+                   f"({self._active_count} active, layer: {task.layer_name})")
+            print(f'[Parallel] {msg}')
+            if self._on_progress:
+                self._ui_queue.put(lambda m=msg: self._on_progress(m))
+
+        except Exception as exc:
+            task.status = 'failed'
+            print(f'[Parallel] ✗ {task.task_id} FAILED: {exc}')
+            import traceback
+            traceback.print_exc()
+            if self._on_progress:
+                self._ui_queue.put(
+                    lambda e=str(exc)[:80]: self._on_progress(f"Node error: {e}"))
+        finally:
+            with self._lock:
+                self._active_count -= 1
+            self._worker_sem.release()
+
+    def _run_cross_link_passes(self):
+        """After all generation is done, suggest cross-branch connections."""
+        if not self._completed_by_layer:
+            return
+        worker = self._workers[0]
+
+        for layer_name in LAYER_ORDER[:-1]:  # skip stillness
+            completed = self._completed_by_layer.get(layer_name, [])
+            if len(completed) < 5:
+                continue  # not enough nodes to cross-link
+            print(f'[Parallel] Cross-linking layer "{layer_name}" ({len(completed)} nodes)...')
+
+            # Build layer_nodes list from all nodes produced by completed batch tasks
+            layer_nodes = []
+            children_map = {}
+            for task in completed:
+                for nid in task.final_node_ids:
+                    nd = self._script.nodes.get(nid, {})
+                    if not nd:
+                        continue
+                    text = nd.get('text', '')
+                    tags = nd.get('tags', [])
+                    child_ids = nd.get('next', [])
+                    layer_nodes.append((nid, text, tags, child_ids))
+                    for cid in child_ids:
+                        cnd = self._script.nodes.get(cid, {})
+                        children_map[cid] = (cnd.get('text', ''), cnd.get('tags', []))
+
+            if not children_map:
+                continue
+
+            try:
+                links = worker.suggest_cross_links_sync(layer_nodes, children_map)
+                print(f'[Parallel]   Cross-link suggestions for {layer_name}: {len(links)} links')
+                for link in links:
+                    print(f'[Parallel]     {link.get("from", "?")} → {link.get("to", "?")}')
+                if links:
+                    def _apply_links(cross_links=links):
+                        for link in cross_links:
+                            from_id = link.get('from', '')
+                            to_id = link.get('to', '')
+                            if (from_id in self._script.nodes
+                                    and to_id in self._script.nodes):
+                                src = self._script.nodes[from_id]
+                                if to_id not in src.get('next', []):
+                                    src.setdefault('next', []).append(to_id)
+                                    src.setdefault('weights', []).append(1.0)
+                                    self._script.dirty = True
+                    self._ui_queue.put(_apply_links)
+            except Exception:
+                pass  # cross-linking is best-effort
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1025,7 +1687,8 @@ class AIAssistant:
         """Extract the first balanced top-level JSON object from *raw* text."""
         start = raw.find('{')
         if start == -1:
-            raise ValueError("No JSON object found in response")
+            preview = raw[:300] if raw else '(empty)'
+            raise ValueError(f"No JSON object found in response. Preview: {preview}")
         depth = 0
         in_string = False
         escape = False
@@ -1048,7 +1711,10 @@ class AIAssistant:
                 depth -= 1
                 if depth == 0:
                     return json.loads(raw[start:i + 1])
-        raise ValueError("Unbalanced braces in JSON response")
+        # Show context around where it broke
+        preview = raw[start:start+300] if len(raw) > start else raw
+        raise ValueError(f"Unbalanced braces in JSON response (depth={depth}, "
+                         f"len={len(raw)}, start={start}). Preview: {preview[:200]}")
 
     def _run_claude(self, system: str, prompt: str) -> str:
         """Blocking call to `claude -p`. Raises on non-zero exit."""
@@ -1162,7 +1828,7 @@ class AIAssistant:
                       on_done, on_error, story_context: str = '',
                       layer_direction: str = '', motif: str = '',
                       variables: list = None):
-        """Generate only the intro layer — no children. Used to seed iterative generation."""
+        """Generate only the arrival layer — no children. Used to seed iterative generation."""
         if self._busy:
             return
         self._busy = True
@@ -1174,7 +1840,7 @@ class AIAssistant:
         if vars_sec:
             parts.append(vars_sec)
         if layer_direction:
-            parts.append(f'INTRO LAYER DIRECTION (this is what the intro nodes must cover):\n{layer_direction}')
+            parts.append(f'ARRIVAL LAYER DIRECTION (this is what the arrival nodes must cover):\n{layer_direction}')
         if motif:
             parts.append(f'RECURRING MOTIF (weave this through the text naturally in every node):\n{motif}')
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
@@ -1182,12 +1848,21 @@ class AIAssistant:
 
         def run():
             try:
+                print(f'[AI] generate_seed: calling claude...')
                 raw   = self._run_claude(SYSTEM_GENERATE_SEED, full_prompt)
+                print(f'[AI] generate_seed: got {len(raw)} chars, extracting JSON...')
                 data = self._extract_json(raw)
+                nodes = data.get('nodes', {})
+                print(f'[AI] generate_seed: {len(nodes)} nodes parsed')
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
+                print(f'[AI] generate_seed JSON error: {exc}')
                 ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
             except Exception as exc:
+                print(f'[AI] generate_seed error: {exc}')
+                # Include first 200 chars of raw response for debugging
+                raw_preview = raw[:200] if 'raw' in dir() else '(no response)'
+                print(f'[AI]   raw preview: {raw_preview}')
                 ui_queue.put(lambda e=exc: on_error(str(e)))
             finally:
                 self._busy = False
@@ -1273,19 +1948,31 @@ class AIAssistant:
         if vars_sec:
             parts.append(vars_sec)
 
-        # ── Ancestor context: oldest first, least influential ────────────────
-        ANCESTOR_LABELS = [
-            ('EARLIER CONTEXT (faint background)',     40),
-            ('GREAT-GRANDPARENT (minimal influence)',  60),
-            ('GRANDPARENT (light influence)',         100),
-            ('DIRECT PARENT (moderate influence)',    200),
-        ]
+        # ── Ancestor context: keywords and tags, oldest first ────────────────
+        _STOPWORDS = frozenset({
+            "the","a","an","and","or","but","in","on","at","to","for","of","with",
+            "by","from","is","was","are","were","be","been","being","have","has",
+            "had","do","does","did","will","would","could","should","may","might",
+            "shall","can","that","this","it","its","they","their","them","there",
+            "then","than","what","which","who","whom","when","where","how","not",
+            "no","so","if","as","into","just","like","over","some","each","only",
+            "also","very","about","up","out","all","more","one","two","said","he",
+            "she","his","her","we","our","you","your","my",
+        })
+        ANCESTOR_KW_COUNTS = [6, 8, 12, 18]
         if upstream_path:
-            parts.append('\nANCESTOR CONTEXT (for arc continuity only — do not let this pull the theme away from the source node):')
-            for i, (nid, text) in enumerate(upstream_path):  # oldest first
-                label, max_chars = ANCESTOR_LABELS[i] if i < len(ANCESTOR_LABELS) else ANCESTOR_LABELS[0]
-                excerpt = text[:max_chars] + '...' if len(text) > max_chars else text
-                parts.append(f'  {label}\n  [{nid}]: "{excerpt}"')
+            parts.append('\nANCESTOR CONTEXT (thematic thread — maintain continuity):')
+            for i, entry in enumerate(upstream_path):
+                nid = entry[0]
+                text = entry[1]
+                tags = entry[2] if len(entry) > 2 else []
+                n_kw = ANCESTOR_KW_COUNTS[i] if i < len(ANCESTOR_KW_COUNTS) else 6
+                words = re.findall(r"\b[a-zA-Z]{3,}\b", text)
+                keywords = list(dict.fromkeys(
+                    w.lower() for w in words if w.lower() not in _STOPWORDS
+                ))[:n_kw]
+                custom_tags = [t for t in tags if t not in set(LAYER_ORDER)]
+                parts.append(f'  [{nid}] tags: {custom_tags}, keywords: {", ".join(keywords)}')
 
         # ── Node intent / guidance (near-primary) ────────────────────────────
         if node_hint:
@@ -1296,7 +1983,7 @@ class AIAssistant:
             parts.append(f'GUIDANCE: {hint}')
 
         # ── Source node (highest weight — closest to generation) ─────────────
-        layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+        layer_tags = set(LAYER_ORDER)
         custom_tags = [t for t in source_tags if t not in layer_tags]
 
         words = re.findall(r"\b[a-zA-Z]{4,}\b", source_text)
@@ -1340,6 +2027,216 @@ class AIAssistant:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def generate_single_node_sync(self, parent_id: str, parent_text: str,
+                                   parent_tags: list, ancestor_chain: list,
+                                   layer_name: str, layer_direction: str = '',
+                                   motif: str = '', sibling_summaries: list = None,
+                                   story_context: str = '',
+                                   existing_custom_tags: list = None,
+                                   variables: list = None,
+                                   premise: str = '',
+                                   premise_weight: float = 1.0) -> dict:
+        """Blocking call that generates exactly one node. Returns parsed dict.
+
+        Designed to be called from worker threads in ParallelNodeOrchestrator.
+        Does NOT use _busy flag — caller is responsible for concurrency control.
+        premise_weight: 0.0–1.0 controls how strongly the premise influences this node.
+        """
+        parts = []
+
+        # Premise — fades over layers via premise_weight
+        if premise and premise_weight > 0.05:
+            weight_pct = int(premise_weight * 100)
+            if premise_weight > 0.8:
+                label = "STORY PREMISE (this is the core vision — stay true to it)"
+            elif premise_weight > 0.5:
+                label = "STORY PREMISE (keep this present as an undercurrent)"
+            elif premise_weight > 0.3:
+                label = "STORY PREMISE (a distant echo — let it inform tone, not dictate content)"
+            else:
+                label = "STORY PREMISE (faint background influence only)"
+            parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
+
+        # Background (lowest weight)
+        if story_context:
+            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
+                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
+            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+
+        if existing_custom_tags:
+            parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
+
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
+
+        # Ancestor context — keywords and tags, not raw truncated text.
+        # Older ancestors are compressed more aggressively.
+        _STOPWORDS = frozenset({
+            "the","a","an","and","or","but","in","on","at","to","for","of","with",
+            "by","from","is","was","are","were","be","been","being","have","has",
+            "had","do","does","did","will","would","could","should","may","might",
+            "shall","can","that","this","it","its","they","their","them","there",
+            "then","than","what","which","who","whom","when","where","how","not",
+            "no","so","if","as","into","just","like","over","some","each","only",
+            "also","very","about","up","out","all","more","one","two","said","he",
+            "she","his","her","we","our","you","your","my",
+        })
+        ANCESTOR_LABELS = [
+            ('DISTANT ANCESTOR (themes only)',  6),   # keyword count
+            ('GREAT-GRANDPARENT (key images)',   8),
+            ('GRANDPARENT (imagery + mood)',    12),
+            ('DIRECT PARENT (rich context)',    18),
+        ]
+        if ancestor_chain:
+            parts.append('\nANCESTOR CONTEXT (thematic thread — do not copy, just maintain continuity):')
+            for i, (nid, text, tags) in enumerate(ancestor_chain):
+                label, n_keywords = ANCESTOR_LABELS[i] if i < len(ANCESTOR_LABELS) else ANCESTOR_LABELS[0]
+                # Extract distinctive keywords
+                words = re.findall(r"\b[a-zA-Z]{3,}\b", text)
+                keywords = list(dict.fromkeys(
+                    w.lower() for w in words if w.lower() not in _STOPWORDS
+                ))[:n_keywords]
+                custom_tags = [t for t in tags if t not in set(LAYER_ORDER)]
+                parts.append(f'  {label}')
+                parts.append(f'  [{nid}] tags: {custom_tags}, keywords: {", ".join(keywords)}')
+
+        # Sibling differentiation
+        if sibling_summaries:
+            parts.append('\nSIBLINGS ALREADY GENERATED (take a DIFFERENT angle):')
+            for sib_id, sib_summary in sibling_summaries:
+                parts.append(f'  [{sib_id}]: {sib_summary}')
+
+        # Layer direction / motif
+        if layer_direction:
+            parts.append(f'\nLAYER DIRECTION: {layer_direction}')
+        if motif:
+            parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+
+        # Parent node (highest weight)
+        parts.append(
+            f'\nPARENT NODE — continue from this:\n'
+            f'  ID: {parent_id}\n'
+            f'  Tags: {parent_tags}\n'
+            f'  Text: "{parent_text}"'
+        )
+
+        parts.append(f'\nGenerate exactly 1 node in the "{layer_name}" layer continuing from {parent_id}.')
+        prompt = '\n'.join(parts)
+
+        raw = self._run_claude(SYSTEM_GENERATE_SINGLE_NODE, prompt)
+        return self._extract_json(raw)
+
+    def generate_batch_sync(self, parent_id: str, parent_text: str,
+                             parent_tags: list, ancestor_chain: list,
+                             layer_name: str, batch_size: int = 3,
+                             layer_direction: str = '', motif: str = '',
+                             sibling_summaries: list = None,
+                             story_context: str = '',
+                             existing_custom_tags: list = None,
+                             variables: list = None,
+                             premise: str = '',
+                             premise_weight: float = 1.0) -> dict:
+        """Blocking call that generates multiple sibling nodes from one parent.
+
+        Returns dict with 'nodes' and 'connect_from' keys (SYSTEM_EXPAND format).
+        """
+        parts = []
+
+        # Premise — fades over layers
+        if premise and premise_weight > 0.05:
+            weight_pct = int(premise_weight * 100)
+            if premise_weight > 0.8:
+                label = "STORY PREMISE (core vision — stay true to it)"
+            elif premise_weight > 0.5:
+                label = "STORY PREMISE (keep as undercurrent)"
+            elif premise_weight > 0.3:
+                label = "STORY PREMISE (distant echo — inform tone only)"
+            else:
+                label = "STORY PREMISE (faint background)"
+            parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
+
+        if story_context:
+            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
+                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
+            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+
+        if existing_custom_tags:
+            parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
+
+        vars_sec = self._vars_prompt_section(variables or [])
+        if vars_sec:
+            parts.append(vars_sec)
+
+        # Ancestor context — keywords and tags
+        _STOPWORDS = frozenset({
+            "the","a","an","and","or","but","in","on","at","to","for","of","with",
+            "by","from","is","was","are","were","be","been","being","have","has",
+            "had","do","does","did","will","would","could","should","may","might",
+            "shall","can","that","this","it","its","they","their","them","there",
+            "then","than","what","which","who","whom","when","where","how","not",
+            "no","so","if","as","into","just","like","over","some","each","only",
+            "also","very","about","up","out","all","more","one","two","said","he",
+            "she","his","her","we","our","you","your","my",
+        })
+        ANCESTOR_KW = [6, 8, 12, 18]
+        if ancestor_chain:
+            parts.append('\nANCESTOR CONTEXT (thematic thread):')
+            for i, entry in enumerate(ancestor_chain):
+                nid, text = entry[0], entry[1]
+                tags = entry[2] if len(entry) > 2 else []
+                n_kw = ANCESTOR_KW[i] if i < len(ANCESTOR_KW) else 6
+                words = re.findall(r"\b[a-zA-Z]{3,}\b", text)
+                keywords = list(dict.fromkeys(
+                    w.lower() for w in words if w.lower() not in _STOPWORDS
+                ))[:n_kw]
+                custom_tags = [t for t in tags if t not in set(LAYER_ORDER)]
+                parts.append(f'  [{nid}] tags: {custom_tags}, keywords: {", ".join(keywords)}')
+
+        if layer_direction:
+            parts.append(f'\nLAYER DIRECTION: {layer_direction}')
+        if motif:
+            parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+
+        # Source node
+        parts.append(
+            f'\nSOURCE NODE — stay close to this:\n'
+            f'  ID: {parent_id}\n'
+            f'  Tags: {parent_tags}\n'
+            f'  Text: "{parent_text}"'
+        )
+
+        parts.append(f'\nGenerate exactly {batch_size} continuation nodes in the '
+                     f'"{layer_name}" layer branching from this node.')
+        prompt = '\n'.join(parts)
+
+        raw = self._run_claude(SYSTEM_EXPAND, prompt)
+        return self._extract_json(raw)
+
+    def suggest_cross_links_sync(self, layer_nodes: list,
+                                  children_map: dict) -> list:
+        """Blocking call that suggests cross-branch connections.
+
+        layer_nodes: [(node_id, text, tags, child_ids), ...] — all nodes at one layer
+        children_map: {child_id: (text, tags)} — all children of those nodes
+        Returns: [{"from": str, "to": str}, ...]
+        """
+        parts = [f'NODES AT THIS LAYER ({len(layer_nodes)}):']
+        for nid, text, tags, child_ids in layer_nodes:
+            parts.append(f'  [{nid}] tags: {tags}')
+            parts.append(f'    text: "{text[:150]}"')
+            parts.append(f'    children: {child_ids}')
+
+        parts.append(f'\nCHILDREN (potential cross-link targets):')
+        for cid, (ctext, ctags) in children_map.items():
+            parts.append(f'  [{cid}] tags: {ctags}')
+            parts.append(f'    text: "{ctext[:100]}"')
+
+        prompt = '\n'.join(parts)
+        raw = self._run_claude(SYSTEM_CROSS_LINK, prompt)
+        data = self._extract_json(raw)
+        return data.get('cross_links', [])
+
     def continue_from_node(self, source_id: str, source_text: str, source_tags: list,
                            ui_queue: queue.SimpleQueue, on_done, on_error,
                            story_context: str = '', node_hint: str = '',
@@ -1348,9 +2245,7 @@ class AIAssistant:
             return
         self._busy = True
 
-        layer_order = ["intro", "opening", "development", "deepening",
-                       "bridge", "turn", "descent", "resolution"]
-        source_layer = next((t for t in source_tags if t in layer_order), 'development')
+        source_layer = next((t for t in source_tags if t in LAYER_ORDER), 'discovery')
 
         parts = []
         if story_context:
@@ -1689,14 +2584,16 @@ def _playback_loop(play_script: "ScriptData", stop_event: threading.Event,
 # ─────────────────────────────────────────────────────────────────────────────
 
 TAG_COLORS = {
-    'intro':       (60,  100, 180),
-    'opening':     (60,  130, 160),
-    'development': (50,  140, 70),
-    'deepening':   (80,  130, 60),
-    'bridge':      (140, 120, 50),
-    'turn':        (180, 80,  50),
-    'descent':     (160, 50,  60),
-    'resolution':  (120, 60,  150),
+    'arrival':      (60, 100, 180),
+    'presence':     (70, 130, 170),
+    'curiosity':    (80, 160, 140),
+    'discovery':    (100, 170, 80),
+    'complication': (170, 160, 50),
+    'intimacy':     (180, 120, 70),
+    'turn':         (190, 70, 70),
+    'consequence':  (160, 50, 90),
+    'echo':         (130, 70, 150),
+    'stillness':    (120, 60, 150),
 }
 
 
@@ -1830,8 +2727,7 @@ class PropertiesPanel(QWidget):
         layer_row.addWidget(QLabel("Layer:"))
         self.layer_combo = QComboBox()
         self.layer_combo.addItem("(none)", "")
-        for _lt in ["intro", "opening", "development", "deepening",
-                    "bridge", "turn", "descent", "resolution"]:
+        for _lt in LAYER_ORDER:
             self.layer_combo.addItem(_lt, _lt)
         self.layer_combo.currentIndexChanged.connect(self._autosave_tags)
         layer_row.addWidget(self.layer_combo)
@@ -1947,7 +2843,7 @@ class PropertiesPanel(QWidget):
             self.text_edit.setPlainText(nd.get("text", ""))
             self.hint_edit.setPlainText(nd.get("hint", ""))
             all_tags   = nd.get("tags", [])
-            layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+            layer_tags = set(LAYER_ORDER)
             layer_tag  = next((t for t in all_tags if t in layer_tags), "")
             custom_tags = [t for t in all_tags if t not in layer_tags]
             idx = self.layer_combo.findData(layer_tag)
@@ -2280,7 +3176,7 @@ class PropertiesPanel(QWidget):
             parts.append("PRECEDING NODES:\n" + "\n".join(parent_lines))
         parts.append(f"CURRENT NODE [{self._node_id}]:\n{current or '(empty)'}")
         all_tags = nd.get('tags', [])
-        layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
+        layer_tags = set(LAYER_ORDER)
         layer_tag  = next((t for t in all_tags if t in layer_tags), "none")
         custom_tags = [t for t in all_tags if t not in layer_tags]
         parts.append(f"LAYER: {layer_tag}")
@@ -2325,8 +3221,7 @@ class PropertiesPanel(QWidget):
                     try:
                         self.text_edit.setPlainText(new_text)
                         if new_tags:
-                            _lt = {"intro","opening","development","deepening",
-                                   "bridge","turn","descent","resolution"}
+                            _lt = set(LAYER_ORDER)
                             lt  = next((t for t in new_tags if t in _lt), "")
                             ct  = [t for t in new_tags if t not in _lt]
                             idx = self.layer_combo.findData(lt)
@@ -2670,122 +3565,6 @@ class VoiceSettingsPanel(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared frontier expansion logic
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _run_expand_frontier(script, ai, ui_queue, total_calls, generation_set,
-                         arc_beats, arc_motif, on_status, on_log, on_complete):
-    """
-    Single implementation of the iterative layer-expansion loop.
-    Used by both AIChatPanel._expand_frontier and ArcEditorDialog._arc_expand_frontier.
-
-    Callbacks:
-      on_status(msg)  — update a status label
-      on_log(msg)     — append a line to the chat/log display
-      on_complete()   — called once on success OR error (triggers graph rebuild etc.)
-    """
-    TERMINAL_LAYERS = {'resolution'}
-    MAX_LAYERS = 8
-    LAYER_NAMES = ['intro', 'opening', 'development', 'deepening',
-                   'bridge', 'turn', 'descent', 'resolution']
-    layer_key       = LAYER_NAMES[min(total_calls + 1, len(LAYER_NAMES) - 1)]
-    layer_direction = arc_beats.get(layer_key, '')
-
-    if total_calls >= MAX_LAYERS:
-        on_status("Generation complete (layer limit).")
-        on_complete()
-        return
-
-    candidate_ids = generation_set if generation_set is not None else set(script.nodes.keys())
-    frontier = [
-        (nid, script.nodes[nid])
-        for nid in candidate_ids
-        if nid in script.nodes
-        and not script.nodes[nid].get('next')
-        and not any(t in TERMINAL_LAYERS for t in script.nodes[nid].get('tags', []))
-    ]
-
-    if not frontier:
-        count = len(generation_set) if generation_set is not None else len(script.nodes)
-        on_status(f'Complete — {count} new nodes, {total_calls} layers.')
-        on_log(f'Graph complete: {count} new nodes across {total_calls} layer expansions.')
-        on_complete()
-        return
-
-    layer_tags = {'intro', 'opening', 'development', 'deepening',
-                  'bridge', 'turn', 'descent', 'resolution'}
-    existing_custom_tags = list({
-        t for n in script.nodes.values()
-        for t in n.get('tags', []) if t not in layer_tags
-    })
-
-    on_status(f'Layer {total_calls + 1}/{MAX_LAYERS}: '
-              f'expanding [{", ".join(nid for nid, _ in frontier)}]...')
-
-    def on_done(data):
-        import traceback as _tb
-        try:
-            nodes = data.get('nodes', {}) if isinstance(data, dict) else {}
-            if not isinstance(nodes, dict):
-                raise ValueError(f"'nodes' is {type(nodes).__name__}, expected dict")
-
-            allowed_sources = candidate_ids | (generation_set or set())
-            before = set(script.nodes.keys())
-
-            for nd_data in nodes.values():
-                if not isinstance(nd_data, dict):
-                    continue
-                nd_data['connect_from'] = [
-                    s for s in nd_data.get('connect_from', [])
-                    if isinstance(s, str) and s in allowed_sources
-                ]
-                nd_data['next'] = []
-
-            script.apply_layer(data)
-            after   = set(script.nodes.keys())
-            new_ids = after - before
-
-            # Tag each new node with the arc beat that guided this layer
-            if layer_direction:
-                for nid in new_ids:
-                    if nid in script.nodes:
-                        script.nodes[nid]['arc_beat'] = layer_direction
-
-            on_log(f'  Layer {total_calls + 1}: '
-                   f'{", ".join(sorted(new_ids)) or "(no new nodes)"}')
-
-            _run_expand_frontier(
-                script, ai, ui_queue,
-                total_calls + 1,
-                (generation_set | new_ids) if generation_set is not None else new_ids,
-                arc_beats, arc_motif,
-                on_status, on_log, on_complete,
-            )
-        except Exception as exc:
-            _tb.print_exc()
-            on_status(f'Layer {total_calls + 1} parse error: {exc}')
-            on_log(f'  Layer {total_calls + 1} error: {exc}')
-            on_complete()
-
-    def on_error(e):
-        on_status(f'Layer {total_calls + 1} error: {e[:50]}')
-        on_log(f'  Layer error: {e[:80]}')
-        on_complete()
-
-    ai.generate_layer(
-        frontier,
-        ui_queue=ui_queue,
-        on_done=on_done,
-        on_error=on_error,
-        story_context=script.story_context_focused,
-        existing_custom_tags=existing_custom_tags,
-        layer_direction=layer_direction,
-        motif=arc_motif,
-        variables=script.variables,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # AIChatPanel
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2887,7 +3666,8 @@ class AIChatPanel(QWidget):
         btn_row.addWidget(chat_btn)
 
         gen_btn = QPushButton("Generate Graph")
-        gen_btn.clicked.connect(self._cmd_generate_graph)
+        gen_btn.setToolTip("Generate graph with parallel AI workers")
+        gen_btn.clicked.connect(self._cmd_generate_parallel)
         btn_row.addWidget(gen_btn)
 
         reset_btn = QPushButton("Reset")
@@ -2961,76 +3741,82 @@ class AIChatPanel(QWidget):
             ),
         )
 
-    def _cmd_generate_graph(self):
+    def _cmd_generate_parallel(self):
+        """Generate graph using parallel orchestrator — one node per AI call."""
         if not self._ai or not self._ui_queue or not self._script:
             return
         if not self._ai.ready:
             self.status_label.setText("claude CLI not found")
-            return
-        if self._ai.busy:
-            self.status_label.setText("AI is busy...")
             return
 
         prompt = ' '.join(self.chat_input.toPlainText().split('\n')).strip()
         if not prompt:
             prompt = "Generate a narrative graph based on our conversation so far."
         self.chat_input.setPlainText("")
-        self.append_message("user", f"[Generate graph]: {prompt}")
+        self.append_message("user", f"[Parallel generate]: {prompt}")
         self.status_label.setText("Generating seed nodes...")
         self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;")
 
         arc = self._script.active_arc() if self._script else None
-        arc_beats  = arc.get('beats', {}) if arc else {}
-        arc_motif  = arc.get('motif', '')  if arc else ''
+        arc_beats = arc.get('beats', {}) if arc else {}
+        arc_motif = arc.get('motif', '') if arc else ''
 
         def on_seed_done(data):
             before = set(self._script.nodes.keys())
             self._script.apply_generated(data)
-            after  = set(self._script.nodes.keys())
-            seed_ids = after - before
-            intro_beat = arc_beats.get('intro', '')
-            if intro_beat:
-                for nid in seed_ids:
-                    if nid in self._script.nodes:
-                        self._script.nodes[nid]['arc_beat'] = intro_beat
-            names = ', '.join(sorted(seed_ids))
-            self.append_message("assistant", f"Seed: {names}")
-            self.status_label.setText(f"Seed done ({len(seed_ids)} nodes). Expanding...")
-            self._expand_frontier(0, generation_set=seed_ids,
-                                  arc_beats=arc_beats, arc_motif=arc_motif)
+            after = set(self._script.nodes.keys())
+            seed_ids = sorted(after - before)
+
+            if not seed_ids:
+                self.status_label.setText("No seed nodes generated")
+                return
+
+            # Mark seeds as start nodes
+            for nid in seed_ids:
+                self._script.set_start(nid, True)
+
+            # Add to visual graph
+            if self._on_nodes_incremental:
+                self._on_nodes_incremental(set(seed_ids))
+
+            self.append_message("assistant", f"Seeds: {', '.join(seed_ids)}")
+            self.status_label.setText(f"Seeds done. Starting parallel expansion...")
+
+            # Launch orchestrator
+            self._orchestrator = ParallelNodeOrchestrator(
+                script=self._script,
+                ui_queue=self._ui_queue,
+                model=self._ai.model,
+                profile='full',
+                story_context=self._script.story_context_focused,
+                motif=arc_motif,
+                premise=prompt,
+                arc_beats=arc_beats,
+                variables=self._script.variables,
+                on_progress=lambda msg: (
+                    self.status_label.setText(msg),
+                    self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;"),
+                ),
+                on_complete=lambda: (
+                    self.status_label.setText(
+                        f"Parallel generation complete — {len(self._script.nodes)} nodes"),
+                    self.status_label.setStyleSheet("color: #88ee88; font-size: 10px;"),
+                    self._on_graph_generated() if self._on_graph_generated else None,
+                ),
+                on_node_added=self._on_nodes_incremental,
+            )
+            self._orchestrator.start(seed_ids)
 
         def on_seed_error(e):
-            self.status_label.setText(f"Error: {e[:50]}")
+            self.status_label.setText(f"Seed error: {e[:50]}")
             self.status_label.setStyleSheet("color: #ff5555; font-size: 10px;")
-            self.append_message("assistant", f"Seed error: {e}")
 
         self._ai.generate_seed(
             prompt, self._ui_queue, on_seed_done, on_seed_error,
             story_context=self._script.story_context_focused if self._script else '',
-            layer_direction=arc_beats.get('intro', ''),
+            layer_direction=arc_beats.get('arrival', ''),
             motif=arc_motif,
             variables=self._script.variables if self._script else [],
-        )
-
-    def _expand_frontier(self, total_calls: int, generation_set: set = None,
-                         arc_beats: dict = None, arc_motif: str = ''):
-        def on_status(msg):
-            self.status_label.setText(msg)
-            ok = msg.startswith('Complete') or msg.startswith('Generation complete')
-            self.status_label.setStyleSheet(
-                "color: #88ee88; font-size: 10px;" if ok else "color: #cccc55; font-size: 10px;")
-
-        _run_expand_frontier(
-            script=self._script,
-            ai=self._ai,
-            ui_queue=self._ui_queue,
-            total_calls=total_calls,
-            generation_set=generation_set,
-            arc_beats=arc_beats or {},
-            arc_motif=arc_motif,
-            on_status=on_status,
-            on_log=lambda msg: self.append_message('assistant', msg),
-            on_complete=self._on_graph_generated if self._on_graph_generated else lambda: None,
         )
 
     def _cmd_reset(self):
@@ -3629,8 +4415,7 @@ class _GraphViewHoverFilter(QObject):
 class ArcEditorDialog(QDialog):
     """Popup dialog for editing story arcs and wiring them into generation."""
 
-    LAYER_NAMES = ['intro', 'opening', 'development', 'deepening',
-                   'bridge', 'turn', 'descent', 'resolution']
+    LAYER_NAMES = LAYER_ORDER
 
     def __init__(self, script: 'ScriptData', ai: 'AIAssistant',
                  ui_queue: queue.SimpleQueue, on_graph_generated=None, parent=None):
@@ -3775,7 +4560,7 @@ class ArcEditorDialog(QDialog):
         bot = QHBoxLayout()
         self.gen_btn = QPushButton("Generate Graph from Arc")
         self.gen_btn.setStyleSheet("font-weight: bold;")
-        self.gen_btn.clicked.connect(self._cmd_generate_from_arc)
+        self.gen_btn.clicked.connect(self._cmd_generate_from_arc_parallel)
         bot.addWidget(self.gen_btn)
 
         bot.addStretch()
@@ -3909,7 +4694,8 @@ class ArcEditorDialog(QDialog):
         if not self.arc_list.count():
             self._clear_fields()
 
-    def _cmd_generate_from_arc(self):
+    def _cmd_generate_from_arc_parallel(self):
+        """Parallel generation from arc — one node per AI call."""
         if not self._current_arc_id:
             self.chat_status.setText("No arc selected.")
             return
@@ -3919,66 +4705,61 @@ class ArcEditorDialog(QDialog):
         if not self._main_ai.ready:
             self.chat_status.setText("claude CLI not found.")
             return
-        if self._main_ai.busy:
-            self.chat_status.setText("AI is busy — wait for current task to finish.")
-            return
 
-        # Build a prompt from the arc's premise (fallback to name)
         prompt = arc.get('premise', '').strip() or arc.get('name', 'Generate a narrative graph.')
         arc_beats = arc.get('beats', {})
         arc_motif = arc.get('motif', '')
 
         self.gen_btn.setEnabled(False)
+        pass  # gen_btn disabled in _cmd_generate_from_arc_parallel
         self.chat_status.setText("Generating seed nodes…")
-        self._append_chat('assistant', f'[Generating graph from arc: {arc.get("name", "")}]')
+        self._append_chat('assistant', f'[Parallel gen from arc: {arc.get("name", "")}]')
 
         def on_seed_done(data):
             before = set(self.script.nodes.keys())
             self.script.apply_generated(data)
             after = set(self.script.nodes.keys())
-            seed_ids = after - before
-            intro_beat = arc_beats.get('intro', '')
+            seed_ids = sorted(after - before)
+
             for nid in seed_ids:
                 if nid in self.script.nodes:
-                    if intro_beat:
-                        self.script.nodes[nid]['arc_beat'] = intro_beat
-                    # Mark seed/intro nodes as start nodes
                     self.script.set_start(nid, True)
-            self._append_chat('assistant', f'Seed: {", ".join(sorted(seed_ids))}')
-            self.chat_status.setText(f'Seed done ({len(seed_ids)} nodes). Expanding…')
-            self._arc_expand_frontier(0, generation_set=seed_ids,
-                                      arc_beats=arc_beats, arc_motif=arc_motif)
+
+            self._append_chat('assistant', f'Seeds: {", ".join(seed_ids)}')
+            self.chat_status.setText(f'Seeds done. Starting parallel expansion…')
+
+            self._orchestrator = ParallelNodeOrchestrator(
+                script=self.script,
+                ui_queue=self.ui_queue,
+                model=self._main_ai.model,
+                profile='full',
+                story_context=self.script.story_context_focused,
+                motif=arc_motif,
+                premise=prompt,
+                arc_beats=arc_beats,
+                variables=self.script.variables,
+                on_progress=lambda msg: self.chat_status.setText(msg),
+                on_complete=lambda: (
+                    self.gen_btn.setEnabled(True),
+                    self.chat_status.setText(
+                        f'Parallel generation complete — {len(self.script.nodes)} nodes'),
+                    self._on_graph_generated() if self._on_graph_generated else None,
+                ),
+                on_node_added=None,  # don't rebuild graph per-node; full rebuild on_complete
+            )
+            self._orchestrator.start(seed_ids)
 
         def on_seed_error(e):
             self.chat_status.setText(f'Seed error: {e[:60]}')
             self.gen_btn.setEnabled(True)
+            self.par_gen_btn.setEnabled(True)
 
         self._main_ai.generate_seed(
             prompt, self.ui_queue, on_seed_done, on_seed_error,
             story_context=self.script.story_context_focused,
-            layer_direction=arc_beats.get('intro', ''),
+            layer_direction=arc_beats.get('arrival', ''),
             motif=arc_motif,
             variables=self.script.variables,
-        )
-
-    def _arc_expand_frontier(self, total_calls: int, generation_set: set = None,
-                              arc_beats: dict = None, arc_motif: str = ''):
-        def on_complete():
-            self.gen_btn.setEnabled(True)
-            if self._on_graph_generated:
-                self._on_graph_generated()
-
-        _run_expand_frontier(
-            script=self.script,
-            ai=self._main_ai,
-            ui_queue=self.ui_queue,
-            total_calls=total_calls,
-            generation_set=generation_set,
-            arc_beats=arc_beats or {},
-            arc_motif=arc_motif,
-            on_status=lambda msg: self.chat_status.setText(msg),
-            on_log=lambda msg: self._append_chat('assistant', msg),
-            on_complete=on_complete,
         )
 
     # ── Arc chat ─────────────────────────────────────────────────────────────
@@ -4377,7 +5158,7 @@ class MainWindow(QMainWindow):
         for model_id in [
             'claude-sonnet-4-20250514',
             'claude-opus-4-20250514',
-            'claude-haiku-3-5-20241022',
+            'claude-haiku-4-5-20251001',
         ]:
             short = model_id.split('-')[1].capitalize()  # Sonnet / Opus / Haiku
             act = QAction(short, self, checkable=True)
@@ -4839,18 +5620,20 @@ class MainWindow(QMainWindow):
         return None
 
     def _get_connected_nodes(self, node_id: str):
-        """Return (parent_ids, child_ids) directly connected to node_id."""
-        node = self._node_items.get(node_id)
-        if not node:
-            return set(), set()
-        def nid_of(n):
-            return next((k for k, v in self._node_items.items() if v is n), None)
-        parents  = {nid_of(p.node()) for p in node.input(0).connected_ports()}
-        children = {nid_of(p.node()) for p in node.output(0).connected_ports()}
-        return parents - {None}, children - {None}
+        """Return (parent_ids, child_ids) directly connected to node_id using script data."""
+        nd = self.script.nodes.get(node_id, {})
+        children = set(nd.get('next', []))
+        parents = set()
+        for nid, n in self.script.nodes.items():
+            if node_id in n.get('next', []):
+                parents.add(nid)
+        return parents, children
 
     def _pipe_connections(self):
         """Yield (pipe_item, from_node_id, to_node_id) for every pipe in the scene."""
+        # Build a reverse lookup: view object → node_id (O(N) once)
+        view_to_nid = {node.view: nid for nid, node in self._node_items.items()}
+
         viewer = self.graph.viewer()
         for item in viewer.scene().items():
             if 'Pipe' not in type(item).__name__:
@@ -4859,136 +5642,97 @@ class MainWindow(QMainWindow):
             out_port = getattr(item, 'output_port', None)
             if in_port is None or out_port is None:
                 continue
-            in_view  = in_port.parentItem()
-            out_view = out_port.parentItem()
-            from_nid = to_nid = None
-            for nid, node in self._node_items.items():
-                if node.view is out_view:
-                    from_nid = nid
-                if node.view is in_view:
-                    to_nid = nid
+            from_nid = view_to_nid.get(out_port.parentItem())
+            to_nid   = view_to_nid.get(in_port.parentItem())
             if from_nid and to_nid:
                 yield item, from_nid, to_nid
 
     def _apply_highlight(self, node_id: str):
-        """Multi-level opacity fade: focus → 1st order → 2nd order → unrelated.
-        Traversal is strictly directional: upstream follows inputs only,
-        downstream follows outputs only, so siblings are never included."""
+        """Directional opacity fade — ancestors and descendants only.
 
-        def nid_of(n):
-            return next((k for k, v in self._node_items.items() if v is n), None)
+        Upstream (parents) and downstream (children) are traced separately
+        so siblings, cousins, and other sideways connections stay dimmed.
+        """
+        nodes = self.script.nodes
+        if node_id not in nodes:
+            return
 
-        def upstream(nid):
-            n = self._node_items.get(nid)
-            if not n:
-                return set()
-            return {r for p in n.input(0).connected_ports() if (r := nid_of(p.node()))}
+        # Build adjacency from script data (O(E))
+        children_of = {}
+        parents_of = defaultdict(set)
+        for nid, nd in nodes.items():
+            children_of[nid] = set(nd.get('next', []))
+            for cid in nd.get('next', []):
+                parents_of[cid].add(nid)
 
-        def downstream(nid):
-            n = self._node_items.get(nid)
-            if not n:
-                return set()
-            return {r for p in n.output(0).connected_ports() if (r := nid_of(p.node()))}
+        # Trace upstream (ancestors) — follow parents only
+        up_dist = {}
+        frontier = {node_id}
+        for level in range(1, 10):
+            next_frontier = set()
+            for nid in frontier:
+                for parent in parents_of.get(nid, set()):
+                    if parent not in up_dist:
+                        up_dist[parent] = level
+                        next_frontier.add(parent)
+            frontier = next_frontier
+            if not frontier:
+                break
 
-        up1   = upstream(node_id)
-        down1 = downstream(node_id)
-        first = up1 | down1
+        # Trace downstream (descendants) — follow children only
+        down_dist = {}
+        frontier = {node_id}
+        for level in range(1, 10):
+            next_frontier = set()
+            for nid in frontier:
+                for child in children_of.get(nid, set()):
+                    if child not in down_dist:
+                        down_dist[child] = level
+                        next_frontier.add(child)
+            frontier = next_frontier
+            if not frontier:
+                break
 
-        up2   = set()
-        for nid in up1:
-            up2 |= upstream(nid)
-        down2 = set()
-        for nid in down1:
-            down2 |= downstream(nid)
-        second = (up2 | down2) - first - {node_id}
+        # Merge — use the closer distance if a node appears in both
+        dist = {node_id: 0}
+        for nid, d in up_dist.items():
+            dist[nid] = d
+        for nid, d in down_dist.items():
+            if nid not in dist or d < dist[nid]:
+                dist[nid] = d
 
-        up3   = set()
-        for nid in up2:
-            up3 |= upstream(nid)
-        down3 = set()
-        for nid in down2:
-            down3 |= downstream(nid)
-        third = (up3 | down3) - second - first - {node_id}
-
-        up4   = set()
-        for nid in up3:
-            up4 |= upstream(nid)
-        down4 = set()
-        for nid in down3:
-            down4 |= downstream(nid)
-        fourth = (up4 | down4) - third - second - first - {node_id}
-
-        up5   = set()
-        for nid in up4:
-            up5 |= upstream(nid)
-        down5 = set()
-        for nid in down4:
-            down5 |= downstream(nid)
-        fifth = (up5 | down5) - fourth - third - second - first - {node_id}
-
-        up6   = set()
-        for nid in up5:
-            up6 |= upstream(nid)
-        down6 = set()
-        for nid in down5:
-            down6 |= downstream(nid)
-        sixth = (up6 | down6) - fifth - fourth - third - second - first - {node_id}
-
-        up7   = set()
-        for nid in up6:
-            up7 |= upstream(nid)
-        down7 = set()
-        for nid in down6:
-            down7 |= downstream(nid)
-        seventh = (up7 | down7) - sixth - fifth - fourth - third - second - first - {node_id}
-
-        up8   = set()
-        for nid in up7:
-            up8 |= upstream(nid)
-        down8 = set()
-        for nid in down7:
-            down8 |= downstream(nid)
-        eighth = (up8 | down8) - seventh - sixth - fifth - fourth - third - second - first - {node_id}
-
-        up9   = set()
-        for nid in up8:
-            up9 |= upstream(nid)
-        down9 = set()
-        for nid in down8:
-            down9 |= downstream(nid)
-        ninth = (up9 | down9) - eighth - seventh - sixth - fifth - fourth - third - second - first - {node_id}
-
-        highlighted = first | second | third | fourth | fifth | sixth | seventh | eighth | ninth | {node_id}
+        OPACITY = [1.0, 1.0, 0.85, 0.70, 0.55, 0.42, 0.32, 0.25, 0.20, 0.16]
+        highlighted = set(dist.keys())
 
         for nid, n in self._node_items.items():
-            if nid == node_id:
-                n.view.setOpacity(1.0)
-            elif nid in first:
-                n.view.setOpacity(1.0)
-            elif nid in second:
-                n.view.setOpacity(0.90)
-            elif nid in third:
-                n.view.setOpacity(0.78)
-            elif nid in fourth:
-                n.view.setOpacity(0.67)
-            elif nid in fifth:
-                n.view.setOpacity(0.57)
-            elif nid in sixth:
-                n.view.setOpacity(0.47)
-            elif nid in seventh:
-                n.view.setOpacity(0.38)
-            elif nid in eighth:
-                n.view.setOpacity(0.31)
-            elif nid in ninth:
-                n.view.setOpacity(0.25)
+            d = dist.get(nid)
+            if d is not None and d < len(OPACITY):
+                n.view.setOpacity(OPACITY[d])
             else:
-                n.view.setOpacity(0.07)
+                n.view.setOpacity(0.05)
 
-        for pipe, from_nid, to_nid in self._pipe_connections():
-            if from_nid in highlighted and to_nid in highlighted:
-                pipe.setOpacity(1.0)
+        # Highlight pipes: bright if both endpoints are in the lineage, dim otherwise
+        # Build edge set from script data for fast lookup
+        highlighted_edges = set()
+        for nid in highlighted:
+            for cid in children_of.get(nid, set()):
+                if cid in highlighted:
+                    highlighted_edges.add((nid, cid))
+
+        view_to_nid = {node.view: nid for nid, node in self._node_items.items()}
+        for item in self.graph.viewer().scene().items():
+            if 'Pipe' not in type(item).__name__:
+                continue
+            out_port = getattr(item, 'output_port', None)
+            in_port = getattr(item, 'input_port', None)
+            if out_port is None or in_port is None:
+                continue
+            from_nid = view_to_nid.get(out_port.parentItem())
+            to_nid = view_to_nid.get(in_port.parentItem())
+            if (from_nid, to_nid) in highlighted_edges:
+                item.setOpacity(1.0)
             else:
-                pipe.setOpacity(0.05)
+                item.setOpacity(0.04)
 
     def _apply_search_overlays(self, matched: set):
         """Add crosshatch overlays to all matched nodes; remove from nodes no longer matching."""
@@ -5025,8 +5769,9 @@ class MainWindow(QMainWindow):
             return
         for n in self._node_items.values():
             n.view.setOpacity(1.0)
-        for pipe, _, _ in self._pipe_connections():
-            pipe.setOpacity(1.0)
+        for item in self.graph.viewer().scene().items():
+            if 'Pipe' in type(item).__name__:
+                item.setOpacity(1.0)
 
     def _on_node_hover_enter(self, node_id: str):
         self._apply_highlight(node_id)
@@ -5102,7 +5847,7 @@ class MainWindow(QMainWindow):
 
             if self.ai.ready and not self.ai.busy:
                 act_gen = menu.addAction("Generate Graph (AI)")
-                act_gen.triggered.connect(self.chat_panel._cmd_generate_graph)
+                act_gen.triggered.connect(self.chat_panel._cmd_generate_parallel)
 
             menu.addSeparator()
             act_freq = menu.addAction("Toggle Frequency Heat Map")
@@ -5227,11 +5972,30 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def _on_graph_generated(self):
-        """Called after AI generates a graph."""
-        self._rebuild_graph()
-        self._cmd_apply_tree_layout()
+        """Called after AI generates a graph.
+
+        If the graph already has the right number of node items (incremental adds
+        kept it in sync), skip the expensive full rebuild and just update layout.
+        """
+        n_script = len(self.script.nodes)
+        n_items  = len(self._node_items)
+
+        if n_items < n_script:
+            # Some nodes were added to script but not to the graph — do incremental
+            missing = set(self.script.nodes.keys()) - set(self._node_items.keys())
+            if missing:
+                self._add_nodes_incremental(missing)
+
+        # Only do a full rebuild if the graph is badly out of sync
+        if abs(len(self._node_items) - n_script) > n_script * 0.2:
+            self._rebuild_graph()
+
+        # Layout: reposition existing items (no recreation)
+        try:
+            self._cmd_apply_tree_layout()
+        except Exception:
+            pass  # layout failure shouldn't crash
         self._update_title()
-        self._maybe_refresh_freq()
         self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Graph updated: {len(self.script.nodes)} nodes")
 
@@ -5404,124 +6168,92 @@ class MainWindow(QMainWindow):
             self._maybe_refresh_freq()
 
     def _cmd_expand_node(self, node_id: str, node_min: int = 2, node_max: int = 5):
+        """Expand a node using parallel orchestrator (1-2 layers deep)."""
         if not node_id or node_id not in self.script.nodes:
             self.status_bar.showMessage("Select a node to expand")
             return
         if not self.ai.ready:
             self.status_bar.showMessage("claude CLI not found")
             return
-        if self.ai.busy:
-            self.status_bar.showMessage("AI is busy...")
-            return
 
-        nd = self.script.nodes[node_id]
-        hint = self.chat_panel.chat_input.toPlainText().strip()
+        self.status_bar.showMessage(f"Expanding '{node_id}' (parallel)...")
+        self.chat_panel.append_message("assistant",
+            f"[Parallel expand '{node_id}' ({node_min}-{node_max} nodes)]")
 
-        _layer_tags = {"intro","opening","development","deepening","bridge","turn","descent","resolution"}
-        existing_custom_tags = sorted({
-            t for n in self.script.nodes.values()
-            for t in n.get("tags", [])
-            if t not in _layer_tags
-        })
+        arc = self.script.active_arc() if self.script else None
+        arc_beats = arc.get('beats', {}) if arc else {}
+        arc_motif = arc.get('motif', '') if arc else ''
 
-        self.status_bar.showMessage(f"Expanding '{node_id}'...")
+        # Override the expand profile's width with the user's min/max
+        expand_profile = {
+            'max_depth': 2,
+            'widths': {'*': (node_min, node_max)},
+        }
 
-        def on_done(data):
-            n = len(data.get("nodes", {}))
-            before = set(self.script.nodes.keys())
-            self.script.apply_expansion(node_id, data)
-            after = set(self.script.nodes.keys())
-            new_ids = after - before
-            for nid, pos in _layout_tree(self.script).items():
-                self.script.update_pos(nid, pos)
-            # Reposition existing nodes in the display without a full rebuild
-            for nid, node_item in list(self._node_items.items()):
-                pos = self.script.nodes.get(nid, {}).get('pos', [100, 100])
-                node_item.set_pos(float(pos[0]), float(pos[1]))
-            # Add only new nodes/edges — avoids clear_session() crash on large graphs
-            self._add_nodes_incremental(new_ids)
-            if node_id in self.script.nodes:
-                self._select_node(node_id)
-            self._update_title()
-            self.status_bar.showMessage(f"Expanded '{node_id}' -> {n} new nodes")
-            self.chat_panel.append_message("assistant",
-                f"Expanded '{node_id}' with {n} new nodes.")
+        arc_premise = arc.get('premise', '') if arc else ''
 
-        def on_error(e):
-            self.status_bar.showMessage(f"Expand error: {e[:60]}")
-            self.chat_panel.append_message("assistant", f"[Expand error] {e}")
-
-        self.ai.expand_node(
-            source_id=node_id,
-            source_text=nd.get("text", ""),
-            source_tags=nd.get("tags", []),
-            hint=hint,
+        self._orchestrator = ParallelNodeOrchestrator(
+            script=self.script,
             ui_queue=self.ui_queue,
-            on_done=on_done,
-            on_error=on_error,
+            model=self.ai.model,
+            profile='expand',
             story_context=self.script.story_context_focused,
-            node_hint=nd.get("hint", ""),
-            upstream_path=self._get_upstream_path(node_id),
-            node_min=node_min,
-            node_max=node_max,
-            existing_custom_tags=existing_custom_tags,
+            motif=arc_motif,
+            premise=arc_premise,
+            arc_beats=arc_beats,
             variables=self.script.variables,
+            on_progress=lambda msg: self.status_bar.showMessage(msg),
+            on_complete=lambda nid=node_id: (
+                self.status_bar.showMessage(
+                    f"Expand complete — {len(self.script.nodes)} total nodes"),
+                self._update_title(),
+                self._select_node(nid) if nid in self.script.nodes else None,
+            ),
+            on_node_added=self._add_nodes_incremental,
         )
+        # Override the profile with custom widths
+        self._orchestrator._profile = expand_profile
+        self._orchestrator.start([node_id])
 
     def _cmd_continue_from_node(self, node_id: str):
-        """Generate 2-4 forward layers from an existing node and wire them to it."""
+        """Continue from an existing node using parallel orchestrator (all remaining layers)."""
         if not node_id or node_id not in self.script.nodes:
             self.status_bar.showMessage("Select a node to continue from")
             return
         if not self.ai.ready:
             self.status_bar.showMessage("claude CLI not found")
             return
-        if self.ai.busy:
-            self.status_bar.showMessage("AI is busy...")
-            return
 
         nd = self.script.nodes[node_id]
-        hint = self.chat_panel.chat_input.toPlainText().strip()
-        self.status_bar.showMessage(f"Continuing from '{node_id}'...")
+        self.status_bar.showMessage(f"Continuing from '{node_id}' (parallel)...")
+        self.chat_panel.append_message("assistant",
+            f"[Parallel continue from '{node_id}']")
 
-        def on_done(data):
-            # Reuse apply_expansion: treat start_nodes as connect_from targets
-            expansion_data = dict(data)
-            expansion_data['connect_from'] = data.get('start_nodes', [])
-            before = set(self.script.nodes.keys())
-            self.script.apply_expansion(node_id, expansion_data)
-            after = set(self.script.nodes.keys())
-            new_ids = after - before
-            for nid, pos in _layout_tree(self.script).items():
-                self.script.update_pos(nid, pos)
-            # Reposition existing nodes in the display without a full rebuild
-            for nid, node_item in list(self._node_items.items()):
-                pos = self.script.nodes.get(nid, {}).get('pos', [100, 100])
-                node_item.set_pos(float(pos[0]), float(pos[1]))
-            # Add only new nodes/edges — avoids clear_session() crash on large graphs
-            self._add_nodes_incremental(new_ids)
-            self._select_node(node_id)
-            n = len(data.get("nodes", {}))
-            self._update_title()
-            self.status_bar.showMessage(f"Continued '{node_id}' → {n} new nodes")
-            self.chat_panel.append_message("assistant",
-                f"Continued from '{node_id}' with {n} new nodes.")
+        arc = self.script.active_arc() if self.script else None
+        arc_beats = arc.get('beats', {}) if arc else {}
+        arc_motif = arc.get('motif', '') if arc else ''
+        arc_premise = arc.get('premise', '') if arc else ''
 
-        def on_error(e):
-            self.status_bar.showMessage(f"Continue error: {e[:60]}")
-            self.chat_panel.append_message("assistant", f"[Continue error] {e}")
-
-        self.ai.continue_from_node(
-            source_id=node_id,
-            source_text=nd.get("text", ""),
-            source_tags=nd.get("tags", []),
+        self._orchestrator = ParallelNodeOrchestrator(
+            script=self.script,
             ui_queue=self.ui_queue,
-            on_done=on_done,
-            on_error=on_error,
+            model=self.ai.model,
+            profile='continue',
             story_context=self.script.story_context_focused,
-            node_hint=nd.get("hint", "") or hint,
+            motif=arc_motif,
+            premise=arc_premise,
+            arc_beats=arc_beats,
             variables=self.script.variables,
+            on_progress=lambda msg: self.status_bar.showMessage(msg),
+            on_complete=lambda nid=node_id: (
+                self.status_bar.showMessage(
+                    f"Continue complete — {len(self.script.nodes)} total nodes"),
+                self._update_title(),
+                self._select_node(nid) if nid in self.script.nodes else None,
+            ),
+            on_node_added=self._add_nodes_incremental,
         )
+        self._orchestrator.start([node_id])
 
     def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
         """Monte Carlo random walk with recency damping.

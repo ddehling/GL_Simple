@@ -51,27 +51,44 @@ class EnvironmentalSystem:
         receivers = [
             [
                 {
-                    'ip': '192.168.68.140',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
+                    'ip': '192.168.68.111',
+                    'pixel_count': 2019,
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt")
                 },
                 {
-                    'ip': '192.168.68.141',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
+                    'ip': '192.168.68.125',
+                    'pixel_count': 1777,
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt")
                 },
                 {
-                    'ip': '192.168.68.142',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
-                },
-                {
-                    'ip': '192.168.68.143',
-                    'pixel_count': disp["height"] * 32,
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
+                    'ip': '192.168.68.124',
+                    'pixel_count': 1793,
+                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt")
                 },
             ],
-        ]
+            # [
+            #     {
+            #         'ip': '192.168.68.140',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
+            #     },
+            #     {
+            #         'ip': '192.168.68.141',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
+            #     },
+            #     {
+            #         'ip': '192.168.68.142',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
+            #     },
+            #     {
+            #         'ip': '192.168.68.143',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
+            #     },
+            # ],
+            ]
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
