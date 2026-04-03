@@ -81,7 +81,7 @@ GENERATION_PROFILES = {
         # Hard cap on total nodes at each layer (global, across all branches)
         # Diamond shape: 2 branches, expand through discovery, gentle taper
         'layer_caps': {
-            'arrival': 2, 'presence': 5, 'curiosity': 7,
+            'arrival': 4, 'presence': 6, 'curiosity': 8,
             'discovery': 12, 'complication': 10, 'intimacy': 9,
             'turn': 8, 'consequence': 7, 'echo': 5, 'stillness': 5,
         },
@@ -95,7 +95,7 @@ GENERATION_PROFILES = {
             'stillness': (1, 2),
         },
         'layer_caps': {
-            'arrival': 2, 'presence': 5, 'curiosity': 7,
+            'arrival': 4, 'presence': 6, 'curiosity': 8,
             'discovery': 12, 'complication': 10, 'intimacy': 9,
             'turn': 8, 'consequence': 7, 'echo': 5, 'stillness': 5,
         },
@@ -271,7 +271,7 @@ Scripts play as atmospheric spoken audio layered over weather and lighting effec
 Each node is one short spoken segment (40–100 words, ~15–35 seconds when read aloud).
 Use evocative, atmospheric language suited to the theme.
 
-Generate ONLY the arrival layer — exactly 2 opening nodes that establish pure sensory immersion.
+Generate ONLY the arrival layer — exactly 4 opening nodes that establish pure sensory immersion.
 Each node should set up a DISTINCT story branch — different perspectives, locations, or characters.
 These are the first words the audience will hear. Leave "next" as [] for ALL nodes —
 subsequent layers will be generated separately in a follow-up step.
@@ -420,7 +420,11 @@ You will receive one existing node and must generate new nodes that continue FRO
 
 Each new node is a short spoken segment (40–100 words, ~15–35 seconds when read aloud).
 
-THEMATIC CONTINUITY — this is the most important rule:
+AUTHOR DIRECTION — if an "AUTHOR DIRECTION" line appears in the prompt, it is the
+HIGHEST PRIORITY instruction. Follow it even if it contradicts thematic continuity rules below.
+The author's creative intent always takes precedence over default behavior.
+
+THEMATIC CONTINUITY — important, but secondary to author direction:
 The daughter nodes must feel like they are in the same room as the parent node.
 - Keep the same specific imagery, sensory details, and atmosphere.
 - If the parent mentions a specific character, place, or object, the daughters should
@@ -1070,6 +1074,13 @@ class ScriptData:
         if not final_id:
             return None
 
+        # Position new node to the right of its parent
+        if parent_id and parent_id in self._data['nodes']:
+            parent_nd = self._data['nodes'][parent_id]
+            pp = parent_nd.get('pos', [100, 100])
+            sibling_count = len(parent_nd.get('next', []))
+            single[final_id]['pos'] = [pp[0] + 300, pp[1] + sibling_count * 120]
+
         # Add node
         self._data['nodes'][final_id] = single[final_id]
 
@@ -1168,7 +1179,7 @@ class ParallelNodeOrchestrator:
     def __init__(self, script: 'ScriptData', ui_queue: queue.SimpleQueue,
                  model: str = '', profile: str = 'full',
                  story_context: str = '', motif: str = '',
-                 premise: str = '',
+                 premise: str = '', themes: str = '',
                  arc_beats: dict = None, variables: list = None,
                  on_progress=None, on_complete=None, on_node_added=None):
         self._script       = script
@@ -1177,6 +1188,7 @@ class ParallelNodeOrchestrator:
         self._story_context = story_context
         self._motif        = motif
         self._premise      = premise
+        self._themes       = themes
         self._arc_beats    = arc_beats or {}
         self._variables    = variables or []
         self._on_progress  = on_progress   # callback(status_str)
@@ -1215,6 +1227,53 @@ class ParallelNodeOrchestrator:
     @property
     def running(self) -> bool:
         return self._active_count > 0
+
+    def start_merged(self, parent_ids: list, batch_size: int = 3):
+        """Generate children that share ALL parent_ids as parents (merge operation).
+
+        The children's layer is determined by the deepest parent's next layer.
+        """
+        valid = [nid for nid in parent_ids if nid in self._script.nodes]
+        if not valid:
+            return
+        print(f'[Parallel] Merged start from {len(valid)} parents: {valid}')
+
+        # Determine child layer from the deepest parent
+        deepest_idx = 0
+        for nid in valid:
+            tags = self._script.nodes[nid].get('tags', [])
+            layer = next((t for t in tags if t in LAYER_ORDER), 'arrival')
+            idx = LAYER_ORDER.index(layer) if layer in LAYER_ORDER else 0
+            deepest_idx = max(deepest_idx, idx)
+
+        next_idx = min(deepest_idx + 1, len(LAYER_ORDER) - 1)
+        child_layer = LAYER_ORDER[next_idx]
+        if child_layer == LAYER_ORDER[deepest_idx] and deepest_idx == len(LAYER_ORDER) - 1:
+            print(f'[Parallel] All parents at stillness — nothing to generate')
+            self._ui_queue.put(lambda: self._on_complete() if self._on_complete else None)
+            return
+
+        # Use first parent as root for branch tracking
+        root_id = valid[0]
+        for nid in valid:
+            self._node_to_root[nid] = root_id
+
+        direction = self._arc_beats.get(child_layer, '')
+        tid = self._next_task_id()
+        task = NodeTask(
+            task_id=tid,
+            parent_id=valid[0],
+            parent_ids=list(valid),
+            root_id=root_id,
+            layer_name=child_layer,
+            layer_direction=direction,
+            batch_size=batch_size,
+        )
+        self._tasks[tid] = task
+        self._total_created += batch_size
+        print(f'[Parallel] Merged batch: {batch_size}× {child_layer} from parents {valid}')
+
+        threading.Thread(target=self._coordinator_loop, daemon=True).start()
 
     def start(self, seed_node_ids: list):
         """Begin parallel generation from a list of existing seed (arrival) nodes."""
@@ -1446,11 +1505,15 @@ class ParallelNodeOrchestrator:
             layer_idx = LAYER_ORDER.index(task.layer_name) if task.layer_name in LAYER_ORDER else 0
             premise_weight = max(0.0, 1.0 - 0.3 * layer_idx) if layer_idx < 5 else 0.0
 
+            # Read the parent node's hint (author guidance for expansion)
+            parent_hint = primary_nd.get('hint', '').strip()
+
             parent_label = (f'parents=[{", ".join(all_parent_ids)}]' if len(all_parent_ids) > 1
                            else f'parent={primary_pid}')
             premise_str = f', premise={premise_weight:.0%}' if premise_weight > 0 else ''
+            hint_str = f', hint="{parent_hint[:40]}..."' if parent_hint else ''
             print(f'[Parallel] ▶ {task.task_id}: batch {task.batch_size}× {task.layer_name} '
-                  f'from {parent_label} (ancestors={len(ancestor_chain)}{premise_str})')
+                  f'from {parent_label} (ancestors={len(ancestor_chain)}{premise_str}{hint_str})')
 
             worker = self._workers[0]
 
@@ -1462,7 +1525,9 @@ class ParallelNodeOrchestrator:
                 layer_name=task.layer_name,
                 batch_size=task.batch_size,
                 layer_direction=task.layer_direction,
+                hint=parent_hint,
                 motif=self._motif,
+                themes=self._themes,
                 story_context=self._story_context,
                 existing_custom_tags=self._existing_tags,
                 variables=self._variables,
@@ -1477,6 +1542,8 @@ class ParallelNodeOrchestrator:
             nodes = result.get('nodes', {})
             if not isinstance(nodes, dict):
                 nodes = {}
+            # Filter out malformed entries (AI sometimes returns strings instead of dicts)
+            nodes = {nid: nd for nid, nd in nodes.items() if isinstance(nd, dict)}
 
             n_got = len(nodes)
             print(f'[Parallel] ✓ {task.task_id}: got {n_got} nodes')
@@ -1622,7 +1689,7 @@ class AIAssistant:
     """Calls the `claude` CLI via subprocess — uses your Claude Code session,
     no separate API key required."""
 
-    DEFAULT_MODEL = 'claude-opus-4-20250514'
+    DEFAULT_MODEL = 'claude-sonnet-4-6'
 
     def __init__(self, model: str = ''):
         self._history: list = []
@@ -1716,8 +1783,8 @@ class AIAssistant:
         raise ValueError(f"Unbalanced braces in JSON response (depth={depth}, "
                          f"len={len(raw)}, start={start}). Preview: {preview[:200]}")
 
-    def _run_claude(self, system: str, prompt: str) -> str:
-        """Blocking call to `claude -p`. Raises on non-zero exit."""
+    def _run_claude(self, system: str, prompt: str, max_retries: int = 5) -> str:
+        """Blocking call to `claude -p`. Retries with exponential backoff."""
         cmd = [
             self._claude_exe,
             "--no-session-persistence",
@@ -1726,23 +1793,41 @@ class AIAssistant:
             "--output-format", "text",
             "-p", prompt,
         ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=360,
-        )
-        if result.returncode != 0:
-            err = result.stderr.strip() or result.stdout.strip() or "claude CLI returned non-zero"
-            raise RuntimeError(err)
-        out = result.stdout.strip()
-        if not out:
-            raise RuntimeError(
-                f"claude produced no output (stderr: {result.stderr.strip()!r})"
-            )
-        return out
+        last_error = None
+        for attempt in range(max_retries):
+            backoff = min(3 * (2 ** attempt), 30)  # 3, 6, 12, 24, 30 seconds
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=360,
+                )
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip() or "claude CLI returned non-zero"
+                    last_error = RuntimeError(err)
+                    # Don't retry model/auth errors
+                    if 'model' in err.lower() or 'auth' in err.lower() or 'access' in err.lower():
+                        raise last_error
+                    print(f'[AI] Attempt {attempt+1}/{max_retries} failed: {err[:80]} (retry in {backoff}s)')
+                    time.sleep(backoff)
+                    continue
+                out = result.stdout.strip()
+                if not out:
+                    last_error = RuntimeError(
+                        f"claude produced no output (stderr: {result.stderr.strip()!r})")
+                    print(f'[AI] Attempt {attempt+1}/{max_retries}: empty output (retry in {backoff}s)')
+                    time.sleep(backoff)
+                    continue
+                return out
+            except subprocess.TimeoutExpired:
+                last_error = RuntimeError("claude CLI timed out (360s)")
+                print(f'[AI] Attempt {attempt+1}/{max_retries}: timeout (retry in {backoff}s)')
+                time.sleep(backoff)
+                continue
+        raise last_error or RuntimeError("claude CLI failed after all retries")
 
     @staticmethod
     def _vars_prompt_section(variables: list) -> str:
@@ -2030,7 +2115,8 @@ class AIAssistant:
     def generate_single_node_sync(self, parent_id: str, parent_text: str,
                                    parent_tags: list, ancestor_chain: list,
                                    layer_name: str, layer_direction: str = '',
-                                   motif: str = '', sibling_summaries: list = None,
+                                   motif: str = '', themes: str = '',
+                                   sibling_summaries: list = None,
                                    story_context: str = '',
                                    existing_custom_tags: list = None,
                                    variables: list = None,
@@ -2112,6 +2198,8 @@ class AIAssistant:
             parts.append(f'\nLAYER DIRECTION: {layer_direction}')
         if motif:
             parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+        if themes:
+            parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
 
         # Parent node (highest weight)
         parts.append(
@@ -2130,13 +2218,15 @@ class AIAssistant:
     def generate_batch_sync(self, parent_id: str, parent_text: str,
                              parent_tags: list, ancestor_chain: list,
                              layer_name: str, batch_size: int = 3,
-                             layer_direction: str = '', motif: str = '',
+                             layer_direction: str = '', hint: str = '',
+                             motif: str = '',
                              sibling_summaries: list = None,
                              story_context: str = '',
                              existing_custom_tags: list = None,
                              variables: list = None,
                              premise: str = '',
-                             premise_weight: float = 1.0) -> dict:
+                             premise_weight: float = 1.0,
+                             themes: str = '') -> dict:
         """Blocking call that generates multiple sibling nodes from one parent.
 
         Returns dict with 'nodes' and 'connect_from' keys (SYSTEM_EXPAND format).
@@ -2197,7 +2287,10 @@ class AIAssistant:
             parts.append(f'\nLAYER DIRECTION: {layer_direction}')
         if motif:
             parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+        if themes:
+            parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
 
+        # Author hint (high priority — right before source node)
         # Source node
         parts.append(
             f'\nSOURCE NODE — stay close to this:\n'
@@ -2208,6 +2301,10 @@ class AIAssistant:
 
         parts.append(f'\nGenerate exactly {batch_size} continuation nodes in the '
                      f'"{layer_name}" layer branching from this node.')
+
+        # Author hint LAST — highest recency weight, overrides all other guidance
+        if hint:
+            parts.append(f'\nCRITICAL — AUTHOR DIRECTION (this overrides thematic continuity): {hint}')
         prompt = '\n'.join(parts)
 
         raw = self._run_claude(SYSTEM_EXPAND, prompt)
@@ -2592,8 +2689,8 @@ TAG_COLORS = {
     'intimacy':     (180, 120, 70),
     'turn':         (190, 70, 70),
     'consequence':  (160, 50, 90),
-    'echo':         (130, 70, 150),
-    'stillness':    (120, 60, 150),
+    'echo':         (100, 90, 180),
+    'stillness':    (160, 140, 180),
 }
 
 
@@ -2701,9 +2798,9 @@ class PropertiesPanel(QWidget):
 
         # Expand button + node count
         expand_row = QHBoxLayout()
-        expand_btn = QPushButton("Expand Node (AI)")
-        expand_btn.clicked.connect(self._cmd_expand)
-        expand_row.addWidget(expand_btn)
+        self.expand_btn = QPushButton("Expand Node (AI)")
+        self.expand_btn.clicked.connect(self._cmd_expand)
+        expand_row.addWidget(self.expand_btn)
         expand_row.addWidget(QLabel("nodes:"))
         self.expand_min = QDoubleSpinBox()
         self.expand_min.setDecimals(0)
@@ -2810,6 +2907,21 @@ class PropertiesPanel(QWidget):
         gen_audio_btn.clicked.connect(self._cmd_generate_audio)
         layout.addWidget(gen_audio_btn)
 
+        # Audio file path (editable)
+        audio_file_row = QHBoxLayout()
+        audio_file_row.addWidget(QLabel("Audio:"))
+        self.audio_file_edit = QLineEdit()
+        self.audio_file_edit.setPlaceholderText("(no file)")
+        self.audio_file_edit.setToolTip("Relative path to audio file from project root")
+        self.audio_file_edit.editingFinished.connect(self._autosave_audio_file)
+        audio_file_row.addWidget(self.audio_file_edit, stretch=1)
+        self.audio_browse_btn = QPushButton("…")
+        self.audio_browse_btn.setFixedWidth(28)
+        self.audio_browse_btn.setToolTip("Browse for audio file")
+        self.audio_browse_btn.clicked.connect(self._cmd_browse_audio_file)
+        audio_file_row.addWidget(self.audio_browse_btn)
+        layout.addLayout(audio_file_row)
+
         audio_status_row = QHBoxLayout()
         self.audio_status = QLabel("")
         self.audio_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
@@ -2842,6 +2954,7 @@ class PropertiesPanel(QWidget):
             self.label_edit.setText(nd.get("label") or node_id)
             self.text_edit.setPlainText(nd.get("text", ""))
             self.hint_edit.setPlainText(nd.get("hint", ""))
+            self.rewrite_hint.clear()
             all_tags   = nd.get("tags", [])
             layer_tags = set(LAYER_ORDER)
             layer_tag  = next((t for t in all_tags if t in layer_tags), "")
@@ -2865,11 +2978,17 @@ class PropertiesPanel(QWidget):
             else:
                 self.voice_combo.setCurrentIndex(0)
 
-            # Audio status
-            file_path = nd.get("file")
+            # Audio file path + status
+            file_path = nd.get("file", "")
+            self.audio_file_edit.setText(file_path)
             if file_path:
-                self.audio_status.setText(f"File: {Path(file_path).name}")
-                self.audio_status.setStyleSheet("color: #88ee88; font-size: 10px;")
+                full = REPO_ROOT / file_path
+                if full.exists():
+                    self.audio_status.setText(f"✓ {Path(file_path).name}")
+                    self.audio_status.setStyleSheet("color: #88ee88; font-size: 10px;")
+                else:
+                    self.audio_status.setText(f"✗ File missing")
+                    self.audio_status.setStyleSheet("color: #ff5555; font-size: 10px;")
             else:
                 self.audio_status.setText("No audio file")
                 self.audio_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
@@ -2910,20 +3029,22 @@ class PropertiesPanel(QWidget):
         else:
             self.clear()
 
-    def clear(self):
+    def clear(self, multi_select: bool = False):
         self._node_id = None
         self._blocking = True
         try:
-            self.id_edit.setText("")
+            self.id_edit.setText("(multiple)" if multi_select else "")
             self.label_edit.setText("")
             self.text_edit.setPlainText("")
             self.hint_edit.setPlainText("")
+            self.rewrite_hint.clear()
             self.layer_combo.setCurrentIndex(0)
             self.tags_edit.setText("")
             self.is_start_cb.setChecked(False)
             self.stability_spin.setValue(0.5)
             self.similarity_spin.setValue(0.75)
             self.style_spin.setValue(0.3)
+            self.audio_file_edit.setText("")
             self.audio_status.setText("")
             self.rewrite_status.setText("")
             # Clear edge list
@@ -3128,6 +3249,43 @@ class PropertiesPanel(QWidget):
 
         self._vars_container.show()
 
+    def _autosave_audio_file(self):
+        if self._blocking or not self._node_id or not self._script:
+            return
+        val = self.audio_file_edit.text().strip()
+        nd = self._script.nodes.get(self._node_id, {})
+        if val:
+            nd["file"] = val
+            full = REPO_ROOT / val
+            if full.exists():
+                self.audio_status.setText(f"✓ {Path(val).name}")
+                self.audio_status.setStyleSheet("color: #88ee88; font-size: 10px;")
+            else:
+                self.audio_status.setText("✗ File missing")
+                self.audio_status.setStyleSheet("color: #ff5555; font-size: 10px;")
+        else:
+            nd.pop("file", None)
+            self.audio_status.setText("No audio file")
+            self.audio_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        self._script.dirty = True
+        self.node_modified.emit(self._node_id)
+
+    def _cmd_browse_audio_file(self):
+        if not self._node_id or not self._script:
+            return
+        start_dir = str(self._script.path.parent) if self._script.path else str(SOUNDS_DIR)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Audio File", start_dir,
+            "Audio Files (*.mp3 *.wav *.ogg *.flac);;All Files (*)")
+        if not path:
+            return
+        try:
+            rel = str(Path(path).relative_to(REPO_ROOT))
+        except ValueError:
+            rel = path
+        self.audio_file_edit.setText(rel)
+        self._autosave_audio_file()
+
     def _autosave_voice(self):
         if self._blocking or not self._node_id or not self._script:
             return
@@ -3301,8 +3459,10 @@ class PropertiesPanel(QWidget):
                 self._script.nodes[node_id]["file"] = rel
                 self._script.dirty = True
             if self._node_id == node_id:
+                self.audio_file_edit.setText(rel)
                 self.audio_status.setText(f"Saved: {path.name}")
                 self.audio_status.setStyleSheet("color: #88ee88; font-size: 10px;")
+            self.node_modified.emit(node_id)
 
         def on_error(e: str):
             self.audio_status.setText(f"Error: {e[:60]}")
@@ -3536,6 +3696,8 @@ class VoiceSettingsPanel(QWidget):
                 if self._script and node_id in self._script.nodes:
                     self._script.nodes[node_id]["file"] = rel
                     self._script.dirty = True
+                if self._props_panel:
+                    self._props_panel.node_modified.emit(node_id)
                 self._gen_done += 1
                 self.gen_all_status.setText(
                     f"{self._gen_done + self._gen_errors} / {total}…")
@@ -3790,6 +3952,7 @@ class AIChatPanel(QWidget):
                 profile='full',
                 story_context=self._script.story_context_focused,
                 motif=arc_motif,
+                themes=arc.get('themes', '') if arc else '',
                 premise=prompt,
                 arc_beats=arc_beats,
                 variables=self._script.variables,
@@ -4253,7 +4416,8 @@ class _GraphViewHoverFilter(QObject):
     def __init__(self, get_node_at_pos, on_enter, on_leave, on_right_click=None,
                  on_delete_pipes=None, on_mouse_move=None, on_deselect=None,
                  get_selected=None, on_restore_selection=None,
-                 on_marquee_select=None, viewer=None, parent=None):
+                 on_marquee_select=None, on_shift_click=None,
+                 viewer=None, parent=None):
         super().__init__(parent)
         self._get_node = get_node_at_pos
         self._on_enter = on_enter
@@ -4265,6 +4429,7 @@ class _GraphViewHoverFilter(QObject):
         self._get_selected = get_selected
         self._on_restore_selection = on_restore_selection
         self._on_marquee_select = on_marquee_select
+        self._on_shift_click = on_shift_click
         self._viewer = viewer
         self._current: Optional[str] = None
 
@@ -4350,6 +4515,11 @@ class _GraphViewHoverFilter(QObject):
                 return True  # suppress NodeGraphQt's built-in right-click menu
             if event.button() == Qt.MouseButton.LeftButton:
                 node_id = self._get_node(event.position().toPoint())
+                # Shift+click on a node: toggle selection without clearing others
+                if node_id and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    if self._on_shift_click:
+                        self._on_shift_click(node_id)
+                    return True
                 if not node_id:
                     # Check if a pipe (connection line) is near the cursor
                     pipe_item = None
@@ -4558,6 +4728,11 @@ class ArcEditorDialog(QDialog):
 
         # ── Bottom buttons ────────────────────────────────────────
         bot = QHBoxLayout()
+        distill_btn = QPushButton("Distill Chat → Arc")
+        distill_btn.setToolTip("Use AI to extract premise, themes, motif, and beats from the chat conversation")
+        distill_btn.clicked.connect(self._cmd_distill_chat_to_arc)
+        bot.addWidget(distill_btn)
+
         self.gen_btn = QPushButton("Generate Graph from Arc")
         self.gen_btn.setStyleSheet("font-weight: bold;")
         self.gen_btn.clicked.connect(self._cmd_generate_from_arc_parallel)
@@ -4709,9 +4884,14 @@ class ArcEditorDialog(QDialog):
         prompt = arc.get('premise', '').strip() or arc.get('name', 'Generate a narrative graph.')
         arc_beats = arc.get('beats', {})
         arc_motif = arc.get('motif', '')
+        arc_notes = arc.get('notes', '').strip()
+
+        # Combine story context with arc notes so character/world details reach every node
+        story_ctx = self.script.story_context_focused
+        if arc_notes:
+            story_ctx = (story_ctx + '\n\n' + arc_notes).strip() if story_ctx else arc_notes
 
         self.gen_btn.setEnabled(False)
-        pass  # gen_btn disabled in _cmd_generate_from_arc_parallel
         self.chat_status.setText("Generating seed nodes…")
         self._append_chat('assistant', f'[Parallel gen from arc: {arc.get("name", "")}]')
 
@@ -4728,13 +4908,15 @@ class ArcEditorDialog(QDialog):
             self._append_chat('assistant', f'Seeds: {", ".join(seed_ids)}')
             self.chat_status.setText(f'Seeds done. Starting parallel expansion…')
 
+            arc_themes = arc.get('themes', '')
             self._orchestrator = ParallelNodeOrchestrator(
                 script=self.script,
                 ui_queue=self.ui_queue,
                 model=self._main_ai.model,
                 profile='full',
-                story_context=self.script.story_context_focused,
+                story_context=story_ctx,
                 motif=arc_motif,
+                themes=arc_themes,
                 premise=prompt,
                 arc_beats=arc_beats,
                 variables=self.script.variables,
@@ -4752,11 +4934,10 @@ class ArcEditorDialog(QDialog):
         def on_seed_error(e):
             self.chat_status.setText(f'Seed error: {e[:60]}')
             self.gen_btn.setEnabled(True)
-            self.par_gen_btn.setEnabled(True)
 
         self._main_ai.generate_seed(
             prompt, self.ui_queue, on_seed_done, on_seed_error,
-            story_context=self.script.story_context_focused,
+            story_context=story_ctx,
             layer_direction=arc_beats.get('arrival', ''),
             motif=arc_motif,
             variables=self.script.variables,
@@ -4792,6 +4973,129 @@ class ArcEditorDialog(QDialog):
         self.chat_log.append(
             f'<span style="color:{color};"><b>{label}:</b> {text}</span><br>')
 
+    def _cmd_distill_chat_to_arc(self):
+        """Use AI to extract structured arc fields from the chat conversation."""
+        if not self._current_arc_id:
+            self.chat_status.setText("No arc selected.")
+            return
+        if not self._main_ai.ready:
+            self.chat_status.setText("Claude CLI not found.")
+            return
+        if self._main_ai.busy:
+            self.chat_status.setText("AI is busy...")
+            return
+
+        arc = self.script.arcs.get(self._current_arc_id, {})
+        chat_history = arc.get('chat_history', [])
+        if not chat_history:
+            self.chat_status.setText("No chat history to distill.")
+            return
+
+        # Build the conversation text
+        conv_lines = []
+        for entry in chat_history:
+            role = 'Author' if entry.get('role') == 'user' else 'Claude'
+            conv_lines.append(f'{role}: {entry.get("content", "")}')
+        conversation = '\n'.join(conv_lines)
+
+        # Include any existing arc fields as context
+        existing = []
+        if arc.get('name'):
+            existing.append(f'Current name: {arc["name"]}')
+        if arc.get('premise'):
+            existing.append(f'Current premise: {arc["premise"]}')
+        if arc.get('themes'):
+            existing.append(f'Current themes: {arc["themes"]}')
+        if arc.get('motif'):
+            existing.append(f'Current motif: {arc["motif"]}')
+
+        layer_names = ', '.join(LAYER_ORDER)
+
+        system = (
+            "You are distilling a brainstorming conversation into structured story arc fields "
+            "for a narrative audio installation.\n\n"
+            "The arc drives generation of a node graph where each node is 15-35 seconds of "
+            "spoken audio. The 10 story layers are: " + layer_names + ".\n\n"
+            "Extract the following from the conversation and return ONLY a JSON object:\n"
+            "{\n"
+            '  "name": "Short arc title (2-5 words)",\n'
+            '  "premise": "The core story premise — what is this about? 1-3 sentences.",\n'
+            '  "themes": "Comma-separated themes (e.g. isolation, transformation, memory)",\n'
+            '  "motif": "One recurring sensory/symbolic thread to weave through every node",\n'
+            '  "notes": "Character details, world-building, tone guidance — anything useful for generation",\n'
+            '  "beats": {\n'
+            '    "arrival": "What the arrival layer should establish",\n'
+            '    "presence": "What presence should introduce",\n'
+            '    "curiosity": "...",\n'
+            '    "discovery": "...",\n'
+            '    "complication": "...",\n'
+            '    "intimacy": "...",\n'
+            '    "turn": "...",\n'
+            '    "consequence": "...",\n'
+            '    "echo": "...",\n'
+            '    "stillness": "What the final resting point should feel like"\n'
+            '  }\n'
+            "}\n\n"
+            "Rules:\n"
+            "- The premise should capture the ESSENCE of what was discussed, not summarize the conversation\n"
+            "- Beats should be specific and actionable — not vague ('something changes') but concrete "
+            "('the character realizes the sound was always there')\n"
+            "- The motif should be a sensory detail that can appear in every node naturally\n"
+            "- If the conversation didn't cover a beat, write one that fits the arc's trajectory\n"
+            "- No markdown fences, no explanation — just the JSON"
+        )
+
+        prompt_parts = []
+        if self.script.story_context_focused:
+            prompt_parts.append(f'STORY CONTEXT (shared across all arcs — incorporate this setting/tone):\n{self.script.story_context_focused}')
+        if existing:
+            prompt_parts.append('EXISTING ARC FIELDS (refine these, don\'t ignore them):\n' + '\n'.join(existing))
+        prompt_parts.append(f'CONVERSATION TO DISTILL:\n{conversation}')
+        prompt = '\n\n'.join(prompt_parts)
+
+        self.chat_status.setText("Distilling chat to arc fields...")
+        self._append_chat('assistant', '[Distilling conversation into arc fields...]')
+
+        def on_done(data):
+            if not isinstance(data, dict):
+                self.chat_status.setText("Distill failed: invalid response")
+                return
+
+            # Fill in the arc fields
+            if data.get('name'):
+                self.name_edit.setText(data['name'])
+            if data.get('premise'):
+                self.premise_edit.setPlainText(data['premise'])
+            if data.get('themes'):
+                self.themes_edit.setText(data['themes'])
+            if data.get('motif'):
+                self.motif_edit.setText(data['motif'])
+            if data.get('notes'):
+                self.notes_edit.setPlainText(data['notes'])
+            beats = data.get('beats', {})
+            for layer, text in beats.items():
+                if layer in self._beat_edits and text:
+                    self._beat_edits[layer].setText(text)
+
+            self._on_field_changed()  # mark dirty
+            self.chat_status.setText("Arc fields updated from chat.")
+            self._append_chat('assistant',
+                f'Distilled: "{data.get("name", "")}" — {data.get("premise", "")[:100]}...')
+
+        def on_error(e):
+            self.chat_status.setText(f"Distill error: {str(e)[:60]}")
+            self._append_chat('assistant', f'[Distill error: {e}]')
+
+        def run():
+            try:
+                raw = self._main_ai._run_claude(system, prompt)
+                data = self._main_ai._extract_json(raw)
+                self.ui_queue.put(lambda: on_done(data))
+            except Exception as exc:
+                self.ui_queue.put(lambda e=exc: on_error(str(e)))
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _cmd_arc_chat(self):
         msg = self.chat_input.text().strip()
         if not msg:
@@ -4819,9 +5123,15 @@ class ArcEditorDialog(QDialog):
         def on_error(e):
             self.chat_status.setText(f'Error: {e[:80]}')
 
+        # Combine script-level story context with arc-specific context
+        full_ctx = ''
+        if self.script.story_context_focused:
+            full_ctx = f'STORY CONTEXT:\n{self.script.story_context_focused}\n\n'
+        full_ctx += arc_ctx
+
         self._arc_ai.chat(msg, self.ui_queue,
                           on_reply=on_reply, on_error=on_error,
-                          story_context=arc_ctx,
+                          story_context=full_ctx,
                           _system_override=SYSTEM_ARC_CHAT)
 
     def closeEvent(self, event):
@@ -4887,6 +5197,8 @@ class MainWindow(QMainWindow):
         self._pending_connect_line = None   # QGraphicsLineItem rubber-band
         self._cycle_nodes: set = set()
         self._search_overlays: dict = {}   # node_id → _CrosshatchItem for active search matches
+        self._orchestrators: list = []     # active ParallelNodeOrchestrator instances
+        self._job_counter: int = 0
 
         self._build_ui()
         self._build_menu()
@@ -4969,6 +5281,7 @@ class MainWindow(QMainWindow):
             get_selected=lambda: self._selected_node_id,
             on_restore_selection=self._select_node,
             on_marquee_select=self._on_marquee_select,
+            on_shift_click=self._on_shift_click,
             viewer=self.graph.viewer(),
         )
         # Events land on the viewport, not the view itself
@@ -5152,12 +5465,16 @@ class MainWindow(QMainWindow):
         act_det_vars.triggered.connect(self._cmd_determine_variables)
         story_menu.addAction(act_det_vars)
 
+        act_audit = QAction("Audit Audio Files…", self)
+        act_audit.triggered.connect(self._cmd_audit_audio)
+        story_menu.addAction(act_audit)
+
         story_menu.addSeparator()
         model_menu = story_menu.addMenu("AI Model")
         self._model_actions = {}
         for model_id in [
-            'claude-sonnet-4-20250514',
-            'claude-opus-4-20250514',
+            'claude-sonnet-4-6',
+            'claude-opus-4-6',
             'claude-haiku-4-5-20251001',
         ]:
             short = model_id.split('-')[1].capitalize()  # Sonnet / Opus / Haiku
@@ -5297,6 +5614,71 @@ class MainWindow(QMainWindow):
             act.setChecked(mid == model_id)
         short = model_id.split('-')[1].capitalize()
         self.status_bar.showMessage(f"AI model: {short}", 3000)
+
+    def _cmd_audit_audio(self):
+        """Check all nodes for missing or unset audio files and show a report."""
+        if not self.script:
+            QMessageBox.information(self, "Audit Audio", "No script loaded.")
+            return
+
+        no_file = []       # nodes with no 'file' field set
+        missing_file = []  # nodes with 'file' set but file doesn't exist
+        ok_count = 0
+
+        for nid, nd in self.script.nodes.items():
+            if not isinstance(nd, dict):
+                continue
+            file_rel = nd.get("file")
+            if not file_rel:
+                no_file.append(nid)
+            else:
+                full = REPO_ROOT / file_rel
+                if full.exists():
+                    ok_count += 1
+                else:
+                    missing_file.append((nid, file_rel))
+
+        total = len(self.script.nodes)
+        lines = [f"Audio audit for {total} nodes:\n"]
+        lines.append(f"  ✓  {ok_count} nodes have valid audio files")
+        if no_file:
+            lines.append(f"  —  {len(no_file)} nodes have no audio file assigned")
+        if missing_file:
+            lines.append(f"  ✗  {len(missing_file)} nodes have missing files:\n")
+            for nid, rel in missing_file[:50]:
+                label = self.script.nodes.get(nid, {}).get("label", nid)
+                lines.append(f"      {label}  →  {rel}")
+            if len(missing_file) > 50:
+                lines.append(f"      … and {len(missing_file) - 50} more")
+
+        if not no_file and not missing_file:
+            lines.append("\nAll audio files are present! ✓")
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Audit Audio Files")
+        msg.setIcon(QMessageBox.Information if not missing_file else QMessageBox.Warning)
+        msg.setText("\n".join(lines))
+        if missing_file:
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Reset)
+            btn_clear = msg.button(QMessageBox.Reset)
+            btn_clear.setText(f"Clear {len(missing_file)} Missing")
+        else:
+            msg.setStandardButtons(QMessageBox.Ok)
+        result = msg.exec()
+        if missing_file and result == QMessageBox.Reset:
+            for nid, _ in missing_file:
+                nd = self.script.nodes.get(nid)
+                if isinstance(nd, dict):
+                    nd.pop("file", None)
+                # Refresh graph node color
+                self._refresh_node(nid)
+            self.script.dirty = True
+            # Refresh panel if the current node was affected
+            if self.props_panel._node_id and self.props_panel._script:
+                self.props_panel.load_node(self.props_panel._script,
+                                           self.props_panel._node_id)
+            self.status_bar.showMessage(
+                f"Cleared audio file from {len(missing_file)} nodes", 5000)
 
     def _cmd_determine_variables(self):
         """Use AI to infer variable values for nodes that have all-zero vars."""
@@ -5512,9 +5894,16 @@ class MainWindow(QMainWindow):
             self.chat_panel.selected_node_id = None
             self._clear_highlight()
 
+    def _nid_of_node(self, node_obj):
+        """O(1) lookup: NodeGraphQt node object → node_id."""
+        # Build/use a cached reverse map
+        if not hasattr(self, '_node_obj_to_id') or len(self._node_obj_to_id) != len(self._node_items):
+            self._node_obj_to_id = {n: nid for nid, n in self._node_items.items()}
+        return self._node_obj_to_id.get(node_obj)
+
     def _on_port_connected(self, in_port, out_port):
-        from_id = next((nid for nid, n in self._node_items.items() if n is out_port.node()), None)
-        to_id   = next((nid for nid, n in self._node_items.items() if n is in_port.node()), None)
+        from_id = self._nid_of_node(out_port.node())
+        to_id   = self._nid_of_node(in_port.node())
         if not from_id or not to_id:
             return
         self.script.add_edge(from_id, to_id)
@@ -5525,8 +5914,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Edge: {from_id} -> {to_id}")
 
     def _on_port_disconnected(self, in_port, out_port):
-        from_id = next((nid for nid, n in self._node_items.items() if n is out_port.node()), None)
-        to_id   = next((nid for nid, n in self._node_items.items() if n is in_port.node()), None)
+        from_id = self._nid_of_node(out_port.node())
+        to_id   = self._nid_of_node(in_port.node())
         if not from_id or not to_id:
             return
         self.script.remove_edge(from_id, to_id)
@@ -5711,28 +6100,25 @@ class MainWindow(QMainWindow):
             else:
                 n.view.setOpacity(0.05)
 
-        # Highlight pipes: bright if both endpoints are in the lineage, dim otherwise
-        # Build edge set from script data for fast lookup
-        highlighted_edges = set()
-        for nid in highlighted:
-            for cid in children_of.get(nid, set()):
-                if cid in highlighted:
-                    highlighted_edges.add((nid, cid))
-
+        # Set pipe opacity by walking output port pipes (no scene().items() scan)
         view_to_nid = {node.view: nid for nid, node in self._node_items.items()}
-        for item in self.graph.viewer().scene().items():
-            if 'Pipe' not in type(item).__name__:
-                continue
-            out_port = getattr(item, 'output_port', None)
-            in_port = getattr(item, 'input_port', None)
-            if out_port is None or in_port is None:
-                continue
-            from_nid = view_to_nid.get(out_port.parentItem())
-            to_nid = view_to_nid.get(in_port.parentItem())
-            if (from_nid, to_nid) in highlighted_edges:
-                item.setOpacity(1.0)
-            else:
-                item.setOpacity(0.04)
+        try:
+            for nid, node in self._node_items.items():
+                out_view = node.output(0).view if node.output(0) else None
+                if not out_view:
+                    continue
+                for pipe_item in out_view.connected_pipes:
+                    in_pv = getattr(pipe_item, 'input_port', None)
+                    if in_pv is None:
+                        continue
+                    from_nid = nid
+                    to_nid = view_to_nid.get(in_pv.parentItem())
+                    if from_nid in highlighted and to_nid in highlighted:
+                        pipe_item.setOpacity(1.0)
+                    else:
+                        pipe_item.setOpacity(0.04)
+        except Exception:
+            pass
 
     def _apply_search_overlays(self, matched: set):
         """Add crosshatch overlays to all matched nodes; remove from nodes no longer matching."""
@@ -5769,21 +6155,37 @@ class MainWindow(QMainWindow):
             return
         for n in self._node_items.values():
             n.view.setOpacity(1.0)
-        for item in self.graph.viewer().scene().items():
-            if 'Pipe' in type(item).__name__:
-                item.setOpacity(1.0)
+        # Restore pipe opacity via port traversal (no scene scan)
+        try:
+            for node in self._node_items.values():
+                out = node.output(0)
+                if out is None:
+                    continue
+                try:
+                    for pipe_item in out.view.connected_pipes:
+                        pipe_item.setOpacity(1.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_node_hover_enter(self, node_id: str):
-        self._apply_highlight(node_id)
+        try:
+            self._apply_highlight(node_id)
+        except Exception:
+            pass
         self.props_panel.preview_node(self.script, node_id)
 
     def _on_node_hover_leave(self, _node_id: str):
-        if self._selected_node_id:
-            self._apply_highlight(self._selected_node_id)
-        elif self._freq_btn.isChecked():
-            self._apply_frequency_heat()
-        else:
-            self._clear_highlight()
+        try:
+            if self._selected_node_id:
+                self._apply_highlight(self._selected_node_id)
+            elif self._freq_btn.isChecked():
+                self._apply_frequency_heat()
+            else:
+                self._clear_highlight()
+        except Exception:
+            pass
         self.props_panel.end_preview()
 
     def _on_graph_right_click(self, node_id: Optional[str], global_pos):
@@ -5873,6 +6275,29 @@ class MainWindow(QMainWindow):
             self._selected_node_id = node_id
             self._apply_highlight(node_id)
 
+    def _on_shift_click(self, node_id: str):
+        """Toggle a node's selection without clearing other selections (Shift+click)."""
+        node = self._node_items.get(node_id)
+        if not node:
+            return
+        currently_selected = node.view.isSelected()
+        node.set_selected(not currently_selected)
+
+        # Update state
+        selected = self._get_selected_node_ids()
+        if len(selected) == 1:
+            self._select_node(selected[0])
+        elif len(selected) > 1:
+            self._selected_node_id = None
+            self.props_panel.clear(multi_select=True)
+            self._clear_highlight()
+            self.status_bar.showMessage(
+                f"{len(selected)} nodes selected — Expand/Continue operates on all")
+        else:
+            self._selected_node_id = None
+            self.props_panel.clear()
+            self._clear_highlight()
+
     def _on_marquee_select(self, scene_rect):
         """Handle completion of a marquee drag — select all nodes and pipes within *scene_rect*."""
         self.graph.clear_selection()
@@ -5899,14 +6324,15 @@ class MainWindow(QMainWindow):
             self._select_node(selected_ids[0])
         elif selected_ids or selected_pipes:
             self._selected_node_id = None
-            self.props_panel.clear()
+            multi = len(selected_ids) > 1
+            self.props_panel.clear(multi_select=multi)
             self._clear_highlight()
             parts = []
             if selected_ids:
                 parts.append(f"{len(selected_ids)} node{'s' if len(selected_ids) != 1 else ''}")
             if selected_pipes:
                 parts.append(f"{selected_pipes} connection{'s' if selected_pipes != 1 else ''}")
-            self.status_bar.showMessage(f"{' + '.join(parts)} selected — press Delete to remove")
+            self.status_bar.showMessage(f"{' + '.join(parts)} selected — Expand/Continue/Delete")
         else:
             self._selected_node_id = None
             self.props_panel.clear()
@@ -5990,6 +6416,9 @@ class MainWindow(QMainWindow):
         if abs(len(self._node_items) - n_script) > n_script * 0.2:
             self._rebuild_graph()
 
+        # Sync any edges that exist in script data but not in the visual graph
+        self._sync_missing_edges()
+
         # Layout: reposition existing items (no recreation)
         try:
             self._cmd_apply_tree_layout()
@@ -5998,6 +6427,51 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._refresh_cycle_markers()
         self.status_bar.showMessage(f"Graph updated: {len(self.script.nodes)} nodes")
+
+    def _sync_missing_edges(self):
+        """Wire any script edges that don't have a visual pipe in the graph."""
+        try:
+            self._sync_missing_edges_inner()
+        except Exception as exc:
+            print(f'[Sync] Edge sync failed: {exc}')
+
+    def _sync_missing_edges_inner(self):
+        # Build set of existing visual edges
+        view_to_nid = {node.view: nid for nid, node in self._node_items.items()}
+        existing_edges = set()
+        for item in self.graph.viewer().scene().items():
+            if 'Pipe' not in type(item).__name__:
+                continue
+            out_port = getattr(item, 'output_port', None)
+            in_port = getattr(item, 'input_port', None)
+            if out_port and in_port:
+                fn = view_to_nid.get(out_port.parentItem())
+                tn = view_to_nid.get(in_port.parentItem())
+                if fn and tn:
+                    existing_edges.add((fn, tn))
+
+        # Wire missing edges
+        self.graph.port_connected.disconnect(self._on_port_connected)
+        try:
+            added = 0
+            for from_id, nd in self.script.nodes.items():
+                if from_id not in self._node_items:
+                    continue
+                for to_id in nd.get('next', []):
+                    if to_id not in self._node_items:
+                        continue
+                    if (from_id, to_id) not in existing_edges:
+                        try:
+                            self._node_items[from_id].output(0).connect_to(
+                                self._node_items[to_id].input(0)
+                            )
+                            added += 1
+                        except Exception:
+                            pass
+            if added:
+                print(f'[Sync] Wired {added} missing edges')
+        finally:
+            self.graph.port_connected.connect(self._on_port_connected)
 
     def _add_nodes_incremental(self, new_node_ids: set):
         """Add only newly-created nodes/edges to the live graph without a full rebuild.
@@ -6030,12 +6504,25 @@ class MainWindow(QMainWindow):
                             )
                         except Exception:
                             pass
-            # Also wire edges FROM existing nodes TO new nodes (parent → new child)
-            for from_id, nd in self.script.nodes.items():
-                if from_id in new_node_ids:
+            # Wire edges involving new nodes (both directions)
+            involved = set(new_node_ids)
+            for node_id in new_node_ids:
+                nd = self.script.nodes.get(node_id)
+                if not nd:
                     continue
                 for to_id in nd.get('next', []):
-                    if to_id in new_node_ids and from_id in self._node_items:
+                    if to_id in self._node_items:
+                        try:
+                            self._node_items[node_id].output(0).connect_to(
+                                self._node_items[to_id].input(0)
+                            )
+                        except Exception:
+                            pass
+            for from_id, nd in self.script.nodes.items():
+                if from_id in involved or from_id not in self._node_items:
+                    continue
+                for to_id in nd.get('next', []):
+                    if to_id in involved and to_id in self._node_items:
                         try:
                             self._node_items[from_id].output(0).connect_to(
                                 self._node_items[to_id].input(0)
@@ -6167,18 +6654,33 @@ class MainWindow(QMainWindow):
             self._update_title()
             self._maybe_refresh_freq()
 
+    def _get_selected_node_ids(self) -> list:
+        """Return list of all currently selected node IDs."""
+        return [nid for nid, node in self._node_items.items()
+                if node.view.isSelected()]
+
     def _cmd_expand_node(self, node_id: str, node_min: int = 2, node_max: int = 5):
-        """Expand a node using parallel orchestrator (1-2 layers deep)."""
-        if not node_id or node_id not in self.script.nodes:
+        """Expand node(s) using parallel orchestrator (1-2 layers deep).
+
+        If multiple nodes are selected, new children share all selected nodes as parents.
+        """
+        selected = self._get_selected_node_ids()
+        parent_ids = selected if len(selected) > 1 else [node_id]
+        parent_ids = [nid for nid in parent_ids if nid in self.script.nodes]
+
+        if not parent_ids:
             self.status_bar.showMessage("Select a node to expand")
             return
         if not self.ai.ready:
             self.status_bar.showMessage("claude CLI not found")
             return
 
-        self.status_bar.showMessage(f"Expanding '{node_id}' (parallel)...")
+        multi = len(parent_ids) > 1
+        label = ', '.join(parent_ids[:5]) + ('...' if len(parent_ids) > 5 else '')
+        action = "Merging" if multi else "Expanding"
+        self.status_bar.showMessage(f"{action} {len(parent_ids)} node(s) (parallel)...")
         self.chat_panel.append_message("assistant",
-            f"[Parallel expand '{node_id}' ({node_min}-{node_max} nodes)]")
+            f"[Parallel {'merge-expand' if multi else 'expand'} {label} ({node_min}-{node_max} nodes)]")
 
         arc = self.script.active_arc() if self.script else None
         arc_beats = arc.get('beats', {}) if arc else {}
@@ -6191,69 +6693,108 @@ class MainWindow(QMainWindow):
         }
 
         arc_premise = arc.get('premise', '') if arc else ''
+        arc_themes = arc.get('themes', '') if arc else ''
 
-        self._orchestrator = ParallelNodeOrchestrator(
-            script=self.script,
-            ui_queue=self.ui_queue,
-            model=self.ai.model,
-            profile='expand',
-            story_context=self.script.story_context_focused,
-            motif=arc_motif,
-            premise=arc_premise,
-            arc_beats=arc_beats,
-            variables=self.script.variables,
-            on_progress=lambda msg: self.status_bar.showMessage(msg),
-            on_complete=lambda nid=node_id: (
-                self.status_bar.showMessage(
-                    f"Expand complete — {len(self.script.nodes)} total nodes"),
-                self._update_title(),
-                self._select_node(nid) if nid in self.script.nodes else None,
-            ),
-            on_node_added=self._add_nodes_incremental,
-        )
-        # Override the profile with custom widths
-        self._orchestrator._profile = expand_profile
-        self._orchestrator.start([node_id])
+        self._job_counter += 1
+        job_tag = f"expand#{self._job_counter}"
+
+        def _make_expand_orch(jt):
+            o = ParallelNodeOrchestrator(
+                script=self.script,
+                ui_queue=self.ui_queue,
+                model=self.ai.model,
+                profile='expand',
+                story_context=self.script.story_context_focused,
+                motif=arc_motif,
+                themes=arc_themes,
+                premise=arc_premise,
+                arc_beats=arc_beats,
+                variables=self.script.variables,
+                on_progress=lambda msg: self.status_bar.showMessage(f"[{jt}] {msg}"),
+                on_complete=lambda: self._on_orchestrator_complete(o, jt, "Expand"),
+                on_node_added=self._add_nodes_incremental,
+            )
+            return o
+
+        orch = _make_expand_orch(job_tag)
+        orch._profile = expand_profile
+        self._orchestrators.append(orch)
+        if multi:
+            orch.start_merged(parent_ids, batch_size=random.randint(node_min, node_max))
+        else:
+            orch.start(parent_ids)
 
     def _cmd_continue_from_node(self, node_id: str):
-        """Continue from an existing node using parallel orchestrator (all remaining layers)."""
-        if not node_id or node_id not in self.script.nodes:
+        """Continue from node(s) using parallel orchestrator (all remaining layers).
+
+        If multiple nodes are selected, new children share all selected nodes as parents.
+        """
+        selected = self._get_selected_node_ids()
+        parent_ids = selected if len(selected) > 1 else [node_id]
+        parent_ids = [nid for nid in parent_ids if nid in self.script.nodes]
+
+        if not parent_ids:
             self.status_bar.showMessage("Select a node to continue from")
             return
         if not self.ai.ready:
             self.status_bar.showMessage("claude CLI not found")
             return
 
-        nd = self.script.nodes[node_id]
-        self.status_bar.showMessage(f"Continuing from '{node_id}' (parallel)...")
+        multi = len(parent_ids) > 1
+        label = ', '.join(parent_ids[:5]) + ('...' if len(parent_ids) > 5 else '')
+        action = "Merge-continuing" if multi else "Continuing"
+        self.status_bar.showMessage(f"{action} from {len(parent_ids)} node(s) (parallel)...")
         self.chat_panel.append_message("assistant",
-            f"[Parallel continue from '{node_id}']")
+            f"[Parallel {'merge-continue' if multi else 'continue'} from {label}]")
 
         arc = self.script.active_arc() if self.script else None
         arc_beats = arc.get('beats', {}) if arc else {}
         arc_motif = arc.get('motif', '') if arc else ''
         arc_premise = arc.get('premise', '') if arc else ''
+        arc_themes = arc.get('themes', '') if arc else ''
 
-        self._orchestrator = ParallelNodeOrchestrator(
-            script=self.script,
-            ui_queue=self.ui_queue,
-            model=self.ai.model,
-            profile='continue',
-            story_context=self.script.story_context_focused,
-            motif=arc_motif,
-            premise=arc_premise,
-            arc_beats=arc_beats,
-            variables=self.script.variables,
-            on_progress=lambda msg: self.status_bar.showMessage(msg),
-            on_complete=lambda nid=node_id: (
-                self.status_bar.showMessage(
-                    f"Continue complete — {len(self.script.nodes)} total nodes"),
-                self._update_title(),
-                self._select_node(nid) if nid in self.script.nodes else None,
-            ),
-            on_node_added=self._add_nodes_incremental,
-        )
-        self._orchestrator.start([node_id])
+        self._job_counter += 1
+        job_tag = f"continue#{self._job_counter}"
+
+        def _make_continue_orch(jt):
+            o = ParallelNodeOrchestrator(
+                script=self.script,
+                ui_queue=self.ui_queue,
+                model=self.ai.model,
+                profile='continue',
+                story_context=self.script.story_context_focused,
+                motif=arc_motif,
+                themes=arc_themes,
+                premise=arc_premise,
+                arc_beats=arc_beats,
+                variables=self.script.variables,
+                on_progress=lambda msg: self.status_bar.showMessage(f"[{jt}] {msg}"),
+                on_complete=lambda: self._on_orchestrator_complete(o, jt, "Continue"),
+                on_node_added=self._add_nodes_incremental,
+            )
+            return o
+
+        orch = _make_continue_orch(job_tag)
+        self._orchestrators.append(orch)
+        if multi:
+            orch.start_merged(parent_ids)
+        else:
+            orch.start(parent_ids)
+
+    def _on_orchestrator_complete(self, orch, job_tag: str, verb: str):
+        """Called when any orchestrator finishes. Cleans up and refreshes UI."""
+        if orch in self._orchestrators:
+            self._orchestrators.remove(orch)
+        n_active = len(self._orchestrators)
+        if n_active:
+            self.status_bar.showMessage(
+                f"[{job_tag}] {verb} complete — {len(self.script.nodes)} nodes "
+                f"({n_active} job{'s' if n_active != 1 else ''} still running)")
+        else:
+            self.status_bar.showMessage(
+                f"{verb} complete — {len(self.script.nodes)} total nodes")
+        self._update_title()
+        self._cmd_apply_tree_layout()
 
     def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
         """Monte Carlo random walk with recency damping.

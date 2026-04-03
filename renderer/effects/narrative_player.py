@@ -219,7 +219,15 @@ class NarrativePlayer(ShaderEffect):
         # Start variable ramp toward this node's values
         self._start_var_ramp(nd.get('vars', {}))
 
-        audio_file = self._audio_dir / f'{node_id}.mp3'
+        # Use the node's explicit "file" field if set, otherwise fall back
+        # to the convention of {node_id}.mp3 in the script directory.
+        file_rel = nd.get('file', '')
+        if file_rel:
+            audio_file = Path(file_rel)
+            if not audio_file.is_absolute():
+                audio_file = self._audio_dir / audio_file
+        else:
+            audio_file = self._audio_dir / f'{node_id}.mp3'
         if audio_file.exists():
             self._audio_dur = _audio_duration(audio_file)
             if engine:
