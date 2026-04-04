@@ -590,7 +590,7 @@ class EnvironmentalSystem:
 
             # At least 30s after last sound ended, then ~1/3000 chance per frame
             # At 40fps that's roughly once every 75 seconds
-            if time_since_last > 5.0 and np.random.random() < 1 / 3000:
+            if time_since_last > 5.0 and np.random.random() < 1 / 800:
                 # Cache sound file list on first use
                 if not hasattr(self, '_bart_sounds'):
                     bart_sounds_dir = Path("media") / "sounds" / "bart_sounds"
