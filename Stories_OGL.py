@@ -189,6 +189,7 @@ class EnvironmentalSystem:
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),
+            "test_fan_coords": (fx.shader_test_fan_coords, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 "script_path": "media/sounds/bartiki/script.json",
                 "node_delay": 3.0,
@@ -269,6 +270,8 @@ class EnvironmentalSystem:
             self.weather_set.commit_set_change(new_set_name)
             if self.enable_web_control:
                 self.web_controller.set("current_weather_set", self.weather_set.current_set)
+                self.web_controller.set("available_weather_states",
+                                        list(self.weather_set.get_current_set_config()["states"]))
 
             # Cancel all existing events and start new background events for the set
             self._initialize_weather_set_events()
@@ -283,7 +286,10 @@ class EnvironmentalSystem:
 
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
-            self.transition_to_weather(new_weather, transition_duration=t_duration)
+            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                t_duration = 0.01
+            # Snap instantly on immediate set change — don't blend from previous set's params
+            self.transition_to_weather(new_weather, transition_duration=0.01)
         else:
             # Queue for next transition
             self.weather_set.queue_set_change(new_set_name)
@@ -340,7 +346,9 @@ class EnvironmentalSystem:
         if ambient_sound:
             sound_path = Path("media") / Path("sounds") / ambient_sound
             engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
-        self.active_effects["ambient_sound"] = target_params["ambient_sound"]
+        else:
+            engine.stop_ambient()
+        self.active_effects["ambient_sound"] = ambient_sound
 
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
@@ -510,6 +518,12 @@ class EnvironmentalSystem:
             # after the hardware limiter (can only dim, never brighten past limiter)
             state["web_brightness"] = brightness_mod
 
+            # Volume controls — both applied in real time in the audio engine mixer
+            master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
+            narrative_vol = self.web_controller.global_modifiers.get('narrative_volume', 1.0)
+            state["soundengine"].master_volume = master_vol
+            state["soundengine"].narrative_volume = narrative_vol
+
             # Cache the final output for the web UI snapshot (post-overrides)
             self._last_web_output = output
 
@@ -636,7 +650,7 @@ if __name__ == "__main__":
 
     # Change to a specific weather set and state on startup
     env_system.change_weather_set("bartiki", immediate=True,
-                                  initial_weather=WeatherState.BARTIKI_PEAK_HOUR)
+                                  initial_weather=WeatherState.BARTIKI_MIDDAY)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()

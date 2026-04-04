@@ -29,7 +29,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict, List, Tuple
 from .base import ShaderEffect
-from .bart_map import _geo_to_norm, _haversine_km
+from .bart_map import _geo_to_fan_px, _haversine_km
 
 # ===========================================================================
 # Highway geometry data
@@ -290,9 +290,10 @@ class HighwayTrafficEffect(ShaderEffect):
     # ------------------------------------------------------------------
 
     def _geo_px(self, lat: float, lon: float) -> np.ndarray:
-        nx, ny = _geo_to_norm(lat, lon)
-        return np.array([nx * self.viewport.width, ny * self.viewport.height],
-                        dtype=np.float32)
+        px, py = _geo_to_fan_px(lat, lon,
+                                float(self.viewport.width),
+                                float(self.viewport.height))
+        return np.array([px, py], dtype=np.float32)
 
     def _bake_geometry(self):
         """Pre-compute per-segment quad vertex positions (pixel space)."""
