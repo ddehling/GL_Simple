@@ -18,6 +18,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict, List, Tuple
 from .base import ShaderEffect
+from renderer.fan_coords import FanCoords
 
 # ---------------------------------------------------------------------------
 # Physics constants  (real-world seconds / km)
@@ -90,9 +91,10 @@ _STATIONS_RAW: List[Tuple[str, float, float]] = [
     ("Dublin/Pleasanton",    37.7016, -121.8996),
 ]
 
-# Geographic bounding box (slightly padded beyond the network extent)
+# Geographic bounding box — expanded to fill the full fan semicircle.
+# Lat range matches BART extent; lon range widened for the 2:1 fan aspect.
 _LAT_MIN, _LAT_MAX = 37.32, 38.02
-_LON_MIN, _LON_MAX = -122.52, -121.72
+_LON_MIN, _LON_MAX = -123.01, -121.23
 
 # Lines: (name, RGB color tuple, ordered station indices)
 _LINES: List[Tuple[str, Tuple[float, float, float], List[int]]] = [
@@ -121,6 +123,336 @@ _LINES: List[Tuple[str, Tuple[float, float, float], List[int]]] = [
 # Number of trains on each line (matches _LINES order)
 _TRAIN_COUNTS = [5, 5, 5, 5, 4]
 
+# ===========================================================================
+# Bay Area geography — simplified coastline polylines (lat, lon)
+# Each list is a connected polyline drawn as a dim outline.
+# ===========================================================================
+_BAY_COASTLINES: List[List[Tuple[float, float]]] = [
+    # SF Peninsula west coast (Pacific side, north to south)
+    [
+        (37.81, -122.48), (37.79, -122.51), (37.77, -122.51),
+        (37.75, -122.51), (37.73, -122.50), (37.71, -122.49),
+        (37.69, -122.49), (37.67, -122.47), (37.65, -122.46),
+        (37.63, -122.44), (37.61, -122.43), (37.59, -122.41),
+        (37.57, -122.39), (37.55, -122.38), (37.52, -122.37),
+        (37.48, -122.35), (37.44, -122.33), (37.40, -122.32),
+        (37.36, -122.31),
+    ],
+    # SF Peninsula east coast (Bay side, north to south)
+    [
+        (37.81, -122.39), (37.80, -122.39), (37.79, -122.39),
+        (37.78, -122.39), (37.77, -122.40), (37.75, -122.40),
+        (37.73, -122.40), (37.71, -122.40), (37.69, -122.41),
+        (37.67, -122.39), (37.65, -122.38), (37.63, -122.37),
+        (37.61, -122.36), (37.59, -122.34), (37.57, -122.32),
+        (37.55, -122.30), (37.52, -122.26), (37.49, -122.21),
+        (37.46, -122.17), (37.43, -122.12), (37.40, -122.08),
+        (37.37, -122.06), (37.34, -121.99),
+    ],
+    # East Bay shoreline (Richmond to Fremont)
+    [
+        (37.97, -122.35), (37.94, -122.34), (37.91, -122.33),
+        (37.88, -122.32), (37.86, -122.31), (37.84, -122.30),
+        (37.82, -122.30), (37.80, -122.30), (37.79, -122.29),
+        (37.77, -122.27), (37.75, -122.25), (37.73, -122.22),
+        (37.71, -122.20), (37.69, -122.19), (37.67, -122.16),
+        (37.65, -122.14), (37.62, -122.12), (37.60, -122.10),
+        (37.58, -122.08), (37.55, -122.06), (37.52, -122.05),
+    ],
+    # SF northern waterfront (Golden Gate to Bay Bridge)
+    [
+        (37.81, -122.48), (37.81, -122.46), (37.81, -122.44),
+        (37.81, -122.42), (37.81, -122.40), (37.81, -122.39),
+        (37.80, -122.38), (37.80, -122.37), (37.80, -122.36),
+        (37.80, -122.35),
+    ],
+    # Bay Bridge (SF to Oakland)
+    [
+        (37.80, -122.35), (37.81, -122.33), (37.82, -122.30),
+    ],
+    # Marin County south shore
+    [
+        (37.84, -122.48), (37.86, -122.47), (37.88, -122.45),
+        (37.90, -122.44), (37.92, -122.42), (37.94, -122.40),
+        (37.95, -122.39), (37.96, -122.38), (37.97, -122.35),
+    ],
+    # South Bay shoreline (Fremont to San Jose)
+    [
+        (37.52, -122.05), (37.49, -122.03), (37.47, -122.01),
+        (37.44, -121.98), (37.41, -121.96), (37.38, -121.94),
+        (37.36, -121.92), (37.34, -121.91),
+    ],
+    # South Bay west shore (Palo Alto area)
+    [
+        (37.34, -121.91), (37.36, -121.93), (37.39, -121.97),
+        (37.42, -122.01), (37.44, -122.04), (37.46, -122.08),
+        (37.48, -122.12), (37.49, -122.16), (37.49, -122.21),
+    ],
+]
+
+_BAY_GEO_COLOR = (0.15, 0.22, 0.30)  # dim blue-grey for coastline outlines
+
+# Colors for the background map regions (dim, muted)
+_COLOR_OCEAN    = np.array([12, 22, 48], dtype=np.uint8)
+_COLOR_BAY      = np.array([20, 38, 72], dtype=np.uint8)
+_COLOR_LAND     = np.array([38, 50, 30], dtype=np.uint8)
+_COLOR_URBAN    = np.array([55, 52, 45], dtype=np.uint8)   # warm grey
+_COLOR_PARK     = np.array([25, 55, 25], dtype=np.uint8)   # green
+_COLOR_MOUNTAIN = np.array([30, 40, 25], dtype=np.uint8)   # darker green-brown
+
+# ===========================================================================
+# Bay Area geography — polygons for region classification
+# Format: list of (lat, lon) tuples forming closed regions.
+# The wider lon range (-123.01 to -121.23) means we show more area.
+# ===========================================================================
+
+# Main coastline polygon — everything inside is "not ocean"
+_LAND_POLYGON: List[Tuple[float, float]] = [
+    # Marin / Sonoma coast (north, tracing south)
+    (38.05, -123.01),  # NW corner of map
+    (38.05, -122.70),  # Bodega Bay area
+    (38.00, -122.65), (37.97, -122.60), (37.95, -122.55),
+    (37.92, -122.52), (37.88, -122.52), (37.85, -122.50),
+    (37.84, -122.48),  # Marin headlands
+    (37.81, -122.48),  # Golden Gate
+    # SF ocean coast south
+    (37.79, -122.51), (37.77, -122.51), (37.75, -122.51),
+    (37.73, -122.50), (37.71, -122.49), (37.69, -122.49),
+    (37.67, -122.47), (37.65, -122.46), (37.63, -122.44),
+    (37.61, -122.43), (37.59, -122.41), (37.57, -122.39),
+    (37.55, -122.38),
+    # Half Moon Bay / Santa Cruz coast
+    (37.52, -122.44), (37.50, -122.45), (37.48, -122.44),
+    (37.45, -122.43), (37.42, -122.41), (37.38, -122.39),
+    (37.35, -122.38), (37.32, -122.36),
+    # South edge of map, east across to close
+    (37.32, -121.20),
+    (38.05, -121.20),  # NE corner
+    (38.05, -123.01),  # close
+]
+
+# SF Bay (central/north bay) — water polygon
+_BAY_POLYGON: List[Tuple[float, float]] = [
+    # SF waterfront east side
+    (37.81, -122.39), (37.80, -122.38), (37.80, -122.37),
+    (37.80, -122.35),
+    # Bay Bridge to Oakland
+    (37.82, -122.32), (37.82, -122.30),
+    # East Bay shoreline north to Richmond
+    (37.84, -122.30), (37.86, -122.31), (37.88, -122.32),
+    (37.90, -122.33), (37.92, -122.34), (37.94, -122.34),
+    (37.96, -122.35), (37.97, -122.35),
+    # San Pablo Bay
+    (37.98, -122.37), (37.98, -122.40), (37.97, -122.43),
+    (37.96, -122.45),
+    # Marin east shore
+    (37.95, -122.47), (37.93, -122.47), (37.91, -122.47),
+    (37.89, -122.48), (37.87, -122.48), (37.85, -122.48),
+    (37.84, -122.48),
+    # Back across Golden Gate
+    (37.83, -122.47), (37.82, -122.44), (37.82, -122.42),
+    (37.81, -122.41), (37.81, -122.39),
+]
+
+# South Bay — water polygon
+_SOUTH_BAY_POLYGON: List[Tuple[float, float]] = [
+    # East Bay shoreline going south
+    (37.80, -122.29), (37.78, -122.27), (37.76, -122.25),
+    (37.74, -122.23), (37.72, -122.21), (37.70, -122.19),
+    (37.68, -122.17), (37.66, -122.15), (37.64, -122.13),
+    (37.62, -122.11), (37.60, -122.09), (37.58, -122.07),
+    (37.55, -122.05), (37.52, -122.04),
+    # South tip of bay
+    (37.49, -122.02), (37.47, -122.00), (37.44, -121.97),
+    (37.42, -121.95), (37.39, -121.93), (37.37, -121.92),
+    (37.35, -121.91),
+    # West shore going back north
+    (37.36, -121.93), (37.38, -121.95), (37.40, -121.98),
+    (37.42, -122.01), (37.44, -122.04), (37.46, -122.08),
+    (37.48, -122.12), (37.49, -122.16), (37.50, -122.20),
+    # Peninsula east coast north
+    (37.52, -122.25), (37.54, -122.28), (37.56, -122.30),
+    (37.58, -122.32), (37.60, -122.34), (37.62, -122.35),
+    (37.64, -122.37), (37.66, -122.38), (37.68, -122.39),
+    (37.70, -122.40), (37.72, -122.40), (37.74, -122.40),
+    (37.76, -122.40), (37.78, -122.39), (37.80, -122.39),
+    (37.80, -122.29),
+]
+
+# San Pablo Bay (north of Richmond Bridge)
+_SAN_PABLO_BAY_POLYGON: List[Tuple[float, float]] = [
+    (37.97, -122.35), (37.98, -122.37), (37.99, -122.40),
+    (38.00, -122.42), (38.01, -122.44), (38.02, -122.46),
+    (38.03, -122.47),
+    (38.04, -122.44), (38.04, -122.40), (38.03, -122.37),
+    (38.02, -122.34), (38.00, -122.32), (37.98, -122.32),
+    (37.97, -122.33), (37.97, -122.35),
+]
+
+# Urban areas — warm grey, brighter than land
+_URBAN_POLYGONS: List[List[Tuple[float, float]]] = [
+    # San Francisco proper
+    [(37.81, -122.48), (37.81, -122.39), (37.71, -122.39),
+     (37.71, -122.48), (37.81, -122.48)],
+    # Oakland / Berkeley / Emeryville
+    [(37.90, -122.31), (37.90, -122.22), (37.78, -122.22),
+     (37.78, -122.31), (37.90, -122.31)],
+    # San Jose metro
+    [(37.42, -122.00), (37.42, -121.82), (37.28, -121.82),
+     (37.28, -122.00), (37.42, -122.00)],
+    # Concord / Walnut Creek / Pleasant Hill
+    [(38.00, -122.08), (38.00, -121.90), (37.89, -121.90),
+     (37.89, -122.08), (38.00, -122.08)],
+    # Fremont / Hayward / Union City
+    [(37.62, -122.13), (37.62, -121.95), (37.50, -121.95),
+     (37.50, -122.13), (37.62, -122.13)],
+    # Daly City / South SF / San Bruno
+    [(37.71, -122.47), (37.71, -122.39), (37.63, -122.39),
+     (37.63, -122.47), (37.71, -122.47)],
+    # San Mateo / Redwood City
+    [(37.58, -122.30), (37.58, -122.20), (37.48, -122.20),
+     (37.48, -122.30), (37.58, -122.30)],
+    # Palo Alto / Mountain View / Sunnyvale
+    [(37.48, -122.18), (37.48, -122.00), (37.36, -122.00),
+     (37.36, -122.18), (37.48, -122.18)],
+    # Richmond / El Cerrito
+    [(37.94, -122.38), (37.94, -122.30), (37.90, -122.30),
+     (37.90, -122.38), (37.94, -122.38)],
+    # Antioch / Pittsburg / Bay Point
+    [(38.02, -121.95), (38.02, -121.78), (37.96, -121.78),
+     (37.96, -121.95), (38.02, -121.95)],
+    # Milpitas / Santa Clara
+    [(37.45, -121.92), (37.45, -121.82), (37.34, -121.82),
+     (37.34, -121.92), (37.45, -121.92)],
+    # Livermore / Dublin / Pleasanton
+    [(37.72, -121.92), (37.72, -121.75), (37.66, -121.75),
+     (37.66, -121.92), (37.72, -121.92)],
+]
+
+# Parks / open space / forests — green
+_PARK_POLYGONS: List[List[Tuple[float, float]]] = [
+    # Golden Gate Park
+    [(37.77, -122.51), (37.77, -122.45), (37.76, -122.45),
+     (37.76, -122.51), (37.77, -122.51)],
+    # Presidio
+    [(37.80, -122.48), (37.80, -122.44), (37.79, -122.44),
+     (37.79, -122.48), (37.80, -122.48)],
+    # Marin Headlands / Muir Woods
+    [(37.86, -122.55), (37.86, -122.48), (37.83, -122.48),
+     (37.83, -122.55), (37.86, -122.55)],
+    # East Bay Regional Parks (Tilden / Wildcat Canyon / Redwood)
+    [(37.92, -122.24), (37.92, -122.17), (37.82, -122.17),
+     (37.82, -122.24), (37.92, -122.24)],
+    # Coyote Hills / Don Edwards Wildlife Refuge
+    [(37.57, -122.10), (37.57, -122.05), (37.53, -122.05),
+     (37.53, -122.10), (37.57, -122.10)],
+    # San Bruno Mountain
+    [(37.70, -122.44), (37.70, -122.41), (37.69, -122.41),
+     (37.69, -122.44), (37.70, -122.44)],
+    # Sunol / Ohlone Wilderness
+    [(37.54, -121.85), (37.54, -121.78), (37.48, -121.78),
+     (37.48, -121.85), (37.54, -121.85)],
+    # Crystal Springs Reservoir area
+    [(37.55, -122.38), (37.55, -122.33), (37.48, -122.33),
+     (37.48, -122.38), (37.55, -122.38)],
+    # Point Reyes / Olema (north Marin)
+    [(38.05, -122.85), (38.05, -122.70), (37.95, -122.70),
+     (37.95, -122.85), (38.05, -122.85)],
+]
+
+# Mountain / hill ranges — darker terrain
+_MOUNTAIN_POLYGONS: List[List[Tuple[float, float]]] = [
+    # Mt Tamalpais
+    [(37.93, -122.60), (37.93, -122.52), (37.88, -122.52),
+     (37.88, -122.60), (37.93, -122.60)],
+    # Santa Cruz Mountains (west ridge)
+    [(37.50, -122.42), (37.50, -122.32), (37.32, -122.32),
+     (37.32, -122.42), (37.50, -122.42)],
+    # Mt Diablo / surrounding hills
+    [(37.90, -121.98), (37.90, -121.88), (37.84, -121.88),
+     (37.84, -121.98), (37.90, -121.98)],
+    # East Bay Hills (upper ridgeline)
+    [(37.92, -122.17), (37.92, -122.13), (37.82, -122.13),
+     (37.82, -122.17), (37.92, -122.17)],
+    # Hamilton Range (east of San Jose)
+    [(37.48, -121.78), (37.48, -121.65), (37.32, -121.65),
+     (37.32, -121.78), (37.48, -121.78)],
+    # Sonoma Mountains (far north)
+    [(38.05, -122.60), (38.05, -122.48), (37.98, -122.48),
+     (37.98, -122.60), (38.05, -122.60)],
+    # Diablo Range south (east of Fremont)
+    [(37.62, -121.82), (37.62, -121.68), (37.48, -121.68),
+     (37.48, -121.82), (37.62, -121.82)],
+]
+
+
+def _point_in_polygon(px: float, py: float,
+                      polygon: List[Tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon test."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]
+        yj, xj = polygon[j]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _classify_point(lat: float, lon: float) -> np.ndarray:
+    """Classify a geographic point as ocean/bay/land/urban/park/mountain."""
+    if not _point_in_polygon(lon, lat, _LAND_POLYGON):
+        return _COLOR_OCEAN
+
+    # Check water bodies
+    if _point_in_polygon(lon, lat, _BAY_POLYGON) or \
+       _point_in_polygon(lon, lat, _SOUTH_BAY_POLYGON) or \
+       _point_in_polygon(lon, lat, _SAN_PABLO_BAY_POLYGON):
+        return _COLOR_BAY
+
+    # Check parks (highest priority land feature — on top of urban/mountain)
+    for poly in _PARK_POLYGONS:
+        if _point_in_polygon(lon, lat, poly):
+            return _COLOR_PARK
+
+    # Check mountains
+    for poly in _MOUNTAIN_POLYGONS:
+        if _point_in_polygon(lon, lat, poly):
+            return _COLOR_MOUNTAIN
+
+    # Check urban areas
+    for poly in _URBAN_POLYGONS:
+        if _point_in_polygon(lon, lat, poly):
+            return _COLOR_URBAN
+
+    return _COLOR_LAND
+
+
+def _build_geo_texture(tex_w: int, tex_h: int) -> np.ndarray:
+    """Build an RGB texture classifying each pixel by geographic region.
+
+    The texture maps directly to the buffer UV space — each texel
+    corresponds to one FBO pixel.  At init time only.
+    """
+    tex = np.zeros((tex_h, tex_w, 3), dtype=np.uint8)
+
+    for row in range(tex_h):
+        v = row / max(tex_h - 1, 1)
+        for col in range(tex_w):
+            u = col / max(tex_w - 1, 1)
+            # Buffer UV → physical feet → lat/lon
+            phys_x, phys_y = _fan.uv_to_physical(u, v)
+            nx = (phys_x - _PHYS_X_MIN) / (_PHYS_X_MAX - _PHYS_X_MIN)
+            ny = (phys_y - _PHYS_Y_MIN) / (_PHYS_Y_MAX - _PHYS_Y_MIN)
+            lon = _LON_MIN + nx * (_LON_MAX - _LON_MIN)
+            lat = _LAT_MIN + ny * (_LAT_MAX - _LAT_MIN)
+
+            tex[row, col] = _classify_point(lat, lon)
+
+    return tex
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in kilometres."""
@@ -132,11 +464,26 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2.0 * np.arcsin(np.sqrt(a))
 
 
-def _geo_to_norm(lat: float, lon: float, pad: float = 0.05) -> Tuple[float, float]:
-    """Normalize lat/lon to [pad, 1-pad] in both axes (y=0 south, y=1 north)."""
-    x = pad + (1 - 2 * pad) * (lon - _LON_MIN) / (_LON_MAX - _LON_MIN)
-    y = pad + (1 - 2 * pad) * (lat - _LAT_MIN) / (_LAT_MAX - _LAT_MIN)
-    return x, y
+_fan = FanCoords()
+
+# Physical region on the fan surface — spans the full semicircle so every
+# pixel participates in the map.
+_PHYS_X_MIN, _PHYS_X_MAX = -20.6, 20.6
+_PHYS_Y_MIN, _PHYS_Y_MAX =   0.0, 20.6
+
+
+def _geo_to_physical(lat: float, lon: float) -> Tuple[float, float]:
+    """Map lat/lon to physical (x, y) feet on the fan surface."""
+    nx = (lon - _LON_MIN) / (_LON_MAX - _LON_MIN)
+    ny = (lat - _LAT_MIN) / (_LAT_MAX - _LAT_MIN)
+    return (_PHYS_X_MIN + nx * (_PHYS_X_MAX - _PHYS_X_MIN),
+            _PHYS_Y_MIN + ny * (_PHYS_Y_MAX - _PHYS_Y_MIN))
+
+
+def _geo_to_fan_px(lat: float, lon: float, w: float, h: float) -> Tuple[float, float]:
+    """Map lat/lon to buffer pixel coords via physical fan space."""
+    phys_x, phys_y = _geo_to_physical(lat, lon)
+    return _fan.physical_to_px(phys_x, phys_y)
 
 
 # ===========================================================================
@@ -178,6 +525,7 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
     if 'effect' in state:
         state['effect'].train_speed = outstate.get('train_speed', train_speed)
         state['effect'].set_train_density(outstate.get('train_density', train_density))
+        state['effect'].time_of_day = outstate.get('season', 0.5)
 
     if state['count'] == -1:
         if 'effect' in state:
@@ -214,6 +562,47 @@ class BARTMapEffect(ShaderEffect):
     # GLSL sources
     # ------------------------------------------------------------------
 
+    _BG_VERT = """
+    #version 310 es
+    precision highp float;
+    in vec2 position;
+    out vec2 vUV;
+    void main() {
+        vUV = position * 0.5 + 0.5;
+        float depth = 98.0 / 100.0;  // behind stars (99.99) but in front of clear
+        gl_Position = vec4(position, depth, 1.0);
+    }
+    """
+
+    _BG_FRAG = """
+    #version 310 es
+    precision highp float;
+    in vec2 vUV;
+    out vec4 FragColor;
+    uniform sampler2D uGeoTex;
+    uniform float uTimeOfDay;  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+
+    void main() {
+        vec3 geo = texture(uGeoTex, vUV).rgb;
+
+        // Day/night brightness: cosine curve, noon=bright, midnight=dark
+        float dayNight = -cos(uTimeOfDay * 6.28318);  // -1 at midnight, +1 at noon
+        float brightness = 0.35 + 0.65 * max(dayNight, 0.0);  // 0.35 at night, 1.0 at noon
+        brightness = max(brightness, 0.06);  // never fully black
+
+        // Golden hour tint near dawn (0.2) and dusk (0.8)
+        float dawnDist = min(abs(uTimeOfDay - 0.20), abs(uTimeOfDay - 1.20));
+        float duskDist = abs(uTimeOfDay - 0.80);
+        float goldenHour = exp(-dawnDist * dawnDist * 80.0)
+                         + exp(-duskDist * duskDist * 80.0);
+        vec3 goldenTint = vec3(0.3, 0.15, 0.0) * goldenHour;
+
+        // At night, let background become semi-transparent so stars show through
+        float nightAlpha = 0.4 + 0.6 * brightness;  // 0.4 at full night, 1.0 at noon
+        FragColor = vec4(geo * brightness + goldenTint * brightness, nightAlpha);
+    }
+    """
+
     _LINE_VERT = """
     #version 310 es
     precision highp float;
@@ -223,7 +612,8 @@ class BARTMapEffect(ShaderEffect):
     uniform vec2 uResolution;
     void main() {
         vec2 clip = (aPos / uResolution) * 2.0 - 1.0;
-        gl_Position = vec4(clip, 0.0, 1.0);
+        float depth = 96.0 / 100.0;  // behind clouds (85-95), in front of background (98)
+        gl_Position = vec4(clip, depth, 1.0);
         vColor = aColor;
     }
     """
@@ -233,8 +623,13 @@ class BARTMapEffect(ShaderEffect):
     precision highp float;
     in vec3 vColor;
     out vec4 FragColor;
+    uniform float uTimeOfDay;
     void main() {
-        FragColor = vec4(vColor, 0.80);
+        // At night, BART lines glow brighter (constellation effect)
+        float dayNight = -cos(uTimeOfDay * 6.28318);
+        float nightBoost = 1.0 + 0.5 * max(-dayNight, 0.0);  // 1.0 day, 1.5 night
+        float alpha = mix(0.70, 0.95, max(-dayNight, 0.0));   // more opaque at night
+        FragColor = vec4(vColor * nightBoost, alpha);
     }
     """
 
@@ -254,9 +649,12 @@ class BARTMapEffect(ShaderEffect):
     out float vGlow;
     uniform vec2 uResolution;
     void main() {
-        vec2 world = iPos + aQuad * iRadius;
+        // Scale quad so circles are round in clip space (FBO is non-square)
+        vec2 pixelRadius = iRadius * uResolution / max(uResolution.x, uResolution.y);
+        vec2 world = iPos + aQuad * pixelRadius;
         vec2 clip  = (world / uResolution) * 2.0 - 1.0;
-        gl_Position = vec4(clip, 0.0, 1.0);
+        float depth = 95.5 / 100.0;  // just in front of lines (96), behind clouds (85-95)
+        gl_Position = vec4(clip, depth, 1.0);
         vQuad  = aQuad;
         vColor = iColor;
         vAlpha = iAlpha;
@@ -293,25 +691,35 @@ class BARTMapEffect(ShaderEffect):
         super().__init__(viewport)
         self.train_speed   = train_speed   # real-time multiplier
         self.train_density = train_density
+        self.time_of_day   = 0.5          # 0=midnight, 0.5=noon
         self.render_priority = 5
 
         w, h = float(viewport.width), float(viewport.height)
 
         self._station_px = np.array(
-            [(_geo_to_norm(lat, lon)[0] * w,
-              _geo_to_norm(lat, lon)[1] * h)
+            [_geo_to_fan_px(lat, lon, w, h)
              for _, lat, lon in _STATIONS_RAW],
             dtype=np.float32,
         )
 
-        self._line_width = max(2.0, w * 0.009)
+        # Precompute per-station pixel scale for radius compensation
+        self._station_scale = np.array(
+            [_fan.pixel_scale_at_uv(*_fan.physical_to_uv(*_geo_to_physical(lat, lon)))
+             for _, lat, lon in _STATIONS_RAW],
+            dtype=np.float32,
+        )
+
+        self._line_width = max(3.0, w * 0.020)
         self._station_r  = max(2.5, w * 0.007)
-        self._train_r    = max(4.0, w * 0.014)
+        self._train_r    = max(6.0, w * 0.025)
 
         self._bake_line_geometry()
         self._init_trains()
 
         # GPU handles (filled by compile_shader / setup_buffers)
+        self._bg_shader       = None
+        self._bg_VAO          = None
+        self._geo_texture     = None
         self.circle_shader    = None
         self._line_VAO        = None
         self._line_VBO        = None
@@ -327,7 +735,34 @@ class BARTMapEffect(ShaderEffect):
     # ------------------------------------------------------------------
 
     def _bake_line_geometry(self):
-        """Pre-compute thick-line quad vertices for every BART line."""
+        """Pre-compute thick-line quad vertices for coastline + BART lines."""
+        w, h = float(self.viewport.width), float(self.viewport.height)
+
+        # --- Coastline geometry (rendered first, behind BART) ---
+        geo_lw = self._line_width * 0.4  # thinner than BART lines
+        geo_half = geo_lw * 0.5
+        cr, cg, cb = _BAY_GEO_COLOR
+        geo_verts: List[float] = []
+        for polyline in _BAY_COASTLINES:
+            for i in range(len(polyline) - 1):
+                ax, ay = _geo_to_fan_px(polyline[i][0], polyline[i][1], w, h)
+                bx, by = _geo_to_fan_px(polyline[i+1][0], polyline[i+1][1], w, h)
+                dx, dy = bx - ax, by - ay
+                L = np.hypot(dx, dy)
+                if L < 0.3:
+                    continue
+                nx, ny = -dy / L * geo_half, dx / L * geo_half
+                geo_verts += [
+                    ax-nx, ay-ny, cr, cg, cb,
+                    ax+nx, ay+ny, cr, cg, cb,
+                    bx+nx, by+ny, cr, cg, cb,
+                    ax-nx, ay-ny, cr, cg, cb,
+                    bx+nx, by+ny, cr, cg, cb,
+                    bx-nx, by-ny, cr, cg, cb,
+                ]
+        self._n_geo_verts = len(geo_verts) // 5
+
+        # --- BART line geometry ---
         self._line_chunks: List[np.ndarray] = []
         lw_half = self._line_width * 0.5
 
@@ -353,6 +788,10 @@ class BARTMapEffect(ShaderEffect):
             self._line_chunks.append(
                 np.array(verts, dtype=np.float32) if verts else np.zeros(0, np.float32)
             )
+
+        # Combine: coastline first, then BART lines
+        geo_arr = np.array(geo_verts, dtype=np.float32) if geo_verts else np.zeros(0, np.float32)
+        self._geo_and_lines = geo_arr  # store for VBO upload
 
     def _init_trains(self):
         """
@@ -395,6 +834,10 @@ class BARTMapEffect(ShaderEffect):
     # ------------------------------------------------------------------
 
     def compile_shader(self):
+        self._bg_shader = shaders.compileProgram(
+            shaders.compileShader(self._BG_VERT, GL_VERTEX_SHADER),
+            shaders.compileShader(self._BG_FRAG, GL_FRAGMENT_SHADER),
+        )
         line_shader = shaders.compileProgram(
             shaders.compileShader(self._LINE_VERT,   GL_VERTEX_SHADER),
             shaders.compileShader(self._LINE_FRAG,   GL_FRAGMENT_SHADER),
@@ -410,9 +853,37 @@ class BARTMapEffect(ShaderEffect):
     # ------------------------------------------------------------------
 
     def setup_buffers(self):
-        # Static line quad geometry
-        all_verts = (np.concatenate(self._line_chunks)
-                     if self._line_chunks else np.zeros(0, np.float32))
+        # --- Background geo texture ---
+        w_int, h_int = self.viewport.width, self.viewport.height
+        geo_tex_data = _build_geo_texture(w_int, h_int)
+        self._geo_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._geo_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w_int, h_int, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, geo_tex_data)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glBindTexture(GL_TEXTURE_2D, 0)
+
+        # --- Background fullscreen quad VAO ---
+        bg_quad = np.array([-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1],
+                           dtype=np.float32)
+        self._bg_VAO = glGenVertexArrays(1)
+        glBindVertexArray(self._bg_VAO)
+        bg_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, bg_vbo)
+        glBufferData(GL_ARRAY_BUFFER, bg_quad.nbytes, bg_quad, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
+        glBindVertexArray(0)
+        self.VBOs.append(bg_vbo)
+
+        # --- Static line quad geometry: coastline + BART lines in one VBO ---
+        bart_verts = (np.concatenate(self._line_chunks)
+                      if self._line_chunks else np.zeros(0, np.float32))
+        all_verts = np.concatenate([self._geo_and_lines, bart_verts]) \
+            if len(self._geo_and_lines) > 0 else bart_verts
         self._n_line_verts = len(all_verts) // 5
 
         self._line_VAO = glGenVertexArrays(1)
@@ -479,7 +950,7 @@ class BARTMapEffect(ShaderEffect):
         sd = np.zeros((n, 8), dtype=np.float32)
         sd[:, 0] = self._station_px[:, 0]
         sd[:, 1] = self._station_px[:, 1]
-        sd[:, 2] = self._station_r
+        sd[:, 2] = self._station_r / self._station_scale  # compensate per station
         sd[:, 3:6] = [0.95, 0.95, 0.95]
         sd[:, 6] = 0.65
         sd[:, 7] = 0.10
@@ -561,10 +1032,10 @@ class BARTMapEffect(ShaderEffect):
     # ShaderEffect — render
     # ------------------------------------------------------------------
 
-    def _train_world_positions(self, line_idx: int) -> List[Tuple[np.ndarray, bool]]:
+    def _train_world_positions(self, line_idx: int) -> List[Tuple[np.ndarray, bool, float]]:
         """
-        Return (pixel_pos, is_dwelling) for each train on the line.
-        When dwelling the train sits exactly at its station pixel.
+        Return (pixel_pos, is_dwelling, pixel_scale) for each train on the line.
+        pixel_scale is interpolated from per-station scales for radius compensation.
         """
         td  = self._trains[line_idx]
         seq = td['seq']
@@ -572,12 +1043,15 @@ class BARTMapEffect(ShaderEffect):
         for i, p in enumerate(td['pos']):
             seg  = int(np.clip(p, 0, len(seq) - 2))
             frac = p - seg
-            a    = self._station_px[seq[seg]]
-            b    = self._station_px[seq[min(seg + 1, len(seq) - 1)]]
-            out.append((a + frac * (b - a), td['dwell'][i] > 0.0))
+            idx_a, idx_b = seq[seg], seq[min(seg + 1, len(seq) - 1)]
+            a    = self._station_px[idx_a]
+            b    = self._station_px[idx_b]
+            scale = self._station_scale[idx_a] + frac * (self._station_scale[idx_b] - self._station_scale[idx_a])
+            out.append((a + frac * (b - a), td['dwell'][i] > 0.0, scale))
         return out
 
     def render(self, state: Dict):
+        # NO state toggling — global state handles depth test + blend
         super().render(state)
         if self.circle_shader is None:
             return
@@ -585,15 +1059,29 @@ class BARTMapEffect(ShaderEffect):
         w = float(self.viewport.width)
         h = float(self.viewport.height)
 
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDepthMask(GL_FALSE)
+        # ---- 0. Draw background geo map (z=98, behind stars at 99.99) ----
+        # At night alpha drops so stars show through via standard blending
+        glUseProgram(self._bg_shader)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self._geo_texture)
+        loc = glGetUniformLocation(self._bg_shader, "uGeoTex")
+        if loc != -1:
+            glUniform1i(loc, 0)
+        loc = glGetUniformLocation(self._bg_shader, "uTimeOfDay")
+        if loc != -1:
+            glUniform1f(loc, self.time_of_day)
+        glBindVertexArray(self._bg_VAO)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
 
-        # ---- 1. Draw BART line quads ----
+        # ---- 1. Draw BART line quads (z=50, constellation glow at night) ----
         glUseProgram(self.shader)
         loc = glGetUniformLocation(self.shader, "uResolution")
         if loc != -1:
             glUniform2f(loc, w, h)
+        loc = glGetUniformLocation(self.shader, "uTimeOfDay")
+        if loc != -1:
+            glUniform1f(loc, self.time_of_day)
         glBindVertexArray(self._line_VAO)
         glDrawArrays(GL_TRIANGLES, 0, self._n_line_verts)
         glBindVertexArray(0)
@@ -602,12 +1090,11 @@ class BARTMapEffect(ShaderEffect):
         train_rows: List[List[float]] = []
         for line_idx, td in enumerate(self._trains):
             c = td['color']
-            for wp, dwelling in self._train_world_positions(line_idx):
+            for wp, dwelling, scale in self._train_world_positions(line_idx):
                 if dwelling:
-                    # Larger, brighter glow while stopped at a station
-                    r, alpha, glow = self._train_r * 1.35, 1.0, 1.2
+                    r, alpha, glow = self._train_r * 1.35 / scale, 1.0, 1.2
                 else:
-                    r, alpha, glow = self._train_r, 0.95, 0.80
+                    r, alpha, glow = self._train_r / scale, 0.95, 0.80
                 train_rows.append([wp[0], wp[1], r,
                                    c[0], c[1], c[2], alpha, glow])
 
@@ -623,7 +1110,7 @@ class BARTMapEffect(ShaderEffect):
         glBindBuffer(GL_ARRAY_BUFFER, self._circle_inst_VBO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, data.nbytes, data)
 
-        # ---- 3. Draw circles ----
+        # ---- 3. Draw circles (z=25, in front of lines) ----
         glUseProgram(self.circle_shader)
         loc = glGetUniformLocation(self.circle_shader, "uResolution")
         if loc != -1:
@@ -633,14 +1120,18 @@ class BARTMapEffect(ShaderEffect):
         glBindVertexArray(0)
         glUseProgram(0)
 
-        glDepthMask(GL_TRUE)
-
     # ------------------------------------------------------------------
     # ShaderEffect — cleanup
     # ------------------------------------------------------------------
 
     def cleanup(self):
         try:
+            if self._bg_VAO:
+                glDeleteVertexArrays(1, [self._bg_VAO])
+            if hasattr(self, '_bg_shader') and self._bg_shader:
+                glDeleteProgram(self._bg_shader)
+            if hasattr(self, '_geo_texture') and self._geo_texture:
+                glDeleteTextures(1, [self._geo_texture])
             if self._line_VAO:
                 glDeleteVertexArrays(1, [self._line_VAO])
             if self._circle_VAO:

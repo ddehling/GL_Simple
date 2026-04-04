@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_aurora(state, outstate, height_ratio=0.75, depth=75.0, intensity=1.0, speed=1.0,
+def shader_aurora(state, outstate, height_ratio=0.75, depth=96.0, intensity=1.0, speed=1.0,
                   bass_sensitivity=0.5, mid_sensitivity=0.3, high_sensitivity=0.2):
     """
     Shader-based aurora effect compatible with EventScheduler
@@ -133,11 +133,12 @@ class Aurora(ShaderEffect):
     layered sine waves with varying frequencies and amplitudes.
     """
     
-    def __init__(self, viewport, height_ratio: float = 0.75, depth: float = 75.0, 
+    def __init__(self, viewport, height_ratio: float = 0.75, depth: float = 96.0,
                  intensity: float = 1.0, speed: float = 1.0,
                  bass_sensitivity: float = 0.5, mid_sensitivity: float = 0.3,
                  high_sensitivity: float = 0.2):
         super().__init__(viewport)
+        self.render_priority = 5.5  # After BART map (5), before clouds (6)
         self.height_ratio = height_ratio
         self.height = int(viewport.height * height_ratio)  # Calculate actual pixel height
         self.depth = depth
@@ -405,7 +406,10 @@ class Aurora(ShaderEffect):
             
             // Apply fade in/out
             alpha *= fadeAlpha;
-            
+
+            // Discard transparent fragments to prevent depth buffer blocking
+            if (alpha < 0.01) discard;
+
             outColor = vec4(color * brightness, alpha);
         }
         """

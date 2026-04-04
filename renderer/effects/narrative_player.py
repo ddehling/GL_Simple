@@ -238,6 +238,7 @@ class NarrativePlayer(ShaderEffect):
                 engine.schedule_event(
                     str(audio_file), volume=1.0,
                     duration=self._audio_dur + 0.5,
+                    narrative=True,
                 )
             print(f'[NarrativePlayer] ▶ {node_id}  ({self._audio_dur:.1f}s)  recency={prev_count:.2f}')
         else:
@@ -269,6 +270,7 @@ class NarrativePlayer(ShaderEffect):
 
         self._phase_elapsed += dt
         engine = state.get('soundengine')
+        self._volume = state.get('narrative_volume', 1.0)
 
         # Decay recency counters (1 count per hour)
         if self._recency:

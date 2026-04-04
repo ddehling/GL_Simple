@@ -78,6 +78,8 @@ class WebController:
             "effect_speed": 1.0,
             "audio_sensitivity": 1.0,
             "brightness": 1.0,
+            "master_volume": 1.0,
+            "narrative_volume": 1.0,
         }
 
         # Global modifier metadata for UI generation
@@ -101,6 +103,16 @@ class WebController:
                 "label": "Brightness",
                 "min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0,
                 "description": "Global brightness dimmer (cannot exceed power limiter)"
+            },
+            "master_volume": {
+                "label": "Master Volume",
+                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
+                "description": "Controls all audio output volume"
+            },
+            "narrative_volume": {
+                "label": "Narrative Volume",
+                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
+                "description": "Controls narrative player TTS volume"
             },
         }
 

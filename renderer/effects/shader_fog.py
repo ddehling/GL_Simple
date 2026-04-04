@@ -3,6 +3,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
+from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 # Vertex shader for fullscreen quad
 VERTEX_SHADER = """#version 310 es
@@ -17,7 +18,7 @@ void main() {
 }
 """
 
-# Fragment shader with depth-based fog and blur
+# Fragment shader with depth-based fog, blur, and spatial clustering
 FRAGMENT_SHADER = """#version 310 es
 precision highp float;
 
@@ -31,54 +32,88 @@ uniform float u_fog_strength;
 uniform float u_fog_near;
 uniform float u_fog_far;
 uniform vec2 u_resolution;
+uniform float u_time;
+
+""" + FAN_COORDS_UNIFORMS + FAN_COORDS_GLSL + """
+
+// Bay Area fog spatial density map.
+// Fog rolls in from the Pacific (west/negative x) through the Golden Gate
+// and settles along the coast and SF peninsula. East Bay stays clearer.
+float bay_fog_density(vec2 phys) {
+    // Convert physical coords to approximate lat/lon
+    float nx = (phys.x - (-20.6)) / 41.2;  // 0-1 across fan
+    float ny = (phys.y - 0.0) / 20.6;
+    float lon = -123.01 + nx * 1.78;
+    float lat = 37.32 + ny * 0.70;
+
+    float density = 0.0;
+
+    // Ocean fog — strongest over the Pacific (lon < -122.5)
+    float ocean_dist = (-122.50 - lon) * 4.0;  // positive = further into ocean
+    density += clamp(ocean_dist, 0.0, 0.6);
+
+    // Golden Gate corridor fog (lon ~ -122.45, lat ~ 37.81)
+    float gate_dist = length(vec2((lon - (-122.45)) * 8.0, (lat - 37.81) * 12.0));
+    density += 0.5 * exp(-gate_dist * gate_dist * 1.5);
+
+    // SF peninsula coastal fog (west side, lon < -122.42)
+    float sf_coast = clamp((-122.42 - lon) * 3.0, 0.0, 0.4);
+    float sf_lat_band = exp(-pow((lat - 37.75) * 4.0, 2.0));  // centered on SF
+    density += sf_coast * sf_lat_band;
+
+    // Fog thins rapidly east of the Bay (lon > -122.2)
+    float east_clear = clamp((lon - (-122.2)) * 3.0, 0.0, 1.0);
+    density *= (1.0 - east_clear * 0.8);
+
+    // Animate: slow drift and pulse
+    float drift = sin(u_time * 0.15 + phys.x * 0.3) * 0.1;
+    density += drift;
+
+    return clamp(density, 0.0, 1.0);
+}
 
 // Gaussian blur with proper weighting
 vec4 apply_gaussian_blur(vec2 uv, float radius) {
     if (radius < 0.5) {
         return texture(u_color_texture, uv);
     }
-    
+
     vec2 texel_size = 1.0 / u_resolution;
     vec4 result = vec4(0.0);
     float total_weight = 0.0;
-    
+
     int r = int(ceil(radius));
-    r = clamp(r, 1, 12); // Max 12 pixel radius
-    
+    r = clamp(r, 1, 12);
+
     float sigma = radius / 2.5;
-    
+
     for (int x = -r; x <= r; x++) {
         for (int y = -r; y <= r; y++) {
             vec2 offset = vec2(float(x), float(y)) * texel_size;
             float dist = length(vec2(float(x), float(y)));
-            
-            // Gaussian weight
             float weight = exp(-(dist * dist) / (2.0 * sigma * sigma));
-            
             result += texture(u_color_texture, uv + offset) * weight;
             total_weight += weight;
         }
     }
-    
+
     return result / total_weight;
 }
 
 void main() {
-    // Sample depth
-    float depth = texture(u_depth_texture, v_texcoord).r;
-    
-    // Convert depth to blur amount
-    // Depth close to 1.0 = far away = more blur
-    // Scale blur: 0 pixels at depth 0, up to 12 pixels at depth 1.0
-    float blur_radius = depth * 3.0 * u_fog_strength;
-    
-    // Apply Gaussian blur based on depth
+    // Spatial fog density from Bay Area geography — purely geographic,
+    // independent of depth buffer (avoids artifacts from aurora/sky layers)
+    vec2 phys = fan_uv_to_physical(v_texcoord);
+    float spatial_fog = bay_fog_density(phys);
+
+    float combined = u_fog_strength * spatial_fog;
+
+    float blur_radius = combined * 4.0;
     vec4 blurred_color = apply_gaussian_blur(v_texcoord, blur_radius);
-    
-    // Mix with fog color based on depth and strength
-    float fog_mix = depth * u_fog_strength * 0.4;
+
+    float fog_mix = combined * 0.5;
     vec3 final_color = mix(blurred_color.rgb, u_fog_color, fog_mix);
-    
+
     fragColor = vec4(final_color, blurred_color.a);
 }
 """
@@ -181,7 +216,7 @@ def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
 class ShaderFog(ShaderEffect):
     """Post-processing fog effect with depth-based blur"""
     
-    def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8), 
+    def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8),
                  fog_near=10.0, fog_far=100.0):
         super().__init__(viewport)
         self.render_priority = 1000  # Post-processing: render LAST
@@ -190,7 +225,9 @@ class ShaderFog(ShaderEffect):
         self.fog_color = color
         self.fog_near = fog_near
         self.fog_far = fog_far
-        
+        self._time = 0.0
+        self._fan = FanCoords(viewport.width, viewport.height)
+
         # OpenGL resources (initialized in setup_buffers)
         self.VAO = None
         self.VBO = None
@@ -283,7 +320,9 @@ class ShaderFog(ShaderEffect):
         """Update fog parameters each frame"""
         if not self.enabled:
             return
-        
+
+        self._time += dt
+
         # If not managed by wrapper, check state dict for dynamic updates
         # This allows real-time control without using the event wrapper
         if not hasattr(self, '_managed_by_wrapper') or not self._managed_by_wrapper:
@@ -345,6 +384,8 @@ class ShaderFog(ShaderEffect):
                    self.fog_far)
         glUniform2f(glGetUniformLocation(self.shader, "u_resolution"),
                    float(self.viewport.width), float(self.viewport.height))
+        glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
+        self._fan.set_uniforms(self.shader)
         
         # Draw fullscreen quad
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

@@ -27,8 +27,9 @@ class _Track:
     def __init__(self, path: Path, *, loop: bool = False, skip: float = 0.0,
                  fade_in: float = 0.0, volume: float = 1.0,
                  duration: float = 0.0, loop_length: float = 0.0,
-                 is_ambient: bool = False):
+                 is_ambient: bool = False, is_narrative: bool = False):
         self.is_ambient       = is_ambient
+        self.is_narrative     = is_narrative
         self.done             = False
         self._path            = path
         self._loop            = loop
@@ -143,6 +144,8 @@ class AudioEngine:
     def __init__(self):
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
         self._device = None
+        self.master_volume = 1.0    # scales all audio output
+        self.narrative_volume = 1.0  # scales non-ambient (oneshot) tracks in real time
 
     # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
@@ -178,9 +181,10 @@ class AudioEngine:
         """Fade out the current ambient track."""
         self._cmds.put(("stop_ambient", duration))
 
-    def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0):
+    def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
+                       narrative: bool = False):
         """Play a sound file once. duration>0 caps playback to that many seconds."""
-        self._cmds.put(("oneshot", Path(path), volume, duration))
+        self._cmds.put(("oneshot", Path(path), volume, duration, narrative))
 
 
     # ------------------------------------------------------------------
@@ -216,9 +220,10 @@ class AudioEngine:
                                 t.fade_out(fo)
 
                     elif kind == "oneshot":
-                        _, path, vol, dur = cmd
+                        _, path, vol, dur, narr = cmd[0], cmd[1], cmd[2], cmd[3], cmd[4] if len(cmd) > 4 else False
                         tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
-                                                         duration=dur)
+                                                         duration=dur,
+                                                         is_narrative=narr)
 
 
             except queue.Empty:
@@ -227,14 +232,19 @@ class AudioEngine:
             # Mix all active tracks.
             buf  = np.zeros((required_frames, CHANNELS), dtype=np.float32)
             dead = []
+            narr_vol = self.narrative_volume
             for key, track in tracks.items():
                 chunk = track.read(required_frames)
                 if chunk is None or track.done:
                     dead.append(key)
                 else:
+                    if track.is_narrative:
+                        chunk = chunk * narr_vol
                     buf[:len(chunk)] += chunk
             for key in dead:
                 del tracks[key]
+
+            buf *= self.master_volume
 
             peak = np.max(np.abs(buf))
             if peak > 1.0:
