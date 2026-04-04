@@ -58,16 +58,16 @@ def _weighted_choice(nexts: list, weights: list,
                      recency: dict = None) -> Optional[str]:
     """Pick a node ID from nexts using weights, penalised by recency counters.
 
-    Each node's effective weight is  w * 2^(-counter).  A counter of 1 halves
-    the probability; 2 quarters it, etc.  Counters decay toward 0 over time
-    so the penalty fades after roughly an hour.
+    Each node's effective weight is  w * 3^(-counter).  A counter of 1 divides
+    the probability by 3; 2 divides it by 9, etc.  Counters decay toward 0 over time
+    so the penalty fades after roughly 10 hours.
     """
     if not nexts:
         return None
     effective = []
     for nid, w in zip(nexts, weights):
         if recency and nid in recency:
-            w *= 2.0 ** (-recency[nid])
+            w *= 3.0 ** (-recency[nid])
         effective.append(w)
     total = sum(effective) or 1.0
     r = random.random() * total
@@ -132,7 +132,7 @@ class NarrativePlayer(ShaderEffect):
         # plays; decays by 1/hour continuously.  Effective weight is
         # original_weight * 2^(-counter).
         self._recency: dict = {}   # node_id -> float
-        self._DECAY_PER_SEC: float = 1.0 / 7200.0  # lose 1 count per 2 hours
+        self._DECAY_PER_SEC: float = 1.0 / 36000.0  # lose 1 count per 10 hours
 
         p = Path(script_path)
         if p.exists():
@@ -221,11 +221,14 @@ class NarrativePlayer(ShaderEffect):
 
         # Use the node's explicit "file" field if set, otherwise fall back
         # to the convention of {node_id}.mp3 in the script directory.
+        # The "file" field is stored relative to the project root.
         file_rel = nd.get('file', '')
         if file_rel:
             audio_file = Path(file_rel)
             if not audio_file.is_absolute():
-                audio_file = self._audio_dir / audio_file
+                # Resolve from project root (2 levels up from this file)
+                repo_root = Path(__file__).parent.parent.parent
+                audio_file = repo_root / audio_file
         else:
             audio_file = self._audio_dir / f'{node_id}.mp3'
         if audio_file.exists():

@@ -58,6 +58,28 @@ FOCUSED_CONTEXT_MAX = 1500  # max chars of story_context_focused sent to AI
 
 PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
 
+# ElevenLabs voice parameter safe ranges (prevents slow/distorted speech)
+VOICE_STABILITY_MIN = 0.35
+VOICE_STABILITY_MAX = 0.80
+VOICE_STYLE_MIN     = 0.0
+VOICE_STYLE_MAX     = 0.0
+
+
+def _clamp_voice_settings(vs: dict) -> bool:
+    """Clamp voice_settings values to safe ranges. Returns True if anything changed."""
+    changed = False
+    if 'stability' in vs:
+        clamped = max(VOICE_STABILITY_MIN, min(VOICE_STABILITY_MAX, vs['stability']))
+        if clamped != vs['stability']:
+            vs['stability'] = round(clamped, 2)
+            changed = True
+    if 'style' in vs:
+        clamped = max(VOICE_STYLE_MIN, min(VOICE_STYLE_MAX, vs['style']))
+        if clamped != vs['style']:
+            vs['style'] = round(clamped, 2)
+            changed = True
+    return changed
+
 LAYER_ORDER = ['arrival', 'presence', 'curiosity', 'discovery', 'complication',
                'intimacy', 'turn', 'consequence', 'echo', 'stillness']
 
@@ -251,10 +273,10 @@ VOICE SETTINGS: set "voice_settings" on every node to match its emotional tone:
     curiosity   stability 0.55  style 0.25  (drawn in, questioning)
     discovery   stability 0.50  style 0.35  (engaged, exploring)
     complication stability 0.45  style 0.45  (more invested, richer)
-    intimacy    stability 0.40  style 0.50  (personal, vulnerable)
-    turn        stability 0.30  style 0.65  (tense, expressive)
-    consequence stability 0.25  style 0.70  (intense, committed)
-    echo        stability 0.35  style 0.55  (resonant, reflective)
+    intimacy    stability 0.42  style 0.48  (personal, vulnerable)
+    turn        stability 0.38  style 0.55  (tense, expressive)
+    consequence stability 0.35  style 0.55  (intense, committed)
+    echo        stability 0.40  style 0.50  (resonant, reflective)
     stillness   stability 0.60  style 0.15  (settled, at rest)
   Adjust within layer if the content is notably more or less intense than usual.
 
@@ -344,9 +366,9 @@ TAGS: one layer tag + custom content tags (carry forward tags from source nodes 
 VOICE SETTINGS per layer:
   arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
   curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
-  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
-  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
-  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.42 style~0.48
+  turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
+  echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
 """
 
 SYSTEM_CONTINUE = """\
@@ -364,7 +386,7 @@ OUTPUT FORMAT — respond with ONLY this JSON, no markdown fences, no explanatio
       "next": ["next_id"],
       "weights": [1.0],
       "tags": ["turn"],
-      "voice_settings": {"stability": 0.30, "similarity_boost": 0.75, "style": 0.65}
+      "voice_settings": {"stability": 0.38, "similarity_boost": 0.75, "style": 0.55}
     }
   },
   "start_nodes": ["first_node_id"]
@@ -472,9 +494,9 @@ Layer progression rules (secondary to thematic continuity):
 VOICE SETTINGS: set voice_settings on every node (stability 0-1, similarity_boost 0.75, style 0-1).
   arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
   curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
-  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
-  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
-  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.42 style~0.48
+  turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
+  echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
   Adjust within the layer to match the specific emotional intensity of the node's text.
 """
 
@@ -511,9 +533,9 @@ node_id: short_snake_case, layer-prefixed (e.g. "disc_kelp_drift", "turn_silence
 VOICE SETTINGS (stability 0-1, similarity_boost 0.75, style 0-1):
   arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
   curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
-  complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
-  turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
-  echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
+  complicat   stab~0.45 style~0.45 | intimacy    stab~0.42 style~0.48
+  turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
+  echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
   Adjust to match the specific emotional intensity of the node's text.
 """
 
@@ -554,9 +576,9 @@ Rules for voice_settings (ElevenLabs):
 - Layer guidance:
     arrival     stab~0.65 style~0.10 | presence    stab~0.60 style~0.15
     curiosity   stab~0.55 style~0.25 | discovery   stab~0.50 style~0.35
-    complicat   stab~0.45 style~0.45 | intimacy    stab~0.40 style~0.50
-    turn        stab~0.30 style~0.65 | consequence stab~0.25 style~0.70
-    echo        stab~0.35 style~0.55 | stillness   stab~0.60 style~0.15
+    complicat   stab~0.45 style~0.45 | intimacy    stab~0.42 style~0.48
+    turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
+    echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
 - Adjust to match the specific emotional intensity of the rewritten text
 
 Respond with ONLY a JSON object in this exact format, no other text:
@@ -993,6 +1015,7 @@ class ScriptData:
                 "voice_settings": ndata.get("voice_settings", {}),
                 "pos":            [x, 80 + y_idx * 170],
             }
+            _clamp_voice_settings(self._data["nodes"][nid].get("voice_settings", {}))
 
         for nid in generated.get("start_nodes", []):
             if nid in self._data["nodes"] and nid not in self._data["start_nodes"]:
@@ -1037,6 +1060,7 @@ class ScriptData:
                 "vars":           ndata.get("vars", {}),
                 "pos":            [x, 80 + y_idx * 170],
             }
+            _clamp_voice_settings(self._data["nodes"][nid].get("voice_settings", {}))
 
         # Wire source node to the connect_from targets
         src = self._data["nodes"].get(source_id)
@@ -1068,6 +1092,10 @@ class ScriptData:
             'vars':           node_data.get('vars', {}),
             'duration':       None,
         }}
+        # Clamp voice settings from AI to safe ranges
+        vs = single[node_id].get('voice_settings', {})
+        if vs:
+            _clamp_voice_settings(vs)
         single = self._sanitize_nodes(single)
         single, _remap = self._dedupe_ids(single)
         final_id = list(single.keys())[0] if single else None
@@ -2560,15 +2588,18 @@ class VoiceManager:
             try:
                 from elevenlabs.client import ElevenLabs
                 from elevenlabs import VoiceSettings
+                # Clamp to safe ranges before sending to API
+                safe = dict(settings)
+                _clamp_voice_settings(safe)
                 client = ElevenLabs(api_key=self.api_key)
                 audio = client.text_to_speech.convert(
                     voice_id=voice_id,
                     text=text,
-                    model_id=settings.get("model", "eleven_multilingual_v2"),
+                    model_id=safe.get("model", "eleven_multilingual_v2"),
                     voice_settings=VoiceSettings(
-                        stability=settings.get("stability", 0.5),
-                        similarity_boost=settings.get("similarity_boost", 0.75),
-                        style=settings.get("style", 0.3),
+                        stability=safe.get("stability", 0.5),
+                        similarity_boost=safe.get("similarity_boost", 0.75),
+                        style=0.0,
                         use_speaker_boost=True,
                     ),
                 )
@@ -2881,9 +2912,10 @@ class PropertiesPanel(QWidget):
         form.setSpacing(4)
 
         self.stability_spin = QDoubleSpinBox()
-        self.stability_spin.setRange(0.0, 1.0)
+        self.stability_spin.setRange(VOICE_STABILITY_MIN, VOICE_STABILITY_MAX)
         self.stability_spin.setSingleStep(0.05)
         self.stability_spin.setDecimals(2)
+        self.stability_spin.setToolTip(f"Safe range: {VOICE_STABILITY_MIN}–{VOICE_STABILITY_MAX}")
         self.stability_spin.valueChanged.connect(self._autosave_voice_settings)
         form.addRow("Stability:", self.stability_spin)
 
@@ -2894,12 +2926,6 @@ class PropertiesPanel(QWidget):
         self.similarity_spin.valueChanged.connect(self._autosave_voice_settings)
         form.addRow("Similarity Boost:", self.similarity_spin)
 
-        self.style_spin = QDoubleSpinBox()
-        self.style_spin.setRange(0.0, 1.0)
-        self.style_spin.setSingleStep(0.05)
-        self.style_spin.setDecimals(2)
-        self.style_spin.valueChanged.connect(self._autosave_voice_settings)
-        form.addRow("Style:", self.style_spin)
 
         layout.addLayout(form)
 
@@ -2965,9 +2991,11 @@ class PropertiesPanel(QWidget):
             self.is_start_cb.setChecked(node_id in script.start_nodes)
 
             vs = nd.get("voice_settings", {})
+            if _clamp_voice_settings(vs):
+                nd["voice_settings"] = vs
+                script.dirty = True
             self.stability_spin.setValue(vs.get("stability", 0.5))
             self.similarity_spin.setValue(vs.get("similarity_boost", 0.75))
-            self.style_spin.setValue(vs.get("style", 0.3))
 
             # Voice combo
             voice_id = nd.get("voice")
@@ -3043,7 +3071,6 @@ class PropertiesPanel(QWidget):
             self.is_start_cb.setChecked(False)
             self.stability_spin.setValue(0.5)
             self.similarity_spin.setValue(0.75)
-            self.style_spin.setValue(0.3)
             self.audio_file_edit.setText("")
             self.audio_status.setText("")
             self.rewrite_status.setText("")
@@ -3304,7 +3331,7 @@ class PropertiesPanel(QWidget):
         self._script.update_node_voice_settings(self._node_id, {
             "stability":        round(self.stability_spin.value(), 2),
             "similarity_boost": round(self.similarity_spin.value(), 2),
-            "style":            round(self.style_spin.value(), 2),
+            "style":            0.0,
         })
 
     def _cmd_rewrite(self):
@@ -3368,7 +3395,7 @@ class PropertiesPanel(QWidget):
                     self._script.update_node_voice_settings(node_id, {
                         "stability":        vs.get("stability",        0.5),
                         "similarity_boost": vs.get("similarity_boost", 0.75),
-                        "style":            vs.get("style",            0.3),
+                        "style":            0.0,
                     })
                 new_vars = data.get("vars", {})
                 if new_vars:
@@ -3388,7 +3415,6 @@ class PropertiesPanel(QWidget):
                         if vs:
                             self.stability_spin.setValue(vs.get("stability", 0.5))
                             self.similarity_spin.setValue(vs.get("similarity_boost", 0.75))
-                            self.style_spin.setValue(vs.get("style", 0.3))
                         if new_vars:
                             for name, spin in self._vars_spins.items():
                                 spin.setValue(new_vars.get(name, spin.value()))
@@ -3548,6 +3574,11 @@ class VoiceSettingsPanel(QWidget):
             idx = self.default_voice_combo.findText(name)
             if idx >= 0:
                 self.default_voice_combo.setCurrentIndex(idx)
+        # Pre-populate TTS model
+        saved_model = script._data.get("voice_settings", {}).get("model", "eleven_multilingual_v2")
+        idx = self.tts_model_combo.findData(saved_model)
+        if idx >= 0:
+            self.tts_model_combo.setCurrentIndex(idx)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -3583,6 +3614,21 @@ class VoiceSettingsPanel(QWidget):
         voice_row.addWidget(self.default_voice_combo)
         layout.addLayout(voice_row)
 
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("TTS Model:"))
+        self.tts_model_combo = QComboBox()
+        self._tts_models = [
+            ("eleven_multilingual_v2",  "Multilingual v2 (most expressive)"),
+            ("eleven_turbo_v2_5",       "Turbo v2.5 (stable pacing)"),
+            ("eleven_flash_v2_5",       "Flash v2.5 (fastest)"),
+            ("eleven_monolingual_v1",   "Monolingual v1 (most stable)"),
+            ("eleven_multilingual_v1",  "Multilingual v1"),
+        ]
+        for model_id, label in self._tts_models:
+            self.tts_model_combo.addItem(label, model_id)
+        self.tts_model_combo.currentIndexChanged.connect(self._autosave_tts_model)
+        model_row.addWidget(self.tts_model_combo)
+        layout.addLayout(model_row)
 
         self.skip_existing_chk = QCheckBox("Skip existing audio (> 1 KB)")
         self.skip_existing_chk.setChecked(True)
@@ -3723,6 +3769,15 @@ class VoiceSettingsPanel(QWidget):
         voice_id = self._vm.id_for_name(name) or name
         if voice_id:
             self._script.set_default_voice(voice_id)
+
+    def _autosave_tts_model(self):
+        if not self._script:
+            return
+        model_id = self.tts_model_combo.currentData()
+        if model_id:
+            self._script._data.setdefault("voice_settings", {})["model"] = model_id
+            self._script.dirty = True
+
 
 
 
@@ -6231,8 +6286,13 @@ class MainWindow(QMainWindow):
 
             menu.addSeparator()
 
-            act_gen_audio = menu.addAction("Generate Audio")
-            act_gen_audio.triggered.connect(lambda: self._cmd_generate_audio_for(node_id))
+            selected = self._get_selected_node_ids()
+            if len(selected) > 1 and node_id in selected:
+                act_gen_audio = menu.addAction(f"Generate Audio ({len(selected)} selected)")
+                act_gen_audio.triggered.connect(lambda: self._cmd_generate_audio_for_nodes(selected))
+            else:
+                act_gen_audio = menu.addAction("Generate Audio")
+                act_gen_audio.triggered.connect(lambda: self._cmd_generate_audio_for(node_id))
             act_gen_audio.setEnabled(bool(self.vm.api_key))
 
             act_play = menu.addAction("Play Audio")
@@ -6355,6 +6415,85 @@ class MainWindow(QMainWindow):
     def _cmd_generate_audio_for(self, node_id: str):
         self._select_node(node_id)
         self.props_panel._cmd_generate_audio()
+
+    def _cmd_generate_audio_for_nodes(self, node_ids: list):
+        """Generate audio sequentially for a list of nodes, skipping those with existing audio."""
+        if not self.vm.api_key:
+            self.status_bar.showMessage("ElevenLabs API key not set")
+            return
+
+        out_dir = self.script.path.parent if self.script.path else SOUNDS_DIR
+
+        # Build work list — skip nodes without text, voice, or with existing audio
+        work = []
+        for nid in node_ids:
+            nd = self.script.nodes.get(nid, {})
+            text = nd.get("text", "").strip()
+            if not text:
+                continue
+            file_rel = nd.get("file")
+            if file_rel:
+                p = REPO_ROOT / file_rel
+                if p.exists() and p.stat().st_size > 10240:
+                    continue
+            raw = nd.get("voice") or self.script._data.get("voice", "")
+            voice_id = self.vm.id_for_name(raw) or raw
+            if not voice_id:
+                continue
+            work.append((nid, nd, voice_id))
+
+        if not work:
+            self.status_bar.showMessage("No nodes with text + voice to generate")
+            return
+
+        total = len(work)
+        self._batch_audio_done = 0
+        self._batch_audio_errors = 0
+        self.status_bar.showMessage(f"Generating audio: 0 / {total}…")
+
+        def generate_next(remaining):
+            if not remaining:
+                self.status_bar.showMessage(
+                    f"Audio done — {self._batch_audio_done} generated, "
+                    f"{self._batch_audio_errors} errors")
+                return
+
+            nid, nd, voice_id = remaining[0]
+            rest = remaining[1:]
+            out_path = out_dir / f"{nid}.mp3"
+            settings = {**self.script._data.get("voice_settings", {}),
+                        **nd.get("voice_settings", {})}
+
+            def on_done(path: Path):
+                try:
+                    rel = str(path.relative_to(REPO_ROOT))
+                except ValueError:
+                    rel = str(path)
+                if nid in self.script.nodes:
+                    self.script.nodes[nid]["file"] = rel
+                    self.script.dirty = True
+                self.props_panel.node_modified.emit(nid)
+                self._batch_audio_done += 1
+                self.status_bar.showMessage(
+                    f"Generating audio: "
+                    f"{self._batch_audio_done + self._batch_audio_errors} / {total}…")
+                generate_next(rest)
+
+            def on_error(_: str):
+                self._batch_audio_errors += 1
+                self.status_bar.showMessage(
+                    f"Generating audio: "
+                    f"{self._batch_audio_done + self._batch_audio_errors} / {total}… "
+                    f"({self._batch_audio_errors} errors)")
+                generate_next(rest)
+
+            self.vm.generate(
+                text=nd.get("text", "").strip(), voice_id=voice_id,
+                out_path=out_path, settings=settings,
+                ui_queue=self.ui_queue, on_done=on_done, on_error=on_error,
+            )
+
+        generate_next(work)
 
     def _cmd_play_audio_for(self, node_id: str):
         self._select_node(node_id)
@@ -6801,7 +6940,7 @@ class MainWindow(QMainWindow):
 
         Estimates each node's audio duration from word count (121 wpm) plus a
         3 s inter-node delay.  Tracks simulated time so recency counters decay
-        at the same rate as the real player (1 count per 7200 s).
+        at the same rate as the real player (1 count per 36000 s / 10 hours).
         """
         nodes = self.script.nodes
         starts = self.script.start_nodes or list(nodes.keys())
@@ -6809,7 +6948,7 @@ class MainWindow(QMainWindow):
 
         INTER_NODE_DELAY = 3.0          # seconds between nodes
         WPM              = 121.0        # measured speech rate
-        DECAY_PER_SEC    = 1.0 / 7200.0 # matches narrative_player
+        DECAY_PER_SEC    = 1.0 / 36000.0 # matches narrative_player (10 hours)
 
         # Pre-compute estimated duration for each node (speech + delay)
         node_dur = {}
