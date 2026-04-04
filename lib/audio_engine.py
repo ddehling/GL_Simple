@@ -220,7 +220,10 @@ class AudioEngine:
                                 t.fade_out(fo)
 
                     elif kind == "oneshot":
-                        _, path, vol, dur, narr = cmd[0], cmd[1], cmd[2], cmd[3], cmd[4] if len(cmd) > 4 else False
+                        path = cmd[1]
+                        vol  = cmd[2]
+                        dur  = cmd[3]
+                        narr = cmd[4] if len(cmd) > 4 else False
                         tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
                                                          duration=dur,
                                                          is_narrative=narr)
