@@ -112,13 +112,13 @@ def shader_meteor(state, outstate):
             }
             state['meteors'].append(meteor)
             
-            # Add whoosh sound occasionally
-            if random.random() < 0.1:
+            # Add whoosh sound occasionally (low volume to avoid squashing narrative audio)
+            if random.random() < 0.05:
                 parent_path = Path(__file__).parent.parent.parent
                 sound_path = parent_path / 'media' / 'sounds'
                 whoosh_path = sound_path / 'Whoosh By 04.wav'
                 if 'soundengine' in outstate and whoosh_path.exists():
-                    outstate['soundengine'].schedule_event(whoosh_path, duration=2.0)
+                    outstate['soundengine'].schedule_event(whoosh_path, volume=0.3, duration=2.0)
         
         # Update meteor positions
         new_meteors = []
