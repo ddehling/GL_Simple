@@ -582,9 +582,35 @@ class EnvironmentalSystem:
             self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
 
 
+        # BART ambient sounds — random oneshots with cooldown
+        if self.weather_set.current_set == "bartiki":
+            now = time.time()
+            last_bart_sound_end = getattr(self, '_last_bart_sound_end', 0)
+            time_since_last = now - last_bart_sound_end
+
+            # At least 30s after last sound ended, then ~1/3000 chance per frame
+            # At 40fps that's roughly once every 75 seconds
+            if time_since_last > 5.0 and np.random.random() < 1 / 3000:
+                # Cache sound file list on first use
+                if not hasattr(self, '_bart_sounds'):
+                    bart_sounds_dir = Path("media") / "sounds" / "bart_sounds"
+                    self._bart_sounds = list(bart_sounds_dir.glob("*.mp3")) if bart_sounds_dir.exists() else []
+                if self._bart_sounds:
+                    pick = np.random.choice(self._bart_sounds)
+                    engine = self.scheduler.state.get("soundengine")
+                    if engine:
+                        import miniaudio
+                        try:
+                            info = miniaudio.mp3_get_file_info(str(pick))
+                            file_dur = info.num_frames / info.sample_rate
+                        except Exception:
+                            file_dur = 15.0
+                        engine.schedule_event(str(pick), volume=0.7)
+                        self._last_bart_sound_end = now + file_dur + 5.0
+
         # Dancing cactus events
         randcheck = np.random.random()
-                
+
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
             return
