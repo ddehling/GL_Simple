@@ -607,7 +607,7 @@ class EnvironmentalSystem:
                             file_dur = info.num_frames / info.sample_rate
                         except Exception:
                             file_dur = 15.0
-                        engine.schedule_event(str(pick), volume=0.7)
+                        engine.schedule_event(str(pick), volume=0.4)
                         self._last_bart_sound_end = now + file_dur + 5.0
 
         # BART train arrival announcements (text overlay)

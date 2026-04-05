@@ -224,6 +224,7 @@ class AudioEngine:
                         vol  = cmd[2]
                         dur  = cmd[3]
                         narr = cmd[4] if len(cmd) > 4 else False
+
                         tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
                                                          duration=dur,
                                                          is_narrative=narr)
@@ -232,26 +233,41 @@ class AudioEngine:
             except queue.Empty:
                 pass
 
-            # Mix all active tracks.
-            buf  = np.zeros((required_frames, CHANNELS), dtype=np.float32)
+            # Mix tracks into separate buses: narrative vs everything else.
+            # The limiter only applies to non-narrative audio so narrative
+            # is never ducked by other sounds.
+            narr_buf = np.zeros((required_frames, CHANNELS), dtype=np.float32)
+            other_buf = np.zeros((required_frames, CHANNELS), dtype=np.float32)
             dead = []
             narr_vol = self.narrative_volume
             for key, track in tracks.items():
-                chunk = track.read(required_frames)
+                try:
+                    chunk = track.read(required_frames)
+                except Exception:
+                    dead.append(key)
+                    continue
                 if chunk is None or track.done:
+                    if track.is_narrative:
+                        elapsed = track._pos / SAMPLE_RATE
+                        max_dur = track._max_frames / SAMPLE_RATE if track._max_frames > 0 else 0
+                        print(f"[AudioEngine] Narrative ended: {track._path.name} "
+                              f"at {elapsed:.1f}s / {max_dur:.1f}s cap  "
+                              f"done={track.done} fading={track._fading_out}")
                     dead.append(key)
                 else:
                     if track.is_narrative:
-                        chunk = chunk * narr_vol
-                    buf[:len(chunk)] += chunk
+                        narr_buf[:len(chunk)] += chunk * narr_vol
+                    else:
+                        other_buf[:len(chunk)] += chunk
             for key in dead:
                 del tracks[key]
 
-            buf *= self.master_volume
+            # Limit only the non-narrative bus
+            peak = np.max(np.abs(other_buf))
+            if peak > 2.0:
+                other_buf /= (peak / 2.0)
 
-            peak = np.max(np.abs(buf))
-            if peak > 1.0:
-                buf /= peak
+            buf = (narr_buf + other_buf) * self.master_volume
 
             required_frames = yield buf.tobytes()
 
