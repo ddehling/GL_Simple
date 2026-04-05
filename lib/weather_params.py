@@ -78,6 +78,8 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'bart_map',
     'highway_traffic',
     'narrative_player',
+    'city_lights',
+    'bay_shimmer',
 ]
 
 # Parameter definitions for the weather editor
@@ -1099,7 +1101,7 @@ WEATHER_SETS = {
             "starryness", "celestial_visibility", "rain_rate", "meteor_rate",
             "wind_speed", "firefly_density", "ambient_sound",
         ],
-        "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "narrative_player"],
+        "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer", "narrative_player"],
         "description": "Bay Area BART system with day/night cycle — map by day, constellations by night",
         "name": "BarTiki",
         "random_event_rate": 0.00008,

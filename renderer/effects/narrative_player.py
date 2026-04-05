@@ -58,8 +58,8 @@ def _weighted_choice(nexts: list, weights: list,
                      recency: dict = None) -> Optional[str]:
     """Pick a node ID from nexts using weights, penalised by recency counters.
 
-    Each node's effective weight is  w * 3^(-counter).  A counter of 1 divides
-    the probability by 3; 2 divides it by 9, etc.  Counters decay toward 0 over time
+    Each node's effective weight is  w * 4^(-counter).  A counter of 1 divides
+    the probability by 4; 2 divides it by 16, etc.  Counters decay toward 0 over time
     so the penalty fades after roughly 10 hours.
     """
     if not nexts:
@@ -67,7 +67,7 @@ def _weighted_choice(nexts: list, weights: list,
     effective = []
     for nid, w in zip(nexts, weights):
         if recency and nid in recency:
-            w *= 3.0 ** (-recency[nid])
+            w *= 4.0 ** (-recency[nid])
         effective.append(w)
     total = sum(effective) or 1.0
     r = random.random() * total
