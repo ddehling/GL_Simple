@@ -2,35 +2,22 @@
 
 ## Prioritized for Unscruz
 
-- Add volume control for Stories system
-  - Slider to scale the volume of the sound of the story system
-  - Scale to 0
 - Finalize Bartiki theme
-  - No sounds
-  - Droning of the bartiki mythos
   - Bart announcements, clipper, trains flying around
   - Work on the map where it is more dense
 - Finalize Ocean theme
   - sounds are bad
 - Finalize Full Spectrum theme
   - Think of it a little
-- Making existing shaders aware of r/theta
-  - Momentum
-  - Sizing
-  - Try briefly to build a translation layer, but abandon quickly
 - Finish the build
   - Finish lightstrips
   - Test build
-- Validate and label the boxes and data being sent correctly
-    - 1, 2, 3, 4
-    - Unique IP addresses
+- Validate the boxes and data being sent correctly
     - Make a pattern that lets us validate that data is being sent correctly.
       - e.g. Validate that Box 1, Strip 13 is receiving the correct data for that strip
     - Ensure we haven't broken the underlying 2d array rendering
+- Full power test
 - Validate the computer and network setup
-  - Computer connected to router connected to switch connected to boxes
-  - Ensure the router is set up with DHCP to assign correct addresses for network boxes
-  - Have Router set static IP addresses to specific MAC addresses of each box
   - (Optional) Assemble the actual box
   
 ## Backlog
