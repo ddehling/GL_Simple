@@ -57,6 +57,7 @@ class RenderPipeline:
         # Seed the shared state dict with hardware references
         state = self._scheduler.state
         state['shader_renderer'] = self._shader_renderer
+        state['event_scheduler'] = self._scheduler
         state['render'] = [None] * len(frame_dimensions)
         state['last_time'] = time.time()
         state['current_time'] = time.time()
