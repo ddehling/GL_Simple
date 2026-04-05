@@ -13,15 +13,16 @@ audio:
 
 web:
   enabled: true
-  port: 5000
+  port: 80
   admin_password: "admin123"
-  bind_ip: ""  # Advertise mDNS (glsimple.local) on this interface only (empty = all interfaces)
+  bind_ip: ""  # Advertise mDNS (lucifera.local) on this interface only (empty = all interfaces)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
 
 dmx:
   bind_ip: ""  # Send DMX from this interface (empty = default route)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
   receivers:
+    # Lucifera
     - ip: "192.168.68.140"
       columns: 32
       column_offset: 0
@@ -34,7 +35,14 @@ dmx:
     - ip: "192.168.68.143"
       columns: 32
       column_offset: 96
-    # Example: Raspberry Pi test receiver
+    # Bean
+    # - ip: "192.168.68.111"
+    #   addressing: { mode: "hs", file: "config/UnitA.txt" }
+    # - ip: "192.168.68.125"
+    #   addressing: { mode: "hs", file: "config/UnitB.txt" }
+    # - ip: "192.168.68.124"
+    #   addressing: { mode: "hs", file: "config/UnitC.txt" }
+    # Raspberry Pi test receiver
     # - ip: "192.168.0.155"
     #   columns: 32
     #   column_offset: 0

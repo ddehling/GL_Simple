@@ -55,54 +55,31 @@ class EnvironmentalSystem:
         ]
 
         # Hardware receiver configuration — built from config.yaml
-        receivers = [
-            [
-                {
+        receivers_list = []
+        for rx in dmx_cfg['receivers']:
+            if 'addressing' in rx:
+                mode = rx['addressing']['mode']
+                filepath = rx['addressing']['file']
+                if mode == 'hs':
+                    addr = imdmx.make_indicesHS(filepath)
+                elif mode == 'vs':
+                    addr = imdmx.make_indicesVS(filepath)
+                else:
+                    raise ValueError(f"Unknown addressing mode: {mode}")
+                receivers_list.append({
+                    'ip': rx['ip'],
+                    'pixel_count': len(addr),
+                    'addressing_array': addr,
+                })
+            else:
+                receivers_list.append({
                     'ip': rx['ip'],
                     'pixel_count': disp["height"] * rx['columns'],
                     'addressing_array': imdmx.make_indices_V_rect_alternate(
                         rx['columns'], disp["height"], rx['column_offset']
                     ),
-                }
-                for rx in dmx_cfg['receivers']
-            ],
-#                  'ip': '192.168.68.111',
-#                     'pixel_count': 2019,
-#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt")
-#                 },
-#                 {
-#                     'ip': '192.168.68.125',
-#                     'pixel_count': 1777,
-#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt")
-#                 },
-#                 {
-#                     'ip': '192.168.68.124',
-#                     'pixel_count': 1793,
-#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt")
-#                 },
-            # [
-            #     {
-            #         'ip': '192.168.68.140',
-            #         'pixel_count': disp["height"] * 32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
-            #     },
-            #     {
-            #         'ip': '192.168.68.141',
-            #         'pixel_count': disp["height"] * 32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
-            #     },
-            #     {
-            #         'ip': '192.168.68.142',
-            #         'pixel_count': disp["height"] * 32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
-            #     },
-            #     {
-            #         'ip': '192.168.68.143',
-            #         'pixel_count': disp["height"] * 32,
-            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
-            #     },
-            # ],
-            ]
+                })
+        receivers = [receivers_list]
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
@@ -142,7 +119,7 @@ class EnvironmentalSystem:
             self.web_controller = WebController(
                 self.web_controls,
                 port=web_cfg["port"],
-                service_name="glsimple",
+                service_name="lucifera",
                 admin_password=web_cfg["admin_password"],
                 bind_ip=web_cfg.get("bind_ip", ""),
             )

@@ -76,8 +76,17 @@ PY
     fi
 fi
 
-echo "[4/4] Setup complete. Launching application..."
-echo "  Web control panel: http://localhost:5000"
+# Allow Python to bind to port 80 without sudo (Linux only, requires libcap2-bin)
+VENV_PYTHON="$(readlink -f venv/bin/python3)"
+if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then
+    echo "[4/5] Granting Python permission to bind port 80 (requires sudo)..."
+    sudo setcap 'cap_net_bind_service=+ep' "$VENV_PYTHON"
+else
+    echo "[4/5] Python already has port-80 capability"
+fi
+
+echo "[5/5] Setup complete. Launching application..."
+echo "  Web control panel: http://lucifera.local"
 echo "  Press Ctrl+C to stop"
 
 python Stories_OGL.py
