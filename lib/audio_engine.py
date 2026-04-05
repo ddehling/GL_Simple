@@ -28,7 +28,7 @@ class _MemTrack:
     during mixing.  No streaming, no disk access after init.
     """
 
-    def __init__(self, path: Path, *, volume: float = 1.0,
+    def __init__(self, samples: np.ndarray, path: Path, *, volume: float = 1.0,
                  duration: float = 0.0, is_narrative: bool = False):
         self.is_ambient   = False
         self.is_narrative = is_narrative
@@ -40,12 +40,7 @@ class _MemTrack:
         self._fade_out_frames = 0
         self._fade_out_pos    = 0
 
-        # Decode entire file into memory
-        decoded = miniaudio.decode_file(
-            str(path), output_format=FORMAT,
-            nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
-        self._samples = np.frombuffer(decoded.samples,
-                                      dtype=np.float32).reshape(-1, CHANNELS)
+        self._samples = samples
 
         # Duration cap
         max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
@@ -246,8 +241,24 @@ class AudioEngine:
 
     def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
                        narrative: bool = False):
-        """Play a sound file once. duration>0 caps playback to that many seconds."""
-        self._cmds.put(("oneshot", Path(path), volume, duration, narrative))
+        """Play a sound file once. duration>0 caps playback to that many seconds.
+
+        Decodes in a background thread to avoid blocking both the main thread
+        and the audio callback thread.
+        """
+        import threading
+        p = Path(path)
+        def _decode_and_queue():
+            try:
+                decoded = miniaudio.decode_file(
+                    str(p), output_format=FORMAT,
+                    nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
+                samples = np.frombuffer(decoded.samples,
+                                        dtype=np.float32).reshape(-1, CHANNELS).copy()
+                self._cmds.put(("oneshot_mem", samples, p, volume, duration, narrative))
+            except Exception as e:
+                print(f"[AudioEngine] Failed to decode {p.name}: {e}")
+        threading.Thread(target=_decode_and_queue, daemon=True).start()
 
 
     # ------------------------------------------------------------------
@@ -282,19 +293,11 @@ class AudioEngine:
                             if t.is_ambient:
                                 t.fade_out(fo)
 
-                    elif kind == "oneshot":
-                        path = cmd[1]
-                        vol  = cmd[2]
-                        dur  = cmd[3]
-                        narr = cmd[4] if len(cmd) > 4 else False
-
-                        # Memory-decode oneshots to avoid I/O contention
-                        try:
-                            tracks[f"os_{id(cmd)}"] = _MemTrack(
-                                path, volume=vol, duration=dur,
-                                is_narrative=narr)
-                        except Exception as e:
-                            print(f"[AudioEngine] Failed to decode {path.name}: {e}")
+                    elif kind == "oneshot_mem":
+                        _, samples, path, vol, dur, narr = cmd
+                        tracks[f"os_{id(cmd)}"] = _MemTrack(
+                            samples, path, volume=vol, duration=dur,
+                            is_narrative=narr)
 
 
             except queue.Empty:
