@@ -134,7 +134,7 @@ class NarrativePlayer(ShaderEffect):
         self._recency: dict = {}   # node_id -> float
         self._DECAY_PER_SEC: float = 1.0 / 36000.0  # lose 1 count per 10 hours
 
-        p = Path(script_path)
+        p = Path(script_path.replace('\\', '/'))
         if p.exists():
             data              = json.loads(p.read_text(encoding='utf-8'))
             self._nodes       = data.get('nodes', {})
@@ -224,9 +224,10 @@ class NarrativePlayer(ShaderEffect):
         # The "file" field is stored relative to the project root.
         file_rel = nd.get('file', '')
         if file_rel:
+            # Normalize path separators for cross-platform compatibility
+            file_rel = file_rel.replace('\\', '/')
             audio_file = Path(file_rel)
             if not audio_file.is_absolute():
-                # Resolve from project root (2 levels up from this file)
                 repo_root = Path(__file__).parent.parent.parent
                 audio_file = repo_root / audio_file
         else:

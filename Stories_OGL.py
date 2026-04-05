@@ -621,7 +621,6 @@ class EnvironmentalSystem:
                 dest = np.random.choice(_BART_DESTINATIONS)
                 mins = np.random.choice([2, 3, 5, 8])
                 cars = np.random.choice([6, 8, 10])
-                print(f"[BART] Train arrival: {dest} {mins} min {cars} car")
                 # Each line as a separate text event with lambda wrappers
                 # to bypass duplicate action detection
                 def _make_text_fn(txt, yp):
