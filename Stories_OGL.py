@@ -686,22 +686,20 @@ if __name__ == "__main__":
             if env_system.scheduler.should_exit:
                 break
 
-            # Calculate time taken
-            frame_time = time.perf_counter() - frame_start
-
-            # Sleep to maintain target framerate (busy-wait for last 1ms for precision)
-            sleep_time = FRAME_TIME - frame_time
-            if sleep_time > 0.001:
-                time.sleep(sleep_time - 0.001)
-                # Busy wait for the last millisecond for precision
-                while time.perf_counter() - frame_start < FRAME_TIME:
-                    pass
+            # Frame rate limiter: sleep for the bulk, then busy-wait for precision
+            remaining = FRAME_TIME - (time.perf_counter() - frame_start)
+            if remaining > 0.002:
+                time.sleep(remaining - 0.001)
+            # Always busy-wait to hit the target exactly
+            while time.perf_counter() - frame_start < FRAME_TIME:
+                pass
 
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 500 frames
                 current_time = time.time()
                 actual_fps = 500.0 / (current_time - fps_start_time)
                 env_system._current_fps = round(actual_fps, 1)
+                print(f"[Main] FPS: {actual_fps:.1f}")
                 fps_start_time = current_time
 
     except KeyboardInterrupt:
