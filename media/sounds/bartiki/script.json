@@ -387,7 +387,7 @@
       "voice_settings": {
         "stability": 0.42,
         "similarity_boost": 0.75,
-        "style": 0.37
+        "style": 0.0
       },
       "pos": [
         1100.0,
@@ -1087,7 +1087,7 @@
       "voice_settings": {
         "stability": 0.52,
         "similarity_boost": 0.75,
-        "style": 0.3
+        "style": 0.0
       },
       "pos": [
         320.0,
@@ -1151,7 +1151,7 @@
       "voice_settings": {
         "stability": 0.44,
         "similarity_boost": 0.75,
-        "style": 0.42
+        "style": 0.0
       },
       "pos": [
         580.0,
@@ -1606,7 +1606,7 @@
       "voice_settings": {
         "stability": 0.38,
         "similarity_boost": 0.75,
-        "style": 0.2
+        "style": 0.0
       },
       "pos": [
         320.0,
@@ -3707,7 +3707,7 @@
       "voice_settings": {
         "stability": 0.42,
         "similarity_boost": 0.75,
-        "style": 0.48
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -4596,7 +4596,7 @@
       "voice_settings": {
         "stability": 0.62,
         "similarity_boost": 0.75,
-        "style": 0.1
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.4,
@@ -5125,7 +5125,7 @@
       "voice_settings": {
         "stability": 0.45,
         "similarity_boost": 0.75,
-        "style": 0.4
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.3,
@@ -5162,7 +5162,7 @@
       "voice_settings": {
         "stability": 0.44,
         "similarity_boost": 0.75,
-        "style": 0.42
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.4,
@@ -5527,8 +5527,12 @@
       "hint": "",
       "file": "media\\sounds\\bartiki\\desc_still_riding.mp3",
       "duration": null,
-      "next": [],
-      "weights": [],
+      "next": [
+        "turn_surface_pull"
+      ],
+      "weights": [
+        1.0
+      ],
       "tags": [
         "consequence",
         "carver",
@@ -5583,7 +5587,7 @@
       "voice_settings": {
         "stability": 0.45,
         "similarity_boost": 0.75,
-        "style": 0.4
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -5624,7 +5628,7 @@
       "voice_settings": {
         "stability": 0.44,
         "similarity_boost": 0.75,
-        "style": 0.42
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.5,
@@ -6514,7 +6518,7 @@
       "voice_settings": {
         "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.55
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.0,
@@ -6548,9 +6552,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.3,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.65
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.3,
@@ -7531,7 +7535,7 @@
       "voice_settings": {
         "stability": 0.59,
         "similarity_boost": 0.75,
-        "style": 0.16
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.7,
@@ -9585,7 +9589,7 @@
       "voice_settings": {
         "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.55
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.4,
@@ -9682,8 +9686,12 @@
     },
     "turn_closing_flood": {
       "text": "Then the train shuddered and the lights went amber and she felt it , water around her ankles, not cold, not warm, the exact temperature of a room after everyone leaves. The bar was gone. The shelf where she lined the bottles by color was gone. The carved face above the register that no one ever asked about , gone. She was standing in current, and the salt was hers now, not someone else's ocean anymore. Her hands still held the shape of a glass she'd already set down.",
-      "next": [],
-      "weights": [],
+      "next": [
+        "conseq_keeping_you"
+      ],
+      "weights": [
+        1.0
+      ],
       "tags": [
         "turn",
         "bartiki",
@@ -9700,9 +9708,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.3,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.65
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -9956,9 +9964,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.25,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.7
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.3,
@@ -10041,9 +10049,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.23,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.72
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.3,
@@ -12772,9 +12780,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.28,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.7
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.4,
@@ -13060,9 +13068,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.32,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.62
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -13162,9 +13170,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.25,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.7
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.7,
@@ -13882,7 +13890,7 @@
       "voice_settings": {
         "stability": 0.6,
         "similarity_boost": 0.75,
-        "style": 0.15
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.2,
@@ -13915,7 +13923,7 @@
       "voice_settings": {
         "stability": 0.65,
         "similarity_boost": 0.75,
-        "style": 0.1
+        "style": 0.0
       },
       "pos": [
         60.0,
@@ -14061,8 +14069,12 @@
     },
     "pres_seam_light": {
       "text": "If you ride the last train out of Embarcadero, the one that leaves at twelve oh three, watch the tunnel walls through the window. There. Between the cable runs. You'll see them. Seams in the rock that catch no light but carry their own. Faint lines like veins in a wrist, pulsing so slow you'd need a century to count one beat. Underground stars. Not metaphor. Not mineral deposit. Something that was burning before this continent had a name, still burning now, still patient.",
-      "next": [],
-      "weights": [],
+      "next": [
+        "cur_warm_seams"
+      ],
+      "weights": [
+        1.0
+      ],
       "tags": [
         "presence",
         "deep_time",
@@ -14079,7 +14091,7 @@
       "voice_settings": {
         "stability": 0.58,
         "similarity_boost": 0.75,
-        "style": 0.18
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -14121,7 +14133,7 @@
       "voice_settings": {
         "stability": 0.62,
         "similarity_boost": 0.75,
-        "style": 0.13
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.5,
@@ -14416,7 +14428,7 @@
       "voice_settings": {
         "stability": 0.55,
         "similarity_boost": 0.75,
-        "style": 0.25
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -17001,7 +17013,7 @@
       "voice_settings": {
         "stability": 0.65,
         "similarity_boost": 0.75,
-        "style": 0.1
+        "style": 0.0
       },
       "pos": [
         60.0,
@@ -20194,8 +20206,12 @@
     },
     "cur_strange_smells": {
       "text": "The smell arrives before anything else does. Aged rum first , rich, almost sweet, with something underneath like ocean floor at low tide. Then coconut, improbably. Then gardenia again, closer now, as if the flowers had migrated downward. Salt. You are definitely underground, definitely beneath the bay, and yet your nose insists there is a beach somewhere. Your feet keep moving. Your nose is better at this than you are.",
-      "next": [],
-      "weights": [],
+      "next": [
+        "disc_toad_arrives"
+      ],
+      "weights": [
+        1.0
+      ],
       "tags": [
         "curiosity",
         "tunnels",
@@ -20214,7 +20230,7 @@
       "voice_settings": {
         "stability": 0.55,
         "similarity_boost": 0.75,
-        "style": 0.28
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.5,
@@ -20254,7 +20270,7 @@
       "voice_settings": {
         "stability": 0.5,
         "similarity_boost": 0.75,
-        "style": 0.3
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.8,
@@ -20297,7 +20313,7 @@
       "voice_settings": {
         "stability": 0.5,
         "similarity_boost": 0.75,
-        "style": 0.35
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.4,
@@ -20342,7 +20358,7 @@
       "voice_settings": {
         "stability": 0.5,
         "similarity_boost": 0.75,
-        "style": 0.33
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -20463,7 +20479,7 @@
       "voice_settings": {
         "stability": 0.48,
         "similarity_boost": 0.75,
-        "style": 0.42
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.5,
@@ -21209,7 +21225,7 @@
       "voice_settings": {
         "stability": 0.42,
         "similarity_boost": 0.75,
-        "style": 0.48
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.3,
@@ -21292,7 +21308,7 @@
       "voice_settings": {
         "stability": 0.38,
         "similarity_boost": 0.75,
-        "style": 0.52
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.2,
@@ -21394,8 +21410,12 @@
     },
     "turn_warmth_surfaces": {
       "text": "The warmth that moved through them gathered at a point. The toad felt it first , a pressure behind the eyes, like recognizing a smell before you know what it is. The capybara lifted its head. The goat said nothing, but its ears moved. Something was arriving, had been arriving for a long time, and was only now choosing to be noticed. The tunnel held its breath.",
-      "next": [],
-      "weights": [],
+      "next": [
+        "cons_toad_aside"
+      ],
+      "weights": [
+        1.0
+      ],
       "tags": [
         "turn",
         "warmth",
@@ -21412,9 +21432,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.32,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.62
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.6,
@@ -21589,9 +21609,9 @@
       ],
       "voice": null,
       "voice_settings": {
-        "stability": 0.22,
+        "stability": 0.35,
         "similarity_boost": 0.75,
-        "style": 0.73
+        "style": 0.0
       },
       "vars": {
         "Mystery": 0.7,
