@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Quick Run",
+      "type": "shell",
+      "group": { "kind": "build", "isDefault": true },
+      "linux": {
+        "command": "./bin/quick_run.sh"
+      },
+      "windows": {
+        "command": "bin\\quick_run.bat"
+      }
+    },
+    {
+      "label": "Setup & Run",
+      "type": "shell",
+      "linux": {
+        "command": "./bin/setup_and_run.sh"
+      },
+      "windows": {
+        "command": "bin\\setup_and_run.bat"
+      }
+    }
+  ]
+}

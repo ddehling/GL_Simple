@@ -33,7 +33,6 @@ dmypy.json
 .claude/
 
 # IDEs and Editors
-.vscode/
 .idea/
 *.swp
 *.swo
