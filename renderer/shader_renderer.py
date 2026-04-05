@@ -244,6 +244,7 @@ class ShaderRenderer:
             raise RuntimeError("Failed to create OpenGL window")
 
         glfw.make_context_current(self.window)
+        glfw.swap_interval(0)  # Disable V-Sync; frame rate is governed by the main loop
 
         # Get actual framebuffer size -- differs from window size on HiDPI displays
         self.fb_width, self.fb_height = glfw.get_framebuffer_size(self.window)
