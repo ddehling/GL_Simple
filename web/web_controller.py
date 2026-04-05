@@ -9,7 +9,7 @@ import secrets
 import time
 import copy
 from flask import Flask, render_template, jsonify, request, session
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from pathlib import Path
 import json
 from zeroconf import Zeroconf, ServiceInfo
@@ -121,8 +121,7 @@ class WebController:
         self.web_param_overrides = {}
 
         # Preview frame streaming
-        self._preview_clients = 0
-        self._preview_lock = threading.Lock()
+        # Preview clients are tracked via Socket.IO 'preview' room
         self._geometry_json = None  # cached FanGeometry JSON
     
     def _setup_routes(self):
@@ -611,20 +610,12 @@ class WebController:
 
         @self.socketio.on('subscribe_preview')
         def handle_subscribe_preview():
-            with self._preview_lock:
-                self._preview_clients += 1
-            print(f"[WebController] Preview client connected ({self._preview_clients} total)")
+            join_room('preview')
+            print(f"[WebController] Preview client subscribed")
 
         @self.socketio.on('unsubscribe_preview')
         def handle_unsubscribe_preview():
-            with self._preview_lock:
-                self._preview_clients = max(0, self._preview_clients - 1)
-
-        @self.socketio.on('disconnect')
-        def handle_disconnect():
-            # Decrement preview counter on any disconnect (safe even if not subscribed)
-            with self._preview_lock:
-                self._preview_clients = max(0, self._preview_clients - 1)
+            leave_room('preview')
 
         @self.socketio.on('update_global')
         def handle_update_global(data):
@@ -773,13 +764,13 @@ class WebController:
                     except Exception as e:
                         print(f"[WebController] Emitter audio error: {e}")
 
-                # Push preview frames at 15 Hz (only if clients are subscribed)
-                if self._preview_clients > 0 and now - last_frame_push >= frame_interval:
+                # Push preview frames at 15 Hz to subscribed clients
+                if now - last_frame_push >= frame_interval:
                     last_frame_push = now
                     try:
                         frame_png = self.control_dict.get('_frame_png')
                         if frame_png is not None:
-                            self.socketio.emit('frame', frame_png)
+                            self.socketio.emit('frame', frame_png, room='preview')
                     except Exception as e:
                         print(f"[WebController] Emitter frame error: {e}")
 
