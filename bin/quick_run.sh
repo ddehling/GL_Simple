@@ -13,7 +13,7 @@ else
 fi
 
 echo "Starting application..."
-echo "  Web control panel: http://localhost:5000"
+echo "  Web control panel: http://lucifera.local"
 echo "Press Ctrl+C to stop"
 
 python Stories_OGL.py

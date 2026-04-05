@@ -22,14 +22,14 @@ class WebController:
     Thread-safe dictionary updates with real-time web interface.
     """
     
-    def __init__(self, control_dict=None, port=5000, service_name="glsimple", admin_password=None, bind_ip=""):
+    def __init__(self, control_dict=None, port=5000, service_name="lucifera", admin_password=None, bind_ip=""):
         """
         Initialize the web controller.
         
         Args:
             control_dict: Dictionary to be controlled (default: creates new dict)
             port: Port number for the web server (default: 5000)
-            service_name: mDNS service name (default: "glsimple")
+            service_name: mDNS service name (default: "lucifera")
                          Will be accessible at http://{service_name}.local:{port}
             admin_password: Password for admin panel (default: None = no admin access)
         """
