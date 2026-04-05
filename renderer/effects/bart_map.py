@@ -622,7 +622,7 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
                 except Exception:
                     file_dur = 15.0
                 #print(f"[BART Sound] Playing: {pick.name} ({file_dur:.1f}s), cooldown until {file_dur + 5.0:.1f}s from now")
-                engine.schedule_event(str(pick), volume=0.7)
+                engine.schedule_event(str(pick), volume=0.5)
                 state['_last_bart_sound_end'] = now + file_dur + 5.0
 
         # --- Train arrival text announcements ---
