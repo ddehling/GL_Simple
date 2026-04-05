@@ -1104,7 +1104,7 @@ WEATHER_SETS = {
         "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer", "narrative_player"],
         "description": "Bay Area BART system with day/night cycle — map by day, constellations by night",
         "name": "BarTiki",
-        "random_event_rate": 0.00008,
+        "random_event_rate": 0.00005,
         "random_events": ["sunrise"],
         "season_extremity": 0.8,
         "season_speed": 1.0,

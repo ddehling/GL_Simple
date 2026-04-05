@@ -91,7 +91,6 @@ def shader_text(state, outstate, text="Hello,World",
     
     # Initialize effect on first call
     if state['count'] == 0:
-        print(f"Initializing text effect for frame {frame_id}")
         
         try:
             effect = viewport.add_effect(
@@ -115,7 +114,6 @@ def shader_text(state, outstate, text="Hello,World",
                 height_scale=height_scale
             )
             state['text_effect'] = effect
-            print(f"✓ Initialized shader text for frame {frame_id}")
         except Exception as e:
             import traceback
             print(f"ERROR initializing text effect: {e}")
@@ -154,7 +152,6 @@ def shader_text(state, outstate, text="Hello,World",
                 viewport.effects.remove(effect)
             effect.cleanup()
             del state['text_effect']
-            print(f"✓ Cleaned up shader text for frame {frame_id}")
 
 
 # ============================================================================
@@ -163,6 +160,7 @@ def shader_text(state, outstate, text="Hello,World",
 
 class TextEffect(ShaderEffect):
     """GPU-based text rendering with multiple display and animation modes"""
+    _silent = True  # suppress add_effect print for transient text overlays
     
     def __init__(self, viewport, text: str = "Hello,World",
                  display_mode: str = "all_lines",
@@ -219,7 +217,17 @@ class TextEffect(ShaderEffect):
         # Font atlas
         self._generate_font_atlas()
         self._generate_text()
-    
+
+    def init(self):
+        """Initialize shader and buffers (silent — no print spam for transient text)."""
+        try:
+            self.shader = self.compile_shader()
+            self.setup_buffers()
+        except Exception as e:
+            print(f"    [ERROR] Error initializing {self.__class__.__name__}: {e}")
+            self.enabled = False
+            raise
+
     def _generate_font_atlas(self):
         """Generate a texture atlas containing ASCII characters"""
         # Create a simple 16x6 grid of ASCII characters (32-127)
