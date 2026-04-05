@@ -5,7 +5,7 @@ display:
   width: 128          # LED strips (framebuffer columns)
   height: 300         # LEDs per strip (framebuffer rows)
   magnification: 0    # Window magnification (0 = auto-scale to monitor)
-  headless: false     # true = no desktop window, web preview only
+  headless: true     # true = no desktop window, web preview only
 
 audio:
   enabled: true         # Set false to run without microphone (e.g. remote/headless)

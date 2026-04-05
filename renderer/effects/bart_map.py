@@ -556,7 +556,7 @@ def _get_bart_sounds():
     """Return cached list of BART ambient sound files."""
     global _bart_sounds_cache
     if _bart_sounds_cache is None:
-        d = _Path("media") / "sounds" / "bart_sounds"
+        d = _Path(__file__).resolve().parent.parent.parent / "media" / "sounds" / "bart_sounds"
         _bart_sounds_cache = list(d.glob("*.mp3")) if d.exists() else []
     return _bart_sounds_cache
 
