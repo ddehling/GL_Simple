@@ -21,7 +21,13 @@ def load_config():
     defaults = {
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "device_name": "TONOR"},
-        "web": {"enabled": True, "port": 5000, "admin_password": "admin123"},
+        "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
+        "dmx": {"bind_ip": "", "receivers": [
+            {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
+            {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
+            {"ip": "192.168.68.142", "columns": 32, "column_offset": 64},
+            {"ip": "192.168.68.143", "columns": 32, "column_offset": 96},
+        ]},
     }
     if config_path.exists():
         with open(config_path, "r") as f:
@@ -42,30 +48,38 @@ class EnvironmentalSystem:
         disp = cfg["display"]
         audio_cfg = cfg["audio"]
         web_cfg = cfg["web"]
+        dmx_cfg = cfg["dmx"]
 
         frame_dimensions = [
             (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
         ]
 
-        # Hardware receiver configuration — one list per frame
+        # Hardware receiver configuration — built from config.yaml
         receivers = [
             [
                 {
-                    'ip': '192.168.68.111',
-                    'pixel_count': 2019,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt")
-                },
-                {
-                    'ip': '192.168.68.125',
-                    'pixel_count': 1777,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt")
-                },
-                {
-                    'ip': '192.168.68.124',
-                    'pixel_count': 1793,
-                    'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt")
-                },
+                    'ip': rx['ip'],
+                    'pixel_count': disp["height"] * rx['columns'],
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(
+                        rx['columns'], disp["height"], rx['column_offset']
+                    ),
+                }
+                for rx in dmx_cfg['receivers']
             ],
+#                  'ip': '192.168.68.111',
+#                     'pixel_count': 2019,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt")
+#                 },
+#                 {
+#                     'ip': '192.168.68.125',
+#                     'pixel_count': 1777,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt")
+#                 },
+#                 {
+#                     'ip': '192.168.68.124',
+#                     'pixel_count': 1793,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt")
+#                 },
             # [
             #     {
             #         'ip': '192.168.68.140',
@@ -95,6 +109,7 @@ class EnvironmentalSystem:
             receivers=receivers,
             magnification=disp["magnification"],
             headless=disp["headless"],
+            dmx_bind_ip=dmx_cfg.get("bind_ip", ""),
         )
         self.weather_state = WeatherStateController()
         self.season = 0.0
@@ -129,6 +144,7 @@ class EnvironmentalSystem:
                 port=web_cfg["port"],
                 service_name="glsimple",
                 admin_password=web_cfg["admin_password"],
+                bind_ip=web_cfg.get("bind_ip", ""),
             )
             self.web_controller.start(threaded=True)
         

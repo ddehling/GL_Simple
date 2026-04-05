@@ -23,19 +23,20 @@ except ImportError:
     NUMBA_AVAILABLE = False
     print("[DMXSender] Warning: Numba not available, using slower numpy operations")
 class SACNPixelSender:
-    def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False, per_receiver_universe=False):
+    def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False, per_receiver_universe=False, bind_ip=""):
         """
         Initialize the SACNPixelSender with receiver configurations.
         :param receivers: List of dicts, each with 'ip', 'pixel_count', and 'addressing_array' keys.
         :param skip_network: If True, skip actual network transmission (for testing)
         :param use_raw_udp: If True, use raw UDP sockets instead of sACN library (much faster)
         :param per_receiver_universe: If True, each receiver restarts at start_universe. If False, use global sequential universes.
+        :param bind_ip: If set, bind UDP socket to this IP (forces traffic out a specific interface)
         """
         self.receivers = receivers
         self.skip_network = skip_network
         self.use_raw_udp = use_raw_udp
         self.per_receiver_universe = per_receiver_universe
-        
+
         if use_raw_udp:
             # Create UDP socket for raw packet sending
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -43,6 +44,10 @@ class SACNPixelSender:
             self.udp_socket.setblocking(False)
             # Increase send buffer size
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
+            # Bind to specific interface if configured
+            if bind_ip:
+                self.udp_socket.bind((bind_ip, 0))
+                print(f"[DMXSender] Bound to {bind_ip}")
             
             # Pre-build sACN packet headers for each universe
             self._sacn_headers = []

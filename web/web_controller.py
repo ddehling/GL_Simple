@@ -22,7 +22,7 @@ class WebController:
     Thread-safe dictionary updates with real-time web interface.
     """
     
-    def __init__(self, control_dict=None, port=5000, service_name="glsimple", admin_password=None):
+    def __init__(self, control_dict=None, port=5000, service_name="glsimple", admin_password=None, bind_ip=""):
         """
         Initialize the web controller.
         
@@ -36,6 +36,7 @@ class WebController:
         self.control_dict = control_dict if control_dict is not None else {}
         self.port = port
         self.service_name = service_name
+        self.bind_ip = bind_ip
         
         # Add thread lock for thread-safe dictionary access
         self._dict_lock = threading.RLock()
@@ -821,26 +822,36 @@ class WebController:
         log.setLevel(logging.ERROR)
 
         self.socketio.run(self.app, host='0.0.0.0', port=self.port,
-                          debug=False, use_reloader=False, log_output=False)
+                          debug=False, use_reloader=False, log_output=False,
+                          allow_unsafe_werkzeug=True)
     
     def _register_mdns(self):
         """Register the service with mDNS/Bonjour for easy discovery."""
         # Do this in background thread - it can be slow
         def register_async():
             try:
-                # Get local IP address (use a timeout to avoid blocking)
-                hostname = socket.gethostname()
-                # Try to get IP quickly, fallback to 127.0.0.1
-                try:
-                    local_ip = socket.gethostbyname(hostname)
-                except:
-                    local_ip = '127.0.0.1'
-                
+                # Use bind_ip if configured, otherwise auto-detect
+                if self.bind_ip:
+                    local_ip = self.bind_ip
+                else:
+                    hostname = socket.gethostname()
+                    try:
+                        local_ip = socket.gethostbyname(hostname)
+                    except:
+                        local_ip = '127.0.0.1'
+
                 # Create service info
                 service_type = "_http._tcp.local."
                 service_name = f"{self.service_name}.{service_type}"
-                
-                self.zeroconf = Zeroconf()
+
+                # Restrict Zeroconf to specific interface if bind_ip is set
+                if self.bind_ip:
+                    from zeroconf import InterfaceChoice
+                    self.zeroconf = Zeroconf(interfaces=[self.bind_ip])
+                    print(f"[WebController] mDNS restricted to interface {self.bind_ip}")
+                else:
+                    self.zeroconf = Zeroconf()
+
                 self.service_info = ServiceInfo(
                     service_type,
                     service_name,
@@ -852,21 +863,17 @@ class WebController:
                     },
                     server=f"{self.service_name}.local."
                 )
-                
-                # Register in a separate thread to avoid blocking
-                def register_with_timeout():
-                    try:
-                        self.zeroconf.register_service(self.service_info)
-                        print(f"[WebController] mDNS registered as '{self.service_name}.local'")
-                    except Exception as e:
-                        print(f"[WebController] Warning: mDNS registration failed: {e}")
-                
-                register_with_timeout()
-                
+
+                try:
+                    self.zeroconf.register_service(self.service_info)
+                    print(f"[WebController] mDNS registered as '{self.service_name}.local' ({local_ip})")
+                except Exception as e:
+                    print(f"[WebController] Warning: mDNS registration failed: {e}")
+
             except Exception as e:
                 print(f"[WebController] Warning: Could not register mDNS service: {e}")
                 print("[WebController] Service still accessible via IP address")
-        
+
         # Start async registration in background
         mdns_thread = threading.Thread(target=register_async, daemon=True)
         mdns_thread.start()

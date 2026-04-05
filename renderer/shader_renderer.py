@@ -18,12 +18,22 @@ Classes:
   ShaderViewport  -- FBO + effect pipeline + display mode delegation
 """
 
+import ctypes
+import os
 import glfw
 from OpenGL.GL import *
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from renderer.fan_geometry import FanGeometry
 from renderer.display_modes import FlatSmooth, FanSmooth, LEDDots
+
+# EGL for headless GPU rendering (no display server required)
+_egl_available = False
+try:
+    from OpenGL import EGL as _EGL
+    _egl_available = True
+except (ImportError, AttributeError, OSError):
+    _EGL = None
 
 
 class ShaderRenderer:
@@ -36,21 +46,37 @@ class ShaderRenderer:
         self.window = None
         self.viewports = []
         self.ctx_initialized = False
+        self._use_egl = False
+        self._egl_display = None
+        self._egl_surface = None
+        self._egl_context = None
 
-        # Initialize GLFW first to detect monitor size
-        self.init_glfw()
+        # Initialize GL context — try GLFW first, fall back to EGL for headless
+        if headless:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=glfw.GLFWError)
+                try:
+                    self.init_glfw()
+                except RuntimeError:
+                    self._init_egl_headless()
+        else:
+            self.init_glfw()
 
         # Get monitor dimensions for autoscaling
         base_width, base_height = frame_dimensions[0]
 
         # Auto-calculate magnification if set to 0 or None
         if magnification is None or magnification == 0:
-            monitor_height = self.get_monitor_height()
-            available_height = monitor_height - 100 if not headless else monitor_height
-            calculated_mag = max(1, int(available_height / base_height))
-            self.magnification = calculated_mag
-            print(f"[ShaderRenderer] Auto-calculated magnification: {self.magnification}x "
-                  f"(monitor height: {monitor_height}px, available: {available_height}px)")
+            if self._use_egl:
+                self.magnification = 1
+            else:
+                monitor_height = self.get_monitor_height()
+                available_height = monitor_height - 100 if not headless else monitor_height
+                calculated_mag = max(1, int(available_height / base_height))
+                self.magnification = calculated_mag
+                print(f"[ShaderRenderer] Auto-calculated magnification: {self.magnification}x "
+                      f"(monitor height: {monitor_height}px, available: {available_height}px)")
         else:
             self.magnification = max(1, int(magnification))
 
@@ -59,7 +85,7 @@ class ShaderRenderer:
         self.window_height = base_height * self.magnification
 
         # Double-check that window height doesn't exceed monitor
-        if not headless:
+        if not headless and not self._use_egl:
             monitor_height = self.get_monitor_height()
             if self.window_height > monitor_height - 100:
                 old_mag = self.magnification
@@ -74,7 +100,10 @@ class ShaderRenderer:
         else:
             print(f"[ShaderRenderer] Window: {self.window_width}x{self.window_height} (native size)")
 
-        self.create_window()
+        if self._use_egl:
+            self._setup_headless_gl()
+        else:
+            self.create_window()
 
     def init_glfw(self):
         """Initialize GLFW with OpenGL ES 3.1"""
@@ -85,7 +114,109 @@ class ShaderRenderer:
         glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
         glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
         glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+        if self.headless:
+            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
         print("[ShaderRenderer] Configuring for OpenGL ES 3.1")
+
+    def _init_egl_headless(self):
+        """Create a headless GPU context via EGL (no display server needed)."""
+        if not _egl_available:
+            raise RuntimeError(
+                "Failed to initialize GLFW (no display server) and EGL is not "
+                "available. Install libEGL (e.g. apt install libegl1-mesa) or "
+                "run with a display server (e.g. xvfb-run)."
+            )
+
+        EGL = _EGL
+        # Use surfaceless platform — works on Mesa without any display server
+        os.environ.setdefault('EGL_PLATFORM', 'surfaceless')
+
+        display = EGL.eglGetDisplay(EGL.EGL_DEFAULT_DISPLAY)
+        if display == EGL.EGL_NO_DISPLAY:
+            raise RuntimeError("EGL: no display available")
+
+        major, minor = ctypes.c_long(), ctypes.c_long()
+        if not EGL.eglInitialize(display, ctypes.pointer(major), ctypes.pointer(minor)):
+            raise RuntimeError("EGL: initialization failed")
+
+        # ES3 renderable bit (0x0040) — consistent across EGL versions
+        EGL_OPENGL_ES3_BIT = 0x0040
+        config_attribs = (EGL.EGLint * 13)(
+            EGL.EGL_SURFACE_TYPE, EGL.EGL_PBUFFER_BIT,
+            EGL.EGL_RED_SIZE, 8,
+            EGL.EGL_GREEN_SIZE, 8,
+            EGL.EGL_BLUE_SIZE, 8,
+            EGL.EGL_DEPTH_SIZE, 16,
+            EGL.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+            EGL.EGL_NONE,
+        )
+        config = (EGL.EGLConfig * 1)()
+        num_configs = ctypes.c_long()
+        EGL.eglChooseConfig(display, config_attribs, config, 1,
+                            ctypes.pointer(num_configs))
+        if num_configs.value == 0:
+            raise RuntimeError("EGL: no config supporting OpenGL ES 3.x found")
+
+        EGL.eglBindAPI(EGL.EGL_OPENGL_ES_API)
+
+        context_attribs = (EGL.EGLint * 5)(
+            EGL.EGL_CONTEXT_MAJOR_VERSION, 3,
+            EGL.EGL_CONTEXT_MINOR_VERSION, 1,
+            EGL.EGL_NONE,
+        )
+        context = EGL.eglCreateContext(display, config[0],
+                                       EGL.EGL_NO_CONTEXT, context_attribs)
+        if context == EGL.EGL_NO_CONTEXT:
+            raise RuntimeError("EGL: failed to create OpenGL ES 3.1 context")
+
+        # Surfaceless — no surface needed, all rendering goes to FBOs
+        if not EGL.eglMakeCurrent(display, EGL.EGL_NO_SURFACE,
+                                  EGL.EGL_NO_SURFACE, context):
+            raise RuntimeError("EGL: failed to make context current")
+
+        self._use_egl = True
+        self._egl_display = display
+        self._egl_surface = None
+        self._egl_context = context
+
+        # PyOpenGL defaults to GLX for context detection on Linux.
+        # Patch both the platform instance and module-level reference
+        # so that GL calls (e.g. glVertexAttribPointer) can find our context.
+        from OpenGL import platform as _gl_platform
+        _egl_get_ctx = lambda: EGL.eglGetCurrentContext()
+        _gl_platform.PLATFORM.GetCurrentContext = _egl_get_ctx
+        _gl_platform.GetCurrentContext = _egl_get_ctx
+
+        print(f"[ShaderRenderer] Headless EGL context created (EGL {major.value}.{minor.value})")
+
+    def _make_current(self):
+        """Activate the GL context (no-op for EGL — always current)."""
+        if self._use_egl:
+            return
+        if self.window:
+            glfw.make_context_current(self.window)
+
+    def _setup_headless_gl(self):
+        """Set up OpenGL state for headless EGL rendering."""
+        base_width, base_height = self.frame_dimensions[0]
+        self.fb_width = base_width
+        self.fb_height = base_height
+
+        glEnable(GL_DEPTH_TEST)
+        glDepthMask(GL_TRUE)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glEnable(GL_SCISSOR_TEST)
+
+        version = glGetString(GL_VERSION)
+        if version:
+            print(f"[ShaderRenderer] OpenGL Version: {version.decode()}")
+        glsl_version = glGetString(GL_SHADING_LANGUAGE_VERSION)
+        if glsl_version:
+            print(f"[ShaderRenderer] GLSL Version: {glsl_version.decode()}")
+
+        self.ctx_initialized = True
+        print(f"[ShaderRenderer] Headless rendering ready ({base_width}x{base_height})")
 
     def get_monitor_height(self):
         """Get the logical height of the primary monitor (in screen coordinates)"""
@@ -319,10 +450,13 @@ class ShaderRenderer:
 
     def poll_events(self):
         """Poll GLFW events"""
-        glfw.poll_events()
+        if not self._use_egl:
+            glfw.poll_events()
 
     def should_close(self):
         """Check if window should close"""
+        if self._use_egl:
+            return False
         return glfw.window_should_close(self.window)
 
     def swap_buffers(self):
@@ -331,8 +465,10 @@ class ShaderRenderer:
             glfw.swap_buffers(self.window)
 
     def clear_window(self):
-        """Clear the entire window"""
-        glfw.make_context_current(self.window)
+        """Clear the entire window (no-op in headless/EGL mode)"""
+        if self._use_egl:
+            return
+        self._make_current()
         glViewport(0, 0, self.fb_width, self.fb_height)
         glScissor(0, 0, self.fb_width, self.fb_height)
         glClearColor(0.1, 0.1, 0.1, 1.0)
@@ -342,13 +478,22 @@ class ShaderRenderer:
         """Clean up resources"""
         for vp in self.viewports:
             vp.cleanup()
-        if self.window:
-            glfw.destroy_window(self.window)
-        glfw.terminate()
+        if self._use_egl:
+            EGL = _EGL
+            if self._egl_display:
+                EGL.eglMakeCurrent(self._egl_display, EGL.EGL_NO_SURFACE,
+                                   EGL.EGL_NO_SURFACE, EGL.EGL_NO_CONTEXT)
+                if self._egl_context:
+                    EGL.eglDestroyContext(self._egl_display, self._egl_context)
+                EGL.eglTerminate(self._egl_display)
+        else:
+            if self.window:
+                glfw.destroy_window(self.window)
+            glfw.terminate()
 
     def sync_gpu(self):
         """Wait for all GPU operations to complete"""
-        glfw.make_context_current(self.window)
+        self._make_current()
         glFinish()
 
 
@@ -403,6 +548,11 @@ class ShaderViewport:
             ('fan', 'led'):     LEDDots(fan=True),
         }
 
+    def _make_current(self):
+        """Activate GL context (no-op when window is None, i.e. EGL headless)."""
+        if self.glfw_window is not None:
+            glfw.make_context_current(self.glfw_window)
+
     @property
     def _current_mode_key(self):
         view = 'fan' if self.fan_mode else 'flat'
@@ -430,7 +580,7 @@ class ShaderViewport:
 
     def init_framebuffer(self):
         """Create framebuffer for offscreen rendering (for LED output)"""
-        glfw.make_context_current(self.glfw_window)
+        self._make_current()
 
         # Create color texture
         self.color_texture = glGenTextures(1)
@@ -474,7 +624,7 @@ class ShaderViewport:
 
     def add_effect(self, effect_class, **params):
         """Add a shader effect to the rendering pipeline"""
-        glfw.make_context_current(self.glfw_window)
+        self._make_current()
         effect = effect_class(self, **params)
         effect.init()
         self.effects.append(effect)
@@ -484,7 +634,7 @@ class ShaderViewport:
 
     def clear(self):
         """Clear the viewport in both window and framebuffer"""
-        glfw.make_context_current(self.glfw_window)
+        self._make_current()
         glDepthMask(GL_TRUE)
 
         # Clear FBO
@@ -524,7 +674,7 @@ class ShaderViewport:
         if not self.headless and self.display_width > 0:
             mode = self._display_modes[self._current_mode_key]
             if not mode._initialized:
-                glfw.make_context_current(self.glfw_window)
+                self._make_current()
                 mode.init(self)
             mode.render(self)
 
@@ -534,7 +684,7 @@ class ShaderViewport:
 
     def get_frame(self) -> np.ndarray:
         """Read framebuffer into numpy array for LED output"""
-        glfw.make_context_current(self.glfw_window)
+        self._make_current()
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
 
         pixels = glReadPixels(0, 0, self.width, self.height,
@@ -553,7 +703,7 @@ class ShaderViewport:
 
     def cleanup(self):
         """Clean up resources"""
-        glfw.make_context_current(self.glfw_window)
+        self._make_current()
         for effect in self.effects:
             effect.cleanup()
         if self.fbo:
