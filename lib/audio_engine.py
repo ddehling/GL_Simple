@@ -45,7 +45,7 @@ class _MemTrack:
         # Duration cap
         max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
         if max_frames > 0 and max_frames < len(self._samples):
-            self._samples = self._samples[:max_frames]
+            self._samples = self._samples[:max_frames].copy()
 
     def fade_out(self, duration: float):
         self._fading_out      = True
@@ -257,8 +257,11 @@ class AudioEngine:
                 decoded = miniaudio.decode_file(
                     str(p), output_format=FORMAT,
                     nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
-                samples = np.frombuffer(decoded.samples,
-                                        dtype=np.float32).reshape(-1, CHANNELS).copy()
+                # Copy raw bytes first to own the memory independently of
+                # miniaudio's C buffer, preventing GC race conditions
+                raw_bytes = bytes(decoded.samples)
+                samples = np.frombuffer(raw_bytes,
+                                        dtype=np.float32).reshape(-1, CHANNELS)
                 self._cmds.put(("oneshot_mem", samples, p, volume, duration, narrative))
             except Exception as e:
                 print(f"[AudioEngine] Failed to decode {p.name}: {e}")
@@ -328,6 +331,19 @@ class AudioEngine:
                 if chunk is None or track.done:
                     dead.append(key)
                 else:
+                    # Detect unexpected silence from oneshot tracks
+                    if not track.is_ambient and not track.is_narrative and not track._fading_out:
+                        peak_val = np.max(np.abs(chunk))
+                        if peak_val < 0.001:
+                            if not getattr(track, '_silence_warned', False):
+                                print(f"[AudioEngine] WARNING: Track {track._path.name} near-silent "
+                                      f"(peak={peak_val:.6f}) at pos {track._pos}/{len(track._samples)} "
+                                      f"vol={track.volume} fading={track._fading_out}")
+                                track._silence_warned = True
+                        elif getattr(track, '_silence_warned', False):
+                            # Track recovered — reset warning
+                            print(f"[AudioEngine] Track {track._path.name} recovered (peak={peak_val:.4f})")
+                            track._silence_warned = False
                     if track.is_narrative:
                         narr_buf[:len(chunk)] += chunk * narr_vol
                     else:
