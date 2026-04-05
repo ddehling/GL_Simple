@@ -3,6 +3,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
+from renderer.fan_coords import FanCoords
 
 # Vertex shader for fullscreen quad
 VERTEX_SHADER = """#version 310 es
@@ -17,7 +18,7 @@ void main() {
 }
 """
 
-# Fragment shader with depth-based fog and blur
+# Fragment shader with depth-based fog, blur, and optional spatial density texture
 FRAGMENT_SHADER = """#version 310 es
 precision highp float;
 
@@ -26,66 +27,71 @@ out vec4 fragColor;
 
 uniform sampler2D u_color_texture;
 uniform sampler2D u_depth_texture;
+uniform sampler2D u_fog_density_tex;  // spatial density map (red channel, 0-1)
 uniform vec3 u_fog_color;
 uniform float u_fog_strength;
 uniform float u_fog_near;
 uniform float u_fog_far;
 uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_use_density_tex;  // 0 = depth-based (default), 1 = use density texture
 
 // Gaussian blur with proper weighting
 vec4 apply_gaussian_blur(vec2 uv, float radius) {
     if (radius < 0.5) {
         return texture(u_color_texture, uv);
     }
-    
+
     vec2 texel_size = 1.0 / u_resolution;
     vec4 result = vec4(0.0);
     float total_weight = 0.0;
-    
+
     int r = int(ceil(radius));
-    r = clamp(r, 1, 12); // Max 12 pixel radius
-    
+    r = clamp(r, 1, 12);
+
     float sigma = radius / 2.5;
-    
+
     for (int x = -r; x <= r; x++) {
         for (int y = -r; y <= r; y++) {
             vec2 offset = vec2(float(x), float(y)) * texel_size;
             float dist = length(vec2(float(x), float(y)));
-            
-            // Gaussian weight
             float weight = exp(-(dist * dist) / (2.0 * sigma * sigma));
-            
             result += texture(u_color_texture, uv + offset) * weight;
             total_weight += weight;
         }
     }
-    
+
     return result / total_weight;
 }
 
 void main() {
-    // Sample depth
-    float depth = texture(u_depth_texture, v_texcoord).r;
-    
-    // Convert depth to blur amount
-    // Depth close to 1.0 = far away = more blur
-    // Scale blur: 0 pixels at depth 0, up to 12 pixels at depth 1.0
-    float blur_radius = depth * 3.0 * u_fog_strength;
-    
-    // Apply Gaussian blur based on depth
+    float combined;
+
+    if (u_use_density_tex == 1) {
+        // Spatial fog from density texture (red channel = density 0-1)
+        float spatial = texture(u_fog_density_tex, v_texcoord).r;
+        // Animate: slow drift and pulse
+        float drift = sin(u_time * 0.15 + v_texcoord.x * 10.0) * 0.05;
+        combined = u_fog_strength * clamp(spatial + drift, 0.0, 1.0);
+    } else {
+        // Standard depth-based fog
+        float depth = texture(u_depth_texture, v_texcoord).r;
+        combined = u_fog_strength * depth;
+    }
+
+    float blur_radius = combined * 4.0;
     vec4 blurred_color = apply_gaussian_blur(v_texcoord, blur_radius);
-    
-    // Mix with fog color based on depth and strength
-    float fog_mix = depth * u_fog_strength * 0.4;
+
+    float fog_mix = combined * 0.5;
     vec3 final_color = mix(blurred_color.rgb, u_fog_color, fog_mix);
-    
+
     fragColor = vec4(final_color, blurred_color.a);
 }
 """
 
 
-def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8), 
-               fog_near=10.0, fog_far=100.0):
+def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
+               fog_near=10.0, fog_far=100.0, spatial_fog=False):
     """
     Depth-based fog post-processing effect compatible with EventScheduler
     
@@ -125,7 +131,8 @@ def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
                 strength=strength,
                 color=color,
                 fog_near=fog_near,
-                fog_far=fog_far
+                fog_far=fog_far,
+                spatial_fog=spatial_fog,
             )
             effect._managed_by_wrapper = True  # Mark as managed by wrapper
             state['effect'] = effect
@@ -141,10 +148,21 @@ def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
         # Allow dynamic fog strength control from outstate
         if 'fog_strength' in outstate:
             state['effect'].base_strength = outstate['fog_strength']
-        
+
         # Allow dynamic fog color control from outstate
         if 'fog_color' in outstate:
             state['effect'].fog_color = outstate['fog_color']
+
+        # Allow weather sets to enable spatial fog via outstate
+        state['effect'].spatial_fog = outstate.get('spatial_fog', False)
+
+        # Pick up or clear fog density texture based on spatial_fog flag
+        if state['effect'].spatial_fog:
+            density_tex = outstate.get('fog_density_texture')
+            if density_tex is not None:
+                state['effect']._fog_density_texture = density_tex
+        else:
+            state['effect']._fog_density_texture = None
         
         # Calculate current_strength based on fade (if duration specified)
         if state.get('duration') is not None:
@@ -181,16 +199,19 @@ def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
 class ShaderFog(ShaderEffect):
     """Post-processing fog effect with depth-based blur"""
     
-    def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8), 
-                 fog_near=10.0, fog_far=100.0):
+    def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8),
+                 fog_near=10.0, fog_far=100.0, spatial_fog=False):
         super().__init__(viewport)
         self.render_priority = 1000  # Post-processing: render LAST
-        self.base_strength = strength  # Base strength set at initialization
-        self.current_strength = strength  # Current strength (affected by fade)
+        self.base_strength = strength
+        self.current_strength = strength
         self.fog_color = color
         self.fog_near = fog_near
         self.fog_far = fog_far
-        
+        self.spatial_fog = spatial_fog
+        self._time = 0.0
+        self._fog_density_texture = None  # GL texture ID, set externally
+
         # OpenGL resources (initialized in setup_buffers)
         self.VAO = None
         self.VBO = None
@@ -283,7 +304,9 @@ class ShaderFog(ShaderEffect):
         """Update fog parameters each frame"""
         if not self.enabled:
             return
-        
+
+        self._time += dt
+
         # If not managed by wrapper, check state dict for dynamic updates
         # This allows real-time control without using the event wrapper
         if not hasattr(self, '_managed_by_wrapper') or not self._managed_by_wrapper:
@@ -345,6 +368,16 @@ class ShaderFog(ShaderEffect):
                    self.fog_far)
         glUniform2f(glGetUniformLocation(self.shader, "u_resolution"),
                    float(self.viewport.width), float(self.viewport.height))
+        glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
+
+        # Spatial fog via density texture
+        use_density = self.spatial_fog and self._fog_density_texture is not None
+        glUniform1i(glGetUniformLocation(self.shader, "u_use_density_tex"),
+                    1 if use_density else 0)
+        if use_density:
+            glActiveTexture(GL_TEXTURE2)
+            glBindTexture(GL_TEXTURE_2D, self._fog_density_texture)
+            glUniform1i(glGetUniformLocation(self.shader, "u_fog_density_tex"), 2)
         
         # Draw fullscreen quad
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

@@ -58,16 +58,16 @@ def _weighted_choice(nexts: list, weights: list,
                      recency: dict = None) -> Optional[str]:
     """Pick a node ID from nexts using weights, penalised by recency counters.
 
-    Each node's effective weight is  w * 2^(-counter).  A counter of 1 halves
-    the probability; 2 quarters it, etc.  Counters decay toward 0 over time
-    so the penalty fades after roughly an hour.
+    Each node's effective weight is  w * 4^(-counter).  A counter of 1 divides
+    the probability by 4; 2 divides it by 16, etc.  Counters decay toward 0 over time
+    so the penalty fades after roughly 10 hours.
     """
     if not nexts:
         return None
     effective = []
     for nid, w in zip(nexts, weights):
         if recency and nid in recency:
-            w *= 2.0 ** (-recency[nid])
+            w *= 4.0 ** (-recency[nid])
         effective.append(w)
     total = sum(effective) or 1.0
     r = random.random() * total
@@ -132,9 +132,9 @@ class NarrativePlayer(ShaderEffect):
         # plays; decays by 1/hour continuously.  Effective weight is
         # original_weight * 2^(-counter).
         self._recency: dict = {}   # node_id -> float
-        self._DECAY_PER_SEC: float = 1.0 / 7200.0  # lose 1 count per 2 hours
+        self._DECAY_PER_SEC: float = 1.0 / 36000.0  # lose 1 count per 10 hours
 
-        p = Path(script_path)
+        p = Path(script_path.replace('\\', '/'))
         if p.exists():
             data              = json.loads(p.read_text(encoding='utf-8'))
             self._nodes       = data.get('nodes', {})
@@ -219,7 +219,19 @@ class NarrativePlayer(ShaderEffect):
         # Start variable ramp toward this node's values
         self._start_var_ramp(nd.get('vars', {}))
 
-        audio_file = self._audio_dir / f'{node_id}.mp3'
+        # Use the node's explicit "file" field if set, otherwise fall back
+        # to the convention of {node_id}.mp3 in the script directory.
+        # The "file" field is stored relative to the project root.
+        file_rel = nd.get('file', '')
+        if file_rel:
+            # Normalize path separators for cross-platform compatibility
+            file_rel = file_rel.replace('\\', '/')
+            audio_file = Path(file_rel)
+            if not audio_file.is_absolute():
+                repo_root = Path(__file__).parent.parent.parent
+                audio_file = repo_root / audio_file
+        else:
+            audio_file = self._audio_dir / f'{node_id}.mp3'
         if audio_file.exists():
             self._audio_dur = _audio_duration(audio_file)
             if engine:
@@ -227,6 +239,7 @@ class NarrativePlayer(ShaderEffect):
                 engine.schedule_event(
                     str(audio_file), volume=1.0,
                     duration=self._audio_dur + 0.5,
+                    narrative=True,
                 )
             print(f'[NarrativePlayer] ▶ {node_id}  ({self._audio_dur:.1f}s)  recency={prev_count:.2f}')
         else:
@@ -258,6 +271,7 @@ class NarrativePlayer(ShaderEffect):
 
         self._phase_elapsed += dt
         engine = state.get('soundengine')
+        self._volume = state.get('narrative_volume', 1.0)
 
         # Decay recency counters (1 count per hour)
         if self._recency:

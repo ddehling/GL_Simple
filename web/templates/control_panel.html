@@ -79,6 +79,18 @@
                     <option value="">Loading...</option>
                 </select>
             </div>
+            <div style="margin-top: 15px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                    <label style="font-weight: bold;">Trigger Event:</label>
+                    <button id="event-lock-btn" onclick="toggleEventLock()" class="btn-small">Locked</button>
+                </div>
+                <div style="display: flex; gap: 5px;">
+                    <select id="event-selector" style="flex: 1;">
+                        <option value="">Loading...</option>
+                    </select>
+                    <button onclick="triggerSelectedEvent()" class="btn-small">Go</button>
+                </div>
+            </div>
         </div>
 
         <!-- Global Modifiers -->

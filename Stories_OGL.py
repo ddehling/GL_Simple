@@ -66,7 +66,43 @@ class EnvironmentalSystem:
                 }
                 for rx in dmx_cfg['receivers']
             ],
-        ]
+#                  'ip': '192.168.68.111',
+#                     'pixel_count': 2019,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitA.txt")
+#                 },
+#                 {
+#                     'ip': '192.168.68.125',
+#                     'pixel_count': 1777,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitB.txt")
+#                 },
+#                 {
+#                     'ip': '192.168.68.124',
+#                     'pixel_count': 1793,
+#                     'addressing_array': imdmx.make_indicesHS(r"./config/UnitC.txt")
+#                 },
+            # [
+            #     {
+            #         'ip': '192.168.68.140',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 0),
+            #     },
+            #     {
+            #         'ip': '192.168.68.141',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 32),
+            #     },
+            #     {
+            #         'ip': '192.168.68.142',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 64),
+            #     },
+            #     {
+            #         'ip': '192.168.68.143',
+            #         'pixel_count': disp["height"] * 32,
+            #         'addressing_array': imdmx.make_indices_V_rect_alternate(32, disp["height"], 96),
+            #     },
+            # ],
+            ]
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
@@ -169,6 +205,9 @@ class EnvironmentalSystem:
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),
+            "test_fan_coords": (fx.shader_test_fan_coords, {}),
+            "city_lights": (fx.shader_city_lights, {}),
+            "bay_shimmer": (fx.shader_bay_shimmer, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 "script_path": "media/sounds/bartiki/script.json",
                 "node_delay": 3.0,
@@ -249,6 +288,8 @@ class EnvironmentalSystem:
             self.weather_set.commit_set_change(new_set_name)
             if self.enable_web_control:
                 self.web_controller.set("current_weather_set", self.weather_set.current_set)
+                self.web_controller.set("available_weather_states",
+                                        list(self.weather_set.get_current_set_config()["states"]))
 
             # Cancel all existing events and start new background events for the set
             self._initialize_weather_set_events()
@@ -263,7 +304,10 @@ class EnvironmentalSystem:
 
             new_weather_params = self.weather_state.get_weather_params(new_weather)
             t_duration = new_weather_params["transition_duration"]
-            self.transition_to_weather(new_weather, transition_duration=t_duration)
+            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                t_duration = 0.01
+            # Snap instantly on immediate set change — don't blend from previous set's params
+            self.transition_to_weather(new_weather, transition_duration=0.01)
         else:
             # Queue for next transition
             self.weather_set.queue_set_change(new_set_name)
@@ -276,8 +320,11 @@ class EnvironmentalSystem:
         """Cancel all events and start background events for the current weather set"""
         print(f"[WEATHER] Initializing events for weather set: '{self.weather_set.current_set}'")
 
-        # Cancel all active events
+        # Cancel all active events and fade out all audio
         self.scheduler.cancel_all_events()
+        engine = self.scheduler.state.get("soundengine")
+        if engine:
+            engine.stop_all(duration=2.0)
 
         # Schedule the permanent background events based on set configuration
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
@@ -320,7 +367,9 @@ class EnvironmentalSystem:
         if ambient_sound:
             sound_path = Path("media") / Path("sounds") / ambient_sound
             engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
-        self.active_effects["ambient_sound"] = target_params["ambient_sound"]
+        else:
+            engine.stop_ambient()
+        self.active_effects["ambient_sound"] = ambient_sound
 
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
@@ -342,6 +391,7 @@ class EnvironmentalSystem:
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
             new_state = self.web_controller.control_dict.pop('request_weather_state', None)
+            trigger_event = self.web_controller.control_dict.pop('request_trigger_event', False)
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
@@ -357,6 +407,18 @@ class EnvironmentalSystem:
                 self.transition_to_weather(state_enum, transition_duration=t_duration)
             else:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
+
+        if trigger_event:
+            if isinstance(trigger_event, str) and trigger_event:
+                # Specific event requested
+                event_name = trigger_event
+            else:
+                # Random pick from current set
+                random_events, _ = self.weather_set.get_random_events_config()
+                event_name = np.random.choice(random_events) if random_events else None
+            if event_name:
+                print(f"[WEB] Triggered event: {event_name}")
+                self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
 
         # Apply audio sensitivity from global modifiers
         if self.analyzer:
@@ -417,6 +479,7 @@ class EnvironmentalSystem:
                 d = self.web_controller.control_dict
                 d['current_weather_set'] = self.weather_set.current_set
                 d['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
+                d['random_events'] = list(self.weather_set.get_current_set_config().get("random_events", []))
                 d['current_weather'] = self.weather_state.current_weather.value
                 d['season'] = float(self.season)
                 d['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)
@@ -490,6 +553,12 @@ class EnvironmentalSystem:
             # after the hardware limiter (can only dim, never brighten past limiter)
             state["web_brightness"] = brightness_mod
 
+            # Volume controls — both applied in real time in the audio engine mixer
+            master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
+            narrative_vol = self.web_controller.global_modifiers.get('narrative_volume', 1.0)
+            state["soundengine"].master_volume = master_vol
+            state["soundengine"].narrative_volume = narrative_vol
+
             # Cache the final output for the web UI snapshot (post-overrides)
             self._last_web_output = output
 
@@ -550,7 +619,7 @@ class EnvironmentalSystem:
 
         # Dancing cactus events
         randcheck = np.random.random()
-                
+
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
             return
@@ -616,7 +685,7 @@ if __name__ == "__main__":
 
     # Change to a specific weather set and state on startup
     env_system.change_weather_set("bartiki", immediate=True,
-                                  initial_weather=WeatherState.BARTIKI_PEAK_HOUR)
+                                  initial_weather=WeatherState.BARTIKI_MIDDAY)
     last_time = time.time()
     FRAME_TIME = 1 / 40
     first_time = time.time()

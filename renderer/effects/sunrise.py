@@ -123,6 +123,7 @@ class SunriseEffect(ShaderEffect):
                  color_intensity: float = 1.0, audio_sensitivity: float = 2.0,
                  squish_top_width: float = 1.0):
         super().__init__(viewport)
+        self.render_priority = 5.4  # After BART map (5), before aurora (5.5) and clouds (6)
         self.tentacle_count = tentacle_count
         self.color_intensity = color_intensity
         self.audio_sensitivity = audio_sensitivity
@@ -185,7 +186,7 @@ class SunriseEffect(ShaderEffect):
         
         void main() {
             fragCoord = position;
-            gl_Position = vec4(position, 0.99, 1.0);  // depth = 0.99 (z=99)
+            gl_Position = vec4(position, 0.97, 1.0);  // depth = 0.97 (behind clouds, in front of background)
         }
         """
     
@@ -242,7 +243,7 @@ class SunriseEffect(ShaderEffect):
             pixel.x = centerX + (pixel.x - centerX) * squish_factor;
             
             // Scale sun based on width - sun+halo+tentacles should be ~50% of total width
-            float targetTotalWidth = resolution.x * 0.5;
+            float targetTotalWidth = resolution.x * 0.75;
             float haloRadius = targetTotalWidth * 0.5;  // Halo is 50% of total (full diameter)
             float sunRadius = haloRadius * 0.35;  // Sun is 35% of halo radius
             
@@ -452,11 +453,11 @@ class SunriseEffect(ShaderEffect):
             
             alpha *= fadeAlpha;
             
-            // Set alpha to 0 for very low intensities to prevent black artifacts
-            if (totalMask < 0.02) {
-                alpha = 0.0;
+            // Discard transparent fragments to prevent depth buffer artifacts
+            if (totalMask < 0.02 || alpha < 0.01) {
+                discard;
             }
-            
+
             outColor = vec4(color, alpha);
         }
         """

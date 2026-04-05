@@ -13,15 +13,15 @@ from PIL import Image, ImageDraw, ImageFont
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_text(state, outstate, text="Hello,World", 
-                display_mode="all_lines", color_mode="solid", 
+def shader_text(state, outstate, text="Hello,World",
+                display_mode="all_lines", color_mode="solid",
                 animation_mode="none", fade_duration=2.0,
                 font_size=48, color=(1.0, 1.0, 1.0),
                 line_spacing=1.2, letter_spacing=1.0,
                 sequential_delay=2.0, typewriter_speed=10.0,
                 depth=25.0, x_pos=0.5, y_pos=0.5,
                 auto_scale=True, scale_factor=0.9,
-                text_rotation=0.0):
+                text_rotation=0.0, height_scale=1.0):
     """
     Text rendering shader effect compatible with EventScheduler
     
@@ -91,7 +91,6 @@ def shader_text(state, outstate, text="Hello,World",
     
     # Initialize effect on first call
     if state['count'] == 0:
-        print(f"Initializing text effect for frame {frame_id}")
         
         try:
             effect = viewport.add_effect(
@@ -111,10 +110,10 @@ def shader_text(state, outstate, text="Hello,World",
                 y_pos=y_pos,
                 auto_scale=auto_scale,
                 scale_factor=scale_factor,
-                text_rotation=text_rotation
+                text_rotation=text_rotation,
+                height_scale=height_scale
             )
             state['text_effect'] = effect
-            print(f"✓ Initialized shader text for frame {frame_id}")
         except Exception as e:
             import traceback
             print(f"ERROR initializing text effect: {e}")
@@ -153,7 +152,6 @@ def shader_text(state, outstate, text="Hello,World",
                 viewport.effects.remove(effect)
             effect.cleanup()
             del state['text_effect']
-            print(f"✓ Cleaned up shader text for frame {frame_id}")
 
 
 # ============================================================================
@@ -162,6 +160,7 @@ def shader_text(state, outstate, text="Hello,World",
 
 class TextEffect(ShaderEffect):
     """GPU-based text rendering with multiple display and animation modes"""
+    _silent = True  # suppress add_effect print for transient text overlays
     
     def __init__(self, viewport, text: str = "Hello,World",
                  display_mode: str = "all_lines",
@@ -178,9 +177,10 @@ class TextEffect(ShaderEffect):
                  y_pos: float = 0.5,
                  auto_scale: bool = True,
                  scale_factor: float = 0.9,
-                 text_rotation: float = 0.0):
+                 text_rotation: float = 0.0,
+                 height_scale: float = 1.0):
         super().__init__(viewport)
-        
+
         self.text = text
         self.display_mode = display_mode
         self.color_mode = color_mode
@@ -196,6 +196,7 @@ class TextEffect(ShaderEffect):
         self.y_pos = y_pos
         self.auto_scale = auto_scale
         self.scale_factor = scale_factor
+        self.height_scale = height_scale
         self.text_rotation = text_rotation
         self.text_rotation_rad = np.radians(text_rotation)  # Convert to radians for shader
         
@@ -216,10 +217,20 @@ class TextEffect(ShaderEffect):
         # Font atlas
         self._generate_font_atlas()
         self._generate_text()
-    
+
+    def init(self):
+        """Initialize shader and buffers (silent — no print spam for transient text)."""
+        try:
+            self.shader = self.compile_shader()
+            self.setup_buffers()
+        except Exception as e:
+            print(f"    [ERROR] Error initializing {self.__class__.__name__}: {e}")
+            self.enabled = False
+            raise
+
     def _generate_font_atlas(self):
         """Generate a texture atlas containing ASCII characters"""
-        # Create a simple 16x16 grid of ASCII characters (32-127)
+        # Create a simple 16x6 grid of ASCII characters (32-127)
         chars_per_row = 16
         chars_per_col = 6  # 96 printable ASCII chars
         char_width = 64
@@ -232,36 +243,55 @@ class TextEffect(ShaderEffect):
         img = Image.new('RGBA', (atlas_width, atlas_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
-        # Try to load a font, fallback to default
+        # Try to load a bold font, fallback to regular, then default
         try:
-            font = ImageFont.truetype("arial.ttf", int(self.font_size * 0.8))
+            font = ImageFont.truetype("arialbd.ttf", int(self.font_size * 0.8))
         except:
             try:
-                font = ImageFont.truetype("DejaVuSans.ttf", int(self.font_size * 0.8))
+                font = ImageFont.truetype("arial.ttf", int(self.font_size * 0.8))
             except:
-                font = ImageFont.load_default()
+                try:
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", int(self.font_size * 0.8))
+                except:
+                    try:
+                        font = ImageFont.truetype("DejaVuSans.ttf", int(self.font_size * 0.8))
+                    except:
+                        font = ImageFont.load_default()
         
-        # Draw characters
-        self.char_map = {}  # Maps character to UV coordinates
+        # Draw characters with tight padding and per-glyph width
+        self.char_map = {}    # char -> (u0, v0, u1, v1)
+        self.char_widths = {} # char -> width ratio (0-1, fraction of cell used)
+        pad = 1
         for i in range(96):  # ASCII 32-127
             char = chr(32 + i)
             row = i // chars_per_row
             col = i % chars_per_row
-            
+
             x = col * char_width
             y = row * char_height
-            
-            # Draw character centered in cell
-            draw.text((x + char_width // 4, y + char_height // 4), 
+
+            # Measure actual glyph width
+            try:
+                bbox = font.getbbox(char)
+                glyph_w = bbox[2] - bbox[0] + pad * 2
+            except Exception:
+                glyph_w = char_width // 2
+            glyph_w = max(glyph_w, char_width // 4)  # minimum width
+            glyph_w = min(glyph_w, char_width)        # cap at cell
+
+            # Draw at left edge
+            draw.text((x + pad, y + pad),
                      char, font=font, fill=(255, 255, 255, 255))
-            
-            # Store UV coordinates (normalized 0-1)
+
+            # Tight UV: only map the portion of the cell the glyph uses
             u0 = col / chars_per_row
             v0 = row / chars_per_col
-            u1 = (col + 1) / chars_per_row
+            u1 = (col + glyph_w / char_width) / chars_per_row
             v1 = (row + 1) / chars_per_col
-            
+            width_ratio = glyph_w / char_width
+
             self.char_map[char] = (u0, v0, u1, v1)
+            self.char_widths[char] = width_ratio
         
         # Convert to OpenGL texture
         img_data = np.array(img, dtype=np.uint8)
@@ -316,56 +346,53 @@ class TextEffect(ShaderEffect):
                 effective_width *= 0.7
                 effective_height *= 0.7
             
-            # Calculate font size that fits both width and height
-            # Account for letter spacing in width calculation
-            width_based_size = (effective_width * self.scale_factor) / (max_line_length * self.letter_spacing)
+            # Calculate line widths using per-glyph widths
+            def _line_width_ratio(line_text):
+                """Sum of glyph width ratios for a line."""
+                return sum(self.char_widths.get(c, 0.6) for c in line_text)
+
+            max_line_ratio = max(_line_width_ratio(l) for l in lines)
+
+            # Font size that fits width and height
+            width_based_size = (effective_width * self.scale_factor) / max(max_line_ratio * self.letter_spacing, 0.1)
             height_based_size = (effective_height * self.scale_factor) / (num_lines * self.line_spacing)
-            
-            # Use the smaller of the two to ensure text fits in both dimensions
+
             self.font_size = min(width_based_size, height_based_size)
-            
-            # Update character dimensions
-            self.char_width = self.font_size * self.letter_spacing
-            self.char_height = self.font_size
-        
+            self.char_height = self.font_size * self.height_scale
+
         all_positions = []
         all_sizes = []
         all_uvs = []
         all_char_indices = []
         all_line_indices = []
-        
+
         # Calculate total text block size for centering
-        max_line_width = max(len(line) for line in lines) * self.char_width
+        def _line_pixel_width(line_text):
+            return sum(self.char_widths.get(c, 0.6) * self.font_size * self.letter_spacing for c in line_text)
+
+        max_line_width = max(_line_pixel_width(l) for l in lines)
         total_height = len(lines) * self.char_height * self.line_spacing
-        
-        # Starting position (centered based on x_pos, y_pos)
+
         start_x = self.viewport.width * self.x_pos - max_line_width / 2
         start_y = self.viewport.height * self.y_pos - total_height / 2
-        
+
         char_idx = 0
         for line_idx, line in enumerate(lines):
-            # Center each line individually
-            line_width = len(line) * self.char_width
+            line_width = _line_pixel_width(line)
             x = start_x + (max_line_width - line_width) / 2
             y = start_y + line_idx * self.char_height * self.line_spacing
-            
+
             for char in line:
                 if char in self.char_map:
-                    # Position
+                    cw = self.char_widths.get(char, 0.6) * self.font_size * self.letter_spacing
+
                     all_positions.append([x, y])
-                    
-                    # Size
-                    all_sizes.append([self.char_width, self.char_height])
-                    
-                    # UV coordinates
-                    uvs = self.char_map[char]
-                    all_uvs.append(uvs)
-                    
-                    # Indices for animations
+                    all_sizes.append([cw, self.char_height])
+                    all_uvs.append(self.char_map[char])
                     all_char_indices.append(char_idx)
                     all_line_indices.append(line_idx)
-                    
-                    x += self.char_width
+
+                    x += cw
                     char_idx += 1
         
         if len(all_positions) > 0:

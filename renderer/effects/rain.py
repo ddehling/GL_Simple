@@ -60,16 +60,29 @@ def shader_rain(state, outstate, intensity=1.0, wind=0.3, audio_sensitivity=1.5)
     
     # Update wind and audio data if effect exists
     if 'rain_effect' in state:
-        state['rain_effect'].wind = outstate.get('wind', wind)
-        
+        effect = state['rain_effect']
+        effect.wind = outstate.get('wind', wind)
+
+        # Fade out: ramp down target drops over the last 5 seconds
+        fade_out_duration = 5.0
+        total_duration = state.get('duration', 60)
+        elapsed = state.get('elapsed_time', 0)
+        remaining = total_duration - elapsed
+
+        if remaining < fade_out_duration:
+            fade = max(remaining / fade_out_duration, 0.0)
+            effect.fade_multiplier = fade
+        else:
+            effect.fade_multiplier = 1.0
+
         # Pass audio data to effect for audio reactivity
         audio_data = outstate.get('sound')
         if audio_data is not None:
             # Extract norm_long_relu bands [0] for current frame
             # Map 16 frequency bands across the spectrum (0-31, step by 2)
             audio_bands = audio_data['norm_long_relu'][0][::2]  # Every other band (32 bands -> 16 bands)
-            state['rain_effect'].update_audio_bands(audio_bands, audio_sensitivity)
-    
+            effect.update_audio_bands(audio_bands, audio_sensitivity)
+
     # On close event, clean up
     if state['count'] == -1:
         if 'rain_effect' in state:
@@ -91,6 +104,7 @@ class RainEffect(ShaderEffect):
         self.num_raindrops = num_raindrops
         self.base_num_raindrops = num_raindrops
         self.target_raindrops = num_raindrops
+        self.fade_multiplier = 1.0  # 1.0 = full rain, ramps to 0.0 during fade-out
         self.wind = wind
         self.instance_VBO = None
         self.wrap_margin = 50  # NEW: Distance from edge to create duplicates (should be > max drop length)
@@ -118,9 +132,10 @@ class RainEffect(ShaderEffect):
         n = self.num_raindrops
         
         # Positions: x, y, z
+        # Start drops above the viewport so rain builds up gradually
         self.positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, n),  # x
-            np.random.uniform(0, self.viewport.height, n),  # y (randomized)
+            np.random.uniform(-self.viewport.height, 0, n),  # y (above screen)
             np.random.uniform(0, 100, n)  # z (depth)
         ])
         
@@ -233,13 +248,13 @@ class RainEffect(ShaderEffect):
             self.band_indices[mask] = np.random.randint(0, 16, n_reset)
 
     def _add_raindrops(self, n_new):
-        """Add new raindrops when intensity increases"""
+        """Add new raindrops above the screen so they fall in naturally"""
         if n_new <= 0:
             return
-            
+
         new_positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, n_new),
-            np.random.uniform(0, self.viewport.height, n_new),
+            np.random.uniform(-self.viewport.height, -10, n_new),  # above screen
             np.random.uniform(0, 100, n_new)
         ])
         
@@ -471,17 +486,17 @@ class RainEffect(ShaderEffect):
         """Update raindrop positions (fully vectorized)"""
         if not self.enabled:
             return
-        
-        # Get global rain intensity
-        rain_intensity = state.get('rain', 1.0)
-        
-        # Calculate target number of drops
-        self.target_raindrops = int(self.base_num_raindrops * rain_intensity)
-        
-        # Only add drops immediately if we need more
+
+        # Get global rain intensity from weather state
+        rain_intensity = state.get('rain', 0.0)
+
+        # Calculate target number of drops, scaled by fade multiplier
+        self.target_raindrops = int(self.base_num_raindrops * rain_intensity * self.fade_multiplier)
+
+        # Gradually add drops (max 5 per frame to avoid bursts)
         current_drops = len(self.positions)
         if self.target_raindrops > current_drops:
-            n_to_add = self.target_raindrops - current_drops
+            n_to_add = min(self.target_raindrops - current_drops, 5)
             self._add_raindrops(n_to_add)
         
         # Update velocities based on intensity AND audio

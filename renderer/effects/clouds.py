@@ -13,6 +13,7 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
+from renderer.fan_coords import FanCoords
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
@@ -110,16 +111,18 @@ class CloudEffectGPU(ShaderEffect):
         self.fog_level = 0.0
         self.fade_factor = 1.0  # Start visible (event system will control fading)
         self.cloudyness = 0.5
-        
+        self.render_priority = 6  # Render AFTER BART map (5) so clouds blend over background
+        self._fan = FanCoords(viewport.width, viewport.height)
+
         # GPU buffers
         self.cloud_ssbo = None
         self.compute_shader = None
-        
+
         # CPU-side mirror of cloud data for rendering (avoiding GPU readback)
         self.cpu_cloud_data = np.zeros((max_clouds, 24), dtype=np.float32)
         self.cpu_cloud_data[:, 9] = -1.0  # Mark all as inactive initially
         self.num_clouds = 0
-        
+
         # Timing
         self.global_time = 0.0
         self.last_fade_time = 0.0  # Track when we last marked a cloud for fading
@@ -226,17 +229,17 @@ class CloudEffectGPU(ShaderEffect):
         """
     
     def get_geometry_shader(self):
-        """Geometry shader for automatic edge wrapping"""
+        """Geometry shader for automatic edge wrapping with fan compensation"""
         return """
         #version 310 es
         #extension GL_EXT_geometry_shader : enable
         #extension GL_EXT_shader_io_blocks : enable
-        
+
         precision highp float;
-        
+
         layout(points) in;
         layout(triangle_strip, max_vertices = 12) out;  // Up to 2 quads (primary + wrap)
-        
+
         in VS_OUT {
             vec2 size;
             float scale;
@@ -244,14 +247,28 @@ class CloudEffectGPU(ShaderEffect):
             vec2 noiseSeed;
             float depth;
         } gs_in[];
-        
+
         out vec2 texCoord;
         out float fragOpacity;
         out vec2 fragNoiseSeed;
-        
+
         uniform vec2 resolution;
         uniform float wrapMargin;
-        
+        uniform float u_inner_r_ft;
+        uniform float u_outer_r_ft;
+
+        // Fan arc-width compensation: scale cloud width based on current Y position
+        // so clouds appear equal physical size on the fan regardless of radial position.
+        // Cloud Y is flipped: Y=0 = top = outer radius, Y=resolution.y = bottom = inner.
+        // Inner radius = 4ft, outer = 20.6ft, ratio = 5.15x
+        float fanWidthScale(float cloudY) {
+            // normalized: 0 at top (outer), 1 at bottom (inner)
+            float t = clamp(cloudY / resolution.y, 0.0, 1.0);
+            // Top (t=0, outer radius): pixels span wide arc, shrink cloud
+            // Bottom (t=1, inner radius): pixels span narrow arc, keep full size
+            return mix(0.2, 1.0, t);
+        }
+
         void emitQuad(vec2 basePos, vec2 size, float opacity, vec2 seed, float depth) {
             // Bottom-left
             vec2 pos = basePos;
@@ -262,7 +279,7 @@ class CloudEffectGPU(ShaderEffect):
             fragOpacity = opacity;
             fragNoiseSeed = seed;
             EmitVertex();
-            
+
             // Bottom-right
             pos = basePos + vec2(size.x, 0.0);
             clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -272,7 +289,7 @@ class CloudEffectGPU(ShaderEffect):
             fragOpacity = opacity;
             fragNoiseSeed = seed;
             EmitVertex();
-            
+
             // Top-left
             pos = basePos + vec2(0.0, size.y);
             clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -282,7 +299,7 @@ class CloudEffectGPU(ShaderEffect):
             fragOpacity = opacity;
             fragNoiseSeed = seed;
             EmitVertex();
-            
+
             // Top-right
             pos = basePos + size;
             clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -292,13 +309,17 @@ class CloudEffectGPU(ShaderEffect):
             fragOpacity = opacity;
             fragNoiseSeed = seed;
             EmitVertex();
-            
+
             EndPrimitive();
         }
-        
+
         void main() {
             vec2 cloudPos = gl_in[0].gl_Position.xy;
+
+            // Apply fan compensation to width based on current Y position
+            float wScale = fanWidthScale(cloudPos.y);
             vec2 cloudSize = gs_in[0].size * gs_in[0].scale;
+            cloudSize.x *= wScale;
             float opacity = gs_in[0].opacity;
             vec2 seed = gs_in[0].noiseSeed;
             float depth = gs_in[0].depth;
@@ -438,7 +459,11 @@ class CloudEffectGPU(ShaderEffect):
             
             // Apply all opacity factors
             float finalAlpha = cloudAlpha * fragOpacity * fadeFactor;
-            
+
+            // Discard low-alpha fragments so they don't write to depth buffer
+            // and create visible edges around clouds
+            if (finalAlpha < 0.05) discard;
+
             outColor = vec4(cloudColor, finalAlpha);
         }
         """
@@ -572,24 +597,28 @@ class CloudEffectGPU(ShaderEffect):
             return
         
         # Generate cloud parameters
+        start_x = np.random.uniform(0, self.viewport.width)
+        start_y = np.random.uniform(0, self.viewport.height)
+        # Clouds are atmospheric background — render behind BART lines (z=50)
+        # and trains (z=25) but in front of the geo map (z=98) and stars (z=99.99)
+        depth = np.random.uniform(85, 95)
+
+        # Width/height in base pixel units — fan compensation is done in
+        # the geometry shader based on current Y position each frame.
         width = np.random.uniform(30, 80)
         height = np.random.uniform(15, 60)
-        start_x = np.random.uniform(-width * 1.5, self.viewport.width + width * 1.5)
-        start_y = np.random.uniform(0, self.viewport.height)
-        depth = np.random.uniform(20, 80)
         
         speed_type = np.random.random()
         if speed_type < 0.3:
-            speed = np.random.uniform(0.2, 0.8)
+            speed = np.random.uniform(0.1, 0.4)
         elif speed_type < 0.7:
-            speed = np.random.uniform(0.8, 2.0)
+            speed = np.random.uniform(0.4, 1.0)
         else:
-            speed = np.random.uniform(2.0, 4.0)
-        
+            speed = np.random.uniform(1.0, 2.0)
+
         size_scale = np.random.uniform(0.5, 0.9)
-        altitude_factor = 0.3 + (start_y / self.viewport.height) * 0.7
         size_factor = 1.5 - size_scale
-        wind_sens = altitude_factor * size_factor * np.random.uniform(0.5, 1.5)
+        wind_sens = size_factor * np.random.uniform(0.5, 1.5)
         
         base_opacity = np.random.uniform(0.7, 1.0)
         max_lifetime = np.random.uniform(40, 100)  # Variable lifespan
@@ -684,9 +713,17 @@ class CloudEffectGPU(ShaderEffect):
         # Calculate global wave (scalar, same for all clouds)
         global_wave_y = np.sin(self.global_time * 0.05) * 0.3 + np.sin(self.global_time * 0.13) * 0.1
         
+        # Fan-compensate horizontal speed: inner radius pixels are narrower,
+        # so clouds there need more px/sec for the same physical speed.
+        # Cloud Y is flipped: Y=0=outer, Y=height=inner.
+        cloud_v = 1.0 - np.clip(active_clouds[:, 1] / self.viewport.height, 0, 1)
+        cloud_r = self._fan.inner_r_ft + cloud_v * (self._fan.outer_r_ft - self._fan.inner_r_ft)
+        mid_r = (self._fan.inner_r_ft + self._fan.outer_r_ft) * 0.5
+        speed_comp = mid_r / np.maximum(cloud_r, 0.1)  # >1 at inner, <1 at outer
+
         # Update position with wind and turbulence (vectorized)
         wind_effect = self.wind * active_clouds[:, 5]  # wind_sens
-        active_clouds[:, 0] += (active_clouds[:, 4] + wind_effect) * dt  # position.x
+        active_clouds[:, 0] += (active_clouds[:, 4] + wind_effect) * speed_comp * dt  # position.x
         active_clouds[:, 1] += global_wave_y * dt  # position.y
         
         # Horizontal wrapping (vectorized)
@@ -753,13 +790,15 @@ class CloudEffectGPU(ShaderEffect):
         ]).astype(np.float32).flatten()
         
         glUseProgram(self.shader)
-        
+
         # Set uniforms
-        glUniform2f(glGetUniformLocation(self.shader, "resolution"), 
+        glUniform2f(glGetUniformLocation(self.shader, "resolution"),
                    float(self.viewport.width), float(self.viewport.height))
         glUniform1f(glGetUniformLocation(self.shader, "noiseTime"), self.global_time)
         glUniform1f(glGetUniformLocation(self.shader, "fadeFactor"), self.fade_factor)
         glUniform1f(glGetUniformLocation(self.shader, "wrapMargin"), 60.0)
+        # Fan coord uniforms for geometry shader width compensation
+        self._fan.set_uniforms(self.shader)
         
         # Upload instance data
         glBindVertexArray(self.VAO)
@@ -786,15 +825,10 @@ class CloudEffectGPU(ShaderEffect):
         glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
         glEnableVertexAttribArray(5)
         
-        # Disable depth writes for alpha blending
-        glDepthMask(GL_FALSE)
-        
         # Draw points (geometry shader will expand to quads)
+        # NO state toggling — global state handles depth test + blend
         glDrawArrays(GL_POINTS, 0, len(active_clouds))
-        
-        # Re-enable depth writes
-        glDepthMask(GL_TRUE)
-        
+
         glBindVertexArray(0)
         glUseProgram(0)
     

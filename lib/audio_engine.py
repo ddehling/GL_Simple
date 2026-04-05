@@ -21,14 +21,73 @@ FORMAT        = miniaudio.SampleFormat.FLOAT32
 CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
 
 
+class _MemTrack:
+    """Memory-decoded audio track — entire file loaded into RAM.
+
+    Used for oneshot sounds (narrative, BART sounds) to avoid I/O contention
+    during mixing.  No streaming, no disk access after init.
+    """
+
+    def __init__(self, samples: np.ndarray, path: Path, *, volume: float = 1.0,
+                 duration: float = 0.0, is_narrative: bool = False):
+        self.is_ambient   = False
+        self.is_narrative = is_narrative
+        self.done         = False
+        self._path        = path
+        self.volume       = volume
+        self._pos         = 0
+        self._fading_out  = False
+        self._fade_out_frames = 0
+        self._fade_out_pos    = 0
+
+        self._samples = samples
+
+        # Duration cap
+        max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
+        if max_frames > 0 and max_frames < len(self._samples):
+            self._samples = self._samples[:max_frames].copy()
+
+    def fade_out(self, duration: float):
+        self._fading_out      = True
+        self._fade_out_frames = max(1, int(duration * SAMPLE_RATE))
+        self._fade_out_pos    = 0
+
+    def read(self, n_frames: int):
+        if self.done or self._pos >= len(self._samples):
+            self.done = True
+            return None
+
+        end = min(self._pos + n_frames, len(self._samples))
+        chunk = self._samples[self._pos:end].copy()
+        self._pos = end
+
+        # Fade-out
+        if self._fading_out:
+            remaining = self._fade_out_frames - self._fade_out_pos
+            if remaining <= 0:
+                self.done = True
+                return None
+            fade_len = min(len(chunk), remaining)
+            s = 1.0 - self._fade_out_pos / self._fade_out_frames
+            e = 1.0 - (self._fade_out_pos + fade_len) / self._fade_out_frames
+            ramp = np.linspace(s, e, fade_len, dtype=np.float32)
+            chunk[:fade_len] *= ramp[:, np.newaxis]
+            if fade_len < len(chunk):
+                chunk[fade_len:] = 0.0
+            self._fade_out_pos += fade_len
+
+        return chunk * self.volume
+
+
 class _Track:
     """Single streaming audio source with loop and linear fade support."""
 
     def __init__(self, path: Path, *, loop: bool = False, skip: float = 0.0,
                  fade_in: float = 0.0, volume: float = 1.0,
                  duration: float = 0.0, loop_length: float = 0.0,
-                 is_ambient: bool = False):
+                 is_ambient: bool = False, is_narrative: bool = False):
         self.is_ambient       = is_ambient
+        self.is_narrative     = is_narrative
         self.done             = False
         self._path            = path
         self._loop            = loop
@@ -143,6 +202,8 @@ class AudioEngine:
     def __init__(self):
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
         self._device = None
+        self.master_volume = 1.0    # scales all audio output
+        self.narrative_volume = 1.0  # scales non-ambient (oneshot) tracks in real time
 
     # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
@@ -178,9 +239,33 @@ class AudioEngine:
         """Fade out the current ambient track."""
         self._cmds.put(("stop_ambient", duration))
 
-    def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0):
-        """Play a sound file once. duration>0 caps playback to that many seconds."""
-        self._cmds.put(("oneshot", Path(path), volume, duration))
+    def stop_all(self, duration: float = FADE_OUT):
+        """Fade out all tracks (ambient + oneshots)."""
+        self._cmds.put(("stop_all", duration))
+
+    def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
+                       narrative: bool = False):
+        """Play a sound file once. duration>0 caps playback to that many seconds.
+
+        Decodes in a background thread to avoid blocking both the main thread
+        and the audio callback thread.
+        """
+        import threading
+        p = Path(path)
+        def _decode_and_queue():
+            try:
+                decoded = miniaudio.decode_file(
+                    str(p), output_format=FORMAT,
+                    nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
+                # Copy raw bytes first to own the memory independently of
+                # miniaudio's C buffer, preventing GC race conditions
+                raw_bytes = bytes(decoded.samples)
+                samples = np.frombuffer(raw_bytes,
+                                        dtype=np.float32).reshape(-1, CHANNELS)
+                self._cmds.put(("oneshot_mem", samples, p, volume, duration, narrative))
+            except Exception as e:
+                print(f"[AudioEngine] Failed to decode {p.name}: {e}")
+        threading.Thread(target=_decode_and_queue, daemon=True).start()
 
 
     # ------------------------------------------------------------------
@@ -215,30 +300,63 @@ class AudioEngine:
                             if t.is_ambient:
                                 t.fade_out(fo)
 
-                    elif kind == "oneshot":
-                        _, path, vol, dur = cmd
-                        tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
-                                                         duration=dur)
+                    elif kind == "stop_all":
+                        _, fo = cmd
+                        for t in tracks.values():
+                            t.fade_out(fo)
+
+                    elif kind == "oneshot_mem":
+                        _, samples, path, vol, dur, narr = cmd
+                        tracks[f"os_{id(cmd)}"] = _MemTrack(
+                            samples, path, volume=vol, duration=dur,
+                            is_narrative=narr)
 
 
             except queue.Empty:
                 pass
 
-            # Mix all active tracks.
-            buf  = np.zeros((required_frames, CHANNELS), dtype=np.float32)
+            # Mix tracks into separate buses: narrative vs everything else.
+            # The limiter only applies to non-narrative audio so narrative
+            # is never ducked by other sounds.
+            narr_buf = np.zeros((required_frames, CHANNELS), dtype=np.float32)
+            other_buf = np.zeros((required_frames, CHANNELS), dtype=np.float32)
             dead = []
+            narr_vol = self.narrative_volume
             for key, track in tracks.items():
-                chunk = track.read(required_frames)
+                try:
+                    chunk = track.read(required_frames)
+                except Exception:
+                    dead.append(key)
+                    continue
                 if chunk is None or track.done:
                     dead.append(key)
                 else:
-                    buf[:len(chunk)] += chunk
+                    # Detect unexpected silence from oneshot tracks
+                    if not track.is_ambient and not track.is_narrative and not track._fading_out:
+                        peak_val = np.max(np.abs(chunk))
+                        if peak_val < 0.001:
+                            if not getattr(track, '_silence_warned', False):
+                                print(f"[AudioEngine] WARNING: Track {track._path.name} near-silent "
+                                      f"(peak={peak_val:.6f}) at pos {track._pos}/{len(track._samples)} "
+                                      f"vol={track.volume} fading={track._fading_out}")
+                                track._silence_warned = True
+                        elif getattr(track, '_silence_warned', False):
+                            # Track recovered — reset warning
+                            print(f"[AudioEngine] Track {track._path.name} recovered (peak={peak_val:.4f})")
+                            track._silence_warned = False
+                    if track.is_narrative:
+                        narr_buf[:len(chunk)] += chunk * narr_vol
+                    else:
+                        other_buf[:len(chunk)] += chunk
             for key in dead:
                 del tracks[key]
 
-            peak = np.max(np.abs(buf))
-            if peak > 1.0:
-                buf /= peak
+            # Limit only the non-narrative bus
+            peak = np.max(np.abs(other_buf))
+            if peak > 2.0:
+                other_buf /= (peak / 2.0)
+
+            buf = (narr_buf + other_buf) * self.master_volume
 
             required_frames = yield buf.tobytes()
 

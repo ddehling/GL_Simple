@@ -628,7 +628,8 @@ class ShaderViewport:
         effect = effect_class(self, **params)
         effect.init()
         self.effects.append(effect)
-        print(f"[ShaderViewport] Added effect: {effect.__class__.__name__} (frame {self.frame_id})")
+        if not getattr(effect, '_silent', False):
+            print(f"[ShaderViewport] Added effect: {effect.__class__.__name__} (frame {self.frame_id})")
         return effect
 
     def clear(self):

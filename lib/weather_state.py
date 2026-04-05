@@ -23,8 +23,9 @@ class WeatherStateController:
         self.transition_start = 0
         self.progress = 0
         self.default_weather_params = DEFAULT_WEATHER_PARAMS.copy()
-        self.weather_params = self.default_weather_params.copy()
         self.weather_presets = WEATHER_PRESETS
+        # Initialize weather_params from the actual initial state, not just defaults
+        self.weather_params = self.get_weather_params(initial_weather)
 
     def get_weather_params(self, weather_state: WeatherState) -> dict:
         """Get the complete set of parameters for a weather state by combining with defaults."""
@@ -111,6 +112,8 @@ class WeatherStateController:
             "bubble_density": self.weather_params.get("bubble_density", 0.0),
             "marine_life_activity": self.weather_params.get("marine_life_activity", 0.0),
             "kelp_density": self.weather_params.get("kelp_density", 0.0),
+            "train_speed": self.weather_params.get("train_speed", 8.0),
+            "train_density": self.weather_params.get("train_density", 1.0),
         }
 
     def select_next_weather(
