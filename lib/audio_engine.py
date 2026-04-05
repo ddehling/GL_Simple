@@ -239,6 +239,10 @@ class AudioEngine:
         """Fade out the current ambient track."""
         self._cmds.put(("stop_ambient", duration))
 
+    def stop_all(self, duration: float = FADE_OUT):
+        """Fade out all tracks (ambient + oneshots)."""
+        self._cmds.put(("stop_all", duration))
+
     def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
                        narrative: bool = False):
         """Play a sound file once. duration>0 caps playback to that many seconds.
@@ -292,6 +296,11 @@ class AudioEngine:
                         for t in tracks.values():
                             if t.is_ambient:
                                 t.fade_out(fo)
+
+                    elif kind == "stop_all":
+                        _, fo = cmd
+                        for t in tracks.values():
+                            t.fade_out(fo)
 
                     elif kind == "oneshot_mem":
                         _, samples, path, vol, dur, narr = cmd

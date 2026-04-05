@@ -304,8 +304,11 @@ class EnvironmentalSystem:
         """Cancel all events and start background events for the current weather set"""
         print(f"[WEATHER] Initializing events for weather set: '{self.weather_set.current_set}'")
 
-        # Cancel all active events
+        # Cancel all active events and fade out all audio
         self.scheduler.cancel_all_events()
+        engine = self.scheduler.state.get("soundengine")
+        if engine:
+            engine.stop_all(duration=2.0)
 
         # Schedule the permanent background events based on set configuration
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
@@ -372,6 +375,7 @@ class EnvironmentalSystem:
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
             new_state = self.web_controller.control_dict.pop('request_weather_state', None)
+            trigger_event = self.web_controller.control_dict.pop('request_trigger_event', False)
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
@@ -387,6 +391,18 @@ class EnvironmentalSystem:
                 self.transition_to_weather(state_enum, transition_duration=t_duration)
             else:
                 print(f"[WEATHER] Requested state '{new_state}' rejected (locked={locked})")
+
+        if trigger_event:
+            if isinstance(trigger_event, str) and trigger_event:
+                # Specific event requested
+                event_name = trigger_event
+            else:
+                # Random pick from current set
+                random_events, _ = self.weather_set.get_random_events_config()
+                event_name = np.random.choice(random_events) if random_events else None
+            if event_name:
+                print(f"[WEB] Triggered event: {event_name}")
+                self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
 
         # Apply audio sensitivity from global modifiers
         if self.analyzer:
@@ -447,6 +463,7 @@ class EnvironmentalSystem:
                 d = self.web_controller.control_dict
                 d['current_weather_set'] = self.weather_set.current_set
                 d['available_weather_states'] = list(self.weather_set.get_current_set_config()["states"])
+                d['random_events'] = list(self.weather_set.get_current_set_config().get("random_events", []))
                 d['current_weather'] = self.weather_state.current_weather.value
                 d['season'] = float(self.season)
                 d['brightness_limiting_factor'] = round(self.scheduler.brightness_state[0]['divisor'], 3)

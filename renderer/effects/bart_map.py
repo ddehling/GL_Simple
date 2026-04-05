@@ -457,6 +457,57 @@ def _build_geo_texture(tex_w: int, tex_h: int) -> np.ndarray:
     return tex
 
 
+def _build_fog_density_texture(tex_w: int, tex_h: int) -> np.ndarray:
+    """Build a single-channel fog density texture for Bay Area spatial fog.
+
+    Red channel = fog density 0-255.  Fog is densest over the Pacific,
+    funnels through the Golden Gate, and thins in the East Bay.
+    Built at init time only, same UV mapping as the geo texture.
+    """
+    import math
+    tex = np.zeros((tex_h, tex_w), dtype=np.uint8)
+
+    for row in range(tex_h):
+        v = row / max(tex_h - 1, 1)
+        for col in range(tex_w):
+            u = col / max(tex_w - 1, 1)
+            phys_x, phys_y = _fan.uv_to_physical(u, v)
+            nx = (phys_x - _PHYS_X_MIN) / (_PHYS_X_MAX - _PHYS_X_MIN)
+            ny = (phys_y - _PHYS_Y_MIN) / (_PHYS_Y_MAX - _PHYS_Y_MIN)
+            lon = _LON_MIN + nx * (_LON_MAX - _LON_MIN)
+            lat = _LAT_MIN + ny * (_LAT_MAX - _LAT_MIN)
+
+            density = 0.0
+
+            # Ocean fog (lon < -122.5)
+            ocean_dist = (-122.50 - lon) * 4.0
+            density += max(min(ocean_dist, 0.6), 0.0)
+
+            # Golden Gate corridor — wide plume spreading into SF and across to Berkeley
+            # (lon ~ -122.45, lat ~ 37.82)
+            gx = (lon - (-122.43)) * 5.0
+            gy = (lat - 37.82) * 8.0
+            gate_dist = math.sqrt(gx * gx + gy * gy)
+            density += 0.6 * math.exp(-gate_dist * gate_dist * 0.8)
+
+            # SF city fog blanket (lon -122.5 to -122.35, lat 37.7-37.82)
+            sf_x = max(min((-122.35 - lon) * 2.0, 0.5), 0.0)
+            sf_lat = math.exp(-((lat - 37.76) * 5.0) ** 2)
+            density += sf_x * sf_lat * 0.5
+
+            # Berkeley / North Oakland fog spill (lon ~ -122.27, lat ~ 37.87)
+            bk_dist = math.sqrt(((lon - (-122.27)) * 6.0) ** 2 + ((lat - 37.87) * 8.0) ** 2)
+            density += 0.35 * math.exp(-bk_dist * bk_dist * 1.2)
+
+            # Fog thins east of Berkeley hills (lon > -122.15)
+            east_clear = max(min((lon - (-122.15)) * 2.0, 1.0), 0.0)
+            density *= (1.0 - east_clear * 0.85)
+
+            tex[row, col] = int(max(min(density, 1.0), 0.0) * 255)
+
+    return tex
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in kilometres."""
     R = 6371.0
@@ -541,6 +592,9 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
             state['effect'] = effect
             state['_last_bart_sound_end'] = 0
             state['_last_arrival_text'] = 0
+            # Publish fog density texture so the fog effect can use it
+            outstate['fog_density_texture'] = effect._fog_density_texture
+            outstate['spatial_fog'] = True
             print(f"✓ Initialized BART map for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize BART map: {e}")
@@ -567,7 +621,7 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
                     file_dur = info.num_frames / info.sample_rate
                 except Exception:
                     file_dur = 15.0
-                print(f"[BART Sound] Playing: {pick.name} ({file_dur:.1f}s), cooldown until {file_dur + 5.0:.1f}s from now")
+                #print(f"[BART Sound] Playing: {pick.name} ({file_dur:.1f}s), cooldown until {file_dur + 5.0:.1f}s from now")
                 engine.schedule_event(str(pick), volume=0.7)
                 state['_last_bart_sound_end'] = now + file_dur + 5.0
 
@@ -600,6 +654,9 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
         if 'effect' in state:
             viewport.effects.remove(state['effect'])
             state['effect'].cleanup()
+            # Clear spatial fog so other weather sets get default depth-based fog
+            outstate.pop('fog_density_texture', None)
+            outstate.pop('spatial_fog', None)
 
 
 # ===========================================================================
@@ -929,6 +986,18 @@ class BARTMapEffect(ShaderEffect):
         glBindTexture(GL_TEXTURE_2D, self._geo_texture)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w_int, h_int, 0,
                      GL_RGB, GL_UNSIGNED_BYTE, geo_tex_data)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glBindTexture(GL_TEXTURE_2D, 0)
+
+        # --- Fog density texture (for spatial fog effect) ---
+        fog_data = _build_fog_density_texture(w_int, h_int)
+        self._fog_density_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._fog_density_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w_int, h_int, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, fog_data)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
