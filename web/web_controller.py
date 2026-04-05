@@ -434,6 +434,8 @@ class WebController:
                     "weather_state_locked": self.control_dict.get('weather_state_locked', False),
                     "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                     "active_effects": self.control_dict.get('active_effects', []),
+                    "available_events": sorted(self.available_events) if self.available_events else [],
+                    "random_events": self.control_dict.get('random_events', []),
                 }
             return jsonify(info)
         
@@ -694,6 +696,13 @@ class WebController:
                     with self._dict_lock:
                         self.control_dict['request_weather_state'] = new_state
                     self._values_cache = None
+
+        @self.socketio.on('trigger_random_event')
+        def handle_trigger_random_event(data=None):
+            event_name = data.get('event_name', '') if data else ''
+            with self._dict_lock:
+                self.control_dict['request_trigger_event'] = event_name or True
+            self._values_cache = None
 
     def _start_emitter(self):
         """Start the background thread that pushes state updates via WebSocket."""

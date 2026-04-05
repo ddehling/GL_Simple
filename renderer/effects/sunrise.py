@@ -243,7 +243,7 @@ class SunriseEffect(ShaderEffect):
             pixel.x = centerX + (pixel.x - centerX) * squish_factor;
             
             // Scale sun based on width - sun+halo+tentacles should be ~50% of total width
-            float targetTotalWidth = resolution.x * 0.5;
+            float targetTotalWidth = resolution.x * 0.75;
             float haloRadius = targetTotalWidth * 0.5;  // Halo is 50% of total (full diameter)
             float sunRadius = haloRadius * 0.35;  // Sun is 35% of halo radius
             

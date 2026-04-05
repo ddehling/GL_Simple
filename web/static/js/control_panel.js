@@ -583,20 +583,25 @@ async function loadWeatherSetInfo() {
         const response = await fetch('/api/weather_set/info');
         const data = await response.json();
 
-        // Populate set selector once
+        // Populate and update set selector
         const setSelector = document.getElementById('weather-set-selector');
-        if (setSelector.options.length <= 1 && data.available_sets) {
-            setSelector.innerHTML = '<option value="">-- Select a set --</option>';
-            data.available_sets.forEach(setKey => {
-                const option = document.createElement('option');
-                option.value = setKey;
-                option.textContent = WEATHER_SET_NAMES[setKey] || setKey;
-                if (setKey === data.current_set) {
-                    option.textContent += ' (current)';
-                    option.selected = true;
-                }
-                setSelector.appendChild(option);
-            });
+        if (data.available_sets) {
+            // Rebuild if first load or current set changed
+            const needsRebuild = setSelector.options.length <= 1 ||
+                !setSelector.querySelector(`option[value="${data.current_set}"]`)?.textContent.includes('(current)');
+            if (needsRebuild) {
+                setSelector.innerHTML = '<option value="">-- Select a set --</option>';
+                data.available_sets.forEach(setKey => {
+                    const option = document.createElement('option');
+                    option.value = setKey;
+                    option.textContent = WEATHER_SET_NAMES[setKey] || setKey;
+                    if (setKey === data.current_set) {
+                        option.textContent += ' (current)';
+                        option.selected = true;
+                    }
+                    setSelector.appendChild(option);
+                });
+            }
         }
 
         // Sync lock buttons on first load
@@ -615,6 +620,17 @@ async function loadWeatherSetInfo() {
             updateLockButton(locked);
             const states = locked ? data.available_weather_states : data.all_weather_states;
             if (states) populateStateSelector(states);
+            _lastEventList = null;  // force event repopulate on set change
+        }
+
+        // Populate event selector based on lock state
+        const eventList = _eventLocked
+            ? (data.random_events || [])
+            : (data.available_events || []);
+        const eventKey = JSON.stringify(eventList) + _eventLocked;
+        if (eventKey !== _lastEventList) {
+            _lastEventList = eventKey;
+            populateEventSelector(eventList);
         }
     } catch (e) {
         console.error('Failed to load weather set info:', e);
@@ -639,6 +655,51 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+let _eventLocked = true;
+let _lastEventList = null;
+
+function toggleEventLock() {
+    _eventLocked = !_eventLocked;
+    updateEventLockButton(_eventLocked);
+    _lastEventList = null;  // force repopulate
+    loadWeatherSetInfo();   // repopulate immediately
+}
+
+function updateEventLockButton(locked) {
+    const btn = document.getElementById('event-lock-btn');
+    if (locked) {
+        btn.textContent = 'Locked';
+        btn.style.background = 'rgba(255, 100, 100, 0.2)';
+        btn.style.borderColor = 'rgba(255, 100, 100, 0.6)';
+        btn.style.color = 'rgba(255, 180, 180, 1)';
+    } else {
+        btn.textContent = 'Unlocked';
+        btn.style.background = 'rgba(100, 255, 100, 0.2)';
+        btn.style.borderColor = 'rgba(100, 255, 100, 0.6)';
+        btn.style.color = 'rgba(180, 255, 180, 1)';
+    }
+}
+
+function populateEventSelector(events) {
+    const sel = document.getElementById('event-selector');
+    sel.innerHTML = '<option value="">-- Select --</option>';
+    events.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name.replace(/_/g, ' ');
+        sel.appendChild(opt);
+    });
+}
+
+function triggerSelectedEvent() {
+    const selector = document.getElementById('event-selector');
+    const eventName = selector.value;
+    if (!eventName) return;
+    if (socket && socket.connected) {
+        socket.emit('trigger_random_event', { event_name: eventName });
+    }
+}
 
 // Check admin availability
 async function checkAdminAvailability() {
