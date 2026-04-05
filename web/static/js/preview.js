@@ -16,8 +16,6 @@
     let mode = "flat-smooth";
     let geometry = null;      // from /api/preview/geometry
     let frameTexture = null;  // WebGL texture updated each frame
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
 
     // GL resources per mode
     const programs = {};
@@ -343,15 +341,7 @@ void main() {
 
         gl.bindVertexArray(null);
 
-        // FPS counter
-        frameCount++;
-        const now = performance.now();
-        if (now - lastFpsTime >= 1000) {
-            const fps = Math.round(frameCount * 1000 / (now - lastFpsTime));
-            document.getElementById("preview-fps").textContent = fps + " FPS";
-            frameCount = 0;
-            lastFpsTime = now;
-        }
+        // FPS counter — updated via state_update from server (see below)
 
         requestAnimationFrame(render);
     }
@@ -471,6 +461,13 @@ void main() {
         });
 
         socket.on("frame", onFrame);
+
+        socket.on("state_update", (data) => {
+            const el = document.getElementById("preview-fps");
+            if (el && data.fps != null) {
+                el.textContent = data.fps + " FPS";
+            }
+        });
     }
 
     if (document.readyState === "loading") {
