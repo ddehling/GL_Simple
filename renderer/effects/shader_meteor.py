@@ -112,13 +112,8 @@ def shader_meteor(state, outstate):
             }
             state['meteors'].append(meteor)
             
-            # Add whoosh sound occasionally (low volume to avoid squashing narrative audio)
-            if random.random() < 0.05:
-                parent_path = Path(__file__).parent.parent.parent
-                sound_path = parent_path / 'media' / 'sounds'
-                whoosh_path = sound_path / 'Whoosh By 04.wav'
-                if 'soundengine' in outstate and whoosh_path.exists():
-                    outstate['soundengine'].schedule_event(whoosh_path, volume=0.3, duration=2.0)
+            # Meteor whoosh sounds disabled — they can cause audio stream
+            # contention when narrative and BART sounds are playing
         
         # Update meteor positions
         new_meteors = []
@@ -210,126 +205,92 @@ class MeteorEffect(ShaderEffect):
         return f"""
         #version 310 es
         precision highp float;
-        
+
         in vec2 fragCoord;
         out vec4 outColor;
-        
+
         uniform vec2 resolution;
-        uniform vec2 screenSize;  // Meteor screen dimensions (120x60)
+        uniform vec2 screenSize;
         uniform float fadeAlpha;
         uniform int meteorCount;
-        uniform float viewportWidth;  // For wrapping calculations
-        
-        // Meteor data (positions in meteor screen space)
+        uniform float viewportWidth;
+
         uniform vec2 meteorPos[{self.MAX_METEORS}];
         uniform float meteorAngle[{self.MAX_METEORS}];
         uniform float meteorSpeed[{self.MAX_METEORS}];
         uniform float meteorSize[{self.MAX_METEORS}];
         uniform float meteorTrailLength[{self.MAX_METEORS}];
         uniform float meteorLife[{self.MAX_METEORS}];
-        uniform float meteorHue[{self.MAX_METEORS}];  // Base hue for each meteor
-        
-        // Random function for noise
-        float random(vec2 st) {{
-            return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
-        }}
-        
-        // Convert HSV to RGB
+        uniform float meteorHue[{self.MAX_METEORS}];
+
         vec3 hsv2rgb(vec3 c) {{
             vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
             vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
             return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
         }}
-        
+
+        // Compute closest point on a line segment and return (distance, t along segment)
+        vec2 lineSegDist(vec2 p, vec2 a, vec2 b) {{
+            vec2 ab = b - a;
+            float len2 = dot(ab, ab);
+            if (len2 < 0.001) return vec2(length(p - a), 0.0);
+            float t = clamp(dot(p - a, ab) / len2, 0.0, 1.0);
+            vec2 proj = a + ab * t;
+            return vec2(length(p - proj), t);
+        }}
+
         void main() {{
-            // Convert fragment coordinate to meteor screen space
-            vec2 meteorScreenPos = fragCoord * screenSize;
-            
+            vec2 px = fragCoord * screenSize;
+
             vec3 finalColor = vec3(0.0);
             float finalAlpha = 0.0;
-            float maxBrightness = 0.0;
-            
-            // Check each meteor at three wrap positions (center, left-wrapped, right-wrapped)
+
             for (int m = 0; m < meteorCount && m < {self.MAX_METEORS}; m++) {{
                 float angle = meteorAngle[m];
-                float size = meteorSize[m];
-                float trailLength = meteorTrailLength[m];
+                float trailLen = meteorTrailLength[m] * 0.4;
                 float life = meteorLife[m];
-                float baseHue = meteorHue[m];  // Get this meteor's base hue
-                
-                // Calculate trail direction
-                vec2 trailDir = vec2(cos(angle), sin(angle));
-                
-                // Check meteor at three wrap positions: center, left-wrapped, right-wrapped
+                float baseHue = meteorHue[m];
+                float size = meteorSize[m];
+                vec2 dir = vec2(cos(angle), sin(angle));
+
+                // Head position and tail position
                 for (int wrapOffset = -1; wrapOffset <= 1; wrapOffset++) {{
-                    vec2 mPos = meteorPos[m];
-                    mPos.x += float(wrapOffset) * viewportWidth;
-                    
-                    // Check multiple points along the trail (longer trails need more samples)
-                    int maxTrailPoints = int(trailLength);
-                    for (int i = 0; i < maxTrailPoints && i < 200; i++) {{
-                        // Trail point position
-                        vec2 trailPos = mPos - trailDir * float(i) * 0.4;  // Reduced spacing for smoother trails
-                        
-                        // Distance from current pixel to trail point
-                        vec2 diff = meteorScreenPos - trailPos;
-                        float dist = length(diff);
-                    
-                    // Calculate trail intensity falloff
-                    float trailFactor = 1.0 - float(i) / trailLength;
-                    float intensity = trailFactor * life;
-                    
-                    // Pixel size based on meteor size and trail position
-                    // Make core bigger and trail thicker
-                    float pixelSize = max(1.5, size * (0.5 + trailFactor * 0.8) * 2.5);
-                    
-                    // Is this pixel within the meteor/trail?
-                    if (dist <= pixelSize) {{
-                        float distFactor = 1.0 - (dist / pixelSize);
-                        float pixelIntensity = intensity * distFactor;
-                        
-                        // Determine color based on position in trail
-                        bool isCore = i < 3;
-                        
-                        if (isCore) {{
-                            // Core: bright colored center with slight desaturation
-                            vec3 coreColor = hsv2rgb(vec3(baseHue, 0.6, pixelIntensity * 1.2));
-                            float coreBrightness = pixelIntensity * 1.2;
-                            
-                            if (coreBrightness > maxBrightness) {{
-                                finalColor = coreColor;
-                                finalAlpha = pixelIntensity;
-                                maxBrightness = coreBrightness;
-                            }}
-                        }} else {{
-                            // Trail: shift hue slightly based on trail position for variety
-                            float hueShift = (1.0 - trailFactor) * 0.15;  // Shift up to 15% along spectrum
-                            float trailHue = fract(baseHue + hueShift);  // Wrap around at 1.0
-                            float trailSaturation = 0.85 + trailFactor * 0.15;  // More saturated at head
-                            float trailValue = pixelIntensity * (0.7 + trailFactor * 0.3);
-                            vec3 trailColor = hsv2rgb(vec3(trailHue, trailSaturation, trailValue));
-                            float trailAlpha = pixelIntensity * 0.99;
-                            float trailBrightness = trailValue;
-                            
-                            if (trailBrightness > maxBrightness) {{
-                                finalColor = trailColor;
-                                finalAlpha = trailAlpha;
-                                maxBrightness = trailBrightness;
-                            }}
+                    vec2 head = meteorPos[m];
+                    head.x += float(wrapOffset) * viewportWidth;
+                    vec2 tail = head - dir * trailLen;
+
+                    // Distance from pixel to the meteor line segment
+                    vec2 result = lineSegDist(px, head, tail);
+                    float dist = result.x;     // perpendicular distance
+                    float t = result.y;        // 0=head, 1=tail
+
+                    // Thin streak: width = 0.8px at head, fading to 0.3px at tail
+                    float width = mix(0.8 * size, 0.3, t);
+
+                    if (dist < width + 0.5) {{
+                        // Soft edge antialiasing
+                        float edge = 1.0 - smoothstep(width - 0.3, width + 0.5, dist);
+
+                        // Brightness: bright at head, fading along trail
+                        float brightness = (1.0 - t * t) * life * edge;
+
+                        // Color: white-hot head fading to hued tail
+                        float sat = mix(0.15, 0.8, t);    // desaturated head, colored tail
+                        float val = brightness * 1.2;
+                        vec3 color = hsv2rgb(vec3(baseHue, sat, val));
+
+                        // Additive: accumulate brightest contribution
+                        if (brightness > finalAlpha) {{
+                            finalColor = color;
+                            finalAlpha = brightness;
                         }}
                     }}
                 }}
-                }}
             }}
-            
-            // Apply global fade
+
             finalAlpha *= fadeAlpha;
-            
-            // Discard if fully transparent
-            if (finalAlpha < 0.01) {{
-                discard;
-            }}
-            
+            if (finalAlpha < 0.01) discard;
+
             outColor = vec4(finalColor, finalAlpha);
         }}
         """

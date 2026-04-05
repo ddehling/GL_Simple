@@ -610,11 +610,11 @@ class CloudEffectGPU(ShaderEffect):
         
         speed_type = np.random.random()
         if speed_type < 0.3:
-            speed = np.random.uniform(0.2, 0.8)
+            speed = np.random.uniform(0.1, 0.4)
         elif speed_type < 0.7:
-            speed = np.random.uniform(0.8, 2.0)
+            speed = np.random.uniform(0.4, 1.0)
         else:
-            speed = np.random.uniform(2.0, 4.0)
+            speed = np.random.uniform(1.0, 2.0)
 
         size_scale = np.random.uniform(0.5, 0.9)
         size_factor = 1.5 - size_scale
