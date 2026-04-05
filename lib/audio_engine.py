@@ -21,6 +21,69 @@ FORMAT        = miniaudio.SampleFormat.FLOAT32
 CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
 
 
+class _MemTrack:
+    """Memory-decoded audio track — entire file loaded into RAM.
+
+    Used for oneshot sounds (narrative, BART sounds) to avoid I/O contention
+    during mixing.  No streaming, no disk access after init.
+    """
+
+    def __init__(self, path: Path, *, volume: float = 1.0,
+                 duration: float = 0.0, is_narrative: bool = False):
+        self.is_ambient   = False
+        self.is_narrative = is_narrative
+        self.done         = False
+        self._path        = path
+        self.volume       = volume
+        self._pos         = 0
+        self._fading_out  = False
+        self._fade_out_frames = 0
+        self._fade_out_pos    = 0
+
+        # Decode entire file into memory
+        decoded = miniaudio.decode_file(
+            str(path), output_format=FORMAT,
+            nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
+        self._samples = np.frombuffer(decoded.samples,
+                                      dtype=np.float32).reshape(-1, CHANNELS)
+
+        # Duration cap
+        max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
+        if max_frames > 0 and max_frames < len(self._samples):
+            self._samples = self._samples[:max_frames]
+
+    def fade_out(self, duration: float):
+        self._fading_out      = True
+        self._fade_out_frames = max(1, int(duration * SAMPLE_RATE))
+        self._fade_out_pos    = 0
+
+    def read(self, n_frames: int):
+        if self.done or self._pos >= len(self._samples):
+            self.done = True
+            return None
+
+        end = min(self._pos + n_frames, len(self._samples))
+        chunk = self._samples[self._pos:end].copy()
+        self._pos = end
+
+        # Fade-out
+        if self._fading_out:
+            remaining = self._fade_out_frames - self._fade_out_pos
+            if remaining <= 0:
+                self.done = True
+                return None
+            fade_len = min(len(chunk), remaining)
+            s = 1.0 - self._fade_out_pos / self._fade_out_frames
+            e = 1.0 - (self._fade_out_pos + fade_len) / self._fade_out_frames
+            ramp = np.linspace(s, e, fade_len, dtype=np.float32)
+            chunk[:fade_len] *= ramp[:, np.newaxis]
+            if fade_len < len(chunk):
+                chunk[fade_len:] = 0.0
+            self._fade_out_pos += fade_len
+
+        return chunk * self.volume
+
+
 class _Track:
     """Single streaming audio source with loop and linear fade support."""
 
@@ -225,9 +288,13 @@ class AudioEngine:
                         dur  = cmd[3]
                         narr = cmd[4] if len(cmd) > 4 else False
 
-                        tracks[f"os_{id(cmd)}"] = _Track(path, volume=vol,
-                                                         duration=dur,
-                                                         is_narrative=narr)
+                        # Memory-decode oneshots to avoid I/O contention
+                        try:
+                            tracks[f"os_{id(cmd)}"] = _MemTrack(
+                                path, volume=vol, duration=dur,
+                                is_narrative=narr)
+                        except Exception as e:
+                            print(f"[AudioEngine] Failed to decode {path.name}: {e}")
 
 
             except queue.Empty:
@@ -247,12 +314,6 @@ class AudioEngine:
                     dead.append(key)
                     continue
                 if chunk is None or track.done:
-                    if track.is_narrative:
-                        elapsed = track._pos / SAMPLE_RATE
-                        max_dur = track._max_frames / SAMPLE_RATE if track._max_frames > 0 else 0
-                        print(f"[AudioEngine] Narrative ended: {track._path.name} "
-                              f"at {elapsed:.1f}s / {max_dur:.1f}s cap  "
-                              f"done={track.done} fading={track._fading_out}")
                     dead.append(key)
                 else:
                     if track.is_narrative:
