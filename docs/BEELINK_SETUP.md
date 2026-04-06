@@ -134,13 +134,40 @@ The Beelink is currently running Pop!_OS with SSH enabled. nixos-anywhere will S
 
 **Deploy:**
 ```bash
-nix run github:nix-community/nixos-anywhere -- \
-  --generate-hardware-config nixos-facter ./nixos/hosts/facter.json \
-  --flake ./nixos#lucifera \
-  --target-host root@192.168.68.144
+# One-shot script (recommended) — wipes disk, installs, generates facter.json
+./bin/nixos-install.sh root@192.168.68.144
+
+# If the disk is /dev/nvme0n1 instead of /dev/sda:
+./bin/nixos-install.sh root@192.168.68.144 /dev/nvme0n1
 ```
 
+The script runs in two phases:
+1. **kexec** — boots the target into a NixOS installer over SSH
+2. **install** — wipes the disk, partitions with disko, generates hardware report, installs NixOS
+
 After install, commit the generated `facter.json` to the repo so future rebuilds have the hardware report.
+
+<details>
+<summary>Manual deploy (if you prefer)</summary>
+
+```bash
+# Phase 1: kexec into installer
+nix run github:nix-community/nixos-anywhere -- \
+  --phases kexec \
+  --target-host root@192.168.68.144
+
+# Wipe the disk (SSH into the installer)
+ssh root@<installer-ip> "wipefs -af /dev/sda && sgdisk --zap-all /dev/sda"
+
+# Phase 2: install
+nix run github:nix-community/nixos-anywhere -- \
+  --phases install \
+  --generate-hardware-config nixos-facter ./nixos/hosts/facter.json \
+  --flake ./nixos#lucifera \
+  --target-host root@<installer-ip>
+```
+
+</details>
 
 ### Applying Config Changes
 
@@ -175,8 +202,8 @@ sudo systemctl restart gl-simple.service
 
 ## TODO
 
-- [ ] Enable root SSH on Pop!_OS so nixos-anywhere can connect
-- [ ] Verify disk device path (`/dev/sda` vs `/dev/nvme0n1`) on the Beelink
+- [x] Enable root SSH on Pop!_OS so nixos-anywhere can connect
+- [x] Verify disk device path (`/dev/sda` vs `/dev/nvme0n1`) on the Beelink
 - [ ] Run nixos-anywhere to install NixOS
 - [ ] Commit generated `facter.json` to the repo
 - [ ] Verify all Python packages resolve in nixpkgs (some may need overrides)
