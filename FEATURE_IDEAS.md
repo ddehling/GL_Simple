@@ -18,6 +18,7 @@
     - Ensure we haven't broken the underlying 2d array rendering
 - Full power test
 - Validate the computer and network setup
+  - Auto boot
   - (Optional) Assemble the actual box
   
 ## Backlog
