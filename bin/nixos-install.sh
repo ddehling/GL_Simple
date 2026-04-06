@@ -8,12 +8,11 @@
 #
 # Usage:
 #   ./bin/nixos-install.sh root@192.168.124.123
-#   ./bin/nixos-install.sh root@192.168.124.123 /dev/nvme0n1
 
 set -euo pipefail
 
-TARGET="${1:?Usage: $0 <user@host> [disk-device]}"
-DISK="${2:-/dev/sda}"
+TARGET="${1:?Usage: $0 <user@host>}"
+DISK="/dev/sda"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 FLAKE_DIR="$REPO_DIR/nixos"
@@ -30,12 +29,22 @@ nix run github:nix-community/nixos-anywhere -- \
   --flake "$FLAKE_DIR#lucifera" \
   --target-host "$TARGET"
 
-# Wait for the installer to come up
-echo "==> Waiting for installer to boot..."
-HOST="${TARGET#*@}"
+# After kexec, the installer boots with a new DHCP IP.
+# Ask the user to find it from the target's console (ip addr).
+echo ""
+echo "==> The installer has booted, but it likely has a new IP (DHCP)."
+echo "    Check the target's console and run: ip addr"
+echo ""
+read -rp "==> Enter the installer's IP address: " INSTALLER_IP
+
+# Clear any stale host keys for the new IP
+ssh-keygen -R "$INSTALLER_IP" 2>/dev/null || true
+
+# Wait for SSH on the installer
+echo "==> Waiting for installer SSH at $INSTALLER_IP..."
 for i in $(seq 1 30); do
   if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-     "root@$HOST" true 2>/dev/null; then
+     "root@$INSTALLER_IP" true 2>/dev/null; then
     echo "==> Installer is up."
     break
   fi
@@ -48,7 +57,7 @@ done
 
 # Wipe the disk so disko can partition cleanly
 echo "==> Wiping disk $DISK..."
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" bash -s <<WIPE
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$INSTALLER_IP" bash -s <<WIPE
   set -euo pipefail
   # Unmount anything left over
   umount /mnt/boot 2>/dev/null || true
@@ -81,7 +90,7 @@ nix run github:nix-community/nixos-anywhere -- \
   --extra-files "$EXTRA_DIR" \
   --generate-hardware-config nixos-facter "$FLAKE_DIR/hosts/facter.json" \
   --flake "$FLAKE_DIR#lucifera" \
-  --target-host "root@$HOST"
+  --target-host "root@$INSTALLER_IP"
 
 # Clean up
 rm -rf "$EXTRA_DIR"
@@ -94,5 +103,5 @@ echo "    Commit the generated facter.json:"
 echo "      git add nixos/hosts/facter.json && git commit -m 'Add hardware facter report'"
 echo ""
 echo "    After reboot, connect via:"
-echo "      ssh lucifera@$HOST"
-echo "    (IP will change to 192.168.68.144 once on the production network)"
+echo "      ssh lucifera@<ip>"
+echo "    (IP will be 192.168.68.144 on the production network)"
