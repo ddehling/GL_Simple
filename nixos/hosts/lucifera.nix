@@ -33,8 +33,10 @@
       prefixLength = 24;
     }];
   };
-  networking.defaultGateway = "192.168.68.1";
-  networking.nameservers = [ "192.168.68.1" "1.1.1.1" ];
+  # No default gateway on ethernet — the offline production network doesn't
+  # route to the internet. When WiFi is connected, NetworkManager provides
+  # the default route automatically.
+  networking.nameservers = [ "1.1.1.1" "8.8.8.8" ];
 
   # ---------- Firewall ----------
   networking.firewall = {
