@@ -3,7 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
-    nixos-cosmic.url = "github:lilyinstarlight/nixos-cosmic";
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -11,7 +10,7 @@
     nixos-facter-modules.url = "github:numtide/nixos-facter-modules";
   };
 
-  outputs = { self, nixpkgs, nixos-cosmic, disko, nixos-facter-modules, ... }:
+  outputs = { self, nixpkgs, disko, nixos-facter-modules, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
@@ -32,7 +31,6 @@
         modules = [
           disko.nixosModules.disko
           nixos-facter-modules.nixosModules.facter
-          nixos-cosmic.nixosModules.default
           ./hosts/lucifera.nix
           ./disk-config.nix
         ] ++ lib.optionals hasFacterReport [
