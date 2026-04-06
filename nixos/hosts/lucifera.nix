@@ -19,6 +19,12 @@
   # ---------- CPU / GPU Performance ----------
   powerManagement.cpuFreqGovernor = "performance";
 
+  # Never sleep/suspend — this machine runs a light show all night
+  systemd.targets.sleep.enable = false;
+  systemd.targets.suspend.enable = false;
+  systemd.targets.hibernate.enable = false;
+  systemd.targets.hybrid-sleep.enable = false;
+
   # Force Intel GPU to max frequency — default power management keeps it at
   # 300/1000 MHz which tanks shader FPS from ~40 to ~12
   systemd.services.gpu-max-freq = {
