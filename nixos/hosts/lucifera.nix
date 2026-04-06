@@ -89,6 +89,7 @@
   };
 
   # ---------- Users ----------
+  users.users.root.initialPassword = "lucifera";
   users.users.lucifera = {
     isNormalUser = true;
     description = "lucifera";
