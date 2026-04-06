@@ -61,6 +61,10 @@ in
       environment = {
         # Let Mesa find the GPU for headless EGL
         MESA_LOADER_DRIVER_OVERRIDE = "iris";
+        # Tell PyOpenGL to use EGL backend (not GLX) for headless rendering
+        PYOPENGL_PLATFORM = "egl";
+        # Disable PyOpenGL's per-call error checking — massive perf win (~2-10x)
+        PYOPENGL_ERROR_CHECKING = "False";
         # Disable Python stdout buffering so journald gets real-time logs
         PYTHONUNBUFFERED = "1";
       };
