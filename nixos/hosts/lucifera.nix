@@ -41,6 +41,9 @@
   # ---------- Firewall ----------
   networking.firewall = {
     enable = true;
+    allowedUDPPorts = [
+      5353 # mDNS (Avahi)
+    ];
     allowedTCPPorts = [
       22   # SSH
       80   # GL_Simple web control panel
