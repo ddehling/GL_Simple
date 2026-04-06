@@ -48,6 +48,16 @@
     ];
   };
 
+  # ---------- mDNS (lucifera.local) ----------
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    publish = {
+      enable = true;
+      addresses = true;
+    };
+  };
+
   # ---------- Locale / timezone ----------
   time.timeZone = "America/New_York";
   i18n.defaultLocale = "en_US.UTF-8";
