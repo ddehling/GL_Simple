@@ -158,19 +158,9 @@ The install script handles everything: kexec into NixOS installer, wipe disk, pa
    sudo systemctl restart ssh
    ```
 
-3. Verify the disk device path:
-   ```bash
-   lsblk
-   ```
-   Default is `/dev/sda`. Pass `/dev/nvme0n1` as the second argument if different.
-
 **Deploy:**
 ```bash
-# One-shot install (recommended)
 ./bin/nixos-install.sh root@<ip>
-
-# If the disk is /dev/nvme0n1 instead of /dev/sda:
-./bin/nixos-install.sh root@<ip> /dev/nvme0n1
 ```
 
 The script:
@@ -227,7 +217,7 @@ sudo systemctl restart gl-simple.service
 ## TODO
 
 - [x] Enable root SSH on Pop!_OS so nixos-anywhere can connect
-- [x] Verify disk device path (`/dev/sda` vs `/dev/nvme0n1`) on the Beelink
+- [x] Verify disk device path (`/dev/sda`) on the Beelink
 - [ ] Run nixos-anywhere to install NixOS
 - [ ] Commit generated `facter.json` to the repo
 - [ ] Verify all Python packages resolve in nixpkgs (some may need overrides)
