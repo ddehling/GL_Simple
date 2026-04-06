@@ -19,7 +19,13 @@
   # ---------- Hostname ----------
   networking.hostName = "lucifera";
 
-  # ---------- Static IP ----------
+  # ---------- Networking ----------
+  # NetworkManager handles WiFi (credentials configured per-machine at runtime).
+  # Ethernet is unmanaged — static IP for the offline production network.
+  networking.networkmanager = {
+    enable = true;
+    unmanaged = [ "eno1" ];
+  };
   networking.interfaces.eno1 = {
     useDHCP = false;
     ipv4.addresses = [{
