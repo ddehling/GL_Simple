@@ -557,7 +557,7 @@
         "fpu_exception": false,
         "cpuid_level": 32,
         "write_protect": false,
-        "tlb_size": 32765,
+        "tlb_size": 32764,
         "clflush_size": 64,
         "cache_alignment": 64,
         "address_sizes": {
@@ -1647,7 +1647,7 @@
         "resources": [
           {
             "type": "hwaddr",
-            "address": 50
+            "address": 49
           },
           {
             "type": "phwaddr",
@@ -1840,6 +1840,28 @@
     "network_interface": [
       {
         "index": 40,
+        "attached_to": 0,
+        "class_list": [
+          "network_interface"
+        ],
+        "base_class": {
+          "hex": "0107",
+          "name": "Network Interface",
+          "value": 263
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Loopback",
+          "value": 0
+        },
+        "model": "Loopback network interface",
+        "sysfs_id": "/class/net/lo",
+        "unix_device_names": [
+          "lo"
+        ]
+      },
+      {
+        "index": 41,
         "attached_to": 13,
         "class_list": [
           "network_interface"
@@ -1863,7 +1885,7 @@
         "resources": [
           {
             "type": "hwaddr",
-            "address": 50
+            "address": 49
           },
           {
             "type": "phwaddr",
@@ -1880,7 +1902,7 @@
         ]
       },
       {
-        "index": 41,
+        "index": 42,
         "attached_to": 15,
         "class_list": [
           "network_interface"
@@ -1918,28 +1940,6 @@
         ],
         "driver_modules": [
           "igc"
-        ]
-      },
-      {
-        "index": 42,
-        "attached_to": 0,
-        "class_list": [
-          "network_interface"
-        ],
-        "base_class": {
-          "hex": "0107",
-          "name": "Network Interface",
-          "value": 263
-        },
-        "sub_class": {
-          "hex": "0000",
-          "name": "Loopback",
-          "value": 0
-        },
-        "model": "Loopback network interface",
-        "sysfs_id": "/class/net/lo",
-        "unix_device_names": [
-          "lo"
         ]
       }
     ],
