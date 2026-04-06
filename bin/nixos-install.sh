@@ -53,8 +53,9 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
-# Wipe the disk so disko can partition cleanly
-echo "==> Wiping disk $DISK..."
+# Wipe the disk and set up swap so the installer has enough memory
+# (8GB RAM isn't enough for the full nix store cache in tmpfs)
+echo "==> Wiping disk and creating temp swap..."
 ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   set -euo pipefail
   umount /mnt/boot 2>/dev/null || true
@@ -65,7 +66,15 @@ ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   done
   wipefs -af "$DISK"
   sgdisk --zap-all "$DISK"
-  echo "Disk wiped."
+
+  # Create a temporary 4GB swap partition to supplement RAM
+  sgdisk -n 1:0:+4G -t 1:8200 "$DISK"
+  partprobe "$DISK"
+  sleep 1
+  mkswap "${DISK}1"
+  swapon "${DISK}1"
+  echo "Disk wiped, 4GB swap active. Total memory:"
+  free -h
 WIPE
 
 # Phase 2: install NixOS
