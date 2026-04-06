@@ -62,28 +62,30 @@ nix run github:nix-community/nixos-anywhere -- \
   --target-host "$TARGET"
 
 # Wait for the machine to reboot into NixOS.
-# After reboot it will have the static IP 192.168.68.144 on ethernet.
-# The dev machine must be on the same network (or use WiFi — see below).
-STATIC_IP="192.168.68.144"
+# After reboot, ethernet has static IP 192.168.68.144 (production LAN).
+# If the dev machine isn't on that network, connect WiFi on the target.
 echo ""
-echo "==> Install complete. Waiting for reboot at $STATIC_IP..."
-echo "    (If not on the 192.168.68.0/24 network, connect a monitor and"
-echo "     use nmcli to connect WiFi, then Ctrl+C and SCP the repo manually.)"
-sleep 10
+echo "==> Install complete! The machine is rebooting."
+echo ""
+echo "    On the target console:"
+echo "      1. Wait for boot (enp1s0 timeout is normal if not on production LAN)"
+echo "      2. Log in as lucifera / lucifera"
+echo "      3. Connect WiFi:  nmcli device wifi connect \"SSID\" password \"PASS\""
+echo "      4. Get the IP:    ip addr"
+echo ""
+read -rp "==> Enter the target's reachable IP address: " FINAL_IP
 
-ssh-keygen -R "$STATIC_IP" 2>/dev/null || true
-FINAL_IP="$STATIC_IP"
+ssh-keygen -R "$FINAL_IP" 2>/dev/null || true
 
+echo "==> Waiting for NixOS SSH at $FINAL_IP..."
 for i in $(seq 1 60); do
   if ssh $SSH_OPTS -o ConnectTimeout=5 "root@$FINAL_IP" true 2>/dev/null; then
     echo "==> NixOS is up."
     break
   fi
   if [ "$i" -eq 60 ]; then
-    echo "==> Machine not reachable at $STATIC_IP."
-    echo "    Check the console for the WiFi IP."
-    read -rp "==> Enter the IP address: " FINAL_IP
-    ssh-keygen -R "$FINAL_IP" 2>/dev/null || true
+    echo "ERROR: Timed out waiting for NixOS."
+    exit 1
   fi
   sleep 5
 done
