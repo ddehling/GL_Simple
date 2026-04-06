@@ -16,9 +16,21 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
-  # ---------- CPU Performance ----------
-  # Force performance governor — powersave tanks GL_Simple FPS from 40 to ~10
+  # ---------- CPU / GPU Performance ----------
   powerManagement.cpuFreqGovernor = "performance";
+
+  # Force Intel GPU to max frequency — default power management keeps it at
+  # 300/1000 MHz which tanks shader FPS from ~40 to ~12
+  systemd.services.gpu-max-freq = {
+    description = "Set Intel GPU to max frequency";
+    after = [ "multi-user.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "${pkgs.bash}/bin/bash -c 'echo 1000 > /sys/class/drm/card1/gt/gt0/rps_min_freq_mhz'";
+    };
+  };
 
   # ---------- Hostname ----------
   networking.hostName = "lucifera";
