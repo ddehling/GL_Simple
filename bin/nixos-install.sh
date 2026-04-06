@@ -27,6 +27,7 @@ echo ""
 echo "==> Phase 1: kexec into NixOS installer..."
 nix run github:nix-community/nixos-anywhere -- \
   --phases kexec \
+  --flake "$FLAKE_DIR#lucifera" \
   --target-host "$TARGET"
 
 # Wait for the installer to come up
