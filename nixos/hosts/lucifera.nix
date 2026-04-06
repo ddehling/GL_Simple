@@ -62,12 +62,13 @@
   };
 
   # ---------- Desktop (COSMIC, for dev mode) ----------
-  # Disabled for initial install (too large for installer RAM disk).
-  # Enable after first boot and run: sudo nixos-rebuild switch --flake .#lucifera
-  #
-  # services.desktopManager.cosmic.enable = true;
-  # services.displayManager.cosmic-greeter.enable = true;
-  # systemd.services.display-manager.wantedBy = lib.mkForce [];
+  # Not started by default. Plug in a monitor and run:
+  #   sudo systemctl start display-manager
+  services.desktopManager.cosmic.enable = true;
+  services.displayManager.cosmic-greeter.enable = true;
+
+  # Don't start the desktop on boot (headless by default)
+  systemd.services.display-manager.wantedBy = lib.mkForce [];
 
   # ---------- Auto-login TTY (headless production) ----------
   services.getty.autologinUser = "lucifera";
@@ -106,9 +107,9 @@
     git
     python3
 
-    # Dev mode tools — uncomment along with COSMIC above, then rebuild
-    # vscode
-    # google-chrome
+    # Dev mode tools (used when COSMIC desktop is running)
+    vscode
+    google-chrome
     alacritty
   ];
 
