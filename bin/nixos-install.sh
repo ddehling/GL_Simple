@@ -73,8 +73,24 @@ ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   sleep 1
   mkswap "${DISK}1"
   swapon "${DISK}1"
-  echo "Disk wiped, 4GB swap active. Total memory:"
+
+  # Expand tmpfs to use RAM + swap (default is 50% of RAM only)
+  mount -o remount,size=12G /
+
+  # Move nix binary cache to a real disk partition so it doesn't eat tmpfs
+  sgdisk -n 2:0:+2G "$DISK"
+  partprobe "$DISK"
+  sleep 1
+  mkfs.ext4 -F "${DISK}2"
+  mkdir -p /tmp/nixcache
+  mount "${DISK}2" /tmp/nixcache
+  rm -rf /root/.cache/nix
+  mkdir -p /root/.cache
+  ln -s /tmp/nixcache /root/.cache/nix
+
+  echo "Disk wiped, 4GB swap + 2GB cache partition active."
   free -h
+  df -h /tmp/nixcache
 WIPE
 
 # Phase 2: install NixOS
