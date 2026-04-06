@@ -24,9 +24,9 @@
   # Ethernet is unmanaged — static IP for the offline production network.
   networking.networkmanager = {
     enable = true;
-    unmanaged = [ "eno1" ];
+    unmanaged = [ "enp1s0" ];
   };
-  networking.interfaces.eno1 = {
+  networking.interfaces.enp1s0 = {
     useDHCP = false;
     ipv4.addresses = [{
       address = "192.168.68.144";
