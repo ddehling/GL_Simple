@@ -61,8 +61,9 @@ in
       environment = {
         # Let Mesa find the GPU for headless EGL
         MESA_LOADER_DRIVER_OVERRIDE = "iris";
-        # Disable PyOpenGL's per-call error checking — massive perf win (~2-10x)
-        PYOPENGL_ERROR_CHECKING = "False";
+        # NOTE: PYOPENGL_ERROR_CHECKING=False breaks EGL import on nixpkgs PyOpenGL
+        # (AttributeError in _errors._error_checker). Error checking is disabled
+        # in Python code after EGL import instead — see shader_renderer.py.
         # Disable Python stdout buffering so journald gets real-time logs
         PYTHONUNBUFFERED = "1";
       };

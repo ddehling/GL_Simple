@@ -20,6 +20,7 @@ Classes:
 
 import ctypes
 import os
+import OpenGL
 import glfw
 from OpenGL.GL import *
 import numpy as np
@@ -34,6 +35,10 @@ try:
     _egl_available = True
 except (ImportError, AttributeError, OSError):
     _EGL = None
+
+# Disable PyOpenGL's per-call error checking AFTER EGL import (setting this
+# via env var breaks EGL on some PyOpenGL versions). ~2-10x perf improvement.
+OpenGL.ERROR_CHECKING = False
 
 
 class ShaderRenderer:
