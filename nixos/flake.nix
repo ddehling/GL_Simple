@@ -36,7 +36,7 @@
           ./hosts/lucifera.nix
           ./disk-config.nix
         ] ++ lib.optionals hasFacterReport [
-          { hardware.facter.reportPath = facterPath; }
+          { facter.reportPath = facterPath; }
         ];
       };
     };
