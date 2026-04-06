@@ -67,20 +67,20 @@ ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   wipefs -af "$DISK"
   sgdisk --zap-all "$DISK"
 
-  # Create a temporary 4GB swap partition to supplement RAM
+  # Create temp swap + nix cache partitions so the installer has enough space.
+  # Disko will zap and repartition the disk during install — these are temporary.
   sgdisk -n 1:0:+4G -t 1:8200 "$DISK"
+  sgdisk -n 2:0:+2G "$DISK"
   partprobe "$DISK"
-  sleep 1
+  sleep 2
+
   mkswap "${DISK}1"
   swapon "${DISK}1"
 
-  # Expand tmpfs to use RAM + swap (default is 50% of RAM only)
+  # Expand tmpfs to use RAM + swap
   mount -o remount,size=12G /
 
-  # Move nix binary cache to a real disk partition so it doesn't eat tmpfs
-  sgdisk -n 2:0:+2G "$DISK"
-  partprobe "$DISK"
-  sleep 1
+  # Move nix binary cache to real disk so it doesn't fill tmpfs
   mkfs.ext4 -F "${DISK}2"
   mkdir -p /tmp/nixcache
   mount "${DISK}2" /tmp/nixcache
@@ -88,10 +88,25 @@ ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   mkdir -p /root/.cache
   ln -s /tmp/nixcache /root/.cache/nix
 
-  echo "Disk wiped, 4GB swap + 2GB cache partition active."
+  echo "Disk wiped. Temp swap + cache active."
   free -h
   df -h /tmp/nixcache
 WIPE
+
+# Clean up temp partitions before nixos-anywhere runs disko
+echo "==> Cleaning up temp partitions..."
+ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<CLEANUP
+  set -euo pipefail
+  umount /tmp/nixcache 2>/dev/null || true
+  swapoff "${DISK}1" 2>/dev/null || true
+  wipefs -af "${DISK}2" 2>/dev/null || true
+  wipefs -af "${DISK}1" 2>/dev/null || true
+  wipefs -af "$DISK" 2>/dev/null || true
+  sgdisk --zap-all "$DISK" 2>/dev/null || true
+  partprobe "$DISK"
+  sleep 1
+  echo "Temp partitions cleaned up."
+CLEANUP
 
 # Phase 2: install NixOS
 # --build-on local: build on dev machine, send only the final closure (saves RAM)
