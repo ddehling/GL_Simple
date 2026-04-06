@@ -90,6 +90,7 @@
   users.users.lucifera = {
     isNormalUser = true;
     description = "lucifera";
+    initialPassword = "lucifera";
     extraGroups = [ "wheel" "video" "audio" "networkmanager" ];
   };
 
