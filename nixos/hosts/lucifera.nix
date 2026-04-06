@@ -65,10 +65,11 @@
   # Not started by default. Plug in a monitor and run:
   #   sudo systemctl start display-manager
   services.desktopManager.cosmic.enable = true;
-  services.displayManager.cosmic-greeter.enable = false;
+  services.displayManager.cosmic-greeter.enable = true;
 
-  # Don't start the desktop on boot (headless by default).
-  # To enter dev mode: sudo systemctl start display-manager
+  # Greeter is enabled but not started on boot (headless by default).
+  # To enter dev mode: sudo systemctl start cosmic-greeter
+  systemd.services.cosmic-greeter.wantedBy = lib.mkForce [];
   systemd.services.display-manager.wantedBy = lib.mkForce [];
 
   # ---------- Auto-login TTY (headless production) ----------
