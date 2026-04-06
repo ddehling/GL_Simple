@@ -67,6 +67,9 @@ echo "==> Bundling repo for deployment..."
 EXTRA_DIR=$(mktemp -d)
 mkdir -p "$EXTRA_DIR/home/lucifera"
 git -C "$REPO_DIR" clone --local "$REPO_DIR" "$EXTRA_DIR/home/lucifera/GL_Simple"
+# Point the remote at GitHub so git pull works immediately
+REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/ddehling/GL_Simple.git")
+git -C "$EXTRA_DIR/home/lucifera/GL_Simple" remote set-url origin "$REMOTE_URL"
 # Set ownership (uid/gid 1000 = first normal user, i.e. lucifera)
 chown -R 1000:1000 "$EXTRA_DIR/home/lucifera"
 
