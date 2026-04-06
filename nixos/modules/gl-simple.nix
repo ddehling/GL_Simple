@@ -61,6 +61,8 @@ in
       environment = {
         # Let Mesa find the GPU for headless EGL
         MESA_LOADER_DRIVER_OVERRIDE = "iris";
+        # Disable Python stdout buffering so journald gets real-time logs
+        PYTHONUNBUFFERED = "1";
       };
     };
   };
