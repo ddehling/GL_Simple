@@ -16,6 +16,7 @@ DISK="/dev/sda"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 FLAKE_DIR="$REPO_DIR/nixos"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 echo "==> Target:  $TARGET"
 echo "==> Disk:    $DISK"
@@ -30,21 +31,18 @@ nix run github:nix-community/nixos-anywhere -- \
   --target-host "$TARGET"
 
 # After kexec, the installer boots with a new DHCP IP.
-# Ask the user to find it from the target's console (ip addr).
 echo ""
 echo "==> The installer has booted, but it likely has a new IP (DHCP)."
 echo "    Check the target's console and run: ip addr"
 echo ""
 read -rp "==> Enter the installer's IP address: " INSTALLER_IP
 
-# Clear any stale host keys for the new IP
 ssh-keygen -R "$INSTALLER_IP" 2>/dev/null || true
 
 # Wait for SSH on the installer
 echo "==> Waiting for installer SSH at $INSTALLER_IP..."
 for i in $(seq 1 30); do
-  if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-     "root@$INSTALLER_IP" true 2>/dev/null; then
+  if ssh $SSH_OPTS -o ConnectTimeout=5 "root@$INSTALLER_IP" true 2>/dev/null; then
     echo "==> Installer is up."
     break
   fi
@@ -57,13 +55,11 @@ done
 
 # Wipe the disk so disko can partition cleanly
 echo "==> Wiping disk $DISK..."
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$INSTALLER_IP" bash -s <<WIPE
+ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
   set -euo pipefail
-  # Unmount anything left over
   umount /mnt/boot 2>/dev/null || true
   umount /mnt 2>/dev/null || true
   swapoff -a 2>/dev/null || true
-  # Wipe partition signatures then the disk itself
   for part in \$(lsblk -ln -o NAME "$DISK" | tail -n +2); do
     wipefs -af "/dev/\$part" 2>/dev/null || true
   done
@@ -72,36 +68,54 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$INSTALLER
   echo "Disk wiped."
 WIPE
 
-# Bundle the repo to send to the target via --extra-files
-echo "==> Bundling repo for deployment..."
-EXTRA_DIR=$(mktemp -d)
-mkdir -p "$EXTRA_DIR/home/lucifera"
-git -C "$REPO_DIR" clone --local "$REPO_DIR" "$EXTRA_DIR/home/lucifera/GL_Simple"
-# Point the remote at GitHub so git pull works immediately
-REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/ddehling/GL_Simple.git")
-git -C "$EXTRA_DIR/home/lucifera/GL_Simple" remote set-url origin "$REMOTE_URL"
-# Set ownership (uid/gid 1000 = first normal user, i.e. lucifera)
-chown -R 1000:1000 "$EXTRA_DIR/home/lucifera"
-
 # Phase 2: install NixOS
 echo "==> Phase 2: Installing NixOS..."
 nix run github:nix-community/nixos-anywhere -- \
   --phases install \
-  --extra-files "$EXTRA_DIR" \
   --generate-hardware-config nixos-facter "$FLAKE_DIR/hosts/facter.json" \
   --flake "$FLAKE_DIR#lucifera" \
   --target-host "root@$INSTALLER_IP"
 
-# Clean up
-rm -rf "$EXTRA_DIR"
+# Wait for the machine to reboot into NixOS
+echo ""
+echo "==> Install complete. The machine is rebooting into NixOS."
+echo "    It will come up with a new IP (DHCP on the current network)."
+echo ""
+read -rp "==> Enter the rebooted machine's IP address: " FINAL_IP
+
+ssh-keygen -R "$FINAL_IP" 2>/dev/null || true
+
+echo "==> Waiting for NixOS to come up at $FINAL_IP..."
+for i in $(seq 1 60); do
+  if ssh $SSH_OPTS -o ConnectTimeout=5 "root@$FINAL_IP" true 2>/dev/null; then
+    echo "==> NixOS is up."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "ERROR: Timed out waiting for NixOS. Check the target machine."
+    exit 1
+  fi
+  sleep 5
+done
+
+# Copy the repo to the target
+echo "==> Copying repo to /home/lucifera/GL_Simple..."
+REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/ddehling/GL_Simple.git")
+ssh $SSH_OPTS "root@$FINAL_IP" "mkdir -p /home/lucifera"
+scp -r $SSH_OPTS "$REPO_DIR" "root@$FINAL_IP:/home/lucifera/GL_Simple"
+ssh $SSH_OPTS "root@$FINAL_IP" bash -s <<SETUP
+  cd /home/lucifera/GL_Simple
+  git remote set-url origin "$REMOTE_URL"
+  chown -R lucifera:users /home/lucifera/GL_Simple
+SETUP
 
 echo ""
-echo "==> Done! The machine should reboot into NixOS."
-echo "    The repo has been copied to /home/lucifera/GL_Simple on the target."
+echo "==> Done!"
+echo "    The repo is at /home/lucifera/GL_Simple on the target."
 echo ""
 echo "    Commit the generated facter.json:"
 echo "      git add nixos/hosts/facter.json && git commit -m 'Add hardware facter report'"
 echo ""
-echo "    After reboot, connect via:"
-echo "      ssh lucifera@<ip>"
+echo "    Connect via:"
+echo "      ssh lucifera@$FINAL_IP"
 echo "    (IP will be 192.168.68.144 on the production network)"
