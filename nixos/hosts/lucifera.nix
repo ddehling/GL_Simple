@@ -110,8 +110,7 @@
   systemd.services.greetd.wantedBy = lib.mkForce [];
   systemd.services.display-manager.wantedBy = lib.mkForce [];
 
-  # Disable services that waste resources in headless production mode
-  hardware.bluetooth.enable = false;
+  # Disable power-profiles-daemon — it overrides CPU governor to 'balanced'
   services.power-profiles-daemon.enable = false;
 
   # ---------- Auto-login TTY (headless production) ----------
