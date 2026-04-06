@@ -14,6 +14,10 @@
   outputs = { self, nixpkgs, nixos-cosmic, disko, nixos-facter-modules, ... }:
     let
       system = "x86_64-linux";
+      lib = nixpkgs.lib;
+      facterPath = ./hosts/facter.json;
+      hasFacterReport = builtins.pathExists facterPath
+        && builtins.stringLength (builtins.readFile facterPath) > 2;
     in
     {
       # Deploy from your dev machine with:
@@ -31,7 +35,8 @@
           nixos-cosmic.nixosModules.default
           ./hosts/lucifera.nix
           ./disk-config.nix
-          { hardware.facter.reportPath = ./hosts/facter.json; }
+        ] ++ lib.optionals hasFacterReport [
+          { hardware.facter.reportPath = facterPath; }
         ];
       };
     };
