@@ -62,16 +62,30 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" bas
   echo "Disk wiped."
 WIPE
 
+# Bundle the repo to send to the target via --extra-files
+echo "==> Bundling repo for deployment..."
+EXTRA_DIR=$(mktemp -d)
+mkdir -p "$EXTRA_DIR/home/lucifera"
+git -C "$REPO_DIR" clone --local "$REPO_DIR" "$EXTRA_DIR/home/lucifera/GL_Simple"
+# Set ownership (uid/gid 1000 = first normal user, i.e. lucifera)
+chown -R 1000:1000 "$EXTRA_DIR/home/lucifera"
+
 # Phase 2: install NixOS
 echo "==> Phase 2: Installing NixOS..."
 nix run github:nix-community/nixos-anywhere -- \
   --phases install \
+  --extra-files "$EXTRA_DIR" \
   --generate-hardware-config nixos-facter "$FLAKE_DIR/hosts/facter.json" \
   --flake "$FLAKE_DIR#lucifera" \
   --target-host "root@$HOST"
 
+# Clean up
+rm -rf "$EXTRA_DIR"
+
 echo ""
 echo "==> Done! The machine should reboot into NixOS."
+echo "    The repo has been copied to /home/lucifera/GL_Simple on the target."
+echo ""
 echo "    Commit the generated facter.json:"
 echo "      git add nixos/hosts/facter.json && git commit -m 'Add hardware facter report'"
 echo ""
