@@ -93,8 +93,10 @@ done
 # Copy the repo to the target
 echo "==> Copying repo to /home/lucifera/GL_Simple..."
 REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/ddehling/GL_Simple.git")
-ssh $SSH_OPTS "root@$FINAL_IP" "mkdir -p /home/lucifera"
-scp -r $SSH_OPTS "$REPO_DIR" "root@$FINAL_IP:/home/lucifera/GL_Simple"
+ssh $SSH_OPTS "root@$FINAL_IP" "mkdir -p /home/lucifera/GL_Simple"
+rsync -az --progress --exclude='venv' --exclude='__pycache__' \
+  -e "ssh $SSH_OPTS" \
+  "$REPO_DIR/" "root@$FINAL_IP:/home/lucifera/GL_Simple/"
 ssh $SSH_OPTS "root@$FINAL_IP" bash -s <<SETUP
   cd /home/lucifera/GL_Simple
   git remote set-url origin "$REMOTE_URL"
