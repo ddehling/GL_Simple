@@ -136,64 +136,37 @@ Everything — disk partitioning, hardware detection, static IP, SSH, auto-login
 
 ### Installing / Reimaging
 
-The install script handles everything: kexec into NixOS installer, wipe disk, partition, install, copy the repo to the target.
+The install uses a NixOS USB installer + nixos-anywhere. The USB installer avoids RAM limitations that occur with kexec on the 8GB Beelink.
 
-**Prerequisites:**
-- Nix installed on your dev machine
-- SSH access to `root@<target-ip>` (root password is `lucifera` on already-imaged machines)
-- Target connected via ethernet to your network
+**One-time setup: create a NixOS USB installer**
 
-**On a fresh machine (Pop!_OS or similar), enable SSH first:**
+1. Download the NixOS minimal ISO from https://nixos.org/download#nixos-iso
+2. Flash it to a USB stick (use Rufus, Etcher, or `dd`)
+3. Keep this USB — it's reusable for all future installs
 
-1. Install and start SSH if not already running:
+**Install steps:**
+
+1. Plug the USB into the Beelink and boot from it (press F7 during boot for boot menu)
+2. Once the NixOS installer boots, set a root password and find the IP:
    ```bash
-   sudo apt install openssh-server
-   sudo systemctl enable --now ssh
+   passwd
+   ip addr
    ```
-
-2. Set a root password and enable root login:
+3. Connect the Beelink via ethernet to your network
+4. From your dev machine:
    ```bash
-   sudo passwd root
-   sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-   sudo systemctl restart ssh
+   ./bin/nixos-install.sh root@<ip>
    ```
-
-**Deploy:**
-```bash
-./bin/nixos-install.sh root@<ip>
-```
 
 The script:
-1. Boots the target into a NixOS installer via kexec
-2. Wipes the disk (clears stale partition tables)
-3. Partitions with disko, generates hardware report, installs NixOS
-4. Copies the GL_Simple repo to `/home/lucifera/GL_Simple` with the correct GitHub remote
+1. Verifies the target is a NixOS installer
+2. Wipes the disk
+3. Runs nixos-anywhere (builds locally, installs to target)
+4. Waits for reboot, then copies the GL_Simple repo over
 
 After install, commit the generated `facter.json` to the repo.
 
-**Reimaging an already-installed machine** is the same command — root SSH is enabled and the password is `lucifera`.
-
-<details>
-<summary>Manual deploy (if you prefer)</summary>
-
-```bash
-# Phase 1: kexec into installer
-nix run github:nix-community/nixos-anywhere -- \
-  --phases kexec \
-  --target-host root@<ip>
-
-# Wipe the disk (SSH into the installer)
-ssh root@<installer-ip> "wipefs -af /dev/sda && sgdisk --zap-all /dev/sda"
-
-# Phase 2: install
-nix run github:nix-community/nixos-anywhere -- \
-  --phases install \
-  --generate-hardware-config nixos-facter ./nixos/hosts/facter.json \
-  --flake ./nixos#lucifera \
-  --target-host root@<installer-ip>
-```
-
-</details>
+**Reimaging an already-installed machine:** boot from the USB installer again and run the same script. Root SSH is enabled on installed machines (password `lucifera`), but the USB installer is still needed to avoid RAM issues during install.
 
 ### Applying Config Changes
 
