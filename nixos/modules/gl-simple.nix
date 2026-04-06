@@ -53,6 +53,9 @@ in
 
         # Headless OpenGL needs access to the GPU
         SupplementaryGroups = [ "video" ];
+
+        # Allow binding to port 80 without running as root
+        AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
       };
 
       environment = {
