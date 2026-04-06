@@ -319,7 +319,7 @@
         "sysfs_bus_id": "0000:00:1f.0",
         "detail": {
           "function": 0,
-          "command": 1027,
+          "command": 1031,
           "header_type": 0,
           "secondary_bus": 0,
           "irq": 0,
@@ -724,7 +724,7 @@
           },
           {
             "type": "irq",
-            "base": 138,
+            "base": 133,
             "triggered": 0,
             "enabled": true
           },
@@ -758,7 +758,7 @@
           "command": 1031,
           "header_type": 0,
           "secondary_bus": 0,
-          "irq": 138,
+          "irq": 133,
           "prog_if": 0
         },
         "driver": "i915",
@@ -1223,7 +1223,7 @@
           {
             "type": "mem",
             "base": 0,
-            "range": 16497008640,
+            "range": 16498024448,
             "enabled": true,
             "access": "read_write",
             "prefetch": "unknown"
@@ -1744,6 +1744,29 @@
     "network_interface": [
       {
         "index": 38,
+        "attached_to": 0,
+        "class_list": [
+          "network_interface"
+        ],
+        "base_class": {
+          "hex": "0107",
+          "name": "Network Interface",
+          "value": 263
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Loopback",
+          "value": 0
+        },
+        "model": "Loopback network interface",
+        "sysfs_id": "/class/net/lo",
+        "unix_device_name": "lo",
+        "unix_device_names": [
+          "lo"
+        ]
+      },
+      {
+        "index": 39,
         "attached_to": 15,
         "class_list": [
           "network_interface"
@@ -1782,29 +1805,6 @@
         ],
         "driver_modules": [
           "igc"
-        ]
-      },
-      {
-        "index": 39,
-        "attached_to": 0,
-        "class_list": [
-          "network_interface"
-        ],
-        "base_class": {
-          "hex": "0107",
-          "name": "Network Interface",
-          "value": 263
-        },
-        "sub_class": {
-          "hex": "0000",
-          "name": "Loopback",
-          "value": 0
-        },
-        "model": "Loopback network interface",
-        "sysfs_id": "/class/net/lo",
-        "unix_device_name": "lo",
-        "unix_device_names": [
-          "lo"
         ]
       }
     ],
@@ -1940,7 +1940,7 @@
         "resources": [
           {
             "type": "irq",
-            "base": 137,
+            "base": 132,
             "triggered": 0,
             "enabled": true
           },
@@ -1958,7 +1958,7 @@
           "command": 1030,
           "header_type": 0,
           "secondary_bus": 0,
-          "irq": 137,
+          "irq": 132,
           "prog_if": 0
         },
         "driver": "mei_me",
@@ -2507,7 +2507,7 @@
         "resources": [
           {
             "type": "irq",
-            "base": 139,
+            "base": 134,
             "triggered": 0,
             "enabled": true
           },
@@ -2533,7 +2533,7 @@
           "command": 1030,
           "header_type": 0,
           "secondary_bus": 0,
-          "irq": 139,
+          "irq": 134,
           "prog_if": 0
         },
         "driver": "snd_hda_intel",
