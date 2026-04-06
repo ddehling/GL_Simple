@@ -69,9 +69,13 @@ ssh $SSH_OPTS "root@$INSTALLER_IP" bash -s <<WIPE
 WIPE
 
 # Phase 2: install NixOS
+# --build-on local: build on dev machine, send only the final closure (saves RAM)
+# --no-disko-deps: don't store disko deps in RAM (8GB Beelink is tight)
 echo "==> Phase 2: Installing NixOS..."
 nix run github:nix-community/nixos-anywhere -- \
   --phases install \
+  --build-on local \
+  --no-disko-deps \
   --generate-hardware-config nixos-facter "$FLAKE_DIR/hosts/facter.json" \
   --flake "$FLAKE_DIR#lucifera" \
   --target-host "root@$INSTALLER_IP"
