@@ -10,7 +10,7 @@
 | **RAM** | 8GB DDR4 (max 16GB @ 2933 MHz) |
 | **Storage** | M.2 SATA 2280 SSD (128GB or 256GB) |
 | **Display** | Dual HDMI, 4K UHD |
-| **Network** | Gigabit Ethernet, WiFi 5, Bluetooth 4.0 |
+| **Network** | Gigabit Ethernet (`enp1s0`), WiFi 5, Bluetooth 4.0 |
 | **OS** | NixOS 25.05 |
 | **BIOS** | AMI Aptio Setup Utility |
 
@@ -42,8 +42,9 @@ The normal operating mode. No monitor connected. GL_Simple runs automatically on
 
 - Auto-login to `lucifera` on TTY
 - GL_Simple starts as a systemd service (headless)
-- Auto-restarts on crash (systemd `Restart=on-failure`)
-- Static IP on the local network
+- Auto-restarts on crash (systemd `Restart=on-failure`, 5s delay)
+- Static IP `192.168.68.144` on ethernet (offline production LAN)
+- WiFi available for internet access (configured per-machine via NetworkManager)
 - COSMIC desktop is installed but not started
 - No internet required for normal operation
 
@@ -62,13 +63,53 @@ sudo systemctl stop display-manager     # back to headless (optional)
 ## Boot Sequence (Production Mode)
 
 ```
-AC Power On
+AC Power On (power strip plugged in)
   → BIOS auto-boot (State After G3 = S0)
     → NixOS boots
       → Auto-login on TTY (lucifera)
         → systemd starts gl-simple.service
-          → GL_Simple runs headless
+          → GL_Simple renders headless immediately
+            → DMX/sACN packets flow once network gear boots (~10-20s)
+              → Lights come on
 ```
+
+All devices (computer, router, switch, DMX controllers) can be on the same power strip. The computer boots fastest and starts rendering immediately. DMX output is UDP fire-and-forget — packets silently go nowhere until the network gear is ready, then lights come on automatically. No race conditions.
+
+## Networking
+
+### Dual-network setup
+
+| Interface | Network | Config | Purpose |
+|-----------|---------|--------|---------|
+| **Ethernet** (`enp1s0`) | `192.168.68.0/24` | Static IP `192.168.68.144`, no gateway | Offline production LAN (DMX controllers, web panel) |
+| **WiFi** | Home/dev network | DHCP via NetworkManager | Internet access for updates, git pull |
+
+The ethernet interface has no default gateway — the offline production network doesn't route to the internet. When WiFi is connected, NetworkManager provides the default route, so `git pull` and internet access work alongside the static ethernet IP.
+
+**Connect WiFi (per-machine, persists across reboots):**
+```bash
+nmcli device wifi connect "YourSSID" password "YourPassword"
+```
+
+### Network details
+
+| Setting | Value |
+|---------|-------|
+| **Hostname** | lucifera |
+| **Static IP** | 192.168.68.144 |
+| **Subnet** | 192.168.68.0/24 |
+| **SSH** | `ssh lucifera@192.168.68.144` (or WiFi IP) |
+| **Web Control Panel** | `http://192.168.68.144:80` |
+| **Web Preview** | `http://192.168.68.144/preview` |
+
+### Default credentials
+
+| User | Password |
+|------|----------|
+| `lucifera` | `lucifera` |
+| `root` | `lucifera` |
+
+Change with `passwd` after first login. These are offline lighting controllers — security is not a concern.
 
 ## NixOS Configuration
 
@@ -93,16 +134,16 @@ Everything — disk partitioning, hardware detection, static IP, SSH, auto-login
 - **[nixos-facter](https://github.com/nix-community/nixos-facter)** — auto-detects hardware, replaces hand-written hardware-configuration.nix
 - **[nixos-anywhere](https://github.com/nix-community/nixos-anywhere)** — remote NixOS install over SSH (works on any running Linux)
 
-### Initial Install (from your dev machine)
+### Installing / Reimaging
 
-The Beelink is currently running Pop!_OS with SSH enabled. nixos-anywhere will SSH in, kexec into a NixOS installer, partition the disk with disko, detect hardware with nixos-facter, and apply the full config — all remotely.
+The install script handles everything: kexec into NixOS installer, wipe disk, partition, install, copy the repo to the target.
 
 **Prerequisites:**
 - Nix installed on your dev machine
-- SSH access to `root@192.168.68.144` on the Beelink (the Pop!_OS install)
-- Beelink connected via ethernet (not WiFi)
+- SSH access to `root@<target-ip>` (root password is `lucifera` on already-imaged machines)
+- Target connected via ethernet to your network
 
-**Prepare the Beelink (one-time, on the Pop!_OS install):**
+**On a fresh machine (Pop!_OS or similar), enable SSH first:**
 
 1. Install and start SSH if not already running:
    ```bash
@@ -110,42 +151,37 @@ The Beelink is currently running Pop!_OS with SSH enabled. nixos-anywhere will S
    sudo systemctl enable --now ssh
    ```
 
-2. Set a root password (needed for nixos-anywhere to SSH in as root):
+2. Set a root password and enable root login:
    ```bash
    sudo passwd root
-   ```
-
-3. Enable root SSH login in `/etc/ssh/sshd_config`:
-   ```bash
    sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
    sudo systemctl restart ssh
    ```
 
-4. Verify from your dev machine:
-   ```bash
-   ssh root@192.168.68.144
-   ```
-
-5. Check the disk device path (needed for `disk-config.nix`):
+3. Verify the disk device path:
    ```bash
    lsblk
    ```
-   If the disk is `/dev/sda`, no changes needed. If it's `/dev/nvme0n1`, update `disk-config.nix` accordingly.
+   Default is `/dev/sda`. Pass `/dev/nvme0n1` as the second argument if different.
 
 **Deploy:**
 ```bash
-# One-shot script (recommended) — wipes disk, installs, generates facter.json
-./bin/nixos-install.sh root@192.168.68.144
+# One-shot install (recommended)
+./bin/nixos-install.sh root@<ip>
 
 # If the disk is /dev/nvme0n1 instead of /dev/sda:
-./bin/nixos-install.sh root@192.168.68.144 /dev/nvme0n1
+./bin/nixos-install.sh root@<ip> /dev/nvme0n1
 ```
 
-The script runs in two phases:
-1. **kexec** — boots the target into a NixOS installer over SSH
-2. **install** — wipes the disk, partitions with disko, generates hardware report, installs NixOS
+The script:
+1. Boots the target into a NixOS installer via kexec
+2. Wipes the disk (clears stale partition tables)
+3. Partitions with disko, generates hardware report, installs NixOS
+4. Copies the GL_Simple repo to `/home/lucifera/GL_Simple` with the correct GitHub remote
 
-After install, commit the generated `facter.json` to the repo so future rebuilds have the hardware report.
+After install, commit the generated `facter.json` to the repo.
+
+**Reimaging an already-installed machine** is the same command — root SSH is enabled and the password is `lucifera`.
 
 <details>
 <summary>Manual deploy (if you prefer)</summary>
@@ -154,7 +190,7 @@ After install, commit the generated `facter.json` to the repo so future rebuilds
 # Phase 1: kexec into installer
 nix run github:nix-community/nixos-anywhere -- \
   --phases kexec \
-  --target-host root@192.168.68.144
+  --target-host root@<ip>
 
 # Wipe the disk (SSH into the installer)
 ssh root@<installer-ip> "wipefs -af /dev/sda && sgdisk --zap-all /dev/sda"
@@ -180,25 +216,13 @@ sudo nixos-rebuild switch --flake .#lucifera
 
 ### Updating GL_Simple Code
 
-Since the machine is usually offline, pull manually when internet is available:
+Connect to WiFi if not already, then:
 
 ```bash
 cd /home/lucifera/GL_Simple
 git pull origin main
 sudo systemctl restart gl-simple.service
 ```
-
-## Network Details
-
-| Setting | Value |
-|---------|-------|
-| **Hostname** | lucifera |
-| **Static IP** | 192.168.68.144 |
-| **Subnet** | 192.168.68.0/24 |
-| **Gateway** | 192.168.68.1 |
-| **SSH** | `ssh lucifera@192.168.68.144` |
-| **Web Control Panel** | `http://192.168.68.144:80` |
-| **Web Preview** | `http://192.168.68.144/preview` |
 
 ## TODO
 
