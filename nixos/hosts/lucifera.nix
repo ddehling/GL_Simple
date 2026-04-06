@@ -95,6 +95,11 @@
     htop
     git
     python3
+
+    # Dev mode tools (used when COSMIC desktop is running)
+    vscode
+    google-chrome
+    alacritty
   ];
 
   # ---------- Misc ----------
