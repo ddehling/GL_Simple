@@ -36,22 +36,23 @@ from renderer.effects.base import ShaderEffect
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _audio_duration(path: Path) -> float:
-    """Return playback length of an audio file in seconds, 0.0 on failure."""
+    """Return playback length of an audio file in seconds, 0.0 on failure.
+
+    NOTE: We deliberately do NOT use miniaudio.mp3_get_file_info() — it is
+    unreliable for VBR MP3s without a Xing/VBRI header (estimates from
+    bitrate × filesize and routinely under-reports), which previously caused
+    long narrative tracks to cut out partway. Always decode the full file
+    so the frame count is exact.
+    """
     try:
         import miniaudio
-        info = miniaudio.mp3_get_file_info(str(path))
-        return info.num_frames / info.sample_rate
+        decoded = miniaudio.decode_file(
+            str(path), nchannels=1, sample_rate=44100,
+            output_format=miniaudio.SampleFormat.SIGNED16,
+        )
+        return decoded.num_frames / 44100
     except Exception:
-        # Fallback: decode a small portion to measure sample rate
-        try:
-            import miniaudio
-            decoded = miniaudio.decode_file(
-                str(path), nchannels=1, sample_rate=44100,
-                output_format=miniaudio.SampleFormat.SIGNED16,
-            )
-            return decoded.num_frames / 44100
-        except Exception:
-            return 0.0
+        return 0.0
 
 
 def _weighted_choice(nexts: list, weights: list,

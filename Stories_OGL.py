@@ -467,6 +467,8 @@ class EnvironmentalSystem:
                 d['active_overrides'] = dict(self.web_controller.web_param_overrides)
                 d['global_modifiers'] = dict(self.web_controller.global_modifiers)
                 d['fps'] = getattr(self, '_current_fps', 0)
+                d['fps_target'] = getattr(self, '_target_fps', 0)
+                d['fps_uncapped'] = getattr(self, '_uncapped_fps', 0)
                 d['active_effects'] = active_effects
                 d['ambient_sound'] = self.active_effects.get("ambient_sound")
                 d['allowed_output_params'] = self._get_allowed_output_params()
@@ -544,6 +546,12 @@ class EnvironmentalSystem:
         state.update(output)
         state["season"] = self.season
         state["current_weather_state"] = self.weather_state.current_weather.value
+        if self.enable_web_control and self.web_controller is not None:
+            state["_preview_active"] = (
+                self.web_controller.control_dict.get('_preview_subscribers', 0) > 0
+            )
+        else:
+            state["_preview_active"] = False
         state["scale"] = self.scale
         state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
         state["celestial_bodies"] = self.celestial_bodies
@@ -671,6 +679,7 @@ if __name__ == "__main__":
     first_time = time.time()
     frame_count = 0
     fps_start_time = time.time()
+    work_time_accum = 0.0  # sum of per-frame work time (no waits) over the window
     
     # For better sleep precision on Windows
     import sys
@@ -689,6 +698,9 @@ if __name__ == "__main__":
             if env_system.scheduler.should_exit:
                 break
 
+            # Measure pure work time (render + send) before any frame-rate waits
+            work_time_accum += time.perf_counter() - frame_start
+
             # Frame rate limiter: sleep for the bulk, then busy-wait for precision
             remaining = FRAME_TIME - (time.perf_counter() - frame_start)
             if remaining > 0.002:
@@ -700,10 +712,17 @@ if __name__ == "__main__":
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 500 frames
                 current_time = time.time()
-                actual_fps = 500.0 / (current_time - fps_start_time)
+                window = current_time - fps_start_time
+                actual_fps = 500.0 / window
+                target_fps = 1.0 / FRAME_TIME
+                avg_work = work_time_accum / 500.0
+                uncapped_fps = (1.0 / avg_work) if avg_work > 0 else 0.0
                 env_system._current_fps = round(actual_fps, 1)
-                print(f"[Main] FPS: {actual_fps:.1f}")
+                env_system._target_fps = round(target_fps, 1)
+                env_system._uncapped_fps = round(uncapped_fps, 1)
+                print(f"[Main] FPS actual={actual_fps:.1f} target={target_fps:.1f} uncapped={uncapped_fps:.1f}")
                 fps_start_time = current_time
+                work_time_accum = 0.0
 
     except KeyboardInterrupt:
         pass

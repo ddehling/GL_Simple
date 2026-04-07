@@ -611,11 +611,25 @@ class WebController:
         @self.socketio.on('subscribe_preview')
         def handle_subscribe_preview():
             join_room('preview')
+            with self._dict_lock:
+                self.control_dict['_preview_subscribers'] = (
+                    self.control_dict.get('_preview_subscribers', 0) + 1
+                )
             print(f"[WebController] Preview client subscribed")
 
         @self.socketio.on('unsubscribe_preview')
         def handle_unsubscribe_preview():
             leave_room('preview')
+            with self._dict_lock:
+                self.control_dict['_preview_subscribers'] = max(
+                    0, self.control_dict.get('_preview_subscribers', 0) - 1
+                )
+
+        @self.socketio.on('disconnect')
+        def handle_disconnect():
+            with self._dict_lock:
+                if self.control_dict.get('_preview_subscribers', 0) > 0:
+                    self.control_dict['_preview_subscribers'] -= 1
 
         @self.socketio.on('update_global')
         def handle_update_global(data):

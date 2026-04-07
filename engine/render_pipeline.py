@@ -148,8 +148,9 @@ class RenderPipeline:
         frames = self._render_shader(dt)
         self._send_to_displays(frames)
 
-        # PNG-encode first frame for web preview (stored in state for web controller)
-        if frames:
+        # PNG-encode first frame for web preview, ONLY if a client is subscribed.
+        # Encoding is ~10-20ms/frame and would otherwise tank FPS for nobody.
+        if frames and self.state.get('_preview_active'):
             bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
             _, png_buf = cv2.imencode('.png', bgr)
             self.state['_frame_png'] = png_buf.tobytes()

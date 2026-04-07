@@ -623,6 +623,19 @@ class ShaderViewport:
             raise RuntimeError(f"Framebuffer incomplete: {status}")
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+        # Pixel Pack Buffers for asynchronous glReadPixels (ping-pong, 2 PBOs).
+        # Frame N issues a non-blocking read into pbo[write], while frame N-1's
+        # data is mapped from pbo[read]. This decouples GPU readback from CPU.
+        self._pbo_size = self.width * self.height * 4  # RGBA8
+        self._pbos = glGenBuffers(2)
+        for pbo in self._pbos:
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo)
+            glBufferData(GL_PIXEL_PACK_BUFFER, self._pbo_size, None, GL_STREAM_READ)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+        self._pbo_index = 0       # which PBO we issue the new read into
+        self._pbo_primed = False  # becomes True after first issued read
+
         print(f"[ShaderViewport] Framebuffer created: {self.width}x{self.height} (frame {self.frame_id})")
 
     # ------------------------------------------------------------------
@@ -690,15 +703,45 @@ class ShaderViewport:
     # ------------------------------------------------------------------
 
     def get_frame(self) -> np.ndarray:
-        """Read framebuffer into numpy array for LED output"""
+        """Read framebuffer into numpy array for LED output (async via PBOs).
+
+        Uses ping-pong Pixel Pack Buffers so glReadPixels never stalls the CPU:
+          - Issue an async read of THIS frame's FBO into pbo[write].
+          - Map and copy out pbo[read] which holds the PREVIOUS frame's data.
+        Result: 1-frame latency on the LED output but no per-frame GPU stall.
+        On the very first call we have no previous data yet, so we return zeros.
+        """
         self._make_current()
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
 
-        pixels = glReadPixels(0, 0, self.width, self.height,
-                              GL_RGBA, GL_UNSIGNED_BYTE)
-        frame = np.frombuffer(pixels, dtype=np.uint8).reshape(
-            self.height, self.width, 4)
+        write_idx = self._pbo_index
+        read_idx = 1 - self._pbo_index
+
+        # 1) Issue async read of the current frame into pbo[write_idx]
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, self._pbos[write_idx])
+        glReadPixels(0, 0, self.width, self.height,
+                     GL_RGBA, GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+
+        # 2) Map and copy out the PREVIOUS frame's data from pbo[read_idx]
+        if self._pbo_primed:
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, self._pbos[read_idx])
+            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self._pbo_size, GL_MAP_READ_BIT)
+            try:
+                # Copy bytes out of the mapped buffer immediately so we can unmap
+                buf = (ctypes.c_ubyte * self._pbo_size).from_address(int(ptr))
+                frame = np.frombuffer(buf, dtype=np.uint8).reshape(
+                    self.height, self.width, 4).copy()
+            finally:
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+        else:
+            frame = np.zeros((self.height, self.width, 4), dtype=np.uint8)
+            self._pbo_primed = True
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+        # Swap PBOs for next call
+        self._pbo_index = read_idx
 
         # Flip Y axis and drop alpha
         frame = np.flipud(frame)
@@ -718,6 +761,9 @@ class ShaderViewport:
             effect.cleanup()
         if self.fbo:
             glDeleteFramebuffers(1, [self.fbo])
+        if getattr(self, '_pbos', None) is not None:
+            glDeleteBuffers(2, self._pbos)
+            self._pbos = None
         if self.color_texture:
             glDeleteTextures([self.color_texture])
         if self.depth_texture:

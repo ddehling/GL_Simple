@@ -41,11 +41,9 @@ class _MemTrack:
         self._fade_out_pos    = 0
 
         self._samples = samples
-
-        # Duration cap
-        max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
-        if max_frames > 0 and max_frames < len(self._samples):
-            self._samples = self._samples[:max_frames].copy()
+        # Note: no duration trim. The in-memory array is the ground truth
+        # for length; trimming based on a separately-measured duration would
+        # silently truncate VBR MP3s when mp3_get_file_info() under-reports.
 
     def fade_out(self, duration: float):
         self._fading_out      = True
@@ -307,9 +305,18 @@ class AudioEngine:
 
                     elif kind == "oneshot_mem":
                         _, samples, path, vol, dur, narr = cmd
-                        tracks[f"os_{id(cmd)}"] = _MemTrack(
+                        # Unique key — id(cmd) was unsafe because Python can
+                        # reuse the address of a freed tuple, silently
+                        # overwriting a still-playing track in the dict.
+                        tracks[f"os_{path.name}_{time.monotonic_ns()}"] = _MemTrack(
                             samples, path, volume=vol, duration=dur,
                             is_narrative=narr)
+                        if not narr:
+                            track_dur = len(samples) / SAMPLE_RATE
+                            finish_at = time.strftime(
+                                "%H:%M:%S", time.localtime(time.time() + track_dur))
+                            print(f"[AudioEngine] Oneshot ▶ {path.name}  "
+                                  f"dur={track_dur:.2f}s  finishes ~{finish_at}")
 
 
             except queue.Empty:
@@ -331,19 +338,6 @@ class AudioEngine:
                 if chunk is None or track.done:
                     dead.append(key)
                 else:
-                    # Detect unexpected silence from oneshot tracks
-                    if not track.is_ambient and not track.is_narrative and not track._fading_out:
-                        peak_val = np.max(np.abs(chunk))
-                        if peak_val < 0.001:
-                            if not getattr(track, '_silence_warned', False):
-                                print(f"[AudioEngine] WARNING: Track {track._path.name} near-silent "
-                                      f"(peak={peak_val:.6f}) at pos {track._pos}/{len(track._samples)} "
-                                      f"vol={track.volume} fading={track._fading_out}")
-                                track._silence_warned = True
-                        elif getattr(track, '_silence_warned', False):
-                            # Track recovered — reset warning
-                            print(f"[AudioEngine] Track {track._path.name} recovered (peak={peak_val:.4f})")
-                            track._silence_warned = False
                     if track.is_narrative:
                         narr_buf[:len(chunk)] += chunk * narr_vol
                     else:

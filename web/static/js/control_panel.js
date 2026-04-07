@@ -132,7 +132,11 @@ function connectSocket() {
         bEl.textContent = factor.toFixed(3);
         bEl.style.color = factor > 1.001 ? 'rgb(255, 200, 80)' : '#00ffff';
 
-        document.getElementById('fps-display').textContent = (data.fps || '--') + ' FPS';
+        const fpsAct = (data.fps ?? '--');
+        const fpsTgt = (data.fps_target ?? '--');
+        const fpsUnc = (data.fps_uncapped ?? '--');
+        document.getElementById('fps-display').textContent =
+            `${fpsAct} / ${fpsTgt} / ${fpsUnc} FPS`;
 
         // Update ambient sound display
         const ambientEl = document.getElementById('ambient-sound-display');
@@ -374,7 +378,8 @@ function toggleShowAllParams() {
 
 // ---- Performance Panel ----
 function updatePerformancePanel(data) {
-    document.getElementById('perf-fps').textContent = (data.fps || '--');
+    document.getElementById('perf-fps').textContent =
+        `${data.fps ?? '--'} / ${data.fps_target ?? '--'} / ${data.fps_uncapped ?? '--'}`;
     const effectCount = (data.active_effects || []).length;
     document.getElementById('perf-effect-count').textContent = effectCount;
 
