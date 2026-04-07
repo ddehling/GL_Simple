@@ -547,7 +547,7 @@ def _geo_to_fan_px(lat: float, lon: float, w: float, h: float) -> Tuple[float, f
 # ---------------------------------------------------------------------------
 # BART ambient sounds and text announcement data
 # ---------------------------------------------------------------------------
-_BART_DESTINATIONS = ["SFO", "RCH", "DAL", "FRM", "PIT", "DUB", "ANT", "WRM"]
+_BART_DESTINATIONS = ["SFO", "RICH", "DALY", "FREM", "PITS", "DUBL", "ANTI", "WARM"]
 
 # Cache for sound file list (populated on first use)
 _bart_sounds_cache = None
