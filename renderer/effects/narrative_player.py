@@ -67,7 +67,7 @@ def _weighted_choice(nexts: list, weights: list,
     effective = []
     for nid, w in zip(nexts, weights):
         if recency and nid in recency:
-            w *= 4.0 ** (-recency[nid])
+            w *= 10.0 ** (-recency[nid])
         effective.append(w)
     total = sum(effective) or 1.0
     r = random.random() * total
