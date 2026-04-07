@@ -542,6 +542,7 @@ class ShaderViewport:
         self.zoom = 1.0          # View zoom level (scroll wheel)
         self.pan_x = 0.0         # Pan offset in clip space
         self.pan_y = 0.0
+        self.flip_x = False      # Horizontal flip applied at FBO readback
 
         # --- Shared geometry (FanGeometry, rebuilt when aspect changes) ---
         self._geometry = None
@@ -700,8 +701,11 @@ class ShaderViewport:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
         # Flip Y axis and drop alpha
-        frame = np.flip(frame, axis=0)
-        return frame[:, :, :3]
+        frame = np.flipud(frame)
+        if self.flip_x:
+            frame = np.fliplr(frame)
+        # Force contiguous so downstream cv2/sACN consumers honor the flips
+        return np.ascontiguousarray(frame[:, :, :3])
 
     # ------------------------------------------------------------------
     # Cleanup

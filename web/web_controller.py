@@ -651,7 +651,7 @@ class WebController:
             self._values_cache = None
 
         # Allowed keys for the set_flag WebSocket event
-        ALLOWED_FLAGS = {'instant_transitions'}
+        ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
 
         @self.socketio.on('set_flag')
         def handle_set_flag(data):
@@ -661,6 +661,12 @@ class WebController:
                 with self._dict_lock:
                     self.control_dict[key] = bool(value)
                 self._values_cache = None
+                # Apply flip_x directly to renderer viewports (avoid per-frame polling)
+                if key == 'flip_x':
+                    viewports = self.control_dict.get('_viewports')
+                    if viewports:
+                        for vp in viewports:
+                            vp.flip_x = bool(value)
 
         @self.socketio.on('change_weather_set')
         def handle_change_set(data):

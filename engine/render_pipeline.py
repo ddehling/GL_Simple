@@ -150,7 +150,8 @@ class RenderPipeline:
 
         # PNG-encode first frame for web preview (stored in state for web controller)
         if frames:
-            _, png_buf = cv2.imencode('.png', frames[0][:, :, ::-1])
+            bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
+            _, png_buf = cv2.imencode('.png', bgr)
             self.state['_frame_png'] = png_buf.tobytes()
 
     def _render_shader(self, dt: float) -> list:

@@ -12,7 +12,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_test_pattern(state, outstate, orientation='horizontal', stripe_width=3):
+def shader_test_pattern(state, outstate, orientation='horizontal', stripe_width=3, pattern='rgb_stripes'):
     """
     Test pattern with alternating RGB stripes
     
@@ -46,7 +46,8 @@ def shader_test_pattern(state, outstate, orientation='horizontal', stripe_width=
             effect = viewport.add_effect(
                 TestPatternEffect,
                 orientation=orientation,
-                stripe_width=stripe_width
+                stripe_width=stripe_width,
+                pattern=pattern
             )
             state['effect'] = effect
             print(f"✓ Initialized shader test_pattern ({orientation}, width={stripe_width}) for frame {frame_id}")
@@ -68,6 +69,18 @@ def shader_test_pattern(state, outstate, orientation='horizontal', stripe_width=
         if state['effect'].stripe_width != new_stripe_width:
             state['effect'].stripe_width = new_stripe_width
             print(f"Changed test pattern stripe width to {new_stripe_width}")
+
+        # Switch pattern based on the current weather state
+        current_state = outstate.get('current_weather_state', '')
+        if current_state == 'test_rgb':
+            desired_pattern = 'rgb_stripes'
+        elif current_state == 'test_hue_bin':
+            desired_pattern = 'hue_binary'
+        else:
+            desired_pattern = state['effect'].pattern  # leave alone
+        if state['effect'].pattern != desired_pattern:
+            state['effect'].pattern = desired_pattern
+            print(f"Changed test pattern to {desired_pattern}")
     
     # Cleanup on close
     if state['count'] == -1:
@@ -85,10 +98,12 @@ def shader_test_pattern(state, outstate, orientation='horizontal', stripe_width=
 class TestPatternEffect(ShaderEffect):
     """Fullscreen test pattern with RGB stripes"""
     
-    def __init__(self, viewport, orientation: str = 'horizontal', stripe_width: int = 3):
+    def __init__(self, viewport, orientation: str = 'horizontal', stripe_width: int = 3,
+                 pattern: str = 'rgb_stripes'):
         super().__init__(viewport)
         self.orientation = orientation  # 'horizontal' or 'vertical'
         self.stripe_width = stripe_width
+        self.pattern = pattern  # 'rgb_stripes' or 'hue_binary'
         self.depth = 50.0  # Mid-depth
     
     def compile_shader(self):
@@ -125,37 +140,57 @@ class TestPatternEffect(ShaderEffect):
         return """
         #version 310 es
         precision highp float;
-        
+
         in vec2 vTexCoord;
-        
+
         uniform vec2 resolution;
         uniform float depth;
-        uniform int orientation;  // 0=horizontal, 1=vertical
+        uniform int orientation;   // 0=horizontal, 1=vertical
         uniform float stripeWidth;
-        
+        uniform int patternMode;   // 0=rgb_stripes, 1=hue_binary
+
         out vec4 outColor;
-        
+
+        vec3 hsv2rgb(vec3 c) {
+            vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+
         void main() {
-            // Get pixel coordinates
             vec2 pixelCoord = vTexCoord * resolution;
-            
-            // Choose which coordinate to use based on orientation
-            float coord = (orientation == 0) ? pixelCoord.x : pixelCoord.y;
-            
-            // Determine which stripe (0, 1, or 2)
-            int stripeIndex = int(floor(coord / stripeWidth)) % 3;
-            
-            // Assign color based on stripe
-            vec3 color;
-            if (stripeIndex == 0) {
-                color = vec3(1.0, 0.0, 0.0);  // Red
-            } else if (stripeIndex == 1) {
-                color = vec3(0.0, 1.0, 0.0);  // Green
+
+            if (patternMode == 0) {
+                // ----- RGB stripes (legacy) -----
+                float coord = (orientation == 0) ? pixelCoord.x : pixelCoord.y;
+                int stripeIndex = int(floor(coord / stripeWidth)) % 3;
+                vec3 color;
+                if (stripeIndex == 0) {
+                    color = vec3(1.0, 0.0, 0.0);
+                } else if (stripeIndex == 1) {
+                    color = vec3(0.0, 1.0, 0.0);
+                } else {
+                    color = vec3(0.0, 0.0, 1.0);
+                }
+                outColor = vec4(color, 1.0);
             } else {
-                color = vec3(0.0, 0.0, 1.0);  // Blue
+                // ----- Horizontal hue gradient + binary column index -----
+                int col  = int(floor(pixelCoord.x));   // 0..127
+                int yPix = int(floor(pixelCoord.y));   // 0..299, FBO bottom = 0
+
+                float hue = (float(col) / 127.0) * 0.66;
+                vec3 rgb = hsv2rgb(vec3(hue, 1.0, 1.0));
+
+                // First 10 LEDs of each strip = top 10 rows of FBO
+                // (get_frame() flips Y on readback).
+                int topRow = int(resolution.y) - 1 - yPix;
+                if (topRow >= 0 && topRow < 10) {
+                    int bit = (col >> (9 - topRow)) & 1;
+                    rgb = (bit == 1) ? vec3(1.0) : vec3(0.0);
+                }
+
+                outColor = vec4(rgb, 1.0);
             }
-            
-            outColor = vec4(color, 1.0);
         }
         """
     
@@ -199,6 +234,7 @@ class TestPatternEffect(ShaderEffect):
         self.uniform_depth = glGetUniformLocation(self.shader, "depth")
         self.uniform_orientation = glGetUniformLocation(self.shader, "orientation")
         self.uniform_stripe_width = glGetUniformLocation(self.shader, "stripeWidth")
+        self.uniform_pattern_mode = glGetUniformLocation(self.shader, "patternMode")
     
     def render(self, state: Dict):
         """Render test pattern"""
@@ -216,6 +252,7 @@ class TestPatternEffect(ShaderEffect):
         orientation_int = 1 if self.orientation == 'vertical' else 0
         glUniform1i(self.uniform_orientation, orientation_int)
         glUniform1f(self.uniform_stripe_width, float(self.stripe_width))
+        glUniform1i(self.uniform_pattern_mode, 1 if self.pattern == 'hue_binary' else 0)
         
         # Draw fullscreen quad
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)

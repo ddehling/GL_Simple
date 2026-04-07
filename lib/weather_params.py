@@ -47,6 +47,8 @@ class WeatherState(Enum):
     BARTIKI_NIGHT         = "bartiki_night"
     BARTIKI_LATE_NIGHT    = "bartiki_late_night"
     BARTIKI_STORMY        = "bartiki_stormy"
+    TEST_RGB              = "test_rgb"
+    TEST_HUE_BIN          = "test_hue_bin"
 
 # Global parameters that are always available in every weather set
 # These cannot be removed from sets but their values can be customized per weather state
@@ -168,6 +170,22 @@ WEATHER_PRESETS = {
         "possible_transitions": ["clear"],
         "season_preference": 0.875,
         "starryness": 1,
+        "transition_weights": [1],
+    },
+
+    WeatherState.TEST_RGB: {
+        "ARI": 9999,
+        "Switch_rate": 1,
+        "ambient_sound": "",
+        "possible_transitions": ["test_hue_bin"],
+        "transition_weights": [1],
+    },
+
+    WeatherState.TEST_HUE_BIN: {
+        "ARI": 9999,
+        "Switch_rate": 1,
+        "ambient_sound": "",
+        "possible_transitions": ["test_rgb"],
         "transition_weights": [1],
     },
 
@@ -1129,7 +1147,7 @@ WEATHER_SETS = {
         "name": "test",
         "season_extremity": 1,
         "season_speed": 1,
-        "states": ["clear"],
+        "states": ["test_rgb", "test_hue_bin"],
         "transition_speed": 1,
     },
 

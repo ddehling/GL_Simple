@@ -124,7 +124,9 @@ class EnvironmentalSystem:
                 bind_ip=web_cfg.get("bind_ip", ""),
             )
             self.web_controller.start(threaded=True)
-        
+            # Register viewports so socket handlers can mutate them directly
+            self.web_controller.control_dict['_viewports'] = self.scheduler._shader_renderer.viewports
+
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
         # sort celestial bodies by distance, farthest first
@@ -541,6 +543,7 @@ class EnvironmentalSystem:
 
         state.update(output)
         state["season"] = self.season
+        state["current_weather_state"] = self.weather_state.current_weather.value
         state["scale"] = self.scale
         state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
         state["celestial_bodies"] = self.celestial_bodies
