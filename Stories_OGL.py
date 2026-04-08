@@ -674,20 +674,20 @@ if __name__ == "__main__":
     # Change to a specific weather set and state on startup
     env_system.change_weather_set("bartiki", immediate=True,
                                   initial_weather=WeatherState.BARTIKI_MIDDAY)
-    last_time = time.time()
     FRAME_TIME = 1 / 40
-    first_time = time.time()
     frame_count = 0
-    fps_start_time = time.time()
+    fps_start_time = time.perf_counter()
     work_time_accum = 0.0  # sum of per-frame work time (no waits) over the window
-    
+
     # For better sleep precision on Windows
     import sys
     if sys.platform == 'win32':
         import ctypes
         winmm = ctypes.WinDLL('winmm')
         winmm.timeBeginPeriod(1)  # Set 1ms timer resolution
-    
+
+    next_deadline = time.perf_counter() + FRAME_TIME
+
     try:
         while True:
             frame_start = time.perf_counter()
@@ -701,17 +701,21 @@ if __name__ == "__main__":
             # Measure pure work time (render + send) before any frame-rate waits
             work_time_accum += time.perf_counter() - frame_start
 
-            # Frame rate limiter: sleep for the bulk, then busy-wait for precision
-            remaining = FRAME_TIME - (time.perf_counter() - frame_start)
+            # Deadline-based frame pacing: fast frames compensate for slow ones
+            remaining = next_deadline - time.perf_counter()
             if remaining > 0.002:
-                time.sleep(remaining - 0.001)
-            # Always busy-wait to hit the target exactly
-            while time.perf_counter() - frame_start < FRAME_TIME:
+                time.sleep(remaining - 0.0015)
+            while time.perf_counter() < next_deadline:
                 pass
+
+            next_deadline += FRAME_TIME
+            # If we're more than 2 frames behind, drop the debt rather than burst-render
+            if time.perf_counter() - next_deadline > 2 * FRAME_TIME:
+                next_deadline = time.perf_counter() + FRAME_TIME
 
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 500 frames
-                current_time = time.time()
+                current_time = time.perf_counter()
                 window = current_time - fps_start_time
                 actual_fps = 500.0 / window
                 target_fps = 1.0 / FRAME_TIME

@@ -60,8 +60,8 @@ class RenderPipeline:
         state['shader_renderer'] = self._shader_renderer
         state['event_scheduler'] = self._scheduler
         state['render'] = [None] * len(frame_dimensions)
-        state['last_time'] = time.time()
-        state['current_time'] = time.time()
+        state['last_time'] = time.perf_counter()
+        state['current_time'] = time.perf_counter()
         state['wind'] = 0
         state['tree_frame'] = np.zeros((60, 120, 4))
         state['rainrate'] = 0.5
@@ -139,7 +139,7 @@ class RenderPipeline:
             self.should_exit = True
             return
 
-        current_time = time.time()
+        current_time = time.perf_counter()
         self._scheduler.tick(current_time)
 
         dt = current_time - self.state['last_time']

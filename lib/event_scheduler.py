@@ -46,7 +46,7 @@ class EventScheduler:
             print(f"[EventScheduler] Skipping duplicate event: {action_name} (already running or queued)")
             return None
 
-        event_time = time.time() + delay
+        event_time = time.perf_counter() + delay
         name = kwargs.pop('name', None)
         frame_id = kwargs.pop('frame_id', None)
 

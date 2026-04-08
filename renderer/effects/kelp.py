@@ -1,11 +1,13 @@
 """
 Kelp shader effect - Swaying kelp forest in ocean waters
 """
+import ctypes
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
+from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
@@ -103,6 +105,7 @@ class KelpEffect(ShaderEffect):
     def __init__(self, viewport, density: float = 1.0, depth: float = 60.0,
                  sway_intensity: float = 1.0):
         super().__init__(viewport)
+        self.fan = FanCoords(viewport.width, viewport.height)
         self.depth = depth
         self.base_density = density
         self.kelp_density = density
@@ -204,10 +207,10 @@ class KelpEffect(ShaderEffect):
         return """
         #version 310 es
         precision highp float;
-        
+
         layout(location = 0) in vec2 position;
         layout(location = 1) in vec4 kelpData;  // [strand_id, segment_t, side, unused]
-        
+
         uniform vec2 resolution;
         uniform float depth;
         uniform float time;
@@ -219,6 +222,7 @@ class KelpEffect(ShaderEffect):
         uniform float swayIntensity;
         uniform float tideLevel;
         uniform float kelpDensity;
+        """ + FAN_COORDS_UNIFORMS + FAN_COORDS_GLSL + """
         
         out vec2 vTexCoord;
         out float vSegmentT;
@@ -296,27 +300,35 @@ class KelpEffect(ShaderEffect):
             float heightVariation = hash2(strandFloat * 0.7) * hash2(strandFloat * 1.3 + 7.7);
             float kelpHeight = maxKelpHeight * (0.2 + heightVariation * 0.8);
             
-            // Width varies by type
-            float baseWidth;
+            // Width in PHYSICAL FEET (will be converted to pixels via local arc width).
+            // Ranges chosen to look like real kelp blades / stipes / fronds.
+            float baseWidthFt;
             if (kelpType == 0) {
-                baseWidth = 3.0 + hash2(strandFloat * 1.1) * 3.0;  // Ribbon kelp: medium
+                baseWidthFt = 0.10 + hash2(strandFloat * 1.1) * 0.12;  // Ribbon kelp
             } else if (kelpType == 1) {
-                baseWidth = 5.0 + hash2(strandFloat * 1.2) * 6.0;  // Broad kelp: wide
+                baseWidthFt = 0.18 + hash2(strandFloat * 1.2) * 0.24;  // Broad kelp
             } else {
-                baseWidth = 1.5 + hash2(strandFloat * 1.3) * 2.0;  // Thin kelp: narrow
+                baseWidthFt = 0.06 + hash2(strandFloat * 1.3) * 0.08;  // Thin kelp
             }
-            
+
             float swayPhase = hash2(strandFloat * 2.1) * 6.28318;
             float swayFreq = 0.6 + hash2(strandFloat * 2.7) * 0.8;
-            
-            // Apply tide level to base position (kelp floor moves with tide)
-            // Tide level in 0-1 range, map to vertical offset
-            float tideOffset = (tideLevel - 0.5) * 30.0;
+
+            // Apply tide level to base position (kelp floor moves with tide).
+            // Tide is a radial offset of ~1 ft, converted to pixels via radial pixel height.
+            float tideOffset = (tideLevel - 0.5) * 1.0 / fan_radial_height_ft();
             basePos.y += tideOffset;
-            
+
             // Calculate position along kelp strand (grow upward = subtract from y)
             vec2 pos = basePos;
             pos.y -= segmentT * kelpHeight;
+
+            // Local arc width in feet at this segment's buffer-v.
+            // Used to convert physical-feet magnitudes (sway, blade width) into pixels
+            // so the strand looks the same physical size everywhere on the fan.
+            float localV = clamp(pos.y / resolution.y, 0.0, 1.0);
+            float arcWFt = fan_arc_width_ft(vec2(0.0, localV));
+            float ftToPx = 1.0 / arcWFt;
             
             // Sway motion (increases toward tip) - varies by kelp type
             float swayAmount = segmentT * segmentT;  // Quadratic - more sway at tip
