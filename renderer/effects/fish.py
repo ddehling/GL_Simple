@@ -113,14 +113,14 @@ SPAWN_R_MAX = INNER_R_FT + 0.65 * (OUTER_R_FT - INNER_R_FT)
 # fan's physical scale a real 6-inch silverside is a few pixels tall and
 # impossible to read. This multiplier blows them up for legibility while
 # keeping the relative species-to-species ratios honest.
-FISH_DISPLAY_SIZE_SCALE = 1.8
+FISH_DISPLAY_SIZE_SCALE = 3.0
 
 # Hard caps for fish geometry in physical feet. The biggest template vertex
 # sits at about 1.1 * size_ft from the fish center, so a fish near the inner
 # radius (r = 4 ft) can safely be at most ~3 ft long without wrapping around
 # the apex singularity. Clamping here keeps the "big" species big without
 # letting them stretch across the fan.
-FISH_MAX_SIZE_FT = 1.0
+FISH_MAX_SIZE_FT = 2.0
 # Minimum radial offset of the fish center from the inner edge of the fan.
 # Anything closer risks having tail vertices wrap to the other side.
 FISH_INNER_MARGIN_FT = 1.2

@@ -311,13 +311,16 @@ class KelpEffect(ShaderEffect):
             // Width in PHYSICAL FEET (will be converted to pixels via local arc width).
             // Range is deliberately wide so some strands are reads-at-a-distance
             // thick while others remain thin wisps.
+            // Minimum width must be at least 1 pixel at the outermost row.
+            // At the outer rim, arc_width_ft ~ 0.51 ft/pixel, so floor at
+            // 0.55 ft guarantees every strand is at least 1 px wide everywhere.
             float baseWidthFt;
             if (kelpType == 0) {
-                baseWidthFt = 0.35 + hash2(strandFloat * 1.1) * 0.90;  // Ribbon kelp
+                baseWidthFt = 0.55 + hash2(strandFloat * 1.1) * 0.90;  // Ribbon kelp
             } else if (kelpType == 1) {
-                baseWidthFt = 0.55 + hash2(strandFloat * 1.2) * 1.30;  // Broad kelp
+                baseWidthFt = 0.75 + hash2(strandFloat * 1.2) * 1.30;  // Broad kelp
             } else {
-                baseWidthFt = 0.18 + hash2(strandFloat * 1.3) * 0.45;  // Thin kelp
+                baseWidthFt = 0.55 + hash2(strandFloat * 1.3) * 0.45;  // Thin kelp
             }
 
             float swayFreq = 0.6 + hash2(strandFloat * 2.7) * 0.8;
