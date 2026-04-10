@@ -127,6 +127,15 @@ function connectSocket() {
         document.getElementById('current-weather').textContent = formatParamName(data.current_weather);
         document.getElementById('season-display').textContent = ((data.season || 0) * 100).toFixed(1) + '%';
 
+        // Keep the season slider/lock button in sync with the server, unless
+        // the user is currently interacting with them.
+        const seasonSlider = document.getElementById('season-slider');
+        if (seasonSlider && !seasonSlider.matches(':active') && !isOnCooldown('season-slider')) {
+            seasonSlider.value = data.season || 0;
+        }
+        _seasonLocked = !!data.season_locked;
+        updateSeasonLockButton(_seasonLocked);
+
         const factor = data.brightness_limiting_factor ?? 1.0;
         const bEl = document.getElementById('brightness-limiting-display');
         bEl.textContent = factor.toFixed(3);
@@ -235,20 +244,18 @@ function resetGlobals() {
 }
 
 // ---- Transition Display ----
+// The transition row and bar are always present so the layout doesn't shift
+// on/off transitions. When not transitioning we show '--' and a 0% bar.
 function updateTransitionDisplay() {
-    const row = document.getElementById('transition-row');
-    const barRow = document.getElementById('transition-bar-row');
     const targetEl = document.getElementById('transition-target');
     const bar = document.getElementById('transition-bar');
 
     if (transitionState.transitioning) {
-        row.style.display = 'flex';
-        barRow.style.display = 'block';
         targetEl.textContent = formatParamName(transitionState.target);
         bar.style.width = (transitionState.progress * 100).toFixed(1) + '%';
     } else {
-        row.style.display = 'none';
-        barRow.style.display = 'none';
+        targetEl.textContent = '--';
+        bar.style.width = '0%';
     }
 }
 
@@ -595,6 +602,57 @@ function toggleFlipX() {
     updateFlipXButton(_flipX);
     if (socket && socket.connected) {
         socket.emit('set_flag', { key: 'flip_x', value: _flipX });
+    }
+}
+
+// ---- Season control ----
+let _seasonLocked = false;
+
+function updateSeasonLockButton(locked) {
+    const btn = document.getElementById('season-lock-btn');
+    if (!btn) return;
+    if (locked) {
+        btn.textContent = 'Locked';
+        btn.style.background = 'rgba(255, 200, 0, 0.2)';
+        btn.style.borderColor = 'rgba(255, 200, 0, 0.7)';
+        btn.style.color = 'rgba(255, 220, 100, 1)';
+    } else {
+        btn.textContent = 'Auto';
+        btn.style.background = 'rgba(255, 255, 255, 0.1)';
+        btn.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+        btn.style.color = '#fff';
+    }
+}
+
+function toggleSeasonLock() {
+    _seasonLocked = !_seasonLocked;
+    updateSeasonLockButton(_seasonLocked);
+    if (socket && socket.connected) {
+        const slider = document.getElementById('season-slider');
+        const payload = { locked: _seasonLocked };
+        if (_seasonLocked && slider) {
+            // Snapshot the current slider value as the lock point.
+            payload.value = parseFloat(slider.value);
+        }
+        socket.emit('set_season', payload);
+    }
+}
+
+function onSeasonSlider(value) {
+    // User is dragging the slider. Cooldown so server updates don't clobber
+    // the value while they're moving it.
+    setInteractionCooldown('season-slider');
+    const v = parseFloat(value);
+    // Also update the %age readout immediately for snappy feedback.
+    const disp = document.getElementById('season-display');
+    if (disp) disp.textContent = (v * 100).toFixed(1) + '%';
+    if (!_seasonLocked) {
+        // Dragging the slider implicitly locks auto-advance.
+        _seasonLocked = true;
+        updateSeasonLockButton(true);
+    }
+    if (socket && socket.connected) {
+        socket.emit('set_season', { value: v, locked: true });
     }
 }
 

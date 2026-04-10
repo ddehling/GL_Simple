@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_bioluminescence(state, outstate, intensity=1.0, depth=50.0):
+def shader_bioluminescence(state, outstate, intensity=2.6, depth=50.0):
     """
     Shader-based bioluminescence effect compatible with EventScheduler
     
@@ -99,7 +99,7 @@ class BioluminescenceEffect(ShaderEffect):
     pulsing, flickering light like real bioluminescent organisms.
     """
     
-    def __init__(self, viewport, intensity: float = 1.0, depth: float = 50.0):
+    def __init__(self, viewport, intensity: float = 2.6, depth: float = 50.0):
         super().__init__(viewport)
         self.depth = depth
         self.base_intensity = intensity
@@ -113,6 +113,15 @@ class BioluminescenceEffect(ShaderEffect):
         self.season = 0.5
         self.fade_factor = 0.0
         self.time = 0.0
+
+        # Drift phases -- these are integrated CPU-side so sudden changes to
+        # wave_speed / current_strength don't teleport particles. The shader
+        # uses these directly as position offsets instead of multiplying
+        # accumulated time by the (varying) instantaneous rate.
+        self.drift_phase_y = 0.0
+        self.drift_phase_x = 0.0
+        self.smoothed_wave_speed = 0.5
+        self.smoothed_current = 0.0
         
         # Particle parameters
         self.max_particles = 2000
@@ -178,8 +187,10 @@ class BioluminescenceEffect(ShaderEffect):
         uniform float time;
         uniform int maxParticles;
         uniform float bioLevel;
-        uniform float waveSpeed;
-        uniform float currentStrength;
+        uniform float waveSpeed;       // current smoothed rate (for pulse frequency)
+        uniform float currentStrength; // current smoothed rate (for pulse frequency)
+        uniform float driftPhaseY;     // accumulated vertical drift (ft of phase)
+        uniform float driftPhaseX;     // accumulated horizontal current drift
         uniform float tideLevel;
         uniform float season;  // Time of day: 0=midnight, 0.5=noon
         
@@ -208,9 +219,14 @@ class BioluminescenceEffect(ShaderEffect):
                 hash2(vec2(pidFloat * 0.1, 2.0)) * resolution.y * 0.85 + resolution.y * 0.15
             );
             
-            float size = 3.0 + hash(pidFloat * 1.5) * 9.0;
+            // Tight, point-like spots. Most particles are small (2-4 px) with
+            // a rare large "glow cluster" at ~8 px.
+            float sizeHash = hash(pidFloat * 1.5);
+            float size = 2.0 + sizeHash * sizeHash * 7.0;
             float pulsePhase = hash(pidFloat * 2.1) * 6.28318;
-            float pulseSpeed = 0.5 + hash(pidFloat * 2.7) * 1.5;
+            // Gentle slow breathing, not blinking. Range 0.15..0.55 rad/s
+            // gives a pulse period of 11-42 seconds per particle.
+            float pulseSpeed = 0.15 + hash(pidFloat * 2.7) * 0.4;
             float colorHue = hash(pidFloat * 3.3);
             float particleDepth = hash(pidFloat * 5.7) * 80.0;  // Random depth 0-80
             
@@ -248,47 +264,73 @@ class BioluminescenceEffect(ShaderEffect):
             float waterBottom = resolution.y;
             float waterHeight = waterBottom - waterTop;
             
-            // Vertical drift (slow rise like plankton) - constrain to water region
-            pos.y -= time * 15.0 * driftSpeed * waveSpeed;
-            
+            // Vertical drift (slow rise like plankton). driftPhaseY is
+            // integrated CPU-side from the (smoothed) wave speed, so the
+            // position never jumps when the weather state changes rates.
+            pos.y -= driftPhaseY * 15.0 * driftSpeed;
+
             // Wrap within water region (adjusted for tide)
             pos.y = waterTop + mod(pos.y - waterTop, waterHeight);
-            
+
             // Cull particles that ended up in beach zone
             if (pos.y < waterTop) {
                 gl_Position = vec4(0.0, 0.0, -10.0, 1.0);
                 gl_PointSize = 0.0;
                 return;
             }
-            
-            // Horizontal current drift
-            pos.x += currentStrength * time * 5.0;
-            pos.x += sin(time * 0.5 + pidFloat * 0.1) * 10.0 * waveSpeed;
+
+            // Horizontal drift uses the integrated phase too.
+            pos.x += driftPhaseX * 5.0;
+            // Gentle horizontal wobble: this is a position oscillation whose
+            // amplitude is constant, so it's safe to use raw time here -- a
+            // rate change in waveSpeed doesn't apply because we dropped it.
+            pos.x += sin(time * 0.5 + pidFloat * 0.1) * 10.0;
             
             // Wrap horizontally
             pos.x = mod(pos.x, resolution.x);
             
-            // Pulsing brightness
+            // Gentle breathing pulse. Range stays in [0.55, 1.0] so particles
+            // never drop below about half brightness -- they sway between
+            // "dim" and "bright" instead of blinking on/off.
             float pulse = sin(time * pulseSpeed + pulsePhase) * 0.5 + 0.5;
-            pulse = pow(pulse, 2.0);  // Sharper pulses
-            
-            // Add flicker
-            float flicker = hash(time * 10.0 + pidFloat) * 0.3 + 0.7;
-            
-            // Night brightness - bright at night, dim during day
+            pulse = 0.55 + pulse * 0.45;
+
+            // Slow secondary wobble so particles don't all pulse in lockstep.
+            // Uses a different (per-particle constant) rate layered on top,
+            // and bounded so it never drags brightness toward zero.
+            float wobble = sin(time * 0.35 + pidFloat * 1.73) * 0.08 + 0.92;
+
+            // Night brightness - bright at night, dim during day.
             // season: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+            // Floor at 0.75 so daytime states still have clearly visible
+            // bioluminescence rather than invisible plankton.
             float dayNightCycle = cos(season * 2.0 * 3.14159);
-            float nightBrightness = 0.3 + dayNightCycle * 1.2;  // midnight=1.5, noon=0.3
+            float nightBrightness = max(0.75, 1.2 + dayNightCycle * 0.8);
+
+            vBrightness = pulse * wobble * nightBrightness;
             
-            vBrightness = pulse * flicker * nightBrightness;
-            
-            // Color - blue-green bioluminescence
-            if (colorHue < 0.4) {
-                vColor = vec3(0.2, 0.6, 1.0);  // Cyan-blue
-            } else if (colorHue < 0.7) {
-                vColor = vec3(0.3, 1.0, 0.7);  // Green-cyan
+            // Wide bioluminescent palette with enough hue separation that
+            // nearby particles read as clearly different colors. Values stay
+            // at or below 1.0 per channel so additive stacking doesn't just
+            // clip everything to white -- each particle is a distinct dot.
+            // Weighted toward the classic cyan/green/blue but with real
+            // outliers in teal, purple, pink, gold, and red.
+            if (colorHue < 0.20) {
+                vColor = vec3(0.10, 0.95, 1.00);  // cyan
+            } else if (colorHue < 0.38) {
+                vColor = vec3(0.15, 1.00, 0.45);  // emerald green
+            } else if (colorHue < 0.52) {
+                vColor = vec3(0.25, 0.40, 1.00);  // deep blue
+            } else if (colorHue < 0.66) {
+                vColor = vec3(0.00, 0.80, 0.65);  // teal
+            } else if (colorHue < 0.78) {
+                vColor = vec3(0.75, 0.30, 1.00);  // violet
+            } else if (colorHue < 0.88) {
+                vColor = vec3(1.00, 0.25, 0.70);  // hot pink
+            } else if (colorHue < 0.96) {
+                vColor = vec3(1.00, 0.70, 0.15);  // amber / gold
             } else {
-                vColor = vec3(0.5, 0.8, 1.0);  // Light blue
+                vColor = vec3(1.00, 0.15, 0.20);  // rare crimson
             }
             
             // Convert to clip space
@@ -300,7 +342,9 @@ class BioluminescenceEffect(ShaderEffect):
             mappedDepth = clamp(mappedDepth, 0.0, 1.0);
             
             gl_Position = vec4(clipPos, mappedDepth, 1.0);
-            gl_PointSize = size * (vBrightness * 0.5 + 0.5);  // Size varies with brightness
+            // Keep point size mostly constant so particles read as crisp
+            // dots instead of pulsating blobs.
+            gl_PointSize = size * (0.8 + vBrightness * 0.25);
         }
         """
     
@@ -319,29 +363,34 @@ class BioluminescenceEffect(ShaderEffect):
         out vec4 outColor;
         
         void main() {
-            // Create circular glow
             vec2 coord = gl_PointCoord - vec2(0.5);
             float dist = length(coord);
-            
-            // Soft glow falloff
-            float glow = 1.0 - smoothstep(0.0, 0.5, dist);
-            glow = pow(glow, 1.5);
-            
-            // Bright core
-            float core = 1.0 - smoothstep(0.0, 0.2, dist);
-            core = pow(core, 3.0);
-            
-            float brightness = (glow * 0.8 + core * 0.6) * vBrightness * bioIntensity;
-            
-            vec3 color = vColor * brightness;
-            
-            // Alpha - glowing particles are semi-transparent
-            float alpha = (glow * 0.7 + core * 0.8) * vBrightness;
-            alpha *= vParticleAlpha;
-            alpha *= fadeAlpha;
-            
+            if (dist > 0.5) discard;
+
+            // Tight bright core + narrow halo. Halo is 0..outer edge, core is
+            // a much smaller inner disc that's nearly solid colored.
+            float halo = 1.0 - smoothstep(0.0, 0.5, dist);
+            halo = pow(halo, 2.0);
+
+            float core = 1.0 - smoothstep(0.0, 0.18, dist);
+            core = pow(core, 1.5);
+
+            // Halo scales with pulse for shimmer; core stays at full strength
+            // so every particle reads as a visible colored dot regardless of
+            // its pulse state.
+            float haloIntensity = vBrightness;
+
+            // Bright core + prominent halo. With additive blending enabled
+            // in render(), overlapping particles stack into bright patches.
+            vec3 color = vColor * (core * 1.8 + halo * haloIntensity * 1.2) * bioIntensity;
+
+            // Alpha: core is fully opaque, halo is also strong so the glow
+            // is thick. The additive blend prevents the alpha from clipping
+            // adjacent particles dark.
+            float alpha = max(core, halo * 0.8);
+            alpha *= vParticleAlpha * fadeAlpha;
             alpha = clamp(alpha, 0.0, 1.0);
-            
+
             outColor = vec4(color, alpha);
         }
         """
@@ -371,20 +420,51 @@ class BioluminescenceEffect(ShaderEffect):
     def update(self, dt: float, state: Dict):
         """Update effect state each frame"""
         self.time += dt
-        
+
         # Smooth bio level transitions
         smoothing_speed = 0.5
         self.smoothed_bio_level += (self.target_bio_level - self.smoothed_bio_level) * smoothing_speed * dt
         self.bio_level = self.smoothed_bio_level
+
+        # Smooth the rate parameters so the weather state transitions don't
+        # cause instantaneous speed changes. Particle drift integrates the
+        # SMOOTHED rates, not the raw incoming values.
+        rate_smooth = 0.25  # per-second approach rate (~4 sec time constant)
+        self.smoothed_wave_speed += (self.wave_speed - self.smoothed_wave_speed) * rate_smooth * dt
+        self.smoothed_current += (self.current_strength - self.smoothed_current) * rate_smooth * dt
+
+        # Floor the effective drift rate so "calm" ocean states (ABYSS,
+        # JELLYFISH_BLOOM) don't look like frozen particles. The quietest
+        # per-state wave_speed is 0.1, which would crawl particles across
+        # the buffer in ~5 minutes -- effectively motionless.
+        MIN_DRIFT_RATE = 0.35
+        effective_drift = max(self.smoothed_wave_speed, MIN_DRIFT_RATE)
+
+        # Integrate drift phases. The shader uses these directly as position
+        # offsets, so varying the rate never causes a position discontinuity.
+        self.drift_phase_y += effective_drift * dt
+        self.drift_phase_x += self.smoothed_current * dt
+
+        # Wrap phases so float32 GPU uniforms don't lose precision overnight.
+        # The shader uses these in mod() and sin() so wrapping is transparent.
+        self.drift_phase_y %= 10000.0
+        self.drift_phase_x %= 10000.0
     
     def render(self, state: Dict):
         """Render bioluminescent particles"""
         if self.shader is None or self.VAO is None:
             return
         
-        # Transparent particles don't write to depth buffer
+        # Transparent particles don't write to depth buffer.
         glDepthMask(GL_FALSE)
-        
+
+        # Additive blending so overlapping bioluminescent spots stack into
+        # bright hotspots instead of alpha-averaging to a muddy tone. Save
+        # and restore so we don't leak state to other effects.
+        prev_blend_src = glGetIntegerv(GL_BLEND_SRC_ALPHA)
+        prev_blend_dst = glGetIntegerv(GL_BLEND_DST_ALPHA)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+
         glUseProgram(self.shader)
         
         # Set uniforms
@@ -393,8 +473,10 @@ class BioluminescenceEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, b"time"), self.time)
         glUniform1i(glGetUniformLocation(self.shader, b"maxParticles"), self.max_particles)
         glUniform1f(glGetUniformLocation(self.shader, b"bioLevel"), self.bio_level)
-        glUniform1f(glGetUniformLocation(self.shader, b"waveSpeed"), self.wave_speed)
-        glUniform1f(glGetUniformLocation(self.shader, b"currentStrength"), self.current_strength)
+        glUniform1f(glGetUniformLocation(self.shader, b"waveSpeed"), self.smoothed_wave_speed)
+        glUniform1f(glGetUniformLocation(self.shader, b"currentStrength"), self.smoothed_current)
+        glUniform1f(glGetUniformLocation(self.shader, b"driftPhaseY"), self.drift_phase_y)
+        glUniform1f(glGetUniformLocation(self.shader, b"driftPhaseX"), self.drift_phase_x)
         glUniform1f(glGetUniformLocation(self.shader, b"tideLevel"), self.tide_level)
         glUniform1f(glGetUniformLocation(self.shader, b"season"), self.season)
         glUniform1f(glGetUniformLocation(self.shader, b"fadeAlpha"), self.fade_factor)
@@ -406,8 +488,9 @@ class BioluminescenceEffect(ShaderEffect):
         glBindVertexArray(0)
         
         glUseProgram(0)
-        
-        # Restore depth writes
+
+        # Restore blending and depth state.
+        glBlendFunc(prev_blend_src, prev_blend_dst)
         glDepthMask(GL_TRUE)
     
     def cleanup(self):

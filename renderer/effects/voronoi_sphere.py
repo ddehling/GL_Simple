@@ -3,11 +3,13 @@ Voronoi Sphere - Raymarched 3D Voronoi pattern on a sphere with glowing kernel
 Based on shader by Stephane Cuillerdier - Aiekick/2015
 Creates a rotating 3D sphere with Voronoi cell structure and internal glowing core
 """
+import ctypes
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict
 from .base import ShaderEffect
+from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 # ============================================================================
 # Event Wrapper Function - Integrates with EventScheduler
@@ -118,9 +120,10 @@ class VoronoiSphereEffect(ShaderEffect):
     """Fullscreen post-processing raymarched Voronoi sphere"""
     
     def __init__(self, viewport, rotation_speed: float = 0.14, elevation: float = 1.0,
-                 distance: float = 1.0, audio_reactive: bool = True, 
+                 distance: float = 1.0, audio_reactive: bool = True,
                  audio_sensitivity: float = 2.5):
         super().__init__(viewport)
+        self.fan = FanCoords(viewport.width, viewport.height)
         self.rotation_speed = rotation_speed
         self.elevation = elevation
         self.distance = distance
@@ -151,10 +154,10 @@ class VoronoiSphereEffect(ShaderEffect):
         return """
         #version 310 es
         precision highp float;
-        
+
         in vec2 fragCoord;
         out vec4 outColor;
-        
+
         uniform vec2 resolution;
         uniform float time;
         uniform float rotationSpeed;
@@ -162,6 +165,7 @@ class VoronoiSphereEffect(ShaderEffect):
         uniform float camDistance;
         uniform float fadeAlpha;
         uniform float audioBands[32];  // All 32 frequency bands
+        """ + FAN_COORDS_UNIFORMS + FAN_COORDS_GLSL + """
         
         #define shape(p) length(p)-2.8
         
@@ -258,23 +262,54 @@ class VoronoiSphereEffect(ShaderEffect):
         const vec3 LPos = vec3(-0.6, 0.7, -0.5);
         
         void main() {
-            vec2 si = resolution.xy;
             float t = time;
-            
+
             // Constant rotation speed (no audio modulation)
             float ca = t * rotationSpeed;
             float ce = elevation;
             float cd = camDistance;
-            
+
             vec3 cu = vec3(0., 1., 0.);
             vec3 cv = vec3(0., 0., 0.);
-            
-            // Shift viewport down so sphere center is at very bottom of screen
-            vec2 uv = (gl_FragCoord.xy + gl_FragCoord.xy - si) / min(si.x, si.y);
-            
-            // Much larger shift to push sphere all the way to bottom
-            uv.y += 2.5;  // Large shift to put sphere center at bottom of tall viewports
-            
+
+            // -------- FAN-AWARE SCREEN COORDINATES --------
+            // The 128x300 buffer maps onto a physical semicircle on the fan
+            // (inner r = 4 ft, outer r = 20.6 ft). Sampling the raymarcher in
+            // physical feet instead of raw buffer pixels makes the sphere
+            // appear perfectly round on the fan instead of as a distorted
+            // wedge.
+            //
+            // Place the sphere so its center coincides with the CENTER of the
+            // fan's arc -- i.e. the origin of the semicircle in physical
+            // coordinates, which is at (0, 0). The rendered area only covers
+            // y in [inner_r, outer_r] feet, so the sphere center sits BELOW
+            // the visible rectangle and only the top dome of the sphere is
+            // visible inside the fan. That's the geometrically correct
+            // "centered on the arc" placement.
+            vec2 buffer_uv = gl_FragCoord.xy / resolution;
+            vec2 phys = fan_uv_to_physical(buffer_uv);
+
+            const float SPHERE_X_FT = 0.0;
+            const float SPHERE_Y_FT = 0.0;    // physical origin = arc center
+            // FT_PER_UNIT scales the raymarcher's radius-2.8 sphere so it
+            // fills the fan. At 7.35 ft/unit the sphere radius is ~20.6 ft,
+            // matching the fan's outer radius so the sphere's equator touches
+            // the rim of the fan and its top reaches the apex.
+            const float FT_PER_UNIT = 7.35;
+
+            vec2 uv = vec2(
+                (phys.x - SPHERE_X_FT) / FT_PER_UNIT,
+                (phys.y - SPHERE_Y_FT) / FT_PER_UNIT
+            );
+
+            // Discard fragments that fall outside the physical semicircle
+            // (below the diameter line). They'd otherwise sample the
+            // raymarcher at angles the fan can't display.
+            if (phys.y < 0.0) {
+                outColor = vec4(0.0);
+                return;
+            }
+
             vec3 ro = vec3(sin(ca) * cd, ce + 1., cos(ca) * cd);
             vec3 rd = cam(uv, ro, cu, cv);
             
@@ -402,8 +437,13 @@ class VoronoiSphereEffect(ShaderEffect):
         self.EBO = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
-        
+
         glBindVertexArray(0)
+
+        # Upload static fan-coord uniforms (inner/outer radius, num_cols/rows).
+        glUseProgram(self.shader)
+        self.fan.set_uniforms(self.shader)
+        glUseProgram(0)
     
     def update(self, dt: float, state: Dict):
         """Update animation time"""

@@ -114,10 +114,15 @@ class KelpEffect(ShaderEffect):
         # Ocean parameters (updated from global state)
         self.wave_speed = 0.5
         self.current_strength = 0.0
+        self.smoothed_current_strength = 0.0
         self.tide_level = 0.5
         self.season = 0.5
         self.fade_factor = 0.0  # Start invisible, fade in
         self.time = 0.0
+        # Sway phase integrated CPU-side so sudden wave_speed changes
+        # (weather state transitions) never snap the kelp to a new pose.
+        self.sway_phase = 0.0
+        self.smoothed_wave_speed = 0.5
         
         # Smoothed density for gradual transitions
         self.target_density = density
@@ -217,7 +222,8 @@ class KelpEffect(ShaderEffect):
         uniform int maxStrands;
         uniform sampler2D kelpPositions;  // Texture with kelp base positions
         uniform sampler2D kelpProperties; // Texture with kelp properties
-        uniform float waveSpeed;
+        uniform float waveSpeed;   // smoothed sway rate (for frond waves etc.)
+        uniform float swayPhase;   // CPU-integrated sway phase, jump-free
         uniform float currentStrength;
         uniform float swayIntensity;
         uniform float tideLevel;
@@ -294,24 +300,26 @@ class KelpEffect(ShaderEffect):
             // Determine kelp type (3 types: ribbon=0, broad=1, thin=2)
             int kelpType = int(mod(strandFloat, 3.0));
             
-            // Limit kelp to bottom 1/3 of screen with much more variety
-            float maxKelpHeight = resolution.y / 3.0;
-            // Use multiple hash calls for better randomization
+            // Wide kelp height range: tallest strands can reach ~75% of the
+            // screen (well past the midpoint), shortest stay near the floor.
+            // Multiplying two independent hashes biases the distribution
+            // toward short strands so towering ones are special and rare.
+            float maxKelpHeight = resolution.y * 0.75;
             float heightVariation = hash2(strandFloat * 0.7) * hash2(strandFloat * 1.3 + 7.7);
-            float kelpHeight = maxKelpHeight * (0.2 + heightVariation * 0.8);
+            float kelpHeight = maxKelpHeight * (0.08 + heightVariation * 0.92);
             
             // Width in PHYSICAL FEET (will be converted to pixels via local arc width).
-            // Ranges chosen to look like real kelp blades / stipes / fronds.
+            // Range is deliberately wide so some strands are reads-at-a-distance
+            // thick while others remain thin wisps.
             float baseWidthFt;
             if (kelpType == 0) {
-                baseWidthFt = 0.10 + hash2(strandFloat * 1.1) * 0.12;  // Ribbon kelp
+                baseWidthFt = 0.35 + hash2(strandFloat * 1.1) * 0.90;  // Ribbon kelp
             } else if (kelpType == 1) {
-                baseWidthFt = 0.18 + hash2(strandFloat * 1.2) * 0.24;  // Broad kelp
+                baseWidthFt = 0.55 + hash2(strandFloat * 1.2) * 1.30;  // Broad kelp
             } else {
-                baseWidthFt = 0.06 + hash2(strandFloat * 1.3) * 0.08;  // Thin kelp
+                baseWidthFt = 0.18 + hash2(strandFloat * 1.3) * 0.45;  // Thin kelp
             }
 
-            float swayPhase = hash2(strandFloat * 2.1) * 6.28318;
             float swayFreq = 0.6 + hash2(strandFloat * 2.7) * 0.8;
 
             // Apply tide level to base position (kelp floor moves with tide).
@@ -332,7 +340,11 @@ class KelpEffect(ShaderEffect):
             
             // Sway motion (increases toward tip) - varies by kelp type
             float swayAmount = segmentT * segmentT;  // Quadratic - more sway at tip
-            float swayTime = time * waveSpeed * swayFreq + swayPhase;
+            // swayPhase is integrated CPU-side so the kelp never snaps to a
+            // new pose when waveSpeed changes between weather states.
+            // per-strand phase offset keeps each strand out of sync.
+            float strandPhaseOffset = hash2(strandFloat * 2.1) * 6.28318;
+            float swayTime = swayPhase * swayFreq + strandPhaseOffset;
             
             // Multi-layer sway for organic motion - intensity varies by type
             float swayMultiplier = 1.0;
@@ -344,22 +356,26 @@ class KelpEffect(ShaderEffect):
                 swayMultiplier = 1.5;  // Thin: most sway (lightest)
             }
             
-            float sway1 = sin(swayTime) * swayAmount * 15.0 * swayMultiplier;
-            float sway2 = sin(swayTime * 1.7 + 1.3) * swayAmount * 8.0 * swayMultiplier;
-            float sway3 = noise(vec2(swayTime * 0.5, strandFloat * 0.1)) * swayAmount * 5.0 * swayMultiplier;
-            
+            // Sway magnitudes in PHYSICAL FEET, converted to pixels via local arc width.
+            // 0.6 ft / 0.32 ft / 0.2 ft give comparable visual amplitude to the old
+            // pixel-space numbers (15/8/5 px) at the mid-radius row.
+            float sway1 = sin(swayTime) * swayAmount * 1.8 * swayMultiplier * ftToPx;
+            float sway2 = sin(swayTime * 1.7 + 1.3) * swayAmount * 1.0 * swayMultiplier * ftToPx;
+            float sway3 = noise(vec2(swayTime * 0.5, strandFloat * 0.1)) * swayAmount * 0.6 * swayMultiplier * ftToPx;
+
             // Add horizontal undulation for frond effect (broad kelp)
             if (kelpType == 1) {
                 float frondWave = sin(segmentT * 3.14159 * 3.0 + swayTime * 2.0);
-                sway1 += frondWave * segmentT * 8.0;
+                sway1 += frondWave * segmentT * 0.32 * ftToPx;
             }
-            
+
             pos.x += (sway1 + sway2 + sway3) * swayIntensity;
+
+            // Current drift: 0.4 ft of horizontal lean per unit of currentStrength.
+            pos.x += currentStrength * segmentT * 0.4 * ftToPx;
             
-            // Add current drift
-            pos.x += currentStrength * segmentT * 10.0;
-            
-            // Width varies along strand based on type - create bulbs and fronds
+            // Width varies along strand based on type - create bulbs and fronds.
+            // widthProfile is dimensionless; base width is in feet, converted to px below.
             float widthProfile;
             if (kelpType == 0) {
                 // Ribbon kelp: bulb near top (like bull kelp)
@@ -378,9 +394,10 @@ class KelpEffect(ShaderEffect):
                 float irregularity = noise(vec2(segmentT * 5.0, strandFloat * 0.3));
                 widthProfile = (1.0 - segmentT * 0.85) * (0.7 + irregularity * 0.6);
             }
-            
-            float width = baseWidth * widthProfile;
-            pos.x += side * width;
+
+            // Convert physical-feet width to local pixels via arc width at this row.
+            float widthPx = baseWidthFt * widthProfile * ftToPx;
+            pos.x += side * widthPx;
             
             // Convert to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
@@ -558,19 +575,41 @@ class KelpEffect(ShaderEffect):
         self.EBO = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, self.indices.nbytes, self.indices, GL_STATIC_DRAW)
-        
+
         glBindVertexArray(0)
+
+        # Upload static fan-coordinate uniforms once.
+        glUseProgram(self.shader)
+        self.fan.set_uniforms(self.shader)
+        glUseProgram(0)
     
     def update(self, dt: float, state: Dict):
         """Update effect state each frame"""
         self.time += dt
-        
-        # Smooth density transitions to make kelp appear/disappear gradually
-        smoothing_speed = 0.5  # How fast density changes (0=instant, 1=slow)
+
+        # Smooth density transitions so kelp appears/disappears gradually.
+        smoothing_speed = 0.5
         self.smoothed_density += (self.target_density - self.smoothed_density) * smoothing_speed * dt
-        
-        # Update actual density used in rendering
         self.kelp_density = self.smoothed_density
+
+        # Smooth the sway rate. The shader uses sway_phase DIRECTLY (not
+        # time * waveSpeed), so a weather state transition to a different
+        # wave_speed changes how fast the phase advances but never snaps
+        # the kelp to a new pose.
+        rate_smooth = 0.25
+        self.smoothed_wave_speed += (self.wave_speed - self.smoothed_wave_speed) * rate_smooth * dt
+        self.smoothed_current_strength += (self.current_strength - self.smoothed_current_strength) * rate_smooth * dt
+
+        # Floor the effective sway rate so "calm" states don't go completely
+        # motionless. The quietest ocean states have wave_speed 0.1-0.15,
+        # which at the shader's sway frequency means one oscillation per
+        # minute -- visually indistinguishable from frozen kelp. Clamp so
+        # every state has readable motion.
+        MIN_SWAY_RATE = 0.4
+        effective_sway = max(self.smoothed_wave_speed, MIN_SWAY_RATE)
+        self.sway_phase += effective_sway * dt
+        # Wrap so float32 GPU uniform doesn't lose precision overnight.
+        self.sway_phase %= 6283.2  # ~1000 × 2π, preserves all sin() behavior
     
     def render(self, state: Dict):
         """Render kelp strands"""
@@ -589,8 +628,9 @@ class KelpEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, b"depth"), self.depth)
         glUniform1f(glGetUniformLocation(self.shader, b"time"), self.time)
         glUniform1i(glGetUniformLocation(self.shader, b"maxStrands"), self.max_kelp_strands)
-        glUniform1f(glGetUniformLocation(self.shader, b"waveSpeed"), self.wave_speed)
-        glUniform1f(glGetUniformLocation(self.shader, b"currentStrength"), self.current_strength)
+        glUniform1f(glGetUniformLocation(self.shader, b"waveSpeed"), self.smoothed_wave_speed)
+        glUniform1f(glGetUniformLocation(self.shader, b"swayPhase"), self.sway_phase)
+        glUniform1f(glGetUniformLocation(self.shader, b"currentStrength"), self.smoothed_current_strength)
         glUniform1f(glGetUniformLocation(self.shader, b"swayIntensity"), self.sway_intensity)
         glUniform1f(glGetUniformLocation(self.shader, b"tideLevel"), self.tide_level)
         glUniform1f(glGetUniformLocation(self.shader, b"kelpDensity"), self.kelp_density)

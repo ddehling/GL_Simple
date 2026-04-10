@@ -38,11 +38,11 @@
                 <span class="info-label">Current Weather:</span>
                 <span class="info-value" id="current-weather">Loading...</span>
             </div>
-            <div id="transition-row" class="info-row" style="display: none;">
+            <div id="transition-row" class="info-row">
                 <span class="info-label">Transitioning to:</span>
                 <span class="info-value" id="transition-target">--</span>
             </div>
-            <div id="transition-bar-row" style="display: none;">
+            <div id="transition-bar-row">
                 <div class="transition-bar-container" style="display: block;">
                     <div class="transition-bar-fill" id="transition-bar" style="width: 0%;"></div>
                 </div>
@@ -50,6 +50,11 @@
             <div class="info-row">
                 <span class="info-label">Season:</span>
                 <span class="info-value" id="season-display">0%</span>
+            </div>
+            <div class="info-row" style="align-items: center; gap: 8px;">
+                <input type="range" id="season-slider" min="0" max="1" step="0.001" value="0"
+                       style="flex: 1;" oninput="onSeasonSlider(this.value)">
+                <button id="season-lock-btn" onclick="toggleSeasonLock()" class="btn-small">Auto</button>
             </div>
             <div class="info-row">
                 <span class="info-label">Brightness Limiting:</span>

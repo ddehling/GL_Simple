@@ -507,7 +507,20 @@ class EnvironmentalSystem:
 
     def send_variables(self):
         season_speed = self.weather_set.get_season_speed()
-        self.season = ((time.time() / 1800) * season_speed) % 1
+
+        # Season can be manually locked to a user-chosen value via the web UI.
+        # When unlocked, it auto-advances from wall-clock time like before.
+        season_locked = False
+        season_override = None
+        if self.enable_web_control and self.web_controller is not None:
+            with self.web_controller._dict_lock:
+                season_locked = bool(self.web_controller.control_dict.get('season_locked', False))
+                season_override = self.web_controller.control_dict.get('season_override')
+
+        if season_locked and season_override is not None:
+            self.season = float(season_override) % 1.0
+        else:
+            self.season = ((time.time() / 1800) * season_speed) % 1
 
         state = self.scheduler.state
         output = self.weather_state.get_state_output(self.season, self.current_time)
@@ -672,8 +685,8 @@ if __name__ == "__main__":
     #TODO: A way to set a weather state independently of set for testing
 
     # Change to a specific weather set and state on startup
-    env_system.change_weather_set("bartiki", immediate=True,
-                                  initial_weather=WeatherState.BARTIKI_MIDDAY)
+    env_system.change_weather_set("ocean", immediate=True,
+                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
     FRAME_TIME = 1 / 40
     frame_count = 0
     fps_start_time = time.perf_counter()

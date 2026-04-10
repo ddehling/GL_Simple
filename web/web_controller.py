@@ -14,6 +14,25 @@ from pathlib import Path
 import json
 from zeroconf import Zeroconf, ServiceInfo
 from renderer.fan_geometry import FanGeometry
+import numpy as np
+
+
+def _sanitize_for_json(obj):
+    """Recursively convert numpy scalars/arrays to Python-native types so
+    json.dumps (used by socketio.emit) doesn't choke on float32 etc."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.complexfloating)):
+        return float(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
 
 
 class WebController:
@@ -299,7 +318,7 @@ class WebController:
 
             if (self._values_cache is not None and
                 current_time - self._values_cache_time < self._cache_duration):
-                return self._values_cache
+                return jsonify(self._values_cache)
 
             with self._dict_lock:
                 snapshot = {
@@ -317,10 +336,9 @@ class WebController:
                     "allowed_output_params": self.control_dict.get('allowed_output_params'),
                 }
 
-            response = jsonify(snapshot)
-            self._values_cache = response
+            self._values_cache = snapshot
             self._values_cache_time = current_time
-            return response
+            return jsonify(snapshot)
 
         @self.app.route('/api/values')
         def get_values():
@@ -606,7 +624,7 @@ class WebController:
                     "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                     "active_effects": self.control_dict.get('active_effects', []),
                 }
-            emit('state_update', snapshot)
+            emit('state_update', _sanitize_for_json(snapshot))
 
         @self.socketio.on('subscribe_preview')
         def handle_subscribe_preview():
@@ -662,6 +680,18 @@ class WebController:
         def handle_clear_all_overrides(data=None):
             with self._dict_lock:
                 self.web_param_overrides.clear()
+            self._values_cache = None
+
+        @self.socketio.on('set_season')
+        def handle_set_season(data):
+            """Set the manual season value and lock auto-advance."""
+            value = data.get('value')
+            locked = data.get('locked')
+            with self._dict_lock:
+                if value is not None:
+                    self.control_dict['season_override'] = float(value) % 1.0
+                if locked is not None:
+                    self.control_dict['season_locked'] = bool(locked)
             self._values_cache = None
 
         # Allowed keys for the set_flag WebSocket event
@@ -747,6 +777,7 @@ class WebController:
                                 "current_weather_set": self.control_dict.get('current_weather_set', 'unknown'),
                                 "current_weather": self.control_dict.get('current_weather', 'unknown'),
                                 "season": self.control_dict.get('season', 0.0),
+                                "season_locked": self.control_dict.get('season_locked', False),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
                                 "ambient_sound": self.control_dict.get('ambient_sound'),
@@ -754,6 +785,7 @@ class WebController:
                             }
 
                         # Emit to all connected clients
+                        snapshot = _sanitize_for_json(snapshot)
                         self.socketio.emit('state_update', snapshot)
 
                         # Detect weather set/state changes for event-driven push
@@ -780,7 +812,7 @@ class WebController:
                         with self._dict_lock:
                             audio = copy.copy(self.control_dict.get('audio_summary', {}))
                         if audio:
-                            self.socketio.emit('audio_update', audio)
+                            self.socketio.emit('audio_update', _sanitize_for_json(audio))
                     except Exception as e:
                         print(f"[WebController] Emitter audio error: {e}")
 
