@@ -509,7 +509,6 @@ class EnvironmentalSystem:
         season_speed = self.weather_set.get_season_speed()
 
         # Season can be manually locked to a user-chosen value via the web UI.
-        # When unlocked, it auto-advances from wall-clock time like before.
         season_locked = False
         season_override = None
         if self.enable_web_control and self.web_controller is not None:

@@ -94,15 +94,6 @@ class RenderPipeline:
         total_pixels = sum(w * h for w, h in frame_dimensions)
         print(f"[RenderPipeline] Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
 
-        # Pre-allocate per-frame numpy buffers to avoid 23 MB/sec of
-        # temporary array allocation in _send_to_displays / gamma correction.
-        self._gamma_bufs = [
-            np.empty((h, w, 3), dtype=np.float32) for w, h in frame_dimensions
-        ]
-        self._output_bufs = [
-            np.empty((h, w, 3), dtype=np.uint8) for w, h in frame_dimensions
-        ]
-
         state['screens'] = []
         for frame_receivers in receivers:
             sender = imdmx.SACNPixelSender(
@@ -179,35 +170,27 @@ class RenderPipeline:
         gamma = 2.8
         for i, frame in enumerate(frames):
             frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
-            gbuf = self._gamma_bufs[i]
-            obuf = self._output_bufs[i]
 
             if gamma != 1:
-                # In-place gamma correction to avoid 3 temporary numpy arrays per frame.
-                np.divide(frame_rgb, 255.0, out=gbuf)
-                np.power(gbuf, gamma, out=gbuf)
-                np.multiply(gbuf, 255.0, out=gbuf)
+                frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
             else:
-                np.copyto(gbuf, frame_rgb, casting='unsafe')
+                frame_corrected = frame_rgb.astype(np.float32)
 
-            self._apply_brightness_limiting(gbuf, i)
+            frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
 
             screens = self.state['screens']
             if i < len(screens) and screens[i] is not None:
                 try:
-                    np.clip(gbuf, 0, 255, out=gbuf)
-                    np.copyto(obuf, gbuf, casting='unsafe')
-                    screens[i].send(obuf)
+                    screens[i].send(frame_corrected[:, :, [0, 1, 2]])
                 except OSError as e:
                     print(f"[RenderPipeline] Network error sending to display {i}: {e}")
 
         self._shader_renderer.swap_buffers()
 
-    def _apply_brightness_limiting(self, frame_corrected: np.ndarray, frame_index: int):
-        """Scale frame down IN PLACE if total brightness exceeds the setpoint.
+    def _apply_brightness_limiting(self, frame_corrected: np.ndarray, frame_index: int) -> np.ndarray:
+        """Scale frame down if total brightness exceeds the setpoint.
 
         Uses exponential smoothing on the divisor to prevent flickering.
-        Modifies ``frame_corrected`` in place to avoid allocating temporary arrays.
         """
         cfg = self.brightness_config
         state = self.brightness_state[frame_index]
@@ -235,7 +218,8 @@ class RenderPipeline:
 
         last = state['last_logged_divisor']
         if state['divisor'] > 1.001:
-            frame_corrected /= state['divisor']
+            frame_corrected = frame_corrected / state['divisor']
+            # Log when limiting starts or value shifts by more than 20%
             if last <= 1.001 or abs(state['divisor'] - last) > 0.2:
                 print(f"[RenderPipeline] Brightness limiting active: divisor={state['divisor']:.3f} (display {frame_index})")
                 state['last_logged_divisor'] = state['divisor']
@@ -246,7 +230,9 @@ class RenderPipeline:
         # Apply web brightness modifier (can only dim, never exceed hardware limiter)
         web_brightness = self.state.get("web_brightness", 1.0)
         if web_brightness < 1.0:
-            frame_corrected *= max(web_brightness, 0.0)
+            frame_corrected = frame_corrected * max(web_brightness, 0.0)
+
+        return np.clip(frame_corrected, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------
     # Lifecycle

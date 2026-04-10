@@ -354,12 +354,6 @@ class MicrophoneAnalyzer:
         self._band_lock = threading.Lock()
         self.band_power_history = CircularBuffer((self.band_history_len, self.num_bands))
 
-        # Analysis cache: get_extended_analysis() is called 40×/sec but the
-        # underlying data only updates at ~86 Hz. Cache the result and only
-        # recompute when the circular buffer has advanced.
-        self._analysis_cache = None
-        self._analysis_cache_idx = -1
-
     def audio_callback(self, indata, frames, time_info, status):
         # Lock-free write - just shift and append
         # This is fast enough that we don't need a lock
@@ -461,13 +455,8 @@ class MicrophoneAnalyzer:
 
     def get_extended_analysis(self):
         """
-        Returns a dictionary with comprehensive audio analysis data.
-
-        The result is CACHED: if the underlying band_power_history has not
-        advanced since the last call, the cached dict is returned immediately,
-        avoiding ~1 MB of numpy allocations per frame (the biggest source of
-        heap churn in the render loop).
-
+        Returns a dictionary with comprehensive audio analysis data
+        
         Returns:
             dict: {
                 'raw_bands': 2D array (1000 x 32) - Raw power in each frequency band
@@ -480,11 +469,6 @@ class MicrophoneAnalyzer:
                 'averaging_method': str - 'exponential' or 'mean'
             }
         """
-        # Fast path: return cached result if the audio data hasn't changed.
-        current_idx = self.band_power_history.write_idx
-        if self._analysis_cache is not None and current_idx == self._analysis_cache_idx:
-            return self._analysis_cache
-
         raw = self.band_power_history.get_ordered()
         
         if len(raw) == 0:
@@ -542,20 +526,17 @@ class MicrophoneAnalyzer:
             norm_long = norm_long * s
             norm_long_relu = norm_long_relu * s
 
-        result = {
+        return {
             'raw_bands': raw,
             'norm_short': norm_short,
             'norm_long': norm_long,
             'norm_long_relu': norm_long_relu,
-            'band_centers': self.band_centers,   # read-only downstream, no copy needed
-            'band_edges': self.band_edges,       # read-only downstream, no copy needed
+            'band_centers': self.band_centers.copy(),
+            'band_edges': self.band_edges.copy(),
             'timestamp': time.time(),
             'averaging_method': 'exponential' if self.use_exponential else 'mean',
             'sensitivity': self._sensitivity
         }
-        self._analysis_cache = result
-        self._analysis_cache_idx = current_idx
-        return result
 
     
     def get_current_bands(self, normalize='none'):

@@ -73,6 +73,22 @@ class WebController:
         # Configure Flask session with a secret key
         self.app.secret_key = secrets.token_hex(32)
 
+        # Custom JSON provider so jsonify() handles numpy types everywhere.
+        from flask.json.provider import DefaultJSONProvider
+        class _NumpyJSONProvider(DefaultJSONProvider):
+            def default(self, o):
+                if isinstance(o, np.ndarray):
+                    return o.tolist()
+                if isinstance(o, (np.floating, np.complexfloating)):
+                    return float(o)
+                if isinstance(o, np.integer):
+                    return int(o)
+                if isinstance(o, np.bool_):
+                    return bool(o)
+                return super().default(o)
+        self.app.json_provider_class = _NumpyJSONProvider
+        self.app.json = _NumpyJSONProvider(self.app)
+
         # Initialize SocketIO with threading async mode
         self.socketio = SocketIO(self.app, async_mode='threading',
                                  cors_allowed_origins='*', logger=False,
@@ -318,7 +334,7 @@ class WebController:
 
             if (self._values_cache is not None and
                 current_time - self._values_cache_time < self._cache_duration):
-                return jsonify(self._values_cache)
+                return self._values_cache
 
             with self._dict_lock:
                 snapshot = {
@@ -336,9 +352,10 @@ class WebController:
                     "allowed_output_params": self.control_dict.get('allowed_output_params'),
                 }
 
-            self._values_cache = snapshot
+            response = jsonify(snapshot)
+            self._values_cache = response
             self._values_cache_time = current_time
-            return jsonify(snapshot)
+            return response
 
         @self.app.route('/api/values')
         def get_values():
