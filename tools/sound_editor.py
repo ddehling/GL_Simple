@@ -11,6 +11,7 @@ Features:
 """
 
 import sys
+import os
 import numpy as np
 import soundfile as sf
 import sounddevice as sd
@@ -850,7 +851,7 @@ class SoundEditor(QMainWindow):
             self,
             "Open Audio File",
             last_dir,
-            "Audio Files (*.wav *.flac *.ogg *.mp3);;All Files (*.*)"
+            "Audio Files (*.wav *.flac *.ogg *.mp3 *.m4a *.aac *.wma);;All Files (*.*)"
         )
         
         if not file_path:
@@ -858,11 +859,14 @@ class SoundEditor(QMainWindow):
         
         try:
             # Save the directory for next time
-            import os
             self.settings.setValue('last_directory', os.path.dirname(file_path))
             
-            # Load audio file
-            self.audio_data, self.sample_rate = sf.read(file_path)
+            # Load audio file — try soundfile first, fall back to ffmpeg for
+            # formats it can't handle (m4a, aac, wma, etc.)
+            try:
+                self.audio_data, self.sample_rate = sf.read(file_path)
+            except Exception:
+                self.audio_data, self.sample_rate = self._read_via_pyav(file_path)
             self.current_file = file_path
             
             # Update UI
@@ -894,6 +898,70 @@ class SoundEditor(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load audio file:\n{str(e)}")
     
+    @staticmethod
+    def _read_via_pyav(file_path):
+        """Decode audio via PyAV for formats soundfile can't handle (m4a, aac, wma, etc.).
+
+        PyAV bundles its own ffmpeg libraries, so no system ffmpeg install is needed.
+        """
+        import av
+        container = av.open(file_path)
+        stream = container.streams.audio[0]
+        sr = stream.rate
+        frames = []
+        for frame in container.decode(audio=0):
+            arr = frame.to_ndarray()  # shape: (channels, samples), float32
+            frames.append(arr)
+        container.close()
+        if not frames:
+            raise RuntimeError("No audio frames decoded")
+        audio = np.concatenate(frames, axis=1)  # (channels, total_samples)
+        # Transpose to (samples, channels) to match soundfile convention
+        if audio.shape[0] == 1:
+            audio = audio[0]          # mono → 1-D
+        else:
+            audio = audio.T           # stereo+ → (samples, channels)
+        return audio.astype(np.float64), sr
+
+    @staticmethod
+    def _write_via_pyav(file_path, audio_data, sample_rate):
+        """Encode audio via PyAV for formats soundfile can't write (mp3, m4a, etc.)."""
+        import av
+
+        # Normalise to (samples, channels)
+        if audio_data.ndim == 1:
+            audio_data = audio_data[:, np.newaxis]
+        n_samples, n_channels = audio_data.shape
+
+        # Map extension → codec
+        ext = os.path.splitext(file_path)[1].lower()
+        codec_map = {'.mp3': 'libmp3lame', '.m4a': 'aac', '.aac': 'aac', '.wma': 'wmav2'}
+        codec = codec_map.get(ext, 'libmp3lame')
+
+        container = av.open(file_path, mode='w')
+        stream = container.add_stream(codec, rate=sample_rate)
+        stream.channels = n_channels
+        stream.layout = 'mono' if n_channels == 1 else 'stereo'
+
+        # PyAV expects (channels, samples) in the stream's sample format.
+        # Convert float64 → signed 16-bit PCM for broad codec compatibility.
+        pcm = np.clip(audio_data.T, -1.0, 1.0)  # (channels, samples)
+        pcm_s16 = (pcm * 32767).astype(np.int16)
+
+        # Encode in chunks to keep memory reasonable
+        chunk_size = sample_rate  # 1 second at a time
+        for start in range(0, n_samples, chunk_size):
+            chunk = pcm_s16[:, start:start + chunk_size]
+            frame = av.AudioFrame.from_ndarray(chunk, format='s16', layout=stream.layout)
+            frame.rate = sample_rate
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+        # Flush
+        for packet in stream.encode(None):
+            container.mux(packet)
+        container.close()
+
     def update_selection_view(self, event=None):
         """Update the selection detail view"""
         start_idx, end_idx = self.main_canvas.get_selection_indices()
@@ -952,21 +1020,25 @@ class SoundEditor(QMainWindow):
         last_dir = self.settings.value('last_directory', '')
         
         # Suggest a filename based on current file
-        import os
+        # soundfile can only write WAV, FLAC, OGG — force extension to .wav
+        # if the source format isn't writable
+        _writable_exts = {'.wav', '.flac', '.ogg'}
         suggested_name = ""
         if self.current_file:
             base_name = os.path.basename(self.current_file)
             name_without_ext, ext = os.path.splitext(base_name)
+            if ext.lower() not in _writable_exts:
+                ext = '.wav'
             suggested_name = os.path.join(last_dir, f"{name_without_ext}_Edited{ext}")
         else:
             suggested_name = os.path.join(last_dir, "Edited.wav")
-        
+
         # Get save file path
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Selected Audio",
             suggested_name,
-            "WAV Files (*.wav);;FLAC Files (*.flac);;OGG Files (*.ogg);;All Files (*.*)"
+            "WAV Files (*.wav);;FLAC Files (*.flac);;OGG Files (*.ogg);;MP3 Files (*.mp3);;All Files (*.*)"
         )
         
         if not file_path:
@@ -991,8 +1063,12 @@ class SoundEditor(QMainWindow):
                 # Mono
                 selected_audio *= envelope
             
-            # Save
-            sf.write(file_path, selected_audio, self.sample_rate)
+            # Save — use PyAV for formats soundfile can't write (mp3, m4a, etc.)
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ('.mp3', '.m4a', '.aac', '.wma'):
+                self._write_via_pyav(file_path, selected_audio, self.sample_rate)
+            else:
+                sf.write(file_path, selected_audio, self.sample_rate)
             
             QMessageBox.information(
                 self, 
