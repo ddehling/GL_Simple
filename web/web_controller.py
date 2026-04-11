@@ -449,6 +449,7 @@ class WebController:
 
             with self._dict_lock:
                 self.control_dict['weather_state_locked'] = bool(locked)
+            print(f"[WebController] Weather state lock: {'ON' if locked else 'OFF'}")
 
             self._values_cache = None
 
