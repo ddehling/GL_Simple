@@ -302,7 +302,7 @@ WEATHER_PRESETS = {
         "possible_transitions": ["bartiki_late_night", "bartiki_stormy"],
         "rain_rate": 0,
         "season_preference": 0.95,
-        "starryness": 0.9,
+        "starryness": 1,
         "train_density": 1,
         "train_speed": 4,
         "transition_duration": 20,

@@ -139,18 +139,8 @@ class TwinklingStarsEffect(ShaderEffect):
             np.random.uniform(0, self.viewport.height, n),
             np.full(n, self.depth)  # Use configurable depth
         ])
-        # Star sizes - mix of small and larger stars
-        # 70% small, 20% medium, 10% large
-        size_types = np.random.random(n)
-        self.sizes = np.where(
-            size_types < 0.7,
-            np.random.uniform(0.5, 1.0, n),  # Small stars
-            np.where(
-                size_types < 0.9,
-                np.random.uniform(1.0, 2.0, n),  # Medium stars
-                np.random.uniform(2.0, 3.0, n)   # Large stars
-            )
-        )
+        # All stars are single-pixel points
+        self.sizes = np.ones(n, dtype=np.float32)
         
         # Colors - mostly white with more saturated tints
         color_types = np.random.random(n)
@@ -237,23 +227,7 @@ class TwinklingStarsEffect(ShaderEffect):
         out vec4 outColor;
 
         void main() {
-            // Create a star shape using distance from center
-            float dist = length(texCoord);
-            
-            // Soft circular falloff for glow effect
-            float glow = 1.0 - smoothstep(0.0, 1.0, dist);
-            
-            // Sharper center for star core
-            float core = 1.0 - smoothstep(0.0, 0.3, dist);
-            
-            // Combine core and glow
-            float intensity = core + glow * 0.5;
-            
-            // Apply to color and alpha
-            vec3 finalColor = fragColor.rgb * intensity;
-            float finalAlpha = fragColor.a * intensity;
-            
-            outColor = vec4(finalColor, finalAlpha);
+            outColor = fragColor;
         }
         """
     
@@ -353,9 +327,9 @@ class TwinklingStarsEffect(ShaderEffect):
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
-        # Map from [-1, 1] to brightness range (min_brightness to 0.9)
+        # Map from [-1, 1] to brightness range (min_brightness to 1.0)
         # This gives a gentle twinkle while staying mostly bright
-        brightness_range = 0.9 - self.min_brightness
+        brightness_range = 1.0 - self.min_brightness
         base_alphas = self.min_brightness + self.twinkle_amplitudes * (twinkle_values * 0.5 + 0.5) * brightness_range
         
         # Add audio reactivity - get audio energy for each star's assigned band
@@ -369,9 +343,9 @@ class TwinklingStarsEffect(ShaderEffect):
         
         # Apply global starryness brightness scalar
         alphas = alphas * self.starryness
-        
-        # Clamp to valid range (min_brightness to 1.0)
-        alphas = np.clip(alphas, self.min_brightness, 1.0)
+
+        # Clamp — floor scales with starryness so stars fade out during daytime
+        alphas = np.clip(alphas, self.min_brightness * self.starryness, 1.0)
         
         # Build instance data - interleave all attributes
         instance_data = np.hstack([
