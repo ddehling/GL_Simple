@@ -110,7 +110,7 @@ class TwinklingStarsEffect(ShaderEffect):
         self.depth = depth  # Z depth (default 99.99 = far back)
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
-        self.min_brightness = 0.5  # Minimum brightness for stars (0.0 to 1.0)
+        self.min_brightness = 0.3  # Minimum brightness for stars (0.0 to 1.0)
         self.instance_VBO = None
         self.time = 0.0
         
@@ -139,41 +139,22 @@ class TwinklingStarsEffect(ShaderEffect):
             np.random.uniform(0, self.viewport.height, n),
             np.full(n, self.depth)  # Use configurable depth
         ])
-        # Star sizes - mix of small and larger stars
-        # 70% small, 20% medium, 10% large
-        size_types = np.random.random(n)
-        self.sizes = np.where(
-            size_types < 0.7,
-            np.random.uniform(0.5, 1.0, n),  # Small stars
-            np.where(
-                size_types < 0.9,
-                np.random.uniform(1.0, 2.0, n),  # Medium stars
-                np.random.uniform(2.0, 3.0, n)   # Large stars
-            )
-        )
+        # All stars are single-pixel points
+        self.sizes = np.ones(n, dtype=np.float32)
         
-        # Colors - mostly white with more saturated tints
-        color_types = np.random.random(n)
-        self.colors = np.where(
-            color_types[:, np.newaxis] < 0.4,
-            # 40% pure white
-            np.column_stack([np.ones(n), np.ones(n), np.ones(n)]),
-            np.where(
-                color_types[:, np.newaxis] < 0.7,
-                # 30% warm colors (yellows, oranges, reds)
-                np.column_stack([
-                    np.random.uniform(0.8, 1.0, n),
-                    np.random.uniform(0.4, 0.9, n),
-                    np.random.uniform(0.2, 0.6, n)
-                ]),
-                # 30% cool/vivid colors (blues, purples, teals, greens)
-                np.column_stack([
-                    np.random.uniform(0.2, 0.8, n),
-                    np.random.uniform(0.3, 0.9, n),
-                    np.random.uniform(0.6, 1.0, n)
-                ])
-            )
-        )
+        # Colors - full hue range via HSV, 20% pure white rest saturated
+        from colorsys import hsv_to_rgb
+        colors = np.empty((n, 3), dtype=np.float32)
+        n_white = int(n * 0.2)
+        colors[:n_white] = 1.0  # pure white
+        for i in range(n_white, n):
+            h = np.random.random()
+            s = np.random.uniform(0.5, 1.0)
+            v = 1.0
+            colors[i] = hsv_to_rgb(h, s, v)
+        # Shuffle so whites aren't all at the start
+        np.random.shuffle(colors)
+        self.colors = colors
         
                 # Audio band assignment - each star assigned to one of 16 bands
         self.audio_band_indices = np.random.randint(0, 16, n)
@@ -237,23 +218,8 @@ class TwinklingStarsEffect(ShaderEffect):
         out vec4 outColor;
 
         void main() {
-            // Create a star shape using distance from center
-            float dist = length(texCoord);
-            
-            // Soft circular falloff for glow effect
-            float glow = 1.0 - smoothstep(0.0, 1.0, dist);
-            
-            // Sharper center for star core
-            float core = 1.0 - smoothstep(0.0, 0.3, dist);
-            
-            // Combine core and glow
-            float intensity = core + glow * 0.5;
-            
-            // Apply to color and alpha
-            vec3 finalColor = fragColor.rgb * intensity;
-            float finalAlpha = fragColor.a * intensity;
-            
-            outColor = vec4(finalColor, finalAlpha);
+            // Premultiply color by alpha so stars punch through at full brightness
+            outColor = vec4(fragColor.rgb * fragColor.a, fragColor.a);
         }
         """
     
@@ -281,12 +247,12 @@ class TwinklingStarsEffect(ShaderEffect):
 
     def setup_buffers(self):
         """Initialize OpenGL buffers for instanced rendering"""
-        # Quad vertices - centered from -1 to 1 for proper circular star shape
+        # Quad vertices - half-pixel extent so each star covers exactly 1 pixel
         vertices = np.array([
-            -1.0, -1.0,  # Bottom left
-             1.0, -1.0,  # Bottom right
-             1.0,  1.0,  # Top right
-            -1.0,  1.0   # Top left
+            -0.5, -0.5,  # Bottom left
+             0.5, -0.5,  # Bottom right
+             0.5,  0.5,  # Top right
+            -0.5,  0.5   # Top left
         ], dtype=np.float32)
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
@@ -353,9 +319,9 @@ class TwinklingStarsEffect(ShaderEffect):
         twinkle_values = np.sin(
             self.time * self.twinkle_frequencies + self.twinkle_phases
         )
-        # Map from [-1, 1] to brightness range (min_brightness to 0.9)
+        # Map from [-1, 1] to brightness range (min_brightness to 1.0)
         # This gives a gentle twinkle while staying mostly bright
-        brightness_range = 0.9 - self.min_brightness
+        brightness_range = 1.0 - self.min_brightness
         base_alphas = self.min_brightness + self.twinkle_amplitudes * (twinkle_values * 0.5 + 0.5) * brightness_range
         
         # Add audio reactivity - get audio energy for each star's assigned band
@@ -369,9 +335,9 @@ class TwinklingStarsEffect(ShaderEffect):
         
         # Apply global starryness brightness scalar
         alphas = alphas * self.starryness
-        
-        # Clamp to valid range (min_brightness to 1.0)
-        alphas = np.clip(alphas, self.min_brightness, 1.0)
+
+        # Clamp — floor scales with starryness so stars fade out during daytime
+        alphas = np.clip(alphas, self.min_brightness * self.starryness, 1.0)
         
         # Build instance data - interleave all attributes
         instance_data = np.hstack([

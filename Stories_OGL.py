@@ -142,7 +142,7 @@ class EnvironmentalSystem:
         self.event_map = {
             "clouds": (fx.shader_drifting_clouds, {}),
             "firefly": (fx.shader_firefly, {}),
-            "stars": (fx.shader_stars, {}),
+            "stars": (fx.shader_stars, {"num_stars": 2000, "audio_sensitivity": 0, "drift_x": 0.3}),
             "rain": (fx.shader_rain, {}),
             "fog": (fx.shader_fog, {
                 "strength": 0.0,
