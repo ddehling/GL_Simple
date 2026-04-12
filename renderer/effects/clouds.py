@@ -120,7 +120,7 @@ class CloudEffectGPU(ShaderEffect):
 
         # CPU-side mirror of cloud data for rendering (avoiding GPU readback)
         self.cpu_cloud_data = np.zeros((max_clouds, 24), dtype=np.float32)
-        self.cpu_cloud_data[:, 9] = -1.0  # Mark all as inactive initially
+        self.cpu_cloud_data[:, 9] = -1.0  # Mark all slots inactive (lifetime = -1)
         self.num_clouds = 0
 
         # Timing
@@ -593,7 +593,6 @@ class CloudEffectGPU(ShaderEffect):
                 break
         
         if inactive_idx == -1:
-            print(f"Warning: Could not find inactive slot for new cloud")
             return
         
         # Generate cloud parameters
@@ -601,7 +600,7 @@ class CloudEffectGPU(ShaderEffect):
         start_y = np.random.uniform(0, self.viewport.height)
         # Clouds are atmospheric background — render behind BART lines (z=50)
         # and trains (z=25) but in front of the geo map (z=98) and stars (z=99.99)
-        depth = np.random.uniform(85, 95)
+        depth = np.random.uniform(15, 30)
 
         # Width/height in base pixel units — fan compensation is done in
         # the geometry shader based on current Y position each frame.
@@ -749,7 +748,7 @@ class CloudEffectGPU(ShaderEffect):
         # Mark for removal if fully faded (vectorized)
         fully_faded = (active_clouds[:, 10] > 0.5) & (active_clouds[:, 7] < 0.01)
         active_clouds[fully_faded, 9] = -1.0  # Mark inactive
-        removed_count = np.sum(fully_faded)
+        removed_count = int(np.sum(fully_faded))
         self.num_clouds -= removed_count
         
         # Natural lifecycle: fade clouds after their individual max_lifetime (40-100 seconds)

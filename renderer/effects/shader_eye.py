@@ -70,7 +70,9 @@ def shader_eye(state, outstate, num_eyes=6, scale=0.175):
         else:
             fade_factor = 1.0
         fade_factor = np.clip(fade_factor, 0, 1)
-        
+        # Sharper cutoff so low-alpha ghosts don't linger
+        fade_factor = fade_factor ** 2.5
+
         state['eye_effect'].fade_factor = fade_factor
         # Update shared parameters from global state
         state['eye_effect'].movement_interval = outstate.get('eye_movement_interval', 3.0)
@@ -344,6 +346,8 @@ class EyeEffect(ShaderEffect):
                 }
             }
             
+            // Discard nearly-invisible fragments so they don't write to depth buffer
+            if (alpha < 0.05) discard;
             outColor = vec4(color, alpha);
         }
         """
@@ -571,7 +575,7 @@ class EyeEffect(ShaderEffect):
         """Render all eyes using instanced rendering with horizontal wrapping"""
         if not self.enabled or not self.shader:
             return
-        
+
         # Blend state is globally enabled - don't toggle it
         glUseProgram(self.shader)
         

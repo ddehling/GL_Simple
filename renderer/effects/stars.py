@@ -110,7 +110,7 @@ class TwinklingStarsEffect(ShaderEffect):
         self.depth = depth  # Z depth (default 99.99 = far back)
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
-        self.min_brightness = 0.75  # Minimum brightness for stars (0.0 to 1.0)
+        self.min_brightness = 0.3  # Minimum brightness for stars (0.0 to 1.0)
         self.instance_VBO = None
         self.time = 0.0
         
@@ -142,28 +142,19 @@ class TwinklingStarsEffect(ShaderEffect):
         # All stars are single-pixel points
         self.sizes = np.ones(n, dtype=np.float32)
         
-        # Colors - mostly white with more saturated tints
-        color_types = np.random.random(n)
-        self.colors = np.where(
-            color_types[:, np.newaxis] < 0.4,
-            # 40% pure white
-            np.column_stack([np.ones(n), np.ones(n), np.ones(n)]),
-            np.where(
-                color_types[:, np.newaxis] < 0.7,
-                # 30% warm colors (yellows, oranges, reds)
-                np.column_stack([
-                    np.random.uniform(0.8, 1.0, n),
-                    np.random.uniform(0.4, 0.9, n),
-                    np.random.uniform(0.2, 0.6, n)
-                ]),
-                # 30% cool/vivid colors (blues, purples, teals, greens)
-                np.column_stack([
-                    np.random.uniform(0.2, 0.8, n),
-                    np.random.uniform(0.3, 0.9, n),
-                    np.random.uniform(0.6, 1.0, n)
-                ])
-            )
-        )
+        # Colors - full hue range via HSV, 20% pure white rest saturated
+        from colorsys import hsv_to_rgb
+        colors = np.empty((n, 3), dtype=np.float32)
+        n_white = int(n * 0.2)
+        colors[:n_white] = 1.0  # pure white
+        for i in range(n_white, n):
+            h = np.random.random()
+            s = np.random.uniform(0.5, 1.0)
+            v = 1.0
+            colors[i] = hsv_to_rgb(h, s, v)
+        # Shuffle so whites aren't all at the start
+        np.random.shuffle(colors)
+        self.colors = colors
         
                 # Audio band assignment - each star assigned to one of 16 bands
         self.audio_band_indices = np.random.randint(0, 16, n)
@@ -256,12 +247,12 @@ class TwinklingStarsEffect(ShaderEffect):
 
     def setup_buffers(self):
         """Initialize OpenGL buffers for instanced rendering"""
-        # Quad vertices - centered from -1 to 1 for proper circular star shape
+        # Quad vertices - half-pixel extent so each star covers exactly 1 pixel
         vertices = np.array([
-            -1.0, -1.0,  # Bottom left
-             1.0, -1.0,  # Bottom right
-             1.0,  1.0,  # Top right
-            -1.0,  1.0   # Top left
+            -0.5, -0.5,  # Bottom left
+             0.5, -0.5,  # Bottom right
+             0.5,  0.5,  # Top right
+            -0.5,  0.5   # Top left
         ], dtype=np.float32)
         
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
