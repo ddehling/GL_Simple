@@ -6932,6 +6932,7 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage(
                 f"{verb} complete — {len(self.script.nodes)} total nodes")
+        self._sync_missing_edges()
         self._update_title()
         self._cmd_apply_tree_layout()
 

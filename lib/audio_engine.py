@@ -41,11 +41,9 @@ class _MemTrack:
         self._fade_out_pos    = 0
 
         self._samples = samples
-
-        # Duration cap
-        max_frames = int(duration * SAMPLE_RATE) if duration > 0 else 0
-        if max_frames > 0 and max_frames < len(self._samples):
-            self._samples = self._samples[:max_frames].copy()
+        # Note: no duration trim. The in-memory array is the ground truth
+        # for length; trimming based on a separately-measured duration would
+        # silently truncate VBR MP3s when mp3_get_file_info() under-reports.
 
     def fade_out(self, duration: float):
         self._fading_out      = True
@@ -104,6 +102,9 @@ class _Track:
         self._fading_out      = False
         self._fade_out_frames = 0
         self._fade_out_pos    = 0
+        # ARI crossfade: second stream blended in near the loop boundary.
+        self._xfade_gen       = None
+        self._xfade_buf       = np.zeros((0, CHANNELS), dtype=np.float32)
 
     def _open(self, skip: float):
         return miniaudio.stream_file(
@@ -121,16 +122,41 @@ class _Track:
         self._fade_out_pos    = 0
         self._loop            = False
 
+    # Duration of the crossfade applied at ARI loop boundaries (seconds).
+    # During this window the tail of the current loop fades out linearly
+    # while the beginning of the next loop fades in, producing a smooth
+    # overlap identical to what weather-state transitions get.
+    _ARI_XFADE_SEC = 3.0
+
     def read(self, n_frames: int):
-        # ARI loop boundary: restart from skip_time when the window expires.
-        # Uses _loop_pos (not _pos) so fade-in fires only once at track start.
+        # ARI loop boundary with crossfade.
+        # When we're within _ARI_XFADE_SEC of the loop end, open a second
+        # stream from skip_time and blend it in while fading the current
+        # stream out. When the loop boundary is reached, the new stream
+        # becomes primary.
         if self._loop_frames > 0:
             remaining = self._loop_frames - self._loop_pos
+            xfade_frames = int(self._ARI_XFADE_SEC * SAMPLE_RATE)
+
             if remaining <= 0:
+                # Hard boundary reached (shouldn't normally get here because
+                # the crossfade should have taken over, but just in case).
                 self._loop_pos = 0
-                self._gen = self._open(self._skip)
-                self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
+                if self._xfade_gen is not None:
+                    self._gen = self._xfade_gen
+                    self._buf = self._xfade_buf
+                    self._xfade_gen = None
+                    self._xfade_buf = np.zeros((0, CHANNELS), dtype=np.float32)
+                else:
+                    self._gen = self._open(self._skip)
+                    self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
                 remaining = self._loop_frames
+
+            elif remaining <= xfade_frames and self._xfade_gen is None:
+                # Approaching the loop boundary — open the next stream.
+                self._xfade_gen = self._open(self._skip)
+                self._xfade_buf = np.zeros((0, CHANNELS), dtype=np.float32)
+
             n_frames = min(n_frames, remaining)
 
         # Fill internal buffer until we have enough frames (or hit EOF).
@@ -158,6 +184,38 @@ class _Track:
         n     = min(n_frames, len(self._buf))
         chunk = self._buf[:n].copy()
         self._buf = self._buf[n:]
+
+        # ARI crossfade blend: if a next-loop stream is open, read from it
+        # and mix into the current chunk with a linear crossfade ramp.
+        if self._xfade_gen is not None and self._loop_frames > 0:
+            xfade_frames = int(self._ARI_XFADE_SEC * SAMPLE_RATE)
+            remaining_in_loop = self._loop_frames - self._loop_pos
+            # How far into the crossfade window are we? (0 = just entered, 1 = done)
+            xf_pos = xfade_frames - remaining_in_loop
+
+            # Fill the crossfade buffer from the next-loop stream.
+            while len(self._xfade_buf) < n:
+                try:
+                    raw = next(self._xfade_gen)
+                    new = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
+                    self._xfade_buf = np.concatenate([self._xfade_buf, new])
+                except StopIteration:
+                    break
+
+            xf_n = min(n, len(self._xfade_buf))
+            if xf_n > 0:
+                xf_chunk = self._xfade_buf[:xf_n]
+                self._xfade_buf = self._xfade_buf[xf_n:]
+
+                # Linear crossfade ramp: current fades 1→0, next fades 0→1.
+                t_start = max(0, xf_pos) / max(1, xfade_frames)
+                t_end   = max(0, xf_pos + xf_n) / max(1, xfade_frames)
+                t_start = min(t_start, 1.0)
+                t_end   = min(t_end, 1.0)
+                ramp_in  = np.linspace(t_start, t_end, xf_n, dtype=np.float32)[:, np.newaxis]
+                ramp_out = 1.0 - ramp_in
+
+                chunk[:xf_n] = chunk[:xf_n] * ramp_out + xf_chunk * ramp_in
 
         # Fade-in: linear ramp from 0→1 over the first _fade_in_frames samples.
         if self._fade_in_frames > 0 and self._pos < self._fade_in_frames:
@@ -307,9 +365,18 @@ class AudioEngine:
 
                     elif kind == "oneshot_mem":
                         _, samples, path, vol, dur, narr = cmd
-                        tracks[f"os_{id(cmd)}"] = _MemTrack(
+                        # Unique key — id(cmd) was unsafe because Python can
+                        # reuse the address of a freed tuple, silently
+                        # overwriting a still-playing track in the dict.
+                        tracks[f"os_{path.name}_{time.monotonic_ns()}"] = _MemTrack(
                             samples, path, volume=vol, duration=dur,
                             is_narrative=narr)
+                        if not narr:
+                            track_dur = len(samples) / SAMPLE_RATE
+                            finish_at = time.strftime(
+                                "%H:%M:%S", time.localtime(time.time() + track_dur))
+                            print(f"[AudioEngine] Oneshot ▶ {path.name}  "
+                                  f"dur={track_dur:.2f}s  finishes ~{finish_at}")
 
 
             except queue.Empty:
@@ -331,19 +398,6 @@ class AudioEngine:
                 if chunk is None or track.done:
                     dead.append(key)
                 else:
-                    # Detect unexpected silence from oneshot tracks
-                    if not track.is_ambient and not track.is_narrative and not track._fading_out:
-                        peak_val = np.max(np.abs(chunk))
-                        if peak_val < 0.001:
-                            if not getattr(track, '_silence_warned', False):
-                                print(f"[AudioEngine] WARNING: Track {track._path.name} near-silent "
-                                      f"(peak={peak_val:.6f}) at pos {track._pos}/{len(track._samples)} "
-                                      f"vol={track.volume} fading={track._fading_out}")
-                                track._silence_warned = True
-                        elif getattr(track, '_silence_warned', False):
-                            # Track recovered — reset warning
-                            print(f"[AudioEngine] Track {track._path.name} recovered (peak={peak_val:.4f})")
-                            track._silence_warned = False
                     if track.is_narrative:
                         narr_buf[:len(chunk)] += chunk * narr_vol
                     else:

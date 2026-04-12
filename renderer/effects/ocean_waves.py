@@ -540,6 +540,9 @@ class OceanWaves(ShaderEffect):
         # Scale wave_speed (0-1 range) to appropriate phase rate
         phase_rate = self.wave_speed * 2.0 * 0.8  # Same scaling as before
         self.phase += dt * phase_rate
+        # Wrap accumulators so float32 GPU uniforms don't lose precision overnight.
+        self.phase %= 10000.0
+        self.time %= 10000.0
     
     def render(self, state: Dict):
         """Render the ocean waves effect"""

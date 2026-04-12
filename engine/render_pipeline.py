@@ -60,8 +60,8 @@ class RenderPipeline:
         state['shader_renderer'] = self._shader_renderer
         state['event_scheduler'] = self._scheduler
         state['render'] = [None] * len(frame_dimensions)
-        state['last_time'] = time.time()
-        state['current_time'] = time.time()
+        state['last_time'] = time.perf_counter()
+        state['current_time'] = time.perf_counter()
         state['wind'] = 0
         state['tree_frame'] = np.zeros((60, 120, 4))
         state['rainrate'] = 0.5
@@ -139,7 +139,7 @@ class RenderPipeline:
             self.should_exit = True
             return
 
-        current_time = time.time()
+        current_time = time.perf_counter()
         self._scheduler.tick(current_time)
 
         dt = current_time - self.state['last_time']
@@ -148,9 +148,11 @@ class RenderPipeline:
         frames = self._render_shader(dt)
         self._send_to_displays(frames)
 
-        # PNG-encode first frame for web preview (stored in state for web controller)
-        if frames:
-            _, png_buf = cv2.imencode('.png', frames[0][:, :, ::-1])
+        # PNG-encode first frame for web preview, ONLY if a client is subscribed.
+        # Encoding is ~10-20ms/frame and would otherwise tank FPS for nobody.
+        if frames and self.state.get('_preview_active'):
+            bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
+            _, png_buf = cv2.imencode('.png', bgr)
             self.state['_frame_png'] = png_buf.tobytes()
 
     def _render_shader(self, dt: float) -> list:

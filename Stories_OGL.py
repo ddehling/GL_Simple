@@ -124,7 +124,9 @@ class EnvironmentalSystem:
                 bind_ip=web_cfg.get("bind_ip", ""),
             )
             self.web_controller.start(threaded=True)
-        
+            # Register viewports so socket handlers can mutate them directly
+            self.web_controller.control_dict['_viewports'] = self.scheduler._shader_renderer.viewports
+
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
         # sort celestial bodies by distance, farthest first
@@ -465,6 +467,8 @@ class EnvironmentalSystem:
                 d['active_overrides'] = dict(self.web_controller.web_param_overrides)
                 d['global_modifiers'] = dict(self.web_controller.global_modifiers)
                 d['fps'] = getattr(self, '_current_fps', 0)
+                d['fps_target'] = getattr(self, '_target_fps', 0)
+                d['fps_uncapped'] = getattr(self, '_uncapped_fps', 0)
                 d['active_effects'] = active_effects
                 d['ambient_sound'] = self.active_effects.get("ambient_sound")
                 d['allowed_output_params'] = self._get_allowed_output_params()
@@ -503,7 +507,19 @@ class EnvironmentalSystem:
 
     def send_variables(self):
         season_speed = self.weather_set.get_season_speed()
-        self.season = ((time.time() / 1800) * season_speed) % 1
+
+        # Season can be manually locked to a user-chosen value via the web UI.
+        season_locked = False
+        season_override = None
+        if self.enable_web_control and self.web_controller is not None:
+            with self.web_controller._dict_lock:
+                season_locked = bool(self.web_controller.control_dict.get('season_locked', False))
+                season_override = self.web_controller.control_dict.get('season_override')
+
+        if season_locked and season_override is not None:
+            self.season = float(season_override) % 1.0
+        else:
+            self.season = ((time.time() / 1800) * season_speed) % 1
 
         state = self.scheduler.state
         output = self.weather_state.get_state_output(self.season, self.current_time)
@@ -541,6 +557,13 @@ class EnvironmentalSystem:
 
         state.update(output)
         state["season"] = self.season
+        state["current_weather_state"] = self.weather_state.current_weather.value
+        if self.enable_web_control and self.web_controller is not None:
+            state["_preview_active"] = (
+                self.web_controller.control_dict.get('_preview_subscribers', 0) > 0
+            )
+        else:
+            state["_preview_active"] = False
         state["scale"] = self.scale
         state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
         state["celestial_bodies"] = self.celestial_bodies
@@ -661,21 +684,22 @@ if __name__ == "__main__":
     #TODO: A way to set a weather state independently of set for testing
 
     # Change to a specific weather set and state on startup
-    env_system.change_weather_set("bartiki", immediate=True,
-                                  initial_weather=WeatherState.BARTIKI_MIDDAY)
-    last_time = time.time()
+    env_system.change_weather_set("ocean", immediate=True,
+                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
     FRAME_TIME = 1 / 40
-    first_time = time.time()
     frame_count = 0
-    fps_start_time = time.time()
-    
+    fps_start_time = time.perf_counter()
+    work_time_accum = 0.0  # sum of per-frame work time (no waits) over the window
+
     # For better sleep precision on Windows
     import sys
     if sys.platform == 'win32':
         import ctypes
         winmm = ctypes.WinDLL('winmm')
         winmm.timeBeginPeriod(1)  # Set 1ms timer resolution
-    
+
+    next_deadline = time.perf_counter() + FRAME_TIME
+
     try:
         while True:
             frame_start = time.perf_counter()
@@ -686,21 +710,35 @@ if __name__ == "__main__":
             if env_system.scheduler.should_exit:
                 break
 
-            # Frame rate limiter: sleep for the bulk, then busy-wait for precision
-            remaining = FRAME_TIME - (time.perf_counter() - frame_start)
+            # Measure pure work time (render + send) before any frame-rate waits
+            work_time_accum += time.perf_counter() - frame_start
+
+            # Deadline-based frame pacing: fast frames compensate for slow ones
+            remaining = next_deadline - time.perf_counter()
             if remaining > 0.002:
-                time.sleep(remaining - 0.001)
-            # Always busy-wait to hit the target exactly
-            while time.perf_counter() - frame_start < FRAME_TIME:
+                time.sleep(remaining - 0.0015)
+            while time.perf_counter() < next_deadline:
                 pass
+
+            next_deadline += FRAME_TIME
+            # If we're more than 2 frames behind, drop the debt rather than burst-render
+            if time.perf_counter() - next_deadline > 2 * FRAME_TIME:
+                next_deadline = time.perf_counter() + FRAME_TIME
 
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 500 frames
-                current_time = time.time()
-                actual_fps = 500.0 / (current_time - fps_start_time)
+                current_time = time.perf_counter()
+                window = current_time - fps_start_time
+                actual_fps = 500.0 / window
+                target_fps = 1.0 / FRAME_TIME
+                avg_work = work_time_accum / 500.0
+                uncapped_fps = (1.0 / avg_work) if avg_work > 0 else 0.0
                 env_system._current_fps = round(actual_fps, 1)
-                print(f"[Main] FPS: {actual_fps:.1f}")
+                env_system._target_fps = round(target_fps, 1)
+                env_system._uncapped_fps = round(uncapped_fps, 1)
+                print(f"[Main] FPS actual={actual_fps:.1f} target={target_fps:.1f} uncapped={uncapped_fps:.1f}")
                 fps_start_time = current_time
+                work_time_accum = 0.0
 
     except KeyboardInterrupt:
         pass

@@ -38,11 +38,11 @@
                 <span class="info-label">Current Weather:</span>
                 <span class="info-value" id="current-weather">Loading...</span>
             </div>
-            <div id="transition-row" class="info-row" style="display: none;">
+            <div id="transition-row" class="info-row">
                 <span class="info-label">Transitioning to:</span>
                 <span class="info-value" id="transition-target">--</span>
             </div>
-            <div id="transition-bar-row" style="display: none;">
+            <div id="transition-bar-row">
                 <div class="transition-bar-container" style="display: block;">
                     <div class="transition-bar-fill" id="transition-bar" style="width: 0%;"></div>
                 </div>
@@ -50,6 +50,11 @@
             <div class="info-row">
                 <span class="info-label">Season:</span>
                 <span class="info-value" id="season-display">0%</span>
+            </div>
+            <div class="info-row" style="align-items: center; gap: 8px;">
+                <input type="range" id="season-slider" min="0" max="1" step="0.001" value="0"
+                       style="flex: 1;" oninput="onSeasonSlider(this.value)">
+                <button id="season-lock-btn" onclick="toggleSeasonLock()" class="btn-small">Auto</button>
             </div>
             <div class="info-row">
                 <span class="info-label">Brightness Limiting:</span>
@@ -62,6 +67,10 @@
             <div class="info-row" style="align-items: center;">
                 <span class="info-label">Instant Transitions:</span>
                 <button id="instant-transition-btn" onclick="toggleInstantTransitions()" class="btn-small">Off</button>
+            </div>
+            <div class="info-row" style="align-items: center;">
+                <span class="info-label">Flip X:</span>
+                <button id="flip-x-btn" onclick="toggleFlipX()" class="btn-small">Off</button>
             </div>
 
             <div style="margin-top: 15px;">
@@ -136,7 +145,7 @@
                 <h3>Performance</h3>
             </div>
             <div class="info-row">
-                <span class="info-label">FPS:</span>
+                <span class="info-label" title="actual / target / uncapped">FPS (act/tgt/unc):</span>
                 <span class="info-value" id="perf-fps">--</span>
             </div>
             <div class="info-row">

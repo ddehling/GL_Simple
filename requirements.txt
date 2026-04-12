@@ -14,6 +14,7 @@ scikit-image
 miniaudio
 sounddevice
 soundfile
+av
 zeroconf
 flask
 flask-socketio
