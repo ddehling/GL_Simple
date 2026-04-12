@@ -110,7 +110,7 @@ class TwinklingStarsEffect(ShaderEffect):
         self.depth = depth  # Z depth (default 99.99 = far back)
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
-        self.min_brightness = 0.5  # Minimum brightness for stars (0.0 to 1.0)
+        self.min_brightness = 0.75  # Minimum brightness for stars (0.0 to 1.0)
         self.instance_VBO = None
         self.time = 0.0
         
@@ -227,7 +227,8 @@ class TwinklingStarsEffect(ShaderEffect):
         out vec4 outColor;
 
         void main() {
-            outColor = fragColor;
+            // Premultiply color by alpha so stars punch through at full brightness
+            outColor = vec4(fragColor.rgb * fragColor.a, fragColor.a);
         }
         """
     
