@@ -815,7 +815,7 @@ WEATHER_PRESETS = {
         "fog_color": np.array([0.15, 0.25, 0.35]),
         "kelp_density": 0,
         "marine_life_activity": 0,
-        "on_transition_events": [['vortex', 180, 0]],
+        "on_transition_events": [['vortex', 90, 0]],
         "possible_transitions": ["ocean_storm_surge", "ocean_deep_calm"],
         "season_preference": 0.8,
         "tide_level": 0.9,
