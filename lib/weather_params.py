@@ -101,7 +101,6 @@ PARAMETER_DEFINITIONS = {
     'light_pollution': {'type': 'number', 'step': 0.05},
     'lightning_probability': {'type': 'number', 'step': 0.05},
     'meteor_rate': {'type': 'number', 'step': 0.05},
-    'mountain': {'type': 'number', 'step': 0.1},
     'neon_intensity': {'type': 'number', 'step': 0.05},
     'on_transition_events': {'type': 'event-list'},
     'pollution_level': {'type': 'number', 'step': 0.05},
@@ -145,7 +144,6 @@ DEFAULT_WEATHER_PARAMS = {
     "Weird": 0.0,
     "Sound_volume": 1.0,
     "season_preference": 0.375,
-    "mountain": 0,
     "ambient_sound": None,
     "ARI": 0.0,
 }
@@ -355,7 +353,7 @@ WEATHER_PRESETS = {
         "Weird": 1,
         "ambient_sound": "Forest Cicadas EDITED.wav",
         "meteor_rate": 0.25,
-        "mountain": 0.1,
+
         "possible_transitions": ["light_rain", "foggy", "windy_night", "firefly", "mushroom", "leaves", "bloom"],
         "season_preference": 0.375,
         "transition_weights": [1, 1, 0.75, 0.5, 0.2, 0.75, 0.75],
@@ -595,7 +593,6 @@ WEATHER_PRESETS = {
         "fog": 0.5,
         "fog_color": np.array([0.3, 0.3, 0.7]),
         "lightning_probability": 0.1,
-        "mountain": 1,
         "possible_transitions": ["light_rain", "thunderstorm", "windy_night"],
         "rain_rate": 0.8,
         "season_preference": 0.7,
@@ -615,7 +612,7 @@ WEATHER_PRESETS = {
         "ambient_sound": "030822_leaves-rustling-in-wind-79518.mp3",
         "fog": 0.25,
         "meteor_rate": 0,
-        "mountain": 0.1,
+
         "on_transition_events": [['falling_leaves', 60, 0]],
         "possible_transitions": ["clear", "windy_night", "spooky"],
         "rain_rate": 0.2,
@@ -633,7 +630,6 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.8,
         "fog": 0.1,
         "fog_color": np.array([0.2, 0.5, 0.5]),
-        "mountain": 0.2,
         "possible_transitions": ["clear", "heavy_rain", "foggy", "bloom"],
         "rain_rate": 0.2,
         "season_preference": 0.125,
@@ -652,7 +648,7 @@ WEATHER_PRESETS = {
         "ambient_sound": "Frog Croaks.wav",
         "fog": 0.5,
         "meteor_rate": 0,
-        "mountain": 0.1,
+
         "possible_transitions": ["clear", "foggy", "heavy_fog", "leaves", "bloom"],
         "rain_rate": 0.1,
         "season_preference": 0.5,
@@ -869,7 +865,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.6,
         "fog": 0.65,
         "fog_color": np.array([0.6, 0.5, 0.35]),
-        "mountain": 0.1,
+
         "on_transition_events": [['sandstorm', 100, 0]],
         "possible_transitions": ["clear", "windy_night", "spooky"],
         "sand_density": 1,
@@ -921,7 +917,6 @@ WEATHER_PRESETS = {
         "fog": 0.3,
         "fog_color": np.array([0.6, 0.6, 0.2]),
         "lightning_probability": 1,
-        "mountain": 0.5,
         "possible_transitions": ["heavy_rain", "light_rain", "windy_night"],
         "rain_rate": 1,
         "season_preference": 0.9,
@@ -956,7 +951,6 @@ WEATHER_PRESETS = {
         "ambient_sound": "Wind Strong EDITED.wav",
         "lightning_probability": 0.05,
         "meteor_rate": 0.1,
-        "mountain": 0.3,
         "possible_transitions": ["clear", "heavy_rain", "sandstorm", "thunderstorm", "leaves"],
         "rain_rate": 0.01,
         "sand_density": 0.2,
@@ -1012,7 +1006,7 @@ WEATHER_SETS = {
     },
 
     "desert_realm": {
-        "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Switch_rate", "ambient_sound", "ARI", "mountain", "possible_transitions", "transition_weights", "season_preference"],
+        "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
         "background_events": ["sandstorm", "stars", "clouds", "fog"],
         "description": "Harsh desert with sandstorms and volcanic activity",
         "name": "Desert Realm",
@@ -1038,12 +1032,12 @@ WEATHER_SETS = {
     },
 
     "full_spectrum": {
-        "allowed_parameters": ["wind_speed", "rain_rate", "lightning_probability", "starryness", "spookyness", "fog", "fog_color", "celestial_visibility", "firefly_density", "Aurora_probability", "Wolfy", "Switch_rate", "meteor_rate", "volcano_level", "sand_density", "skiptime", "tree_prob", "Weird", "Sound_volume", "season_preference", "mountain", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration"],
+        "allowed_parameters": ["wind_speed", "rain_rate", "lightning_probability", "starryness", "spookyness", "fog", "fog_color", "celestial_visibility", "firefly_density", "Aurora_probability", "Wolfy", "Switch_rate", "meteor_rate", "volcano_level", "sand_density", "skiptime", "tree_prob", "Weird", "Sound_volume", "season_preference", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration"],
         "background_events": ["clouds", "firefly", "stars", "rain", "fog"],
         "description": "All weather states available - maximum variety",
         "name": "Full Spectrum",
         "random_event_rate": 0.0001,
-        "random_events": ["audio_balls", "audio_curve", "sunrise", "game_of_life", "fractal_fog", "noise_isovalues", "voronoi_sphere", "wave_terrain", "wave_equation", "audio_scan_line", "pixel_spots"],
+        "random_events": [],
         "season_extremity": 1,
         "season_speed": 1,
         "states": ["clear", "light_rain", "heavy_rain", "thunderstorm", "windy_night", "foggy", "heavy_fog", "spooky", "firefly", "sandstorm", "mushroom", "leaves", "bloom"],
@@ -1064,7 +1058,7 @@ WEATHER_SETS = {
     },
 
     "peaceful_forest": {
-        "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Aurora_probability", "meteor_rate", "tree_prob", "Weird", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference", "mountain"],
+        "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Aurora_probability", "meteor_rate", "tree_prob", "Weird", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
         "background_events": ["clouds", "firefly", "stars", "rain", "fog", "falling_leaves"],
         "description": "Gentle natural cycles with fireflies and light weather",
         "name": "Peaceful Forest",
@@ -1077,7 +1071,7 @@ WEATHER_SETS = {
     },
 
     "storm_world": {
-        "allowed_parameters": ["wind_speed", "rain_rate", "lightning_probability", "fog", "fog_color", "starryness", "spookyness", "celestial_visibility", "Wolfy", "Switch_rate", "tree_prob", "Sound_volume", "skiptime", "mountain", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
+        "allowed_parameters": ["wind_speed", "rain_rate", "lightning_probability", "fog", "fog_color", "starryness", "spookyness", "celestial_visibility", "Wolfy", "Switch_rate", "tree_prob", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
         "background_events": ["clouds", "rain", "fog", "stars"],
         "description": "Intense weather with storms and high winds",
         "name": "Storm World",

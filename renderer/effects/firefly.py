@@ -12,23 +12,21 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
+def shader_firefly(state, outstate, density=1.0):
     """
     Shader-based firefly effect compatible with EventScheduler
-    
+
     Usage:
-        scheduler.schedule_event(0, 60, shader_firefly, density=1.5, audio_sensitivity=1.5, frame_id=0)
-    
+        scheduler.schedule_event(0, 60, shader_firefly, density=1.5, frame_id=0)
+
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
         density: Firefly spawn rate multiplier
-        audio_sensitivity: Audio reactivity multiplier (0.0 = no audio, 1.0 = normal, 2.0 = double)
     """
     # Get the viewport
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
-    audio_data = outstate.get('sound')
     squish_top_width = outstate.get('scale', 1.0)  # Get scale from state
     
     if shader_renderer is None:
@@ -48,7 +46,6 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
             firefly_effect = viewport.add_effect(
                 FireflyEffect,
                 density=density,
-                audio_sensitivity=audio_sensitivity,
                 squish_top_width=squish_top_width
             )
             state['firefly_effect'] = firefly_effect
@@ -59,56 +56,9 @@ def shader_firefly(state, outstate, density=1.0, audio_sensitivity=1.0):
             traceback.print_exc()
             return
     
-        # Update density and audio data every frame
+        # Update density every frame
     if 'firefly_effect' in state:
         state['firefly_effect'].density = outstate.get('firefly_density', density)
-        state['firefly_effect'].audio_sensitivity = audio_sensitivity
-        
-        # Initialize audio smoothing buffers on first update
-        if 'audio_history' not in state:
-            state['audio_history'] = {
-                'bass': [],
-                'mid': [],
-                'high': []
-            }
-            state['smoothing_frames'] = 2  # Average over last 15 frames (~0.375s at 40fps)
-        
-        # Pass audio data to effect for reactivity
-        if audio_data is not None:
-            # Extract norm_long_relu for above-average sound detection
-            current_bands = audio_data['norm_long_relu'][0]  # Shape: (32,)
-            
-            # Split into frequency ranges
-            bass_energy = np.mean(current_bands[0:8])      # Bass: 40-300 Hz
-            mid_energy = np.mean(current_bands[8:20])      # Mids: 300-2000 Hz
-            high_energy = np.mean(current_bands[20:32])    # Highs: 2000-16000 Hz
-            
-            # Add to history buffers
-            state['audio_history']['bass'].append(bass_energy)
-            state['audio_history']['mid'].append(mid_energy)
-            state['audio_history']['high'].append(high_energy)
-            
-            # Keep only last N frames
-            max_frames = state['smoothing_frames']
-            if len(state['audio_history']['bass']) > max_frames:
-                state['audio_history']['bass'] = state['audio_history']['bass'][-max_frames:]
-                state['audio_history']['mid'] = state['audio_history']['mid'][-max_frames:]
-                state['audio_history']['high'] = state['audio_history']['high'][-max_frames:]
-            
-            # Calculate smoothed averages
-            smoothed_bass = np.mean(state['audio_history']['bass']) if state['audio_history']['bass'] else 0.0
-            smoothed_mid = np.mean(state['audio_history']['mid']) if state['audio_history']['mid'] else 0.0
-            smoothed_high = np.mean(state['audio_history']['high']) if state['audio_history']['high'] else 0.0
-            
-            # Pass smoothed values to effect
-            state['firefly_effect'].audio_bass = smoothed_bass * audio_sensitivity
-            state['firefly_effect'].audio_mid = smoothed_mid * audio_sensitivity
-            state['firefly_effect'].audio_high = smoothed_high * audio_sensitivity
-        else:
-            # No audio data available
-            state['firefly_effect'].audio_bass = 0.0
-            state['firefly_effect'].audio_mid = 0.0
-            state['firefly_effect'].audio_high = 0.0
     
     # On close event, clean up
     if state['count'] == -1:
@@ -170,20 +120,14 @@ class FireflyEffect(ShaderEffect):
         
         return rgb
     
-    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, audio_sensitivity: float = 1.0, squish_top_width: float = 1.0):
+    def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.density = density
         self.max_fireflies = max_fireflies
         self.squish_top_width = squish_top_width
         self.viewport_height = viewport.height  # Store for squish calculation
         self.instance_VBO = None
-        self.audio_sensitivity = audio_sensitivity
-        
-        # Audio reactivity values (updated from wrapper)
-        self.audio_bass = 0.0
-        self.audio_mid = 0.0
-        self.audio_high = 0.0
-        
+
         # Depth range
         self.min_depth = 10.0
         self.max_depth = 100.0
@@ -200,7 +144,6 @@ class FireflyEffect(ShaderEffect):
         self.lifetimes = np.zeros(0, dtype=np.float32)  # Remaining lifetime (0-1)
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [h, s, v] in HSV
         self.base_sizes = np.zeros(0, dtype=np.float32)  # Base size (before depth scaling)
-        self.audio_bands = np.zeros(0, dtype=np.int32)  # Which frequency band each firefly responds to (0=bass, 1=mid, 2=high)
         self.squish_factors = np.zeros(0, dtype=np.float32)  # Horizontal width multipliers
         
         # Performance optimizations
@@ -237,11 +180,8 @@ class FireflyEffect(ShaderEffect):
             np.ones(count)                         # Value: full brightness
         ])
         
-        new_base_sizes = np.random.uniform(2.0, 3.0, count)  # Firefly size
-        
-        # Assign each firefly to a frequency band (0=bass, 1=mid, 2=high)
-        new_audio_bands = np.random.randint(0, 3, count)
-        
+        new_base_sizes = np.random.uniform(3.5, 6.0, count)  # Firefly size
+
         # Calculate squish factors based on y position (bottom = 1.0, top = squish_top_width)
         y_normalized = (self.viewport_height - new_positions[:, 1]) / self.viewport_height
         new_squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
@@ -255,7 +195,6 @@ class FireflyEffect(ShaderEffect):
         self.lifetimes = np.concatenate([self.lifetimes, new_lifetimes]) if len(self.lifetimes) > 0 else new_lifetimes
         self.colors = np.vstack([self.colors, new_colors]) if len(self.colors) > 0 else new_colors
         self.base_sizes = np.concatenate([self.base_sizes, new_base_sizes]) if len(self.base_sizes) > 0 else new_base_sizes
-        self.audio_bands = np.concatenate([self.audio_bands, new_audio_bands]) if len(self.audio_bands) > 0 else new_audio_bands
         self.squish_factors = np.concatenate([self.squish_factors, new_squish_factors]) if len(self.squish_factors) > 0 else new_squish_factors
         
     def get_vertex_shader(self):
@@ -429,19 +368,9 @@ class FireflyEffect(ShaderEffect):
         # Calculate movement angles from phases
         angles = self.phases * 0.1
         
-                # Get audio energy for speed modulation
-        audio_energies = np.zeros(len(self.positions))
-        audio_energies[self.audio_bands == 0] = self.audio_bass
-        audio_energies[self.audio_bands == 1] = self.audio_mid
-        audio_energies[self.audio_bands == 2] = self.audio_high
-        audio_energies = np.clip(audio_energies, 0, 2)
-        
-        # SPEED MODULATION: Increase speed with audio energy
-        audio_speed_multiplier = 1.0 + audio_energies * 0.5  # Up to 1.5x speed boost
-        
-        # Update XY positions (smooth wandering motion with audio reactivity)
-        self.positions[:, 0] += np.cos(angles) * self.speeds * movement_multiplier * audio_speed_multiplier
-        self.positions[:, 1] += np.sin(angles) * self.speeds * movement_multiplier * audio_speed_multiplier
+        # Update XY positions (smooth wandering motion)
+        self.positions[:, 0] += np.cos(angles) * self.speeds * movement_multiplier
+        self.positions[:, 1] += np.sin(angles) * self.speeds * movement_multiplier
         
         # Update Z positions (oscillating wandering between min and max depth)
         # Use sine wave with phase offset for smooth back-and-forth motion
@@ -477,7 +406,6 @@ class FireflyEffect(ShaderEffect):
             self.lifetimes = self.lifetimes[alive_mask]
             self.colors = self.colors[alive_mask]
             self.base_sizes = self.base_sizes[alive_mask]
-            self.audio_bands = self.audio_bands[alive_mask]
             self.squish_factors = self.squish_factors[alive_mask]
 
     def render(self, state: Dict):
@@ -495,52 +423,23 @@ class FireflyEffect(ShaderEffect):
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
         
-                # Get audio energy for each firefly based on their assigned frequency band
-        audio_energies = np.zeros(len(self.positions))
-        audio_energies[self.audio_bands == 0] = self.audio_bass   # Bass fireflies
-        audio_energies[self.audio_bands == 1] = self.audio_mid    # Mid fireflies
-        audio_energies[self.audio_bands == 2] = self.audio_high   # High fireflies
-        
-        # Clamp audio energies to reasonable range (0-2)
-        audio_energies = np.clip(audio_energies, 0, 2)
-        
         # Calculate depth-based size scaling (closer = bigger)
         depth_range = self.max_depth - self.min_depth
         depth_factors = 2.0 - 1.5 * (self.positions[:, 2] - self.min_depth) / depth_range
-        
-        # SIZE MODULATION: Scale size based on audio energy
-        audio_size_multiplier = 1.0 + audio_energies * 0.8  # Up to 1.8x size boost
-        scaled_sizes = self.base_sizes * depth_factors * audio_size_multiplier
-        
-        # Calculate brightness based on phase (smooth bright to dim)
-        # Use 0.5 offset to keep fireflies always somewhat visible
+
+        scaled_sizes = self.base_sizes * depth_factors
+
+        # Calculate brightness: smooth pulse with a solid floor so fireflies are always visible
         pulse = np.sin(self.phases)
-        brightness = 0.4 + 0.6 * (pulse * 0.5 + 0.5)  # Range: 0.4 (dim) to 1.0 (bright)
-        
-        # BRIGHTNESS MODULATION: Boost brightness with audio energy
-        audio_brightness_boost = audio_energies * 0.3  # Up to 30% brighter
-        brightness = np.clip(brightness + audio_brightness_boost, 0.4, 1.0)
-        
+        flash = np.power(np.clip(pulse, 0, 1), 2.0)  # soft bright peak on up-swing
+        brightness = 0.35 + flash * 0.65             # 0.35 floor → 1.0 peak
+
         brightness *= self.lifetimes  # Fade out as lifetime decreases
         brightness *= depth_factors * 0.4 + 0.6  # Scale brightness with depth
-        
-                        # Convert HSV colors to RGB (fully vectorized) with audio modulation
+
+        # Convert HSV colors to RGB (fully vectorized)
         hsv_colors = self.colors.copy()
-        hsv_colors[:, 2] = brightness
-        
-        # COLOR MODULATION: Shift hue slightly based on audio energy
-        # Bass: shift toward red/orange, Mid: neutral, High: shift toward green/blue
-        hue_shift = np.zeros(len(self.positions))
-        hue_shift[self.audio_bands == 0] = -audio_energies[self.audio_bands == 0] * 0.03  # Bass: redder
-        hue_shift[self.audio_bands == 1] = 0.0  # Mid: no shift
-        hue_shift[self.audio_bands == 2] = audio_energies[self.audio_bands == 2] * 0.03   # High: greener
-        hsv_colors[:, 0] = (hsv_colors[:, 0] + hue_shift) % 1.0  # Wrap hue to 0-1
-        
-        # Boost saturation with audio energy for more vibrant colors
-        audio_saturation_boost = audio_energies * 0.1  # Up to 10% more saturated
-        hsv_colors[:, 1] = np.clip(hsv_colors[:, 1] + audio_saturation_boost, 0.0, 1.0)
-        
-        # OPTIMIZED: Vectorized HSV to RGB conversion (no loop!)
+        hsv_colors[:, 2] = 1.0  # always full value — brightness carried by alpha only
         rgb_colors = self._hsv_to_rgb_vectorized(hsv_colors)
         
                 # ============================================================

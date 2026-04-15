@@ -12,7 +12,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_rain(state, outstate, intensity=1.0, wind=0.3, audio_sensitivity=1.5):
+def shader_rain(state, outstate, intensity=1.0, wind=0.3):
     """
     Shader-based rain effect compatible with EventScheduler
     
@@ -75,13 +75,6 @@ def shader_rain(state, outstate, intensity=1.0, wind=0.3, audio_sensitivity=1.5)
         else:
             effect.fade_multiplier = 1.0
 
-        # Pass audio data to effect for audio reactivity
-        audio_data = outstate.get('sound')
-        if audio_data is not None:
-            # Extract norm_long_relu bands [0] for current frame
-            # Map 16 frequency bands across the spectrum (0-31, step by 2)
-            audio_bands = audio_data['norm_long_relu'][0][::2]  # Every other band (32 bands -> 16 bands)
-            effect.update_audio_bands(audio_bands, audio_sensitivity)
 
     # On close event, clean up
     if state['count'] == -1:
@@ -107,23 +100,15 @@ class RainEffect(ShaderEffect):
         self.fade_multiplier = 1.0  # 1.0 = full rain, ramps to 0.0 during fade-out
         self.wind = wind
         self.instance_VBO = None
-        self.wrap_margin = 50  # NEW: Distance from edge to create duplicates (should be > max drop length)
-        
-                # Vectorized raindrop data (all stored as numpy arrays)
+        self.wrap_margin = 50  # Distance from edge to create duplicates (should be > max drop length)
+
+        # Vectorized raindrop data (all stored as numpy arrays)
         self.positions = None
         self.velocities = None
         self.base_velocities = None
         self.dimensions = None
-        self.base_dimensions = None  # Store original dimensions for audio modulation
         self.alphas = None
         self.colors = None
-        self.base_colors = None  # Store original colors for audio modulation
-        self.band_indices = None  # Audio band index (0-15) for each raindrop
-        self.audio_speed_multipliers = None  # Store audio speed multipliers for angle correction
-        
-        # Audio reactivity
-        self.audio_bands = np.zeros(16)  # Current audio energy per band
-        self.audio_sensitivity = 1.5
         
         self._initialize_raindrops()
         
@@ -152,21 +137,16 @@ class RainEffect(ShaderEffect):
             base_widths * (0.3 + 0.7 * depth_factors),
             base_lengths * (0.3 + 0.7 * depth_factors)
         ])
-        self.base_dimensions = self.dimensions.copy()  # Store base dimensions
-        
+
         # Alpha based on depth
         self.alphas = 0.2 + 0.6 * depth_factors
-        
-                # Colors: slight variations of blue/white
+
+        # Colors: slight variations of blue/white
         self.colors = np.column_stack([
             np.random.uniform(0.3, 0.7, n),  # R: blue to cyan
             np.random.uniform(0.7, 0.9, n),  # G: consistent
             np.ones(n)  # B: full blue
         ])
-        self.base_colors = self.colors.copy()  # Store base colors
-        
-        # Assign audio band indices (0-15) to each raindrop
-        self.band_indices = np.random.randint(0, 16, n)
         
     def _reset_raindrops(self, mask):
         """Reset raindrops that are off-screen OR remove them if over target (vectorized)"""
@@ -192,11 +172,8 @@ class RainEffect(ShaderEffect):
             self.velocities = self.velocities[keep_mask]
             self.base_velocities = self.base_velocities[keep_mask]
             self.dimensions = self.dimensions[keep_mask]
-            self.base_dimensions = self.base_dimensions[keep_mask]
             self.alphas = self.alphas[keep_mask]
             self.colors = self.colors[keep_mask]
-            self.base_colors = self.base_colors[keep_mask]
-            self.band_indices = self.band_indices[keep_mask]
             
             # Update the mask for remaining resets
             if n_to_remove < n_reset:
@@ -235,17 +212,12 @@ class RainEffect(ShaderEffect):
             
             self.dimensions[mask, 0] = base_widths * (0.3 + 0.7 * depth_factors)
             self.dimensions[mask, 1] = base_lengths * (0.3 + 0.7 * depth_factors)
-            self.base_dimensions[mask] = self.dimensions[mask].copy()
             self.alphas[mask] = 0.2 + 0.6 * depth_factors
-            
-                        # Reset colors
+
+            # Reset colors
             self.colors[mask, 0] = np.random.uniform(0.3, 0.7, n_reset)
             self.colors[mask, 1] = np.random.uniform(0.7, 0.9, n_reset)
             self.colors[mask, 2] = 1.0
-            self.base_colors[mask] = self.colors[mask].copy()
-            
-            # Reassign audio band indices
-            self.band_indices[mask] = np.random.randint(0, 16, n_reset)
 
     def _add_raindrops(self, n_new):
         """Add new raindrops above the screen so they fall in naturally"""
@@ -276,19 +248,14 @@ class RainEffect(ShaderEffect):
             np.random.uniform(0.7, 0.9, n_new),
             np.ones(n_new)
         ])
-        
-        new_band_indices = np.random.randint(0, 16, n_new)
-        
+
         # Concatenate
         self.positions = np.vstack([self.positions, new_positions])
         self.velocities = np.concatenate([self.velocities, new_velocities])
         self.base_velocities = np.concatenate([self.base_velocities, new_velocities])
         self.dimensions = np.vstack([self.dimensions, new_dimensions])
-        self.base_dimensions = np.vstack([self.base_dimensions, new_dimensions])
         self.alphas = np.concatenate([self.alphas, new_alphas])
         self.colors = np.vstack([self.colors, new_colors])
-        self.base_colors = np.vstack([self.base_colors, new_colors])
-        self.band_indices = np.concatenate([self.band_indices, new_band_indices])
 
 
         
@@ -324,31 +291,23 @@ class RainEffect(ShaderEffect):
                 np.random.uniform(0.7, 0.9, n_new),
                 np.ones(n_new)
             ])
-            
-            new_band_indices = np.random.randint(0, 16, n_new)
-            
+
             # Concatenate
             self.positions = np.vstack([self.positions, new_positions])
             self.velocities = np.concatenate([self.velocities, new_velocities])
             self.base_velocities = np.concatenate([self.base_velocities, new_velocities])
             self.dimensions = np.vstack([self.dimensions, new_dimensions])
-            self.base_dimensions = np.vstack([self.base_dimensions, new_dimensions])
             self.alphas = np.concatenate([self.alphas, new_alphas])
             self.colors = np.vstack([self.colors, new_colors])
-            self.base_colors = np.vstack([self.base_colors, new_colors])
-            self.band_indices = np.concatenate([self.band_indices, new_band_indices])
-            
+
         elif new_size < current_size:
             # Remove excess raindrops
             self.positions = self.positions[:new_size]
             self.velocities = self.velocities[:new_size]
             self.base_velocities = self.base_velocities[:new_size]
             self.dimensions = self.dimensions[:new_size]
-            self.base_dimensions = self.base_dimensions[:new_size]
             self.alphas = self.alphas[:new_size]
             self.colors = self.colors[:new_size]
-            self.base_colors = self.base_colors[:new_size]
-            self.band_indices = self.band_indices[:new_size]
         
     def get_vertex_shader(self):
         return """
@@ -476,12 +435,6 @@ class RainEffect(ShaderEffect):
         
         glBindVertexArray(0)
     
-    def update_audio_bands(self, audio_bands, sensitivity=0.5):
-        """Update audio band energies from event wrapper"""
-        if audio_bands is not None and len(audio_bands) == 16:
-            self.audio_bands = audio_bands
-            self.audio_sensitivity = sensitivity
-
     def update(self, dt: float, state: Dict):
         """Update raindrop positions (fully vectorized)"""
         if not self.enabled:
@@ -499,54 +452,13 @@ class RainEffect(ShaderEffect):
             n_to_add = min(self.target_raindrops - current_drops, 5)
             self._add_raindrops(n_to_add)
         
-        # Update velocities based on intensity AND audio
-        # Base velocity from rain_intensity
+        # Update velocities based on rain intensity
         self.velocities = self.base_velocities * (rain_intensity + 0.2)
         
-        # Calculate base horizontal velocity from wind (increased for more visible effect)
-        base_horizontal_velocity = self.wind * 100
-        
-        # Audio modulation: FULLY VECTORIZED
-        if len(self.audio_bands) == 16 and len(self.band_indices) > 0:
-            # Get audio energy for each raindrop's band - vectorized lookup
-            audio_energies = self.audio_bands[self.band_indices]
-            
-            # Speed modulation: Clamp to reasonable range (1.0 to 3.0x speed)
-            audio_multipliers = np.clip(audio_energies * self.audio_sensitivity, 0, 2.0) + 1.0
-            self.velocities *= audio_multipliers
-            
-            # Store audio multipliers for later use in render (no longer needed for angle correction)
-            self.audio_speed_multipliers = audio_multipliers
-            
-            # Color modulation: FULLY VECTORIZED - No more loops!
-            audio_clamped = np.clip(audio_energies * self.audio_sensitivity, 0, 2.5)
-            
-            # Create target color arrays based on frequency bands (vectorized)
-            # Moderately contrasting colors while staying somewhat natural
-            target_colors = np.zeros_like(self.colors)
-            
-            # Bass bands (0-5) - Deep purple-magenta
-            bass_mask = self.band_indices < 6
-            target_colors[bass_mask] = [0.7, 0.3, 1.0]  # Purple-magenta
-            
-            # Mid bands (6-10) - Bright cyan  
-            mid_mask = (self.band_indices >= 6) & (self.band_indices < 11)
-            target_colors[mid_mask] = [0.2, 0.9, 1.0]  # Bright cyan
-            
-            # High bands (11-15) - White-cyan
-            high_mask = self.band_indices >= 11
-            target_colors[high_mask] = [0.8, 1.0, 1.0]  # White-cyan
-            
-            # Vectorized color mixing (60% target color for moderate visibility)
-            mix_factors = np.clip(audio_clamped * 0.6, 0, 0.6)[:, np.newaxis]  # Reshape for broadcasting
-            self.colors = self.base_colors * (1 - mix_factors) + target_colors * mix_factors
-            
-            # Audio affects only vertical speed, not horizontal direction
-            self.audio_speed_multipliers = audio_multipliers
-        else:
-            self.audio_speed_multipliers = None
-        
-        # Vectorized position updates - audio affects only vertical velocity
+        # Calculate base horizontal velocity from wind
+        base_horizontal_velocity = self.wind * 40
+
+        # Vectorized position updates
         self.positions[:, 1] += self.velocities * dt
         self.positions[:, 0] += base_horizontal_velocity * dt
         
@@ -627,7 +539,7 @@ class RainEffect(ShaderEffect):
         
         # Calculate rotations to match actual movement direction
         # Use the ACTUAL velocities being used for movement, not base velocities
-        horizontal_vel = self.wind * 100
+        horizontal_vel = self.wind * 40
         vertical_vel = self.velocities[combined_indices]  # Use actual velocities with rain_intensity
         
         # Angle of movement from vertical downward direction

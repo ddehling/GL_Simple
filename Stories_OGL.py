@@ -147,8 +147,8 @@ class EnvironmentalSystem:
             "fog": (fx.shader_fog, {
                 "strength": 0.0,
                 "color": (0.7, 0.7, 0.8),
-                "fog_near": 20.0,
-                "fog_far": 80.0
+                "fog_near": 0.0,
+                "fog_far": 30.0
             }),
             "sandstorm": (fx.shader_sandstorm, {}),
             "fog_beings": (fx.shader_chromatic_fog_beings, {}),
@@ -612,6 +612,18 @@ class EnvironmentalSystem:
         if randcheck < self.weather_state.weather_params["spookyness"] / 1000:
             self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
 
+        # Wolf howl one-shot sounds
+        if randcheck < self.weather_state.weather_params["Wolfy"] / 2500:
+            wolf_sounds = [
+                "howling-wolves-6965.mp3",
+                "wolf-howling-140235.mp3",
+                "duskwolf-101348.mp3",
+            ]
+            wolf_file = Path("media/sounds") / np.random.choice(wolf_sounds)
+            engine = self.scheduler.state.get("soundengine")
+            if engine:
+                engine.schedule_event(wolf_file, volume=1.0)
+
         # # Random meteor events
         if randcheck < self.weather_state.weather_params["meteor_rate"] / 800:
             self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
@@ -627,8 +639,7 @@ class EnvironmentalSystem:
         transition_speed_mult = self.weather_set.get_transition_speed()
 
         randcheck = np.random.random()
-        if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 0.99):
-            self.weather_state.progress = 0
+        if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 1.0):
 
             # Check if we need to change weather sets
             if self.weather_set.has_pending_set_change():

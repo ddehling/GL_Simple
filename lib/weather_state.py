@@ -26,6 +26,9 @@ class WeatherStateController:
         self.weather_presets = WEATHER_PRESETS
         # Initialize weather_params from the actual initial state, not just defaults
         self.weather_params = self.get_weather_params(initial_weather)
+        # Snapshot of weather_params at the moment a transition started (used as
+        # interpolation start so mid-transition redirects don't snap back to presets)
+        self.transition_start_params = self.weather_params.copy()
 
     def get_weather_params(self, weather_state: WeatherState) -> dict:
         """Get the complete set of parameters for a weather state by combining with defaults."""
@@ -44,6 +47,8 @@ class WeatherStateController:
         self.target_weather = new_weather
         self.transition_time = transition_duration
         self.transition_start = current_time
+        # Snapshot current interpolated state so redirected transitions don't snap
+        self.transition_start_params = self.weather_params.copy()
         return self.get_weather_params(new_weather)
 
     def update(self, current_time: float) -> None:
@@ -53,12 +58,11 @@ class WeatherStateController:
                 1.0, (current_time - self.transition_start) / self.transition_time
             )
 
-            start_params = self.get_weather_params(self.current_weather)
             target_params = self.get_weather_params(self.target_weather)
 
             for param in target_params:
                 if isinstance(target_params[param], (int, float, np.ndarray)):
-                    start_value = start_params.get(
+                    start_value = self.transition_start_params.get(
                         param, self.default_weather_params.get(param, 0)
                     )
                     self.weather_params[param] = (

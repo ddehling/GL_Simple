@@ -74,9 +74,12 @@ void main() {
         float drift = sin(u_time * 0.15 + v_texcoord.x * 10.0) * 0.05;
         combined = u_fog_strength * clamp(spatial + drift, 0.0, 1.0);
     } else {
-        // Standard depth-based fog
+        // Linear fog between fog_near and fog_far depth planes (0-100 range)
         float depth = texture(u_depth_texture, v_texcoord).r;
-        combined = u_fog_strength * depth;
+        float near = u_fog_near / 100.0;
+        float far  = u_fog_far  / 100.0;
+        float linear = clamp((depth - near) / max(far - near, 0.001), 0.0, 1.0);
+        combined = u_fog_strength * linear;
     }
 
     float blur_radius = combined * 4.0;

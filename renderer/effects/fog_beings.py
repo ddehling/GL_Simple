@@ -50,7 +50,6 @@ def shader_chromatic_fog_beings(state, outstate, num_beings=4, depth_layer=50.0)
                 depth_layer=depth_layer
             )
             state['fog_effect'] = fog_effect
-            state['start_time'] = time.time()
             print(f"✓ Initialized {num_beings} fog beings at depth {depth_layer} for frame {frame_id}")
         except Exception as e:
             print(f"✗ Failed to initialize fog beings: {e}")
@@ -140,6 +139,7 @@ class ChromaticFogBeingsEffect(ShaderEffect):
         self.num_beings = np.clip(num_beings, 1, 6)
         self.beings: List[Being] = []  # Keep for compatibility with render method
         self.fade_factor = 0.0
+        self.render_priority = 1100  # Draw after ShaderFog post-process (priority 1000)
         self.next_communication = time.time() + np.random.uniform(3, 8)
         self.depth_layer = depth_layer  # Depth in range 0-100
         

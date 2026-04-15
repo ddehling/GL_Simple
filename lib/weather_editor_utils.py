@@ -189,7 +189,7 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
         'Weird': {'type': 'number', 'step': 0.1},
         'Sound_volume': {'type': 'number', 'step': 0.1},
         'season_preference': {'type': 'number', 'step': 0.025},
-        'mountain': {'type': 'number', 'step': 0.1},
+
         'ambient_sound': {'type': 'text'},
         'ARI': {'type': 'number', 'step': 1},
         'transition_duration': {'type': 'number', 'step': 1},
@@ -238,7 +238,6 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
         "Weird": 0.0,
         "Sound_volume": 1.0,
         "season_preference": 0.375,
-        "mountain": 0,
         "ambient_sound": None,
         "ARI": 0.0
     }
