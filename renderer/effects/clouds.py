@@ -64,7 +64,7 @@ def shader_drifting_clouds(state, outstate, density=1.0):
     # Update wind, fog, and cloudyness from global state
     if 'cloud_effect' in state:
         effect = state['cloud_effect']
-        effect.wind = outstate.get('wind', 0) * 50
+        effect.wind = outstate.get('wind', 0) * 15
         effect.fog_level = outstate.get('fog_level', 0)
         effect.cloudyness = outstate.get('cloudyness', 0.5)
         
