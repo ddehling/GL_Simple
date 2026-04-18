@@ -448,10 +448,10 @@ def make_indices_V_rect_alternate(width, height,start):
     indices = []
     for x in range(width):
         if x % 2 == 0:
-            for y in range(height):
+            for y in range(height-1, -1, -1):
                 indices.append([y, x+start])
         else:
-            for y in range(height-1, -1, -1):
+            for y in range(height):
                 indices.append([y, x+start])
     return np.array(indices).astype(int)
 

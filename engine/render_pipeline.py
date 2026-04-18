@@ -167,7 +167,7 @@ class RenderPipeline:
         return [viewport.get_frame() for viewport in self._shader_renderer.viewports]
 
     def _send_to_displays(self, frames: list):
-        gamma = 2.8
+        gamma = 2.0
         for i, frame in enumerate(frames):
             frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
 
