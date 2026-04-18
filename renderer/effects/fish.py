@@ -491,16 +491,22 @@ class FishEffect(ShaderEffect):
                 # rim (bottom of display), where there's more arc length / more
                 # LEDs per foot so their features are readable; big fish get
                 # pushed toward the apex where they have room to be seen.
-                # Size range across all species is roughly 0.13..3.2 ft.
+                # Real species max is ~1.6 ft (before display scaling), so the
+                # size normalization uses that range -- the old 3.2 ft upper
+                # bound made size_norm top out near 0.45 and collapsed the
+                # banding to ~1.7 ft of variation.
                 sz = out['sizes_ft'][mask]
-                size_norm = np.clip((sz - 0.13) / (3.2 - 0.13), 0.0, 1.0)
-                # Soften the banding: instead of forcing big fish fully to
-                # the apex, gently bias them inward. This keeps the size
-                # sorting visible without cramming a dozen barracudas into
-                # a 2 ft band near the inner rim.
-                preferred_r = SPAWN_R_MAX - size_norm * (SPAWN_R_MAX - SPAWN_R_MIN) * 0.55
-                # Wide jitter so same-species fish spread out across radii.
-                jitter = np.random.uniform(-4.0, 4.0, k)
+                size_norm = np.clip((sz - 0.13) / (1.6 - 0.13), 0.0, 1.0)
+                # Center the preferred radius in the middle of the spawn band
+                # and use a mild size-based offset. The dominant spread comes
+                # from the wide random jitter below, so fish of the same
+                # species still end up scattered across heights instead of
+                # clumping at one edge.
+                r_mid = (SPAWN_R_MIN + SPAWN_R_MAX) * 0.5
+                size_bias = (0.5 - size_norm) * (SPAWN_R_MAX - SPAWN_R_MIN) * 0.25
+                preferred_r = r_mid + size_bias
+                half_span = (SPAWN_R_MAX - SPAWN_R_MIN) * 0.45
+                jitter = np.random.uniform(-half_span, half_span, k)
                 out['r_fts'][mask] = np.clip(preferred_r + jitter, SPAWN_R_MIN, SPAWN_R_MAX)
 
             # Modest radial drift -- enough to give some diagonal motion but
@@ -1258,19 +1264,22 @@ class FishEffect(ShaderEffect):
         r_lo[surface_mask] = SPAWN_R_MIN
         r_hi[surface_mask] = SPAWN_R_MIN + 3.0
 
-        # Fish that hit a radial boundary are pushed back a bit and have
-        # their radial drift ZEROED out (not reversed). Any future drift
-        # comes from the random-wobble stage. This prevents the "slam the
-        # wall, swing to the other wall, slam, repeat" ping-pong that looks
-        # ridiculous on a narrow water column.
+        # Fish that hit a radial boundary bounce back with a freshly randomized
+        # inward drift. Zeroing the drift (the old behavior) stranded fish at
+        # whichever wall they first touched, since nothing else re-randomized
+        # r_drifts during a fish's lifetime -- the whole fleet ended up glued
+        # to the outer rim. Randomizing the magnitude on bounce avoids the
+        # "slam wall, slam opposite wall, repeat" perfect ping-pong.
         too_low = self.r_fts < r_lo
         too_high = self.r_fts > r_hi
         if np.any(too_low):
+            n = int(np.sum(too_low))
             self.r_fts[too_low] = r_lo[too_low] + 0.2
-            self.r_drifts[too_low] = 0.0
+            self.r_drifts[too_low] = np.random.uniform(0.05, 0.25, n) * FISH_DRIFT_SCALE
         if np.any(too_high):
+            n = int(np.sum(too_high))
             self.r_fts[too_high] = r_hi[too_high] - 0.2
-            self.r_drifts[too_high] = 0.0
+            self.r_drifts[too_high] = -np.random.uniform(0.05, 0.25, n) * FISH_DRIFT_SCALE
 
         # Recompute buffer-pixel positions and pixel sizes for render().
         self._refresh_buffer_state()
