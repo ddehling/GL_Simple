@@ -15,11 +15,9 @@ No network calls are made; everything is self-contained.
 import numpy as np
 import ctypes
 import time as _time
-import miniaudio as _miniaudio
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict, List, Tuple
-from pathlib import Path as _Path
 from .base import ShaderEffect
 from renderer.fan_coords import FanCoords
 
@@ -545,20 +543,14 @@ def _geo_to_fan_px(lat: float, lon: float, w: float, h: float) -> Tuple[float, f
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# BART ambient sounds and text announcement data
+# BART train-arrival text announcement data
 # ---------------------------------------------------------------------------
+# Ambient BART sound scheduling used to live here, driven by a hardcoded
+# `media/sounds/bart_sounds` directory. That behavior has been extracted
+# into the general-purpose `sound_pool` effect (see
+# renderer/effects/sound_pool.py). The BarTiki weather set now wires up
+# its pool via WEATHER_SETS["bartiki"]["sound_pool_dir"].
 _BART_DESTINATIONS = ["SFO", "RICH", "DALY", "FREM", "PITS", "DUBL", "ANTI", "WARM"]
-
-# Cache for sound file list (populated on first use)
-_bart_sounds_cache = None
-
-def _get_bart_sounds():
-    """Return cached list of BART ambient sound files."""
-    global _bart_sounds_cache
-    if _bart_sounds_cache is None:
-        d = _Path(__file__).resolve().parent.parent.parent / "media" / "sounds" / "bart_sounds"
-        _bart_sounds_cache = list(d.glob("*.mp3")) if d.exists() else []
-    return _bart_sounds_cache
 
 
 def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
@@ -608,22 +600,6 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
         state['effect'].time_of_day = outstate.get('season', 0.5)
 
         now = _time.time()
-        engine = outstate.get('soundengine')
-
-        # --- BART ambient sounds (random oneshots with cooldown) ---
-        time_since_sound = now - state.get('_last_bart_sound_end', 0)
-        if time_since_sound > 5.0 and np.random.random() < 1 / 400:
-            sounds = _get_bart_sounds()
-            if sounds and engine:
-                pick = np.random.choice(sounds)
-                try:
-                    info = _miniaudio.mp3_get_file_info(str(pick))
-                    file_dur = info.num_frames / info.sample_rate
-                except Exception:
-                    file_dur = 15.0
-                #print(f"[BART Sound] Playing: {pick.name} ({file_dur:.1f}s), cooldown until {file_dur + 5.0:.1f}s from now")
-                engine.schedule_event(str(pick), volume=0.8)
-                state['_last_bart_sound_end'] = now + file_dur + 5.0
 
         # --- Train arrival text announcements ---
         time_since_text = now - state.get('_last_arrival_text', 0)

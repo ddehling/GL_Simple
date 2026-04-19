@@ -507,6 +507,46 @@ class WebController:
                 if sounds_dir.exists():
                     sound_files = [f.name for f in sounds_dir.iterdir() if f.is_file()]
                     sound_files.sort()
+
+                # Discover narrative scripts: any media/sounds/*/script.json.
+                # Each entry carries the repo-relative path (what gets stored
+                # in WEATHER_SETS[*]["narrative_script"]) and a display name
+                # pulled from the JSON's "name" field when present.
+                import json as _json
+                narrative_scripts = []
+                sound_pool_dirs = []
+                audio_exts = {'.mp3', '.wav', '.ogg', '.flac', '.m4a'}
+                if sounds_dir.exists():
+                    for sub in sorted(sounds_dir.iterdir()):
+                        if not sub.is_dir():
+                            continue
+                        script_file = sub / 'script.json'
+                        if script_file.is_file():
+                            rel_path = f"media/sounds/{sub.name}/script.json"
+                            display = sub.name
+                            try:
+                                data = _json.loads(script_file.read_text(encoding='utf-8'))
+                                display = data.get('name') or sub.name
+                            except Exception:
+                                pass  # Keep directory name as fallback label.
+                            narrative_scripts.append({
+                                "path": rel_path,
+                                "name": display,
+                            })
+
+                        # Any subdir with audio files is eligible as a
+                        # sound pool. Count non-recursively so the UI can
+                        # show how many clips the user is selecting.
+                        audio_count = sum(
+                            1 for f in sub.iterdir()
+                            if f.is_file() and f.suffix.lower() in audio_exts
+                        )
+                        if audio_count > 0:
+                            sound_pool_dirs.append({
+                                "path": f"media/sounds/{sub.name}",
+                                "name": sub.name,
+                                "count": audio_count,
+                            })
                 
                 # Convert WeatherState enum to list of strings
                 weather_states = [state.value for state in WeatherState]
@@ -541,6 +581,8 @@ class WebController:
                     "parameter_definitions": PARAMETER_DEFINITIONS,
                     "available_background_events": background_events,
                     "available_sounds": sound_files,
+                    "available_narratives": narrative_scripts,
+                    "available_sound_pools": sound_pool_dirs,
                     "available_events": sorted(self.available_events) if hasattr(self, 'available_events') else []
                 }
             

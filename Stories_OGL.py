@@ -190,10 +190,17 @@ class EnvironmentalSystem:
             "city_lights": (fx.shader_city_lights, {}),
             "bay_shimmer": (fx.shader_bay_shimmer, {}),
             "narrative_player": (fx.shader_narrative_player, {
-                "script_path": "media/sounds/bartiki/script.json",
+                # No script_path here: the active weather set declares its
+                # own narrative via its `narrative_script` field, which is
+                # published to outstate['narrative_script'] and read by
+                # the event wrapper. Sets without a script leave the
+                # effect silent.
                 "node_delay": 3.0,
                 "restart_delay": 10.0,
             }),
+            # Random ambient audio pool. Directory is driven per-set by
+            # the active set's `sound_pool_dir` via outstate.
+            "sound_pool": (fx.shader_sound_pool, {}),
         }
         
         # WeatherSetManager owns the event_map from here on
@@ -202,10 +209,15 @@ class EnvironmentalSystem:
 
         # Pass event names to web controller if enabled
         if self.enable_web_control:
+            from lib.weather_set import IMPLICIT_BACKGROUND_EVENTS
             event_list = self.weather_set.get_event_names()
+            # Hide implicitly-scheduled events (narrative_player, sound_pool)
+            # from the "+ Add Background Event" dropdown; they're controlled
+            # via per-set dropdown fields instead.
+            bg_events = [e for e in event_list if e not in IMPLICIT_BACKGROUND_EVENTS]
             self.web_controller.set_available_events(
                 all_events=event_list,
-                background_events=event_list
+                background_events=bg_events,
             )
             # Sync initial set name now that WeatherSetManager is ready
             self.web_controller.set("current_weather_set", self.weather_set.current_set)
@@ -560,6 +572,12 @@ class EnvironmentalSystem:
         state.update(output)
         state["season"] = self.season
         state["current_weather_state"] = self.weather_state.current_weather.value
+        # Publish the active set's narrative script path (or None). The
+        # narrative_player background event reads this and reloads when it
+        # changes, so switching weather sets cleanly swaps scripts.
+        state["narrative_script"] = self.weather_set.get_narrative_script()
+        # Same deal for the random ambient-sound pool directory.
+        state["sound_pool_dir"] = self.weather_set.get_sound_pool_dir()
         if self.enable_web_control and self.web_controller is not None:
             state["_preview_active"] = (
                 self.web_controller.control_dict.get('_preview_subscribers', 0) > 0

@@ -10,6 +10,14 @@ from typing import Optional
 from lib.weather_params import WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
 
 
+# Events that are scheduled automatically from per-set config fields
+# (narrative_script, sound_pool_dir) rather than from the explicit
+# `background_events` list. The editor should hide these from the
+# "+ Add Background Event" dropdown -- the set's dedicated dropdowns
+# are the single source of truth for them.
+IMPLICIT_BACKGROUND_EVENTS = frozenset({"narrative_player", "sound_pool"})
+
+
 class WeatherSetManager:
     """Manages weather set selection, queued set changes, and per-set config access.
 
@@ -47,7 +55,28 @@ class WeatherSetManager:
         return list(self.weather_sets.keys())
 
     def get_background_events(self) -> list:
-        return self.get_current_set_config().get("background_events", [])
+        """Return the effective background-events list for the active set.
+
+        Starts from the explicit `background_events` list, then auto-adds
+        `narrative_player` whenever the set has a non-empty `narrative_script`
+        and `sound_pool` whenever `sound_pool_dir` is non-empty. The dropdown
+        fields in the editor are the single source of truth for those two
+        features -- users don't have to remember to add the events to the
+        pill list too. Dedupes so an explicit entry won't cause duplicate
+        scheduling.
+        """
+        cfg = self.get_current_set_config()
+        events = list(cfg.get("background_events", []))
+
+        implied = []
+        if cfg.get("narrative_script"):
+            implied.append("narrative_player")
+        if cfg.get("sound_pool_dir"):
+            implied.append("sound_pool")
+        for ev in implied:
+            if ev not in events:
+                events.append(ev)
+        return events
 
     def get_random_events_config(self) -> tuple:
         """Return (random_events list, random_event_rate float) for current set."""
@@ -62,6 +91,27 @@ class WeatherSetManager:
 
     def get_season_extremity(self) -> float:
         return self.get_current_set_config().get("season_extremity", 1.0)
+
+    def get_narrative_script(self) -> Optional[str]:
+        """Return the current set's narrative script path, or None if unset.
+
+        Sets that omit the field (older saved data) behave as if it were None.
+        Empty strings are treated as None too.
+        """
+        script = self.get_current_set_config().get("narrative_script")
+        if not script:
+            return None
+        return script
+
+    def get_sound_pool_dir(self) -> Optional[str]:
+        """Return the current set's ambient sound-pool directory, or None.
+
+        Same semantics as get_narrative_script: missing/empty -> None.
+        """
+        sdir = self.get_current_set_config().get("sound_pool_dir")
+        if not sdir:
+            return None
+        return sdir
 
     # ------------------------------------------------------------------
     # Event map accessors

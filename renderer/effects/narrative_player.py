@@ -119,6 +119,7 @@ class NarrativePlayer(ShaderEffect):
         self._nodes:       dict = {}
         self._start_nodes: list = []
         self._audio_dir:   Path = Path('.')
+        self._script_path: str  = ''    # currently-loaded script (empty = none)
 
         # ── Story variable interpolation state ───────────────────────────
         self._var_defs:    list = []   # [{"name": ..., "description": ...}, ...]
@@ -135,29 +136,82 @@ class NarrativePlayer(ShaderEffect):
         self._recency: dict = {}   # node_id -> float
         self._DECAY_PER_SEC: float = 1.0 / 36000.0  # lose 1 count per 10 hours
 
+        # Disabled by default; _load_script flips enabled on success.
+        self.enabled = False
+        if script_path:
+            self._load_script(script_path)
+
+    def _load_script(self, script_path: str) -> bool:
+        """Load a narrative script JSON. Resets state-machine and variables.
+
+        Returns True on success, False otherwise. A False return leaves
+        the player disabled so it stays silent until a valid path arrives.
+        """
         p = Path(script_path.replace('\\', '/'))
-        if p.exists():
-            data              = json.loads(p.read_text(encoding='utf-8'))
-            self._nodes       = data.get('nodes', {})
-            self._start_nodes = data.get('start_nodes', [])
-            self._var_defs    = data.get('variables', [])
-            self._audio_dir   = p.parent
-
-            # Initialise all variables to 0
-            for v in self._var_defs:
-                name = v['name']
-                self._var_current[name] = 0.0
-                self._var_start[name]   = 0.0
-                self._var_target[name]  = 0.0
-
-            var_names = [v['name'] for v in self._var_defs]
-            print(f'[NarrativePlayer] Loaded {p.name}  '
-                  f'({len(self._nodes)} nodes, '
-                  f'{len(self._start_nodes)} start nodes'
-                  f'{", vars: " + ", ".join(var_names) if var_names else ""})')
-        else:
+        if not p.exists():
             print(f'[NarrativePlayer] Script not found: {script_path}')
+            self._script_path = ''
             self.enabled = False
+            return False
+
+        try:
+            data = json.loads(p.read_text(encoding='utf-8'))
+        except Exception as e:
+            print(f'[NarrativePlayer] Failed to parse {script_path}: {e}')
+            self._script_path = ''
+            self.enabled = False
+            return False
+
+        self._nodes       = data.get('nodes', {})
+        self._start_nodes = data.get('start_nodes', [])
+        self._var_defs    = data.get('variables', [])
+        self._audio_dir   = p.parent
+        self._script_path = script_path
+
+        # Reset state machine and variables so the new script starts fresh.
+        self._phase         = self.IDLE
+        self._phase_elapsed = 0.0
+        self._audio_dur     = 0.0
+        self._current_node  = None
+        self._var_current.clear()
+        self._var_start.clear()
+        self._var_target.clear()
+        self._var_elapsed = 0.0
+        self._var_ramping = False
+        self._recency.clear()
+        for v in self._var_defs:
+            name = v['name']
+            self._var_current[name] = 0.0
+            self._var_start[name]   = 0.0
+            self._var_target[name]  = 0.0
+
+        var_names = [v['name'] for v in self._var_defs]
+        print(f'[NarrativePlayer] Loaded {p.name}  '
+              f'({len(self._nodes)} nodes, '
+              f'{len(self._start_nodes)} start nodes'
+              f'{", vars: " + ", ".join(var_names) if var_names else ""})')
+
+        self.enabled = True
+        return True
+
+    def unload(self) -> None:
+        """Disable the player without destroying the instance.
+
+        Used when the active weather set declares no narrative_script,
+        so the effect stays silent but the same object can be reloaded
+        later without reconstructing OpenGL resources (there are none,
+        but the pattern matches other effects).
+        """
+        self._script_path = ''
+        self._phase       = self.IDLE
+        self._current_node = None
+        self._nodes.clear()
+        self._start_nodes = []
+        self.enabled = False
+
+    @property
+    def script_path(self) -> str:
+        return self._script_path
 
     def init(self):
         """No shaders or GPU buffers needed."""
@@ -272,7 +326,6 @@ class NarrativePlayer(ShaderEffect):
 
         self._phase_elapsed += dt
         engine = state.get('soundengine')
-        self._volume = state.get('narrative_volume', 1.0)
 
         # Decay recency counters (1 count per hour)
         if self._recency:
@@ -335,18 +388,36 @@ def shader_narrative_player(state: dict, outstate: dict,
     """
     Event-map wrapper for NarrativePlayer.
 
-    count == 0   : first call — instantiate and register the effect.
-    count  > 0   : subsequent frames — effect drives itself via update().
+    The script path is driven by outstate['narrative_script'], published by
+    WeatherSetManager from the active set's configuration. Any explicit
+    `script_path` kwarg here is only a fallback for cases where the
+    outstate key is absent (standalone scheduling, tests, etc.). When the
+    active set changes its narrative_script, this wrapper calls reload on
+    the effect so the story swaps cleanly without restarting the effect
+    instance.
+
+    count == 0   : first call — instantiate the effect (disabled) and
+                   load whatever script is currently declared.
+    count  > 0   : subsequent frames — sync effect.script_path with
+                   outstate['narrative_script'].
     count == -1  : cleanup call — remove effect from viewport.
     """
     renderer = outstate.get('shader_renderer')
     if not renderer:
         return
 
+    # outstate is the single source of truth for which script plays.
+    # Fall back to the kwarg only when the key is absent entirely.
+    if 'narrative_script' in outstate:
+        desired = outstate['narrative_script'] or ''
+    else:
+        desired = script_path or ''
+
     if state['count'] == 0:
         viewport = renderer.get_viewport(frame_id)
+        # Construct disabled; _sync_script below loads the correct script.
         viewport.add_effect(NarrativePlayer,
-                            script_path=script_path,
+                            script_path='',
                             delay=node_delay,
                             restart_delay=restart_delay,
                             var_ramp_duration=var_ramp_duration)
@@ -360,3 +431,16 @@ def shader_narrative_player(state: dict, outstate: dict,
             viewport.effects.remove(effect)
             effect.cleanup()
         print('[shader_narrative_player] Stopped')
+        return
+
+    # Every frame (including the first): if the desired script differs
+    # from what the effect has loaded, swap.
+    effect = state.get('effect')
+    if effect is None:
+        return
+    current = effect.script_path
+    if desired != current:
+        if desired:
+            effect._load_script(desired)
+        else:
+            effect.unload()

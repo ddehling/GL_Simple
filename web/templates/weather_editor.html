@@ -693,6 +693,8 @@ let currentSet = null;
 let currentWeatherTab = null;
 let hasUnsavedChanges = false;
 let availableSounds = []; // List of available sound files
+let availableNarratives = []; // List of {path, name} objects for narrative scripts
+let availableSoundPools = []; // List of {path, name, count} objects for sound-pool dirs
 let autoSaveTimeout = null;
 const AUTO_SAVE_DELAY = 1000; // Auto-save 1 second after last change
 
@@ -732,9 +734,13 @@ async function loadWeatherData() {
         
         weatherData = await response.json();
         availableSounds = weatherData.available_sounds || [];
+        availableNarratives = weatherData.available_narratives || [];
+        availableSoundPools = weatherData.available_sound_pools || [];
         console.log('Weather data loaded:', weatherData);
         console.log('Weather sets:', Object.keys(weatherData.weather_sets || {}));
         console.log('Available sounds:', availableSounds.length);
+        console.log('Available narratives:', availableNarratives.length);
+        console.log('Available sound pools:', availableSoundPools.length);
         renderGlobalParameters();
         renderSetList();
         showStatus('Weather data loaded successfully', 'success');
@@ -1007,11 +1013,43 @@ function renderSetEditor() {
             
             <div class="form-group">
                 <label>Description</label>
-                <textarea id="setDescription" 
+                <textarea id="setDescription"
                           onchange="updateSetProperty('description', this.value)">${setData.description || ''}</textarea>
             </div>
+
+            <div class="form-group">
+                <label>Narrative</label>
+                <select id="setNarrativeScript"
+                        onchange="updateSetProperty('narrative_script', this.value || null)"
+                        style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                    <option value="">-- None --</option>
+                    ${(availableNarratives || []).map(n => {
+                        const selected = n.path === setData.narrative_script ? 'selected' : '';
+                        return `<option value="${n.path}" ${selected}>${n.name} (${n.path})</option>`;
+                    }).join('')}
+                </select>
+                <div style="color: #888; font-size: 12px; margin-top: 4px;">
+                    Plays when this set is active and <code>narrative_player</code> is in background events.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Sound Pool Directory</label>
+                <select id="setSoundPoolDir"
+                        onchange="updateSetProperty('sound_pool_dir', this.value || null)"
+                        style="width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                    <option value="">-- None --</option>
+                    ${(availableSoundPools || []).map(p => {
+                        const selected = p.path === setData.sound_pool_dir ? 'selected' : '';
+                        return `<option value="${p.path}" ${selected}>${p.name} (${p.count} files)</option>`;
+                    }).join('')}
+                </select>
+                <div style="color: #888; font-size: 12px; margin-top: 4px;">
+                    Random clips from this directory play at intervals when <code>sound_pool</code> is in background events.
+                </div>
+            </div>
         </div>
-        
+
         <div class="editor-section">
             <div class="section-header">
                 <div class="section-title">Background Events (Always Active)</div>
