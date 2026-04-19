@@ -65,13 +65,16 @@ def shader_bubbles(state, outstate, density=1.0, audio_sensitivity=0.5):
     if 'bubble_effect' in state:
         bubble_density = outstate.get('bubble_density', density)
         state['bubble_effect'].set_target_density(bubble_density)
-        
+
         # Update squish width from scale
         state['bubble_effect'].squish_top_width = squish_top_width
-        
+
         # Update tide level (controls water line/beach boundary)
         tide_level = outstate.get('tide_level', 0.5)
         state['bubble_effect'].set_tide_level(tide_level)
+
+        # Current strength: positive wind drifts bubbles right, negative drifts left.
+        state['bubble_effect'].wind = float(outstate.get('wind', 0.0))
     
     # On close event, clean up
     if state['count'] == -1:
@@ -118,6 +121,10 @@ class BubbleEffect(ShaderEffect):
         # Audio reactivity
         self.audio_energy = 0.0
         self.audio_sensitivity = 0.5
+
+        # Current drift: set from outstate['wind']; pushes bubbles sideways
+        # as they rise, so strong currents visibly sweep the bubble column.
+        self.wind = 0.0
         
         self._initialize_bubbles()
         
@@ -461,9 +468,15 @@ class BubbleEffect(ShaderEffect):
         # Calculate horizontal wobble
         wobble_x = np.sin(self.wobble_phases) * 5.0
         
-        # Update positions (rise + wobble)
+        # Update positions (rise + wobble + current drift)
         self.positions[:, 1] += self.velocities * dt  # Rise
         self.positions[:, 0] += wobble_x * dt  # Wobble horizontally
+        # Horizontal current push. 25 px/s per unit of wind at wind = 1
+        # visibly sweeps the bubble column without overwhelming the wobble.
+        self.positions[:, 0] += self.wind * 25.0 * dt
+        # Wrap around horizontally so drifting bubbles don't pile up on a
+        # single edge and leave the other side empty.
+        self.positions[:, 0] = np.mod(self.positions[:, 0], self.viewport.width)
         
         # Update squish factors based on current y position (bottom = 1.0, top = squish_top_width)
         y_normalized = self.positions[:, 1] / self.viewport.height

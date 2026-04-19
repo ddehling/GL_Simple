@@ -73,9 +73,17 @@ def shader_fish(state, outstate, activity=1.0):
     if 'fish_effect' in state:
         marine_life_activity = outstate.get('marine_life_activity', activity)
         state['fish_effect'].set_target_activity(marine_life_activity)
-        
+
         # Update squish width from scale
         state['fish_effect'].squish_top_width = squish_top_width
+
+        # Current bias: positive wind pushes the whole school one way along
+        # their arcs, negative the other. Signed so the drift direction
+        # tracks the water's current.
+        state['fish_effect'].current_bias = float(outstate.get('wind', 0.0))
+
+        # Day/night dimming: fish are less visible in dark water.
+        state['fish_effect'].ambient_light = float(outstate.get('ambient_light', 1.0))
     
     # On close event, clean up
     if state['count'] == -1:
@@ -130,6 +138,11 @@ FISH_INNER_MARGIN_FT = 1.2
 # Most of the "diagonal motion" illusion now comes from gentle drift plus
 # the natural arc swimming.
 FISH_DRIFT_SCALE = 0.8
+
+# Fade-in time (seconds) for newly spawned or recycled fish. The fish's
+# effective alpha ramps from 0 to 1 linearly over this window so they
+# don't pop into existence mid-arc.
+FISH_FADE_IN_S = 1.5
 
 
 # ----------------------------------------------------------------------------
@@ -396,6 +409,14 @@ class FishEffect(ShaderEffect):
         # Width scaling based on vertical position (legacy hack for flat-mode display)
         self.squish_top_width = squish_top_width
 
+        # Current bias (rad/s added to every fish's omega). Set from
+        # outstate['wind']; positive = fish drift CCW, negative = CW.
+        self.current_bias = 0.0
+
+        # Day/night light level in [0.25, 1.0] from outstate['ambient_light'];
+        # scales render-time alpha so fish dim in dark water.
+        self.ambient_light = 1.0
+
         # Physical state — fish swim along arcs of constant radius.
         self.thetas = None        # rad in [0, pi]
         self.r_fts = None         # ft in [INNER_R_FT, OUTER_R_FT]
@@ -408,6 +429,7 @@ class FishEffect(ShaderEffect):
         self.swim_phases = None   # tail-wiggle animation
         self.swim_speeds = None   # tail-wiggle frequency
         self.alphas = None
+        self.ages = None          # seconds since spawn; drives a fade-in ramp
         self.colors = None
         self.species = None       # species index per fish
         self.body_lengths = None  # body morph (per fish)
@@ -562,6 +584,10 @@ class FishEffect(ShaderEffect):
         # Depth-driven alpha (kept from old model — gives back-to-front variation).
         depth_factors = 1.0 - (self.zs / 100.0)
         self.alphas = np.ones_like(depth_factors)
+        # Start fully faded in -- the initial fleet is already on screen
+        # when the effect spawns, so popping them would be worse than
+        # having them visible immediately.
+        self.ages = np.full(len(depth_factors), FISH_FADE_IN_S, dtype=np.float64)
 
         # Tail-wiggle animation. Old code did: 8 + base_speed/10 with px-speeds in
         # the 6..35 range. New base_speeds are in ft/s (0.15..2.5), so use a
@@ -626,6 +652,7 @@ class FishEffect(ShaderEffect):
         self.swim_phases = self.swim_phases[keep_mask]
         self.swim_speeds = self.swim_speeds[keep_mask]
         self.alphas = self.alphas[keep_mask]
+        self.ages = self.ages[keep_mask]
         self.colors = self.colors[keep_mask]
         self.species = self.species[keep_mask]
         self.body_lengths = self.body_lengths[keep_mask]
@@ -707,6 +734,9 @@ class FishEffect(ShaderEffect):
         # alpha stays consistent with depth (zs unchanged for reset).
         depth_factors = 1.0 - (self.zs[idx] / 100.0)
         self.alphas[idx] = np.ones_like(depth_factors)
+        # Reset age so recycled fish fade in rather than popping back at
+        # full opacity on the opposite edge.
+        self.ages[idx] = 0.0
 
     def set_target_activity(self, activity):
         """Set target marine life activity and adjust fish count."""
@@ -725,6 +755,7 @@ class FishEffect(ShaderEffect):
 
         depth_factors = 1.0 - (data['zs'] / 100.0)
         new_alphas = np.ones_like(depth_factors)
+        new_ages = np.zeros(n_to_add, dtype=np.float64)  # fade in from 0
         new_swim_phases = np.random.uniform(0, 2 * np.pi, n_to_add)
         new_swim_speeds = 6.0 + data['base_speeds_fps'] * 5.0
 
@@ -739,6 +770,7 @@ class FishEffect(ShaderEffect):
         self.swim_phases = np.concatenate([self.swim_phases, new_swim_phases])
         self.swim_speeds = np.concatenate([self.swim_speeds, new_swim_speeds])
         self.alphas = np.concatenate([self.alphas, new_alphas])
+        self.ages = np.concatenate([self.ages, new_ages])
         self.colors = np.vstack([self.colors, data['colors']])
         self.species = np.concatenate([self.species, new_species])
         self.body_lengths = np.concatenate([self.body_lengths, data['body_lengths']])
@@ -779,6 +811,12 @@ class FishEffect(ShaderEffect):
         layout(location = 7) in float instance_swim_phase;
         layout(location = 8) in vec4 instance_body;       // length, height, taper, tail_spread
         layout(location = 9) in float instance_pattern;
+        // True (unwrapped) center theta in radians. Passing this directly
+        // avoids the atan2 wrap that would otherwise flip a fish from
+        // theta = pi + eps to theta = -pi + eps once it crossed the edge,
+        // instantly teleporting it to the opposite side of the viewport
+        // instead of letting it swim fully offscreen.
+        layout(location = 10) in float instance_theta;
 
         out float fragAlpha;
         out vec3 fragColor;
@@ -836,7 +874,14 @@ class FishEffect(ShaderEffect):
             }
 
             // Fish center UV and clip position (safe fallback for unsafe verts).
-            vec2 center_uv = fish_physical_to_uv(instance_pos.xy);
+            // Compute directly from instance_theta rather than from atan2 of
+            // the cartesian position, so fish whose center has crossed
+            // theta = 0 or theta = pi stay on the correct side of the viewport.
+            float center_r_phys = length(instance_pos.xy);
+            vec2 center_uv = vec2(
+                1.0 - instance_theta / FAN_PI,
+                (center_r_phys - u_inner_r_ft) / (u_outer_r_ft - u_inner_r_ft)
+            );
             vec4 center_clip = vec4(
                 center_uv.x * 2.0 - 1.0,
                 1.0 - center_uv.y * 2.0,
@@ -882,8 +927,10 @@ class FishEffect(ShaderEffect):
             //
             // The radial direction stays in honest feet -- fish thickness
             // should NOT depend on the position along the arc.
-            float center_theta = atan(instance_pos.y, instance_pos.x);
-            float center_r = length(instance_pos.xy);
+            // Use the unwrapped theta directly -- atan2 would wrap an
+            // off-edge fish (theta > pi or < 0) to the far side of the arc.
+            float center_theta = instance_theta;
+            float center_r = center_r_phys;
             float mid_r = (u_inner_r_ft + u_outer_r_ft) * 0.5;
 
             // Template +y is the fish's BACK. We want the back pointing toward
@@ -1064,7 +1111,7 @@ class FishEffect(ShaderEffect):
             shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER),
         )
     
-    # Instance VBO layout (16 floats per instance):
+    # Instance VBO layout (17 floats per instance):
     #   offset 0..2   pos (x_ft, y_ft, z)     location 1
     #   offset 3      size_ft                 location 2
     #   offset 4      alpha                   location 3
@@ -1074,7 +1121,8 @@ class FishEffect(ShaderEffect):
     #   offset 10     swim_phase              location 7
     #   offset 11..14 body (len, ht, taper, tail_spread)  location 8
     #   offset 15     pattern                 location 9
-    INSTANCE_FLOATS = 16
+    #   offset 16     theta_center (unwrapped radians)    location 10
+    INSTANCE_FLOATS = 17
 
     def setup_buffers(self):
         """Set up VAO and VBOs for instanced rendering."""
@@ -1136,6 +1184,7 @@ class FishEffect(ShaderEffect):
         _attr(7, 1, 10)  # instance_swim_phase
         _attr(8, 4, 11)  # instance_body (length, height, taper, tail_spread)
         _attr(9, 1, 15)  # instance_pattern
+        _attr(10, 1, 16) # instance_theta (unwrapped center theta)
 
         self.VBOs.append(self.instance_VBO)
         glBindVertexArray(0)
@@ -1159,6 +1208,9 @@ class FishEffect(ShaderEffect):
             self._add_fish(self.target_fish - self.num_fish)
 
         self.time += dt
+
+        # Advance per-fish age so the fade-in ramp in render() progresses.
+        self.ages += dt
 
         # Tail-wiggle animation.
         self.swim_phases += self.swim_speeds * dt
@@ -1249,6 +1301,14 @@ class FishEffect(ShaderEffect):
             n = int(np.sum(do_change))
             self.omegas[do_change] *= 1.0 + np.random.uniform(-0.15, 0.15, n)
 
+        # ---- Current bias ----
+        # A uniform rad/s kick applied to every fish's omega, driven by
+        # outstate['wind']. Scale factor 0.15 means wind=1 adds ~0.15 rad/s,
+        # comparable to a typical mid-speed fish's base omega so the effect
+        # is visible but doesn't overpower species-specific swimming.
+        if self.current_bias != 0.0:
+            self.omegas += self.current_bias * 0.15
+
         # ---- Integrate ----
         self.thetas += self.omegas * dt
         self.r_fts += r_drifts * dt
@@ -1316,14 +1376,24 @@ class FishEffect(ShaderEffect):
         # Sort back-to-front by depth (z) so blending looks right.
         sort_idx = np.argsort(-self.positions[:, 2])
 
-        # Assemble instance data: 16 floats per fish.
+        # Assemble instance data: 17 floats per fish.
         n_fish = self.num_fish
         reserved = np.zeros(n_fish, dtype=np.float32)
+        # Apply per-fish fade-in: alpha scales up linearly with age until
+        # FISH_FADE_IN_S, then stays at 1. Combined with the base alpha
+        # from depth so freshly-spawned distant fish still look further.
+        fade = np.minimum(self.ages / FISH_FADE_IN_S, 1.0)
+        display_alphas = self.alphas * fade
+        # Day/night dimming is an INTENSITY fade (scales RGB), not an alpha
+        # fade. Using alpha would make fish turn transparent (mix toward the
+        # sky/sea background), whereas they should just get darker as if
+        # under-lit -- same object, less light on it.
+        display_colors = self.colors * self.ambient_light
         instance_data = np.column_stack([
             self.positions[sort_idx],          # 3  (x_ft, y_ft, z)           location 1
             self.sizes_ft[sort_idx],           # 1  instance_size_ft          location 2
-            self.alphas[sort_idx],             # 1                             location 3
-            self.colors[sort_idx],             # 3                             location 4
+            display_alphas[sort_idx],          # 1                             location 3
+            display_colors[sort_idx],          # 3                             location 4
             reserved,                          # 1  instance_reserved          location 5
             self.rotations[sort_idx],          # 1  instance_rotation          location 6
             self.swim_phases[sort_idx],        # 1
@@ -1332,6 +1402,7 @@ class FishEffect(ShaderEffect):
             self.body_tapers[sort_idx],        # 1
             self.tail_spreads[sort_idx],       # 1
             self.patterns[sort_idx],           # 1
+            self.thetas[sort_idx],             # 1  instance_theta             location 10
         ]).astype(np.float32)
 
         stride = self.INSTANCE_FLOATS * 4

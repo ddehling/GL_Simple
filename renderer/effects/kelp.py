@@ -81,6 +81,10 @@ def shader_kelp(state, outstate, density=1.0, depth=60.0, sway_intensity=1.0):
             fade_factor = 1.0
         
         state['effect'].fade_factor = float(np.clip(fade_factor, 0, 1))
+
+        # Day/night dimming (outstate['ambient_light'] is a 0.25..1.0 curve
+        # of time-of-day in the ocean set).
+        state['effect'].ambient_light = float(outstate.get('ambient_light', 1.0))
     
     # Cleanup on close
     if state['count'] == -1:
@@ -118,6 +122,7 @@ class KelpEffect(ShaderEffect):
         self.tide_level = 0.5
         self.season = 0.5
         self.fade_factor = 0.0  # Start invisible, fade in
+        self.ambient_light = 1.0  # Set from outstate['ambient_light']; dims at night
         self.time = 0.0
         # Sway phase integrated CPU-side so sudden wave_speed changes
         # (weather state transitions) never snap the kelp to a new pose.
@@ -483,6 +488,7 @@ class KelpEffect(ShaderEffect):
         uniform float time;
         uniform float fadeAlpha;
         uniform float season;
+        uniform float ambientLight;  // 0.25..1.0 day/night intensity
         
         out vec4 outColor;
         
@@ -537,6 +543,10 @@ class KelpEffect(ShaderEffect):
             // Season affects color slightly
             float seasonalBrightness = 0.9 + sin(season * 6.28318) * 0.1;
             color *= seasonalBrightness;
+
+            // Day/night intensity: dims RGB without touching alpha so kelp
+            // darkens under low light rather than turning transparent.
+            color *= ambientLight;
             
             // Alpha - fully opaque when at full density/fade
             float alpha = 0.7 + vSegmentT * 0.3;  // 0.7 to 1.0 base range
@@ -638,6 +648,10 @@ class KelpEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, b"tideLevel"), self.tide_level)
         glUniform1f(glGetUniformLocation(self.shader, b"kelpDensity"), self.kelp_density)
         glUniform1f(glGetUniformLocation(self.shader, b"fadeAlpha"), self.fade_factor)
+        # Day/night dims RGB intensity (not alpha), so fronds darken rather
+        # than turning transparent against the water.
+        glUniform1f(glGetUniformLocation(self.shader, b"ambientLight"),
+                    float(self.ambient_light))
         glUniform1f(glGetUniformLocation(self.shader, b"season"), self.season)
         
         # Render kelp

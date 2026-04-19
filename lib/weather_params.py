@@ -90,6 +90,8 @@ PARAMETER_DEFINITIONS = {
     'Weird': {'type': 'number', 'step': 0.1},
     'Wolfy': {'type': 'number', 'step': 0.1},
     'ambient_sound': {'type': 'text'},
+    'bioluminescence': {'type': 'number', 'step': 0.05},
+    'bubble_density': {'type': 'number', 'step': 0.05},
     'celestial_visibility': {'type': 'number', 'step': 0.1},
     'data_flow_rate': {'type': 'number', 'step': 0.05},
     'drone_activity': {'type': 'number', 'step': 0.05},
@@ -99,8 +101,10 @@ PARAMETER_DEFINITIONS = {
     'fog_color': {'type': 'array', 'length': 3},
     'glitch_probability': {'type': 'number', 'step': 0.05},
     'hologram_density': {'type': 'number', 'step': 0.05},
+    'kelp_density': {'type': 'number', 'step': 0.05},
     'light_pollution': {'type': 'number', 'step': 0.05},
     'lightning_probability': {'type': 'number', 'step': 0.05},
+    'marine_life_activity': {'type': 'number', 'step': 0.05},
     'meteor_rate': {'type': 'number', 'step': 0.05},
     'neon_intensity': {'type': 'number', 'step': 0.05},
     'on_transition_events': {'type': 'event-list'},
@@ -113,10 +117,15 @@ PARAMETER_DEFINITIONS = {
     'skiptime': {'type': 'number', 'step': 0.5},
     'spookyness': {'type': 'number', 'step': 0.1},
     'starryness': {'type': 'number', 'step': 0.1},
+    'tide_level': {'type': 'number', 'step': 0.05},
+    'train_density': {'type': 'number', 'step': 0.1},
+    'train_speed': {'type': 'number', 'step': 0.5},
     'transition_duration': {'type': 'number', 'step': 1},
     'transition_weights': {'type': 'array-number'},
     'tree_prob': {'type': 'number', 'step': 0.1},
     'volcano_level': {'type': 'number', 'step': 0.1},
+    'wave_amplitude': {'type': 'number', 'step': 0.05},
+    'wave_speed': {'type': 'number', 'step': 0.05},
     'wind_speed': {'type': 'number', 'step': 0.1},
 }
 
@@ -783,7 +792,7 @@ WEATHER_PRESETS = {
         "transition_weights": [0.8, 0.3, 1, 0.6, 0.5],
         "wave_amplitude": 0.2,
         "wave_speed": 0.3,
-        "wind_speed": 0.3,
+        "wind_speed": 0,
     },
 
     WeatherState.OCEAN_JELLYFISH_BLOOM: {
@@ -818,8 +827,8 @@ WEATHER_PRESETS = {
         "season_preference": 0.35,
         "tide_level": 0.6,
         "transition_weights": [1, 1, 0.4],
-        "wave_amplitude": 0.3,
-        "wave_speed": 0.4,
+        "wave_amplitude": 0.5,
+        "wave_speed": 0.5,
         "wind_speed": 0.3,
     },
 
@@ -845,7 +854,7 @@ WEATHER_PRESETS = {
     WeatherState.OCEAN_MIDNIGHT_OPEN_WATER: {
         "ARI": 40,
         "ambient_sound": "285 Water - Natural long small ocean wave by x5.mp3",
-        "bioluminescence": 0.1,
+        "bioluminescence": 0.3,
         "bubble_density": 0,
         "fog": 0.05,
         "fog_color": np.array([0.05, 0.08, 0.2]),
@@ -1117,3 +1126,55 @@ WEATHER_SETS = {
 }
 
 DEFAULT_WEATHER_SET = "bartiki"
+
+
+
+def _validate_parameter_definitions():
+    """Sanity-check that every parameter referenced by a weather set or
+    preset has a PARAMETER_DEFINITIONS entry.
+
+    Missing entries cause the web weather editor to silently skip the
+    parameter (see the `if (!paramDef) continue;` in weather_editor.html),
+    so even though the parameter still affects rendering, the user can't
+    see or change its value. Surfacing the problem at import time turns a
+    "why can't I edit this" mystery into an obvious warning.
+    """
+    import sys
+
+    known = set(PARAMETER_DEFINITIONS.keys())
+
+    missing_in_sets = {}
+    for set_name, set_data in WEATHER_SETS.items():
+        for param in set_data.get("allowed_parameters", []):
+            if param not in known:
+                missing_in_sets.setdefault(param, []).append(set_name)
+
+    missing_in_presets = {}
+    for state, preset in WEATHER_PRESETS.items():
+        for param in preset.keys():
+            if param not in known:
+                missing_in_presets.setdefault(param, []).append(state.value)
+
+    if not missing_in_sets and not missing_in_presets:
+        return
+
+    bar = "=" * 72
+    lines = [
+        "",
+        bar,
+        "[weather_params] parameters missing from PARAMETER_DEFINITIONS",
+        "These will be silently skipped by the web weather editor.",
+        "Add an entry in PARAMETER_DEFINITIONS for each one.",
+        bar,
+    ]
+    for param in sorted(missing_in_sets):
+        sets = ", ".join(sorted(missing_in_sets[param]))
+        lines.append(f"  [set]    {param}  (in allowed_parameters of: {sets})")
+    for param in sorted(missing_in_presets):
+        states = ", ".join(sorted(missing_in_presets[param]))
+        lines.append(f"  [preset] {param}  (in states: {states})")
+    lines.append(bar)
+    print("\n".join(lines), file=sys.stderr)
+
+
+_validate_parameter_definitions()

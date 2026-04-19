@@ -164,50 +164,17 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
     lines.append("]")
     lines.append("")
     
-    # Parameter definitions
+    # PARAMETER_DEFINITIONS: read straight from the currently-loaded
+    # module, which is the single source of truth. The generator is not
+    # allowed to edit this -- if a param needs to be added or removed,
+    # that change happens in weather_params.py directly and is preserved
+    # verbatim here.
     lines.append("# Parameter definitions for the weather editor")
     lines.append("# Defines the type and input configuration for each parameter")
     lines.append("PARAMETER_DEFINITIONS = {")
-    param_defs = {
-        'wind_speed': {'type': 'number', 'step': 0.1},
-        'rain_rate': {'type': 'number', 'step': 0.1},
-        'lightning_probability': {'type': 'number', 'step': 0.05},
-        'starryness': {'type': 'number', 'step': 0.1},
-        'spookyness': {'type': 'number', 'step': 0.1},
-        'fog': {'type': 'number', 'step': 0.05},
-        'fog_color': {'type': 'array', 'length': 3},
-        'celestial_visibility': {'type': 'number', 'step': 0.1},
-        'firefly_density': {'type': 'number', 'step': 0.1},
-        'Aurora_probability': {'type': 'number', 'step': 0.1},
-        'Wolfy': {'type': 'number', 'step': 0.1},
-        'Switch_rate': {'type': 'number', 'step': 0.1},
-        'meteor_rate': {'type': 'number', 'step': 0.05},
-        'volcano_level': {'type': 'number', 'step': 0.1},
-        'sand_density': {'type': 'number', 'step': 0.1},
-        'skiptime': {'type': 'number', 'step': 0.5},
-        'tree_prob': {'type': 'number', 'step': 0.1},
-        'Weird': {'type': 'number', 'step': 0.1},
-        'Sound_volume': {'type': 'number', 'step': 0.1},
-        'season_preference': {'type': 'number', 'step': 0.025},
-
-        'ambient_sound': {'type': 'text'},
-        'ARI': {'type': 'number', 'step': 1},
-        'transition_duration': {'type': 'number', 'step': 1},
-        'possible_transitions': {'type': 'array-string'},
-        'transition_weights': {'type': 'array-number'},
-        'on_transition_events': {'type': 'event-list'},
-        'neon_intensity': {'type': 'number', 'step': 0.05},
-        'pollution_level': {'type': 'number', 'step': 0.05},
-        'hologram_density': {'type': 'number', 'step': 0.05},
-        'electric_interference': {'type': 'number', 'step': 0.05},
-        'data_flow_rate': {'type': 'number', 'step': 0.05},
-        'light_pollution': {'type': 'number', 'step': 0.05},
-        'drone_activity': {'type': 'number', 'step': 0.05},
-        'glitch_probability': {'type': 'number', 'step': 0.05},
-        'scan_line_intensity': {'type': 'number', 'step': 0.05}
-    }
-    for param_name, param_def in sorted(param_defs.items()):
-        lines.append(f"    '{param_name}': {repr(param_def)},")
+    from lib.weather_params import PARAMETER_DEFINITIONS as _live_defs
+    for param_name, param_def in sorted(_live_defs.items()):
+        lines.append(f"    '{param_name}': {repr(dict(param_def))},")
     lines.append("}")
     lines.append("")
     
@@ -296,8 +263,66 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
     else:
         lines.append('DEFAULT_WEATHER_SET = "full_spectrum"')
     lines.append("")
-    
+
+    # Preserve the import-time validation function so future missing
+    # PARAMETER_DEFINITIONS entries still get surfaced loudly on startup.
+    lines.append(_VALIDATION_FOOTER)
+
     return '\n'.join(lines)
+
+
+_VALIDATION_FOOTER = '''
+
+def _validate_parameter_definitions():
+    """Sanity-check that every parameter referenced by a weather set or
+    preset has a PARAMETER_DEFINITIONS entry.
+
+    Missing entries cause the web weather editor to silently skip the
+    parameter (see the `if (!paramDef) continue;` in weather_editor.html),
+    so even though the parameter still affects rendering, the user can't
+    see or change its value. Surfacing the problem at import time turns a
+    "why can't I edit this" mystery into an obvious warning.
+    """
+    import sys
+
+    known = set(PARAMETER_DEFINITIONS.keys())
+
+    missing_in_sets = {}
+    for set_name, set_data in WEATHER_SETS.items():
+        for param in set_data.get("allowed_parameters", []):
+            if param not in known:
+                missing_in_sets.setdefault(param, []).append(set_name)
+
+    missing_in_presets = {}
+    for state, preset in WEATHER_PRESETS.items():
+        for param in preset.keys():
+            if param not in known:
+                missing_in_presets.setdefault(param, []).append(state.value)
+
+    if not missing_in_sets and not missing_in_presets:
+        return
+
+    bar = "=" * 72
+    lines = [
+        "",
+        bar,
+        "[weather_params] parameters missing from PARAMETER_DEFINITIONS",
+        "These will be silently skipped by the web weather editor.",
+        "Add an entry in PARAMETER_DEFINITIONS for each one.",
+        bar,
+    ]
+    for param in sorted(missing_in_sets):
+        sets = ", ".join(sorted(missing_in_sets[param]))
+        lines.append(f"  [set]    {param}  (in allowed_parameters of: {sets})")
+    for param in sorted(missing_in_presets):
+        states = ", ".join(sorted(missing_in_presets[param]))
+        lines.append(f"  [preset] {param}  (in states: {states})")
+    lines.append(bar)
+    print("\\n".join(lines), file=sys.stderr)
+
+
+_validate_parameter_definitions()
+'''
 
 
 def format_python_value(key, value):

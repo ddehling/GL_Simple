@@ -118,6 +118,11 @@ class WeatherStateController:
             "kelp_density": self.weather_params.get("kelp_density", 0.0),
             "train_speed": self.weather_params.get("train_speed", 8.0),
             "train_density": self.weather_params.get("train_density", 1.0),
+            # Ambient light level in [0.25, 1.0]: peaks at noon (season=0.5),
+            # minimum at midnight (season=0 / 1). In the ocean set season is
+            # repurposed as time of day, so effects that want to dim at
+            # night (fish, kelp) scale their output by this value.
+            "ambient_light": 0.25 + 0.75 * (0.5 - 0.5 * np.cos(2 * np.pi * season)),
         }
 
     def select_next_weather(
