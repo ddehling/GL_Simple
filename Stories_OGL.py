@@ -176,6 +176,8 @@ class EnvironmentalSystem:
             }),
             "pixel_spots": (fx.shader_pixel_spots, {}),
             "vortex": (fx.shader_vortex, {}),
+            "hurricane": (fx.shader_hurricane, {}),
+            "lightning": (fx.shader_lightning, {}),
             "ocean_waves": (fx.shader_ocean_waves, {}),
             "kelp": (fx.shader_kelp, {}),
             "Bioluminescence": (fx.shader_bioluminescence, {}),

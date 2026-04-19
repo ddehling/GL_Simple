@@ -11,6 +11,23 @@
 (function () {
     "use strict";
 
+    // ---- Weather set display names (kept in sync with control_panel.js) ----
+    const WEATHER_SET_NAMES = {
+        "peaceful_forest": "Peaceful Forest",
+        "storm_world": "Storm World",
+        "desert_realm": "Desert Realm",
+        "ethereal_mist": "Ethereal Mist",
+        "cosmic_night": "Cosmic Night",
+        "full_spectrum": "Full Spectrum",
+        "cyberpunk": "Cyberpunk",
+        "ocean": "Ocean",
+        "test": "Test"
+    };
+
+    function titleCase(s) {
+        return (s || "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    }
+
     // ---- State ----
     let gl, canvas;
     let mode = "flat-smooth";
@@ -463,9 +480,20 @@ void main() {
         socket.on("frame", onFrame);
 
         socket.on("state_update", (data) => {
-            const el = document.getElementById("preview-fps");
-            if (el && data.fps != null) {
-                el.textContent = data.fps + " FPS";
+            const fpsEl = document.getElementById("preview-fps");
+            if (fpsEl && data.fps != null) {
+                fpsEl.textContent = data.fps + " FPS";
+            }
+
+            const setEl = document.getElementById("preview-weather-set");
+            if (setEl && data.current_weather_set) {
+                setEl.textContent = WEATHER_SET_NAMES[data.current_weather_set]
+                    || titleCase(data.current_weather_set);
+            }
+
+            const stateEl = document.getElementById("preview-weather-state");
+            if (stateEl && data.current_weather) {
+                stateEl.textContent = titleCase(data.current_weather);
             }
         });
     }

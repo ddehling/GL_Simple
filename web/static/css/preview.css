@@ -1,3 +1,33 @@
+.preview-weather {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    font-size: 0.95em;
+}
+
+.preview-weather-label {
+    opacity: 0.6;
+    font-size: 0.85em;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.preview-weather-value {
+    color: #6ec1ff;
+    font-weight: 600;
+}
+
+.preview-weather-sep {
+    opacity: 0.35;
+    margin: 0 4px;
+}
+
 .preview-controls {
     display: flex;
     align-items: center;

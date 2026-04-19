@@ -13,6 +13,7 @@ class WeatherState(Enum):
     FIREFLY = "firefly"
     VOLCANO = "volcano"
     SANDSTORM = "sandstorm"
+    HURRICANE = "hurricane"
     ASTEROID = "asteroid"
     MUSHROOM = "mushroom"
     LEAVES = "leaves"
@@ -592,14 +593,36 @@ WEATHER_PRESETS = {
         "fog": 0.5,
         "fog_color": np.array([0.3, 0.3, 0.7]),
         "lightning_probability": 0.1,
-        "possible_transitions": ["light_rain", "thunderstorm", "windy_night"],
+        "possible_transitions": ["light_rain", "thunderstorm", "windy_night", "hurricane"],
         "rain_rate": 0.8,
         "season_preference": 0.7,
         "skiptime": 2,
         "starryness": 0.1,
-        "transition_weights": [2, 1, 0.5],
+        "transition_weights": [2, 1, 0.5, 0.3],
         "tree_prob": 0.2,
         "wind_speed": 0.7,
+    },
+
+    WeatherState.HURRICANE: {
+        "ARI": 100,
+        "Sound_volume": 3,
+        "Switch_rate": 2,
+        "Wolfy": 0.2,
+        "ambient_sound": "Hurricane_1.mp3",
+        "celestial_visibility": 0,
+        "fog": 0.6,
+        "fog_color": np.array([0.35, 0.42, 0.28]),
+        "lightning_probability": 0.8,
+        "on_transition_events": [['hurricane', 50, 0], ['lightning', 6, 0], ['lightning', 6, 5], ['lightning', 6, 12]],
+        "possible_transitions": ["thunderstorm", "heavy_rain", "windy_night"],
+        "rain_rate": 1,
+        "season_preference": 0.95,
+        "skiptime": 2,
+        "spookyness": 0.15,
+        "starryness": 0,
+        "transition_weights": [1.5, 1, 0.5],
+        "tree_prob": 0.3,
+        "wind_speed": 2.2,
     },
 
     WeatherState.LEAVES: {
@@ -913,12 +936,12 @@ WEATHER_PRESETS = {
         "fog": 0.3,
         "fog_color": np.array([0.6, 0.6, 0.2]),
         "lightning_probability": 1,
-        "possible_transitions": ["heavy_rain", "light_rain", "windy_night"],
+        "possible_transitions": ["heavy_rain", "light_rain", "windy_night", "hurricane"],
         "rain_rate": 1,
         "season_preference": 0.9,
         "spookyness": 0.1,
         "starryness": 0,
-        "transition_weights": [2, 0.3, 0.3],
+        "transition_weights": [2, 0.3, 0.3, 0.6],
         "wind_speed": 1,
     },
 
@@ -947,13 +970,13 @@ WEATHER_PRESETS = {
         "ambient_sound": "Wind Strong EDITED.wav",
         "lightning_probability": 0.05,
         "meteor_rate": 0.1,
-        "possible_transitions": ["clear", "heavy_rain", "sandstorm", "thunderstorm", "leaves"],
+        "possible_transitions": ["clear", "heavy_rain", "sandstorm", "thunderstorm", "leaves", "hurricane"],
         "rain_rate": 0.01,
         "sand_density": 0.2,
         "season_preference": 0.8,
         "spookyness": 0.01,
         "starryness": 1,
-        "transition_weights": [1, 1, 0.6, 0.4, 0.5],
+        "transition_weights": [1, 1, 0.6, 0.4, 0.5, 0.2],
         "tree_prob": 0.2,
         "wind_speed": 1.5,
     },
@@ -1068,14 +1091,14 @@ WEATHER_SETS = {
 
     "storm_world": {
         "allowed_parameters": ["wind_speed", "rain_rate", "lightning_probability", "fog", "fog_color", "starryness", "spookyness", "celestial_visibility", "Wolfy", "Switch_rate", "tree_prob", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["clouds", "rain", "fog", "stars"],
+        "background_events": ["clouds", "rain", "fog", "stars", "firefly"],
         "description": "Intense weather with storms and high winds",
         "name": "Storm World",
         "random_event_rate": 0.0001,
         "random_events": [],
         "season_extremity": 0.5,
         "season_speed": 1.5,
-        "states": ["windy_night", "heavy_rain", "thunderstorm", "foggy", "light_rain", "sandstorm", "leaves", "firefly"],
+        "states": ["windy_night", "heavy_rain", "thunderstorm", "hurricane", "foggy", "light_rain", "sandstorm", "leaves", "firefly"],
         "transition_speed": 1.5,
     },
 

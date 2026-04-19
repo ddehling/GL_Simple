@@ -70,31 +70,91 @@ class LightningEffect(ShaderEffect):
     
     def setup_buffers(self):
         """Initialize OpenGL buffers - Called automatically after shader compilation"""
-        # Create VAO
+        # Create VAO for bolt lines
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
-        
+
         # Create VBOs
         self.vbo_positions = glGenBuffers(1)
         self.vbo_offsets = glGenBuffers(1)
         self.vbo_brightness = glGenBuffers(1)
-        
+
         # Position attribute (vertex positions - relative to bolt)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
-        
+
         # Offset attribute (x, y, z position per vertex)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_offsets)
         glEnableVertexAttribArray(1)
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, None)
-        
+
         # Brightness attribute (per vertex for fade effect)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_brightness)
         glEnableVertexAttribArray(2)
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, None)
-        
+
         glBindVertexArray(0)
+
+        # Fullscreen-flash VAO: a single oversize triangle covering clip-space.
+        # Rendered first each strike to brighten the whole sky (the signature
+        # atmospheric wash that real lightning produces).
+        self.flash_VAO = glGenVertexArrays(1)
+        glBindVertexArray(self.flash_VAO)
+        self.flash_VBO = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.flash_VBO)
+        flash_verts = np.array([-1.0, -1.0, 3.0, -1.0, -1.0, 3.0], dtype=np.float32)
+        glBufferData(GL_ARRAY_BUFFER, flash_verts.nbytes, flash_verts, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
+        glBindVertexArray(0)
+
+        # Simple shader dedicated to the fullscreen flash pass.
+        self.flash_shader = self._compile_flash_shader()
+
+    def _compile_flash_shader(self):
+        vs = """
+#version 310 es
+precision highp float;
+layout(location = 0) in vec2 position;
+void main() { gl_Position = vec4(position, 0.999, 1.0); }
+"""
+        fs = """
+#version 310 es
+precision highp float;
+uniform float u_intensity;
+uniform vec3 u_flash_color;
+out vec4 outColor;
+void main() {
+    outColor = vec4(u_flash_color * u_intensity, 1.0);
+}
+"""
+        return shaders.compileProgram(
+            shaders.compileShader(vs, GL_VERTEX_SHADER),
+            shaders.compileShader(fs, GL_FRAGMENT_SHADER),
+        )
+
+    @staticmethod
+    def _flicker_envelope(t):
+        """Multi-peak lightning envelope, t in [0, 1].
+
+        Three gaussian-ish peaks: the initial strike, a bright re-strike ~35%
+        into the event, and a weaker echo near the end. This is what gives
+        the effect its "flash, pause, flash again" signature rather than a
+        single dull fade.
+        """
+        if t < 0.0 or t >= 1.0:
+            return 0.0
+        peaks = ((0.00, 1.00, 0.07),
+                 (0.38, 0.80, 0.06),
+                 (0.72, 0.45, 0.09))
+        val = 0.0
+        for center, amp, width in peaks:
+            d = (t - center) / width
+            v = amp * float(np.exp(-d * d))
+            if v > val:
+                val = v
+        return val
     
     def generate_branch(self, start_point, direction, length_ratio, depth):
         """
@@ -232,11 +292,10 @@ class LightningEffect(ShaderEffect):
             if (current_time - bolt['spawn_time']) < self.bolt_duration
         ]
         
-        # Update brightness (fade out)
+        # Multi-peak flicker envelope: strike, re-strike, echo.
         for bolt in self.bolts:
             elapsed = current_time - bolt['spawn_time']
-            fade_progress = elapsed / self.bolt_duration
-            bolt['brightness'] = 1.0 - fade_progress
+            bolt['brightness'] = self._flicker_envelope(elapsed / self.bolt_duration)
         
         # Spawn new bolt if interval has passed
         if current_time - self.last_spawn_time >= self.bolt_interval:
@@ -331,49 +390,90 @@ class LightningEffect(ShaderEffect):
         if not self.enabled:
             return
         self.update_bolts()
+
+        # Publish the current strike intensity so other shaders (e.g. the
+        # hurricane cloud mass) can react to the flash. 0 when no bolt is
+        # active, peaks at 1 during the main strike.
+        if self.bolts:
+            state['lightning_flash'] = max(b['brightness'] for b in self.bolts)
+        else:
+            state['lightning_flash'] = 0.0
     
     def render(self, state):
         """Render all active lightning bolts"""
         if not self.enabled or self.shader is None:
             return
-        
+
         if not self.bolts:
             return
-        
+
         # Build render data
         vertices, offsets, brightness_data, vertex_count = self.build_render_data()
-        
+
         if vertex_count == 0:
             return
-        
-        # NO depth test toggling per shader_info.txt guidelines!
+
+        # Overall strike intensity for this frame (max of all active bolts).
+        strike_intensity = max(b['brightness'] for b in self.bolts)
+
+        # Switch to ADDITIVE blending so both the sky flash and the bolt
+        # stack on top of whatever sky/cloud effects rendered before us.
+        # Without this the bolt just alpha-blends over the sky and never
+        # reads as a luminous discharge.
+        glBlendFunc(GL_ONE, GL_ONE)
+
+        # ---- Pass 1: fullscreen sky flash ----
+        # The whole scene briefly gets washed in cool white-blue, which is
+        # the single biggest "this looks like lightning" cue. Scaled well
+        # below 1 so it brightens the sky without blowing out everything.
+        if strike_intensity > 0.01:
+            glUseProgram(self.flash_shader)
+            glBindVertexArray(self.flash_VAO)
+            loc = glGetUniformLocation(self.flash_shader, b"u_intensity")
+            if loc >= 0:
+                glUniform1f(loc, strike_intensity * 0.45)
+            col_loc = glGetUniformLocation(self.flash_shader, b"u_flash_color")
+            if col_loc >= 0:
+                glUniform3f(col_loc, 0.55, 0.70, 1.00)
+            glDrawArrays(GL_TRIANGLES, 0, 3)
+
+        # ---- Pass 2: bolt halo + hot core ----
         glUseProgram(self.shader)
-        
-        # Set uniforms
+
         res_loc = glGetUniformLocation(self.shader, b"resolution")
         if res_loc >= 0:
             glUniform2f(res_loc, float(self.viewport.width), float(self.viewport.height))
-        
-        # Upload geometry
+
         glBindVertexArray(self.VAO)
-        
+
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
         glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_DYNAMIC_DRAW)
-        
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_offsets)
         glBufferData(GL_ARRAY_BUFFER, offsets.nbytes, offsets, GL_DYNAMIC_DRAW)
-        
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_brightness)
         glBufferData(GL_ARRAY_BUFFER, brightness_data.nbytes, brightness_data, GL_DYNAMIC_DRAW)
-        
-        # Render as lines
+
         old_line_width = glGetFloatv(GL_LINE_WIDTH)
-        glLineWidth(3.0)
+        glow_loc = glGetUniformLocation(self.shader, b"u_glow")
+
+        # Wide cool halo underneath.
+        if glow_loc >= 0:
+            glUniform1f(glow_loc, 1.0)
+        glLineWidth(6.0)
+        glDrawArrays(GL_LINES, 0, vertex_count)
+
+        # Thin hot white core on top.
+        if glow_loc >= 0:
+            glUniform1f(glow_loc, 0.0)
+        glLineWidth(2.5)
         glDrawArrays(GL_LINES, 0, vertex_count)
         glLineWidth(old_line_width)
-        
+
         glBindVertexArray(0)
         glUseProgram(0)
+
+        # Restore the renderer-wide default alpha blending.
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     
     def get_vertex_shader(self):
         return """
@@ -407,14 +507,18 @@ void main() {
 precision highp float;
 
 in float v_brightness;
+uniform float u_glow;
 out vec4 outColor;
 
 void main() {
-    vec3 innerColor = vec3(1.0, 1.0, 1.0);
-    vec3 outerColor = vec3(0.5, 0.7, 1.0);
-    vec3 boltColor = mix(outerColor, innerColor, 0.7);
-    float alpha = v_brightness * 0.9;
-    outColor = vec4(boltColor * v_brightness, alpha);
+    // Core is hot white pushed WAY past 1.0; additive blend + LED clamping
+    // gives a saturated searing-white line. Halo pass (u_glow = 1.0) is a
+    // bright cool blue wider stroke that reads as scattered atmospheric glow.
+    vec3 coreColor = vec3(3.5, 3.5, 3.8);
+    vec3 haloColor = vec3(0.55, 0.85, 1.60);
+    vec3 boltColor = mix(coreColor, haloColor, u_glow);
+    float gain = (u_glow > 0.5) ? 1.0 : 1.6;
+    outColor = vec4(boltColor * v_brightness * gain, 1.0);
 }
 """
     
@@ -428,6 +532,12 @@ void main() {
             glDeleteBuffers(1, [self.vbo_offsets])
         if hasattr(self, 'vbo_brightness') and self.vbo_brightness:
             glDeleteBuffers(1, [self.vbo_brightness])
+        if hasattr(self, 'flash_VAO') and self.flash_VAO:
+            glDeleteVertexArrays(1, [self.flash_VAO])
+        if hasattr(self, 'flash_VBO') and self.flash_VBO:
+            glDeleteBuffers(1, [self.flash_VBO])
+        if hasattr(self, 'flash_shader') and self.flash_shader:
+            glDeleteProgram(self.flash_shader)
         super().cleanup()
 
 
