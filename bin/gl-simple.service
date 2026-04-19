@@ -1,0 +1,21 @@
+[Unit]
+Description=GL_Simple OpenGL Lighting Controller
+After=network-online.target sound.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=network-online.target pipewire.service pipewire-pulse.service wireplumber.service
+# Auto-stop when the user logs into a graphical session (frees ports/DMX/audio for dev work).
+Conflicts=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/led/Desktop/devel/GL_Simple
+# Wait for the PipeWire graph to assign a real (non-null) default sink.
+ExecStartPre=/home/led/Desktop/devel/GL_Simple/bin/wait_for_audio.sh
+ExecStartPre=/bin/sleep 2
+ExecStart=/home/led/Desktop/devel/GL_Simple/venv/bin/python Stories_OGL.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
