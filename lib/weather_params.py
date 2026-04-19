@@ -173,7 +173,7 @@ WEATHER_PRESETS = {
         "fog_color": np.array([0.15, 0.15, 0.25]),
         "meteor_rate": 0,
         "possible_transitions": ["bartiki_evening_rush", "bartiki_stormy"],
-        "rain_rate": 0.1,
+        "rain_rate": 0.2,
         "season_preference": 0.6,
         "starryness": 0,
         "train_density": 1,
@@ -299,7 +299,7 @@ WEATHER_PRESETS = {
         "fog_color": np.array([0.05, 0.05, 0.15]),
         "meteor_rate": 0.5,
         "possible_transitions": ["bartiki_late_night", "bartiki_stormy"],
-        "rain_rate": 0,
+        "rain_rate": 0.1,
         "season_preference": 0.95,
         "starryness": 1,
         "train_density": 1,
@@ -316,6 +316,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0,
         "fog": 0.35,
         "fog_color": np.array([0.15, 0.15, 0.2]),
+        "lightning_probability": 0.3,
         "meteor_rate": 0,
         "possible_transitions": ["bartiki_midday", "bartiki_afternoon", "bartiki_evening_rush", "bartiki_morning_rush"],
         "rain_rate": 0.8,
@@ -986,7 +987,7 @@ WEATHER_PRESETS = {
 # Weather Sets - Mutually exclusive collections of weather states
 WEATHER_SETS = {
     "bartiki": {
-        "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound"],
+        "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound", "lightning_probability"],
         "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer", "narrative_player"],
         "description": "Bay Area BART system with day/night cycle — map by day, constellations by night",
         "name": "BarTiki",
