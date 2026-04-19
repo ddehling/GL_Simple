@@ -91,6 +91,12 @@ class RenderPipeline:
             for _ in frame_dimensions
         ]
 
+        # Rate-limit preview PNG encoding to match the web emitter rate (15 Hz).
+        # Encoding every render frame (40 Hz) wastes ~62% of the work on frames
+        # the emitter never consumes.
+        self._preview_encode_interval = 1.0 / 15.0
+        self._last_preview_encode = 0.0
+
         total_pixels = sum(w * h for w, h in frame_dimensions)
         print(f"[RenderPipeline] Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
 
@@ -149,11 +155,15 @@ class RenderPipeline:
         self._send_to_displays(frames)
 
         # PNG-encode first frame for web preview, ONLY if a client is subscribed.
-        # Encoding is ~10-20ms/frame and would otherwise tank FPS for nobody.
+        # Encoding is ~10-20ms/frame; rate-limited to the emitter rate (15 Hz)
+        # so we don't burn CPU producing frames the emitter throws away.
         if frames and self.state.get('_preview_active'):
-            bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
-            _, png_buf = cv2.imencode('.png', bgr)
-            self.state['_frame_png'] = png_buf.tobytes()
+            now = time.perf_counter()
+            if now - self._last_preview_encode >= self._preview_encode_interval:
+                self._last_preview_encode = now
+                bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
+                _, png_buf = cv2.imencode('.png', bgr)
+                self.state['_frame_png'] = png_buf.tobytes()
 
     def _render_shader(self, dt: float) -> list:
         self._shader_renderer.clear_window()

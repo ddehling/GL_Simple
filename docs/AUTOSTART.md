@@ -1,98 +1,81 @@
-# GL_Simple Autostart (Pop!_OS / systemd user service)
+# GL_Simple Autostart (Pop!_OS / Cosmic session)
 
-Stories_OGL.py is configured to start on boot via a systemd **user service** with linger enabled. This works because `config.yaml` has `headless: true` — no desktop session is required.
+Stories_OGL.py is configured to start automatically on boot by enabling **auto-login** to the Cosmic desktop, then firing a standard XDG **autostart** entry inside the session. The app runs in a visible `xterm` window so you can `Ctrl+C` to stop it like any other dev run.
+
+A legacy systemd user service also exists (disabled) — see [Alternative: systemd user service](#alternative-systemd-user-service) at the bottom.
 
 ## Files
 
-Source-of-truth copies are version-controlled in this repo:
+- `~/.config/autostart/gl-simple.desktop` — XDG autostart entry launched by the Cosmic session on login.
+- `/etc/greetd/cosmic-greeter.toml` — greetd config; an `[initial_session]` block here enables auto-login.
 
-- `bin/gl-simple.service` — the systemd user unit
-- `bin/wait_for_audio.sh` — ExecStartPre helper that waits for a real audio sink
+## One-time setup
 
-At runtime the service unit must be installed to `~/.config/systemd/user/`:
+### 1. Enable auto-login
 
-```bash
-mkdir -p ~/.config/systemd/user
-cp bin/gl-simple.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable gl-simple.service
-```
-
-The `wait_for_audio.sh` script is executed from its repo path (`/home/led/Desktop/devel/GL_Simple/bin/wait_for_audio.sh`), so it doesn't need to be copied — just keep it executable (`chmod +x bin/wait_for_audio.sh`).
-
-If you edit `bin/gl-simple.service` in the repo, re-run `cp` + `daemon-reload` + `systemctl --user restart gl-simple` to apply.
-
-## Remaining setup (run once)
-
-Enable linger so the user service starts at boot *before* login:
+Append an `[initial_session]` block to the greetd config:
 
 ```bash
-sudo loginctl enable-linger led
+sudo tee -a /etc/greetd/cosmic-greeter.toml > /dev/null <<'EOF'
+
+[initial_session]
+command = "/usr/bin/start-cosmic"
+user = "led"
+EOF
 ```
 
-Verify:
+Verify: `cat /etc/greetd/cosmic-greeter.toml` should show the new block at the end.
+
+To disable auto-login later, delete that block (use your editor or copy/paste the file without it).
+
+### 2. Install xterm (if not already)
 
 ```bash
-loginctl show-user led | grep Linger   # should show Linger=yes
+sudo apt install xterm
 ```
 
-## Starting / testing
+### 3. Create the autostart entry
 
-Do **not** start the service while `Stories_OGL.py` is already running manually — they will conflict on the web port (5000), sACN, and the audio device.
+Write `~/.config/autostart/gl-simple.desktop`:
 
-- **Reboot test (cleanest):** `sudo reboot`, then after boot run `systemctl --user status gl-simple`.
-- **Test now:** kill the running instance first, then `systemctl --user start gl-simple`.
-
-## Managing the service
-
-```bash
-systemctl --user status gl-simple        # check state
-systemctl --user start gl-simple         # start
-systemctl --user stop gl-simple          # stop
-systemctl --user restart gl-simple       # restart
-systemctl --user disable gl-simple       # disable autostart
-systemctl --user enable gl-simple        # re-enable autostart
-journalctl --user -u gl-simple -f        # live logs
-journalctl --user -u gl-simple -n 200    # last 200 log lines
+```ini
+[Desktop Entry]
+Type=Application
+Name=GL_Simple
+Comment=OpenGL lighting controller — starts with the graphical session
+Exec=xterm -T GL_Simple -geometry 120x30+50+50 -hold -e /home/led/Desktop/devel/GL_Simple/venv/bin/python /home/led/Desktop/devel/GL_Simple/Stories_OGL.py
+Path=/home/led/Desktop/devel/GL_Simple
+Terminal=false
+X-GNOME-Autostart-enabled=true
 ```
 
-After editing the unit file:
+Notes on the Exec line:
+- `-T GL_Simple` — window title.
+- `-geometry 120x30+50+50` — 120 cols × 30 rows, positioned at (50, 50). Adjust to taste.
+- `-hold` — keeps the window open after the script exits so you can read any traceback.
+- `-e <cmd>` — must be the last flag; everything after is the command to run.
+- Tweak fonts by adding `-fa Monospace -fs 11` before `-e`.
 
-```bash
-systemctl --user daemon-reload
-systemctl --user restart gl-simple
-```
+## What happens on boot
 
-## If you switch to `headless: false`
+1. greetd sees `[initial_session]` → runs `/usr/bin/start-cosmic` as user `led`.
+2. Cosmic session starts (no login screen).
+3. The autostart entry fires → xterm opens with Stories_OGL.py running inside.
 
-A user service with linger runs without a graphical session, so the GL window won't appear. Switch to a desktop autostart entry instead:
+## Day-to-day use
 
-1. Disable the service: `systemctl --user disable --now gl-simple`
-2. Create `~/.config/autostart/gl-simple.desktop`:
-
-   ```ini
-   [Desktop Entry]
-   Type=Application
-   Name=GL_Simple
-   Exec=/home/led/Desktop/devel/GL_Simple/venv/bin/python /home/led/Desktop/devel/GL_Simple/Stories_OGL.py
-   Path=/home/led/Desktop/devel/GL_Simple
-   X-GNOME-Autostart-enabled=true
-   ```
-
-   This runs after login instead of at boot.
-
-## Auto-stop on login (dev workflow)
-
-The service has `Conflicts=graphical-session.target` — when you log into the desktop, Cosmic activates `graphical-session.target` and systemd stops gl-simple automatically. This frees the web port, sACN, audio device, and DMX for dev work.
-
-- At boot without login: service runs.
-- On login: service stops.
-- On logout (without reboot): service does NOT auto-restart. Manually: `systemctl --user start gl-simple`, or just reboot.
-- Temporarily disable autostart for a dev session: `systemctl --user disable --now gl-simple` (re-enable with `enable --now`).
+- **Stop the app:** `Ctrl+C` in the xterm window (or close the window).
+- **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && ./bin/quick_run.sh`.
+- **Skip the autostart for one session:** before reboot, rename the file:
+  ```bash
+  mv ~/.config/autostart/gl-simple.desktop ~/.config/autostart/gl-simple.desktop.disabled
+  ```
+  Reboot, do dev work, then rename it back. Or set `Hidden=true` inline.
+- **Disable auto-login temporarily:** remove the `[initial_session]` block from `/etc/greetd/cosmic-greeter.toml` and reboot. Re-add to restore.
 
 ## Required group membership
 
-`led` must be in `audio`, `render`, and `video` groups. Without these, PipeWire can't open `/dev/snd/*` and EGL can't open `/dev/dri/*` pre-login (logind only grants device ACLs to users with an active seat login).
+`led` must be in `audio`, `render`, and `video` groups — these grant access to the audio and GPU device nodes. The auto-login path doesn't strictly need `audio` (logind grants it via ACL on session start), but these groups are still recommended for headless/remote scenarios and were required for the old systemd-service approach.
 
 ```bash
 sudo usermod -a -G audio,render,video led
@@ -101,21 +84,32 @@ sudo usermod -a -G audio,render,video led
 
 Verify: `groups led` should include `audio render video`.
 
-## Why the service waits for the audio graph
+## Alternative: systemd user service
 
-Even with linger enabled, `pipewire.service`, `pipewire-pulse.service`, and `wireplumber.service` are socket-activated — they don't actually start at boot until a client connects. And once they do start, WirePlumber needs time to enumerate ALSA cards and assign a default sink before any playback will produce sound. The unit handles both:
+A user service unit (`bin/gl-simple.service`) and a helper (`bin/wait_for_audio.sh`) are checked into the repo. This path starts Stories_OGL.py **before login**, useful for truly headless installations with `headless: true` in `config.yaml`.
 
-1. `After=` / `Wants=` list all three PipeWire services so systemd orders gl-simple after them.
-2. `ExecStartPre` explicitly starts pipewire/pipewire-pulse/wireplumber so they don't sit idle waiting for a trigger.
-3. `ExecStartPre` polls `pactl info` for up to 30 seconds until a real `Default Sink:` is reported — this is the key to audio output working before a user logs in.
-4. A final 3-second settle delay before Python launches.
+This approach had a subtle performance issue with the web preview: when running pre-login, Python's GC falls behind allocations under scheduler/CPU conditions that differ from an active session, and the preview pipeline leaks objects. The auto-login path above sidesteps this entirely by running the app inside a normal user session.
 
-You can see the readiness log in the journal: look for `audio ready: default sink=...`.
+To install the service anyway:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp bin/gl-simple.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable gl-simple.service
+sudo loginctl enable-linger led    # so it starts at boot before login
+```
+
+Then reboot. Check with `systemctl --user status gl-simple` and `journalctl --user -u gl-simple -b`.
+
+The unit currently has `Conflicts=graphical-session.target` commented out — re-enable it if you want the service to auto-stop when you log in.
+
+### Why the service waits for the audio graph
+
+Even with linger enabled, `pipewire.service`, `pipewire-pulse.service`, and `wireplumber.service` are socket-activated and take time to enumerate ALSA cards. The helper `bin/wait_for_audio.sh` explicitly starts them and polls `pactl info` (up to 25 s) for a real (non-`auto_null`) default sink, force-setting it via `pactl set-default-sink` if needed, unmuting hardware mixers, and setting volume to 100%.
 
 ## Troubleshooting
 
-- **Sound doesn't play at boot (before login):** check `journalctl --user -u gl-simple -b | grep -E "(audio ready|WARN|sink)"`. If you see `WARN: no default sink after 30s`, WirePlumber isn't auto-assigning a default without a session — manual fix is to force a sink via `wpctl set-default <ID>` in a `ExecStartPre` line using the known device name.
-- **TONOR mic not detected:** USB enumeration can lag. Increase the final `ExecStartPre=/bin/sleep` value to 10-15s.
-- **Logs for current boot:** `journalctl --user -u gl-simple -b`
-- **Logs for a previous boot:** `journalctl --user -u gl-simple -b -1` (2 boots ago = `-b -2`, etc.)
-- **Inspect service state without logging in:** SSH into the machine, then `journalctl --user -u gl-simple -b`. Or from a local root session: `sudo machinectl shell led@` then run the user systemctl commands.
+- **App doesn't appear on boot:** check Cosmic's session log: `journalctl --user -b | grep -iE "autostart|gl-simple|xterm"`. Confirm the `.desktop` file has `chmod +x` isn't required for `.desktop` files, but the Exec binary (`xterm`) must be on PATH.
+- **Auto-login doesn't happen:** `sudo journalctl -u greetd -b` — look for errors parsing the `[initial_session]` block.
+- **Web preview triggers progressive FPS drop:** avoid leaving the preview tab open for long sessions; the control panel (`/`) doesn't have this issue.

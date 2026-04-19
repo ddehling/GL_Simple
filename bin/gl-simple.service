@@ -8,6 +8,8 @@ Conflicts=graphical-session.target
 [Service]
 Type=simple
 WorkingDirectory=/home/led/Desktop/devel/GL_Simple
+# Unbuffered Python so FPS/status prints hit the journal in real time.
+Environment=PYTHONUNBUFFERED=1
 # Wait for the PipeWire graph to assign a real (non-null) default sink.
 ExecStartPre=/home/led/Desktop/devel/GL_Simple/bin/wait_for_audio.sh
 ExecStartPre=/bin/sleep 2

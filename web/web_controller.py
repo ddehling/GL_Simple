@@ -834,13 +834,18 @@ class WebController:
                     except Exception as e:
                         print(f"[WebController] Emitter audio error: {e}")
 
-                # Push preview frames at 15 Hz to subscribed clients
+                # Push preview frames at 15 Hz to subscribed clients, but
+                # only when the encoder has produced a new PNG since last
+                # broadcast (prevents re-emitting identical bytes).
                 if now - last_frame_push >= frame_interval:
                     last_frame_push = now
                     try:
                         frame_png = self.control_dict.get('_frame_png')
                         if frame_png is not None:
-                            self.socketio.emit('frame', frame_png, room='preview')
+                            frame_id = id(frame_png)
+                            if frame_id != getattr(self, '_last_broadcast_frame_id', None):
+                                self._last_broadcast_frame_id = frame_id
+                                self.socketio.emit('frame', frame_png, room='preview')
                     except Exception as e:
                         print(f"[WebController] Emitter frame error: {e}")
 
