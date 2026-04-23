@@ -66,6 +66,14 @@ Notes on the Exec line:
 
 - **Stop the app:** `Ctrl+C` in the xterm window (or close the window).
 - **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && ./bin/quick_run.sh`.
+- **Restart the running xterm instance:** kill the xterm, then re-launch with the same command the `.desktop` file uses. `setsid -f` detaches it so it survives the spawning shell:
+  ```bash
+  pkill -f 'xterm.*GL_Simple'
+  setsid -f xterm -T GL_Simple -geometry 120x30+50+50 -hold \
+    -e /home/led/Desktop/devel/GL_Simple/venv/bin/python \
+       /home/led/Desktop/devel/GL_Simple/Stories_OGL.py
+  ```
+  **Note:** `systemctl --user restart gl-simple.service` does **not** affect this instance — the xterm path is launched by XDG autostart, not systemd. The systemd unit is a separate (disabled) code path; see [Alternative: systemd user service](#alternative-systemd-user-service).
 - **Skip the autostart for one session:** before reboot, rename the file:
   ```bash
   mv ~/.config/autostart/gl-simple.desktop ~/.config/autostart/gl-simple.desktop.disabled
