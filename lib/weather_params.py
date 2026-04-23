@@ -48,6 +48,13 @@ class WeatherState(Enum):
     BARTIKI_NIGHT = "bartiki_night"
     BARTIKI_LATE_NIGHT = "bartiki_late_night"
     BARTIKI_STORMY = "bartiki_stormy"
+    LOVE_INFATUATION = "love_infatuation"
+    LOVE_TENDERNESS = "love_tenderness"
+    LOVE_LONGING = "love_longing"
+    LOVE_DEVOTION = "love_devotion"
+    LOVE_HEARTBREAK = "love_heartbreak"
+    LOVE_REUNION = "love_reunion"
+    LOVE_SOLITUDE = "love_solitude"
     TEST_RGB = "test_rgb"
     TEST_HUE_BIN = "test_hue_bin"
 
@@ -78,6 +85,10 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
+    'heart_pulse',
+    'thread_bonds',
+    'warm_bloom',
+    'distant_lights',
 ]
 
 # Parameter definitions for the weather editor
@@ -671,6 +682,104 @@ WEATHER_PRESETS = {
         "wind_speed": 0.4,
     },
 
+    WeatherState.LOVE_INFATUATION: {
+        "ARI": 30,
+        "Switch_rate": 1.5,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "celestial_visibility": 0.4,
+        "fog": 0.15,
+        "fog_color": np.array([0.7, 0.35, 0.45]),
+        "possible_transitions": ["love_tenderness", "love_longing", "love_solitude"],
+        "season_preference": 0.3,
+        "starryness": 0.6,
+        "transition_weights": [1.2, 0.6, 0.4],
+        "wind_speed": 0.2,
+    },
+
+    WeatherState.LOVE_TENDERNESS: {
+        "ARI": 45,
+        "Switch_rate": 0.7,
+        "ambient_sound": "09 Nightingale.mp3",
+        "celestial_visibility": 0.6,
+        "fog": 0.25,
+        "fog_color": np.array([0.9, 0.6, 0.65]),
+        "possible_transitions": ["love_devotion", "love_infatuation", "love_solitude"],
+        "season_preference": 0.45,
+        "starryness": 0.7,
+        "transition_weights": [1.2, 0.7, 0.5],
+        "wind_speed": 0.05,
+    },
+
+    WeatherState.LOVE_LONGING: {
+        "ARI": 50,
+        "Switch_rate": 0.8,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "celestial_visibility": 0.9,
+        "fog": 0.45,
+        "fog_color": np.array([0.25, 0.30, 0.55]),
+        "possible_transitions": ["love_heartbreak", "love_solitude", "love_reunion", "love_tenderness"],
+        "season_preference": 0.85,
+        "starryness": 1.0,
+        "transition_weights": [0.6, 0.9, 0.5, 0.7],
+        "wind_speed": 0.3,
+    },
+
+    WeatherState.LOVE_DEVOTION: {
+        "ARI": 60,
+        "Switch_rate": 0.5,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "celestial_visibility": 0.5,
+        "fog": 0.20,
+        "fog_color": np.array([0.85, 0.7, 0.4]),
+        "possible_transitions": ["love_tenderness", "love_solitude", "love_longing"],
+        "season_preference": 0.5,
+        "starryness": 0.6,
+        "transition_weights": [1.0, 0.8, 0.4],
+        "wind_speed": 0.05,
+    },
+
+    WeatherState.LOVE_HEARTBREAK: {
+        "ARI": 50,
+        "Switch_rate": 0.9,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "celestial_visibility": 0.3,
+        "fog": 0.6,
+        "fog_color": np.array([0.15, 0.18, 0.4]),
+        "possible_transitions": ["love_solitude", "love_longing"],
+        "season_preference": 0.95,
+        "starryness": 0.5,
+        "transition_weights": [1.2, 0.8],
+        "wind_speed": 0.4,
+    },
+
+    WeatherState.LOVE_REUNION: {
+        "ARI": 35,
+        "Switch_rate": 1.2,
+        "ambient_sound": "09 Nightingale.mp3",
+        "celestial_visibility": 0.8,
+        "fog": 0.10,
+        "fog_color": np.array([1.0, 0.55, 0.4]),
+        "possible_transitions": ["love_devotion", "love_tenderness", "love_infatuation"],
+        "season_preference": 0.4,
+        "starryness": 0.8,
+        "transition_weights": [1.2, 1.0, 0.5],
+        "wind_speed": 0.15,
+    },
+
+    WeatherState.LOVE_SOLITUDE: {
+        "ARI": 55,
+        "Switch_rate": 0.6,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "celestial_visibility": 1.0,
+        "fog": 0.15,
+        "fog_color": np.array([0.20, 0.20, 0.35]),
+        "possible_transitions": ["love_tenderness", "love_longing", "love_devotion", "love_infatuation"],
+        "season_preference": 0.0,
+        "starryness": 1.0,
+        "transition_weights": [0.8, 0.6, 0.7, 0.4],
+        "wind_speed": 0.05,
+    },
+
     WeatherState.MUSHROOM: {
         "ARI": 22,
         "Aurora_probability": 0.5,
@@ -1008,6 +1117,21 @@ WEATHER_SETS = {
         "sound_pool_dir": "media/sounds/bart_sounds",
         "states": ["bartiki_dawn", "bartiki_morning_rush", "bartiki_midday", "bartiki_afternoon", "bartiki_evening_rush", "bartiki_dusk", "bartiki_night", "bartiki_late_night", "bartiki_stormy"],
         "transition_speed": 1,
+    },
+
+    "beloved": {
+        "allowed_parameters": ["wind_speed", "fog", "fog_color", "starryness", "celestial_visibility", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
+        "background_events": ["distant_lights", "warm_bloom", "heart_pulse", "thread_bonds"],
+        "description": "Weather of the heart — passion, tenderness, longing, devotion. Driven by narrative variables.",
+        "name": "Beloved",
+        "narrative_script": "media/sounds/beloved/script.json",
+        "random_event_rate": 6e-05,
+        "random_events": ["heart_pulse", "warm_bloom"],
+        "season_extremity": 0.6,
+        "season_speed": 0.5,
+        "sound_pool_dir": "media/sounds/beloved_pool",
+        "states": ["love_infatuation", "love_tenderness", "love_longing", "love_devotion", "love_heartbreak", "love_reunion", "love_solitude"],
+        "transition_speed": 0.5,
     },
 
     "cosmic_night": {

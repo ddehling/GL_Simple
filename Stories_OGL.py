@@ -189,6 +189,10 @@ class EnvironmentalSystem:
             "test_fan_coords": (fx.shader_test_fan_coords, {}),
             "city_lights": (fx.shader_city_lights, {}),
             "bay_shimmer": (fx.shader_bay_shimmer, {}),
+            "heart_pulse": (fx.shader_heart_pulse, {}),
+            "thread_bonds": (fx.shader_thread_bonds, {}),
+            "warm_bloom": (fx.shader_warm_bloom, {}),
+            "distant_lights": (fx.shader_distant_lights, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 # No script_path here: the active weather set declares its
                 # own narrative via its `narrative_script` field, which is

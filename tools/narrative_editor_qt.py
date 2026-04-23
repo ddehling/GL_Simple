@@ -715,8 +715,8 @@ class ScriptData:
         return self._data.setdefault("variables", [])
 
     def set_variables(self, var_list: list):
-        """Replace all variable definitions (max 4)."""
-        self._data["variables"] = list(var_list)[:4]
+        """Replace all variable definitions (max 6)."""
+        self._data["variables"] = list(var_list)[:6]
         self.dirty = True
 
     # ── Arc management ──────────────────────────────────────────────────────
@@ -2460,6 +2460,72 @@ class AIAssistant:
                 self._busy = False
         threading.Thread(target=run, daemon=True).start()
 
+    # System prompt for the multi-turn story-context collaborator.
+    # Used by chat_context(); kept as a class attribute so the dialog can
+    # show it / tweak it later without poking at internals.
+    SYSTEM_CONTEXT_CHAT = (
+        "You are a collaborator helping develop a story / character bible for a "
+        "narrative audio script. The bible is reference material — a dense, "
+        "evocative portrait of premise, world, characters, voice, sensory "
+        "anchors, and themes — that a human reads and edits.\n\n"
+        "How to behave:\n"
+        "- Listen to what the user actually asks. Sometimes they want a draft; "
+        "  sometimes they want to discuss, brainstorm, ask a question, or "
+        "  refine one section. Match the request.\n"
+        "- When the user asks for a draft, an expansion, or a revision: output "
+        "  the FULL revised bible as the body of your reply, in flowing prose. "
+        "  No preamble like \"Here's the revised version:\" — just the bible. "
+        "  No markdown, no headers, no bullet points. Present tense.\n"
+        "- When the user asks a question, wants to brainstorm, or pushes back: "
+        "  reply conversationally. Don't dump a fresh bible — talk with them.\n"
+        "- Feel free to ask clarifying questions before drafting if the brief "
+        "  is genuinely ambiguous. Otherwise commit and draft.\n"
+        "- Drafts should be 2000–4000 characters: dense, specific, sensory. "
+        "  Concrete details over abstractions.\n"
+        "- Always carry forward the user's prior decisions. If they said the "
+        "  protagonist is a tile-setter, do not later make them a librarian."
+    )
+
+    def chat_context(self, history: list, user_msg: str,
+                     ui_queue: queue.SimpleQueue, on_done, on_error):
+        """Multi-turn collaboration on the Full Context.
+
+        history: list of {"role": "user"|"assistant", "content": str} —
+                 the dialog owns this list and appends to it.
+        user_msg: the new message from the user.
+        on_done(reply: str): called with Claude's reply text.
+
+        The full transcript is rendered into a single text prompt because
+        the `claude -p` CLI does not accept a structured chat history.
+        """
+        if self._busy:
+            return
+        self._busy = True
+
+        parts = []
+        if history:
+            parts.append("Conversation so far:")
+            for msg in history:
+                who = "User" if msg["role"] == "user" else "You (Claude)"
+                parts.append(f"{who}: {msg['content']}")
+            parts.append("")
+            parts.append(f"User: {user_msg}")
+            parts.append("")
+            parts.append("Reply now as Claude.")
+        else:
+            parts.append(user_msg)
+        prompt = "\n".join(parts)
+
+        def run():
+            try:
+                reply = self._run_claude(self.SYSTEM_CONTEXT_CHAT, prompt)
+                ui_queue.put(lambda r=reply.strip(): on_done(r))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+        threading.Thread(target=run, daemon=True).start()
+
     def determine_variables(self, node_texts: list, variables: list,
                             ui_queue: queue.SimpleQueue, on_done, on_error):
         """Analyze node texts and assign variable values via AI.
@@ -3257,7 +3323,7 @@ class PropertiesPanel(QWidget):
         self._vars_layout.addWidget(hdr, 0, 0, 1, 4)
 
         # 2-column grid: label + spin, label + spin
-        for i, var in enumerate(variables[:4]):
+        for i, var in enumerate(variables[:6]):
             row = 1 + i // 2
             col = (i % 2) * 2
             lbl = QLabel(f"{var['name']}:")
@@ -5238,6 +5304,214 @@ class _SearchBorderItem(QGraphicsItem):
         painter.restore()
 
 
+class StoryContextChatDialog(QDialog):
+    """Multi-turn chat with Claude to develop the Full Context.
+
+    Owns its own conversation history (independent of the main AI chat panel).
+    The user types messages; each Claude reply is shown in the log and held
+    as the "latest draft." A button commits the latest reply back to the
+    parent dialog's Full Context box.
+    """
+
+    def __init__(self, parent, ai: AIAssistant, ui_queue: queue.SimpleQueue,
+                 initial_full: str = ''):
+        super().__init__(parent)
+        self.setWindowTitle("Develop Full Context with AI")
+        self.setMinimumWidth(820)
+        self.setMinimumHeight(560)
+
+        self._ai = ai
+        self._ui_queue = ui_queue
+        self._history: list = []        # [{"role": "user"|"assistant", "content": str}, ...]
+        self._latest_reply: str = ''    # most recent assistant message
+        self.committed_text: Optional[str] = None  # set on "Use as Full Context"
+        self._initial_full = (initial_full or '').strip()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        info = QLabel(
+            "Chat with Claude to draft, expand, refine, or discuss the Full "
+            "Context. When Claude produces a draft you like, click "
+            "<b>Use Latest Reply as Full Context</b> to send it back. The "
+            "current Full Context (if any) is sent on your first message."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        layout.addWidget(info)
+
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        layout.addWidget(self._log, stretch=1)
+
+        self._input = QTextEdit()
+        self._input.setPlaceholderText(
+            "What would you like to do? "
+            "(e.g. \"Draft a bible for a story about two siblings reuniting after years apart\", "
+            "\"Make the tone more bittersweet\", \"Expand the section on the protagonist\", "
+            "\"Cut the lighthouse subplot\".  Enter to send, Shift+Enter for newline.)"
+        )
+        self._input.setMinimumHeight(70)
+        self._input.setMaximumHeight(120)
+        self._input.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        self._input.installEventFilter(self)
+        layout.addWidget(self._input)
+
+        btn_row = QHBoxLayout()
+        self._status = QLabel("")
+        self._status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        btn_row.addWidget(self._status, stretch=1)
+
+        self._send_btn = QPushButton("Send")
+        self._send_btn.clicked.connect(self._on_send)
+        btn_row.addWidget(self._send_btn)
+
+        self._commit_btn = QPushButton("Use Latest Reply as Full Context")
+        self._commit_btn.setEnabled(False)
+        self._commit_btn.clicked.connect(self._on_commit)
+        btn_row.addWidget(self._commit_btn)
+
+        self._reset_btn = QPushButton("Reset Chat")
+        self._reset_btn.clicked.connect(self._on_reset)
+        btn_row.addWidget(self._reset_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        # Pump for ui_queue callbacks while the modal dialog is up.
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._drain_ui_queue)
+        self._timer.start(50)
+
+        if self._initial_full:
+            self._append_system(
+                f"(Existing Full Context will be included with your first message — "
+                f"{len(self._initial_full)} chars.)"
+            )
+
+    # ── UI helpers ──────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                    self._on_send()
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _append_system(self, text: str):
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(
+            f'<div style="color:#888888;font-style:italic;margin:4px 0;">{text}</div><br>'
+        )
+        self._log.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _append_message(self, role: str, text: str):
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if role == "user":
+            color = "#88bbff"
+            who = "You"
+        else:
+            color = "#aaee99"
+            who = "Claude"
+        # Escape minimally for HTML safety on user input
+        safe = (text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\n", "<br>"))
+        cursor.insertHtml(
+            f'<div style="margin:4px 0;"><b style="color:{color};">{who}:</b> '
+            f'<span style="color:#dddddd;">{safe}</span></div><br>'
+        )
+        self._log.moveCursor(QTextCursor.MoveOperation.End)
+
+    # ── Actions ─────────────────────────────────────────────────────────────
+
+    def _on_send(self):
+        msg = self._input.toPlainText().strip()
+        if not msg:
+            return
+        if self._ai.busy:
+            self._status.setText("AI is busy...")
+            return
+
+        # On the very first send, prepend the existing full context (if any)
+        # so Claude has something to build from.
+        if not self._history and self._initial_full:
+            msg_to_send = (
+                f"Here is the current Full Context I'm working with:\n\n"
+                f"{self._initial_full}\n\n"
+                f"My request: {msg}"
+            )
+        else:
+            msg_to_send = msg
+
+        self._append_message("user", msg)
+        self._input.clear()
+        self._send_btn.setEnabled(False)
+        self._status.setText("Claude is thinking...")
+
+        def on_done(reply: str):
+            # Update internal history with the *original* user message (not
+            # the wrapped one), so subsequent transcripts stay clean.
+            self._history.append({"role": "user", "content": msg_to_send})
+            self._history.append({"role": "assistant", "content": reply})
+            self._latest_reply = reply
+            self._append_message("assistant", reply)
+            self._append_system(
+                f"Latest reply: {len(reply)} chars. "
+                f"Click \"Use Latest Reply as Full Context\" to commit."
+            )
+            self._send_btn.setEnabled(True)
+            self._commit_btn.setEnabled(True)
+            self._status.setText("Ready.")
+
+        def on_error(err: str):
+            self._send_btn.setEnabled(True)
+            self._status.setText(f"Error: {err[:80]}")
+            self._append_system(f"Error: {err[:200]}")
+
+        self._ai.chat_context(self._history, msg_to_send,
+                              self._ui_queue, on_done, on_error)
+
+    def _on_commit(self):
+        if not self._latest_reply:
+            return
+        self.committed_text = self._latest_reply
+        self.accept()
+
+    def _on_reset(self):
+        self._history.clear()
+        self._latest_reply = ''
+        self._log.clear()
+        self._commit_btn.setEnabled(False)
+        self._status.setText("Chat reset.")
+        if self._initial_full:
+            self._append_system(
+                f"(Existing Full Context will be included with your first message — "
+                f"{len(self._initial_full)} chars.)"
+            )
+
+    def _drain_ui_queue(self):
+        """Run any pending UI callbacks posted by the AI worker thread."""
+        try:
+            while True:
+                cb = self._ui_queue.get_nowait()
+                try:
+                    cb()
+                except Exception as e:
+                    print(f"[StoryContextChatDialog] callback error: {e}")
+        except queue.Empty:
+            pass
+
+
 class MainWindow(QMainWindow):
     def __init__(self, script_path=None):
         super().__init__()
@@ -5591,6 +5865,12 @@ class MainWindow(QMainWindow):
         full_edit.textChanged.connect(
             lambda: full_char_lbl.setText(f"{len(full_edit.toPlainText())} characters"))
         left_layout.addWidget(full_char_lbl)
+
+        chat_btn = QPushButton("Develop Full Context with AI...")
+        chat_btn.setToolTip(
+            "Open a chat with Claude to build, expand, refine, or iterate on the "
+            "Full Context. Replies can be committed back to this box.")
+        left_layout.addWidget(chat_btn)
         splitter.addWidget(left)
 
         # ── Right: focused context (sent to AI) ─────────────────────────────
@@ -5656,6 +5936,22 @@ class MainWindow(QMainWindow):
             self.ai.generate_focused_context(full, self.ui_queue, on_done, on_error)
 
         gen_btn.clicked.connect(on_generate)
+
+        def on_chat():
+            if not self.ai.ready:
+                status_lbl.setText("Claude CLI not found.")
+                return
+            sub = StoryContextChatDialog(
+                parent=dlg,
+                ai=self.ai,
+                ui_queue=self.ui_queue,
+                initial_full=full_edit.toPlainText(),
+            )
+            if sub.exec() and sub.committed_text is not None:
+                full_edit.setPlainText(sub.committed_text)
+                status_lbl.setText("Full context updated from chat.")
+
+        chat_btn.clicked.connect(on_chat)
 
         dlg.exec()
         self.script.set_story_context(full_edit.toPlainText())
@@ -5792,7 +6088,7 @@ class MainWindow(QMainWindow):
         self.ai.determine_variables(candidates, variables, self.ui_queue, on_done, on_error)
 
     def _cmd_open_story_variables(self):
-        """Open dialog to define up to 4 story-level variables."""
+        """Open dialog to define up to 6 story-level variables."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Story Variables")
         dlg.setMinimumWidth(520)
@@ -5801,7 +6097,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
-        info_lbl = QLabel("Define up to 4 numeric variables (0–1) tracked per node. "
+        info_lbl = QLabel("Define up to 6 numeric variables (0–1) tracked per node. "
                           "AI will set values based on the description when generating nodes.")
         info_lbl.setWordWrap(True)
         info_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
@@ -5817,7 +6113,7 @@ class MainWindow(QMainWindow):
         row_widgets = []  # list of (name_edit, desc_edit, remove_btn, row_widget)
 
         def add_row(name: str = '', desc: str = ''):
-            if len(row_widgets) >= 4:
+            if len(row_widgets) >= 6:
                 return
             row = QWidget()
             rl = QHBoxLayout(row)
@@ -5844,10 +6140,10 @@ class MainWindow(QMainWindow):
             def remove(e=entry):
                 row_widgets.remove(e)
                 e[3].deleteLater()
-                add_btn.setEnabled(len(row_widgets) < 4)
+                add_btn.setEnabled(len(row_widgets) < 6)
 
             rm_btn.clicked.connect(remove)
-            add_btn.setEnabled(len(row_widgets) < 4)
+            add_btn.setEnabled(len(row_widgets) < 6)
 
         # Add variable button
         add_btn = QPushButton("+ Add Variable")
