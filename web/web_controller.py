@@ -114,6 +114,7 @@ class WebController:
             "effect_speed": 1.0,
             "audio_sensitivity": 1.0,
             "brightness": 1.0,
+            "gamma": 2.0,
             "master_volume": 1.0,
             "narrative_volume": 1.0,
         }
@@ -139,6 +140,11 @@ class WebController:
                 "label": "Brightness",
                 "min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0,
                 "description": "Global brightness dimmer (cannot exceed power limiter)"
+            },
+            "gamma": {
+                "label": "Gamma",
+                "min": 1.0, "max": 3.0, "step": 0.05, "default": 2.0,
+                "description": "Output gamma correction exponent (applied before brightness limiter)"
             },
             "master_volume": {
                 "label": "Master Volume",

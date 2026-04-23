@@ -543,6 +543,7 @@ class EnvironmentalSystem:
             with self.web_controller._dict_lock:
                 intensity = self.web_controller.global_modifiers.get('weather_intensity', 1.0)
                 brightness_mod = self.web_controller.global_modifiers.get('brightness', 1.0)
+                gamma_mod = self.web_controller.global_modifiers.get('gamma', 2.0)
                 overrides = dict(self.web_controller.web_param_overrides)
 
             # Scale weather intensity on output keys
@@ -559,6 +560,7 @@ class EnvironmentalSystem:
             # Store brightness modifier in state for render pipeline to apply
             # after the hardware limiter (can only dim, never brighten past limiter)
             state["web_brightness"] = brightness_mod
+            state["web_gamma"] = gamma_mod
 
             # Volume controls — both applied in real time in the audio engine mixer
             master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
