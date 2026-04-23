@@ -115,6 +115,7 @@ class WebController:
             "audio_sensitivity": 1.0,
             "brightness": 1.0,
             "gamma": 2.0,
+            "brightness_limit": 0.1,
             "master_volume": 1.0,
             "narrative_volume": 1.0,
         }
@@ -145,6 +146,11 @@ class WebController:
                 "label": "Gamma",
                 "min": 1.0, "max": 3.0, "step": 0.05, "default": 2.0,
                 "description": "Output gamma correction exponent (applied before brightness limiter)"
+            },
+            "brightness_limit": {
+                "label": "Brightness Limit",
+                "min": 0.0, "max": 0.1, "step": 0.005, "default": 0.1,
+                "description": "Power limiter threshold (0.1 = safe max). Lower values cap output harder to save power"
             },
             "master_volume": {
                 "label": "Master Volume",

@@ -204,6 +204,7 @@ class RenderPipeline:
         """
         cfg = self.brightness_config
         state = self.brightness_state[frame_index]
+        setpoint = float(self.state.get("brightness_limit", self.brightness_setpoint))
 
         height, width = frame_corrected.shape[:2]
         sum_of_weights = cfg['red_factor'] + cfg['green_factor'] + cfg['blue_factor']
@@ -217,11 +218,13 @@ class RenderPipeline:
         normalized = bright_factor / max_possible
         state['bright_factor'] = normalized
 
-        threshold_value = self.brightness_setpoint * cfg['threshold']
+        threshold_value = setpoint * cfg['threshold']
         if normalized <= threshold_value:
             target_divisor = 1.0
         else:
-            target_divisor = max(1.0, normalized / self.brightness_setpoint)
+            # Guard divide-by-zero when user drags setpoint all the way to 0
+            # (that case just means "blackout" — divisor goes huge, output → 0).
+            target_divisor = max(1.0, normalized / max(setpoint, 1e-6))
 
         alpha = cfg['smoothing']
         state['divisor'] = alpha * target_divisor + (1 - alpha) * state['divisor']
