@@ -25,11 +25,22 @@
         </div>
 
         <div class="preview-weather">
-            <span class="preview-weather-label">Set:</span>
-            <span id="preview-weather-set" class="preview-weather-value">--</span>
+            <label for="preview-set-selector" class="preview-weather-label">Set:</label>
+            <select id="preview-set-selector" class="preview-selector">
+                <option value="">Loading...</option>
+            </select>
             <span class="preview-weather-sep">&middot;</span>
-            <span class="preview-weather-label">Weather:</span>
-            <span id="preview-weather-state" class="preview-weather-value">--</span>
+            <label for="preview-state-selector" class="preview-weather-label">Weather:</label>
+            <select id="preview-state-selector" class="preview-selector">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+        <div class="preview-now" id="preview-now">
+            <span class="preview-now-label">Now:</span>
+            <span id="preview-now-set" class="preview-now-value">--</span>
+            <span class="preview-now-sep">/</span>
+            <span id="preview-now-weather" class="preview-now-value">--</span>
+            <span id="preview-now-transition" class="preview-now-transition"></span>
         </div>
 
         <div class="preview-controls">

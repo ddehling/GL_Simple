@@ -1171,7 +1171,14 @@ function renderRandomEventsList() {
     const availableEvents = weatherData.available_events || [];
     
     if (randomEvents.length === 0) {
-        container.innerHTML = '<p style="color: #999; padding: 10px;">No seasonal events configured. Events are distributed evenly across the seasonal cycle (0=winter, 0.5=summer). The event closest to the current season will be triggered.</p>';
+        // Use this set's cycle labels so the helper text matches what the
+        // visualizer shows (seasons by default; time-of-day for ocean/
+        // bartiki; etc.).
+        const labels = (setData.cycle_labels && setData.cycle_labels.length === 4)
+            ? setData.cycle_labels
+            : ['Spring', 'Summer', 'Fall', 'Winter'];
+        const cycleHint = `0=${labels[0]}, 0.5=${labels[2]}`;
+        container.innerHTML = `<p style="color: #999; padding: 10px;">No cyclical events configured. Events are distributed evenly across the cycle (${cycleHint}). The event closest to the current cycle position will be triggered.</p>`;
         return;
     }
     
@@ -2405,13 +2412,19 @@ function renderSeasonVisualizer() {
     ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
     ctx.stroke();
     
-    // Draw season labels
-    const seasons = ['Spring', 'Summer', 'Fall', 'Winter'];
+    // Draw cardinal cycle labels. Each set can override the four labels
+    // via `cycle_labels` (ordered: 0.0, 0.25, 0.50, 0.75 in season_preference,
+    // i.e. top, right, bottom, left). Falls back to seasons for sets that
+    // don't repurpose the cycle (forest, storm, etc.). Ocean and bartiki
+    // use the cycle as time-of-day, so they label Midnight/Sunrise/Noon/Sunset.
+    const seasons = (setData.cycle_labels && setData.cycle_labels.length === 4)
+        ? setData.cycle_labels
+        : ['Spring', 'Summer', 'Fall', 'Winter'];
     const seasonAngles = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
     ctx.fillStyle = '#666';
     ctx.font = '14px Arial';
     ctx.textAlign = 'center';
-    
+
     seasons.forEach((season, i) => {
         const angle = seasonAngles[i];
         const labelRadius = radius + 30;

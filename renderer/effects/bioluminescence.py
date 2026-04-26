@@ -58,10 +58,18 @@ def shader_bioluminescence(state, outstate, intensity=2.6, depth=50.0):
     
     # Update from global state - read ocean weather parameters
     if 'effect' in state:
-        # Use ocean weather set parameter names
+        # Use ocean weather set parameter names.
+        # current_strength reads wind_speed (the raw per-state parameter), NOT
+        # the derived 'wind' value, because 'wind' is wind_speed * cos(2π *
+        # (season - 0.125)) and in the ocean set season is repurposed as time
+        # of day (cycles every ~15 min). That cosine reverses the horizontal
+        # current direction across each day cycle, which made particles
+        # visibly drift one way, slow, then reverse -- the rapid speed/
+        # direction change. Subsurface currents shouldn't flip with time of
+        # day, so we use the unmodulated wind_speed instead.
         state['effect'].target_bio_level = outstate.get('bioluminescence', 0.0)
         state['effect'].wave_speed = outstate.get('wave_speed', 0.5)
-        state['effect'].current_strength = outstate.get('wind', 0.0)
+        state['effect'].current_strength = outstate.get('wind_speed', 0.0)
         state['effect'].tide_level = outstate.get('tide_level', 0.5)
         state['effect'].season = outstate.get('season', 0.5)
         

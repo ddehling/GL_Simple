@@ -455,12 +455,83 @@ void main() {
 
     // ---- Bootstrap ----
 
+    // Rebuild a <select> in place ONLY when its option list changed. This
+    // avoids tearing down a dropdown the user might be mid-interaction with,
+    // and keeps the selected value pinned to `current` whenever provided.
+    function syncSelector(sel, values, current, labelFor) {
+        if (!sel) return;
+        const existing = Array.from(sel.options).map(o => o.value).join("|");
+        const incoming = (values || []).join("|");
+        if (existing !== incoming) {
+            sel.innerHTML = "";
+            (values || []).forEach(key => {
+                const opt = document.createElement("option");
+                opt.value = key;
+                opt.textContent = labelFor ? labelFor(key) : key;
+                sel.appendChild(opt);
+            });
+        }
+        if (current && sel.value !== current) {
+            sel.value = current;
+        }
+    }
+
+    // Populate / sync both dropdowns from /api/weather_set/info. Called on
+    // load and whenever the server reports a weather_changed event so the
+    // selected options follow the live state. The endpoint returns the
+    // currently-active set's state list in `available_weather_states`,
+    // which is exactly what we want — the dropdown should only offer
+    // states reachable in the current set.
+    function refreshSelectors() {
+        fetch("/api/weather_set/info")
+            .then(r => r.json())
+            .then(info => {
+                syncSelector(
+                    document.getElementById("preview-set-selector"),
+                    info.available_sets || [],
+                    info.current_set,
+                    key => WEATHER_SET_NAMES[key] || titleCase(key),
+                );
+                syncSelector(
+                    document.getElementById("preview-state-selector"),
+                    info.available_weather_states || [],
+                    info.current_weather,
+                    titleCase,
+                );
+            })
+            .catch(err => console.error("weather_set/info fetch failed:", err));
+    }
+
+    function setupSelectors(socket) {
+        const setSel = document.getElementById("preview-set-selector");
+        if (setSel) {
+            setSel.addEventListener("change", (e) => {
+                const newSet = e.target.value;
+                if (!newSet) return;
+                if (socket && socket.connected) {
+                    socket.emit("change_weather_set", { set_name: newSet });
+                }
+            });
+        }
+        const stateSel = document.getElementById("preview-state-selector");
+        if (stateSel) {
+            stateSel.addEventListener("change", (e) => {
+                const newState = e.target.value;
+                if (!newState) return;
+                if (socket && socket.connected) {
+                    socket.emit("change_weather_state", { state_name: newState });
+                }
+            });
+        }
+    }
+
     function init() {
         if (!initGL()) return;
         setupModeButtons();
         setupPanZoom();
 
         const socket = createSocket();
+        setupSelectors(socket);
 
         // Fetch geometry once
         fetch("/api/preview/geometry")
@@ -475,9 +546,15 @@ void main() {
         // Subscribe to frame stream
         socket.on("connect", () => {
             socket.emit("subscribe_preview");
+            refreshSelectors();
         });
 
         socket.on("frame", onFrame);
+
+        // Server emits this when the set or state changes; refresh so the
+        // selectors follow along (e.g. when changed from another tab, or
+        // when the set's state list changes after a set switch).
+        socket.on("weather_changed", () => refreshSelectors());
 
         socket.on("state_update", (data) => {
             const fpsEl = document.getElementById("preview-fps");
@@ -485,15 +562,48 @@ void main() {
                 fpsEl.textContent = data.fps + " FPS";
             }
 
-            const setEl = document.getElementById("preview-weather-set");
-            if (setEl && data.current_weather_set) {
-                setEl.textContent = WEATHER_SET_NAMES[data.current_weather_set]
-                    || titleCase(data.current_weather_set);
+            // Sync the SET dropdown to the live current set. Set switches are
+            // atomic on the server, so this is always the correct value.
+            const setSel = document.getElementById("preview-set-selector");
+            if (setSel && data.current_weather_set && setSel.options.length > 0
+                && setSel.value !== data.current_weather_set) {
+                setSel.value = data.current_weather_set;
             }
 
-            const stateEl = document.getElementById("preview-weather-state");
-            if (stateEl && data.current_weather) {
-                stateEl.textContent = titleCase(data.current_weather);
+            // Sync the STATE dropdown to the transition TARGET, not the
+            // source. The server reports `current_weather` as the still-
+            // playing source until the transition completes (progress >=
+            // 1.0); using `target` keeps the user's selection visible
+            // through the transition instead of snapping back to the old
+            // value. When not transitioning, target == current.
+            const trans = data.transition || {};
+            const targetState = trans.target || data.current_weather;
+            const stateSel = document.getElementById("preview-state-selector");
+            if (stateSel && targetState && stateSel.options.length > 0
+                && stateSel.value !== targetState) {
+                stateSel.value = targetState;
+            }
+
+            // "Now playing" readout: source state, plus a transition arrow
+            // when one is in progress so the user can see what's actually
+            // rendering right now (distinct from what they've selected).
+            const nowSetEl = document.getElementById("preview-now-set");
+            if (nowSetEl && data.current_weather_set) {
+                nowSetEl.textContent = WEATHER_SET_NAMES[data.current_weather_set]
+                    || titleCase(data.current_weather_set);
+            }
+            const nowWeatherEl = document.getElementById("preview-now-weather");
+            const nowTransEl = document.getElementById("preview-now-transition");
+            if (nowWeatherEl && data.current_weather) {
+                nowWeatherEl.textContent = titleCase(data.current_weather);
+            }
+            if (nowTransEl) {
+                if (trans.transitioning && trans.target && trans.target !== trans.current) {
+                    const pct = Math.round((trans.progress || 0) * 100);
+                    nowTransEl.textContent = `→ ${titleCase(trans.target)} (${pct}%)`;
+                } else {
+                    nowTransEl.textContent = "";
+                }
             }
         });
     }

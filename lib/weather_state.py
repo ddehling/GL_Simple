@@ -116,6 +116,7 @@ class WeatherStateController:
             "bubble_density": self.weather_params.get("bubble_density", 0.0),
             "marine_life_activity": self.weather_params.get("marine_life_activity", 0.0),
             "kelp_density": self.weather_params.get("kelp_density", 0.0),
+            "vent_activity": self.weather_params.get("vent_activity", 0.0),
             "train_speed": self.weather_params.get("train_speed", 8.0),
             "train_density": self.weather_params.get("train_density", 1.0),
             "godray_strength": self.weather_params.get("godray_strength", 0.0),

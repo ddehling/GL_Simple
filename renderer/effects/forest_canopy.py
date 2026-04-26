@@ -139,10 +139,10 @@ void main() {
 
     // Threshold: higher density → lower threshold → more pixels render
     // leaves. Range tuned so even max density leaves visible sky gaps.
-    //   density=0.30 (aurora_grove) → thresh ~0.77 (very sparse, big gaps)
-    //   density=0.85 (forest_dawn)  → thresh ~0.52 (dense with gaps)
-    //   density=1.00 (forest_morning) → thresh ~0.45 (densest, still gapped)
-    float leaf_thresh = mix(0.90, 0.45, density);
+    //   density=0.45 (snowfall)      → thresh ~0.64 (sparse, lots of sky)
+    //   density=0.85 (forest_dawn)   → thresh ~0.45 (dense with gaps)
+    //   density=1.00 (forest_morning) → thresh ~0.38 (densest, still gapped)
+    float leaf_thresh = mix(0.85, 0.38, density);
     float leaf_mask = smoothstep(leaf_thresh - 0.08,
                                  leaf_thresh + 0.12,
                                  leaf_n);

@@ -39,6 +39,8 @@ class WeatherState(Enum):
     OCEAN_JELLYFISH_BLOOM = "ocean_jellyfish_bloom"
     OCEAN_MIDNIGHT_OPEN_WATER = "ocean_midnight_open_water"
     OCEAN_MAELSTROM = "ocean_maelstrom"
+    OCEAN_TIDE_POOL = "ocean_tide_pool"
+    OCEAN_HYDROTHERMAL_VENT = "ocean_hydrothermal_vent"
     BARTIKI_DAWN = "bartiki_dawn"
     BARTIKI_MORNING_RUSH = "bartiki_morning_rush"
     BARTIKI_MIDDAY = "bartiki_midday"
@@ -61,6 +63,7 @@ class WeatherState(Enum):
     FOREST_DUSK = "forest_dusk"
     FOREST_NIGHT = "forest_night"
     FOREST_LATE_NIGHT = "forest_late_night"
+    FOREST_NIGHT_STORM = "forest_night_storm"
     SNOWFALL = "snowfall"
     FIRST_FROST = "first_frost"
     AUTUMN_BLAZE = "autumn_blaze"
@@ -153,6 +156,7 @@ PARAMETER_DEFINITIONS = {
     'transition_duration': {'type': 'number', 'step': 1},
     'transition_weights': {'type': 'array-number'},
     'tree_prob': {'type': 'number', 'step': 0.1},
+    'vent_activity': {'type': 'number', 'step': 0.05},
     'volcano_level': {'type': 'number', 'step': 0.1},
     'wave_amplitude': {'type': 'number', 'step': 0.05},
     'wave_speed': {'type': 'number', 'step': 0.05},
@@ -186,6 +190,7 @@ DEFAULT_WEATHER_PARAMS = {
     "season_preference": 0.375,
     "ambient_sound": None,
     "ARI": 0.0,
+    "vent_activity": 0.0,
 }
 
 # Weather presets
@@ -703,11 +708,11 @@ WEATHER_PRESETS = {
         "fog": 0.3,
         "fog_color": np.array([0.5, 0.32, 0.25]),
         "godray_strength": 0.95,
-        "possible_transitions": ["forest_night", "autumn_blaze"],
+        "possible_transitions": ["forest_night", "autumn_blaze", "forest_night_storm"],
         "season_preference": 0.78,
         "starryness": 0.35,
         "transition_duration": 25,
-        "transition_weights": [1, 0.3],
+        "transition_weights": [1, 0.3, 0.4],
         "tree_prob": 0.5,
         "wind_speed": 0.2,
     },
@@ -726,11 +731,11 @@ WEATHER_PRESETS = {
         "fog": 0.15,
         "fog_color": np.array([0.05, 0.07, 0.18]),
         "meteor_rate": 0.2,
-        "possible_transitions": ["forest_dawn", "aurora_grove", "spirit_grove", "snowfall"],
+        "possible_transitions": ["forest_dawn", "aurora_grove", "spirit_grove", "snowfall", "forest_night_storm"],
         "season_preference": 0.06,
         "starryness": 1,
         "transition_duration": 30,
-        "transition_weights": [1, 0.3, 0.25, 0.2],
+        "transition_weights": [1, 0.3, 0.25, 0.2, 0.3],
         "tree_prob": 0.2,
         "wind_speed": 0.05,
     },
@@ -787,13 +792,49 @@ WEATHER_PRESETS = {
         "firefly_density": 0.7,
         "fog": 0.25,
         "fog_color": np.array([0.1, 0.12, 0.22]),
-        "possible_transitions": ["forest_late_night", "aurora_grove", "spirit_grove"],
+        "possible_transitions": ["forest_late_night", "aurora_grove", "spirit_grove", "forest_night_storm"],
         "season_preference": 0.94,
         "starryness": 1,
         "transition_duration": 25,
-        "transition_weights": [1, 0.4, 0.3],
+        "transition_weights": [1, 0.4, 0.3, 0.4],
         "tree_prob": 0.3,
         "wind_speed": 0.1,
+    },
+
+    WeatherState.FOREST_NIGHT_STORM: {
+        "ARI": 28,
+        "Owly": 0.3,
+        "Sound_volume": 2.5,
+        "Switch_rate": 0.6,
+        "Weird": 0.1,
+        "Wolfy": 0.3,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "canopy_density": 0.7,
+        # celestial_visibility=0 hides stars; starryness=1 puts the sky
+        # backdrop in night mode (canopy_godrays mixes toward night_sky
+        # when starryness is high). Without starryness=1 the sky stayed
+        # in daytime mode and rendered amber from season_preference=0.9.
+        "celestial_visibility": 0,
+        "dapple_strength": 0,
+        "fog": 0.7,
+        "fog_color": np.array([0.03, 0.04, 0.07]),
+        "godray_strength": 0,
+        "lightning_probability": 0.7,
+        "on_transition_events": [
+            ['lightning', 6, 0],
+            ['lightning', 6, 8],
+            ['lightning', 6, 18],
+            ['rain_on_leaves', 120, 0],
+        ],
+        "possible_transitions": ["forest_late_night", "forest_night", "light_rain", "forest_storm"],
+        "rain_rate": 1.0,
+        "season_preference": 0.9,
+        "spookyness": 0.3,
+        "starryness": 1.0,
+        "transition_duration": 25,
+        "transition_weights": [1.0, 0.8, 0.6, 0.4],
+        "tree_prob": 0.5,
+        "wind_speed": 1.3,
     },
 
     WeatherState.FOREST_STORM: {
@@ -809,12 +850,12 @@ WEATHER_PRESETS = {
         "godray_strength": 0,
         "lightning_probability": 0.5,
         "on_transition_events": [['lightning', 6, 0], ['rain_on_leaves', 90, 0]],
-        "possible_transitions": ["forest_morning", "forest_midday", "light_rain"],
+        "possible_transitions": ["forest_morning", "forest_midday", "light_rain", "forest_night_storm"],
         "rain_rate": 0.7,
         "season_preference": 0.55,
         "starryness": 0,
         "transition_duration": 25,
-        "transition_weights": [0.8, 0.8, 1],
+        "transition_weights": [0.8, 0.8, 1, 0.5],
         "tree_prob": 0.4,
         "wind_speed": 0.9,
     },
@@ -1036,17 +1077,17 @@ WEATHER_PRESETS = {
 
     WeatherState.OCEAN_ABYSS: {
         "ARI": 60,
-        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
         "bioluminescence": 0.8,
         "bubble_density": 0,
         "fog": 0.95,
         "fog_color": np.array([0.02, 0.02, 0.08]),
         "kelp_density": 0,
         "marine_life_activity": 0.1,
-        "possible_transitions": ["ocean_deep_calm", "ocean_bioluminescent_swarm"],
+        "possible_transitions": ["ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_hydrothermal_vent"],
         "season_preference": 0,
-        "tide_level": 0.05,
-        "transition_weights": [1, 0.5],
+        "tide_level": 1,
+        "transition_weights": [1, 0.5, 0.6],
         "wave_amplitude": 0.05,
         "wave_speed": 0.1,
         "wind_speed": 0.05,
@@ -1063,7 +1104,7 @@ WEATHER_PRESETS = {
         "marine_life_activity": 1,
         "possible_transitions": ["ocean_deep_calm", "ocean_calm_shallows", "ocean_kelp_forest", "ocean_jellyfish_bloom"],
         "season_preference": 0.875,
-        "tide_level": 0.5,
+        "tide_level": 1,
         "transition_weights": [0.8, 1, 0.6, 0.7],
         "wave_amplitude": 0.2,
         "wave_speed": 0.3,
@@ -1079,10 +1120,10 @@ WEATHER_PRESETS = {
         "fog_color": np.array([0.3, 0.6, 0.9]),
         "kelp_density": 0.3,
         "marine_life_activity": 0.7,
-        "possible_transitions": ["ocean_kelp_forest", "ocean_coral_reef", "ocean_choppy_surface", "ocean_midnight_open_water"],
+        "possible_transitions": ["ocean_kelp_forest", "ocean_coral_reef", "ocean_choppy_surface", "ocean_midnight_open_water", "ocean_tide_pool"],
         "season_preference": 0.15,
         "tide_level": 0.65,
-        "transition_weights": [1, 1, 0.5, 0.4],
+        "transition_weights": [1, 1, 0.5, 0.4, 0.7],
         "wave_amplitude": 0.3,
         "wave_speed": 0.4,
         "wind_speed": 0.2,
@@ -1133,13 +1174,32 @@ WEATHER_PRESETS = {
         "fog_color": np.array([0.1, 0.2, 0.35]),
         "kelp_density": 0,
         "marine_life_activity": 0.4,
-        "possible_transitions": ["ocean_bioluminescent_swarm", "ocean_abyss", "ocean_calm_shallows", "ocean_choppy_surface", "ocean_jellyfish_bloom"],
+        "possible_transitions": ["ocean_bioluminescent_swarm", "ocean_abyss", "ocean_calm_shallows", "ocean_choppy_surface", "ocean_jellyfish_bloom", "ocean_hydrothermal_vent"],
         "season_preference": 0.95,
-        "tide_level": 0.35,
-        "transition_weights": [0.8, 0.3, 1, 0.6, 0.5],
+        "tide_level": 1,
+        "transition_weights": [0.8, 0.3, 1, 0.6, 0.5, 0.4],
         "wave_amplitude": 0.2,
         "wave_speed": 0.3,
         "wind_speed": 0,
+    },
+
+    WeatherState.OCEAN_HYDROTHERMAL_VENT: {
+        "ARI": 55,
+        "ambient_sound": "underwater_turbulent.mp3",
+        "bioluminescence": 0.55,
+        "bubble_density": 1,
+        "fog": 0.85,
+        "fog_color": np.array([0.18, 0.08, 0.05]),
+        "kelp_density": 0,
+        "marine_life_activity": 0.25,
+        "possible_transitions": ["ocean_abyss", "ocean_deep_calm"],
+        "season_preference": 0,
+        "tide_level": 1,
+        "transition_weights": [1, 0.6],
+        "vent_activity": 1.0,
+        "wave_amplitude": 0.05,
+        "wave_speed": 0.1,
+        "wind_speed": 0.05,
     },
 
     WeatherState.OCEAN_JELLYFISH_BLOOM: {
@@ -1154,7 +1214,7 @@ WEATHER_PRESETS = {
         "on_transition_events": [['tentacle', 180, 0]],
         "possible_transitions": ["ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_calm_shallows"],
         "season_preference": 0.1,
-        "tide_level": 0.4,
+        "tide_level": 1,
         "transition_weights": [1, 0.8, 0.5],
         "wave_amplitude": 0.15,
         "wave_speed": 0.15,
@@ -1191,7 +1251,7 @@ WEATHER_PRESETS = {
         "on_transition_events": [['vortex', 90, 0]],
         "possible_transitions": ["ocean_storm_surge", "ocean_deep_calm"],
         "season_preference": 0.8,
-        "tide_level": 0.9,
+        "tide_level": 0.55,
         "transition_weights": [1.2, 0.4],
         "wave_amplitude": 1.2,
         "wave_speed": 1.2,
@@ -1228,11 +1288,29 @@ WEATHER_PRESETS = {
         "marine_life_activity": 0.05,
         "possible_transitions": ["ocean_choppy_surface", "ocean_deep_calm", "ocean_maelstrom"],
         "season_preference": 0.7,
-        "tide_level": 0.95,
+        "tide_level": 0.6,
         "transition_weights": [1.5, 0.5, 0.6],
         "wave_amplitude": 1,
         "wave_speed": 1,
         "wind_speed": 1.5,
+    },
+
+    WeatherState.OCEAN_TIDE_POOL: {
+        "ARI": 50,
+        "ambient_sound": "285 Water - Natural long small ocean wave by x5.mp3",
+        "bioluminescence": 0.05,
+        "bubble_density": 0.3,
+        "fog": 0.05,
+        "fog_color": np.array([0.45, 0.75, 0.85]),
+        "kelp_density": 0.15,
+        "marine_life_activity": 1,
+        "possible_transitions": ["ocean_calm_shallows", "ocean_coral_reef", "ocean_kelp_forest"],
+        "season_preference": 0.25,
+        "tide_level": 0,
+        "transition_weights": [1.2, 0.7, 0.5],
+        "wave_amplitude": 0.1,
+        "wave_speed": 0.2,
+        "wind_speed": 0.15,
     },
 
     WeatherState.POLLEN_DRIFT: {
@@ -1411,6 +1489,7 @@ WEATHER_SETS = {
     "bartiki": {
         "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound", "lightning_probability"],
         "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer"],
+        "cycle_labels": ["Midnight", "Sunrise", "Noon", "Sunset"],
         "description": "Bay Area BART system with day/night cycle — map by day, constellations by night",
         "name": "BarTiki",
         "narrative_script": "media/sounds/bartiki/script.json",
@@ -1514,21 +1593,23 @@ WEATHER_SETS = {
     },
 
     "ocean": {
-        "allowed_parameters": ["wind_speed", "fog", "fog_color", "wave_speed", "wave_amplitude", "bioluminescence", "tide_level", "bubble_density", "marine_life_activity", "kelp_density", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["Bioluminescence", "ocean_waves", "kelp", "bubbles", "fish", "fog"],
+        "allowed_parameters": ["wind_speed", "fog", "fog_color", "wave_speed", "wave_amplitude", "bioluminescence", "tide_level", "bubble_density", "marine_life_activity", "kelp_density", "vent_activity", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
+        "background_events": ["Bioluminescence", "ocean_waves", "kelp", "bubbles", "fish", "fog", "smoker"],
+        "cycle_labels": ["Midnight", "Sunrise", "Noon", "Sunset"],
         "description": "Oceanic environment with waves and aquatic life - fog represents water clarity, season represents time of day",
         "name": "Ocean Realm",
         "narrative_script": None,
         "random_event_rate": 8e-05,
         "random_events": [],
-        "season_extremity": 1,
+        "season_extremity": 1.25,
         "season_speed": 2,
         "sound_pool_dir": None,
-        "states": ["ocean_calm_shallows", "ocean_choppy_surface", "ocean_storm_surge", "ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_abyss", "ocean_kelp_forest", "ocean_coral_reef", "ocean_jellyfish_bloom", "ocean_midnight_open_water", "ocean_maelstrom"],
+        "states": ["ocean_calm_shallows", "ocean_choppy_surface", "ocean_storm_surge", "ocean_deep_calm", "ocean_bioluminescent_swarm", "ocean_abyss", "ocean_kelp_forest", "ocean_coral_reef", "ocean_jellyfish_bloom", "ocean_midnight_open_water", "ocean_maelstrom", "ocean_tide_pool", "ocean_hydrothermal_vent"],
         "transition_speed": 0.7,
     },
 
     "peaceful_forest": {
+        "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Aurora_probability", "meteor_rate", "tree_prob", "Weird", "Wolfy", "Owly", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration", "season_preference", "Switch_rate", "spookyness", "lightning_probability", "godray_strength", "canopy_density", "snow_rate", "spore_density", "spore_color", "dapple_strength", "stream_flow_rate", "eye_density", "frost_level"],
         "background_events": ["clouds", "firefly", "stars", "rain", "fog", "forest_canopy", "canopy_godrays", "dappled_shadows", "snowfall", "spore_drift", "stream_flow", "forest_eyes"],
         "description": "Forest with full day/night cycle, seasonal moods, and aurora/storm/spirit variants",
@@ -1539,7 +1620,7 @@ WEATHER_SETS = {
         "season_extremity": 1,
         "season_speed": 1,
         "sound_pool_dir": None,
-        "states": ["forest_dawn", "forest_morning", "forest_midday", "forest_dusk", "forest_night", "forest_late_night", "snowfall", "first_frost", "autumn_blaze", "aurora_grove", "spirit_grove", "forest_storm", "pollen_drift", "clear", "light_rain", "foggy", "firefly", "mushroom", "bloom", "leaves"],
+        "states": ["forest_dawn", "forest_morning", "forest_midday", "forest_dusk", "forest_night", "forest_late_night", "forest_night_storm", "snowfall", "first_frost", "autumn_blaze", "aurora_grove", "spirit_grove", "forest_storm", "pollen_drift", "clear", "light_rain", "foggy", "firefly", "mushroom", "bloom", "leaves"],
         "transition_speed": 1,
     },
 

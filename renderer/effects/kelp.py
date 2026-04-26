@@ -330,10 +330,12 @@ class KelpEffect(ShaderEffect):
 
             float swayFreq = 0.6 + hash2(strandFloat * 2.7) * 0.8;
 
-            // Apply tide level to base position (kelp floor moves with tide).
-            // Tide is a radial offset of ~1 ft, converted to pixels via radial pixel height.
-            float tideOffset = (tideLevel - 0.5) * 1.0 / fan_radial_height_ft();
-            basePos.y += tideOffset;
+            // Kelp anchors to the physical seafloor (inner ring of the fan)
+            // which does NOT move with tide -- tide affects the surface, not
+            // the floor. The previous (tideLevel-0.5)*~18px offset visibly
+            // lifted kelp 5-10 px above the bottom edge in low-tide states
+            // (OCEAN_TIDE_POOL at tide_level=0, and transient values during
+            // transitions to/from it). basePos stays pinned at resolution.y.
 
             // Calculate position along kelp strand (grow upward = subtract from y)
             vec2 pos = basePos;

@@ -395,8 +395,11 @@ class OceanWaves(ShaderEffect):
             // Beach extends from normY 0.92 to 1.0 (top 8% of screen)
             // Tide level shifts beach boundary: tideLevel in 0-1 range, map to -0.5 to 0.5 (0.5 = normal)
             float tideFactor = (tideLevel - 0.5) * 0.3;  // Map 0-1 to -0.15 to +0.15
-            float beachStart = clamp(0.92 + tideFactor, 0.0, 0.99);  // Clamp to prevent invalid smoothstep
-            float beachZone = smoothstep(beachStart, 1.0, y);
+            float beachStart = clamp(0.92 + tideFactor, 0.0, 1.0);
+            // beachStart >= 1.0 means fully submerged: no beach band, water
+            // covers the whole frame. smoothstep with edge0 == edge1 is
+            // undefined per spec, so branch explicitly.
+            float beachZone = (beachStart >= 1.0) ? 0.0 : smoothstep(beachStart, 1.0, y);
             
             // Sand colors
             vec3 drySandColor = vec3(0.85, 0.75, 0.55);

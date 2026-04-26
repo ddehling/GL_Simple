@@ -183,6 +183,7 @@ class EnvironmentalSystem:
             "Bioluminescence": (fx.shader_bioluminescence, {}),
             "bubbles": (fx.shader_bubbles, {}),
             "fish": (fx.shader_fish, {}),
+            "smoker": (fx.shader_smoker, {}),
             "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
             "bart_map": (fx.shader_bart_map, {}),
             "highway_traffic": (fx.shader_highway_traffic, {}),

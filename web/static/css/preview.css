@@ -28,6 +28,58 @@
     margin: 0 4px;
 }
 
+.preview-selector {
+    background: #222;
+    color: #6ec1ff;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 0.95em;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.preview-selector:hover {
+    background: #2a2a2a;
+    border-color: #777;
+}
+
+.preview-selector:focus {
+    outline: none;
+    border-color: #0a5;
+}
+
+.preview-now {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 12px 8px;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+}
+
+.preview-now-label {
+    opacity: 0.5;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.preview-now-value {
+    color: #ddd;
+    font-weight: 500;
+}
+
+.preview-now-sep {
+    opacity: 0.35;
+}
+
+.preview-now-transition {
+    color: #f4c87a;
+    font-weight: 500;
+    margin-left: 4px;
+}
+
 .preview-controls {
     display: flex;
     align-items: center;
