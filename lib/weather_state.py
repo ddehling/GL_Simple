@@ -118,6 +118,17 @@ class WeatherStateController:
             "kelp_density": self.weather_params.get("kelp_density", 0.0),
             "train_speed": self.weather_params.get("train_speed", 8.0),
             "train_density": self.weather_params.get("train_density", 1.0),
+            "godray_strength": self.weather_params.get("godray_strength", 0.0),
+            "canopy_density": self.weather_params.get("canopy_density", 0.0),
+            "snow_rate": self.weather_params.get("snow_rate", 0.0),
+            "spore_density": self.weather_params.get("spore_density", 0.0),
+            "spore_color": self.weather_params.get("spore_color", 0.0),
+            "dapple_strength": self.weather_params.get("dapple_strength", 0.0),
+            "stream_flow_rate": self.weather_params.get("stream_flow_rate", 0.0),
+            "eye_density": self.weather_params.get("eye_density", 0.0),
+            "frost_level": self.weather_params.get("frost_level", 0.0),
+            "spookyness": self.weather_params.get("spookyness", 0.0),
+            "season_preference": self.weather_params.get("season_preference", 0.5),
             # Ambient light level in [0.25, 1.0]: peaks at noon (season=0.5),
             # minimum at midnight (season=0 / 1). In the ocean set season is
             # repurposed as time of day, so effects that want to dim at

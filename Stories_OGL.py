@@ -193,6 +193,15 @@ class EnvironmentalSystem:
             "thread_bonds": (fx.shader_thread_bonds, {}),
             "warm_bloom": (fx.shader_warm_bloom, {}),
             "distant_lights": (fx.shader_distant_lights, {}),
+            "aurora": (fx.shader_aurora, {}),
+            "canopy_godrays": (fx.shader_canopy_godrays, {}),
+            "forest_canopy": (fx.shader_forest_canopy, {}),
+            "dappled_shadows": (fx.shader_dappled_shadows, {}),
+            "snowfall": (fx.shader_snowfall, {}),
+            "rain_on_leaves": (fx.shader_rain_on_leaves, {}),
+            "spore_drift": (fx.shader_spore_drift, {}),
+            "stream_flow": (fx.shader_stream_flow, {}),
+            "forest_eyes": (fx.shader_forest_eyes, {}),
             "narrative_player": (fx.shader_narrative_player, {
                 # No script_path here: the active weather set declares its
                 # own narrative via its `narrative_script` field, which is
@@ -627,6 +636,16 @@ class EnvironmentalSystem:
 
         if randcheck < self.weather_state.weather_params["lightning_probability"] / 500:
             self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
+            # Pair the visual lightning with a randomized thunder rumble.
+            thunder_sounds = [
+                "thunder-307513.mp3",
+                "loud-thunder-192165.mp3",
+                "peals-of-thunder-191992.mp3",
+            ]
+            thunder_file = Path("media/sounds") / np.random.choice(thunder_sounds)
+            engine = self.scheduler.state.get("soundengine")
+            if engine:
+                engine.schedule_event(thunder_file, volume=0.7)
 
 
         randcheck = np.random.random()
@@ -651,6 +670,16 @@ class EnvironmentalSystem:
             engine = self.scheduler.state.get("soundengine")
             if engine:
                 engine.schedule_event(wolf_file, volume=1.0)
+
+        # Owl hoot one-shot sounds (low probability, half volume).
+        # Divisor is 5x larger than wolves because the owl clip is ~23s
+        # long — without this, hoots would overlap continuously.
+        if randcheck < self.weather_state.weather_params.get("Owly", 0.0) / 12500:
+            owl_sounds = ["Owls Hooting.wav"]
+            owl_file = Path("media/sounds") / np.random.choice(owl_sounds)
+            engine = self.scheduler.state.get("soundengine")
+            if engine:
+                engine.schedule_event(owl_file, volume=0.5)
 
         # # Random meteor events
         if randcheck < self.weather_state.weather_params["meteor_rate"] / 800:

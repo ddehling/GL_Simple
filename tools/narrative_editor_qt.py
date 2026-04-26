@@ -52,9 +52,11 @@ from NodeGraphQt import NodeGraph, BaseNode
 
 REPO_ROOT  = Path(__file__).parent.parent
 SOUNDS_DIR = REPO_ROOT / "media" / "sounds"
+RECENTS_PATH = REPO_ROOT / "config" / "narrative_recents.json"
+RECENTS_MAX = 10
 
 NODE_PREVIEW_LEN = 60        # chars shown inside a node box
-FOCUSED_CONTEXT_MAX = 1500  # max chars of story_context_focused sent to AI
+FOCUSED_CONTEXT_MAX = 4000  # max chars of story_context_focused sent to AI
 
 PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
 
@@ -766,6 +768,21 @@ class ScriptData:
             self.arcs[arc_id].update(data)
             self.dirty = True
 
+    def get_node_arc_id(self, node_id: str) -> str:
+        nd = self._data.get('nodes', {}).get(node_id, {})
+        return nd.get('arc_id', '') if isinstance(nd, dict) else ''
+
+    def set_node_arc_id(self, node_id: str, arc_id: str):
+        nd = self._data.get('nodes', {}).get(node_id)
+        if isinstance(nd, dict):
+            nd['arc_id'] = arc_id or ''
+            self.dirty = True
+
+    def get_arc(self, arc_id: str) -> dict:
+        if not arc_id:
+            return {}
+        return self._data.get('arcs', {}).get(arc_id, {}) or {}
+
     def summary(self, max_text: int = 80) -> str:
         """Compact text description of the script for AI context."""
         lines = [f'Script: "{self.name}"']
@@ -1206,25 +1223,20 @@ class ParallelNodeOrchestrator:
 
     def __init__(self, script: 'ScriptData', ui_queue: queue.SimpleQueue,
                  model: str = '', profile: str = 'full',
-                 story_context: str = '', motif: str = '',
-                 premise: str = '', themes: str = '',
-                 arc_beats: dict = None, variables: list = None,
-                 on_progress=None, on_complete=None, on_node_added=None):
+                 story_context: str = '', variables: list = None,
+                 on_progress=None, on_complete=None, on_node_added=None,
+                 thinking: str = ''):
         self._script       = script
         self._ui_queue     = ui_queue
         self._profile      = GENERATION_PROFILES.get(profile, GENERATION_PROFILES['full'])
         self._story_context = story_context
-        self._motif        = motif
-        self._premise      = premise
-        self._themes       = themes
-        self._arc_beats    = arc_beats or {}
         self._variables    = variables or []
         self._on_progress  = on_progress   # callback(status_str)
         self._on_complete  = on_complete   # callback()
         self._on_node_added = on_node_added  # callback(set_of_new_ids)
 
         # Worker pool
-        self._workers = [AIAssistant(model=model) for _ in range(PARALLEL_WORKER_COUNT)]
+        self._workers = [AIAssistant(model=model, thinking=thinking) for _ in range(PARALLEL_WORKER_COUNT)]
         self._worker_sem = threading.Semaphore(PARALLEL_WORKER_COUNT)
         self._executor = ThreadPoolExecutor(max_workers=PARALLEL_WORKER_COUNT)
 
@@ -1247,6 +1259,16 @@ class ParallelNodeOrchestrator:
             t for n in script.nodes.values()
             for t in n.get('tags', []) if t not in layer_tags
         })
+
+    def _arc_fields_for_parent(self, parent_id: str) -> tuple:
+        """Resolve (premise, motif, themes, beats) from the parent node's arc_id.
+
+        Returns empty values if the parent has no arc_id or the arc is gone.
+        """
+        arc_id = self._script.get_node_arc_id(parent_id)
+        arc = self._script.get_arc(arc_id)
+        return (arc.get('premise', ''), arc.get('motif', ''),
+                arc.get('themes', ''), arc.get('beats', {}) or {})
 
     def cancel(self):
         """Signal cancellation. In-flight tasks finish but results are discarded."""
@@ -1286,7 +1308,8 @@ class ParallelNodeOrchestrator:
         for nid in valid:
             self._node_to_root[nid] = root_id
 
-        direction = self._arc_beats.get(child_layer, '')
+        _, _, _, beats = self._arc_fields_for_parent(valid[0])
+        direction = beats.get(child_layer, '')
         tid = self._next_task_id()
         task = NodeTask(
             task_id=tid,
@@ -1307,7 +1330,6 @@ class ParallelNodeOrchestrator:
         """Begin parallel generation from a list of existing seed (arrival) nodes."""
         print(f'[Parallel] Starting with {len(seed_node_ids)} seed nodes: {seed_node_ids}')
         print(f'[Parallel] Profile: max_depth={self._profile["max_depth"]}, workers={PARALLEL_WORKER_COUNT}')
-        print(f'[Parallel] Arc beats: {list(self._arc_beats.keys())}')
         for nid in seed_node_ids:
             nd = self._script.nodes.get(nid)
             if not nd:
@@ -1358,7 +1380,8 @@ class ParallelNodeOrchestrator:
 
         lo, hi = self._get_width(child_layer)
         desired = random.randint(lo, hi)
-        direction = self._arc_beats.get(child_layer, '')
+        _, _, _, beats = self._arc_fields_for_parent(parent_id)
+        direction = beats.get(child_layer, '')
 
         with self._lock:
             cap = self._get_layer_cap(child_layer)
@@ -1545,6 +1568,8 @@ class ParallelNodeOrchestrator:
 
             worker = self._workers[0]
 
+            premise, motif, themes, _ = self._arc_fields_for_parent(primary_pid)
+
             result = worker.generate_batch_sync(
                 parent_id=primary_pid,
                 parent_text=parent_text,
@@ -1554,12 +1579,12 @@ class ParallelNodeOrchestrator:
                 batch_size=task.batch_size,
                 layer_direction=task.layer_direction,
                 hint=parent_hint,
-                motif=self._motif,
-                themes=self._themes,
+                motif=motif,
+                themes=themes,
                 story_context=self._story_context,
                 existing_custom_tags=self._existing_tags,
                 variables=self._variables,
-                premise=self._premise,
+                premise=premise,
                 premise_weight=premise_weight,
             )
 
@@ -1585,7 +1610,10 @@ class ParallelNodeOrchestrator:
             # Apply all nodes to script on main thread
             applied_event = threading.Event()
 
-            def _apply(t=task, evt=applied_event, pids=all_parent_ids, node_dict=nodes):
+            parent_arc_id = self._script.get_node_arc_id(primary_pid)
+
+            def _apply(t=task, evt=applied_event, pids=all_parent_ids,
+                       node_dict=nodes, inherit_arc=parent_arc_id):
                 applied_ids = []
                 for nid, ndata in node_dict.items():
                     # Build a single-node result dict for apply_single_node
@@ -1594,6 +1622,8 @@ class ParallelNodeOrchestrator:
                     final_id = self._script.apply_single_node(t.parent_id, single)
                     if final_id:
                         applied_ids.append(final_id)
+                        if inherit_arc:
+                            self._script.set_node_arc_id(final_id, inherit_arc)
                         # Wire additional convergence parents
                         for pid in pids[1:]:
                             if pid in self._script.nodes:
@@ -1719,10 +1749,21 @@ class AIAssistant:
 
     DEFAULT_MODEL = 'claude-sonnet-4-6'
 
-    def __init__(self, model: str = ''):
+    # Extended-thinking levels triggered by keywords in the prompt.
+    # Claude Code escalates its thinking budget when it sees these tokens.
+    THINKING_LEVELS = {
+        'off':        '',
+        'think':      'Think about this. ',
+        'think_hard': 'Think hard about this. ',
+        'ultrathink': 'Ultrathink about this. ',
+    }
+    DEFAULT_THINKING = 'think'
+
+    def __init__(self, model: str = '', thinking: str = ''):
         self._history: list = []
         self._busy = False
         self._model: str = model or self.DEFAULT_MODEL
+        self._thinking: str = thinking if thinking in self.THINKING_LEVELS else self.DEFAULT_THINKING
         self._claude_exe: Optional[str] = self._find_claude()
 
     @property
@@ -1732,6 +1773,15 @@ class AIAssistant:
     @model.setter
     def model(self, value: str):
         self._model = value or self.DEFAULT_MODEL
+
+    @property
+    def thinking(self) -> str:
+        return self._thinking
+
+    @thinking.setter
+    def thinking(self, value: str):
+        if value in self.THINKING_LEVELS:
+            self._thinking = value
 
     @staticmethod
     def _find_claude() -> Optional[str]:
@@ -1813,13 +1863,15 @@ class AIAssistant:
 
     def _run_claude(self, system: str, prompt: str, max_retries: int = 5) -> str:
         """Blocking call to `claude -p`. Retries with exponential backoff."""
+        prefix = self.THINKING_LEVELS.get(self._thinking, '')
+        full_prompt = prefix + prompt if prefix else prompt
         cmd = [
             self._claude_exe,
             "--no-session-persistence",
             "--model", self._model,
             "--system-prompt", system,
             "--output-format", "text",
-            "-p", prompt,
+            "-p", full_prompt,
         ]
         last_error = None
         for attempt in range(max_retries):
@@ -2051,7 +2103,8 @@ class AIAssistant:
 
         # ── Background: story context (lowest weight, read first / least recent) ──
         if story_context:
-            sc = story_context[:1000] + '...' if len(story_context) > 1000 else story_context
+            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
+                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
             parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
 
         if existing_custom_tags:
@@ -2443,7 +2496,7 @@ class AIAssistant:
             "for use during node expansion in a narrative audio script.\n\n"
             "Rules:\n"
             "- Output plain text only — no JSON, no markdown, no headers\n"
-            "- Maximum 800 characters\n"
+            f"- Maximum {FOCUSED_CONTEXT_MAX} characters\n"
             "- Keep: core character nature, tone/voice guidance, key sensory anchors\n"
             "- Drop: backstory detail, lists, repeated ideas, anything decorative\n"
             "- Write in present tense, dense and specific\n"
@@ -4040,10 +4093,6 @@ class AIChatPanel(QWidget):
         self.status_label.setText("Generating seed nodes...")
         self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;")
 
-        arc = self._script.active_arc() if self._script else None
-        arc_beats = arc.get('beats', {}) if arc else {}
-        arc_motif = arc.get('motif', '') if arc else ''
-
         def on_seed_done(data):
             before = set(self._script.nodes.keys())
             self._script.apply_generated(data)
@@ -4072,10 +4121,6 @@ class AIChatPanel(QWidget):
                 model=self._ai.model,
                 profile='full',
                 story_context=self._script.story_context_focused,
-                motif=arc_motif,
-                themes=arc.get('themes', '') if arc else '',
-                premise=prompt,
-                arc_beats=arc_beats,
                 variables=self._script.variables,
                 on_progress=lambda msg: (
                     self.status_label.setText(msg),
@@ -4098,8 +4143,6 @@ class AIChatPanel(QWidget):
         self._ai.generate_seed(
             prompt, self._ui_queue, on_seed_done, on_seed_error,
             story_context=self._script.story_context_focused if self._script else '',
-            layer_direction=arc_beats.get('arrival', ''),
-            motif=arc_motif,
             variables=self._script.variables if self._script else [],
         )
 
@@ -5016,6 +5059,8 @@ class ArcEditorDialog(QDialog):
         self.chat_status.setText("Generating seed nodes…")
         self._append_chat('assistant', f'[Parallel gen from arc: {arc.get("name", "")}]')
 
+        arc_id_for_seeds = self._current_arc_id
+
         def on_seed_done(data):
             before = set(self.script.nodes.keys())
             self.script.apply_generated(data)
@@ -5025,21 +5070,18 @@ class ArcEditorDialog(QDialog):
             for nid in seed_ids:
                 if nid in self.script.nodes:
                     self.script.set_start(nid, True)
+                    self.script.set_node_arc_id(nid, arc_id_for_seeds)
 
             self._append_chat('assistant', f'Seeds: {", ".join(seed_ids)}')
             self.chat_status.setText(f'Seeds done. Starting parallel expansion…')
 
-            arc_themes = arc.get('themes', '')
             self._orchestrator = ParallelNodeOrchestrator(
                 script=self.script,
                 ui_queue=self.ui_queue,
                 model=self._main_ai.model,
+                thinking=self._main_ai.thinking,
                 profile='full',
                 story_context=story_ctx,
-                motif=arc_motif,
-                themes=arc_themes,
-                premise=prompt,
-                arc_beats=arc_beats,
                 variables=self.script.variables,
                 on_progress=lambda msg: self.chat_status.setText(msg),
                 on_complete=lambda: (
@@ -5528,6 +5570,8 @@ class MainWindow(QMainWindow):
         self._search_overlays: dict = {}   # node_id → _CrosshatchItem for active search matches
         self._orchestrators: list = []     # active ParallelNodeOrchestrator instances
         self._job_counter: int = 0
+        self._recent_files: list = self._load_recent_files()
+        self._recent_menu = None
 
         self._build_ui()
         self._build_menu()
@@ -5729,6 +5773,9 @@ class MainWindow(QMainWindow):
         act_open.triggered.connect(self._cmd_open)
         file_menu.addAction(act_open)
 
+        self._recent_menu = file_menu.addMenu("Open Recent")
+        self._rebuild_recent_menu()
+
         act_save = QAction("Save", self)
         act_save.setShortcut("Ctrl+S")
         act_save.triggered.connect(self._cmd_save)
@@ -5816,6 +5863,24 @@ class MainWindow(QMainWindow):
         default_act = self._model_actions.get(self.ai.model)
         if default_act:
             default_act.setChecked(True)
+
+        thinking_menu = story_menu.addMenu("Thinking")
+        self._thinking_actions = {}
+        thinking_labels = [
+            ('off',        'Off'),
+            ('think',      'Think'),
+            ('think_hard', 'Think Hard'),
+            ('ultrathink', 'Ultrathink'),
+        ]
+        for level, label in thinking_labels:
+            act = QAction(label, self, checkable=True)
+            act.setData(level)
+            act.triggered.connect(lambda checked, lv=level: self._set_ai_thinking(lv))
+            thinking_menu.addAction(act)
+            self._thinking_actions[level] = act
+        default_think = self._thinking_actions.get(self.ai.thinking)
+        if default_think:
+            default_think.setChecked(True)
 
         # Analysis menu
         analysis_menu = menubar.addMenu("Analysis")
@@ -5965,6 +6030,15 @@ class MainWindow(QMainWindow):
             act.setChecked(mid == model_id)
         short = model_id.split('-')[1].capitalize()
         self.status_bar.showMessage(f"AI model: {short}", 3000)
+
+    def _set_ai_thinking(self, level: str):
+        """Switch the extended-thinking level used for AI calls."""
+        self.ai.thinking = level
+        for lv, act in self._thinking_actions.items():
+            act.setChecked(lv == level)
+        pretty = {'off': 'Off', 'think': 'Think',
+                  'think_hard': 'Think Hard', 'ultrathink': 'Ultrathink'}.get(level, level)
+        self.status_bar.showMessage(f"Thinking: {pretty}", 3000)
 
     def _cmd_audit_audio(self):
         """Check all nodes for missing or unset audio files and show a report."""
@@ -7117,18 +7191,11 @@ class MainWindow(QMainWindow):
         self.chat_panel.append_message("assistant",
             f"[Parallel {'merge-expand' if multi else 'expand'} {label} ({node_min}-{node_max} nodes)]")
 
-        arc = self.script.active_arc() if self.script else None
-        arc_beats = arc.get('beats', {}) if arc else {}
-        arc_motif = arc.get('motif', '') if arc else ''
-
         # Override the expand profile's width with the user's min/max
         expand_profile = {
             'max_depth': 2,
             'widths': {'*': (node_min, node_max)},
         }
-
-        arc_premise = arc.get('premise', '') if arc else ''
-        arc_themes = arc.get('themes', '') if arc else ''
 
         self._job_counter += 1
         job_tag = f"expand#{self._job_counter}"
@@ -7138,12 +7205,9 @@ class MainWindow(QMainWindow):
                 script=self.script,
                 ui_queue=self.ui_queue,
                 model=self.ai.model,
+                thinking=self.ai.thinking,
                 profile='expand',
                 story_context=self.script.story_context_focused,
-                motif=arc_motif,
-                themes=arc_themes,
-                premise=arc_premise,
-                arc_beats=arc_beats,
                 variables=self.script.variables,
                 on_progress=lambda msg: self.status_bar.showMessage(f"[{jt}] {msg}"),
                 on_complete=lambda: self._on_orchestrator_complete(o, jt, "Expand"),
@@ -7182,12 +7246,6 @@ class MainWindow(QMainWindow):
         self.chat_panel.append_message("assistant",
             f"[Parallel {'merge-continue' if multi else 'continue'} from {label}]")
 
-        arc = self.script.active_arc() if self.script else None
-        arc_beats = arc.get('beats', {}) if arc else {}
-        arc_motif = arc.get('motif', '') if arc else ''
-        arc_premise = arc.get('premise', '') if arc else ''
-        arc_themes = arc.get('themes', '') if arc else ''
-
         self._job_counter += 1
         job_tag = f"continue#{self._job_counter}"
 
@@ -7196,12 +7254,9 @@ class MainWindow(QMainWindow):
                 script=self.script,
                 ui_queue=self.ui_queue,
                 model=self.ai.model,
+                thinking=self.ai.thinking,
                 profile='continue',
                 story_context=self.script.story_context_focused,
-                motif=arc_motif,
-                themes=arc_themes,
-                premise=arc_premise,
-                arc_beats=arc_beats,
                 variables=self.script.variables,
                 on_progress=lambda msg: self.status_bar.showMessage(f"[{jt}] {msg}"),
                 on_complete=lambda: self._on_orchestrator_complete(o, jt, "Continue"),
@@ -7501,6 +7556,80 @@ class MainWindow(QMainWindow):
         if path:
             self._load_script(Path(path))
 
+    def _load_recent_files(self) -> list:
+        try:
+            if RECENTS_PATH.exists():
+                data = json.loads(RECENTS_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(p) for p in data if isinstance(p, str)]
+        except Exception:
+            pass
+        return []
+
+    def _save_recent_files(self):
+        try:
+            RECENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            RECENTS_PATH.write_text(
+                json.dumps(self._recent_files, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _add_recent_file(self, path: Path):
+        s = str(Path(path).resolve())
+        # Move-to-front semantics, dedup case-insensitive on Windows
+        norm = s.lower() if sys.platform == 'win32' else s
+        self._recent_files = [
+            p for p in self._recent_files
+            if (p.lower() if sys.platform == 'win32' else p) != norm
+        ]
+        self._recent_files.insert(0, s)
+        self._recent_files = self._recent_files[:RECENTS_MAX]
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
+    @staticmethod
+    def _label_for_recent(path_str: str) -> str:
+        """Prefer the script's internal name; fall back to parent dir, then filename."""
+        p = Path(path_str)
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            name = (data.get("name") or "").strip()
+            if name and name.lower() != "new script":
+                parent = p.parent.name
+                return f"{name}  ({parent})" if parent else name
+        except Exception:
+            pass
+        return p.parent.name or p.name
+
+    def _rebuild_recent_menu(self):
+        if self._recent_menu is None:
+            return
+        self._recent_menu.clear()
+        live = [p for p in self._recent_files if Path(p).exists()]
+        if live != self._recent_files:
+            self._recent_files = live
+            self._save_recent_files()
+        if not self._recent_files:
+            empty = QAction("(empty)", self)
+            empty.setEnabled(False)
+            self._recent_menu.addAction(empty)
+            return
+        for i, p in enumerate(self._recent_files, 1):
+            label = self._label_for_recent(p)
+            act = QAction(f"{i}. {label}", self)
+            act.setToolTip(p)
+            act.triggered.connect(lambda _checked=False, path=p: self._load_script(Path(path)))
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear = QAction("Clear Recent", self)
+        clear.triggered.connect(self._cmd_clear_recent)
+        self._recent_menu.addAction(clear)
+
+    def _cmd_clear_recent(self):
+        self._recent_files = []
+        self._save_recent_files()
+        self._rebuild_recent_menu()
+
     def _autosave(self):
         """Silently save if dirty and a file path exists."""
         if self.script.dirty and self.script.path:
@@ -7533,6 +7662,7 @@ class MainWindow(QMainWindow):
                 self.script.save(Path(path))
                 self._update_title()
                 self.status_bar.showMessage(f"Saved: {Path(path).name}")
+                self._add_recent_file(Path(path))
             except Exception as exc:
                 self.status_bar.showMessage(f"Save error: {exc}")
 
@@ -7553,6 +7683,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, _fit)
             self._update_title()
             self.status_bar.showMessage(f"Loaded: {path.name}")
+            self._add_recent_file(path)
         except Exception as exc:
             QMessageBox.critical(self, "Load Error", str(exc))
 

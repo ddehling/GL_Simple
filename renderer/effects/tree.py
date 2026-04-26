@@ -128,8 +128,26 @@ def shader_tree(state, outstate, x_position=0.5, scale=1.0, fade_duration=5.0,
 # ============================================================================
 
 class TreeEffect(ShaderEffect):
-    """GPU-based tree with procedural branches and leaves"""
-    
+    """GPU-based tree with procedural branches and leaves.
+
+    Fan-corrected: each logical branch (a straight line in pixel space) is
+    tessellated into N short sub-segments that together trace a straight
+    line in fan-cartesian (the visible polar layout). On a fan-mapped LED
+    display this makes branches look physically straight rather than
+    curved.
+    """
+
+    # Number of sub-segments per logical branch. Higher = smoother fan
+    # curves but more draw instances. 12 is a good balance.
+    SEGMENTS_PER_BRANCH = 12
+
+    # Original branch growth duration before tessellation.
+    BRANCH_GROWTH_DURATION = 10.0
+
+    # Inner-to-outer radius ratio of the fan installation (matches
+    # FanGeometry.PHYSICAL_INNER_FT / PHYSICAL_OUTER_FT = 4 / 20.6).
+    FAN_INNER_RATIO = 4.0 / 20.6
+
     def __init__(self, viewport, x_position: float = 0.5, scale: float = 1.0, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.x_position = x_position
@@ -140,17 +158,89 @@ class TreeEffect(ShaderEffect):
         self.sway_time = 0.0  # For animation
         self.growth_time = 0.0  # For growth animation
         self.growth_duration = 75.0  # Seconds to fully grow (5x slower)
-        
+
         # Audio reactivity parameters
         self.audio_bass = 0.0
         self.audio_mid = 0.0
         self.audio_high = 0.0
-        
+
         self.branch_VBO = None
         self.leaf_VBO = None
-        
+
         # Generate tree structure (with growth timestamps)
         self._generate_tree()
+
+    # ------------------------------------------------------------------
+    # Fan-cartesian / pixel coordinate conversions
+    # ------------------------------------------------------------------
+
+    def _pixel_to_cart(self, px, py):
+        """FBO pixel -> fan-cartesian (X, Y).
+
+        In tree's pixel-coord system, pos.y=0 renders at the top of clip
+        space (after the y-flip in the vertex shader), which corresponds
+        to the OUTER ring of the fan (texture v=1 -> r=outer_r). Pos.y=H
+        renders at the bottom = inner ring.
+
+        We normalize so outer_r = 1, inner_r = FAN_INNER_RATIO.
+        """
+        W = self.viewport.width
+        H = self.viewport.height
+        u = px / max(W - 1, 1)
+        theta = np.pi * (1.0 - u)
+        # py=0 -> outer (r=1); py=H -> inner (r=inner_ratio)
+        r = self.FAN_INNER_RATIO + (1.0 - py / max(H, 1)) * (1.0 - self.FAN_INNER_RATIO)
+        return r * np.cos(theta), r * np.sin(theta)
+
+    def _cart_to_pixel(self, X, Y):
+        """fan-cartesian (X, Y) -> FBO pixel (px, py)."""
+        W = self.viewport.width
+        H = self.viewport.height
+        r = float(np.sqrt(X * X + Y * Y))
+        theta = float(np.arctan2(Y, X))
+        # Clamp into the fan's angular range [0, pi]
+        if theta < 0:
+            theta = 0.0
+        elif theta > np.pi:
+            theta = float(np.pi)
+        u = 1.0 - theta / np.pi
+        px = u * (W - 1)
+        # r in [inner_ratio, 1] -> py in [H, 0]
+        r_clamped = min(max(r, self.FAN_INNER_RATIO), 1.0)
+        py = (1.0 - (r_clamped - self.FAN_INNER_RATIO) /
+              (1.0 - self.FAN_INNER_RATIO)) * H
+        return px, py
+
+    def _tessellate_branch(self, sx, sy, ex, ey, sw, ew, z_depth, growth_start):
+        """Replace one logical branch with N sub-segments traced along
+        the fan-cartesian straight line between its endpoints.
+        """
+        N = self.SEGMENTS_PER_BRANCH
+        sX, sY = self._pixel_to_cart(sx, sy)
+        eX, eY = self._pixel_to_cart(ex, ey)
+
+        segments = []
+        prev_px, prev_py = sx, sy
+        seg_dur = self.BRANCH_GROWTH_DURATION / N
+
+        for k in range(1, N + 1):
+            t = k / N
+            cX = sX + (eX - sX) * t
+            cY = sY + (eY - sY) * t
+            cur_px, cur_py = self._cart_to_pixel(cX, cY)
+
+            seg_sw = sw + (ew - sw) * ((k - 1) / N)
+            seg_ew = sw + (ew - sw) * (k / N)
+
+            # Each sub-segment grows after the previous one — the parent's
+            # full BRANCH_GROWTH_DURATION is split into N sequential phases.
+            seg_growth_start = growth_start + (k - 1) * seg_dur
+
+            segments.append([prev_px, prev_py, cur_px, cur_py,
+                             seg_sw, seg_ew, z_depth, seg_growth_start])
+            prev_px, prev_py = cur_px, cur_py
+
+        return segments
     
     def _generate_tree(self):
         """Generate recursive branch structure with leaves (upward perspective)"""
@@ -199,14 +289,22 @@ class TreeEffect(ShaderEffect):
                 0.0  # Growth start time
             )
         
+        # Fan-correction tessellation: replace each logical branch with
+        # N sub-segments traced along the fan-cartesian straight line, so
+        # branches look physically straight on the fan-mapped LED display.
+        tessellated = []
+        for b in self.branches:
+            tessellated.extend(self._tessellate_branch(*b))
+        self.branches = tessellated
+
         # Convert to numpy arrays
         self.branches = np.array(self.branches, dtype=np.float32)
         self.leaves = np.array(self.leaves, dtype=np.float32)
-        
+
         # Horizontal wrapping margin (larger than largest leaf)
         self.wrap_margin = 30
-        
-        print(f"Generated tree with {len(self.branches)} branches and {len(self.leaves)} leaves")
+
+        print(f"Generated tree with {len(self.branches)} segments and {len(self.leaves)} leaves")
     
     def _generate_branch(self, start_x, start_y, end_x, end_y, start_width, end_width, depth, max_depth, z_depth, growth_start):
         """Recursively generate branches with tapering and growth timing"""
@@ -276,14 +374,23 @@ class TreeEffect(ShaderEffect):
             )
     
     def _add_leaves_to_branch(self, start_x, start_y, end_x, end_y, z_depth, growth_start):
-        """Add leaves along a branch - leaves appear after branch is grown"""
-        num_leaves = np.random.randint(3, 7)  # Fewer leaves with more spacing
-        
+        """Add leaves along a branch - leaves appear after branch is grown.
+
+        Leaf positions are interpolated in FAN-CARTESIAN space, then mapped
+        back to FBO pixels — this places leaves along the fan-straight curve
+        rather than the (curved-on-fan) pixel-space straight line.
+        """
+        num_leaves = np.random.randint(3, 7)
+
+        sX, sY = self._pixel_to_cart(start_x, start_y)
+        eX, eY = self._pixel_to_cart(end_x, end_y)
+
         for i in range(num_leaves):
-            # Position along branch
+            # Position along branch (fraction).
             t = np.random.uniform(0.2, 1.0)
-            leaf_x = start_x + (end_x - start_x) * t
-            leaf_y = start_y + (end_y - start_y) * t
+            cX = sX + (eX - sX) * t
+            cY = sY + (eY - sY) * t
+            leaf_x, leaf_y = self._cart_to_pixel(cX, cY)
             
             # Calculate squish factor based on vertical position (bottom = 1.0, top = squish_top_width)
             # Trees grow from bottom (y = viewport.height) to top (y = 0)
@@ -406,8 +513,11 @@ class TreeEffect(ShaderEffect):
             float depth = data2.z;
             float growth_start = data2.w;
             
-            // Calculate growth factor (0 to 1)
-            float growth_duration = 10.0;  // Each branch takes 10 seconds to grow (5x slower)
+            // Calculate growth factor (0 to 1).
+            // Each tessellated SUB-segment grows over a fraction of the
+            // original branch time (10s / SEGMENTS_PER_BRANCH). The N
+            // sub-segments together span the original 10s.
+            float growth_duration = 10.0 / 12.0;  // SEGMENTS_PER_BRANCH = 12
             growthFactor = clamp((growthTime - growth_start) / growth_duration, 0.0, 1.0);
             
             // If not grown yet, don't render
