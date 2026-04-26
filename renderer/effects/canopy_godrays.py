@@ -91,6 +91,10 @@ uniform float u_season;
 uniform float u_wind;
 uniform float u_starryness;
 uniform float u_fade;
+// Integrated phase: dt * (0.04 + u_wind * 0.12) accumulated CPU-side.
+// Replaces `u_time * (0.04 + u_wind * 0.12)` so the warm-glow noise drift
+// stays monotonic when u_wind interpolates during state transitions.
+uniform float u_glow_drift_phase;
 
 float hash1(float n) { return fract(sin(n) * 43758.5453); }
 float hash2(vec2 p) {
@@ -137,7 +141,7 @@ void main() {
     float radial = pow(y, 2.0);
     // 2D noise modulates the glow so it has organic patchiness and
     // drifts with wind.
-    vec2 np = vec2(uv.x * 4.0 + u_time * (0.04 + u_wind * 0.12),
+    vec2 np = vec2(uv.x * 4.0 + u_glow_drift_phase,
                    uv.y * 6.0 + u_time * 0.02);
     float texture_n = vnoise(np) * 0.6 + vnoise(np * 2.5 + 7.7) * 0.4;
     float glow_modulation = 0.55 + 0.45 * texture_n;
@@ -170,6 +174,7 @@ class CanopyGodraysEffect(ShaderEffect):
         # depth writes disabled, render order is purely priority-driven.
         self.render_priority = 1.0
         self._time = 0.0
+        self._glow_drift_phase = 0.0  # integrated dt * (0.04 + wind * 0.12)
         self.strength = 0.6
         self.season = 0.5
         self.wind = 0.2
@@ -196,6 +201,7 @@ class CanopyGodraysEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        self._glow_drift_phase += dt * (0.04 + self.wind * 0.12)
 
     def render(self, state: Dict):
         super().render(state)
@@ -212,6 +218,7 @@ class CanopyGodraysEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
         glUniform1f(glGetUniformLocation(self.shader, "u_starryness"), self.starryness)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
+        glUniform1f(glGetUniformLocation(self.shader, "u_glow_drift_phase"), self._glow_drift_phase)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)

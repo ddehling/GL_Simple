@@ -35,6 +35,7 @@ uniform float u_fog_far;
 uniform vec2 u_resolution;
 uniform float u_time;
 uniform int u_use_density_tex;  // 0 = depth-based (default), 1 = use density texture
+uniform float u_fog_density_scale;  // diurnal multiplier on spatial density (1.0 = unchanged)
 
 // Gaussian blur with proper weighting
 vec4 apply_gaussian_blur(vec2 uv, float radius) {
@@ -69,7 +70,7 @@ void main() {
 
     if (u_use_density_tex == 1) {
         // Spatial fog from density texture (red channel = density 0-1)
-        float spatial = texture(u_fog_density_tex, v_texcoord).r;
+        float spatial = texture(u_fog_density_tex, v_texcoord).r * u_fog_density_scale;
         // Animate: slow drift and pulse
         float drift = sin(u_time * 0.15 + v_texcoord.x * 10.0) * 0.05;
         combined = u_fog_strength * clamp(spatial + drift, 0.0, 1.0);
@@ -164,8 +165,10 @@ def shader_fog(state, outstate, strength=0.0, color=(0.7, 0.7, 0.8),
             density_tex = outstate.get('fog_density_texture')
             if density_tex is not None:
                 state['effect']._fog_density_texture = density_tex
+            state['effect'].density_scale = float(outstate.get('spatial_fog_scale', 1.0))
         else:
             state['effect']._fog_density_texture = None
+            state['effect'].density_scale = 1.0
         
         # Calculate current_strength based on fade (if duration specified)
         if state.get('duration') is not None:
@@ -214,6 +217,7 @@ class ShaderFog(ShaderEffect):
         self.spatial_fog = spatial_fog
         self._time = 0.0
         self._fog_density_texture = None  # GL texture ID, set externally
+        self.density_scale = 1.0  # diurnal scale (only used in spatial mode)
 
         # OpenGL resources (initialized in setup_buffers)
         self.VAO = None
@@ -377,6 +381,8 @@ class ShaderFog(ShaderEffect):
         use_density = self.spatial_fog and self._fog_density_texture is not None
         glUniform1i(glGetUniformLocation(self.shader, "u_use_density_tex"),
                     1 if use_density else 0)
+        glUniform1f(glGetUniformLocation(self.shader, "u_fog_density_scale"),
+                    float(self.density_scale))
         if use_density:
             glActiveTexture(GL_TEXTURE2)
             glBindTexture(GL_TEXTURE_2D, self._fog_density_texture)

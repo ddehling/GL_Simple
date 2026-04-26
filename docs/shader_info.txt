@@ -92,6 +92,126 @@ For the param to also flow from weather presets through to outstate:
 7. **Add to `lib/weather_params.py` `DEFAULT_WEATHER_PARAMS`**: default value
 8. **Add to the relevant set's `allowed_parameters`**: so it's editable in that set
 
+## Time-based Animation — NEVER multiply u_time by a varying uniform
+
+This is the single most common cause of single-frame jumps, rain falling
+upward, snow slowing-then-reversing, etc. — see git log around the
+`weather state transition rain` regression.
+
+### The bug
+
+```glsl
+// BUG — drift rate is coupled to a uniform that interpolates
+uniform float u_time;
+uniform float u_wind;
+...
+float drift = u_time * u_wind * 0.04;
+```
+
+Looks innocent. But `u_wind` interpolates during weather state transitions
+while `u_time` is a large accumulated value. The wall-clock derivative is:
+
+```
+d(u_time * u_wind)/dt = u_wind                       (the desired motion)
+                      + u_time * d(u_wind)/dt        (unwanted; scales with
+                                                      how long the program
+                                                      has been running)
+```
+
+After a few minutes of runtime the unwanted term dominates the first. While
+`u_wind` is decreasing, the total derivative goes NEGATIVE — particles drift
+backward even though wind is only slowing down, not reversing. Visual: rain
+sliding upward during transitions, snow snapping the wrong way, fog that
+animates fine then jerks when the state changes.
+
+The same hazard applies to `fract(u_time / period)` and `floor(u_time * rate)`
+whenever `period` / `rate` is itself a varying uniform.
+
+### The fix — integrate phase on the CPU
+
+Maintain a `_phase` accumulator on the effect class. Each frame, integrate it
+using the CURRENT rate value:
+
+```python
+class MyEffect(ShaderEffect):
+    def __init__(self, viewport):
+        ...
+        self._wind_phase = 0.0   # integrated dt * current_wind
+        self.wind = 0.0
+
+    def update(self, dt: float, state: Dict):
+        self._time += dt
+        self._wind_phase += dt * self.wind          # ← the fix
+
+    def render(self, state: Dict):
+        ...
+        glUniform1f(glGetUniformLocation(self.shader, "u_wind_phase"),
+                    self._wind_phase)
+```
+
+```glsl
+// FIXED — phase is monotonic by construction
+uniform float u_wind_phase;
+...
+float drift = u_wind_phase * 0.04;
+```
+
+`u_wind_phase` advances quickly when `wind` is high, slowly when `wind` is low,
+never backward — regardless of how the underlying rate interpolates.
+
+If you need rate AND wind both integrated, use one phase per axis:
+`_rate_phase`, `_wind_phase`. Don't try to combine them into one uniform —
+they advance at independent rates.
+
+### Variant — fract / floor of `u_time / period` with varying period
+
+A related form: drips, pulses, or other event-cadence shaders that compute
+`fract(u_time / spawn_period)` where `spawn_period` is rate-coupled. The same
+math applies — when `spawn_period` interpolates, the fract winds backward and
+the events appear to drift in reverse.
+
+Two acceptable fixes:
+
+1. **Lock the period to a constant** and modulate intensity instead via a
+   per-event visibility gate keyed off the rate uniform. Example pattern from
+   `rain_on_leaves.py`:
+
+   ```glsl
+   const float spawn_period = 0.7;   // fixed
+   ...
+   float visibility = step(1.0 - clamp(u_rain * 1.4, 0.0, 1.0),
+                           hash(vec2(col, drip_idx)));
+   if (visibility < 0.5) continue;
+   ```
+
+2. **Integrate an event-phase on the CPU**: `self._event_phase += dt * rate`
+   per frame, then use it as `floor(u_event_phase)` / `fract(u_event_phase)`
+   in the shader.
+
+### Quick check before merging a shader
+
+Grep your shader for `u_time *` and `u_time /`. EVERY hit must be one of:
+
+1. **Literal constant**: `u_time * 2.0`, `u_time * 0.06` — fine, frequency is
+   fixed.
+2. **Per-particle constant**: `u_time * pulseSpeed` where `pulseSpeed`
+   is derived from `hash(particleId)` and never changes — fine.
+3. **A uniform that never changes after init** — fine.
+
+If `u_time` is multiplied or divided by anything driven from weather params
+(`u_wind`, `u_rate`, `u_density`, `u_intensity`, `u_season`, audio uniforms,
+etc.), you have the bug. Convert to an integrated phase.
+
+### Reference effects (already converted)
+
+- `kelp.py` — `swayPhase = sway_phase` (CPU-integrated `effective_sway * dt`)
+- `bioluminescence.py` — `driftPhaseY` / `driftPhaseX`
+- `snowfall.py` — `u_rate_phase`, `u_wind_phase`
+- `spore_drift.py` — `u_ascend_phase`, `u_wind_phase`
+- `stream_flow.py` — `u_drift_phase`
+- `canopy_godrays.py` — `u_glow_drift_phase`
+- `rain_on_leaves.py` — `u_splash_phase` (plus locked drip period)
+
 ## Wrapper Default Values — keep them at zero
 
 In your shader wrapper, when reading from `outstate`, the FALLBACK value should be

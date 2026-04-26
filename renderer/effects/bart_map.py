@@ -12,6 +12,7 @@ Train motion is physically based:
 No network calls are made; everything is self-contained.
 """
 
+import math
 import numpy as np
 import ctypes
 import time as _time
@@ -389,7 +390,8 @@ _MOUNTAIN_POLYGONS: List[List[Tuple[float, float]]] = [
 
 def _point_in_polygon(px: float, py: float,
                       polygon: List[Tuple[float, float]]) -> bool:
-    """Ray-casting point-in-polygon test."""
+    """Scalar ray-casting point-in-polygon test (kept for external callers
+    such as city_lights.py that test individual random points)."""
     n = len(polygon)
     inside = False
     j = n - 1
@@ -402,33 +404,40 @@ def _point_in_polygon(px: float, py: float,
     return inside
 
 
-def _classify_point(lat: float, lon: float) -> np.ndarray:
-    """Classify a geographic point as ocean/bay/land/urban/park/mountain."""
-    if not _point_in_polygon(lon, lat, _LAND_POLYGON):
-        return _COLOR_OCEAN
+def _polygon_mask(px: np.ndarray, py: np.ndarray,
+                  polygon: List[Tuple[float, float]]) -> np.ndarray:
+    """Vectorized ray-casting point-in-polygon test over arrays of points.
 
-    # Check water bodies
-    if _point_in_polygon(lon, lat, _BAY_POLYGON) or \
-       _point_in_polygon(lon, lat, _SOUTH_BAY_POLYGON) or \
-       _point_in_polygon(lon, lat, _SAN_PABLO_BAY_POLYGON):
-        return _COLOR_BAY
+    polygon is a list of (y, x) tuples (lat, lon order to match the rest of
+    this module). px and py are arrays of any matching shape.
+    """
+    n = len(polygon)
+    inside = np.zeros(px.shape, dtype=bool)
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]
+        yj, xj = polygon[j]
+        cond = (yi > py) != (yj > py)
+        # Safe division: where cond is False we don't use xint, so a divide
+        # by a zero edge (yj == yi) doesn't matter — suppress the warning.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            xint = (xj - xi) * (py - yi) / (yj - yi) + xi
+        inside ^= cond & (px < xint)
+        j = i
+    return inside
 
-    # Check parks (highest priority land feature — on top of urban/mountain)
-    for poly in _PARK_POLYGONS:
-        if _point_in_polygon(lon, lat, poly):
-            return _COLOR_PARK
 
-    # Check mountains
-    for poly in _MOUNTAIN_POLYGONS:
-        if _point_in_polygon(lon, lat, poly):
-            return _COLOR_MOUNTAIN
-
-    # Check urban areas
-    for poly in _URBAN_POLYGONS:
-        if _point_in_polygon(lon, lat, poly):
-            return _COLOR_URBAN
-
-    return _COLOR_LAND
+def _pixel_lat_lon(tex_w: int, tex_h: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (lat, lon) arrays of shape (tex_h, tex_w) for every texel."""
+    u = np.linspace(0.0, 1.0, tex_w, dtype=np.float64)
+    v = np.linspace(0.0, 1.0, tex_h, dtype=np.float64)
+    uu, vv = np.meshgrid(u, v)  # both (tex_h, tex_w)
+    phys_x, phys_y = _fan.uv_to_physical_np(uu, vv)
+    nx = (phys_x - _PHYS_X_MIN) / (_PHYS_X_MAX - _PHYS_X_MIN)
+    ny = (phys_y - _PHYS_Y_MIN) / (_PHYS_Y_MAX - _PHYS_Y_MIN)
+    lon = _LON_MIN + nx * (_LON_MAX - _LON_MIN)
+    lat = _LAT_MIN + ny * (_LAT_MAX - _LAT_MIN)
+    return lat, lon
 
 
 def _build_geo_texture(tex_w: int, tex_h: int) -> np.ndarray:
@@ -437,20 +446,40 @@ def _build_geo_texture(tex_w: int, tex_h: int) -> np.ndarray:
     The texture maps directly to the buffer UV space — each texel
     corresponds to one FBO pixel.  At init time only.
     """
-    tex = np.zeros((tex_h, tex_w, 3), dtype=np.uint8)
+    lat, lon = _pixel_lat_lon(tex_w, tex_h)
 
-    for row in range(tex_h):
-        v = row / max(tex_h - 1, 1)
-        for col in range(tex_w):
-            u = col / max(tex_w - 1, 1)
-            # Buffer UV → physical feet → lat/lon
-            phys_x, phys_y = _fan.uv_to_physical(u, v)
-            nx = (phys_x - _PHYS_X_MIN) / (_PHYS_X_MAX - _PHYS_X_MIN)
-            ny = (phys_y - _PHYS_Y_MIN) / (_PHYS_Y_MAX - _PHYS_Y_MIN)
-            lon = _LON_MIN + nx * (_LON_MAX - _LON_MIN)
-            lat = _LAT_MIN + ny * (_LAT_MAX - _LAT_MIN)
+    # Start everyone as ocean, then overlay regions in priority order.
+    tex = np.broadcast_to(_COLOR_OCEAN, (tex_h, tex_w, 3)).copy()
 
-            tex[row, col] = _classify_point(lat, lon)
+    is_land = _polygon_mask(lon, lat, _LAND_POLYGON)
+    tex[is_land] = _COLOR_LAND
+
+    is_bay = is_land & (
+        _polygon_mask(lon, lat, _BAY_POLYGON)
+        | _polygon_mask(lon, lat, _SOUTH_BAY_POLYGON)
+        | _polygon_mask(lon, lat, _SAN_PABLO_BAY_POLYGON)
+    )
+    tex[is_bay] = _COLOR_BAY
+
+    land_only = is_land & ~is_bay
+
+    # Urban first (lowest priority among land overlays), then mountain, then
+    # park — later layers win, matching the original priority order
+    # (park > mountain > urban > land).
+    urban_mask = np.zeros_like(land_only)
+    for poly in _URBAN_POLYGONS:
+        urban_mask |= _polygon_mask(lon, lat, poly)
+    tex[land_only & urban_mask] = _COLOR_URBAN
+
+    mountain_mask = np.zeros_like(land_only)
+    for poly in _MOUNTAIN_POLYGONS:
+        mountain_mask |= _polygon_mask(lon, lat, poly)
+    tex[land_only & mountain_mask] = _COLOR_MOUNTAIN
+
+    park_mask = np.zeros_like(land_only)
+    for poly in _PARK_POLYGONS:
+        park_mask |= _polygon_mask(lon, lat, poly)
+    tex[land_only & park_mask] = _COLOR_PARK
 
     return tex
 
@@ -462,48 +491,32 @@ def _build_fog_density_texture(tex_w: int, tex_h: int) -> np.ndarray:
     funnels through the Golden Gate, and thins in the East Bay.
     Built at init time only, same UV mapping as the geo texture.
     """
-    import math
-    tex = np.zeros((tex_h, tex_w), dtype=np.uint8)
+    lat, lon = _pixel_lat_lon(tex_w, tex_h)
 
-    for row in range(tex_h):
-        v = row / max(tex_h - 1, 1)
-        for col in range(tex_w):
-            u = col / max(tex_w - 1, 1)
-            phys_x, phys_y = _fan.uv_to_physical(u, v)
-            nx = (phys_x - _PHYS_X_MIN) / (_PHYS_X_MAX - _PHYS_X_MIN)
-            ny = (phys_y - _PHYS_Y_MIN) / (_PHYS_Y_MAX - _PHYS_Y_MIN)
-            lon = _LON_MIN + nx * (_LON_MAX - _LON_MIN)
-            lat = _LAT_MIN + ny * (_LAT_MAX - _LAT_MIN)
+    # Ocean fog (lon < -122.5)
+    ocean_dist = (-122.50 - lon) * 4.0
+    density = np.clip(ocean_dist, 0.0, 0.6)
 
-            density = 0.0
+    # Golden Gate plume — original took sqrt then squared, equivalent to gx²+gy²
+    gx = (lon - (-122.43)) * 5.0
+    gy = (lat - 37.82) * 8.0
+    density += 0.6 * np.exp(-(gx * gx + gy * gy) * 0.8)
 
-            # Ocean fog (lon < -122.5)
-            ocean_dist = (-122.50 - lon) * 4.0
-            density += max(min(ocean_dist, 0.6), 0.0)
+    # SF city fog blanket
+    sf_x = np.clip((-122.35 - lon) * 2.0, 0.0, 0.5)
+    sf_lat = np.exp(-((lat - 37.76) * 5.0) ** 2)
+    density += sf_x * sf_lat * 0.5
 
-            # Golden Gate corridor — wide plume spreading into SF and across to Berkeley
-            # (lon ~ -122.45, lat ~ 37.82)
-            gx = (lon - (-122.43)) * 5.0
-            gy = (lat - 37.82) * 8.0
-            gate_dist = math.sqrt(gx * gx + gy * gy)
-            density += 0.6 * math.exp(-gate_dist * gate_dist * 0.8)
+    # Berkeley / North Oakland spill
+    bk_x = (lon - (-122.27)) * 6.0
+    bk_y = (lat - 37.87) * 8.0
+    density += 0.35 * np.exp(-(bk_x * bk_x + bk_y * bk_y) * 1.2)
 
-            # SF city fog blanket (lon -122.5 to -122.35, lat 37.7-37.82)
-            sf_x = max(min((-122.35 - lon) * 2.0, 0.5), 0.0)
-            sf_lat = math.exp(-((lat - 37.76) * 5.0) ** 2)
-            density += sf_x * sf_lat * 0.5
+    # Fog thins east of Berkeley hills
+    east_clear = np.clip((lon - (-122.15)) * 2.0, 0.0, 1.0)
+    density *= (1.0 - east_clear * 0.85)
 
-            # Berkeley / North Oakland fog spill (lon ~ -122.27, lat ~ 37.87)
-            bk_dist = math.sqrt(((lon - (-122.27)) * 6.0) ** 2 + ((lat - 37.87) * 8.0) ** 2)
-            density += 0.35 * math.exp(-bk_dist * bk_dist * 1.2)
-
-            # Fog thins east of Berkeley hills (lon > -122.15)
-            east_clear = max(min((lon - (-122.15)) * 2.0, 1.0), 0.0)
-            density *= (1.0 - east_clear * 0.85)
-
-            tex[row, col] = int(max(min(density, 1.0), 0.0) * 255)
-
-    return tex
+    return (np.clip(density, 0.0, 1.0) * 255).astype(np.uint8)
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -553,6 +566,18 @@ def _geo_to_fan_px(lat: float, lon: float, w: float, h: float) -> Tuple[float, f
 _BART_DESTINATIONS = ["SFO", "RICH", "DALY", "FREM", "PITS", "DUBL", "ANTI", "WARM"]
 
 
+def _diurnal_fog_scale(t: float) -> float:
+    """Marine-layer fog cycle: peaks pre-dawn, burns off midday, returns at dusk.
+
+    t is time-of-day (0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset).
+    Returns a multiplier for spatial fog density, ~0.3 at noon and ~1.3 at dawn.
+    """
+    midday = max(-math.cos(2.0 * math.pi * t), 0.0)        # 1 at noon, 0 at night
+    dawn_dist = abs(((t - 0.22) + 0.5) % 1.0 - 0.5)         # peaks at t=0.22
+    dawn_bump = math.exp(-(dawn_dist * 8.0) ** 2)
+    return (1.0 - 0.7 * midday) + 0.3 * dawn_bump
+
+
 def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
     """
     BART Map background effect — compatible with EventScheduler.
@@ -597,7 +622,9 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
     if 'effect' in state:
         state['effect'].train_speed = outstate.get('train_speed', train_speed)
         state['effect'].set_train_density(outstate.get('train_density', train_density))
-        state['effect'].time_of_day = outstate.get('season', 0.5)
+        tod = outstate.get('season', 0.5)
+        state['effect'].time_of_day = tod
+        outstate['spatial_fog_scale'] = _diurnal_fog_scale(tod)
 
         now = _time.time()
 
@@ -633,6 +660,7 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
             # Clear spatial fog so other weather sets get default depth-based fog
             outstate.pop('fog_density_texture', None)
             outstate.pop('spatial_fog', None)
+            outstate.pop('spatial_fog_scale', None)
 
 
 # ===========================================================================

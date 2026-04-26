@@ -60,16 +60,30 @@ class WeatherStateController:
 
             target_params = self.get_weather_params(self.target_weather)
 
-            for param in target_params:
-                if isinstance(target_params[param], (int, float, np.ndarray)):
-                    start_value = self.transition_start_params.get(
-                        param, self.default_weather_params.get(param, 0)
-                    )
+            # Iterate over the UNION of source and target keys. A param that
+            # exists in the source but not the target (e.g. spore_density when
+            # leaving the "mushroom" state for one that doesn't define it, and
+            # which also isn't in DEFAULT_WEATHER_PARAMS) used to be held at
+            # the source value throughout the transition and then snap to its
+            # fallback the moment progress hit 1.0 — visible as effects
+            # disappearing in a single frame. Interpolating the union makes
+            # orphan params fade smoothly toward their default (or 0).
+            all_keys = set(target_params.keys()) | set(self.transition_start_params.keys())
+            for param in all_keys:
+                target_value = target_params.get(
+                    param, self.default_weather_params.get(param, 0)
+                )
+                start_value = self.transition_start_params.get(
+                    param, self.default_weather_params.get(param, 0)
+                )
+
+                if (isinstance(target_value, (int, float, np.ndarray))
+                        and isinstance(start_value, (int, float, np.ndarray))):
                     self.weather_params[param] = (
-                        target_params[param] - start_value
+                        target_value - start_value
                     ) * self.progress + start_value
                 else:
-                    self.weather_params[param] = target_params[param]
+                    self.weather_params[param] = target_value
 
             if self.progress >= 1.0:
                 self.current_weather = self.target_weather

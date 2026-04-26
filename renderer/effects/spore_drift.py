@@ -83,6 +83,11 @@ uniform float u_density;
 uniform float u_color_shift;
 uniform float u_wind;
 uniform float u_fade;
+// Integrated phases — see snowfall.py / rain_on_leaves.py for rationale.
+// Replaces `u_time * varying_rate` so motion stays monotonic when the
+// driving uniforms (density, wind) interpolate during state transitions.
+uniform float u_ascend_phase;
+uniform float u_wind_phase;
 
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -107,15 +112,16 @@ void main() {
 
     // Continuous density field via fbm — NO cellular grid, so spores
     // blend smoothly with each other and gradients are continuous.
-    float ascend_speed = 0.025 * (0.5 + u_density * 0.6);
-    float wind_drift   = u_wind * u_time * 0.04;
+    // ascend_speed and wind_drift are pre-integrated on the CPU as
+    // u_ascend_phase / u_wind_phase to avoid time-warp under interpolation.
+    float wind_drift = u_wind_phase * 0.04;
 
     // Two layered noise scales for depth/parallax. Both drift upward
     // (negative y term in p) and sideways with wind.
     vec2 p1 = vec2(uv.x *  6.0 + wind_drift *  6.0,
-                   uv.y * 10.0 - u_time * ascend_speed * 10.0);
+                   uv.y * 10.0 - u_ascend_phase * 10.0);
     vec2 p2 = vec2(uv.x * 12.0 + wind_drift * 12.0 * 1.4,
-                   uv.y * 18.0 - u_time * ascend_speed * 18.0 * 0.7) + 31.4;
+                   uv.y * 18.0 - u_ascend_phase * 18.0 * 0.7) + 31.4;
     float density_field = vnoise(p1) * 0.7 + vnoise(p2) * 0.3;
 
     // Smooth threshold (no hard step). Higher density param -> lower
@@ -160,6 +166,8 @@ class SporeDriftEffect(ShaderEffect):
         super().__init__(viewport)
         self.render_priority = 8.0  # Mid-air particles, in front of canopy/shadows
         self._time = 0.0
+        self._ascend_phase = 0.0   # integrated dt * 0.025 * (0.5 + density * 0.6)
+        self._wind_phase = 0.0     # integrated dt * wind
         self.density = 0.5
         self.color_shift = 0.0
         self.wind = 0.1
@@ -185,6 +193,8 @@ class SporeDriftEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        self._ascend_phase += dt * 0.025 * (0.5 + self.density * 0.6)
+        self._wind_phase += dt * self.wind
 
     def render(self, state: Dict):
         super().render(state)
@@ -198,6 +208,8 @@ class SporeDriftEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_color_shift"), self.color_shift)
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
+        glUniform1f(glGetUniformLocation(self.shader, "u_ascend_phase"), self._ascend_phase)
+        glUniform1f(glGetUniformLocation(self.shader, "u_wind_phase"), self._wind_phase)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)

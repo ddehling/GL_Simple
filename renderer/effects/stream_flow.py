@@ -80,6 +80,10 @@ uniform float u_time;
 uniform float u_rate;
 uniform float u_wind;
 uniform float u_fade;
+// Integrated phase: dt * (0.18 * (0.4 + u_rate * 1.2) + u_wind * 0.06)
+// accumulated CPU-side. Replaces `u_time * flow_speed` so the caustic and
+// bubble drift stay monotonic when u_rate / u_wind interpolate.
+uniform float u_drift_phase;
 
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -112,8 +116,8 @@ void main() {
     float band_t = clamp(1.0 - uv.y / band_top, 0.0, 1.0);
 
     // Flow direction along x (angular around fan). Speed = base + wind.
-    float flow_speed = 0.18 * (0.4 + u_rate * 1.2) + u_wind * 0.06;
-    float drift = u_time * flow_speed;
+    // Pre-integrated as u_drift_phase on the CPU; see uniform comment.
+    float drift = u_drift_phase;
 
     // Layered caustics: two scales of noise scrolling at different speeds.
     float n1 = vnoise(vec2(uv.x * 14.0 + drift * 14.0, uv.y * 24.0 + u_time * 0.5));
@@ -163,6 +167,7 @@ class StreamFlowEffect(ShaderEffect):
         super().__init__(viewport)
         self.render_priority = 2.0  # Bottom water layer; renders only at floor band
         self._time = 0.0
+        self._drift_phase = 0.0    # integrated dt * flow_speed
         self.rate = 0.5
         self.wind = 0.0
         self.fade = 0.0
@@ -187,6 +192,8 @@ class StreamFlowEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        flow_speed = 0.18 * (0.4 + self.rate * 1.2) + self.wind * 0.06
+        self._drift_phase += dt * flow_speed
 
     def render(self, state: Dict):
         super().render(state)
@@ -199,6 +206,7 @@ class StreamFlowEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_rate"), self.rate)
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
+        glUniform1f(glGetUniformLocation(self.shader, "u_drift_phase"), self._drift_phase)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)

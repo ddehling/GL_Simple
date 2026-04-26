@@ -81,6 +81,10 @@ uniform float u_time;
 uniform float u_rain;
 uniform float u_wind;
 uniform float u_fade;
+// Integrated splash event phase: dt * (0.6 + u_rain * 1.2) accumulated
+// CPU-side. Replaces `u_time * event_rate` so splash event_idx / splash_t
+// don't wind backward when u_rain interpolates during state transitions.
+uniform float u_splash_phase;
 
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -96,11 +100,17 @@ void main() {
     float col = floor(uv.x * n_columns);
     float col_phase = uv.x * n_columns - col;
 
-    // Per-column random offsets (deterministic on column index).
-    float seed = col * 0.137;
-    float spawn_period = mix(2.0, 0.5, clamp(u_rain, 0.0, 1.0));
-    float fall_speed   = mix(0.18, 0.45, clamp(u_rain, 0.0, 1.0));
-    float trail_len    = mix(0.04, 0.15, clamp(u_rain, 0.0, 1.0));
+    // IMPORTANT: spawn_period, fall_speed, and trail_len are CONSTANTS — they
+    // must NOT depend on u_rain. They parameterize drip motion via the
+    // accumulated u_time, and any change to them would shift drip_age
+    // non-monotonically (since d(u_time/period)/dt = 1/period − u_time·dperiod/dt
+    // / period² can go negative for large u_time). That manifests as drips
+    // drifting upward during weather state transitions when u_rain is being
+    // interpolated. Convey rain intensity via the per-drip visibility gate
+    // below instead.
+    const float spawn_period = 0.7;
+    const float fall_speed   = 0.32;
+    const float trail_len    = 0.10;
 
     // Drips are events: each drip has a start time, falls down, then dies.
     float drip_alpha = 0.0;
@@ -109,6 +119,11 @@ void main() {
         float local_t = u_time + fk * spawn_period * 0.33 + hash(vec2(col, fk)) * spawn_period;
         float drip_idx = floor(local_t / spawn_period);
         float drip_age = fract(local_t / spawn_period);  // 0..1
+
+        // Per-drip visibility gate: at low rain, only some drips appear.
+        // This is the ONLY place u_rain modulates drip cadence.
+        float visibility_thresh = 1.0 - clamp(u_rain * 1.4, 0.0, 1.0);
+        if (hash(vec2(col + 0.31, drip_idx)) < visibility_thresh) continue;
 
         // Pick a starting y near the canopy (top of FBO = outer ring of fan).
         // Drips fall toward the floor (uv.y decreasing toward 0).
@@ -149,14 +164,15 @@ void main() {
         float sx = uv.x * scols;
         float scell = floor(sx);
         float sfrac = fract(sx) - 0.5;  // -0.5..0.5
-        float event_rate = 0.6 + u_rain * 1.2;
-        float event_idx = floor(u_time * event_rate + scell * 0.13);
+        // event phase pre-integrated CPU-side as u_splash_phase to avoid
+        // the same time-warp the drip code is protected against.
+        float event_idx = floor(u_splash_phase + scell * 0.13);
         float s_seed = hash(vec2(scell, event_idx));
         float splash_show = step(1.0 - clamp(u_rain * 0.45, 0.0, 0.6), s_seed);
         // Splash lifetime is brief (0..1 of cycle, but only the first 30%
         // looks like a hit; rest is invisible). No expanding ring → no
         // upward motion.
-        float splash_t = fract(u_time * event_rate + scell * 0.13);
+        float splash_t = fract(u_splash_phase + scell * 0.13);
         float life = step(splash_t, 0.30) * (1.0 - splash_t / 0.30);
         // Horizontal smear: bright at cell center, fades sideways. No
         // vertical motion component at all.
@@ -181,6 +197,7 @@ class RainOnLeavesEffect(ShaderEffect):
         super().__init__(viewport)
         self.render_priority = 9.0  # Front rain detail
         self._time = 0.0
+        self._splash_phase = 0.0   # integrated dt * (0.6 + rain * 1.2)
         self.rain = 0.3
         self.wind = 0.0
         self.fade = 0.0
@@ -205,6 +222,7 @@ class RainOnLeavesEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        self._splash_phase += dt * (0.6 + self.rain * 1.2)
 
     def render(self, state: Dict):
         super().render(state)
@@ -217,6 +235,7 @@ class RainOnLeavesEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_rain"), self.rain)
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
+        glUniform1f(glGetUniformLocation(self.shader, "u_splash_phase"), self._splash_phase)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)

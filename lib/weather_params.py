@@ -190,7 +190,6 @@ DEFAULT_WEATHER_PARAMS = {
     "season_preference": 0.375,
     "ambient_sound": None,
     "ARI": 0.0,
-    "vent_activity": 0.0,
 }
 
 # Weather presets
@@ -810,29 +809,20 @@ WEATHER_PRESETS = {
         "Wolfy": 0.3,
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "canopy_density": 0.7,
-        # celestial_visibility=0 hides stars; starryness=1 puts the sky
-        # backdrop in night mode (canopy_godrays mixes toward night_sky
-        # when starryness is high). Without starryness=1 the sky stayed
-        # in daytime mode and rendered amber from season_preference=0.9.
         "celestial_visibility": 0,
         "dapple_strength": 0,
         "fog": 0.7,
         "fog_color": np.array([0.03, 0.04, 0.07]),
         "godray_strength": 0,
         "lightning_probability": 0.7,
-        "on_transition_events": [
-            ['lightning', 6, 0],
-            ['lightning', 6, 8],
-            ['lightning', 6, 18],
-            ['rain_on_leaves', 120, 0],
-        ],
+        "on_transition_events": [['lightning', 6, 0], ['lightning', 6, 8], ['lightning', 6, 18], ['rain_on_leaves', 120, 0]],
         "possible_transitions": ["forest_late_night", "forest_night", "light_rain", "forest_storm"],
-        "rain_rate": 1.0,
+        "rain_rate": 1,
         "season_preference": 0.9,
         "spookyness": 0.3,
-        "starryness": 1.0,
+        "starryness": 1,
         "transition_duration": 25,
-        "transition_weights": [1.0, 0.8, 0.6, 0.4],
+        "transition_weights": [1, 0.8, 0.6, 0.4],
         "tree_prob": 0.5,
         "wind_speed": 1.3,
     },
@@ -1196,7 +1186,7 @@ WEATHER_PRESETS = {
         "season_preference": 0,
         "tide_level": 1,
         "transition_weights": [1, 0.6],
-        "vent_activity": 1.0,
+        "vent_activity": 1,
         "wave_amplitude": 0.05,
         "wave_speed": 0.1,
         "wind_speed": 0.05,
@@ -1609,13 +1599,13 @@ WEATHER_SETS = {
     },
 
     "peaceful_forest": {
-        "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Aurora_probability", "meteor_rate", "tree_prob", "Weird", "Wolfy", "Owly", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration", "season_preference", "Switch_rate", "spookyness", "lightning_probability", "godray_strength", "canopy_density", "snow_rate", "spore_density", "spore_color", "dapple_strength", "stream_flow_rate", "eye_density", "frost_level"],
         "background_events": ["clouds", "firefly", "stars", "rain", "fog", "forest_canopy", "canopy_godrays", "dappled_shadows", "snowfall", "spore_drift", "stream_flow", "forest_eyes"],
+        "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "description": "Forest with full day/night cycle, seasonal moods, and aurora/storm/spirit variants",
         "name": "Peaceful Forest",
         "narrative_script": None,
-        "random_event_rate": 8e-05,
+        "random_event_rate": 2e-05,
         "random_events": ["sunrise"],
         "season_extremity": 1,
         "season_speed": 1,

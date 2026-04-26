@@ -87,6 +87,11 @@ uniform float u_rate;
 uniform float u_wind;
 uniform float u_frost;
 uniform float u_fade;
+// Integrated phases: CPU-side accumulators of dt * current_rate / dt * current_wind.
+// Used in place of `u_time * varying_rate` so motion stays monotonic when
+// u_rate / u_wind are interpolated during weather state transitions.
+uniform float u_rate_phase;
+uniform float u_wind_phase;
 
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -99,16 +104,18 @@ vec3 flakeLayer(vec2 uv, float layer_idx, float depth) {
     float rows = mix(14.0, 22.0, depth);
 
     // Speed: faster when "rate" is high; deeper layers fall slower (parallax).
-    float speed = mix(0.05, 0.18, depth) * (0.5 + u_rate * 1.5);
+    // Rate-dependent factor is integrated as u_rate_phase on the CPU so it
+    // stays monotonic when u_rate is interpolated during state transitions.
+    float depth_speed = mix(0.05, 0.18, depth);
 
     // Wind tilts the path; angular wrapping ensures continuity in x.
-    float wind_offset = u_wind * u_time * 0.06 * (0.5 + depth);
+    float wind_offset = u_wind_phase * 0.06 * (0.5 + depth);
 
     // Flakes fall from canopy (uv.y=1) toward floor (uv.y=0).
     // To make a fixed cell-identity slide downward (uv.y decreasing) as
     // time grows, scroll p.y in the +flow direction with uv.y in plain
     // (non-inverted) form: uv.y * rows + flow * rows.
-    float flow = u_time * speed;
+    float flow = u_rate_phase * depth_speed;
     vec2 p = vec2(
         uv.x * cols + wind_offset * cols + layer_idx * 13.7,
         uv.y * rows + flow * rows
@@ -178,6 +185,8 @@ class SnowfallEffect(ShaderEffect):
         super().__init__(viewport)
         self.render_priority = 9.5  # Front snow
         self._time = 0.0
+        self._rate_phase = 0.0   # integrated dt * (0.5 + rate * 1.5)
+        self._wind_phase = 0.0   # integrated dt * wind
         self.rate = 0.5
         self.wind = 0.0
         self.frost = 0.0
@@ -203,6 +212,8 @@ class SnowfallEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        self._rate_phase += dt * (0.5 + self.rate * 1.5)
+        self._wind_phase += dt * self.wind
 
     def render(self, state: Dict):
         super().render(state)
@@ -216,6 +227,8 @@ class SnowfallEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
         glUniform1f(glGetUniformLocation(self.shader, "u_frost"), self.frost)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
+        glUniform1f(glGetUniformLocation(self.shader, "u_rate_phase"), self._rate_phase)
+        glUniform1f(glGetUniformLocation(self.shader, "u_wind_phase"), self._wind_phase)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
