@@ -88,72 +88,69 @@ float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-vec3 sporeLayer(vec2 uv, float layer_idx, float depth, float burst) {
-    // Larger cells and bigger soft cores → cloudy / hazy, not point-source
-    // (so it doesn't read like fireflies).
-    float cols = mix(8.0, 14.0, depth);
-    float rows = mix(6.0, 10.0, depth);
-
-    // Slow ascent — these are spores/pollen drifting, not bugs flying.
-    float ascend_speed = mix(0.008, 0.022, depth) * (0.5 + u_density * 0.6 + burst * 0.4);
-    float wind_drift = u_wind * u_time * 0.04 * (0.4 + depth) + burst * 0.05;
-
-    float flow = u_time * ascend_speed;
-    vec2 p = vec2(
-        uv.x * cols + wind_drift * cols + layer_idx * 9.7,
-        uv.y * rows - flow * rows
-    );
-
-    vec2 cell = floor(p);
-    vec2 frac = fract(p);
-
-    float h1 = hash(cell + layer_idx * 5.13);
-    float h2 = hash(cell + layer_idx * 8.7 + 1.0);
-    vec2 center = vec2(h1, h2);
-
-    vec2 dv = frac - center;
-    float d2 = dot(dv, dv);
-    // Wider, softer core: spore "puffs" instead of pinpoint specks.
-    float radius = mix(0.18, 0.32, depth);
-    float core = exp(-d2 / (radius * radius * 1.4));
-
-    float threshold = 1.0 - clamp(u_density * 0.45 + burst * 0.20, 0.0, 0.85);
-    float on = step(threshold, hash(cell + layer_idx * 19.7 + 3.3));
-
-    // Slow, gentle breathing — no rapid flicker. Period 5–10s per puff.
-    float pulse = 0.65 + 0.35 *
-        sin(u_time * (0.3 + h1 * 0.25) + h1 * 6.28);
-
-    return vec3(core * on * pulse * depth);
+// Smooth value noise.
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 void main() {
-    vec2 uv = v_uv;
-
-    // Hard gate: invisible when density is essentially zero.
     if (u_density < 0.02 || u_fade < 0.005) discard;
 
-    // Burst events: a slow pulse on top of wind. Higher wind = more bursting.
-    float burst = pow(0.5 + 0.5 * sin(u_time * 0.41 + 1.7), 8.0) * (0.3 + u_wind * 0.7);
+    vec2 uv = v_uv;
 
-    vec3 acc = vec3(0.0);
-    acc += sporeLayer(uv, 0.0, 0.5,  burst);
-    acc += sporeLayer(uv, 1.0, 0.85, burst);
-    acc += sporeLayer(uv, 2.0, 1.0,  burst);
+    // Continuous density field via fbm — NO cellular grid, so spores
+    // blend smoothly with each other and gradients are continuous.
+    float ascend_speed = 0.025 * (0.5 + u_density * 0.6);
+    float wind_drift   = u_wind * u_time * 0.04;
 
-    float intensity = clamp(acc.r, 0.0, 1.0);
+    // Two layered noise scales for depth/parallax. Both drift upward
+    // (negative y term in p) and sideways with wind.
+    vec2 p1 = vec2(uv.x *  6.0 + wind_drift *  6.0,
+                   uv.y * 10.0 - u_time * ascend_speed * 10.0);
+    vec2 p2 = vec2(uv.x * 12.0 + wind_drift * 12.0 * 1.4,
+                   uv.y * 18.0 - u_time * ascend_speed * 18.0 * 0.7) + 31.4;
+    float density_field = vnoise(p1) * 0.7 + vnoise(p2) * 0.3;
 
-    // Color: cool green-cyan (spore) → warm gold (pollen).
-    vec3 spore = vec3(0.45, 1.00, 0.65);
-    vec3 pollen = vec3(1.00, 0.78, 0.30);
-    vec3 col = mix(spore, pollen, clamp(u_color_shift, 0.0, 1.0));
+    // Smooth threshold (no hard step). Higher density param -> lower
+    // threshold -> more spore coverage.
+    float thresh = mix(0.85, 0.30, clamp(u_density, 0.0, 1.0));
+    float spore_field = smoothstep(thresh - 0.10,
+                                   thresh + 0.20,
+                                   density_field);
 
-    // Slight extra brightness near the floor (denser air there).
-    float vertical = mix(0.7, 1.0, 1.0 - uv.y);
+    // Lifecycle fade: spores fade IN as they enter from the floor and
+    // fade OUT as they reach the canopy. Eliminates pop-in/out at
+    // screen edges.
+    float fade_in  = smoothstep(0.00, 0.20, uv.y);
+    float fade_out = smoothstep(1.00, 0.80, uv.y);
+    float lifecycle = fade_in * fade_out;
 
-    float alpha = intensity * vertical * u_fade;
-    if (alpha < 0.005) discard;
-    fragColor = vec4(col * alpha, alpha * 0.85);
+    // Slow gentle breathing across the field — spatial variation rather
+    // than temporal flicker. Mild low-freq oscillation only.
+    float breath = 0.75 + 0.25 *
+        sin(u_time * 0.25 + uv.x * 3.0 + uv.y * 2.0);
+
+    float intensity = spore_field * lifecycle * breath;
+
+    // Color palette — DISTINCT from fireflies (yellow-green):
+    //   spore (default): pale lavender / blue-violet — mushroom-grove feel
+    //   pollen (color_shift=1): warm gold
+    vec3 spore_col  = vec3(0.62, 0.55, 0.95);   // pale lavender
+    vec3 pollen_col = vec3(1.00, 0.78, 0.30);   // warm gold
+    vec3 col = mix(spore_col, pollen_col, clamp(u_color_shift, 0.0, 1.0));
+
+    // Use STRAIGHT alpha (NOT pre-multiplied) — global blend is
+    // (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), so output rgb directly.
+    float alpha = clamp(intensity, 0.0, 1.0) * 0.65 * u_fade;
+    if (alpha < 0.01) discard;
+    fragColor = vec4(col, alpha);
 }
 """
 

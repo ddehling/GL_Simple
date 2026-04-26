@@ -146,16 +146,19 @@ void main() {
     float leaf_mask = smoothstep(leaf_thresh - 0.08,
                                  leaf_thresh + 0.12,
                                  leaf_n);
-    // NOTE: don't discard on (leaf_mask*canopy_band < threshold) — that
-    // would skip gap pixels and the sky backdrop would never render.
+
+    // Only render LEAF cells. Gap cells discard so depth is not written
+    // there — that lets canopy_godrays' sky backdrop (at depth 0.95)
+    // remain visible AND allows clouds (depth 0.15-0.30) to drift in
+    // front of the sky through the leaf gaps.
+    float effective_mask = leaf_mask * canopy_band;
+    if (effective_mask < 0.05) discard;
 
     float lit_amount = smoothstep(0.40, 0.90, leaf_n);
 
     // ---------- Leaf color ----------
     // Leaves stay GREEN across all daytime seasons so they contrast
-    // against the (warm or blue) sky. A dawn/dusk warm tint just shifts
-    // them slightly toward yellow-green, never into amber (which would
-    // blend with the dawn sky and disappear).
+    // against the warm/blue sky behind them.
     float warm_factor = 1.0 - smoothstep(0.0, 0.4, abs(u_season - 0.5));
     vec3 day_lit_midday = vec3(0.45, 0.95, 0.30);   // vivid midday green
     vec3 day_lit_dd     = vec3(0.70, 0.85, 0.25);   // yellow-green at dawn/dusk
@@ -169,32 +172,14 @@ void main() {
 
     vec3 leaf_col = mix(day_col, night_col, u_starryness);
 
-    // ---------- Sky backdrop ----------
-    vec3 day_sky  = vec3(0.45, 0.72, 0.95);   // midday blue
-    vec3 dd_sky   = vec3(1.00, 0.55, 0.30);   // dawn/dusk amber
-    vec3 daytime_sky = mix(dd_sky, day_sky, warm_factor);
-    vec3 night_sky   = vec3(0.04, 0.06, 0.12);
-    vec3 sky_col = mix(daytime_sky, night_sky, u_starryness);
-
-    // ---------- Compose ----------
-    // Blend leaf-vs-sky by leaf_mask (NOT leaves) — leaf_mask is the
-    // pure leaf/gap indicator independent of band edge fade.
-    vec3 col = mix(sky_col, leaf_col, leaf_mask);
-
+    // Bright/lit leaves are nearly opaque; shadowed leaves slightly
+    // translucent. effective_mask carries the soft band edge.
     float leaf_alpha = mix(0.50, 1.0, lit_amount);
     float max_leaf_alpha = mix(0.98, 0.85, u_starryness);
-    float sky_alpha = 0.70 * (1.0 - u_starryness * 0.85);
-
-    float combined_alpha = mix(sky_alpha,
-                               leaf_alpha * max_leaf_alpha,
-                               leaf_mask);
-
-    // Multiply by canopy_band so the inner band edge fades smoothly
-    // (was the "hard rectangular stop" the user reported).
-    float total_alpha = combined_alpha * canopy_band * u_fade;
+    float total_alpha = leaf_alpha * max_leaf_alpha * effective_mask * u_fade;
     if (total_alpha < 0.02) discard;
 
-    fragColor = vec4(col, total_alpha);
+    fragColor = vec4(leaf_col, total_alpha);
 }
 """
 

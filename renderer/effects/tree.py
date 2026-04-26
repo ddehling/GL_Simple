@@ -243,50 +243,43 @@ class TreeEffect(ShaderEffect):
         return segments
     
     def _generate_tree(self):
-        """Generate recursive branch structure with leaves (upward perspective)"""
-        # Tree parameters - branches originate from bottom, spread upward
-        bottom_y = self.viewport.height  # Bottom of screen
-        
-        # Storage for all branches (start_x, start_y, end_x, end_y, start_width, end_width, depth, growth_start)
+        """Generate recursive branch structure with leaves.
+
+        ALL branch generation happens in fan-cartesian coordinates so
+        angles, lengths, and sub-branches are straight relative to the
+        fan layout — not the FBO pixel grid. Branches are stored as
+        pixel coords (the tessellator traces the cart-straight path
+        through pixel space for rendering).
+        """
         self.branches = []
-        
-        # Storage for all leaves (x, y, size, rotation, color_r, color_g, color_b, leaf_type, depth, growth_start, squish_factor)
         self.leaves = []
-        
-        # Generate multiple main branches from bottom
-        num_main_branches = np.random.randint(4, 7)  # Fewer main branches
-        
+
+        num_main_branches = np.random.randint(4, 7)
+
         for i in range(num_main_branches):
-            # Branches start at random x positions along bottom
-            start_x = np.random.uniform(0, self.viewport.width)
-            
-            # Angle pointing generally upward (-60 to -120 degrees, with -90 being straight up)
-            angle = np.random.uniform(-2.4, -0.7)  # Radians
-            
-            # Main branch length - reach about 90% of viewport height
-            branch_length = np.random.uniform(0.75, 0.9) * self.viewport.height * self.scale
-            
-            # End position
-            end_x = start_x + np.cos(angle) * branch_length
-            end_y = bottom_y + np.sin(angle) * branch_length
-            
-            # Main branch width (tapers from base to tip)
-            branch_start_width = np.random.uniform(4, 7) * self.scale
-            branch_end_width = branch_start_width * 0.6  # Tapers to 60%
-            
-            # Depth varies per branch
-            branch_depth = np.random.uniform(40, 60)
-            
-            # Generate this main branch and its sub-branches
+            # Trunk base in fan-cart: along the bottom edge of the
+            # visible fan area (Y near 0, X across the half-disc width).
+            start_X = float(np.random.uniform(-0.85, 0.85))
+            start_Y = 0.0
+
+            # Cart angle: pi/2 = straight up (radially outward on fan).
+            # Spread ±0.6 rad gives variety in trunk lean.
+            angle = float(np.random.uniform(np.pi * 0.30, np.pi * 0.70))
+
+            # Cart-unit length (visible radial extent ~0.81 cart units).
+            branch_length = float(np.random.uniform(0.55, 0.85)) * self.scale
+
+            end_X = start_X + np.cos(angle) * branch_length
+            end_Y = start_Y + np.sin(angle) * branch_length
+
+            branch_start_width = float(np.random.uniform(4, 7)) * self.scale
+            branch_end_width = branch_start_width * 0.6
+            branch_depth = float(np.random.uniform(40, 60))
+
             self._generate_branch(
-                start_x, bottom_y,  # Start at bottom
-                end_x, end_y,  # End position
-                branch_start_width,  # Start width
-                branch_end_width,  # End width
-                0,  # Current depth/generation
-                3,  # Max depth
-                branch_depth,  # Depth coordinate (z)
-                0.0  # Growth start time
+                start_X, start_Y, end_X, end_Y,    # cart endpoints
+                branch_start_width, branch_end_width,
+                0, 3, branch_depth, 0.0
             )
         
         # Fan-correction tessellation: replace each logical branch with
@@ -306,110 +299,98 @@ class TreeEffect(ShaderEffect):
 
         print(f"Generated tree with {len(self.branches)} segments and {len(self.leaves)} leaves")
     
-    def _generate_branch(self, start_x, start_y, end_x, end_y, start_width, end_width, depth, max_depth, z_depth, growth_start):
-        """Recursively generate branches with tapering and growth timing"""
-        # Add this branch with start and end widths for tapering, plus growth timing
-        self.branches.append([start_x, start_y, end_x, end_y, start_width, end_width, z_depth, growth_start])
-        
-        # Add leaves along all branches starting from the base
-        if depth >= 0:  # Add leaves to all branches including main ones
-            self._add_leaves_to_branch(start_x, start_y, end_x, end_y, z_depth, growth_start)
-        
-        # Stop if we've reached max depth
+    def _generate_branch(self, sX, sY, eX, eY, start_width, end_width, depth, max_depth, z_depth, growth_start):
+        """Recursively generate branches in FAN-CARTESIAN coords.
+
+        Endpoints (sX, sY, eX, eY) are in cart space. We convert to
+        pixel for storage (so the tessellator can work in pixel space),
+        but all sub-branch geometry is computed in cart so angles and
+        lengths are straight relative to the fan, not the pixel grid.
+        """
+        # Convert cart endpoints to pixel for storage.
+        s_px, s_py = self._cart_to_pixel(sX, sY)
+        e_px, e_py = self._cart_to_pixel(eX, eY)
+        self.branches.append([s_px, s_py, e_px, e_py,
+                              start_width, end_width, z_depth, growth_start])
+
+        # Place leaves along this branch (in cart, then projected to pixel).
+        if depth >= 0:
+            self._add_leaves_to_branch_cart(sX, sY, eX, eY, z_depth, growth_start)
+
         if depth >= max_depth:
             return
-        
-        # Calculate branch properties
-        branch_length = np.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
-        branch_angle = np.arctan2(end_y - start_y, end_x - start_x)
-        
-        # Number of sub-branches (2-3 for better spread)
+
+        # Cart-space length and direction.
+        dX, dY = eX - sX, eY - sY
+        branch_length = float(np.sqrt(dX * dX + dY * dY))
+        branch_angle  = float(np.arctan2(dY, dX))
+
         num_subbranches = np.random.randint(2, 4)
-        
-        # Generate sub-branches
+
         for i in range(num_subbranches):
-            # Sub-branch starts at random point along parent (40-90% along)
-            t = np.random.uniform(0.4, 0.9)
-            sub_start_x = start_x + (end_x - start_x) * t
-            sub_start_y = start_y + (end_y - start_y) * t
-            
-            # Interpolate width at branch point
+            # Sub-branch start: interpolated along parent in cart.
+            t = float(np.random.uniform(0.4, 0.9))
+            sub_sX = sX + dX * t
+            sub_sY = sY + dY * t
+
             branch_width_at_point = start_width + (end_width - start_width) * t
-            
-            # Sub-branch angle (spread outward from parent)
-            angle_offset = np.random.uniform(-1.0, 1.0)  # Wider spread
+
+            # Cart-space angle offset relative to parent's cart direction.
+            angle_offset = float(np.random.uniform(-1.0, 1.0))
             sub_angle = branch_angle + angle_offset
-            
-            # Sub-branch length (40-65% of parent)
-            sub_length = branch_length * np.random.uniform(0.4, 0.65)
-            
-            # Sub-branch end position
-            sub_end_x = sub_start_x + np.cos(sub_angle) * sub_length
-            sub_end_y = sub_start_y + np.sin(sub_angle) * sub_length
-            
-            # Sub-branch width (starts at parent's width at branch point, tapers to 60%)
-            sub_start_width = branch_width_at_point * np.random.uniform(0.7, 0.9)
+
+            sub_length = branch_length * float(np.random.uniform(0.4, 0.65))
+
+            sub_eX = sub_sX + np.cos(sub_angle) * sub_length
+            sub_eY = sub_sY + np.sin(sub_angle) * sub_length
+
+            sub_start_width = branch_width_at_point * float(np.random.uniform(0.7, 0.9))
             sub_end_width = sub_start_width * 0.6
-            
-            # Depth varies slightly (branches closer to viewer are nearer)
-            sub_z_depth = z_depth + np.random.uniform(-5, 5)
-            sub_z_depth = np.clip(sub_z_depth, 5, 95)
-            
-            # Growth timing - sub-branches grow after parent reaches the branch point
-            # Parent takes 10s to grow, so branch point at position 't' is reached at: growth_start + t * 10s
+            sub_z_depth = z_depth + float(np.random.uniform(-5, 5))
+            sub_z_depth = float(np.clip(sub_z_depth, 5, 95))
+
             parent_reaches_branch_point = growth_start + t * 10.0
-            # Add small random delay after parent reaches this point
-            sub_growth_start = parent_reaches_branch_point + np.random.uniform(0, 1.0)
-            
-            # Recurse
+            sub_growth_start = parent_reaches_branch_point + float(np.random.uniform(0, 1.0))
+
             self._generate_branch(
-                sub_start_x, sub_start_y,
-                sub_end_x, sub_end_y,
-                sub_start_width,
-                sub_end_width,
-                depth + 1,
-                max_depth,
-                sub_z_depth,
-                sub_growth_start
+                sub_sX, sub_sY, sub_eX, sub_eY,
+                sub_start_width, sub_end_width,
+                depth + 1, max_depth,
+                sub_z_depth, sub_growth_start
             )
     
-    def _add_leaves_to_branch(self, start_x, start_y, end_x, end_y, z_depth, growth_start):
-        """Add leaves along a branch - leaves appear after branch is grown.
+    def _add_leaves_to_branch_cart(self, sX, sY, eX, eY, z_depth, growth_start):
+        """Add leaves along a branch given in FAN-CARTESIAN coords.
 
-        Leaf positions are interpolated in FAN-CARTESIAN space, then mapped
-        back to FBO pixels — this places leaves along the fan-straight curve
-        rather than the (curved-on-fan) pixel-space straight line.
+        Position interpolation, perpendicular offset, and the cart->pixel
+        conversion all happen here — so leaves sit on the fan-straight
+        line and their cluster offset is also interpreted in cart space.
         """
         num_leaves = np.random.randint(3, 7)
 
-        sX, sY = self._pixel_to_cart(start_x, start_y)
-        eX, eY = self._pixel_to_cart(end_x, end_y)
+        cart_branch_angle = float(np.arctan2(eY - sY, eX - sX))
+        perp_angle = cart_branch_angle + np.pi / 2
 
         for i in range(num_leaves):
-            # Position along branch (fraction).
-            t = np.random.uniform(0.2, 1.0)
+            # Position along branch (cart interpolation).
+            t = float(np.random.uniform(0.2, 1.0))
             cX = sX + (eX - sX) * t
             cY = sY + (eY - sY) * t
+
+            # Small perpendicular offset in cart space so leaves cluster
+            # to the side of the branch line.
+            offset_dist = float(np.random.uniform(-0.025, 0.025)) * self.scale
+            cX += np.cos(perp_angle) * offset_dist
+            cY += np.sin(perp_angle) * offset_dist
+
             leaf_x, leaf_y = self._cart_to_pixel(cX, cY)
-            
-            # Calculate squish factor based on vertical position (bottom = 1.0, top = squish_top_width)
-            # Trees grow from bottom (y = viewport.height) to top (y = 0)
-            # y_normalized: 0 at bottom, 1 at top
+
+            # Squish factor based on pixel y. The cart-space perp offset
+            # above already handles cluster spread; this just keeps the
+            # rendered leaf-quad's horizontal width correct on the fan.
             y_normalized = (self.viewport.height - leaf_y) / self.viewport.height
             squish_factor = 1.0 + (self.squish_top_width - 1.0) * y_normalized
-            
-            # Offset perpendicular to branch (both sides)
-            branch_angle = np.arctan2(end_y - start_y, end_x - start_x)
-            offset_dist = np.random.uniform(-6, 6) * self.scale
-            
-            # Apply squish to the horizontal component of the offset
-            perpendicular_angle = branch_angle + np.pi/2
-            offset_x = np.cos(perpendicular_angle) * offset_dist * squish_factor
-            offset_y = np.sin(perpendicular_angle) * offset_dist
-            
-            leaf_x += offset_x
-            leaf_y += offset_y
-            
+
             # Leaf properties - smaller leaves
             leaf_size = np.random.uniform(1.5, 3.0) * self.scale
             leaf_rotation = np.random.uniform(0, 2 * np.pi)

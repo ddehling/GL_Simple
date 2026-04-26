@@ -1,14 +1,16 @@
-"""Canopy glow effect — warm radial light filtering down from the canopy.
+"""Canopy sky + glow backdrop — sky color and warm light glow at the
+outer-ring canopy band, behind the leaf layer.
 
-Replaces the older "vertical streaks" approach which rendered as ugly
-radial spokes on the fan. Now renders as a soft brightness gradient
-brightest at the outer-ring canopy band and fading inward, with low-
-amplitude organic noise for texture and rare bright dust-mote sparkles.
+Renders FIRST among canopy layers at deep depth (0.95) so clouds can
+drift in front of it through the leaf gaps. forest_canopy then renders
+leaves on top (depth 0.15) and only WHERE leaves exist, leaving the gap
+cells with their sky/glow visible.
 
 Drives:
-  godray_strength    -> overall glow intensity
-  season_preference  -> time-of-day color (dawn/dusk = warm, midday = white)
-  wind_speed         -> subtle drift in the noise texture
+  godray_strength    -> overall glow intensity (warm shaft tint)
+  season_preference  -> sky color (dawn/dusk amber, midday blue)
+  starryness         -> mixes toward dark night sky
+  wind_speed         -> subtle drift in the glow texture
 """
 
 import numpy as np
@@ -43,6 +45,7 @@ def shader_canopy_godrays(state, outstate):
         eff.strength = float(outstate.get('godray_strength', 0.0))
         eff.season = float(outstate.get('season_preference', 0.5))
         eff.wind = float(outstate.get('wind', 0.0))
+        eff.starryness = float(outstate.get('starryness', 0.0))
 
         elapsed = state['elapsed_time']
         total = state.get('duration', 60)
@@ -68,11 +71,11 @@ in vec2 position;
 out vec2 v_uv;
 void main() {
     v_uv = position * 0.5 + 0.5;
-    // Depth 0.10: in front of canopy (depth 0.15) so godrays render
-    // AFTER canopy and ALPHA-BLEND on top — adds warm shaft tint
-    // without depth-erasing the leaves underneath. Canopy renders
-    // first (priority 1.5), godrays second (priority 1.7).
-    gl_Position = vec4(position, 0.10, 1.0);
+    // Depth 0.95: deep so this is the BACKDROP layer for the canopy
+    // band. forest_canopy leaves at depth 0.15 render in front of it,
+    // and clouds at depth 0.15-0.30 can drift in front of the sky in
+    // gap cells (where forest_canopy discarded).
+    gl_Position = vec4(position, 0.95, 1.0);
 }
 """
 
@@ -86,6 +89,7 @@ uniform float u_time;
 uniform float u_strength;
 uniform float u_season;
 uniform float u_wind;
+uniform float u_starryness;
 uniform float u_fade;
 
 float hash1(float n) { return fract(sin(n) * 43758.5453); }
@@ -106,47 +110,55 @@ float vnoise(vec2 p) {
 }
 
 void main() {
-    if (u_strength < 0.02 || u_fade < 0.005) discard;
+    if (u_fade < 0.005) discard;
 
     vec2 uv = v_uv;
     float y = uv.y;
 
-    // RADIAL GRADIENT, no vertical streaks. Brightest at the outer-ring
-    // canopy band (y near 1), fades quickly toward the inner ring (y=0).
-    // Quadratic falloff gives a soft glow rather than a hard band.
-    float radial = pow(y, 2.0);
-    if (radial < 0.02) discard;
+    // Restrict to the canopy band (matches forest_canopy's band).
+    // Below uv.y=0.20 we discard so this doesn't write depth on the
+    // forest floor — clouds and other effects render normally there.
+    float band = smoothstep(0.20, 0.55, y);
+    if (band < 0.01) discard;
 
-    // Subtle 2D noise modulates the glow so it's not a perfectly smooth
-    // gradient — gives texture / "patchy light through canopy" feeling.
-    // Wind slowly drifts the pattern.
+    // ---------- SKY backdrop ----------
+    // Time-of-day color. This layer provides the SKY visible through
+    // canopy gaps (since forest_canopy now discards in gap pixels and
+    // doesn't draw sky itself).
+    float warm_factor = 1.0 - smoothstep(0.0, 0.4, abs(u_season - 0.5));
+    vec3 day_sky  = vec3(0.45, 0.72, 0.95);   // midday blue
+    vec3 dd_sky   = vec3(1.00, 0.55, 0.30);   // dawn/dusk amber
+    vec3 daytime_sky = mix(dd_sky, day_sky, warm_factor);
+    vec3 night_sky   = vec3(0.04, 0.06, 0.12);
+    vec3 sky_col = mix(daytime_sky, night_sky, u_starryness);
+
+    // ---------- Warm glow on top of sky ----------
+    // Radial falloff brightest near the outer ring (y=1).
+    float radial = pow(y, 2.0);
+    // 2D noise modulates the glow so it has organic patchiness and
+    // drifts with wind.
     vec2 np = vec2(uv.x * 4.0 + u_time * (0.04 + u_wind * 0.12),
                    uv.y * 6.0 + u_time * 0.02);
     float texture_n = vnoise(np) * 0.6 + vnoise(np * 2.5 + 7.7) * 0.4;
-    // Map noise to a 0.55-1.0 multiplier so even the dim spots still
-    // contribute glow (no harsh dark gaps).
     float glow_modulation = 0.55 + 0.45 * texture_n;
 
-    // Rare bright dust-mote sparkles, only in the upper part where the
-    // glow is bright enough to see them.
-    float mote_cell = floor(uv.x * 50.0) + floor(uv.y * 70.0) * 137.0;
-    float mote = step(0.992, hash1(mote_cell + floor(u_time * 3.5)));
-    float mote_brightness = mote * smoothstep(0.4, 1.0, radial);
+    // Glow color is brighter / warmer than the sky.
+    vec3 dawn_glow = vec3(1.00, 0.60, 0.28);
+    vec3 day_glow  = vec3(1.00, 0.95, 0.78);
+    vec3 glow_col = mix(dawn_glow, day_glow, warm_factor);
+    // Fades to nothing at night (no sun).
+    float glow_amount = radial * glow_modulation * u_strength * (1.0 - u_starryness);
 
-    // Time-of-day color.
-    float warm_factor = 1.0 - smoothstep(0.0, 0.4, abs(u_season - 0.5));
-    vec3 dawn_dusk = vec3(1.00, 0.60, 0.28);
-    vec3 midday    = vec3(1.00, 0.95, 0.78);
-    vec3 glow_col = mix(dawn_dusk, midday, warm_factor);
+    // Combine: base sky + warm glow added on top.
+    vec3 col = sky_col + glow_col * glow_amount * 0.5;
 
-    float intensity = radial * glow_modulation * u_strength;
-    intensity += mote_brightness * 0.7 * u_strength;
-    intensity = clamp(intensity, 0.0, 1.0);
-
-    // Alpha capped low so this is a SOFT atmospheric layer, not a wash.
-    float alpha = intensity * 0.55 * u_fade;
-    if (alpha < 0.005) discard;
-    fragColor = vec4(glow_col * intensity, alpha);
+    // Sky opacity — solid in daytime, fades to nearly transparent at
+    // night so stars / aurora rendered behind (deeper depth) can dominate
+    // the canopy gaps. Clouds always render in front via depth 0.15-0.30.
+    float sky_alpha = mix(0.85, 0.10, u_starryness);
+    float total_alpha = sky_alpha * band * u_fade;
+    if (total_alpha < 0.01) discard;
+    fragColor = vec4(col, total_alpha);
 }
 """
 
@@ -159,6 +171,7 @@ class CanopyGodraysEffect(ShaderEffect):
         self.strength = 0.6
         self.season = 0.5
         self.wind = 0.2
+        self.starryness = 0.0
         self.fade = 0.0
 
     def compile_shader(self):
@@ -191,6 +204,7 @@ class CanopyGodraysEffect(ShaderEffect):
         glUniform1f(glGetUniformLocation(self.shader, "u_strength"), self.strength)
         glUniform1f(glGetUniformLocation(self.shader, "u_season"), self.season)
         glUniform1f(glGetUniformLocation(self.shader, "u_wind"), self.wind)
+        glUniform1f(glGetUniformLocation(self.shader, "u_starryness"), self.starryness)
         glUniform1f(glGetUniformLocation(self.shader, "u_fade"), self.fade)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
