@@ -84,16 +84,35 @@ uniform float u_fade;
 
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
+// Fan-cartesian helper: convert a uv (FBO normalized) to fan-cart (X, Y).
+// uv.x in [0,1] maps to angle theta = pi*(1-uv.x); uv.y in [0,1] maps to
+// radius r in [INNER_RATIO, 1]. This is the same convention used by the
+// fan_geometry module (inner=4ft, outer=20.6ft → ratio ~0.194).
+const float INNER_RATIO = 0.194;
+const float PI = 3.14159265;
+
+vec2 uv_to_cart(vec2 uv) {
+    float theta = PI * (1.0 - uv.x);
+    float r = INNER_RATIO + uv.y * (1.0 - INNER_RATIO);
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
 void main() {
     if (u_density < 0.02 || u_fade < 0.005) discard;
 
     vec2 uv = v_uv;
+    // Convert this pixel to fan-cartesian once. Distances computed in
+    // cart space produce true circles on the fan instead of pixel-space
+    // ovals that get squished/stretched by the radial mapping.
+    vec2 px_cart = uv_to_cart(uv);
 
     vec3 col = vec3(0.0);
     float total_alpha = 0.0;
 
     const int N_PAIRS = 8;
-    float radius = 0.012;
+    // Eye radius in fan-cartesian units (~one cart unit = the fan's
+    // outer radius). 0.025 cart ≈ 1.3% of the visible fan diameter.
+    float radius = 0.025;
     float r2 = radius * radius;
 
     for (int i = 0; i < N_PAIRS; ++i) {
@@ -105,52 +124,49 @@ void main() {
         float show = step(1.0 - clamp(u_density, 0.0, 1.0), hash(reroll * 13.7 + fi * 7.7));
         if (show < 0.5) continue;
 
-        // Center position. x is angular (0..1), y is mid-radius zone.
-        // Cluster bias: every other pair spawns near the previous one,
-        // creating "watching groups" instead of evenly-distributed eyes.
+        // Pick eye-cluster center in UV (cx in [0,1] angular, cy in
+        // mid-radius band). We then convert to cart for distancing.
         float cx = hash(reroll * 7.13 + fi * 3.1);
-        float cy = mix(0.18, 0.55, hash(reroll * 11.3 + fi * 5.7));
+        float cy = mix(0.20, 0.60, hash(reroll * 11.3 + fi * 5.7));
         float cluster = step(0.5, hash(reroll * 19.3 + fi));
         if (cluster > 0.5 && i > 0) {
             float anchor_x = hash(reroll * 7.13 + (fi - 1.0) * 3.1);
-            float anchor_y = mix(0.18, 0.55, hash(reroll * 11.3 + (fi - 1.0) * 5.7));
+            float anchor_y = mix(0.20, 0.60, hash(reroll * 11.3 + (fi - 1.0) * 5.7));
             cx = anchor_x + (hash(reroll + fi * 5.5) - 0.5) * 0.06;
             cy = anchor_y + (hash(reroll + fi * 6.6) - 0.5) * 0.04;
         }
 
-        // Pair offset: two eyes spaced apart horizontally.
-        float spacing = 0.012 + 0.008 * hash(reroll + fi * 9.1);
+        // Convert center to fan-cartesian.
+        vec2 center_cart = uv_to_cart(vec2(cx, cy));
 
-        // Smooth blink: eye openness goes 1 → 0 → 1 over a short window
-        // every blink period. Spookyness shortens the period.
+        // Smooth blink: openness 1 → 0 → 1 over a short window per period.
         float blink_period = mix(4.5, 1.8, u_spookyness) + hash(reroll + fi) * 1.2;
         float blink_cycle  = mod(u_time + fi * 2.0, blink_period);
-        // Blink lasts 0.18 seconds, smooth on/off.
         float blink_t = blink_cycle / 0.18;
         float openness = (blink_t < 1.0)
             ? (1.0 - exp(-pow(blink_t * 2.0 - 1.0, 2.0) * 4.0))
             : 1.0;
 
-        // Slow gaze drift inside the assigned cell (eyes shift left/right
-        // by a fraction of an eye width).
-        float gaze = sin(u_time * 0.8 + fi * 1.7) * 0.003;
+        // Slow gaze drift in cart units.
+        float gaze_cart = sin(u_time * 0.8 + fi * 1.7) * 0.005;
 
-        // Two eye centers (left + right) — handle horizontal wrap continuity.
+        // Pair spacing in CART units — gives a constant physical
+        // separation between the two eyes regardless of fan radius.
+        float spacing_cart = 0.030 + 0.012 * hash(reroll + fi * 9.1);
+
+        // Two eye centers, offset along cart-X (horizontal in fan view).
         for (int k = 0; k < 2; ++k) {
             float kf = float(k) * 2.0 - 1.0;  // -1 or 1
-            vec2 ecenter = vec2(cx + kf * spacing + gaze, cy);
+            vec2 ecenter = center_cart + vec2(kf * spacing_cart * 0.5 + gaze_cart, 0.0);
 
-            float dx = abs(uv.x - ecenter.x);
-            dx = min(dx, 1.0 - dx);  // wrap continuity
-            float dy = uv.y - ecenter.y;
-            float d2 = dx * dx + dy * dy;
+            // Distance in fan-cartesian → true circle on the physical fan.
+            vec2 dv = px_cart - ecenter;
+            float d2 = dot(dv, dv);
 
-            // Squared-distance falloff (no sqrt).
             float core = exp(-d2 / (r2 * 0.35)) * openness;
             float glow = exp(-d2 / (r2 * 1.6)) * 0.3 * openness;
             float bright = core + glow;
 
-            // Color: yellow-green default, shifts to red with spookyness.
             vec3 normal_col = vec3(0.85, 1.0, 0.45);
             vec3 spooky_col = vec3(1.0, 0.18, 0.12);
             vec3 ec = mix(normal_col, spooky_col, u_spookyness);
@@ -170,7 +186,7 @@ void main() {
 class ForestEyesEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 5.0
+        self.render_priority = 8.5  # Foreground glints, in front of spores
         self._time = 0.0
         self.density = 0.6
         self.spookyness = 0.0
@@ -201,6 +217,8 @@ class ForestEyesEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_density"), self.density)
@@ -210,3 +228,5 @@ class ForestEyesEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

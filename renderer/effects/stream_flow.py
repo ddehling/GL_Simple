@@ -161,7 +161,7 @@ void main() {
 class StreamFlowEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 2.5  # Above dappled (2.0), below spore_drift (3.0)
+        self.render_priority = 2.0  # Bottom water layer; renders only at floor band
         self._time = 0.0
         self.rate = 0.5
         self.wind = 0.0
@@ -192,6 +192,8 @@ class StreamFlowEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_rate"), self.rate)
@@ -201,3 +203,5 @@ class StreamFlowEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

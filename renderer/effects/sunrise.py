@@ -186,13 +186,7 @@ class SunriseEffect(ShaderEffect):
         
         void main() {
             fragCoord = position;
-            // Depth 0.50: sits BETWEEN forest_canopy leaves (0.15) and
-            // canopy_godrays sky (0.95). Sun renders in front of the sky
-            // backdrop but is blocked by foreground leaves — visually a
-            // sun in the sky behind the forest. Still passes against
-            // BarTiki's deeper map layers (0.95-0.98) so it renders on
-            // top there too.
-            gl_Position = vec4(position, 0.50, 1.0);
+            gl_Position = vec4(position, 0.97, 1.0);  // depth = 0.97 (behind clouds, in front of background)
         }
         """
     

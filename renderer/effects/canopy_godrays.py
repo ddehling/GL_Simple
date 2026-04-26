@@ -166,7 +166,9 @@ void main() {
 class CanopyGodraysEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 1.7  # After canopy (1.5), so we alpha-blend on top.
+        # Sky backdrop renders FIRST (back of atmospheric stack). With
+        # depth writes disabled, render order is purely priority-driven.
+        self.render_priority = 1.0
         self._time = 0.0
         self.strength = 0.6
         self.season = 0.5
@@ -199,6 +201,10 @@ class CanopyGodraysEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        # Post-process layering: always pass depth, never write depth.
+        # Layer order is determined purely by render_priority.
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_strength"), self.strength)
@@ -210,3 +216,6 @@ class CanopyGodraysEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        # Restore default depth state for subsequent effects.
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

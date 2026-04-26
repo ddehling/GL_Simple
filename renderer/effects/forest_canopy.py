@@ -187,9 +187,9 @@ void main() {
 class ForestCanopyEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        # Renders BEFORE godrays so godrays alpha-blend on top instead
-        # of depth-occluding the canopy.
-        self.render_priority = 1.5
+        # Foreground silhouettes — renders LATE so it alpha-blends on
+        # top of the sky/aurora/sunrise/clouds underneath.
+        self.render_priority = 7.0
         self._time = 0.0
         self.density = 0.0
         self.wind = 0.0
@@ -222,6 +222,9 @@ class ForestCanopyEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        # Pure alpha-blend layering — never read or write depth.
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_density"), self.density)
@@ -233,3 +236,5 @@ class ForestCanopyEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

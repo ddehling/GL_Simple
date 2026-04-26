@@ -1,5 +1,13 @@
 # GL_Simple — Claude Code Guide
 
+> **Working on a shader effect?** STOP and read
+> [docs/shader_info.txt](docs/shader_info.txt) first — at minimum the TL;DR and
+> "Alpha Output Rules" sections. Almost every shader regression in this
+> codebase has been a re-violation of those rules (pre-multiplied alpha,
+> wrong depth-state for fullscreen quads, missing uniform-wiring step).
+> If (and only if) the shader is audio-reactive, also read
+> [docs/shader_audio_reactivity.md](docs/shader_audio_reactivity.md).
+
 ## Project Overview
 
 OpenGL-based DMX lighting control system with real-time GPU shader effects, audio-reactive visuals, weather simulation, and a web control panel. Primary use: live event visualization and stage lighting.
@@ -114,9 +122,29 @@ Weather set/state defaults and DMX receiver config remain in `Stories_OGL.py`.
 
 ## Adding a Shader Effect
 
-1. Create a new file in `renderer/effects/` extending `ShaderEffect` from `base.py`
-2. Implement `__init__`, `update(dt, audio_data)`, and `render()` methods
-3. Register it in `Stories_OGL.py`'s `event_map` or schedule it directly in the `__main__` block
+**REQUIRED — read [docs/shader_info.txt](docs/shader_info.txt) before writing or
+modifying any shader.** It documents the depth/alpha-blending rules, the
+fullscreen-quad vs 3D-particle patterns, the wrapper-uniform wiring checklist,
+and known gotchas (pre-multiplied alpha, missing uniform updates in wrappers,
+default-value pitfalls). Most shader bugs in this codebase have been the same
+few violations of those rules — read the TL;DR section at the top of the file
+at minimum.
+
+**If (and only if) the shader is audio-reactive** (responds to microphone /
+sound energy / `outstate['sound']`), ALSO read
+[docs/shader_audio_reactivity.md](docs/shader_audio_reactivity.md). Skip it
+otherwise — non-audio shaders don't need it.
+
+1. Read [docs/shader_info.txt](docs/shader_info.txt) — pick Pattern A
+   (3D-style geometry) or Pattern B (fullscreen-quad atmospheric layer) for
+   what you're building.
+2. If audio-reactive: also read
+   [docs/shader_audio_reactivity.md](docs/shader_audio_reactivity.md).
+3. Create a new file in `renderer/effects/` extending `ShaderEffect` from `base.py`
+4. Implement `__init__`, `update(dt, audio_data)`, and `render()` methods
+5. Register it in `Stories_OGL.py`'s `event_map` or schedule it directly in the `__main__` block
+6. If the effect introduces new weather params, follow the wiring checklist in
+   [docs/shader_info.txt](docs/shader_info.txt) ("Wiring a New Uniform").
 
 ## Weather Sets
 
@@ -137,4 +165,5 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/MIDI_README.md` — MIDI controller setup
 - `docs/EVENT_MAP_SYSTEM.md` — Event scheduling
 - `docs/PARAMETER_MANAGEMENT.md` — Parameter system
-- `docs/shader_info.txt` — Shader effect reference
+- `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
+- `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)

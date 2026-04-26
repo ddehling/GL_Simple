@@ -158,7 +158,7 @@ void main() {
 class SporeDriftEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 3.0
+        self.render_priority = 8.0  # Mid-air particles, in front of canopy/shadows
         self._time = 0.0
         self.density = 0.5
         self.color_shift = 0.0
@@ -190,6 +190,8 @@ class SporeDriftEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_density"), self.density)
@@ -200,3 +202,5 @@ class SporeDriftEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

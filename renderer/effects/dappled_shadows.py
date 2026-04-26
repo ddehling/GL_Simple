@@ -124,11 +124,15 @@ void main() {
     float thresh = mix(0.65, 0.45, clamp(u_strength, 0.0, 1.0));
     float shadow = smoothstep(thresh, thresh - 0.35, blobs);
 
-    // Strongest near the canopy, softer toward floor.
-    float radial = mix(0.3, 1.0, uv.y);
+    // Confine shadows to the canopy band — they're supposed to be
+    // light filtering THROUGH the canopy. Below uv.y=0.20 (the inner
+    // ring / forest floor) there's no canopy above, so no dappled
+    // shadows. Smooth fade-in matches the canopy band edge.
+    float band = smoothstep(0.20, 0.55, uv.y);
+    if (band < 0.01) discard;
 
     // Final alpha — kept moderate so shadows DIM rather than block.
-    float alpha = shadow * radial * u_strength * u_fade * 0.55;
+    float alpha = shadow * band * u_strength * u_fade * 0.55;
     if (alpha < 0.01) discard;
 
     // Output BLACK rgb with positive alpha. With standard
@@ -144,7 +148,7 @@ void main() {
 class DappledShadowsEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 2.0
+        self.render_priority = 7.5  # Shadows on top of leaves (canopy=7.0)
         self._time = 0.0
         self.strength = 0.5
         self.wind = 0.2
@@ -176,6 +180,8 @@ class DappledShadowsEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_strength"), self.strength)
@@ -186,3 +192,5 @@ class DappledShadowsEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

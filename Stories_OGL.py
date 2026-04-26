@@ -193,7 +193,10 @@ class EnvironmentalSystem:
             "thread_bonds": (fx.shader_thread_bonds, {}),
             "warm_bloom": (fx.shader_warm_bloom, {}),
             "distant_lights": (fx.shader_distant_lights, {}),
-            "aurora": (fx.shader_aurora, {}),
+            # Depth 88 (gl_Position.z = 0.88) so aurora sits just in front
+            # of canopy_godrays' sky backdrop at 0.95 — otherwise the sky
+            # depth-writes occlude the aurora.
+            "aurora": (fx.shader_aurora, {"depth": 88.0}),
             "canopy_godrays": (fx.shader_canopy_godrays, {}),
             "forest_canopy": (fx.shader_forest_canopy, {}),
             "dappled_shadows": (fx.shader_dappled_shadows, {}),

@@ -176,7 +176,7 @@ void main() {
 class SnowfallEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 4.0
+        self.render_priority = 9.5  # Front snow
         self._time = 0.0
         self.rate = 0.5
         self.wind = 0.0
@@ -208,6 +208,8 @@ class SnowfallEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_rate"), self.rate)
@@ -218,3 +220,5 @@ class SnowfallEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)
