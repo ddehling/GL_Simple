@@ -139,18 +139,29 @@ class _Track:
             xfade_frames = int(self._ARI_XFADE_SEC * SAMPLE_RATE)
 
             if remaining <= 0:
-                # Hard boundary reached (shouldn't normally get here because
-                # the crossfade should have taken over, but just in case).
-                self._loop_pos = 0
+                # Loop boundary reached.
                 if self._xfade_gen is not None:
+                    # The xfade stream has been read in parallel for
+                    # xfade_frames samples during the crossfade — it is now
+                    # at file pos `_skip + xfade_frames`. Account for that
+                    # in _loop_pos so the next loop window ends at the same
+                    # absolute file offset every time. Without this, each
+                    # loop would drift forward by xfade_frames worth of
+                    # audio, eventually playing parts of the file far past
+                    # the intended ARI window.
                     self._gen = self._xfade_gen
                     self._buf = self._xfade_buf
                     self._xfade_gen = None
                     self._xfade_buf = np.zeros((0, CHANNELS), dtype=np.float32)
+                    self._loop_pos = xfade_frames
                 else:
+                    # Edge case: no crossfade was set up (e.g. n_frames was
+                    # large enough to skip past the xfade trigger). Fresh
+                    # stream from _skip — no drift to compensate.
                     self._gen = self._open(self._skip)
                     self._buf = np.zeros((0, CHANNELS), dtype=np.float32)
-                remaining = self._loop_frames
+                    self._loop_pos = 0
+                remaining = self._loop_frames - self._loop_pos
 
             elif remaining <= xfade_frames and self._xfade_gen is None:
                 # Approaching the loop boundary — open the next stream.
