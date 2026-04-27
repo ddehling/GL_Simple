@@ -180,6 +180,8 @@ class EnvironmentalSystem:
             "lightning": (fx.shader_lightning, {}),
             "ocean_waves": (fx.shader_ocean_waves, {}),
             "kelp": (fx.shader_kelp, {}),
+            "coral": (fx.shader_coral, {}),
+            "tube_worms": (fx.shader_tube_worms, {}),
             "Bioluminescence": (fx.shader_bioluminescence, {}),
             "bubbles": (fx.shader_bubbles, {}),
             "fish": (fx.shader_fish, {}),

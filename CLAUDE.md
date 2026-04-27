@@ -4,7 +4,8 @@
 > [docs/shader_info.txt](docs/shader_info.txt) first — at minimum the TL;DR and
 > "Alpha Output Rules" sections. Almost every shader regression in this
 > codebase has been a re-violation of those rules (pre-multiplied alpha,
-> wrong depth-state for fullscreen quads, missing uniform-wiring step).
+> wrong depth-state for fullscreen quads, missing uniform-wiring step,
+> coupling `u_time` to a varying uniform — see "Time-based Animation").
 > If (and only if) the shader is audio-reactive, also read
 > [docs/shader_audio_reactivity.md](docs/shader_audio_reactivity.md).
 

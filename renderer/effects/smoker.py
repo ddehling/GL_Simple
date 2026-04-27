@@ -130,12 +130,17 @@ void main() {{
     // doesn't read as a grid. (angular_uv, base_width_ft).
     float chimney_u[6];
     float chimney_w[6];
-    chimney_u[0] = 0.08; chimney_w[0] = 0.55;
-    chimney_u[1] = 0.24; chimney_w[1] = 0.75;
-    chimney_u[2] = 0.41; chimney_w[2] = 0.55;
-    chimney_u[3] = 0.59; chimney_w[3] = 0.70;
-    chimney_u[4] = 0.76; chimney_w[4] = 0.55;
-    chimney_u[5] = 0.92; chimney_w[5] = 0.65;
+    // Irregular angular positions — variable spacing (0.14 – 0.21 between
+    // chimneys) reads as a natural vent field rather than a regular row.
+    // Positions chosen so the gaps line up with the tube-worm cluster
+    // positions in tube_worms.py (worms grow BETWEEN the chimneys, not on
+    // them).
+    chimney_u[0] = 0.05; chimney_w[0] = 0.95;
+    chimney_u[1] = 0.19; chimney_w[1] = 1.10;
+    chimney_u[2] = 0.36; chimney_w[2] = 0.80;
+    chimney_u[3] = 0.57; chimney_w[3] = 1.05;
+    chimney_u[4] = 0.74; chimney_w[4] = 0.85;
+    chimney_u[5] = 0.93; chimney_w[5] = 0.90;
 
     // Two-octave noise sampled in physical (x_ft, y_ft) space scrolling
     // upward over time. Gives turbulent billow that stays uniform across
@@ -147,10 +152,11 @@ void main() {{
 
     // Vertical envelope in feet: starts ~half a foot above the floor (so
     // the chimney mouth glow isn't smothered), rises through the water
-    // column, fades out by ~14 ft above the seafloor. Outer ring is at
-    // 16.6 ft above the floor, so plumes fade well before the surface.
+    // column, fades by ~15 ft above the seafloor. Outer ring is at
+    // 16.6 ft, so plumes now reach close to the surface for dramatic
+    // floor-to-ceiling vent activity.
     float env = smoothstep(0.4, 1.6, rise_ft)
-              * (1.0 - smoothstep(8.0, 14.0, rise_ft));
+              * (1.0 - smoothstep(11.0, 15.5, rise_ft));
 
     float smoke_density = 0.0;
     float glow_density  = 0.0;
@@ -200,12 +206,12 @@ void main() {{
         ember_density += ember_col * spark * env * surge;
     }}
 
-    // Boost smoke density a touch so plumes read as substantial rather
-    // than gauzy. Glow gets an extra boost so the chimney mouths punch
-    // through even when other plumes overlap.
-    smoke_density = clamp(smoke_density * u_vent_activity * 1.35, 0.0, 1.0);
-    glow_density  = clamp(glow_density  * u_vent_activity * 1.50, 0.0, 1.2);
-    ember_density = clamp(ember_density * u_vent_activity * 1.10, 0.0, 1.0);
+    // Boost smoke density so plumes read as substantial rather than
+    // gauzy. Glow gets an extra boost so chimney mouths punch through
+    // even when plumes overlap. Embers stay luminous through the body.
+    smoke_density = clamp(smoke_density * u_vent_activity * 1.85, 0.0, 1.0);
+    glow_density  = clamp(glow_density  * u_vent_activity * 2.20, 0.0, 1.2);
+    ember_density = clamp(ember_density * u_vent_activity * 1.55, 0.0, 1.0);
 
     // Sooty almost-black for the cold upper plume, mineral-warm tint as
     // smoke nears the chimney mouth.
@@ -223,10 +229,10 @@ void main() {{
                 + glow_color   * glow_density
                 + ember_color  * ember_density) / total;
 
-    // Smoke contributes most of the body opacity; embers are bright but
-    // not solid, glow is luminous so its alpha contribution is moderated.
-    float alpha = clamp(smoke_density * 0.95
-                      + glow_density  * 0.65
+    // Smoke contributes most of the body opacity; glow alpha bumped so
+    // the chimney mouths read as fierce hot vents.
+    float alpha = clamp(smoke_density * 0.97
+                      + glow_density  * 0.90
                       + ember_density * 0.95, 0.0, 1.0);
     alpha *= u_fade;
 
