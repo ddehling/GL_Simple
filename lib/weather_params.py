@@ -65,6 +65,7 @@ class WeatherState(Enum):
     BARTIKI_NIGHT = "bartiki_night"
     BARTIKI_LATE_NIGHT = "bartiki_late_night"
     BARTIKI_STORMY = "bartiki_stormy"
+    BARTIKI_PRIDE = "bartiki_pride"
     LOVE_INFATUATION = "love_infatuation"
     LOVE_TENDERNESS = "love_tenderness"
     LOVE_LONGING = "love_longing"
@@ -154,6 +155,7 @@ PARAMETER_DEFINITIONS = {
     'on_transition_events': {'type': 'event-list'},
     'pollution_level': {'type': 'number', 'step': 0.05},
     'possible_transitions': {'type': 'array-string'},
+    'pride_intensity': {'type': 'number', 'step': 0.05},
     'rain_rate': {'type': 'number', 'step': 0.1},
     'sand_density': {'type': 'number', 'step': 0.1},
     'scan_line_intensity': {'type': 'number', 'step': 0.05},
@@ -268,26 +270,26 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_AFTERNOON: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "ambient_sound": "01 Rain Light EDITED.wav",
         "celestial_visibility": 0,
         "fog": 0.05,
         "fog_color": np.array([0.15, 0.15, 0.25]),
         "meteor_rate": 0,
-        "possible_transitions": ["bartiki_evening_rush", "bartiki_stormy"],
+        "possible_transitions": ["bartiki_evening_rush", "bartiki_stormy", "bartiki_pride"],
         "rain_rate": 0.2,
         "season_preference": 0.6,
         "starryness": 0,
         "train_density": 1,
         "train_speed": 8,
         "transition_duration": 20,
-        "transition_weights": [1, 0.2],
+        "transition_weights": [1, 0.2, 0.1],
         "wind_speed": 0.2,
     },
 
     WeatherState.BARTIKI_DAWN: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 0.3,
         "fog": 0.75,
         "fog_color": np.array([0.4, 0.25, 0.15]),
@@ -305,7 +307,7 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_DUSK: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 0.6,
         "fog": 0.2,
         "fog_color": np.array([0.15, 0.12, 0.2]),
@@ -323,7 +325,7 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_EVENING_RUSH: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 0.2,
         "fog": 0.1,
         "fog_color": np.array([0.35, 0.2, 0.1]),
@@ -341,7 +343,7 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_LATE_NIGHT: {
         "ARI": 0,
-        "Switch_rate": 0.08,
+        "Switch_rate": 0.22,
         "celestial_visibility": 1,
         "fog": 0,
         "fog_color": np.array([0.03, 0.03, 0.1]),
@@ -359,43 +361,43 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_MIDDAY: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 0,
         "fog": 0,
         "fog_color": np.array([0.1, 0.1, 0.2]),
         "meteor_rate": 0,
-        "possible_transitions": ["bartiki_afternoon", "bartiki_stormy"],
+        "possible_transitions": ["bartiki_afternoon", "bartiki_stormy", "bartiki_pride"],
         "rain_rate": 0,
         "season_preference": 0.5,
         "starryness": 0,
         "train_density": 1,
         "train_speed": 8,
         "transition_duration": 20,
-        "transition_weights": [1, 0.15],
+        "transition_weights": [1, 0.25, 0.1],
         "wind_speed": 0.15,
     },
 
     WeatherState.BARTIKI_MORNING_RUSH: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 0,
         "fog": 0.6,
         "fog_color": np.array([0.1, 0.1, 0.2]),
         "meteor_rate": 0,
-        "possible_transitions": ["bartiki_midday", "bartiki_stormy"],
+        "possible_transitions": ["bartiki_midday", "bartiki_stormy", "bartiki_pride"],
         "rain_rate": 0,
         "season_preference": 0.3,
         "starryness": 0,
         "train_density": 1,
         "train_speed": 10,
         "transition_duration": 20,
-        "transition_weights": [1, 0.15],
+        "transition_weights": [1, 0.25, 0.1],
         "wind_speed": 0.1,
     },
 
     WeatherState.BARTIKI_NIGHT: {
         "ARI": 0,
-        "Switch_rate": 0.1,
+        "Switch_rate": 0.25,
         "celestial_visibility": 1,
         "fog": 0,
         "fog_color": np.array([0.05, 0.05, 0.15]),
@@ -411,9 +413,29 @@ WEATHER_PRESETS = {
         "wind_speed": 0.05,
     },
 
+    WeatherState.BARTIKI_PRIDE: {
+        "ARI": 25,
+        "Switch_rate": 0.18,
+        "celestial_visibility": 0,
+        "fog": 0,
+        "fog_color": np.array([1, 0.6, 0.9]),
+        "lightning_probability": 0,
+        "meteor_rate": 0,
+        "possible_transitions": ["bartiki_afternoon", "bartiki_evening_rush", "bartiki_dusk"],
+        "pride_intensity": 1,
+        "rain_rate": 0,
+        "season_preference": 0.4,
+        "starryness": 0,
+        "train_density": 1.5,
+        "train_speed": 6,
+        "transition_duration": 30,
+        "transition_weights": [1, 1, 0.8],
+        "wind_speed": 0.35,
+    },
+
     WeatherState.BARTIKI_STORMY: {
         "ARI": 30,
-        "Switch_rate": 0.15,
+        "Switch_rate": 0.32,
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "celestial_visibility": 0,
         "fog": 0.35,
@@ -1730,8 +1752,8 @@ WEATHER_PRESETS = {
 # Weather Sets - Mutually exclusive collections of weather states
 WEATHER_SETS = {
     "bartiki": {
-        "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound", "lightning_probability"],
-        "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer"],
+        "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound", "lightning_probability", "pride_intensity"],
+        "background_events": ["bart_map", "stars", "clouds", "fog", "rain", "city_lights", "bay_shimmer", "pride_flag"],
         "cycle_labels": ["Midnight", "Sunrise", "Noon", "Sunset"],
         "description": "Bay Area BART system with day/night cycle — map by day, constellations by night",
         "name": "BarTiki",
@@ -1741,7 +1763,7 @@ WEATHER_SETS = {
         "season_extremity": 0.8,
         "season_speed": 1,
         "sound_pool_dir": "media/sounds/bart_sounds",
-        "states": ["bartiki_dawn", "bartiki_morning_rush", "bartiki_midday", "bartiki_afternoon", "bartiki_evening_rush", "bartiki_dusk", "bartiki_night", "bartiki_late_night", "bartiki_stormy"],
+        "states": ["bartiki_dawn", "bartiki_morning_rush", "bartiki_midday", "bartiki_afternoon", "bartiki_evening_rush", "bartiki_dusk", "bartiki_night", "bartiki_late_night", "bartiki_stormy", "bartiki_pride"],
         "transition_speed": 1,
     },
 

@@ -196,6 +196,7 @@ class EnvironmentalSystem:
             "test_fan_coords": (fx.shader_test_fan_coords, {}),
             "city_lights": (fx.shader_city_lights, {}),
             "bay_shimmer": (fx.shader_bay_shimmer, {}),
+            "pride_flag": (fx.shader_pride_flag, {}),
             "heart_pulse": (fx.shader_heart_pulse, {}),
             "thread_bonds": (fx.shader_thread_bonds, {}),
             "warm_bloom": (fx.shader_warm_bloom, {}),
