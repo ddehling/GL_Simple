@@ -41,6 +41,8 @@ class WeatherState(Enum):
     DESERT_DAWN = "desert_dawn"
     DESERT_GOLDEN_MORNING = "desert_golden_morning"
     DESERT_TWILIGHT_BLUE = "desert_twilight_blue"
+    DESERT_DAY_RAIN = "desert_day_rain"
+    DESERT_NIGHT_RAIN = "desert_night_rain"
     OCEAN_CALM_SHALLOWS = "ocean_calm_shallows"
     OCEAN_CHOPPY_SURFACE = "ocean_choppy_surface"
     OCEAN_STORM_SURGE = "ocean_storm_surge"
@@ -114,6 +116,10 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'sandstorm',
     'fog_beings',
     'falling_leaves',
+    'desert_sky',
+    'desert_dunes',
+    'desert_creatures',
+    'desert_rain',
 ]
 
 # Parameter definitions for the weather editor
@@ -635,11 +641,11 @@ WEATHER_PRESETS = {
         "celestial_visibility": 1,
         "fog": 0.15,
         "fog_color": np.array([0.9, 0.85, 0.6]),
-        "possible_transitions": ["sandstorm", "desert_dust_devil", "desert_dusk_embers", "desert_harmattan", "desert_golden_morning"],
+        "possible_transitions": ["sandstorm", "desert_dust_devil", "desert_dusk_embers", "desert_harmattan", "desert_golden_morning", "desert_day_rain"],
         "sand_density": 0.05,
         "season_preference": 0.5,
         "starryness": 0,
-        "transition_weights": [0.4, 0.4, 0.8, 0.3, 0.3],
+        "transition_weights": [0.4, 0.4, 0.8, 0.3, 0.3, 0.25],
         "wind_speed": 0.2,
     },
 
@@ -660,14 +666,32 @@ WEATHER_PRESETS = {
         "wind_speed": 0.2,
     },
 
+    WeatherState.DESERT_DAY_RAIN: {
+        "ARI": 30,
+        "Sound_volume": 1.4,
+        "Switch_rate": 0.9,
+        "ambient_sound": "01 Rain Light EDITED.wav",
+        "celestial_visibility": 0.35,
+        "fog": 0.40,
+        "fog_color": np.array([0.55, 0.50, 0.45]),
+        "lightning_probability": 0.10,
+        "possible_transitions": ["desert_blazing_noon", "desert_harmattan", "desert_dust_devil", "sandstorm", "desert_dry_thunderstorm", "desert_golden_morning"],
+        "rain_rate": 0.55,
+        "sand_density": 0.10,
+        "season_preference": 0.42,
+        "starryness": 0.0,
+        "transition_weights": [0.7, 0.5, 0.4, 0.4, 0.3, 0.4],
+        "wind_speed": 0.8,
+    },
+
     WeatherState.DESERT_DAWN: {
         "ARI": 35,
         "Switch_rate": 0.5,
         "ambient_sound": "Low Wind & Tone Atmosphere.wav",
-        "celestial_visibility": 1.0,
-        "fog": 0.20,
-        "fog_color": np.array([0.85, 0.55, 0.50]),
-        "on_transition_events": [['sunrise', 60, 0]],
+        "celestial_visibility": 1,
+        "fog": 0.2,
+        "fog_color": np.array([0.85, 0.55, 0.5]),
+        "on_transition_events": [],
         "possible_transitions": ["desert_golden_morning", "desert_pre_dawn", "desert_harmattan"],
         "season_preference": 0.22,
         "starryness": 0.2,
@@ -685,12 +709,12 @@ WEATHER_PRESETS = {
         "fog": 0.45,
         "fog_color": np.array([0.5, 0.4, 0.3]),
         "lightning_probability": 0.8,
-        "possible_transitions": ["sandstorm", "windy_night", "desert_dust_devil", "clear", "volcano"],
+        "possible_transitions": ["sandstorm", "windy_night", "desert_dust_devil", "clear", "volcano", "desert_day_rain", "desert_night_rain"],
         "rain_rate": 0,
         "sand_density": 0.3,
         "season_preference": 0.8,
         "starryness": 0.2,
-        "transition_weights": [0.6, 0.5, 0.4, 0.3, 0.2],
+        "transition_weights": [0.6, 0.5, 0.4, 0.3, 0.2, 0.5, 0.5],
         "wind_speed": 0.9,
     },
 
@@ -730,14 +754,14 @@ WEATHER_PRESETS = {
         "ARI": 30,
         "Switch_rate": 0.6,
         "ambient_sound": "High Desert Crickets.wav",
-        "celestial_visibility": 1.0,
-        "fog": 0.10,
-        "fog_color": np.array([0.95, 0.75, 0.50]),
+        "celestial_visibility": 1,
+        "fog": 0.1,
+        "fog_color": np.array([0.95, 0.75, 0.5]),
         "possible_transitions": ["desert_blazing_noon", "desert_harmattan", "desert_dawn", "desert_dust_devil"],
         "season_preference": 0.33,
-        "starryness": 0.0,
+        "starryness": 0,
         "transition_weights": [1, 0.7, 0.4, 0.4],
-        "wind_speed": 0.20,
+        "wind_speed": 0.2,
     },
 
     WeatherState.DESERT_HARMATTAN: {
@@ -748,11 +772,11 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.4,
         "fog": 0.55,
         "fog_color": np.array([0.7, 0.55, 0.3]),
-        "possible_transitions": ["sandstorm", "desert_blazing_noon", "windy_night", "desert_dust_devil", "desert_golden_morning"],
+        "possible_transitions": ["sandstorm", "desert_blazing_noon", "windy_night", "desert_dust_devil", "desert_golden_morning", "desert_day_rain"],
         "sand_density": 0.6,
         "season_preference": 0.45,
         "starryness": 0.2,
-        "transition_weights": [0.5, 0.4, 0.4, 0.3, 0.4],
+        "transition_weights": [0.5, 0.4, 0.4, 0.3, 0.4, 0.3],
         "wind_speed": 1,
     },
 
@@ -771,6 +795,24 @@ WEATHER_PRESETS = {
         "wind_speed": 0.1,
     },
 
+    WeatherState.DESERT_NIGHT_RAIN: {
+        "ARI": 35,
+        "Sound_volume": 1.3,
+        "Switch_rate": 0.7,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "celestial_visibility": 0.10,
+        "fog": 0.45,
+        "fog_color": np.array([0.18, 0.22, 0.32]),
+        "lightning_probability": 0.20,
+        "possible_transitions": ["desert_starlit_night", "desert_oasis_night", "desert_pre_dawn", "desert_blood_moon", "desert_dry_thunderstorm", "windy_night"],
+        "rain_rate": 0.65,
+        "season_preference": 0.93,
+        "spookyness": 0.10,
+        "starryness": 0.0,
+        "transition_weights": [0.7, 0.5, 0.5, 0.3, 0.3, 0.4],
+        "wind_speed": 0.5,
+    },
+
     WeatherState.DESERT_OASIS_NIGHT: {
         "ARI": 30,
         "Switch_rate": 0.5,
@@ -779,10 +821,10 @@ WEATHER_PRESETS = {
         "firefly_density": 0.6,
         "fog": 0.1,
         "fog_color": np.array([0.2, 0.2, 0.35]),
-        "possible_transitions": ["desert_starlit_night", "desert_pre_dawn", "desert_dusk_embers", "windy_night", "desert_blood_moon"],
+        "possible_transitions": ["desert_starlit_night", "desert_pre_dawn", "desert_dusk_embers", "windy_night", "desert_blood_moon", "desert_night_rain"],
         "season_preference": 0.9,
         "starryness": 0.8,
-        "transition_weights": [1, 0.6, 0.4, 0.3, 0.2],
+        "transition_weights": [1, 0.6, 0.4, 0.3, 0.2, 0.25],
         "wind_speed": 0.15,
     },
 
@@ -790,9 +832,9 @@ WEATHER_PRESETS = {
         "ARI": 50,
         "Switch_rate": 0.4,
         "ambient_sound": "Low Wind & Tone Atmosphere.wav",
-        "celestial_visibility": 1.0,
+        "celestial_visibility": 1,
         "fog": 0.05,
-        "fog_color": np.array([0.10, 0.12, 0.20]),
+        "fog_color": np.array([0.1, 0.12, 0.2]),
         "possible_transitions": ["desert_dawn", "desert_starlit_night", "desert_oasis_night"],
         "season_preference": 0.08,
         "starryness": 0.7,
@@ -808,10 +850,10 @@ WEATHER_PRESETS = {
         "fog": 0,
         "fog_color": np.array([0.1, 0.12, 0.25]),
         "meteor_rate": 0.05,
-        "possible_transitions": ["desert_meteor_shower", "desert_oasis_night", "windy_night", "desert_blood_moon", "desert_dusk_embers", "desert_pre_dawn"],
+        "possible_transitions": ["desert_meteor_shower", "desert_oasis_night", "windy_night", "desert_blood_moon", "desert_dusk_embers", "desert_pre_dawn", "desert_night_rain"],
         "season_preference": 0.95,
         "starryness": 1,
-        "transition_weights": [0.4, 0.6, 0.5, 0.2, 0.4, 0.7],
+        "transition_weights": [0.4, 0.6, 0.5, 0.2, 0.4, 0.7, 0.25],
         "wind_speed": 0.1,
     },
 
@@ -820,13 +862,13 @@ WEATHER_PRESETS = {
         "Switch_rate": 0.5,
         "ambient_sound": "Low Wind & Tone Atmosphere.wav",
         "celestial_visibility": 0.5,
-        "fog": 0.20,
-        "fog_color": np.array([0.15, 0.20, 0.45]),
+        "fog": 0.2,
+        "fog_color": np.array([0.15, 0.2, 0.45]),
         "possible_transitions": ["desert_starlit_night", "desert_oasis_night", "windy_night", "desert_dusk_embers", "desert_blood_moon"],
         "season_preference": 0.83,
         "starryness": 0.4,
         "transition_weights": [1, 0.6, 0.5, 0.3, 0.2],
-        "wind_speed": 0.30,
+        "wind_speed": 0.3,
     },
 
     WeatherState.FIREFLY: {
@@ -1754,7 +1796,7 @@ WEATHER_SETS = {
 
     "desert_realm": {
         "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "lightning_probability", "rain_rate", "spookyness", "Wolfy", "meteor_rate", "Sound_volume", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration", "season_preference"],
-        "background_events": ["desert_sky", "desert_dunes", "sandstorm", "stars", "clouds", "fog", "firefly"],
+        "background_events": ["desert_sky", "desert_dunes", "desert_creatures", "sandstorm", "stars", "clouds", "fog", "firefly", "desert_rain"],
         "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "description": "Harsh desert with sandstorms and a full day/night cycle of dust, heat, and starlight",
         "name": "Desert Realm",
@@ -1764,7 +1806,7 @@ WEATHER_SETS = {
         "season_extremity": 1.5,
         "season_speed": 0.5,
         "sound_pool_dir": None,
-        "states": ["sandstorm", "windy_night", "desert_blazing_noon", "desert_dusk_embers", "desert_starlit_night", "desert_oasis_night", "desert_dry_thunderstorm", "desert_dust_devil", "desert_harmattan", "desert_meteor_shower", "desert_blood_moon", "desert_pre_dawn", "desert_dawn", "desert_golden_morning", "desert_twilight_blue"],
+        "states": ["sandstorm", "windy_night", "desert_blazing_noon", "desert_dusk_embers", "desert_starlit_night", "desert_oasis_night", "desert_dry_thunderstorm", "desert_dust_devil", "desert_harmattan", "desert_meteor_shower", "desert_blood_moon", "desert_pre_dawn", "desert_dawn", "desert_golden_morning", "desert_twilight_blue", "desert_day_rain", "desert_night_rain"],
         "transition_speed": 0.6,
     },
 

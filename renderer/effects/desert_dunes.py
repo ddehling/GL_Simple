@@ -50,6 +50,14 @@ uniform vec2  u_light_dir;      // normalized 2D direction TOWARD the sun/moon
 float hash11(float n) {{ return fract(sin(n) * 43758.5453); }}
 float hash21(vec2 p) {{ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }}
 
+// Smooth 1D value-noise (input in feet)
+float vnoise1(float x) {{
+    float i = floor(x);
+    float f = fract(x);
+    float u = f * f * (3.0 - 2.0 * f);
+    return mix(hash11(i), hash11(i + 1.0), u);
+}}
+
 // 2D value-noise for surface texture
 float vnoise2(vec2 p) {{
     vec2 i = floor(p);
@@ -83,20 +91,105 @@ float dune_jitter(float x_ft, float wavelength_ft, float phase_ft) {{
     return 0.7 + 0.3 * hash11(ci * 7.13);
 }}
 
-// Full ridge height (feet) for a layer
+// X-axis warp for APERIODIC spacing. Stretches and compresses x non-uniformly
+// using a slow noise so dunes are NOT evenly spaced. The warp also drifts
+// with the wind so the irregular spacing migrates with the dunes themselves.
+// `warp_scale_ft` controls how much x is shifted (~ how irregular the
+// spacing looks); a low spatial frequency keeps the warp slow so it doesn't
+// destroy the dune shape itself.
+float warp_x(float x_ft, float drift_ft, float warp_scale_ft, float warp_freq) {{
+    float n = vnoise1(x_ft * warp_freq + drift_ft * warp_freq * 0.5) - 0.5;
+    return x_ft + warp_scale_ft * n * 2.0;
+}}
+
+// Per-cycle personality — each individual dune has its own roughness and
+// crest sharpness, so adjacent dunes don't all read identically.
+// Returns (rough_amount, sharp_bias) where rough_amount in [0.4, 1.6]
+// scales the high-freq crest detail, and sharp_bias in [-0.3, +0.3] biases
+// the apex pointiness.
+vec2 dune_personality(float x_ft, float wavelength_ft, float drift_ft) {{
+    float ci = floor((x_ft + drift_ft) / wavelength_ft);
+    float rough = 0.4 + 1.2 * hash11(ci * 13.71);
+    float sharp = (hash11(ci * 23.17) - 0.5) * 0.6;
+    return vec2(rough, sharp);
+}}
+
+// Multi-octave crest detail. Builds up lateral structure on the crest
+// (sub-peaks, notches, irregular topography along the ridge length).
+// `detail_scale` amplifies the structure — back/mid pass 1.0; the front
+// (foreground) layer passes a larger value to read as the most-detailed,
+// closest-to-viewer silhouette with extra high-frequency micro-bumps.
+float crest_detail(float x_ft, float w, float drift_ft, float amp_ft,
+                   float rough, float detail_scale) {{
+    if (w <= 0.0) return 0.0;
+
+    // Base four octaves (always on)
+    float n = 0.0;
+    n += 1.00 * (vnoise1(x_ft * 0.45 + drift_ft * 0.7              ) - 0.5);
+    n += 0.65 * (vnoise1(x_ft * 1.10 + drift_ft * 0.9 + 17.3        ) - 0.5);
+    n += 0.40 * (vnoise1(x_ft * 2.10 + drift_ft * 1.2 + 41.7        ) - 0.5);
+    n += 0.22 * (vnoise1(x_ft * 3.20 + drift_ft * 1.5 + 73.1        ) - 0.5);
+
+    // Extra high-frequency octaves for foreground detail. Activated when
+    // detail_scale > 1.0 (front layer) so back/mid stay visually quieter.
+    float extra = max(0.0, detail_scale - 1.0);
+    if (extra > 0.0) {{
+        n += 0.55 * extra * (vnoise1(x_ft * 5.30 + drift_ft * 2.0 + 113.7) - 0.5);
+        n += 0.35 * extra * (vnoise1(x_ft * 8.20 + drift_ft * 2.5 + 157.1) - 0.5);
+        n += 0.20 * extra * (vnoise1(x_ft * 12.5 + drift_ft * 3.0 + 191.3) - 0.5);
+    }}
+
+    // Sharp "notch" — occasional dunes get a deep saddle in their crest.
+    float notch_phase = vnoise1(x_ft * 0.30 + drift_ft * 0.4 + 91.5);
+    float notch = smoothstep(0.78, 0.92, notch_phase)
+                * smoothstep(0.92, 0.78, notch_phase);
+
+    // Secondary smaller notches/sub-peaks for high-detail layers
+    float sub_notch = 0.0;
+    if (extra > 0.0) {{
+        float p2 = vnoise1(x_ft * 0.85 + drift_ft * 0.6 + 211.7);
+        sub_notch = smoothstep(0.82, 0.93, p2)
+                  * smoothstep(0.93, 0.82, p2) * extra;
+    }}
+
+    // Mask: cover most of the upper face so detail shapes the whole crest
+    float mask = max(0.0, w);
+
+    float detail = n * amp_ft * 0.85 * mask * rough * detail_scale;
+    detail -= notch * amp_ft * 0.55 * mask * detail_scale;
+    detail -= sub_notch * amp_ft * 0.35 * mask;
+    return detail;
+}}
+
+// Full ridge height (feet) for a layer. `wavelength_ft` is a NOMINAL
+// spacing — actual dune-to-dune distances vary via x-warping. Each dune
+// carries its own crest detail. `detail_scale` controls how much
+// high-freq structure the layer gets: 1.0 for distant layers, larger
+// values for the foreground so close-up dunes have more visible detail.
 float ridge_h(float x_ft, float baseline_ft, float amp_ft,
-              float wavelength_ft, float drift_ft) {{
-    float w = dune_wave(x_ft, wavelength_ft, drift_ft);
-    float j = dune_jitter(x_ft, wavelength_ft, drift_ft);
-    return baseline_ft + amp_ft * w * j;
+              float wavelength_ft, float drift_ft,
+              float warp_scale_ft, float warp_freq,
+              float detail_scale) {{
+    float wx = warp_x(x_ft, drift_ft, warp_scale_ft, warp_freq);
+    float w  = dune_wave(wx, wavelength_ft, drift_ft);
+    float j  = dune_jitter(wx, wavelength_ft, drift_ft);
+    vec2  p  = dune_personality(wx, wavelength_ft, drift_ft);
+    float w_shaped = w >= 0.0 ? pow(w, 1.0 - p.y) : w;
+    float base = baseline_ft + amp_ft * w_shaped * j;
+    base += crest_detail(x_ft, max(0.0, w), drift_ft, amp_ft, p.x, detail_scale);
+    return base;
 }}
 
 // Slope dh/dx via central difference (in feet)
 float ridge_slope(float x_ft, float baseline_ft, float amp_ft,
-                  float wavelength_ft, float drift_ft) {{
+                  float wavelength_ft, float drift_ft,
+                  float warp_scale_ft, float warp_freq,
+                  float detail_scale) {{
     float dx = 0.25;
-    float h_p = ridge_h(x_ft + dx, baseline_ft, amp_ft, wavelength_ft, drift_ft);
-    float h_m = ridge_h(x_ft - dx, baseline_ft, amp_ft, wavelength_ft, drift_ft);
+    float h_p = ridge_h(x_ft + dx, baseline_ft, amp_ft, wavelength_ft,
+                        drift_ft, warp_scale_ft, warp_freq, detail_scale);
+    float h_m = ridge_h(x_ft - dx, baseline_ft, amp_ft, wavelength_ft,
+                        drift_ft, warp_scale_ft, warp_freq, detail_scale);
     return (h_p - h_m) / (2.0 * dx);
 }}
 
@@ -155,33 +248,59 @@ float slope_shading(float slope) {{
     return 0.35 + 0.95 * clamp(lambert * 0.5 + 0.5, 0.0, 1.0);
 }}
 
-// Per-layer parameters. Wavelengths chosen so back dunes are large and front
-// dunes are small (atmospheric perspective).
+// Per-layer parameters. Wavelengths are NOMINAL spacings — actual dune-to-
+// dune distances vary because the input x is warped by low-freq noise
+// (warp_scale_ft, warp_freq). Larger warp_scale → more aperiodic spacing.
 const float BACK_BASE  = 5.6;
 const float BACK_AMP   = 0.9;
 const float BACK_WL    = 14.0;
+const float BACK_WARP  = 4.0;    // ft, warp magnitude
+const float BACK_WFREQ = 0.05;   // 1/ft, low spatial freq
 const float MID_BASE   = 4.9;
 const float MID_AMP    = 0.7;
 const float MID_WL     = 7.0;
+const float MID_WARP   = 2.5;
+const float MID_WFREQ  = 0.10;
+// Foreground dune spacing (peak-to-peak distance) varies in roughly 5..8 ft.
+// Mean WL = 6.5 ft; warp_scale 0.75 ft per peak → adjacent-peak shifts up to
+// ±1.5 ft → actual separations in [WL-1.5, WL+1.5] = [5.0, 8.0] ft.
+// warp_freq 0.30 = ~3.3 ft per warp cycle so adjacent peaks see decorrelated
+// warp values (without that, every peak shifts the same amount and the
+// separation just stays at WL).
 const float FR_BASE    = 4.4;
 const float FR_AMP     = 0.5;
-const float FR_WL      = 3.5;
+const float FR_WL      = 6.5;
+const float FR_WARP    = 0.75;
+const float FR_WFREQ   = 0.30;
 
 void main() {{
     vec2 phys = fan_uv_to_physical(v_uv);
 
     // Drift offsets in feet — front layer migrates fastest, back slowest.
-    float drift_back = u_wind_phase * 0.30;
-    float drift_mid  = u_wind_phase * 0.65;
-    float drift_fr   = u_wind_phase * 1.10;
+    // u_wind_phase is strictly proportional to signed wind. Coefficients
+    // are NEGATIVE because dune_wave(x + drift) shifts the wave shape in
+    // the -x direction as drift grows, so a negative drift coefficient
+    // makes the dunes (and their ripples / lifted grit) migrate in the
+    // SAME direction the wind is blowing.
+    float drift_back = -u_wind_phase * 0.30;
+    float drift_mid  = -u_wind_phase * 0.65;
+    float drift_fr   = -u_wind_phase * 1.10;
+
+    // Per-layer detail amplifier. Front kept at 1.0 — the four base
+    // octaves only (no high-freq "extras"). With FR_AMP=0.5 that gives
+    // ±0.43 ft of crest wiggle: visible horizontal undulation without
+    // the spiky high-freq stack of the larger detail_scale values.
+    const float BACK_DETAIL = 0.9;
+    const float MID_DETAIL  = 1.2;
+    const float FR_DETAIL   = 1.0;
 
     // Heights and slopes
-    float h_back = ridge_h    (phys.x, BACK_BASE, BACK_AMP, BACK_WL, drift_back);
-    float h_mid  = ridge_h    (phys.x, MID_BASE,  MID_AMP,  MID_WL,  drift_mid);
-    float h_fr   = ridge_h    (phys.x, FR_BASE,   FR_AMP,   FR_WL,   drift_fr);
-    float s_back = ridge_slope(phys.x, BACK_BASE, BACK_AMP, BACK_WL, drift_back);
-    float s_mid  = ridge_slope(phys.x, MID_BASE,  MID_AMP,  MID_WL,  drift_mid);
-    float s_fr   = ridge_slope(phys.x, FR_BASE,   FR_AMP,   FR_WL,   drift_fr);
+    float h_back = ridge_h    (phys.x, BACK_BASE, BACK_AMP, BACK_WL, drift_back, BACK_WARP, BACK_WFREQ, BACK_DETAIL);
+    float h_mid  = ridge_h    (phys.x, MID_BASE,  MID_AMP,  MID_WL,  drift_mid,  MID_WARP,  MID_WFREQ,  MID_DETAIL);
+    float h_fr   = ridge_h    (phys.x, FR_BASE,   FR_AMP,   FR_WL,   drift_fr,   FR_WARP,   FR_WFREQ,   FR_DETAIL);
+    float s_back = ridge_slope(phys.x, BACK_BASE, BACK_AMP, BACK_WL, drift_back, BACK_WARP, BACK_WFREQ, BACK_DETAIL);
+    float s_mid  = ridge_slope(phys.x, MID_BASE,  MID_AMP,  MID_WL,  drift_mid,  MID_WARP,  MID_WFREQ,  MID_DETAIL);
+    float s_fr   = ridge_slope(phys.x, FR_BASE,   FR_AMP,   FR_WL,   drift_fr,   FR_WARP,   FR_WFREQ,   FR_DETAIL);
 
     float a_back = dune_alpha(phys, h_back);
     float a_mid  = dune_alpha(phys, h_mid);
@@ -335,13 +454,14 @@ class DesertDunesEffect(ShaderEffect):
     def update(self, dt: float, state: Dict):
         if not self.enabled:
             return
-        w = max(self.wind, 0.0)
-        # Wind drift in feet/s. Front layer's effective drift is multiplied by
-        # 1.10 in the shader, so at wind=1 the front layer migrates at
-        # ~7 ft/s — a 3.5 ft front-dune visibly creeps within a second.
-        self._wind_phase += dt * (0.4 + 6.5 * w)
-        # Ripple phase advances faster still
-        self._ripple_phase += dt * (1.0 + 9.0 * w)
+        # `outstate['wind']` is signed (`wind_speed * cos(2π(season-0.125))`)
+        # — i.e., direction reverses across the day cycle. Use it directly
+        # so dunes drift one way during morning winds and the other during
+        # evening winds. Magnitude is what matters for visible motion, so
+        # ripple_phase uses |wind|.
+        w = self.wind
+        self._wind_phase   += dt * 6.5 * w
+        self._ripple_phase += dt * 9.0 * abs(w)
 
     def _light_direction(self):
         """Return a normalized 2D (lx, ly) pointing TOWARD the sun/moon,

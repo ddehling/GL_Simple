@@ -109,32 +109,44 @@ class SandstormEffect(ShaderEffect):
         self.viewport_height = viewport.height
         self.instance_VBO = None
         self.fade_factor = 0.0  # For fade in/out (updated by event wrapper)
-        
+
+        # FanCoords for converting between buffer pixels and physical feet.
+        # Particles are stored in PHYSICAL coords so their trajectories are
+        # straight lines in real fan space (not curved spirals in buffer
+        # space). Imported lazily via FanCoords to avoid module cycles.
+        from renderer.fan_coords import FanCoords
+        self._fan = FanCoords(viewport.width, viewport.height)
+        # Physical fan extents — used for spawn / cull bounds.
+        self._fan_x_half = self._fan.outer_r_ft + 1.0     # 21.6 ft
+        self._fan_y_max  = self._fan.outer_r_ft + 1.0     # 21.6 ft
+        self._fan_y_min  = -2.0                            # off-fan margin
+
         # Environmental parameters (updated by event wrapper)
-        self.wind_strength = 0.0   # From outstate['wind']
+        self.wind_strength = 0.0   # From outstate['wind'] (ft/s scale internally)
         self.sand_density = 0.0    # From outstate['sand_density']
-        
-        # Vectorized particle data
-        self.positions = np.zeros((0, 2), dtype=np.float32)  # [x, y]
-        self.velocities = np.zeros((0, 2), dtype=np.float32)  # [vx, vy]
+
+        # Vectorized particle data — positions and velocities are now in
+        # PHYSICAL FEET, NOT viewport pixels. Render-time we convert to
+        # pixel coords via the FanCoords mapper.
+        self.positions = np.zeros((0, 2), dtype=np.float32)  # [x_ft, y_ft]
+        self.velocities = np.zeros((0, 2), dtype=np.float32)  # [vx_ft/s, vy_ft/s]
         self.sizes = np.zeros(0, dtype=np.float32)
         self.colors = np.zeros((0, 3), dtype=np.float32)  # [r, g, b]
         self.alphas = np.zeros(0, dtype=np.float32)
         self.lifetimes = np.zeros(0, dtype=np.float32)
         self.distances = np.zeros(0, dtype=np.float32)  # Depth (10-40) for 3D ordering
-        self.squish_factors = np.zeros(0, dtype=np.float32)  # Horizontal width multipliers
+        # squish_factors removed — vertex shader computes squish from
+        # the radial position in `offset` directly.
         self.turbulence_phases = np.zeros(0, dtype=np.float32)  # Individual turbulence
-        
+
         # Time tracking
         self.time = 0.0
-        
-        # Horizontal wrapping margin
-        self.wrap_margin = 50  # Should exceed max particle size
-        
-        # Spawn initial particles across the entire viewport for immediate visibility
-        initial_count = min(50, max_particles)
-        if initial_count > 0:
-            self._spawn_initial_particles(initial_count)
+
+        # No unconditional initial spawn — particles are spawned by update()
+        # based on the current `sand_density`. This avoids 50 ghost grains
+        # appearing for the first ~10 seconds during states with no wind /
+        # sand activity. With density ≥ 0.5 the particle population reaches
+        # steady-state in well under a second, so the warm-up is invisible.
     
     def _hsv_to_rgb_vectorized(self, h, s, v):
         """Convert HSV to RGB using vectorized NumPy operations
@@ -190,21 +202,45 @@ class SandstormEffect(ShaderEffect):
         return rgb
         
     def _spawn_particles(self, count: int):
-        """Spawn new sand particles"""
+        """Spawn new sand particles. Positions are PHYSICAL FEET so their
+        trajectories are straight lines on the fan.
+
+        Spawns INSIDE the fan annulus using polar sampling — picks a
+        random radius in [inner, outer] and a theta biased toward the
+        upwind edge (so wind blows particles ACROSS the fan rather than
+        out of it). Cartesian-band spawning was causing many particles to
+        spawn outside the annulus, where the vertex shader clamps them to
+        the outer ring and then they drift inward radially — that was the
+        "moving along radials" symptom.
+        """
         if count <= 0:
             return
-            
-        # Spawn from full horizontal range, distributed across full viewport height
+
+        # Uniform-AREA sampling across the fan annulus so particle density
+        # is spatially even (uniform-r sampling biased density toward the
+        # inner ring because area scales with r dr dθ; the upwind/outer
+        # corner ended up under-populated). Theta now spans the full half-
+        # circle so spawns happen across the whole fan; the wind continues
+        # to push them along straight horizontal lines either way, so the
+        # visible flow still reads as wind-driven.
+        rs = np.sqrt(np.random.uniform(
+            self._fan.inner_r_ft ** 2,
+            self._fan.outer_r_ft ** 2,
+            count,
+        ))
+        thetas = np.random.uniform(0.0, np.pi, count)
         new_positions = np.column_stack([
-            np.random.uniform(0, self.viewport.width, count),  # Full horizontal range
-            np.random.uniform(0, self.viewport.height, count)  # Across full height
+            rs * np.cos(thetas),
+            rs * np.sin(thetas),
         ])
-        
-        # Base velocities (primarily horizontal from wind, minimal vertical)
-        wind_speed = self.wind_strength * 150.0  # Stronger horizontal motion
+
+        # Wind-driven horizontal velocity in FEET per second.
+        # 12 ft/s at wind=1 gives visibly fast dust without warping; per-
+        # particle 0.8x..1.2x scatter stays constant for straight lines.
+        wind_speed_ft_s = self.wind_strength * 12.0
         new_velocities = np.column_stack([
-            np.random.uniform(wind_speed * 0.8, wind_speed * 1.2, count),  # Horizontal (wind-driven)
-            np.random.uniform(-5.0, 5.0, count)  # Minimal vertical drift
+            np.random.uniform(wind_speed_ft_s * 0.8, wind_speed_ft_s * 1.2, count),
+            np.random.uniform(-0.15, 0.15, count),  # gentle vertical drift
         ])
         
         # Random distances (depth) between 10 and 40
@@ -235,10 +271,10 @@ class SandstormEffect(ShaderEffect):
         # Random turbulence phases
         new_turbulence_phases = np.random.uniform(0, 2 * np.pi, count)
         
-        # Calculate squish factors based on y position
-        y_normalized = (self.viewport_height - new_positions[:, 1]) / self.viewport_height
-        new_squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
-        
+        # squish_factor used to be precomputed per particle here. The
+        # vertex shader now computes it from the radial component of the
+        # particle's physical position, so this CPU step is gone.
+
         # Concatenate with existing arrays
         self.positions = np.vstack([self.positions, new_positions]) if len(self.positions) > 0 else new_positions
         self.velocities = np.vstack([self.velocities, new_velocities]) if len(self.velocities) > 0 else new_velocities
@@ -247,7 +283,6 @@ class SandstormEffect(ShaderEffect):
         self.alphas = np.concatenate([self.alphas, new_alphas]) if len(self.alphas) > 0 else new_alphas
         self.lifetimes = np.concatenate([self.lifetimes, new_lifetimes]) if len(self.lifetimes) > 0 else new_lifetimes
         self.distances = np.concatenate([self.distances, new_distances]) if len(self.distances) > 0 else new_distances
-        self.squish_factors = np.concatenate([self.squish_factors, new_squish_factors]) if len(self.squish_factors) > 0 else new_squish_factors
         self.turbulence_phases = np.concatenate([self.turbulence_phases, new_turbulence_phases]) if len(self.turbulence_phases) > 0 else new_turbulence_phases
     
     def _spawn_initial_particles(self, count: int):
@@ -255,17 +290,17 @@ class SandstormEffect(ShaderEffect):
         if count <= 0:
             return
         
-        # Spawn from random positions across the entire viewport height
+        # Spawn at random PHYSICAL positions across the visible fan area
         new_positions = np.column_stack([
-            np.random.uniform(0, self.viewport.width, count),  # Full horizontal range
-            np.random.uniform(0, self.viewport.height, count)  # Across full height
+            np.random.uniform(-self._fan_x_half, self._fan_x_half, count),
+            np.random.uniform(0, self._fan_y_max, count),
         ])
-        
-        # Base velocities (primarily horizontal, minimal vertical)
-        wind_speed = 0.5 * 150.0  # Use moderate wind for initial particles
+
+        # Moderate initial wind, in FEET PER SECOND.
+        wind_speed_ft_s = 0.5 * 12.0
         new_velocities = np.column_stack([
-            np.random.uniform(wind_speed * 0.8, wind_speed * 1.2, count),
-            np.random.uniform(-5.0, 5.0, count)  # Minimal vertical drift
+            np.random.uniform(wind_speed_ft_s * 0.8, wind_speed_ft_s * 1.2, count),
+            np.random.uniform(-0.15, 0.15, count),
         ])
         
         # Random distances (depth) between 10 and 40
@@ -295,10 +330,8 @@ class SandstormEffect(ShaderEffect):
         # Random turbulence phases
         new_turbulence_phases = np.random.uniform(0, 2 * np.pi, count)
         
-        # Calculate squish factors based on y position
-        y_normalized = (self.viewport_height - new_positions[:, 1]) / self.viewport_height
-        new_squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
-        
+        # squish_factor is computed in the vertex shader now (no CPU step).
+
         # Initialize arrays
         self.positions = new_positions
         self.velocities = new_velocities
@@ -307,7 +340,6 @@ class SandstormEffect(ShaderEffect):
         self.alphas = new_alphas
         self.lifetimes = new_lifetimes
         self.distances = new_distances
-        self.squish_factors = new_squish_factors
         self.turbulence_phases = new_turbulence_phases
     
     def update(self, dt: float, state: Dict):
@@ -329,33 +361,61 @@ class SandstormEffect(ShaderEffect):
         if len(self.positions) == 0:
             return
         
-        # Update turbulence phases
-        self.turbulence_phases += dt * 2.0
-        
-        # Calculate wind-driven turbulence (horizontal and vertical variation)
-        turbulence_x = np.sin(self.turbulence_phases) * self.wind_strength * 50.0
-        turbulence_y = np.cos(self.turbulence_phases * 1.3) * 15.0  # Vertical drift
-        
-        # Update velocities with wind influence (primarily horizontal)
-        wind_speed = self.wind_strength * 150.0
-        self.velocities[:, 0] = wind_speed + turbulence_x
-        self.velocities[:, 1] = turbulence_y  # Mainly turbulence-driven vertical
-        
-        # Update positions
+        # Velocities are FIXED for the lifetime of each particle — set once
+        # at spawn (with 0.8x..1.2x scatter around the wind baseline) and
+        # never modified. Constant velocity → exact straight-line motion in
+        # physical fan space.
         self.positions += self.velocities * dt
-        
-        # Wrap horizontally (particles crossing edges appear on opposite side)
-        self.positions[:, 0] = self.positions[:, 0] % self.viewport.width
-        
+
         # Update lifetimes
         self.lifetimes -= dt
-        
-        # Remove particles that are out of bounds or expired
+
+        # ----- Wrap particles that exit the fan annulus -----
+        # Instead of culling at the downwind edge (which left a sand
+        # gradient where particles spawned mid-screen and drifted off),
+        # wrap the position to the OPPOSITE side at the same physical y.
+        # The teleport direction follows the velocity sign so the particle
+        # keeps moving the way the wind blows it: a particle that exits
+        # the right edge re-enters at the left, etc.
+        inner_r2 = self._fan.inner_r_ft ** 2
+        outer_r2 = self._fan.outer_r_ft ** 2
+        r2 = self.positions[:, 0] ** 2 + self.positions[:, 1] ** 2
+
+        # Wrap across outer ring: particle exited at the fan rim → reappear
+        # at the rim on the other side at the same y.
+        out_of_outer = r2 > outer_r2
+        if np.any(out_of_outer):
+            ys = self.positions[out_of_outer, 1]
+            max_x_at_y = np.sqrt(np.maximum(0.0, outer_r2 - ys * ys))
+            vx_vals = self.velocities[out_of_outer, 0]
+            # Moving +x → teleport to -max_x_at_y; moving -x → +max_x_at_y.
+            self.positions[out_of_outer, 0] = np.where(
+                vx_vals > 0, -max_x_at_y, max_x_at_y,
+            )
+
+        # Teleport across inner-ring cutout: particle drifted into the
+        # central hole → pop out the other side along its current velocity.
+        # Recompute r² because we just moved some particles.
+        r2 = self.positions[:, 0] ** 2 + self.positions[:, 1] ** 2
+        in_cutout = r2 < inner_r2
+        if np.any(in_cutout):
+            ys = self.positions[in_cutout, 1]
+            cut_x = np.sqrt(np.maximum(0.0, inner_r2 - ys * ys))
+            vx_vals = self.velocities[in_cutout, 0]
+            # Moving +x → exit on the +x side of the cutout, etc. Add a
+            # tiny epsilon so we land just OUTSIDE the cutout.
+            self.positions[in_cutout, 0] = np.where(
+                vx_vals > 0, cut_x + 0.05, -cut_x - 0.05,
+            )
+
+        # Cull only on lifetime expiry and on y going outside the fan.
+        # (Vertical drift is ±0.15 ft/s so over a 10 s lifetime particles
+        # only drift ~1.5 ft vertically — y-cull rarely fires but is a
+        # safety net for transitioning states.)
         valid_mask = (
-            (self.positions[:, 0] < self.viewport.width + 10) &  # Before right edge
-            (self.positions[:, 1] > -10) &  # Not above top
-            (self.positions[:, 1] < self.viewport.height + 10) &  # Not below bottom
-            (self.lifetimes > 0)  # Not expired
+            (self.positions[:, 1] > self._fan_y_min - 0.5) &
+            (self.positions[:, 1] < self._fan_y_max + 1.5) &
+            (self.lifetimes > 0)
         )
         
         self.positions = self.positions[valid_mask]
@@ -365,14 +425,9 @@ class SandstormEffect(ShaderEffect):
         self.alphas = self.alphas[valid_mask]
         self.lifetimes = self.lifetimes[valid_mask]
         self.distances = self.distances[valid_mask]
-        self.squish_factors = self.squish_factors[valid_mask]
         self.turbulence_phases = self.turbulence_phases[valid_mask]
-        
-        # Update squish factors based on current y position
-        if len(self.positions) > 0:
-            y_normalized = (self.viewport_height - self.positions[:, 1]) / self.viewport_height
-            y_normalized = np.clip(y_normalized, 0, 1)
-            self.squish_factors = 1.0 + (self.squish_top_width - 1.0) * y_normalized
+        # Squish factor recomputation is gone — the vertex shader derives
+        # it from each particle's `offset.{x,y}` directly each frame.
     
     def render(self, state: Dict):
         """Render sand particles with horizontal wrapping"""
@@ -387,65 +442,41 @@ class SandstormEffect(ShaderEffect):
         # Set uniforms
         res_loc = glGetUniformLocation(self.shader, "resolution")
         glUniform2f(res_loc, self.viewport.width, self.viewport.height)
-        
+
         fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
         glUniform1f(fade_loc, self.fade_factor)
-        
-        # Prepare instance data with horizontal wrapping
-        all_positions = []
-        all_sizes = []
-        all_colors = []
-        all_distances = []
-        all_squish_factors = []
-        
-        # Detect particles near edges for wrapping
-        left_edge_mask = self.positions[:, 0] < self.wrap_margin
-        right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
-        
-        # Add original particles
-        all_positions.append(self.positions)
-        all_sizes.append(self.sizes)
-        all_colors.append(np.column_stack([self.colors, self.alphas]))
-        all_distances.append(self.distances)
-        all_squish_factors.append(self.squish_factors)
-        
-        # Add duplicates for particles near left edge (appear on right)
-        if np.any(left_edge_mask):
-            left_indices = np.where(left_edge_mask)[0]
-            duplicate_pos = self.positions[left_indices].copy()
-            duplicate_pos[:, 0] += self.viewport.width
-            all_positions.append(duplicate_pos)
-            all_sizes.append(self.sizes[left_indices])
-            all_colors.append(np.column_stack([self.colors[left_indices], self.alphas[left_indices]]))
-            all_distances.append(self.distances[left_indices])
-            all_squish_factors.append(self.squish_factors[left_indices])
-        
-        # Add duplicates for particles near right edge (appear on left)
-        if np.any(right_edge_mask):
-            right_indices = np.where(right_edge_mask)[0]
-            duplicate_pos = self.positions[right_indices].copy()
-            duplicate_pos[:, 0] -= self.viewport.width
-            all_positions.append(duplicate_pos)
-            all_sizes.append(self.sizes[right_indices])
-            all_colors.append(np.column_stack([self.colors[right_indices], self.alphas[right_indices]]))
-            all_distances.append(self.distances[right_indices])
-            all_squish_factors.append(self.squish_factors[right_indices])
-        
-        # Combine all particles (originals + duplicates)
-        positions_combined = np.vstack(all_positions)
-        sizes_combined = np.concatenate(all_sizes)
-        colors_combined = np.vstack(all_colors)
-        distances_combined = np.concatenate(all_distances)
-        squish_combined = np.concatenate(all_squish_factors)
-        
-        # Build instance data array
-        # Layout: [x, y, size, r, g, b, a, distance, squish_factor]
+
+        # Fan-geometry uniforms. The vertex shader uses these to do the
+        # polar→buffer-pixel conversion in-place (used to be on CPU via
+        # FanCoords.physical_to_uv_np). Imported lazily to avoid a hard
+        # dependency cycle when this module is reused.
+        from renderer.fan_geometry import FanGeometry
+        glUniform1f(glGetUniformLocation(self.shader, "u_inner_r_ft"),
+                    FanGeometry.PHYSICAL_INNER_FT)
+        glUniform1f(glGetUniformLocation(self.shader, "u_outer_r_ft"),
+                    FanGeometry.PHYSICAL_OUTER_FT)
+        glUniform1f(glGetUniformLocation(self.shader, "u_squish_top"),
+                    float(self.squish_top_width))
+
+        # Drop particles that have wandered into the inner-ring cutout
+        # (where r < inner_r_ft) or below the visible diameter line. Cheap
+        # squared-distance test, no sqrt needed.
+        r2 = self.positions[:, 0] ** 2 + self.positions[:, 1] ** 2
+        in_fan = (r2 >= self._fan.inner_r_ft ** 2) & (self.positions[:, 1] >= 0.0)
+        if not np.any(in_fan):
+            glBindVertexArray(0)
+            glUseProgram(0)
+            return
+
+        # Build instance data — layout: [x_ft, y_ft, size, r, g, b, a, distance]
+        # 8 floats per particle. Positions stay in PHYSICAL FEET; the
+        # vertex shader converts to clip space.
         instance_data = np.column_stack([
-            positions_combined,
-            sizes_combined,
-            colors_combined,
-            distances_combined,
-            squish_combined
+            self.positions[in_fan],
+            self.sizes[in_fan],
+            self.colors[in_fan],
+            self.alphas[in_fan],
+            self.distances[in_fan],
         ]).astype(np.float32)
         
         # Update instance buffer
@@ -462,44 +493,81 @@ class SandstormEffect(ShaderEffect):
         return """
         #version 310 es
         precision highp float;
-        
+
         layout(location = 0) in vec2 position;  // Quad vertices (-1 to 1)
-        layout(location = 1) in vec2 offset;    // Particle position (x, y)
-        layout(location = 2) in float size;     // Particle size
+        layout(location = 1) in vec2 offset;    // Particle position in PHYSICAL FEET (x, y)
+        layout(location = 2) in float size;     // Particle size hint
         layout(location = 3) in vec4 color;     // Color (r, g, b, alpha)
         layout(location = 4) in float distance; // Depth value (10-40)
-        layout(location = 5) in float squishFactor; // Horizontal width multiplier
-        
+
         out vec4 fragColor;
-        out vec2 fragPos;  // Position within quad (-1 to 1)
+        out vec2 fragPos;
         uniform vec2 resolution;
-        uniform float fadeAlpha;  // Global fade factor
-        
+        uniform float fadeAlpha;
+        // Fan geometry uniforms — particle is in PHYSICAL coordinates;
+        // the vertex shader does the polar→buffer-pixel conversion that
+        // used to live on the CPU as FanCoords.physical_to_uv_np().
+        uniform float u_inner_r_ft;
+        uniform float u_outer_r_ft;
+        uniform float u_squish_top;   // multiplier for outer-ring particles
+
+        const float FAN_PI = 3.14159265358979;
+
         void main() {
             fragPos = position;
-            
-            // Scale by particle size with squish applied to horizontal
-            vec2 scaled = vec2(
-                position.x * size * squishFactor,
-                position.y * size
-            );
-            
-            // Translate to particle position
-            vec2 pos = scaled + offset;
-            
-            // Convert to clip space
+
+            // ---- Convert PHYSICAL position (feet) → BUFFER pixels ----
+            // Mirrors FanCoords.physical_to_uv: theta is the polar angle,
+            // u maps π-left→0-right, v maps inner-ring (0)→outer-ring (1).
+            float r_ft   = length(offset);
+            float theta  = atan(offset.y, offset.x);   // GLSL atan(y, x) = atan2
+            float u      = clamp(1.0 - theta / FAN_PI, 0.0, 1.0);
+            float v_part = clamp((r_ft - u_inner_r_ft) /
+                                 (u_outer_r_ft - u_inner_r_ft), 0.0, 1.0);
+            vec2 offset_px = vec2(u * resolution.x, v_part * resolution.y);
+
+            // ---- Per-particle anisotropic scale (circular in fan space) ----
+            // Use the actual radial distance r_ft (not the v-derived approx)
+            // so partially-clamped positions still get the right column scale.
+            float dx_ft_per_col = max(r_ft, u_inner_r_ft) * FAN_PI / resolution.x;
+            float dy_ft_per_row = (u_outer_r_ft - u_inner_r_ft) / resolution.y;
+
+            // Particle radius in PHYSICAL feet. `size=2` (default wrapper
+            // hint) → ~0.20 ft radius — visible everywhere on the fan.
+            float size_ft = size * 0.10;
+            float w_px = size_ft / max(dx_ft_per_col, 1e-4);
+            float h_px = size_ft / max(dy_ft_per_row, 1e-4);
+
+            // FLOOR the per-axis pixel size to ~1.5 buffer pixels so the
+            // particle's quad always covers more than a single fragment.
+            // Without this, the outer-ring particles end up sub-pixel-
+            // wide (because cols at the outer ring span 0.51 ft each, so
+            // a 0.20 ft particle is ~0.4 cols), the smoothstep edge falls
+            // entirely on at most one fragment, and as the particle moves
+            // across pixel centres it alternates which LED is lit — that
+            // shows up as the particles appearing to "blink".
+            const float MIN_PX = 1.5;
+            w_px = max(MIN_PX, w_px);
+            h_px = max(MIN_PX, h_px);
+
+            // ---- Squish from radial position (was CPU-computed) ----
+            float squish = 1.0 + (u_squish_top - 1.0) * v_part;
+
+            vec2 scaled = vec2(position.x * w_px * squish,
+                               position.y * h_px);
+
+            vec2 pos = scaled + offset_px;
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
-            clipPos.y = -clipPos.y;
-            
-            // Standard depth mapping: z = 0-100 -> depth = 0.0-1.0
-            // distance 10 (near) -> depth 0.10
-            // distance 40 (far) -> depth 0.40
-            float depth = distance / 100.0;
-            depth = clamp(depth, 0.0, 1.0);
-            
+            // No y-flip here. `offset_px.y` is now derived from the
+            // physical_to_uv `v` axis where v=0 is the inner ring (bottom
+            // of FBO in OpenGL texture-coord convention) and v=1 is the
+            // outer ring (top). That already matches clip-space y-up;
+            // adding a flip would mirror particles radially and produce
+            // dumbbell-shaped trajectories instead of straight lines.
+
+            float depth = clamp(distance / 100.0, 0.0, 1.0);
             gl_Position = vec4(clipPos, depth, 1.0);
-            
-            // Apply fade factor to alpha
+
             fragColor = vec4(color.rgb, color.a * fadeAlpha);
         }
         """
@@ -578,32 +646,30 @@ class SandstormEffect(ShaderEffect):
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
         self.VBOs.append(self.instance_VBO)
         
-        # Instance attributes: offset (vec2), size (float), color (vec4), distance (float), squish (float)
-        stride = 4 * 9  # 9 floats per instance
-        
-        # offset (location 1)
+        # Instance attributes (8 floats / 32 bytes per particle):
+        #   offset(vec2 ft) + size(float) + color(vec4) + distance(float)
+        # Squish is no longer per-instance — the vertex shader computes
+        # it from the radial position derived from `offset`.
+        stride = 4 * 8
+
+        # offset (location 1) — particle position in PHYSICAL FEET
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
         glVertexAttribDivisor(1, 1)
-        
+
         # size (location 2)
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8))
         glEnableVertexAttribArray(2)
         glVertexAttribDivisor(2, 1)
-        
+
         # color (location 3)
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(12))
         glEnableVertexAttribArray(3)
         glVertexAttribDivisor(3, 1)
-        
+
         # distance (location 4)
         glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(28))
         glEnableVertexAttribArray(4)
         glVertexAttribDivisor(4, 1)
-        
-        # squish_factor (location 5)
-        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(32))
-        glEnableVertexAttribArray(5)
-        glVertexAttribDivisor(5, 1)
-        
+
         glBindVertexArray(0)

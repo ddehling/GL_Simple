@@ -153,6 +153,8 @@ class EnvironmentalSystem:
             "sandstorm": (fx.shader_sandstorm, {}),
             "desert_dunes": (fx.shader_desert_dunes, {}),
             "desert_sky": (fx.shader_desert_sky, {}),
+            "desert_creatures": (fx.shader_desert_creatures, {}),
+            "desert_rain": (fx.shader_desert_rain, {}),
             "fog_beings": (fx.shader_chromatic_fog_beings, {}),
             "falling_leaves": (fx.shader_falling_leaves, {}), 
             "audio_balls": (fx.shader_audio_balls, {}),
