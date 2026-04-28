@@ -110,6 +110,8 @@ class KelpEffect(ShaderEffect):
                  sway_intensity: float = 1.0):
         super().__init__(viewport)
         self.fan = FanCoords(viewport.width, viewport.height)
+        # Render after coral (2.5) so kelp strands occlude reef shapes.
+        self.render_priority = 2.7
         self.depth = depth
         self.base_density = density
         self.kelp_density = density

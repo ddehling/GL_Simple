@@ -439,12 +439,13 @@ class FishEffect(ShaderEffect):
         self.patterns = None      # int pattern id per fish
         self.behaviors = None     # int behavior id per fish
         self.dart_phases = None   # phase offset for dart bursts
-        self.rotations = None     # per-fish sprite rotation (radians), computed each frame
 
-        # Buffer-pixel positions, recomputed each frame from (theta, r). Kept as
-        # an (n, 3) array because the existing render path samples positions[:, 2]
-        # (depth) for back-to-front sorting.
-        self.positions = None
+        # Pre-allocated instance buffer reused across frames; populated in
+        # render() via direct slice writes. Avoids per-frame column_stack
+        # allocation. Capacity grows with self._instance_capacity.
+        self._instance_buffer = None
+        self._instance_capacity = 0
+        self._uniform_resolution = -1
 
         self.species_names = list(FISH_SPECIES.keys())
 
@@ -595,49 +596,8 @@ class FishEffect(ShaderEffect):
         self.swim_phases = np.random.uniform(0, 2 * np.pi, n)
         self.swim_speeds = 6.0 + self.base_speeds_fps * 5.0
 
-        # instance_pos (physical x_ft, y_ft, z_depth) and rotations are filled by _refresh_buffer_state.
-        self.positions = np.zeros((n, 3))
-        self.rotations = np.zeros(n)
-        self._refresh_buffer_state()
-
-    def _refresh_buffer_state(self):
-        """Recompute physical-space fish positions and sprite rotations from
-        (theta, r, omega, r_drift) state. The vertex shader does the
-        physical->buffer conversion per template vertex, so we only need to
-        hand it (x_ft, y_ft) per fish here.
-        """
-        if self.thetas is None or len(self.thetas) == 0:
-            return
-
-        # Fish center in physical feet.
-        cos_t = np.cos(self.thetas)
-        sin_t = np.sin(self.thetas)
-        x_phys = self.r_fts * cos_t
-        y_phys = self.r_fts * sin_t
-
-        # instance_pos is now (x_ft, y_ft, z_depth).
-        self.positions[:, 0] = x_phys
-        self.positions[:, 1] = y_phys
-        self.positions[:, 2] = self.zs
-
-        # Rotation in the LOCAL POLAR FRAME, not in cartesian.
-        #
-        # The vertex shader treats the template's +x axis as "along the arc
-        # tangent" and the +y axis as "radially outward" at the fish's
-        # position. The fish's local-frame velocity is:
-        #     tangential component = r * omega   (ft/s along arc)
-        #     radial component     = r_drift     (ft/s outward)
-        # The angle of that velocity vector in the local frame is the amount
-        # we need to rotate the template so its head points along the motion.
-        #
-        # Doing the rotation in the LOCAL frame (instead of cartesian) means
-        # "top of fish" is always radially outward, regardless of where the
-        # fish sits on the arc. A fish at theta=0 and a fish at theta=pi have
-        # the same body-up direction relative to the fan, as you'd expect.
-        local_tangential = self.r_fts * self.omegas       # ft/s along tangent
-        local_radial     = self.r_drifts                  # ft/s radially outward
-        self.rotations = np.arctan2(local_radial, local_tangential)
-
+        # The vertex shader receives (r, theta, omega, r_drift) directly and
+        # computes its own cos/sin/atan2 — no per-frame CPU trig needed.
 
     def _apply_index_mask(self, keep_mask):
         """Filter every per-fish array down to the rows where keep_mask is True."""
@@ -662,8 +622,6 @@ class FishEffect(ShaderEffect):
         self.patterns = self.patterns[keep_mask]
         self.behaviors = self.behaviors[keep_mask]
         self.dart_phases = self.dart_phases[keep_mask]
-        self.rotations = self.rotations[keep_mask]
-        self.positions = self.positions[keep_mask]
         self.num_fish = len(self.thetas)
 
     def _reset_fish(self, off_mask):
@@ -780,8 +738,6 @@ class FishEffect(ShaderEffect):
         self.patterns = np.concatenate([self.patterns, data['patterns']])
         self.behaviors = np.concatenate([self.behaviors, data['behaviors']])
         self.dart_phases = np.concatenate([self.dart_phases, data['dart_phases']])
-        self.rotations = np.concatenate([self.rotations, np.zeros(n_to_add)])
-        self.positions = np.vstack([self.positions, np.zeros((n_to_add, 3))])
 
         self.num_fish = len(self.thetas)
 
@@ -802,12 +758,12 @@ class FishEffect(ShaderEffect):
         precision highp float;
 
         layout(location = 0) in vec2 position;            // template vertex (unit fish)
-        layout(location = 1) in vec3 instance_pos;        // (x_ft, y_ft, z_depth)
+        layout(location = 1) in vec3 instance_pos;        // (r_ft, z_depth, unused) — depth z is CPU-side only, kept here for layout compat
         layout(location = 2) in float instance_size_ft;   // overall fish length in feet
         layout(location = 3) in float instance_alpha;
         layout(location = 4) in vec3 instance_color;
-        layout(location = 5) in float instance_reserved;  // unused (was size_y)
-        layout(location = 6) in float instance_rotation;  // radians in PHYSICAL space
+        layout(location = 5) in float instance_r_drift;   // ft/s radially outward
+        layout(location = 6) in float instance_omega;     // rad/s along theta
         layout(location = 7) in float instance_swim_phase;
         layout(location = 8) in vec4 instance_body;       // length, height, taper, tail_spread
         layout(location = 9) in float instance_pattern;
@@ -877,7 +833,8 @@ class FishEffect(ShaderEffect):
             // Compute directly from instance_theta rather than from atan2 of
             // the cartesian position, so fish whose center has crossed
             // theta = 0 or theta = pi stay on the correct side of the viewport.
-            float center_r_phys = length(instance_pos.xy);
+            // r_ft is now passed directly via instance_pos.x (no length() needed).
+            float center_r_phys = instance_pos.x;
             vec2 center_uv = vec2(
                 1.0 - instance_theta / FAN_PI,
                 (center_r_phys - u_inner_r_ft) / (u_outer_r_ft - u_inner_r_ft)
@@ -890,7 +847,7 @@ class FishEffect(ShaderEffect):
 
             // ---- Rotate the template in the LOCAL POLAR FRAME ----
             //
-            // instance_rotation is the fish's velocity angle in the local
+            // The rotation angle is the fish's velocity direction in the local
             // (tangent, radial_outward) frame, NOT in cartesian. After this
             // rotation:
             //   rotated.x = displacement in feet ALONG THE TANGENT (arc len)
@@ -898,12 +855,12 @@ class FishEffect(ShaderEffect):
             //
             // Doing the rotation in the local frame (instead of cartesian)
             // makes "top of fish" always radially outward regardless of where
-            // the fish sits on the arc. The old cartesian-rotation code had
-            // template +y pointing in different physical directions at
-            // different positions, which made fish render correctly in
-            // rectangular buffer space but incorrectly in fan space.
-            float cs = cos(instance_rotation);
-            float sn = sin(instance_rotation);
+            // the fish sits on the arc. Computed here from omega and r_drift
+            // so the CPU doesn't pay an arctan2 over N fish per frame.
+            float local_tangential = center_r_phys * instance_omega;
+            float rotation_angle = atan(instance_r_drift, local_tangential);
+            float cs = cos(rotation_angle);
+            float sn = sin(rotation_angle);
             vec2 rotated = vec2(
                 morphed.x * cs - morphed.y * sn,
                 morphed.x * sn + morphed.y * cs
@@ -1112,12 +1069,12 @@ class FishEffect(ShaderEffect):
         )
     
     # Instance VBO layout (17 floats per instance):
-    #   offset 0..2   pos (x_ft, y_ft, z)     location 1
+    #   offset 0..2   pos (r_ft, z_depth, _)  location 1   z unused on GPU; kept for layout compat
     #   offset 3      size_ft                 location 2
     #   offset 4      alpha                   location 3
     #   offset 5..7   color                   location 4
-    #   offset 8      reserved                location 5
-    #   offset 9      rotation (radians)      location 6
+    #   offset 8      r_drift (ft/s)          location 5
+    #   offset 9      omega (rad/s)           location 6
     #   offset 10     swim_phase              location 7
     #   offset 11..14 body (len, ht, taper, tail_spread)  location 8
     #   offset 15     pattern                 location 9
@@ -1168,6 +1125,9 @@ class FishEffect(ShaderEffect):
         initial_capacity = max(self.num_fish, 1)
         glBufferData(GL_ARRAY_BUFFER, initial_capacity * stride, None, GL_DYNAMIC_DRAW)
         self._instance_capacity = initial_capacity
+        # CPU-side mirror, written via slice assignment each frame.
+        self._instance_buffer = np.empty(
+            (initial_capacity, self.INSTANCE_FLOATS), dtype=np.float32)
 
         def _attr(loc, count, offset_floats):
             glEnableVertexAttribArray(loc)
@@ -1175,12 +1135,12 @@ class FishEffect(ShaderEffect):
                                   ctypes.c_void_p(offset_floats * 4))
             glVertexAttribDivisor(loc, 1)
 
-        _attr(1, 3, 0)   # instance_pos (x_ft, y_ft, z)
+        _attr(1, 3, 0)   # instance_pos (r_ft, z_depth, unused)
         _attr(2, 1, 3)   # instance_size_ft
         _attr(3, 1, 4)   # instance_alpha
         _attr(4, 3, 5)   # instance_color
-        _attr(5, 1, 8)   # instance_reserved (unused)
-        _attr(6, 1, 9)   # instance_rotation (radians, physical-space)
+        _attr(5, 1, 8)   # instance_r_drift (ft/s)
+        _attr(6, 1, 9)   # instance_omega (rad/s)
         _attr(7, 1, 10)  # instance_swim_phase
         _attr(8, 4, 11)  # instance_body (length, height, taper, tail_spread)
         _attr(9, 1, 15)  # instance_pattern
@@ -1193,7 +1153,11 @@ class FishEffect(ShaderEffect):
         glUseProgram(self.shader)
         self.fan.set_uniforms(self.shader)
         glUseProgram(0)
-    
+
+        # Cache the resolution uniform location so render() doesn't re-look it
+        # up every frame.
+        self._uniform_resolution = glGetUniformLocation(self.shader, "resolution")
+
     # ------------------------------------------------------------------
     # Per-frame physics
     # ------------------------------------------------------------------
@@ -1341,9 +1305,6 @@ class FishEffect(ShaderEffect):
             self.r_fts[too_high] = r_hi[too_high] - 0.2
             self.r_drifts[too_high] = -np.random.uniform(0.05, 0.25, n) * FISH_DRIFT_SCALE
 
-        # Recompute buffer-pixel positions and pixel sizes for render().
-        self._refresh_buffer_state()
-
         # Off-arc reset (fish has swum well past theta=0 or theta=pi).
         # Use a generous margin so fish visibly swim OUT of the fan before
         # being respawned on the other side, rather than teleporting the
@@ -1352,8 +1313,6 @@ class FishEffect(ShaderEffect):
         off_arc = (self.thetas < -margin) | (self.thetas > np.pi + margin)
         if np.any(off_arc):
             self._reset_fish(off_arc)
-            # Refresh again because reset moved fish to opposite edges.
-            self._refresh_buffer_state()
 
     # ------------------------------------------------------------------
     # Render
@@ -1369,16 +1328,14 @@ class FishEffect(ShaderEffect):
         glUseProgram(self.shader)
         glBindVertexArray(self.VAO)
 
-        loc = glGetUniformLocation(self.shader, "resolution")
-        if loc != -1:
-            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+        if self._uniform_resolution != -1:
+            glUniform2f(self._uniform_resolution,
+                        float(self.viewport.width), float(self.viewport.height))
 
         # Sort back-to-front by depth (z) so blending looks right.
-        sort_idx = np.argsort(-self.positions[:, 2])
+        sort_idx = np.argsort(-self.zs)
 
-        # Assemble instance data: 17 floats per fish.
-        n_fish = self.num_fish
-        reserved = np.zeros(n_fish, dtype=np.float32)
+        n = self.num_fish
         # Apply per-fish fade-in: alpha scales up linearly with age until
         # FISH_FADE_IN_S, then stays at 1. Combined with the base alpha
         # from depth so freshly-spawned distant fish still look further.
@@ -1389,30 +1346,40 @@ class FishEffect(ShaderEffect):
         # sky/sea background), whereas they should just get darker as if
         # under-lit -- same object, less light on it.
         display_colors = self.colors * self.ambient_light
-        instance_data = np.column_stack([
-            self.positions[sort_idx],          # 3  (x_ft, y_ft, z)           location 1
-            self.sizes_ft[sort_idx],           # 1  instance_size_ft          location 2
-            display_alphas[sort_idx],          # 1                             location 3
-            display_colors[sort_idx],          # 3                             location 4
-            reserved,                          # 1  instance_reserved          location 5
-            self.rotations[sort_idx],          # 1  instance_rotation          location 6
-            self.swim_phases[sort_idx],        # 1
-            self.body_lengths[sort_idx],       # 1
-            self.body_heights[sort_idx],       # 1
-            self.body_tapers[sort_idx],        # 1
-            self.tail_spreads[sort_idx],       # 1
-            self.patterns[sort_idx],           # 1
-            self.thetas[sort_idx],             # 1  instance_theta             location 10
-        ]).astype(np.float32)
 
+        # Grow CPU+GPU instance buffers in lockstep when fish count exceeds
+        # capacity. _instance_buffer is pre-allocated so per-frame writes are
+        # contiguous slice assignments (no column_stack allocation).
         stride = self.INSTANCE_FLOATS * 4
-        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        # Grow VBO if we now have more fish than the allocation can hold.
-        if self.num_fish > self._instance_capacity:
-            new_capacity = max(self.num_fish, self._instance_capacity * 2)
+        if n > self._instance_capacity:
+            new_capacity = max(n, self._instance_capacity * 2)
+            glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
             glBufferData(GL_ARRAY_BUFFER, new_capacity * stride, None, GL_DYNAMIC_DRAW)
             self._instance_capacity = new_capacity
-        glBufferSubData(GL_ARRAY_BUFFER, 0, instance_data.nbytes, instance_data)
+            self._instance_buffer = np.empty(
+                (new_capacity, self.INSTANCE_FLOATS), dtype=np.float32)
+
+        buf = self._instance_buffer
+        # instance_pos = (r_ft, z_depth, unused). z is CPU-side only but kept
+        # in the slot for layout compatibility.
+        buf[:n, 0] = self.r_fts[sort_idx]
+        buf[:n, 1] = self.zs[sort_idx]
+        buf[:n, 2] = 0.0
+        buf[:n, 3] = self.sizes_ft[sort_idx]
+        buf[:n, 4] = display_alphas[sort_idx]
+        buf[:n, 5:8] = display_colors[sort_idx]
+        buf[:n, 8] = self.r_drifts[sort_idx]   # location 5: r_drift
+        buf[:n, 9] = self.omegas[sort_idx]     # location 6: omega
+        buf[:n, 10] = self.swim_phases[sort_idx]
+        buf[:n, 11] = self.body_lengths[sort_idx]
+        buf[:n, 12] = self.body_heights[sort_idx]
+        buf[:n, 13] = self.body_tapers[sort_idx]
+        buf[:n, 14] = self.tail_spreads[sort_idx]
+        buf[:n, 15] = self.patterns[sort_idx]
+        buf[:n, 16] = self.thetas[sort_idx]
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, n * stride, buf[:n])
 
         glDepthMask(GL_FALSE)
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 24, self.num_fish)

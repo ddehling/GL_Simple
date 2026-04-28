@@ -125,6 +125,9 @@ class BubbleEffect(ShaderEffect):
         # Current drift: set from outstate['wind']; pushes bubbles sideways
         # as they rise, so strong currents visibly sweep the bubble column.
         self.wind = 0.0
+
+        # Cached uniform locations (populated in setup_buffers).
+        self._uniform_resolution = -1
         
         self._initialize_bubbles()
         
@@ -448,9 +451,12 @@ class BubbleEffect(ShaderEffect):
         glVertexAttribDivisor(5, 1)
         
         self.VBOs.append(self.instance_VBO)
-        
+
         glBindVertexArray(0)
-    
+
+        # Cache uniform locations so render() doesn't re-look them up each frame.
+        self._uniform_resolution = glGetUniformLocation(self.shader, "resolution")
+
     def update(self, dt: float, state: Dict):
         """Update bubble positions and wobble"""
         if self.num_bubbles == 0:
@@ -495,11 +501,10 @@ class BubbleEffect(ShaderEffect):
         
         glUseProgram(self.shader)
         glBindVertexArray(self.VAO)
-        
-        # Update resolution uniform
-        loc = glGetUniformLocation(self.shader, "resolution")
-        if loc != -1:
-            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+
+        if self._uniform_resolution != -1:
+            glUniform2f(self._uniform_resolution,
+                        float(self.viewport.width), float(self.viewport.height))
         
         # Sort bubbles back-to-front by depth (z) for proper alpha blending
         sort_indices = np.argsort(-self.positions[:, 2])

@@ -44,7 +44,9 @@ def shader_forest_canopy(state, outstate):
 
     if 'effect' in state:
         eff = state['effect']
-        eff.density = float(outstate.get('canopy_density', 0.0))
+        # Scale incoming density 1.5x for a denser-looking canopy. The shader
+        # clamps u_density to [0, 1] so high-density states cleanly saturate.
+        eff.density = float(outstate.get('canopy_density', 0.0)) * 1.5
         eff.wind = float(outstate.get('wind', 0.0))
         eff.season = float(outstate.get('season_preference', 0.5))
         eff.starryness = float(outstate.get('starryness', 0.0))
@@ -139,10 +141,10 @@ void main() {
 
     // Threshold: higher density → lower threshold → more pixels render
     // leaves. Range tuned so even max density leaves visible sky gaps.
-    //   density=0.45 (snowfall)      → thresh ~0.64 (sparse, lots of sky)
-    //   density=0.85 (forest_dawn)   → thresh ~0.45 (dense with gaps)
-    //   density=1.00 (forest_morning) → thresh ~0.38 (densest, still gapped)
-    float leaf_thresh = mix(0.85, 0.38, density);
+    //   density=0.45 (snowfall)      → thresh ~0.56 (sparse, lots of sky)
+    //   density=0.85 (forest_dawn)   → thresh ~0.30 (dense with small gaps)
+    //   density=1.00 (forest_morning) → thresh ~0.20 (~80% coverage)
+    float leaf_thresh = mix(0.85, 0.20, density);
     float leaf_mask = smoothstep(leaf_thresh - 0.08,
                                  leaf_thresh + 0.12,
                                  leaf_n);

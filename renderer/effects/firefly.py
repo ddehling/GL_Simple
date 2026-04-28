@@ -150,6 +150,9 @@ class FireflyEffect(ShaderEffect):
         self.max_wrapping_instances = max_fireflies * 3  # Max originals + left wrap + right wrap
         self.instance_buffer_size = self.max_wrapping_instances * 9 * 4  # 9 floats per instance
         self.instance_data_cache = np.zeros((self.max_wrapping_instances, 9), dtype=np.float32)
+
+        # Cached uniform location, populated when the shader compiles.
+        self._uniform_resolution = -1
         
         # Spawn initial fireflies immediately
         initial_count = int(max_fireflies * 0.6)  # Start with 60% of max
@@ -291,14 +294,15 @@ class FireflyEffect(ShaderEffect):
             vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
             frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
             shader = shaders.compileProgram(vert, frag)
-            
-            # Set resolution uniform
+
+            # Set resolution uniform and cache its location for render().
             glUseProgram(shader)
-            loc = glGetUniformLocation(shader, "resolution")
-            if loc != -1:
-                glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+            self._uniform_resolution = glGetUniformLocation(shader, "resolution")
+            if self._uniform_resolution != -1:
+                glUniform2f(self._uniform_resolution,
+                            float(self.viewport.width), float(self.viewport.height))
             glUseProgram(0)
-            
+
             return shader
         except Exception as e:
             print(f"Shader compilation error: {e}")
@@ -417,11 +421,10 @@ class FireflyEffect(ShaderEffect):
             return
         
         glUseProgram(self.shader)
-        
-        # Update resolution uniform
-        loc = glGetUniformLocation(self.shader, "resolution")
-        if loc != -1:
-            glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
+
+        if self._uniform_resolution != -1:
+            glUniform2f(self._uniform_resolution,
+                        float(self.viewport.width), float(self.viewport.height))
         
         # Calculate depth-based size scaling (closer = bigger)
         depth_range = self.max_depth - self.min_depth

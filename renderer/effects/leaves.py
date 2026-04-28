@@ -137,6 +137,9 @@ def shader_falling_leaves(state, outstate, density=2.5, fade_duration=10.0,
 class FallingLeavesEffect(ShaderEffect):
     """GPU-based audio-reactive falling leaves effect using instanced rendering"""
     
+    # 11 floats per instance: pos.xy(2) + size(1) + rotation(1) + color.rgb(3) + alpha(1) + leaf_type(1) + distance(1) + squish(1)
+    INSTANCE_FLOATS = 11
+
     def __init__(self, viewport, density: float = 2.5, max_leaves: int = 100, squish_top_width: float = 1.0):
         super().__init__(viewport)
         self.density = density
@@ -145,6 +148,15 @@ class FallingLeavesEffect(ShaderEffect):
         self.viewport_height = viewport.height  # Store for squish calculation
         self.instance_VBO = None
         self.fade_factor = 0.0  # For fade in/out (updated by event wrapper)
+
+        # Pre-allocated CPU mirror of the instance VBO (worst-case 3x for wrap
+        # duplicates on both edges). Written via slice assignment in render()
+        # to avoid per-frame np.hstack allocation.
+        self._instance_capacity = 0
+        self._instance_buffer = None
+        # Cached uniform locations populated in setup_buffers().
+        self._uniform_resolution = -1
+        self._uniform_fade = -1
         
         # Audio reactivity parameters (updated by event wrapper)
         self.audio_bass = 0.0      # Bass energy (affects spawn rate)
@@ -527,11 +539,26 @@ class FallingLeavesEffect(ShaderEffect):
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
         
-        # Instance buffer
+        # Instance buffer — pre-allocate at worst-case capacity so render()
+        # uses glBufferSubData (no GPU re-allocation per frame).
         self.instance_VBO = glGenBuffers(1)
         self.VBOs.append(self.instance_VBO)
-        
+
+        # Worst case: every leaf is near both edges → 3 copies. With max_leaves
+        # ~100 this is 300 instances * 44 bytes = 13 KB, trivially small.
+        self._instance_capacity = self.max_leaves * 3
+        glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+        glBufferData(GL_ARRAY_BUFFER,
+                     self._instance_capacity * self.INSTANCE_FLOATS * 4,
+                     None, GL_DYNAMIC_DRAW)
+        self._instance_buffer = np.empty(
+            (self._instance_capacity, self.INSTANCE_FLOATS), dtype=np.float32)
+
         glBindVertexArray(0)
+
+        # Cache uniform locations.
+        self._uniform_resolution = glGetUniformLocation(self.shader, "resolution")
+        self._uniform_fade = glGetUniformLocation(self.shader, "fadeAlpha")
 
     def trigger_bass_burst(self):
         """Trigger a burst effect on bass hit"""
@@ -667,87 +694,84 @@ class FallingLeavesEffect(ShaderEffect):
         # Depth testing and alpha blending are ALWAYS enabled globally
         
         glUseProgram(self.shader)
-        
-        # Update uniforms
-        res_loc = glGetUniformLocation(self.shader, "resolution")
-        if res_loc != -1:
-            glUniform2f(res_loc, float(self.viewport.width), float(self.viewport.height))
-        
-        # Set fade factor uniform
-        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
-        if fade_loc != -1:
-            glUniform1f(fade_loc, self.fade_factor)
-        
-        # === HORIZONTAL WRAPPING: Create duplicates for edge leaves ===
-        # Leaves near left edge need duplicates on right
+
+        if self._uniform_resolution != -1:
+            glUniform2f(self._uniform_resolution,
+                        float(self.viewport.width), float(self.viewport.height))
+        if self._uniform_fade != -1:
+            glUniform1f(self._uniform_fade, self.fade_factor)
+
+        # === HORIZONTAL WRAPPING: queue edge leaves as duplicates ===
         left_edge_mask = self.positions[:, 0] < self.wrap_margin
-        # Leaves near right edge need duplicates on left  
         right_edge_mask = self.positions[:, 0] > (self.viewport.width - self.wrap_margin)
-        
-        # Start with original positions
-        render_positions = self.positions.copy()
-        render_sizes = self.sizes.copy()
-        render_rotations = self.rotations.copy()
-        render_colors = self.colors.copy()
-        render_alphas = self.alphas.copy()
-        render_leaf_types = self.leaf_types.copy()
-        render_distances = self.distances.copy()
-        render_squish_factors = self.squish_factors.copy()
-        
-        # Add duplicates for left edge leaves (appear on right side)
-        if np.any(left_edge_mask):
-            left_indices = np.where(left_edge_mask)[0]
-            duplicate_positions = self.positions[left_indices].copy()
-            duplicate_positions[:, 0] += self.viewport.width  # Shift to right side
-            
-            render_positions = np.vstack([render_positions, duplicate_positions])
-            render_sizes = np.concatenate([render_sizes, self.sizes[left_indices]])
-            render_rotations = np.concatenate([render_rotations, self.rotations[left_indices]])
-            render_colors = np.vstack([render_colors, self.colors[left_indices]])
-            render_alphas = np.concatenate([render_alphas, self.alphas[left_indices]])
-            render_leaf_types = np.concatenate([render_leaf_types, self.leaf_types[left_indices]])
-            render_distances = np.concatenate([render_distances, self.distances[left_indices]])
-            render_squish_factors = np.concatenate([render_squish_factors, self.squish_factors[left_indices]])
-        
-        # Add duplicates for right edge leaves (appear on left side)
-        if np.any(right_edge_mask):
-            right_indices = np.where(right_edge_mask)[0]
-            duplicate_positions = self.positions[right_indices].copy()
-            duplicate_positions[:, 0] -= self.viewport.width  # Shift to left side
-            
-            render_positions = np.vstack([render_positions, duplicate_positions])
-            render_sizes = np.concatenate([render_sizes, self.sizes[right_indices]])
-            render_rotations = np.concatenate([render_rotations, self.rotations[right_indices]])
-            render_colors = np.vstack([render_colors, self.colors[right_indices]])
-            render_alphas = np.concatenate([render_alphas, self.alphas[right_indices]])
-            render_leaf_types = np.concatenate([render_leaf_types, self.leaf_types[right_indices]])
-            render_distances = np.concatenate([render_distances, self.distances[right_indices]])
-            render_squish_factors = np.concatenate([render_squish_factors, self.squish_factors[right_indices]])
-        
-        # Audio subtly affects brightness and color
-        audio_brightness = 1.0 + self.audio_high * 0.15  # Subtle brightness boost from highs
-        audio_color_shift = self.audio_mid * 0.08  # Subtle color warmth from mids
-        
-        # Apply audio effects to colors
-        adjusted_colors = render_colors.copy()
-        adjusted_colors *= audio_brightness  # Brighten
-        adjusted_colors[:, 0] = np.clip(adjusted_colors[:, 0] + audio_color_shift, 0, 1)  # Add warmth (red)
-        
-        # Build instance data with all attributes including duplicates
-        instance_data = np.hstack([
-            render_positions,                                      # 2 floats: x, y
-            render_sizes[:, np.newaxis],                          # 1 float: size
-            render_rotations[:, np.newaxis],                      # 1 float: rotation
-            adjusted_colors,                                      # 3 floats: r, g, b (audio-adjusted)
-            render_alphas[:, np.newaxis],                         # 1 float: alpha
-            render_leaf_types[:, np.newaxis].astype(np.float32),  # 1 float: leafType
-            render_distances[:, np.newaxis],                      # 1 float: distance (depth)
-            render_squish_factors[:, np.newaxis]                  # 1 float: squishFactor
-        ]).astype(np.float32)
-        
-        # Upload instance data
+
+        # Audio brightness/warmth applied during the slice write so we don't
+        # need an intermediate `adjusted_colors` array.
+        audio_brightness = 1.0 + self.audio_high * 0.15
+        audio_color_shift = self.audio_mid * 0.08
+
+        # Grow the pre-allocated instance buffer if the leaf population
+        # outgrew the worst-case headroom (e.g. max_leaves was bumped up).
+        n_orig = len(self.positions)
+        num_left = int(np.sum(left_edge_mask))
+        num_right = int(np.sum(right_edge_mask))
+        total_instances = n_orig + num_left + num_right
+        if total_instances > self._instance_capacity:
+            new_capacity = max(total_instances, self._instance_capacity * 2)
+            glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
+            glBufferData(GL_ARRAY_BUFFER,
+                         new_capacity * self.INSTANCE_FLOATS * 4,
+                         None, GL_DYNAMIC_DRAW)
+            self._instance_capacity = new_capacity
+            self._instance_buffer = np.empty(
+                (new_capacity, self.INSTANCE_FLOATS), dtype=np.float32)
+
+        buf = self._instance_buffer
+
+        def _write_block(dst_start, src_idx, x_offset):
+            n = len(src_idx) if src_idx is not None else n_orig
+            if n == 0:
+                return
+            end = dst_start + n
+            if src_idx is None:
+                buf[dst_start:end, 0:2] = self.positions
+                buf[dst_start:end, 2] = self.sizes
+                buf[dst_start:end, 3] = self.rotations
+                buf[dst_start:end, 4:7] = self.colors
+                buf[dst_start:end, 7] = self.alphas
+                buf[dst_start:end, 8] = self.leaf_types
+                buf[dst_start:end, 9] = self.distances
+                buf[dst_start:end, 10] = self.squish_factors
+            else:
+                buf[dst_start:end, 0:2] = self.positions[src_idx]
+                buf[dst_start:end, 2] = self.sizes[src_idx]
+                buf[dst_start:end, 3] = self.rotations[src_idx]
+                buf[dst_start:end, 4:7] = self.colors[src_idx]
+                buf[dst_start:end, 7] = self.alphas[src_idx]
+                buf[dst_start:end, 8] = self.leaf_types[src_idx]
+                buf[dst_start:end, 9] = self.distances[src_idx]
+                buf[dst_start:end, 10] = self.squish_factors[src_idx]
+            if x_offset:
+                buf[dst_start:end, 0] += x_offset
+            # Apply audio brightness to RGB columns in-place on the slice.
+            buf[dst_start:end, 4:7] *= audio_brightness
+            np.clip(buf[dst_start:end, 4] + audio_color_shift, 0.0, 1.0,
+                    out=buf[dst_start:end, 4])
+
+        _write_block(0, None, 0.0)
+        idx = n_orig
+        if num_left:
+            _write_block(idx, np.where(left_edge_mask)[0], self.viewport.width)
+            idx += num_left
+        if num_right:
+            _write_block(idx, np.where(right_edge_mask)[0], -self.viewport.width)
+            idx += num_right
+
+        # Sub-data upload reuses the existing GPU allocation (no realloc).
         glBindBuffer(GL_ARRAY_BUFFER, self.instance_VBO)
-        glBufferData(GL_ARRAY_BUFFER, instance_data.nbytes, instance_data, GL_DYNAMIC_DRAW)
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        total_instances * self.INSTANCE_FLOATS * 4,
+                        buf[:total_instances])
         
         glBindVertexArray(self.VAO)
         
@@ -789,8 +813,8 @@ class FallingLeavesEffect(ShaderEffect):
         glEnableVertexAttribArray(7)
         glVertexAttribDivisor(7, 1)
         
-                # Render all leaf instances (originals + duplicates for seamless wrapping)
-        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, len(render_positions))
+        # Render all leaf instances (originals + duplicates for seamless wrapping)
+        glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None, total_instances)
         
         glBindVertexArray(0)
         glUseProgram(0)
