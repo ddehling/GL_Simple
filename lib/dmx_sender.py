@@ -37,7 +37,12 @@ class SACNPixelSender:
         self.use_raw_udp = use_raw_udp
         self.per_receiver_universe = per_receiver_universe
 
-        if use_raw_udp:
+        # Any DDP receiver in the list forces a UDP socket regardless of
+        # use_raw_udp — DDP doesn't go through the sacn library at all.
+        any_ddp = any(rx.get('protocol', 'sacn').lower() == 'ddp' for rx in receivers)
+        any_sacn = any(rx.get('protocol', 'sacn').lower() == 'sacn' for rx in receivers)
+
+        if use_raw_udp or any_ddp:
             # Create UDP socket for raw packet sending
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # Set socket to non-blocking for async operation
@@ -48,38 +53,59 @@ class SACNPixelSender:
             if bind_ip:
                 self.udp_socket.bind((bind_ip, 0))
                 print(f"[DMXSender] Bound to {bind_ip}")
-            
+
             # Pre-build sACN packet headers for each universe
             self._sacn_headers = []
             self._sequence_numbers = []
-        else:
+            # Per-receiver DDP sequence (1..15 cycle). 0 means "no sequence"
+            # in DDP, which the receiver won't use for drop detection.
+            self._ddp_sequence = []
+        elif any_sacn:
             self.sender = sACNsender()
             # Enable manual flush for synchronized sending
             self.sender.manual_flush = True
             self.sender.start()
 
-        # Set up universes for each receiver
+        # Per-receiver protocol cache, lower-cased and defaulted.
+        self.receiver_protocols = [
+            rx.get('protocol', 'sacn').lower() for rx in receivers
+        ]
+
+        # Set up universes for each receiver (sACN only — DDP is byte-offset
+        # based and doesn't need universe assignment).
         self.receiver_universes = []
         universe_counter = start_universe
-        
+
         # Pre-compute and cache coordinate arrays (they never change)
         self._cached_coords = []
         self._universe_slices = []
-        
-        for receiver in receivers:
+
+        for rx_idx, receiver in enumerate(receivers):
+            protocol = self.receiver_protocols[rx_idx]
             universe_count = math.ceil(receiver['pixel_count'] / 170)
-            
-            if per_receiver_universe:
-                # Each receiver restarts at start_universe
-                receiver_universes = list(range(start_universe, start_universe + universe_count))
-            else:
-                # Global sequential universe numbering
-                receiver_universes = list(range(universe_counter, universe_counter + universe_count))
-                universe_counter += universe_count
-            
+
+            # Universe assignment is sACN-only; DDP uses byte offsets and so
+            # this list is empty for DDP receivers (kept index-aligned anyway).
+            if protocol == 'sacn':
+                if per_receiver_universe:
+                    receiver_universes = list(range(start_universe, start_universe + universe_count))
+                else:
+                    receiver_universes = list(range(universe_counter, universe_counter + universe_count))
+                    universe_counter += universe_count
+            else:  # 'ddp'
+                receiver_universes = []
             self.receiver_universes.append(receiver_universes)
 
-            if self.use_raw_udp:
+            if protocol == 'ddp':
+                # DDP needs only a single per-receiver sequence counter
+                # (1..15 cycle; 0 means "no sequence"). Packet headers are
+                # rebuilt per-chunk because the byte offset changes.
+                self._ddp_sequence.append(1)
+                # Index-align the sACN state arrays even though unused.
+                if hasattr(self, '_sacn_headers'):
+                    self._sacn_headers.append([])
+                    self._sequence_numbers.append([])
+            elif self.use_raw_udp:
                 # Pre-build sACN packet headers for each universe of this receiver
                 receiver_headers = []
                 receiver_seqs = []
@@ -90,8 +116,9 @@ class SACNPixelSender:
                     receiver_seqs.append(0)
                 self._sacn_headers.append(receiver_headers)
                 self._sequence_numbers.append(receiver_seqs)
+                self._ddp_sequence.append(1)   # unused
             else:
-                # Activate universes for this receiver
+                # Activate universes for this receiver via the sacn library
                 for universe in receiver_universes:
                     self.sender.activate_output(universe)
                     self.sender[universe].destination = receiver['ip']
@@ -218,6 +245,50 @@ class SACNPixelSender:
         
         return bytes(header)
     
+    # ---- DDP --------------------------------------------------------------
+    # DDP_MAX_PAYLOAD: 1440 keeps the resulting UDP datagram under a typical
+    # 1500-byte MTU (10-byte DDP header + 8-byte UDP + 20-byte IP + Ethernet
+    # framing). Bumping this just causes IP fragmentation on the wire which
+    # defeats the whole point of the protocol switch.
+    DDP_MAX_PAYLOAD = 1440
+    DDP_PORT = 4048
+
+    def _send_ddp_receiver(self, rx_idx, ip):
+        """Send the receiver's full pixel buffer as a sequence of DDP packets.
+        Each packet carries up to DDP_MAX_PAYLOAD bytes at a known byte offset
+        into the destination's pixel data; the last packet has the PUSH flag
+        set so the receiver knows it's safe to display."""
+        pixel_buffer = self._receiver_buffers[rx_idx]
+        total_bytes = len(pixel_buffer)
+        seq = self._ddp_sequence[rx_idx]
+
+        offset = 0
+        while offset < total_bytes:
+            chunk_size = min(self.DDP_MAX_PAYLOAD, total_bytes - offset)
+            is_last = (offset + chunk_size) >= total_bytes
+
+            # 10-byte DDP header (big-endian)
+            #   byte 0 (flags1): version 01 in bits 7-6, push in bit 0
+            #   byte 1 (flags2/seq): low nibble = sequence
+            #   byte 2 (data type): 0x01 = RGB
+            #   byte 3 (destination id): 1 = default output
+            #   bytes 4-7: 32-bit byte offset
+            #   bytes 8-9: 16-bit payload length
+            flags1 = 0x40 | (0x01 if is_last else 0x00)
+            header = struct.pack('>BBBBIH', flags1, seq & 0x0f, 0x01, 1,
+                                 offset, chunk_size)
+            packet = header + bytes(pixel_buffer[offset:offset + chunk_size])
+
+            try:
+                self.udp_socket.sendto(packet, (ip, self.DDP_PORT))
+            except BlockingIOError:
+                pass  # send buffer full, skip
+
+            offset += chunk_size
+
+        # Cycle 1..15; spec reserves 0 as "no sequence / don't validate".
+        self._ddp_sequence[rx_idx] = (seq % 15) + 1
+
     def _send_udp_universes(self, rx_idx, ip, universes):
         """Send universe data via raw UDP sockets"""
         universe_buffer_2d = self._universe_buffers[rx_idx]
@@ -292,7 +363,9 @@ class SACNPixelSender:
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
             x_coords, y_coords = self._cached_coords[rx_idx]
             pixel_buffer = self._receiver_buffers[rx_idx]
-            
+            protocol = self.receiver_protocols[rx_idx]
+
+            # ---- pixel extraction (same for both protocols) ----
             if NUMBA_AVAILABLE:
                 # Ultra-fast: extract pixels with no bounds checking (coords pre-validated)
                 extract_and_pack_pixels_unchecked(
@@ -301,7 +374,27 @@ class SACNPixelSender:
                     y_coords,
                     pixel_buffer
                 )
-                
+            else:
+                # Fallback to numpy
+                height, width = source_array.shape[:2]
+                x_valid = np.minimum(x_coords, height - 1)
+                y_valid = np.minimum(y_coords, width - 1)
+                pixels = source_array[x_valid, y_valid]
+                pixel_buffer[:] = pixels.flatten()
+
+            if self.skip_network:
+                continue
+
+            # ---- protocol-specific send ----
+            if protocol == 'ddp':
+                # DDP: ship pixel_buffer directly as ~1440-byte chunks. No
+                # universe packing needed — far fewer packets per frame
+                # avoids the ETH RX cliff that bites sACN at ~6 packets.
+                self._send_ddp_receiver(rx_idx, receiver['ip'])
+                continue
+
+            # ---- sACN packing + send ----
+            if NUMBA_AVAILABLE:
                 # Process all universes in parallel
                 universe_buffer_2d = self._universe_buffers[rx_idx]
                 process_all_universes(
@@ -310,44 +403,34 @@ class SACNPixelSender:
                     self._universe_ends[rx_idx],
                     universe_buffer_2d
                 )
-                
-                # Send all universes
-                if not self.skip_network:
-                    if self.use_raw_udp:
-                        self._send_udp_universes(rx_idx, receiver['ip'], universes)
-                    else:
-                        memviews = self._universe_memviews[rx_idx]
-                        for u, universe in enumerate(universes):
-                            self.sender[universe].dmx_data = memviews[u]
-                    
+
+                if self.use_raw_udp:
+                    self._send_udp_universes(rx_idx, receiver['ip'], universes)
+                else:
+                    memviews = self._universe_memviews[rx_idx]
+                    for u, universe in enumerate(universes):
+                        self.sender[universe].dmx_data = memviews[u]
+
             else:
-                # Fallback to numpy
-                height, width = source_array.shape[:2]
-                x_valid = np.minimum(x_coords, height - 1)
-                y_valid = np.minimum(y_coords, width - 1)
-                pixels = source_array[x_valid, y_valid]
-                pixel_buffer[:] = pixels.flatten()
-                
-                # Pack into universe buffers
+                # Pack into universe buffers (numpy fallback)
                 slices = self._universe_slices[rx_idx]
                 universe_buffer_2d = self._universe_buffers[rx_idx]
-                
+
                 for u, (start, end, needs_padding) in enumerate(slices):
                     byte_start = start * 3
                     byte_end = end * 3
                     byte_count = byte_end - byte_start
-                    
+
                     universe_buffer_2d[u, :byte_count] = pixel_buffer[byte_start:byte_end]
                     if needs_padding:
                         universe_buffer_2d[u, byte_count:] = 0
-                
-                if not self.skip_network:
-                    if self.use_raw_udp:
-                        self._send_udp_universes(rx_idx, receiver['ip'], universes)
-                    else:
-                        memviews = self._universe_memviews[rx_idx]
-                        for u, (start, end, needs_padding) in enumerate(slices):
-                            self.sender[universes[u]].dmx_data = memviews[u]
+
+                if self.use_raw_udp:
+                    self._send_udp_universes(rx_idx, receiver['ip'], universes)
+                else:
+                    memviews = self._universe_memviews[rx_idx]
+                    for u, (start, end, needs_padding) in enumerate(slices):
+                        self.sender[universes[u]].dmx_data = memviews[u]
         
         # Flush all universes
         if not self.skip_network and not self.use_raw_udp:
@@ -359,9 +442,12 @@ class SACNPixelSender:
         """
         # Stop async thread if running
         self.disable_async_send()
-        if self.use_raw_udp:
+        # The UDP socket is created either when use_raw_udp is set OR when any
+        # receiver speaks DDP; the sacn library is only used when neither
+        # condition holds.
+        if hasattr(self, 'udp_socket') and self.udp_socket is not None:
             self.udp_socket.close()
-        else:
+        if hasattr(self, 'sender') and self.sender is not None:
             self.sender.stop()
 
     def analyze_row_groups(self, max_pixels_per_group=170):

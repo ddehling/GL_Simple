@@ -54,9 +54,12 @@ class EnvironmentalSystem:
             (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
         ]
 
-        # Hardware receiver configuration — built from config.yaml
+        # Hardware receiver configuration — built from config.yaml.
+        # Per-receiver `protocol` (default "sacn"; "ddp" supported) is passed
+        # through to the sender so it can dispatch on the right transport.
         receivers_list = []
         for rx in dmx_cfg['receivers']:
+            protocol = rx.get('protocol', 'sacn')
             if 'addressing' in rx:
                 mode = rx['addressing']['mode']
                 filepath = rx['addressing']['file']
@@ -70,6 +73,7 @@ class EnvironmentalSystem:
                     'ip': rx['ip'],
                     'pixel_count': len(addr),
                     'addressing_array': addr,
+                    'protocol': protocol,
                 })
             else:
                 receivers_list.append({
@@ -78,6 +82,7 @@ class EnvironmentalSystem:
                     'addressing_array': imdmx.make_indices_V_rect_alternate(
                         rx['columns'], disp["height"], rx['column_offset']
                     ),
+                    'protocol': protocol,
                 })
         receivers = [receivers_list]
 

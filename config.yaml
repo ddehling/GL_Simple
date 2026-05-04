@@ -21,9 +21,15 @@ web:
 dmx:
   bind_ip: ""  # Send DMX from this interface (empty = default route)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
+  # Per-receiver `protocol` (default "sacn"):
+  #   sacn: E1.31 multicast/unicast on UDP 5568, 510 bytes/packet
+  #   ddp:  Distributed Display Protocol on UDP 4048, ~1440 bytes/packet
+  #         (preferred for big pixel counts — fewer packets per frame avoids
+  #         the receiver's ETH RX buffer cliff at ~6 packets/burst)
   receivers:
     # Lucifera
     - ip: "192.168.68.140"
+      protocol: "sacn"
       columns: 32
       column_offset: 0
     - ip: "192.168.68.141"

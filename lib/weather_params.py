@@ -415,7 +415,7 @@ WEATHER_PRESETS = {
 
     WeatherState.BARTIKI_PRIDE: {
         "ARI": 25,
-        "Switch_rate": 0.18,
+        "Switch_rate": 0.5,
         "celestial_visibility": 0,
         "fog": 0,
         "fog_color": np.array([1, 0.6, 0.9]),
