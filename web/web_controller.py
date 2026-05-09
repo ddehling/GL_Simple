@@ -245,6 +245,31 @@ class WebController:
                 "available": available,
             })
 
+        @self.app.route('/api/project/change', methods=['POST'])
+        def project_change():
+            """Swap the active project. Mirrors the ``change_project``
+            Socket.IO handler so HTTP clients (the layout editor) can
+            request a swap without a Socket.IO dependency."""
+            data = request.get_json(silent=True) or {}
+            new_id = data.get('project_id')
+            if not new_id:
+                return jsonify({"success": False,
+                                "error": "missing project_id"}), 400
+            with self._dict_lock:
+                avail = self.control_dict.get('available_projects', []) or []
+                ids = {p.get('id') for p in avail if isinstance(p, dict)}
+                current = self.control_dict.get('current_project')
+            if new_id not in ids:
+                return jsonify({"success": False,
+                                "error": f"unknown project {new_id!r}"}), 400
+            if new_id == current:
+                return jsonify({"success": True, "current": current,
+                                "note": "already active"})
+            with self._dict_lock:
+                self.control_dict['request_project_swap'] = new_id
+            self._values_cache = None
+            return jsonify({"success": True, "requested": new_id})
+
         @self.app.route('/admin')
         def admin_panel():
             """Serve the admin panel page."""

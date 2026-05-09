@@ -41,6 +41,12 @@ class Project:
     groups: list = field(default_factory=list)  # list[GroupSpec]
     hooks: dict = field(default_factory=dict)   # capabilities (random_events_module, etc.)
     raw: dict = field(default_factory=dict)
+    # Brightness setpoint (0..1) used by RenderPipeline's per-frame
+    # limiter. Per-project so each piece can match its actual power
+    # supply budget — Fan and WoL have very different LED counts and
+    # PSU capacities. ``None`` means "use the pipeline default" so
+    # legacy projects without the key keep their existing behaviour.
+    brightness_limit: float | None = None
 
     @property
     def root(self) -> Path:
@@ -194,6 +200,9 @@ def load_project(project_id: str) -> Project:
     if not isinstance(hooks, dict):
         hooks = {}
 
+    bl = raw.get("brightness_limit")
+    brightness_limit = float(bl) if bl is not None else None
+
     return Project(
         id=pid,
         display_name=raw.get("display_name", pid),
@@ -202,4 +211,5 @@ def load_project(project_id: str) -> Project:
         groups=groups,
         hooks=hooks,
         raw=raw,
+        brightness_limit=brightness_limit,
     )

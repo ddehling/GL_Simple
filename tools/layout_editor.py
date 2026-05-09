@@ -35,32 +35,510 @@ Planned for follow-up:
 """
 from __future__ import annotations
 
+import os
+import socket
+import struct
 import sys
+import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from PyQt6.QtCore import (
-    Qt, QAbstractTableModel, QModelIndex, QPointF, QRectF, pyqtSignal,
+    Qt, QAbstractTableModel, QModelIndex, QPointF, QRectF, QTimer,
+    QProcess, QProcessEnvironment, pyqtSignal,
 )
 from PyQt6.QtGui import (
     QAction, QBrush, QColor, QFont, QPainter, QPen, QPainterPath,
+    QImage, QPixmap, QKeySequence, QShortcut, QUndoCommand, QUndoStack,
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTabWidget, QTableView, QPushButton, QComboBox, QLabel, QToolBar,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsSimpleTextItem,
-    QHeaderView, QStyledItemDelegate, QStatusBar, QFrame,
+    QGraphicsPixmapItem,
+    QHeaderView, QStyledItemDelegate, QStatusBar, QFrame, QPlainTextEdit,
+    QMenu, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QSpinBox,
 )
 
 from core.project import list_projects
+from lib.emulator_broadcaster import (
+    decode_message, STAGE_RAW, STAGE_CORRECTED,
+)
+
+
+# ---------------------------------------------------------------------------
+# Emulator client: TCP receive thread + thread-safe latest-frame caches
+# ---------------------------------------------------------------------------
+
+class EmulatorClient:
+    """Reads length-prefixed frames from the engine's localhost TCP feed
+    and parks the most recent ``raw`` and ``corrected`` frame per group
+    in two dicts. Designed for a Qt timer to poll without blocking.
+
+    The connect attempt is retried in the background until the engine's
+    listener is up, so the editor can press Launch then connect — the
+    engine will be a few hundred ms behind the editor's connect attempts.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        self.host = host
+        self.port = int(port)
+        self._sock: Optional[socket.socket] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        self._lock = threading.Lock()
+        self._raw: dict[str, np.ndarray] = {}
+        self._corrected: dict[str, np.ndarray] = {}
+        self._last_seq: int = 0
+        self._connected = False
+
+    # ----- lifecycle -----
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="EmulatorClient", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._sock is not None:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+    # ----- snapshot accessors (called from Qt thread) -----
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def snapshot(self) -> tuple[dict[str, np.ndarray],
+                                dict[str, np.ndarray], int]:
+        """Return (raw_frames, corrected_frames, last_seq). Returned
+        arrays are *not* copied — treat them as read-only. Safe to call
+        from the Qt thread; the receive thread only ever replaces the
+        whole dict entry under the lock."""
+        with self._lock:
+            return dict(self._raw), dict(self._corrected), self._last_seq
+
+    # ----- internals -----
+    def _run(self):
+        while not self._stop.is_set():
+            if not self._connect_with_retry():
+                return
+            try:
+                self._read_loop()
+            except OSError:
+                pass
+            self._connected = False
+            with self._lock:
+                self._raw.clear()
+                self._corrected.clear()
+
+    def _connect_with_retry(self) -> bool:
+        # Retry a few times so the editor's "Launch" button isn't racing
+        # the engine's bind. ~6 seconds total before giving up.
+        deadline = 6.0
+        delay = 0.2
+        elapsed = 0.0
+        while not self._stop.is_set() and elapsed < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect((self.host, self.port))
+                s.settimeout(None)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self._sock = s
+                self._connected = True
+                return True
+            except OSError:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                self._stop.wait(delay)
+                elapsed += delay
+        return False
+
+    def _read_exact(self, n: int) -> Optional[bytes]:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = self._sock.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def _read_loop(self):
+        while not self._stop.is_set():
+            hdr = self._read_exact(4)
+            if hdr is None:
+                return
+            (msg_len,) = struct.unpack(">L", hdr)
+            payload = self._read_exact(msg_len)
+            if payload is None:
+                return
+            msg = decode_message(payload)
+            if msg is None:
+                continue
+            with self._lock:
+                if msg["stage"] == STAGE_RAW:
+                    self._raw[msg["group_id"]] = msg["frame"]
+                elif msg["stage"] == STAGE_CORRECTED:
+                    self._corrected[msg["group_id"]] = msg["frame"]
+                self._last_seq = msg["seq"]
+
+
+# ---------------------------------------------------------------------------
+# Emulator overlay: per-LED canvas positions + FBO sample indices,
+# numpy-painted QImage updates per frame.
+# ---------------------------------------------------------------------------
+
+class _ArcParamDialog(QDialog):
+    """Edit the (center, radius, start_deg, end_deg, segments) of an
+    arc-shaped strip. Live-updates the strip's polyline preview when
+    the dialog's Apply button is hit."""
+
+    def __init__(self, strip, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Arc parameters")
+        layout = QFormLayout(self)
+        self._cx = QSpinBox(); self._cx.setRange(-99999, 99999)
+        self._cy = QSpinBox(); self._cy.setRange(-99999, 99999)
+        self._cx.setValue(int(strip.arc_center[0]))
+        self._cy.setValue(int(strip.arc_center[1]))
+        self._radius = QDoubleSpinBox()
+        self._radius.setRange(0.1, 99999.0)
+        self._radius.setDecimals(1)
+        self._radius.setValue(float(strip.arc_radius))
+        self._start = QDoubleSpinBox()
+        self._start.setRange(-720.0, 720.0)
+        self._start.setDecimals(1)
+        self._start.setValue(float(strip.arc_start_deg))
+        self._end = QDoubleSpinBox()
+        self._end.setRange(-720.0, 720.0)
+        self._end.setDecimals(1)
+        self._end.setValue(float(strip.arc_end_deg))
+        self._segments = QSpinBox()
+        self._segments.setRange(2, 256)
+        self._segments.setValue(int(strip.arc_segments))
+        layout.addRow("Center X (canvas px)", self._cx)
+        layout.addRow("Center Y (canvas px)", self._cy)
+        layout.addRow("Radius (px)", self._radius)
+        layout.addRow("Start angle (° CCW from +x)", self._start)
+        layout.addRow("End angle (° CCW from +x)", self._end)
+        layout.addRow("Polyline segments", self._segments)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def apply_to(self, strip):
+        strip.arc_center = (self._cx.value(), self._cy.value())
+        strip.arc_radius = float(self._radius.value())
+        strip.arc_start_deg = float(self._start.value())
+        strip.arc_end_deg = float(self._end.value())
+        strip.arc_segments = int(self._segments.value())
+
+
+def _arc_to_polyline(center: tuple, radius: float,
+                     start_deg: float, end_deg: float,
+                     segments: int) -> list:
+    """Sample a circular arc into an ``(segments+1)``-vertex polyline
+    (canvas coords). Angles are degrees, measured CCW from +x. The
+    polyline runs from ``start_deg`` toward ``end_deg`` so direction
+    is preserved (a reversed angle range yields a reversed walk)."""
+    import math
+    cx, cy = center
+    n = max(int(segments), 1)
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        ang_deg = start_deg + t * (end_deg - start_deg)
+        ang = math.radians(ang_deg)
+        # Canvas y grows down — negate sin so positive angle goes up
+        # in screen-correct orientation (matches the Fan polyline
+        # derivation in load_doc).
+        x = cx + radius * math.cos(ang)
+        y = cy - radius * math.sin(ang)
+        pts.append([int(round(x)), int(round(y))])
+    return pts
+
+
+def _resample_polyline(polyline: list, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sample ``n`` evenly-spaced points along a multi-vertex polyline.
+    Returns (xs, ys) as int arrays, in chain order (matching polyline
+    order — caller is responsible for orienting it correctly)."""
+    if n <= 0 or not polyline:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
+    if n == 1:
+        return (np.array([int(polyline[0][0])], dtype=np.int32),
+                np.array([int(polyline[0][1])], dtype=np.int32))
+    pts = np.asarray(polyline, dtype=np.float64)
+    seg = np.diff(pts, axis=0)
+    seg_lens = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    total = cum[-1] if cum[-1] > 1e-9 else 1.0
+    targets = np.linspace(0.0, total, n)
+    seg_idx = np.clip(np.searchsorted(cum, targets, side="right") - 1,
+                      0, len(seg_lens) - 1)
+    base = cum[seg_idx]
+    span = np.maximum(seg_lens[seg_idx], 1e-9)
+    t = (targets - base) / span
+    xs = pts[seg_idx, 0] + t * seg[seg_idx, 0]
+    ys = pts[seg_idx, 1] + t * seg[seg_idx, 1]
+    return xs.astype(np.int32), ys.astype(np.int32)
+
+
+def _strip_fbo_indices(s: 'StripSpec') -> tuple[np.ndarray, np.ndarray]:
+    """Per-LED (rows, cols) indices into the strip's group canvas, in
+    chain order. Mirrors core/strip.py's index logic so the editor
+    emulator samples the same pixels the runtime would extract."""
+    L = max(int(s.length), 0)
+    if L == 0:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
+    start = int(s.start)
+    if s.kind == "row":
+        if s.direction == "right":
+            cols = np.arange(start, start + L, dtype=np.int32)
+        else:  # left
+            cols = np.arange(start, start - L, -1, dtype=np.int32)
+        rows = np.full(L, int(s.row), dtype=np.int32)
+    elif s.kind == "column":
+        if s.direction == "down":
+            rows = np.arange(start, start - L, -1, dtype=np.int32)
+        else:  # up
+            rows = np.arange(start, start + L, dtype=np.int32)
+        cols = np.full(L, int(s.col), dtype=np.int32)
+    else:  # raw — polyline carries indices directly; no fbo sampling
+        rows = np.zeros(L, dtype=np.int32)
+        cols = np.zeros(L, dtype=np.int32)
+    return rows, cols
+
+
+class EmulatorOverlay:
+    """Drives the live LED preview on top of an existing LayoutScene
+    (physical canvas) and GroupCanvasScene (group canvases).
+
+    Setup phase: pre-compute per-strip arrays of (canvas_x, canvas_y)
+    LED positions and (fbo_row, fbo_col) sample indices. Allocates two
+    QGraphicsPixmapItems that overlay each scene's existing items.
+
+    Tick phase: snapshot the EmulatorClient's current frames; for each
+    strip sample its LEDs from the corrected frame and paint them into
+    the physical-canvas image; for each group blit the raw frame into
+    the group-canvas image (nearest-neighbour upscaled to display size).
+    """
+
+    # Half-width of each LED dot on the physical-canvas image, in
+    # canvas pixels. 0 = single pixel; 1 = 3×3 ish; 2 = 5×5 ish.
+    # Implemented via a single per-frame cv2.dilate after writing
+    # one pixel per LED — far cheaper than expanding stamps into
+    # the index arrays (which costs ~10× more pixel writes per
+    # tick on Fan's 40k-LED canvas).
+    LED_RADIUS = 2
+
+    def __init__(self, doc: 'LayoutDoc',
+                 phys_scene: 'LayoutScene',
+                 group_scene: 'GroupCanvasScene'):
+        self.doc = doc
+        self.phys_scene = phys_scene
+        self.group_scene = group_scene
+
+        # Per-strip precomputed sampling tables (chain-ordered).
+        # Each list entry is (group_id, fbo_rows, fbo_cols, canvas_xs,
+        # canvas_ys). Strips with no length get empty arrays and are
+        # silently skipped each tick.
+        self._strip_tables: list[tuple] = []
+        self._build_strip_tables()
+
+        # Physical-canvas overlay: one numpy buffer + one QPixmapItem.
+        cw = max(int(doc.canvas_w), 1)
+        ch = max(int(doc.canvas_h), 1)
+        self._phys_buf = np.zeros((ch, cw, 3), dtype=np.uint8)
+        self._phys_pixmap_item = QGraphicsPixmapItem()
+        self._phys_pixmap_item.setZValue(7)   # above strips (z=5), below handles (z=20)
+        # Disable smoothing so single-pixel LEDs stay crisp on zoom.
+        self._phys_pixmap_item.setTransformationMode(
+            Qt.TransformationMode.FastTransformation
+        )
+        phys_scene.addItem(self._phys_pixmap_item)
+
+        # Group-canvas overlays: one QPixmapItem per group, sized to the
+        # group's display rect. Rebuild whenever the doc/canvas changes.
+        self._group_pixmap_items: dict[str, QGraphicsPixmapItem] = {}
+        self._allocate_group_pixmaps()
+
+        # Visibility starts hidden; show() is called when the emulator
+        # is connected and we have at least one frame in hand.
+        self.set_visible(False)
+
+    # ----- precompute -----
+    def _build_strip_tables(self):
+        # Cache canvas dimensions so we can pre-clip canvas-side
+        # destinations once instead of per tick.
+        ch = max(int(self.doc.canvas_h), 1)
+        cw = max(int(self.doc.canvas_w), 1)
+        group_dims = {g.id: (g.height, g.width) for g in self.doc.groups}
+
+        for s in self.doc.strips:
+            L = max(int(s.length), 0)
+            if L == 0:
+                self._strip_tables.append((s.group, None, None, None, None))
+                continue
+            rows, cols = _strip_fbo_indices(s)
+            if s.polyline and len(s.polyline) >= 2:
+                xs, ys = _resample_polyline(s.polyline, L)
+            elif s.kind in ("row", "column"):
+                if s.kind == "row":
+                    a_start = int(s.start)
+                    step = 1 if s.direction == "right" else -1
+                    xs = np.arange(L, dtype=np.int32) * step + a_start
+                    ys = np.full(L, int(s.row), dtype=np.int32)
+                else:
+                    a_start = int(s.start)
+                    step = -1 if s.direction == "down" else 1
+                    ys = np.arange(L, dtype=np.int32) * step + a_start
+                    xs = np.full(L, int(s.col), dtype=np.int32)
+            else:
+                xs = np.zeros(L, dtype=np.int32)
+                ys = np.zeros(L, dtype=np.int32)
+
+            # Clip everything once at setup so the per-tick path is
+            # pure indexing — no boolean masks, no bounds compares.
+            gh, gw = group_dims.get(s.group, (0, 0))
+            ok = (
+                (rows >= 0) & (rows < gh) & (cols >= 0) & (cols < gw)
+                & (xs >= 0) & (xs < cw) & (ys >= 0) & (ys < ch)
+            )
+            if not ok.all():
+                rows = rows[ok]; cols = cols[ok]
+                xs = xs[ok]; ys = ys[ok]
+            self._strip_tables.append((s.group, rows, cols, xs, ys))
+
+        # Pre-build the morphological kernel for the per-frame dilate
+        # that fattens single-pixel LED writes into visible dots. A
+        # circular kernel reads more like an LED than the default
+        # square block. Lazily import cv2 so the editor still loads
+        # if OpenCV is unavailable (in which case dilate is skipped).
+        self._dilate_kernel = None
+        if self.LED_RADIUS > 0:
+            try:
+                import cv2
+                size = 2 * self.LED_RADIUS + 1
+                self._dilate_kernel = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (size, size)
+                )
+            except ImportError:
+                pass
+
+    def _allocate_group_pixmaps(self):
+        # Place one pixmap item per group at its origin in the group
+        # scene. Sized to the display rect; nearest-neighbour scaling
+        # so the FBO grid is visible.
+        for gid, origin in self.group_scene._group_origin.items():
+            ox, oy, sx, sy = origin
+            g = next((g for g in self.doc.groups if g.id == gid), None)
+            if g is None or g.width <= 0 or g.height <= 0:
+                continue
+            item = QGraphicsPixmapItem()
+            item.setPos(ox, oy)
+            # We'll set the pixmap each tick; pre-set a transform so the
+            # native-resolution pixmap fills the group's display rect.
+            item.setTransform(item.transform().scale(sx, sy))
+            item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+            item.setZValue(2)   # above the group canvas rect, below strip lines
+            self.group_scene.addItem(item)
+            self._group_pixmap_items[gid] = item
+
+    # ----- per-frame -----
+    def update_frame(self,
+                     raw_frames: dict[str, np.ndarray],
+                     corrected_frames: dict[str, np.ndarray]) -> None:
+        # Physical canvas: paint LEDs from corrected frames. Hot path
+        # — runs every emulator tick on the GUI thread. Bounds were
+        # pre-clipped in _build_strip_tables, so per-tick work is just
+        # fancy-indexed reads from the source frame and writes to the
+        # destination buffer.
+        if corrected_frames:
+            self._phys_buf.fill(0)
+            for (gid, rows, cols, xs, ys) in self._strip_tables:
+                if rows is None or rows.size == 0:
+                    continue
+                frame = corrected_frames.get(gid)
+                if frame is None:
+                    continue
+                self._phys_buf[ys, xs] = frame[rows, cols]
+            # Fatten each single-pixel LED into a visible dot via a
+            # single SIMD-accelerated dilate. Far cheaper than
+            # expanding every LED into a stamp during the index
+            # writes (~1 ms for a 1024×600 buffer vs ~35 ms for
+            # 25×-expanded writes on Fan).
+            if self._dilate_kernel is not None:
+                import cv2
+                cv2.dilate(self._phys_buf, self._dilate_kernel,
+                           dst=self._phys_buf)
+            self._phys_pixmap_item.setPixmap(_pixmap_from_rgb(self._phys_buf))
+
+        # Group canvases: blit the raw FBO directly.
+        for gid, item in self._group_pixmap_items.items():
+            frame = raw_frames.get(gid)
+            if frame is None:
+                continue
+            item.setPixmap(_pixmap_from_rgb(frame))
+
+    def set_visible(self, on: bool):
+        self._phys_pixmap_item.setVisible(on)
+        for item in self._group_pixmap_items.values():
+            item.setVisible(on)
+
+    def teardown(self):
+        # Items may already be C++-deleted if the scene was cleared
+        # underneath us (e.g. a doc edit triggered scene.rebuild()).
+        # In that case ``.scene()`` raises RuntimeError; treat it as a
+        # successful no-op cleanup.
+        try:
+            if self._phys_pixmap_item.scene() is self.phys_scene:
+                self.phys_scene.removeItem(self._phys_pixmap_item)
+        except RuntimeError:
+            pass
+        for item in list(self._group_pixmap_items.values()):
+            try:
+                if item.scene() is self.group_scene:
+                    self.group_scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self._group_pixmap_items.clear()
+
+
+def _pixmap_from_rgb(arr: np.ndarray) -> QPixmap:
+    """Wrap a (H, W, 3) uint8 RGB numpy array as a QPixmap. Copies the
+    bytes into the QImage's lifetime (don't hold the array reference)."""
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr)
+    h, w = arr.shape[:2]
+    img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+    return QPixmap.fromImage(img)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +630,20 @@ class StripSpec:
     direction: str = "right"
     polyline: list = field(default_factory=list)
     receiver_idx: int = -1
+    # Optional shape hint used by the editor to drive interactive
+    # editing of multi_object polylines. ``"polyline"`` (default) =
+    # arbitrary N-vertex path, edited by dragging per-vertex handles.
+    # ``"arc"`` = polyline derived from (center, radius, start_deg,
+    # end_deg, segments); editing the arc parameters regenerates the
+    # polyline. The runtime never reads these — at load/save time the
+    # editor regenerates the polyline from the arc params, and writes
+    # the polyline to YAML alongside the params for round-trip safety.
+    shape: str = "polyline"
+    arc_center: tuple = (0, 0)        # (x, y) canvas coords
+    arc_radius: float = 0.0
+    arc_start_deg: float = 0.0
+    arc_end_deg: float = 0.0
+    arc_segments: int = 16            # polyline resolution
 
     @property
     def canvas_pos(self) -> int:
@@ -365,6 +857,8 @@ def load_doc(project_id: str) -> LayoutDoc:
                 start = max(length - 1, 0)
             else:
                 start = 0
+            shape = str(s.get("shape", "polyline"))
+            arc_center = tuple(s.get("arc_center", (0, 0)) or (0, 0))
             spec = StripSpec(
                 group=str(s.get("group", "")),
                 strip_idx=strip_idx,
@@ -376,6 +870,12 @@ def load_doc(project_id: str) -> LayoutDoc:
                 direction=direction,
                 polyline=[],
                 receiver_idx=rx_idx,
+                shape=shape,
+                arc_center=arc_center,
+                arc_radius=float(s.get("arc_radius", 0.0)),
+                arc_start_deg=float(s.get("arc_start_deg", 0.0)),
+                arc_end_deg=float(s.get("arc_end_deg", 0.0)),
+                arc_segments=int(s.get("arc_segments", 16)),
             )
             doc.strips.append(spec)
 
@@ -420,10 +920,22 @@ def load_doc(project_id: str) -> LayoutDoc:
             y_inner = cy - inner_r_px * _m.sin(theta)   # canvas y grows down
             x_outer = cx + outer_r_px * _m.cos(theta)
             y_outer = cy - outer_r_px * _m.sin(theta)
-            spec.polyline = [
-                [int(round(x_inner)), int(round(y_inner))],
-                [int(round(x_outer)), int(round(y_outer))],
-            ]
+            # Chain-align the polyline so polyline[0] is LED 0's position.
+            #
+            # In the FBO, FanGeometry maps texture v=0 (=GL y=0, the
+            # bottom row) to inner_r. BUT the broadcaster sees the
+            # frame *after* GroupCanvas.get_frame() does ``np.flipud``,
+            # so in the array we receive, **row 0 is the OUTER end and
+            # row 299 is the INNER end** — opposite of the bare GL
+            # convention. Combine that with core/strip.py:
+            #   direction=down → LED 0 at row=length-1 → INNER
+            #   direction=up   → LED 0 at row=0        → OUTER
+            inner = [int(round(x_inner)), int(round(y_inner))]
+            outer = [int(round(x_outer)), int(round(y_outer))]
+            if spec.direction == "down":
+                spec.polyline = [inner, outer]
+            else:   # up
+                spec.polyline = [outer, inner]
 
     # multi_object: merge per-strip polylines from geometry.yaml by (group, strip_idx)
     if geometry_type == "multi_object":
@@ -440,6 +952,16 @@ def load_doc(project_id: str) -> LayoutDoc:
             # geometry.yaml's length wins if project.yaml didn't carry one
             if spec.length == 0 and key in lengths:
                 spec.length = lengths[key]
+
+    # Regenerate arc-shaped polylines from their stored params so the
+    # editor canvas reflects the latest arc settings even if the
+    # cached polyline in geometry.yaml went stale.
+    for spec in doc.strips:
+        if spec.shape == "arc" and spec.arc_radius > 0:
+            spec.polyline = _arc_to_polyline(
+                spec.arc_center, spec.arc_radius,
+                spec.arc_start_deg, spec.arc_end_deg, spec.arc_segments,
+            )
 
     return doc
 
@@ -527,6 +1049,16 @@ def save_doc(doc: LayoutDoc) -> None:
         # has overridden start.
         if s.start != s.default_start():
             strip_entry["start"] = s.start
+        # Arc shape metadata — only emitted when shape != "polyline"
+        # so polyline-shaped strips stay terse on disk.
+        if s.shape == "arc":
+            strip_entry["shape"] = "arc"
+            strip_entry["arc_center"] = [int(s.arc_center[0]),
+                                         int(s.arc_center[1])]
+            strip_entry["arc_radius"] = float(s.arc_radius)
+            strip_entry["arc_start_deg"] = float(s.arc_start_deg)
+            strip_entry["arc_end_deg"] = float(s.arc_end_deg)
+            strip_entry["arc_segments"] = int(s.arc_segments)
         receivers_yaml_proto[rx_yaml_idx]["strips"].append(strip_entry)
 
     # ---- geometry.yaml (multi_object only) ----
@@ -582,6 +1114,35 @@ def color_for_group(group_id: str, all_groups: list[GroupSpec]) -> QColor:
     if group_id in ids:
         return _GROUP_COLORS[ids.index(group_id) % len(_GROUP_COLORS)]
     return QColor("#aaaaaa")
+
+
+# Per-receiver shading for the Strips table — gives a quick visual
+# grouping of strips wired to the same physical box. Hand-tuned
+# palette: each color is dim enough (luminance ≈ 0.12-0.18) to leave
+# the text foreground white and read with good contrast, while still
+# carrying a distinguishable hue. Hue order spaces adjacent receivers
+# at ~30° intervals across the wheel to maximize differentiation.
+_RECEIVER_SHADES = [
+    QColor("#7a2828"),   #  0  red
+    QColor("#7a4f28"),   #  1  orange
+    QColor("#7a7a28"),   #  2  yellow
+    QColor("#4f7a28"),   #  3  lime
+    QColor("#287a28"),   #  4  green
+    QColor("#287a4f"),   #  5  teal-green
+    QColor("#287a7a"),   #  6  teal
+    QColor("#284f7a"),   #  7  cyan-blue
+    QColor("#28287a"),   #  8  blue
+    QColor("#4f287a"),   #  9  violet
+    QColor("#7a287a"),   # 10  magenta
+    QColor("#7a284f"),   # 11  pink
+]
+_RECEIVER_UNASSIGNED = QColor("#2a2a2a")    # dark grey
+
+
+def shade_for_receiver(receiver_idx: int) -> QColor:
+    if receiver_idx < 0:
+        return _RECEIVER_UNASSIGNED
+    return _RECEIVER_SHADES[receiver_idx % len(_RECEIVER_SHADES)]
 
 
 # ---------------------------------------------------------------------------
@@ -860,8 +1421,19 @@ class StripsModel(_BaseModel):
                 if pts == 1:
                     return f"1 pt: {s.polyline[0]}"
                 return "—"
-        if role == Qt.ItemDataRole.BackgroundRole and c == self.COL_GROUP:
-            return QBrush(color_for_group(s.group, self.doc.groups))
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if c == self.COL_GROUP:
+                return QBrush(color_for_group(s.group, self.doc.groups))
+            # Every other column gets a per-receiver shade so strips
+            # on the same physical box read together at a glance.
+            return QBrush(shade_for_receiver(s.receiver_idx))
+        if role == Qt.ItemDataRole.ForegroundRole:
+            # Force text color explicitly so contrast doesn't depend
+            # on the OS theme. Group column has a LIGHT pastel BG →
+            # dark text; other columns have DIM saturated BG → white.
+            if c == self.COL_GROUP:
+                return QBrush(QColor("#101010"))
+            return QBrush(QColor("#f0f0f0"))
         if role == Qt.ItemDataRole.ToolTipRole and c == self.COL_CANVAS_POS:
             return ("Canvas row (kind=row)" if s.kind == "row"
                     else "Canvas column (kind=column)" if s.kind == "column"
@@ -939,6 +1511,16 @@ class StripsModel(_BaseModel):
                             break
                     else:
                         return False
+                # Re-sort the strips list by (receiver_idx, strip_idx)
+                # so this strip slots in next to its receiver siblings.
+                # Defer one event loop tick — the QComboBox delegate
+                # is still finishing this commit, and a synchronous
+                # beginResetModel mid-commit trips Qt assertions on
+                # some versions.
+                target_strip = s
+                QTimer.singleShot(
+                    0, lambda ts=target_strip: self._resort_after_receiver_change(ts)
+                )
             else:
                 return False
         except (TypeError, ValueError):
@@ -946,6 +1528,25 @@ class StripsModel(_BaseModel):
         self.dataChanged.emit(index, index)
         self.emit_layout_changed()
         return True
+
+    def _resort_after_receiver_change(self, target_strip):
+        """Re-sort strips by receiver after a single strip's
+        receiver_idx changed, then renumber strip_idx within each
+        receiver so the moved strip picks up the next free wire-order
+        slot in its new receiver. Re-selects the moved strip's new
+        row so the operator's cursor follows it."""
+        self.beginResetModel()
+        self._sort_strips_by_receiver()
+        self._renumber_strip_idx_per_receiver()
+        self.endResetModel()
+        self.emit_layout_changed()
+        try:
+            new_row = self.doc.strips.index(target_strip)
+        except ValueError:
+            return
+        view = getattr(self, "_view", None)
+        if view is not None:
+            view.selectRow(new_row)
 
     def flags(self, index):
         c = index.column()
@@ -980,18 +1581,69 @@ class StripsModel(_BaseModel):
             kind=default_kind,
             col=new_idx if default_kind == "column" else 0,
         )
-        self.beginInsertRows(QModelIndex(), len(self.doc.strips), len(self.doc.strips))
+        # Append + sort by (receiver_idx, strip_idx) + renumber so
+        # the new row slots in next to its receiver siblings AND
+        # picks up the next available ``strip_idx`` in that receiver
+        # (rather than the strip-counter heuristic above, which can
+        # collide when receivers have been re-ordered or trimmed).
+        self.beginResetModel()
         self.doc.strips.append(new)
-        self.endInsertRows()
+        self._sort_strips_by_receiver()
+        self._renumber_strip_idx_per_receiver()
+        self.endResetModel()
         self.emit_layout_changed()
-        return len(self.doc.strips) - 1
+        return self.doc.strips.index(new)
+
+    def _sort_strips_by_receiver(self):
+        """Stable-sort doc.strips by (receiver_idx, strip_idx, group).
+        Unassigned strips (receiver_idx == -1) sort to the end via a
+        sentinel, matching their visual treatment (near-black shade)."""
+        SENTINEL = 10 ** 9
+        self.doc.strips.sort(
+            key=lambda s: (
+                s.receiver_idx if s.receiver_idx >= 0 else SENTINEL,
+                s.strip_idx,
+                s.group,
+            )
+        )
+
+    def _renumber_strip_idx_per_receiver(self):
+        """Reassign ``strip_idx`` to sequential 0..N-1 within each
+        receiver group. Closes gaps left by removals and avoids
+        collisions when a strip moves between receivers — every wire
+        slot stays densely numbered.
+
+        Multi-object row strips track ``s.row == s.strip_idx`` by
+        default; that coupling is preserved so the canvas-row mapping
+        stays consistent with the new wire-order index. Strips whose
+        ``row`` was hand-edited away from ``strip_idx`` are left alone
+        (the operator's override wins over the renumbering)."""
+        counters: dict[int, int] = {}
+        for s in self.doc.strips:
+            rx = s.receiver_idx
+            next_idx = counters.get(rx, 0)
+            if s.strip_idx != next_idx:
+                # Carry the row coupling along so default-row strips
+                # don't get stranded on a stale canvas row index.
+                if s.kind == "row" and s.row == s.strip_idx:
+                    s.row = next_idx
+                s.strip_idx = next_idx
+            counters[rx] = next_idx + 1
 
     def remove_rows(self, rows: list[int]):
+        # Pop the rows top-down (unchanged), then renumber and reset
+        # the model so the ``strip_idx`` column reflects the new
+        # dense wire-order numbering.
         for row in sorted(rows, reverse=True):
             if 0 <= row < len(self.doc.strips):
                 self.beginRemoveRows(QModelIndex(), row, row)
                 self.doc.strips.pop(row)
                 self.endRemoveRows()
+        # Ordering preserved by the pops; just close gaps left in
+        # strip_idx by the removed rows.
+        self.beginResetModel()
+        self._renumber_strip_idx_per_receiver()
+        self.endResetModel()
         self.emit_layout_changed()
 
 
@@ -1083,8 +1735,14 @@ class _ReceiverDelegate(QStyledItemDelegate):
 # ---------------------------------------------------------------------------
 
 class _ObjectItem(QGraphicsEllipseItem):
-    """Draggable dot for one box's spatial position (multi_object only)."""
-    RADIUS = 7
+    """Draggable dot for one box's spatial position (multi_object only).
+
+    Visual radius stays small (so dense layouts don't smush together)
+    but the click ``shape()`` is widened to a larger invisible disc —
+    grab anywhere within ``HIT_RADIUS`` to drag the object."""
+
+    RADIUS = 9
+    HIT_RADIUS = 16
 
     def __init__(self, obj_idx: int, obj: BoxSpec, on_moved):
         super().__init__(-self.RADIUS, -self.RADIUS, 2 * self.RADIUS, 2 * self.RADIUS)
@@ -1102,39 +1760,103 @@ class _ObjectItem(QGraphicsEllipseItem):
             f"(id={obj.object_id})  ({obj.x},{obj.y})"
         )
 
+    def shape(self):
+        # Widen the click/drag hit area beyond the visible dot so
+        # rubber-band selection doesn't steal the click when the
+        # operator's aim is slightly off. The visible ellipse stays
+        # small (RADIUS=9); only the interaction zone is bigger.
+        path = QPainterPath()
+        path.addEllipse(-self.HIT_RADIUS, -self.HIT_RADIUS,
+                        2 * self.HIT_RADIUS, 2 * self.HIT_RADIUS)
+        return path
+
+    def paint(self, painter, option, widget=None):
+        # Custom paint: thick white outline + bigger fill when this
+        # object is selected. Qt's default selected-item rendering
+        # (a faint dashed rect) is hard to see on the dark canvas
+        # and made multi-select status invisible to the operator.
+        if self.isSelected():
+            painter.setBrush(QBrush(QColor("#ffd66c")))
+            painter.setPen(QPen(QColor("#ffffff"), 3))
+            r = self.RADIUS + 2
+            painter.drawEllipse(-r, -r, 2 * r, 2 * r)
+        else:
+            painter.setBrush(QBrush(QColor("#ffd66c")))
+            painter.setPen(QPen(QColor("#000000"), 1.5))
+            r = self.RADIUS
+            painter.drawEllipse(-r, -r, 2 * r, 2 * r)
+
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             self._on_moved(self.obj_idx, int(value.x()), int(value.y()))
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            # Force a repaint so the highlight border swaps in/out.
+            self.update()
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.object_drag_started.emit(self.obj_idx)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.object_drag_finished.emit(self.obj_idx)
+        super().mouseReleaseEvent(event)
 
 
 class _VertexHandle(QGraphicsEllipseItem):
     """Draggable handle at a polyline vertex (multi_object strips only).
 
-    Hidden by default; the scene reveals only the handles for the
-    currently-selected strip so the canvas doesn't drown in tiny dots.
+    Color codes the role:
+      * green = chain start (LED 0)
+      * red   = chain end   (last LED)
+      * white = interior vertex
+    Start/end also get a slightly larger radius so they're easy to
+    spot on dense paths. Hidden by default; the scene reveals only
+    the handles for the currently-selected strip.
     """
-    RADIUS = 5
+    RADIUS_INTERIOR = 5
+    RADIUS_ENDPOINT = 7
 
-    def __init__(self, strip_idx: int, vertex_idx: int, x: int, y: int, on_moved):
-        super().__init__(-self.RADIUS, -self.RADIUS,
-                         2 * self.RADIUS, 2 * self.RADIUS)
+    COLOR_START    = QColor("#7be59a")   # green
+    COLOR_END      = QColor("#ff8a8a")   # red
+    COLOR_INTERIOR = QColor("#ffffff")
+
+    def __init__(self, strip_idx: int, vertex_idx: int, x: int, y: int,
+                 on_moved, role: str = "interior"):
+        # ``role`` is "start" / "end" / "interior" — picks color + size.
+        if role in ("start", "end"):
+            r = self.RADIUS_ENDPOINT
+        else:
+            r = self.RADIUS_INTERIOR
+        super().__init__(-r, -r, 2 * r, 2 * r)
         self.strip_idx = strip_idx
         self.vertex_idx = vertex_idx
+        self.role = role
         self._on_moved = on_moved
-        # When True, programmatic setPos() calls won't fire the on_moved
-        # callback. QGraphicsEllipseItem isn't a QObject so blockSignals()
-        # is not available — we gate the callback ourselves instead.
         self._suppress_callback = True
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
-        self.setBrush(QBrush(QColor("#ffffff")))
+        if role == "start":
+            self.setBrush(QBrush(self.COLOR_START))
+            label = "chain start (LED 0)"
+        elif role == "end":
+            self.setBrush(QBrush(self.COLOR_END))
+            label = "chain end (last LED)"
+        else:
+            self.setBrush(QBrush(self.COLOR_INTERIOR))
+            label = f"vertex {vertex_idx}"
         self.setPen(QPen(QColor("#000000"), 1))
-        self.setZValue(20)         # above strips and object dots
-        self.setVisible(False)     # revealed by LayoutScene.highlight_strip
+        self.setZValue(20)
+        self.setVisible(False)
         self.setPos(x, y)
-        self.setToolTip(f"vertex {vertex_idx} ({x}, {y}) — drag to reshape")
+        self.setToolTip(f"{label}  ({x}, {y}) — drag to reshape")
         self._suppress_callback = False
 
     def set_pos_silent(self, x: int, y: int):
@@ -1151,6 +1873,111 @@ class _VertexHandle(QGraphicsEllipseItem):
             self._on_moved(self.strip_idx, self.vertex_idx,
                            int(value.x()), int(value.y()))
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.vertex_drag_started.emit(self.strip_idx)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.vertex_drag_finished.emit(self.strip_idx)
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        scene = self.scene()
+        if isinstance(scene, LayoutScene):
+            scene.vertex_context_requested.emit(
+                self.strip_idx, self.vertex_idx,
+                event.screenPos().x(), event.screenPos().y(),
+            )
+        event.accept()
+
+
+class _ArcHandle(QGraphicsEllipseItem):
+    """Direct-manipulation handle for an arc-shaped strip.
+
+    Roles map to the four interactive points on an arc:
+      * ``center`` — yellow; drag to pan the whole arc
+      * ``start``  — white; drag to change ``arc_start_deg`` (snaps to
+                    the current radius circle so the arc stays
+                    well-defined)
+      * ``end``    — white; drag to change ``arc_end_deg``
+      * ``radius`` — teal; sits at the arc's midpoint, drag radially
+                    to change ``arc_radius``
+
+    Hidden by default; revealed when the strip is the highlighted
+    selection (same gating as polyline vertex handles)."""
+
+    # Bigger than vertex-handle endpoints (R=7) so arc controls stand
+    # out and are easier to grab without precision aim.
+    RADIUS = 9
+    HIT_RADIUS = 16
+    # Match the polyline-vertex palette so start/end are recognisable
+    # whether the strip is shape=polyline or shape=arc.
+    COLORS = {
+        "center": QColor("#ffd66c"),   # yellow — pan
+        "start":  QColor("#7be59a"),   # green — chain start (LED 0)
+        "end":    QColor("#ff8a8a"),   # red — chain end (last LED)
+        "radius": QColor("#5be5da"),   # teal — radius
+    }
+
+    def __init__(self, strip_idx: int, role: str,
+                 x: int, y: int, on_moved):
+        super().__init__(-self.RADIUS, -self.RADIUS,
+                         2 * self.RADIUS, 2 * self.RADIUS)
+        self.strip_idx = strip_idx
+        self.role = role
+        self._on_moved = on_moved
+        self._suppress_callback = True
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setBrush(QBrush(self.COLORS.get(role, QColor("#ffffff"))))
+        self.setPen(QPen(QColor("#000000"), 1))
+        self.setZValue(21)         # above polyline vertex handles
+        self.setVisible(False)
+        self.setPos(x, y)
+        self.setToolTip(f"arc {role} — drag to reshape")
+        self._suppress_callback = False
+
+    def set_pos_silent(self, x: int, y: int):
+        self._suppress_callback = True
+        try:
+            self.setPos(x, y)
+        finally:
+            self._suppress_callback = False
+
+    def itemChange(self, change, value):
+        if (change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+                and not self._suppress_callback):
+            self._on_moved(self.strip_idx, self.role,
+                           int(value.x()), int(value.y()))
+        return super().itemChange(change, value)
+
+    def shape(self):
+        path = QPainterPath()
+        path.addEllipse(-self.HIT_RADIUS, -self.HIT_RADIUS,
+                        2 * self.HIT_RADIUS, 2 * self.HIT_RADIUS)
+        return path
+
+    def mousePressEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.vertex_drag_started.emit(self.strip_idx)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)):
+            scene.vertex_drag_finished.emit(self.strip_idx)
+        super().mouseReleaseEvent(event)
 
 
 def _strip_path_points(strip: StripSpec) -> list:
@@ -1188,6 +2015,12 @@ class _StripItem(QGraphicsPathItem):
         super().__init__()
         self.strip_idx = strip_idx
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        # Strip-translation drag state. Initialized to "no drag in
+        # progress" so the move handler is safe even if a synthetic
+        # move arrives before any press.
+        self._press_scene_pos = None
+        self._dragging = False
+        self._drag_emitted_started = False
         # Use a thicker invisible "hit" area so close-packed strips
         # (Fan: 32 columns 1px apart) are still individually clickable.
         self.set_points(_strip_path_points(strip))
@@ -1208,11 +2041,69 @@ class _StripItem(QGraphicsPathItem):
             f"(click to select, then drag the white dots to reshape)"
         )
 
+    DRAG_THRESHOLD = 4   # scene px before a press becomes a translation drag
+
     def mousePressEvent(self, event):
         scene = self.scene()
         if isinstance(scene, LayoutScene):
             scene.selection_changed_strip.emit(self.strip_idx)
+        # Capture potential strip-translation. The drag only commits
+        # to a translation after the cursor moves past DRAG_THRESHOLD,
+        # so a quick click-release doesn't shift the strip by a pixel.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_scene_pos = event.scenePos()
+            self._dragging = False
+            self._drag_emitted_started = False
+        else:
+            self._press_scene_pos = None
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_scene_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        scene = self.scene()
+        if not isinstance(scene, LayoutScene):
+            super().mouseMoveEvent(event)
+            return
+        delta = event.scenePos() - self._press_scene_pos
+        if not self._dragging:
+            if abs(delta.x()) + abs(delta.y()) < self.DRAG_THRESHOLD:
+                super().mouseMoveEvent(event)
+                return
+            # Crossed the threshold — start the translation drag.
+            self._dragging = True
+            scene.strip_translate_started.emit(self.strip_idx)
+            self._drag_emitted_started = True
+        scene.strip_translated.emit(
+            self.strip_idx, int(delta.x()), int(delta.y())
+        )
+        # Don't call super() while translating; we don't want Qt's
+        # default selection-rect / pan behaviour to interfere.
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        scene = self.scene()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and isinstance(scene, LayoutScene)
+                and self._drag_emitted_started):
+            scene.strip_translate_finished.emit(self.strip_idx)
+        self._press_scene_pos = None
+        self._dragging = False
+        self._drag_emitted_started = False
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        scene = self.scene()
+        if isinstance(scene, LayoutScene):
+            # Pass the click point in scene coords so the editor can
+            # insert a vertex at the right place along the polyline.
+            scene.strip_context_requested.emit(
+                self.strip_idx,
+                int(event.scenePos().x()), int(event.scenePos().y()),
+                event.screenPos().x(), event.screenPos().y(),
+            )
+        event.accept()
 
     def shape(self):
         # Widen the click target so close-packed strips remain selectable.
@@ -1238,15 +2129,41 @@ class LayoutScene(QGraphicsScene):
     vertex_moved = pyqtSignal(int, int, int, int)  # (strip_idx, vertex_idx, x, y)
     selection_changed_obj = pyqtSignal(int)    # row index, -1 = none
     selection_changed_strip = pyqtSignal(int)  # emitted on strip click
+    # Right-click on a strip path: (strip_idx, scene_x, scene_y, screen_x, screen_y).
+    # The first two are where the click landed (used to insert a vertex
+    # at that position along the polyline); the last two are the global
+    # screen coords for popping a QMenu.
+    strip_context_requested = pyqtSignal(int, int, int, int, int)
+    # Right-click on a vertex handle: (strip_idx, vertex_idx, screen_x, screen_y).
+    vertex_context_requested = pyqtSignal(int, int, int, int)
+    # Drag lifecycle for the undo stack — pre-state captured on
+    # ``_started``, command pushed on ``_finished``.
+    vertex_drag_started = pyqtSignal(int)        # strip_idx
+    vertex_drag_finished = pyqtSignal(int)
+    object_drag_started = pyqtSignal(int)        # obj_idx
+    object_drag_finished = pyqtSignal(int)
+    # Strip-translation drag: user clicks and drags the strip's path
+    # (not a handle) to translate every vertex by the same delta.
+    strip_translate_started = pyqtSignal(int)        # strip_idx
+    strip_translated = pyqtSignal(int, int, int)     # strip_idx, dx, dy (scene)
+    strip_translate_finished = pyqtSignal(int)
+
+    arc_handle_moved = pyqtSignal(int, str, int, int)
+    # ^^ (strip_idx, role, x, y) where role is "center" / "start" /
+    # "end" / "radius". Editor recomputes the strip's arc params
+    # from the new handle position, regenerates the polyline, and
+    # asks the scene to reposition the OTHER arc handles.
 
     def __init__(self):
         super().__init__()
         self._objects: list[_ObjectItem] = []
         self._strips: list[_StripItem] = []
         self._labels: list[QGraphicsSimpleTextItem] = []
-        # vertex handles per strip; each entry is the list of handles for
-        # that strip in polyline order. Empty for strips without polylines.
+        # Per-strip vertex handles (polyline shape) and per-strip arc
+        # handles (arc shape). Mutually exclusive — a given strip has
+        # one populated and the other empty depending on its shape.
         self._handles: list[list[_VertexHandle]] = []
+        self._arc_handles: list[dict[str, _ArcHandle]] = []
 
     def rebuild(self, doc: LayoutDoc):
         # Remove everything
@@ -1255,6 +2172,7 @@ class LayoutScene(QGraphicsScene):
         self._strips = []
         self._labels = []
         self._handles = []
+        self._arc_handles = []
 
         # Canvas frame
         frame = self.addRect(0, 0, doc.canvas_w, doc.canvas_h)
@@ -1275,10 +2193,45 @@ class LayoutScene(QGraphicsScene):
             # FanGeometry and not editable from the canvas; you change
             # them by editing FanGeometry's inner_r / outer_r in the
             # project.yaml ``geometry`` block.
+            #
+            # Arc-shaped strips get a different handle set (center,
+            # endpoints, radius) instead of per-vertex handles, so the
+            # operator can manipulate the arc directly without
+            # accidentally converting it back to a polyline.
+            arc_handles: dict[str, _ArcHandle] = {}
+            if (polylines_editable and s.shape == "arc"
+                    and s.arc_radius > 0):
+                import math as _m
+                cx, cy = s.arc_center
+                sa = _m.radians(s.arc_start_deg)
+                ea = _m.radians(s.arc_end_deg)
+                ma = (sa + ea) / 2.0
+                r = s.arc_radius
+                # canvas y grows down → negate sin (matches _arc_to_polyline)
+                spec_pts = {
+                    "center": (cx, cy),
+                    "start":  (cx + r * _m.cos(sa), cy - r * _m.sin(sa)),
+                    "end":    (cx + r * _m.cos(ea), cy - r * _m.sin(ea)),
+                    "radius": (cx + r * _m.cos(ma), cy - r * _m.sin(ma)),
+                }
+                for role, (hx, hy) in spec_pts.items():
+                    h = _ArcHandle(i, role, int(hx), int(hy),
+                                   self._on_arc_handle_moved)
+                    self.addItem(h)
+                    arc_handles[role] = h
+            self._arc_handles.append(arc_handles)
             handles: list[_VertexHandle] = []
-            if polylines_editable and s.polyline:
+            if polylines_editable and not arc_handles and s.polyline:
+                last = len(s.polyline) - 1
                 for vi, (vx, vy) in enumerate(s.polyline):
-                    h = _VertexHandle(i, vi, int(vx), int(vy), self._on_vertex_moved)
+                    if vi == 0:
+                        role = "start"
+                    elif vi == last:
+                        role = "end"
+                    else:
+                        role = "interior"
+                    h = _VertexHandle(i, vi, int(vx), int(vy),
+                                      self._on_vertex_moved, role=role)
                     self.addItem(h)
                     handles.append(h)
             self._handles.append(handles)
@@ -1355,17 +2308,52 @@ class LayoutScene(QGraphicsScene):
             pen = item.pen()
             pen.setWidthF(4.5 if i == strip_idx else 2.5)
             item.setPen(pen)
-        # Show vertex handles for the highlighted strip only.
+        # Show vertex / arc handles for the highlighted strip only.
         for i, handles in enumerate(self._handles):
             visible = (i == strip_idx)
             for h in handles:
                 h.setVisible(visible)
+        for i, handles in enumerate(self._arc_handles):
+            visible = (i == strip_idx)
+            for h in handles.values():
+                h.setVisible(visible)
+
+    def update_arc_handles(self, strip_idx: int,
+                           cx: float, cy: float,
+                           radius: float,
+                           start_deg: float, end_deg: float,
+                           except_role: str = "") -> None:
+        """Reposition the arc's three derived handles (everything
+        except the one currently being dragged). Called by the editor
+        after recomputing arc params from a handle drag."""
+        if not (0 <= strip_idx < len(self._arc_handles)):
+            return
+        import math as _m
+        sa = _m.radians(start_deg)
+        ea = _m.radians(end_deg)
+        ma = (sa + ea) / 2.0
+        positions = {
+            "center": (cx, cy),
+            "start":  (cx + radius * _m.cos(sa), cy - radius * _m.sin(sa)),
+            "end":    (cx + radius * _m.cos(ea), cy - radius * _m.sin(ea)),
+            "radius": (cx + radius * _m.cos(ma), cy - radius * _m.sin(ma)),
+        }
+        handles = self._arc_handles[strip_idx]
+        for role, (hx, hy) in positions.items():
+            if role == except_role:
+                continue
+            h = handles.get(role)
+            if h is not None:
+                h.set_pos_silent(int(hx), int(hy))
 
     def _on_object_moved(self, obj_idx: int, x: int, y: int):
         self.object_moved.emit(obj_idx, x, y)
 
     def _on_vertex_moved(self, strip_idx: int, vertex_idx: int, x: int, y: int):
         self.vertex_moved.emit(strip_idx, vertex_idx, x, y)
+
+    def _on_arc_handle_moved(self, strip_idx: int, role: str, x: int, y: int):
+        self.arc_handle_moved.emit(strip_idx, role, x, y)
 
 
 class GroupCanvasScene(QGraphicsScene):
@@ -1389,13 +2377,26 @@ class GroupCanvasScene(QGraphicsScene):
 
     GROUP_GAP = 50        # vertical gap between stacked group rects
     LABEL_HEIGHT = 22
-    # Minimum pixels between adjacent strip lines on the panel — drives
-    # the per-group display scale so close-packed strips (Fan: 32 columns
-    # on a 128-wide FBO = 4 px apart natively) remain individually
-    # clickable and labellable.
+    # Each group canvas is drawn at a UNIFORM per-group scale so its
+    # FBO aspect ratio is preserved. Three constraints layered on top
+    # of each other:
+    #   - smaller axis at least MIN_DISPLAY_DIM px (a 9-row trunk
+    #     canvas stays readable)
+    #   - adjacent strip lines at least MIN_STRIP_SPACING px apart
+    #     (Fan's 32 strips on 128 px native = 4 px stride get scaled
+    #     up to ~9 px stride uniformly — preserves aspect AND avoids
+    #     the "jammed up" look)
+    #   - larger axis at most MAX_DISPLAY_DIM px (panel can scroll
+    #     for the rare case where strip density forces this floor
+    #     above the cap)
+    MIN_DISPLAY_DIM = 80
+    MAX_DISPLAY_DIM = 800
+    # Hard absolute cap on the larger display axis. Even when strip
+    # density demands more scaling than this allows, we settle so the
+    # group canvas panel doesn't become a kilometre-tall scrollable
+    # column. Wheel-zoom remains for inspection.
+    HARD_CAP = 1500
     MIN_STRIP_SPACING = 9
-    MIN_DISPLAY_DIM = 90    # also enforce a minimum on the smaller axis
-    MAX_DISPLAY_DIM = 800   # cap on the larger axis so huge canvases fit
     TICK_PT = 7
 
     selection_changed_strip = pyqtSignal(int)  # strip_idx, -1 = clear
@@ -1410,47 +2411,61 @@ class GroupCanvasScene(QGraphicsScene):
 
     def _group_display_scale(self, g: GroupSpec,
                              strips: list) -> tuple[float, float]:
-        """Per-group (sx, sy) display scale.
+        """Per-group uniform display scale, returned as (sx, sy) where
+        sx == sy so the FBO aspect ratio is preserved.
 
-        Non-uniform on purpose: the group canvas is an FBO, not a
-        physical surface, so distorting its aspect ratio for display is
-        fine. The X scale is sized so adjacent column strips have at
-        least ``MIN_STRIP_SPACING`` px between them; Y likewise for
-        rows. Both axes are clamped to a ``[MIN_DISPLAY_DIM,
-        MAX_DISPLAY_DIM]`` band so tiny canvases stay readable and
-        massive ones still fit in the panel."""
+        Three lower-bound constraints, all in scale-factor units:
+          * strip-density floor — adjacent strip lines at least
+            MIN_STRIP_SPACING px apart on either axis (Fan: 128 cols
+            on 128px native = 1px stride → scale ≥ MIN_STRIP_SPACING)
+          * smaller-axis floor — tiny canvases stay readable
+          * native 1.0 — never down-scale a small canvas
+        Plus an upper-bound *target* (MAX_DISPLAY_DIM): used only when
+        none of the floors require a bigger scale. Density wins when
+        they conflict; the panel's QGraphicsView handles scroll and
+        wheel-zoom for the resulting taller-than-screen canvases."""
         if g.width <= 0 or g.height <= 0:
             return 1.0, 1.0
 
-        cols = sorted({int(s.col)
-                       for s in strips
-                       if s.group == g.id and s.kind == "column"})
-        rows = sorted({int(s.row)
-                       for s in strips
-                       if s.group == g.id and s.kind == "row"})
+        smaller = min(g.width, g.height)
+        larger = max(g.width, g.height)
 
-        sx = 1.0
+        cols = {int(s.col) for s in strips
+                if s.group == g.id and s.kind == "column"}
+        rows = {int(s.row) for s in strips
+                if s.group == g.id and s.kind == "row"}
+        strip_floor = 1.0
         if len(cols) >= 2:
-            native = (cols[-1] - cols[0]) / max(1, len(cols) - 1)
+            native = g.width / max(len(cols), 1)
             if native < self.MIN_STRIP_SPACING:
-                sx = self.MIN_STRIP_SPACING / max(native, 1e-3)
-        sy = 1.0
+                strip_floor = max(strip_floor, self.MIN_STRIP_SPACING / native)
         if len(rows) >= 2:
-            native = (rows[-1] - rows[0]) / max(1, len(rows) - 1)
+            native = g.height / max(len(rows), 1)
             if native < self.MIN_STRIP_SPACING:
-                sy = self.MIN_STRIP_SPACING / max(native, 1e-3)
+                strip_floor = max(strip_floor, self.MIN_STRIP_SPACING / native)
 
-        # Clamp each axis to [MIN_DISPLAY_DIM, MAX_DISPLAY_DIM].
-        def clamp(scale, native_dim):
-            disp = scale * native_dim
-            if disp < self.MIN_DISPLAY_DIM:
-                return self.MIN_DISPLAY_DIM / native_dim
-            if disp > self.MAX_DISPLAY_DIM:
-                return self.MAX_DISPLAY_DIM / native_dim
-            return scale
-        sx = clamp(sx, g.width)
-        sy = clamp(sy, g.height)
-        return sx, sy
+        small_floor = max(self.MIN_DISPLAY_DIM / smaller, 1.0)
+
+        floor = max(strip_floor, small_floor, 1.0)
+
+        # If neither floor demanded growth, pull the canvas up to a
+        # comfortable display size (at most MAX_DISPLAY_DIM on the
+        # larger axis). This is what makes a 60×8 WoL ambient canvas
+        # display at ~600 px wide instead of 60 px.
+        if floor < 1.5:
+            comfort = self.MAX_DISPLAY_DIM / larger
+            floor = max(floor, min(comfort, self.MAX_DISPLAY_DIM / smaller))
+
+        # Hard cap on the larger axis. Caps Fan's 128-strip canvas at
+        # ``HARD_CAP / 300`` ≈ 5× scale instead of 9× — strip stride
+        # ~5 px instead of ~9 px, but the panel stays a reasonable
+        # height. User can wheel-zoom to inspect dense regions.
+        floor = min(floor, self.HARD_CAP / larger)
+
+        # Round to integer scale when ≥ 2 — cleaner pixel rendering.
+        if floor >= 2.0:
+            floor = float(round(floor))
+        return floor, floor
 
     def rebuild(self, doc: LayoutDoc):
         self.clear()
@@ -1707,6 +2722,16 @@ class LayoutView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setBackgroundBrush(QBrush(QColor("#101010")))
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        # Make the rubber-band rectangle clearly visible against the
+        # dark background — the default thin grey line is barely
+        # perceptible and led to operators thinking band-select wasn't
+        # working.
+        self.setStyleSheet(
+            "QGraphicsView { selection-background-color: #4a90d9; }"
+        )
+        self.setRubberBandSelectionMode(
+            Qt.ItemSelectionMode.IntersectsItemShape
+        )
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._panning = False
         self._pan_start = QPointF()
@@ -1751,6 +2776,228 @@ class LayoutView(QGraphicsView):
 # Main window
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Undo commands
+# ---------------------------------------------------------------------------
+
+class _StripPolylineCmd(QUndoCommand):
+    """Reversible polyline edit on a single strip. Captures the full
+    polyline + shape (and the arc params if applicable) before/after,
+    so undo restores both the geometry and the arc-derived flag.
+
+    Used for: vertex drags (debounced via mouse-press/release on the
+    handle), insert vertex, delete vertex, arc-dialog apply,
+    convert-to-arc, convert-to-polyline. Anything that mutates a
+    StripSpec's polyline-side fields routes through this command."""
+
+    def __init__(self, editor, strip_idx, before, after, label,
+                 from_drag: bool = False):
+        super().__init__(label)
+        self._editor = editor
+        self._strip_idx = strip_idx
+        self._before = before
+        self._after = after
+        # ``from_drag``: was this command pushed from a vertex/arc
+        # drag-finished event? Drag paths already keep the canvas in
+        # sync incrementally (update_strip_polyline / update_arc_handles)
+        # so no rebuild is needed on the initial push — and crucially
+        # rebuilding from inside the caller's mouseReleaseEvent
+        # destroys the handle whose event is still on the stack, then
+        # Qt crashes when control returns. Other paths (insert vertex,
+        # delete vertex, arc dialog) DO need a rebuild to reflect the
+        # structural change in the polyline; they pass ``False`` and
+        # get a synchronous rebuild.
+        self._initial = True
+        self._from_drag = from_drag
+
+    def _apply(self, snapshot: dict):
+        if not (0 <= self._strip_idx < len(self._editor.doc.strips)):
+            return
+        s = self._editor.doc.strips[self._strip_idx]
+        s.polyline = [list(p) for p in snapshot["polyline"]]
+        s.shape = snapshot["shape"]
+        s.arc_center = tuple(snapshot["arc_center"])
+        s.arc_radius = float(snapshot["arc_radius"])
+        s.arc_start_deg = float(snapshot["arc_start_deg"])
+        s.arc_end_deg = float(snapshot["arc_end_deg"])
+        s.arc_segments = int(snapshot["arc_segments"])
+        self._editor._rebuild_scenes()
+        self._editor._mark_dirty()
+
+    def undo(self):
+        self._apply(self._before)
+
+    def redo(self):
+        if self._initial:
+            self._initial = False
+            if self._from_drag:
+                # Canvas already in sync from the live drag updates.
+                # Nothing to draw; just register that the doc changed.
+                self._editor._mark_dirty()
+            else:
+                # Polyline structure changed; rebuild now (we're not
+                # inside an item event handler, so it's safe).
+                self._apply(self._after)
+            return
+        self._apply(self._after)
+
+
+def _strip_snapshot(s) -> dict:
+    """Capture the polyline-side fields of a StripSpec for undo."""
+    return {
+        "polyline": [list(p) for p in s.polyline],
+        "shape": s.shape,
+        "arc_center": tuple(s.arc_center),
+        "arc_radius": s.arc_radius,
+        "arc_start_deg": s.arc_start_deg,
+        "arc_end_deg": s.arc_end_deg,
+        "arc_segments": s.arc_segments,
+    }
+
+
+class _ObjectMoveCmd(QUndoCommand):
+    """Reversible drag of one box's (x, y) on the physical canvas.
+    Pushed on mouseRelease so it covers the whole drag as a single
+    undo step rather than one per pixel."""
+
+    def __init__(self, editor, box_idx, before_xy, after_xy):
+        super().__init__(f"Move object {box_idx}")
+        self._editor = editor
+        self._box_idx = box_idx
+        self._before = before_xy
+        self._after = after_xy
+        # See _StripPolylineCmd — drags keep the canvas in sync
+        # incrementally so no rebuild is needed on the initial push.
+        self._initial = True
+
+    def _apply(self, xy):
+        if not (0 <= self._box_idx < len(self._editor.doc.boxes)):
+            return
+        b = self._editor.doc.boxes[self._box_idx]
+        b.x, b.y = int(xy[0]), int(xy[1])
+        self._editor.scene.update_object(self._box_idx, b)
+        tl = self._editor.boxes_m.index(self._box_idx, 2)
+        br = self._editor.boxes_m.index(self._box_idx, 3)
+        self._editor.boxes_m.dataChanged.emit(tl, br)
+        self._editor._mark_dirty()
+
+    def undo(self):
+        self._apply(self._before)
+
+    def redo(self):
+        if self._initial:
+            self._initial = False
+            self._editor._mark_dirty()
+            return
+        self._apply(self._after)
+
+
+class _MultiObjectMoveCmd(QUndoCommand):
+    """Reversible drag of *multiple* boxes simultaneously. Used when
+    the operator rubber-band-selects several objects on the physical
+    canvas and drags one of them — Qt moves the rest as a group, and
+    we capture the before/after for every selected object so undo
+    restores them all in one step."""
+
+    def __init__(self, editor, moves: list):
+        # moves = [(box_idx, before_xy, after_xy), ...]
+        super().__init__(f"Move {len(moves)} objects")
+        self._editor = editor
+        self._moves = moves
+        self._initial = True
+
+    def _apply_to(self, key: str):
+        # key is "before" or "after"; pick that field of each move
+        idx = 1 if key == "before" else 2
+        for m in self._moves:
+            box_idx, _b, _a = m[0], m[1], m[2]
+            xy = m[idx]
+            if 0 <= box_idx < len(self._editor.doc.boxes):
+                b = self._editor.doc.boxes[box_idx]
+                b.x, b.y = int(xy[0]), int(xy[1])
+                self._editor.scene.update_object(box_idx, b)
+                tl = self._editor.boxes_m.index(box_idx, 2)
+                br = self._editor.boxes_m.index(box_idx, 3)
+                self._editor.boxes_m.dataChanged.emit(tl, br)
+        self._editor._mark_dirty()
+
+    def undo(self):
+        self._apply_to("before")
+
+    def redo(self):
+        if self._initial:
+            self._initial = False
+            self._editor._mark_dirty()
+            return
+        self._apply_to("after")
+
+
+class _GroupTranslateCmd(QUndoCommand):
+    """Reversible drag of a *mixed* selection — any combination of
+    objects and strips that were band-selected together. Each object
+    contributes a (before, after) (x, y) pair; each strip contributes
+    a full polyline+arc snapshot pair. Undo restores everything.
+
+    Used when the operator rubber-bands a region containing more than
+    one item type and drags one of them; with the editor owning the
+    group-translate semantics, all selected items follow the primary
+    by the same delta and undo restores them in one step."""
+
+    def __init__(self, editor, obj_moves: list, strip_moves: list, label: str):
+        # obj_moves   = [(box_idx, before_xy, after_xy), ...]
+        # strip_moves = [(strip_idx, before_snap, after_snap), ...]
+        super().__init__(label)
+        self._editor = editor
+        self._obj_moves = obj_moves
+        self._strip_moves = strip_moves
+        self._initial = True
+
+    def _restore_objects(self, key: str):
+        for m in self._obj_moves:
+            box_idx = m[0]
+            xy = m[1] if key == "before" else m[2]
+            if not (0 <= box_idx < len(self._editor.doc.boxes)):
+                continue
+            b = self._editor.doc.boxes[box_idx]
+            b.x, b.y = int(xy[0]), int(xy[1])
+            self._editor.scene.update_object(box_idx, b)
+            tl = self._editor.boxes_m.index(box_idx, 2)
+            br = self._editor.boxes_m.index(box_idx, 3)
+            self._editor.boxes_m.dataChanged.emit(tl, br)
+
+    def _restore_strips(self, key: str):
+        for m in self._strip_moves:
+            strip_idx = m[0]
+            snap = m[1] if key == "before" else m[2]
+            if not (0 <= strip_idx < len(self._editor.doc.strips)):
+                continue
+            s = self._editor.doc.strips[strip_idx]
+            s.polyline = [list(p) for p in snap["polyline"]]
+            s.shape = snap["shape"]
+            s.arc_center = tuple(snap["arc_center"])
+            s.arc_radius = float(snap["arc_radius"])
+            s.arc_start_deg = float(snap["arc_start_deg"])
+            s.arc_end_deg = float(snap["arc_end_deg"])
+            s.arc_segments = int(snap["arc_segments"])
+
+    def undo(self):
+        self._restore_objects("before")
+        self._restore_strips("before")
+        self._editor._rebuild_scenes()
+        self._editor._mark_dirty()
+
+    def redo(self):
+        if self._initial:
+            self._initial = False
+            # Doc is already in after-state from the live drag.
+            self._editor._mark_dirty()
+            return
+        self._restore_objects("after")
+        self._restore_strips("after")
+        self._editor._rebuild_scenes()
+        self._editor._mark_dirty()
+
+
 class EditorWindow(QMainWindow):
     def __init__(self, project_id: str):
         super().__init__()
@@ -1759,6 +3006,48 @@ class EditorWindow(QMainWindow):
 
         self.doc = load_doc(project_id)
         self._dirty = False
+
+        # Undo stack — covers canvas-side ops (vertex drag, insert /
+        # delete vertex, arc edits, object drags). Cell edits in the
+        # tables aren't routed through it yet; that'd require wrapping
+        # every model setData and is out of scope for this pass.
+        self.undo_stack = QUndoStack(self)
+        self.undo_stack.setUndoLimit(200)
+        # Drag-state buffers populated by mousePress on _VertexHandle
+        # and _ObjectItem; consumed on mouseRelease to construct an
+        # undo command spanning the full drag.
+        #
+        # ``_drag_strip_pre`` holds vertex-drag pre-snapshots; the
+        # group-drag buffers below collect simultaneously-dragged
+        # objects + strips so a single rubber-band-then-drag moves
+        # everything in the selection regardless of item type.
+        self._drag_strip_pre: dict[int, dict] = {}
+        self._drag_object_pre: dict[int, tuple] = {}
+        # Group-drag participants captured at press time. ``_pre`` maps
+        # box_idx → (x, y); ``_strip_pre`` maps strip_idx → full
+        # polyline/arc snapshot. Both populated when group-drag starts
+        # via either an _ObjectItem or _StripItem press.
+        self._group_obj_pre: dict[int, tuple] = {}
+        self._group_strip_pre: dict[int, dict] = {}
+        self._drag_primary_obj_idx: int = -1
+        self._drag_primary_strip_idx: int = -1
+        # Authoritative record of which object/strip indices are
+        # currently selected on the canvas. Maintained by listening
+        # to ``scene.selectionChanged``.
+        self._selected_obj_idxs: set[int] = set()
+        self._selected_strip_idxs: set[int] = set()
+
+        # Resolve the engine's web API port from config.yaml so REST
+        # calls (project swap, weather state polling) reach the right
+        # server. Falls back to the class-level default if config is
+        # missing or malformed.
+        try:
+            with open(ROOT / "config.yaml", "r", encoding="utf-8") as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            _port = (_cfg.get("web") or {}).get("port", 5000)
+            self.WEB_API_BASE = f"http://127.0.0.1:{int(_port)}"
+        except Exception:
+            pass   # keep class default
 
         # Models. The Boxes model is the unified Object+Receiver pair —
         # each row represents one physical hardware unit (with optional
@@ -1780,6 +3069,24 @@ class EditorWindow(QMainWindow):
         self.scene.selection_changed_strip.connect(
             self._on_strip_clicked_on_canvas
         )
+        self.scene.strip_context_requested.connect(
+            self._on_strip_context_menu)
+        self.scene.vertex_context_requested.connect(
+            self._on_vertex_context_menu)
+        self.scene.vertex_drag_started.connect(self._on_vertex_drag_started)
+        self.scene.vertex_drag_finished.connect(self._on_vertex_drag_finished)
+        self.scene.object_drag_started.connect(self._on_object_drag_started)
+        self.scene.object_drag_finished.connect(self._on_object_drag_finished)
+        self.scene.arc_handle_moved.connect(self._on_arc_handle_moved)
+        self.scene.strip_translate_started.connect(
+            self._on_strip_translate_started)
+        self.scene.strip_translated.connect(self._on_strip_translated)
+        self.scene.strip_translate_finished.connect(
+            self._on_strip_translate_finished)
+        # Track scene selection independently of any specific event
+        # callback so we can answer "which objects are selected?"
+        # reliably at any point during a press / drag sequence.
+        self.scene.selectionChanged.connect(self._on_scene_selection_changed)
         self.view = LayoutView(self.scene)
 
         # Secondary group-canvas scene + view (logical rendering surfaces)
@@ -1827,19 +3134,36 @@ class EditorWindow(QMainWindow):
 
         outer.addLayout(top)
 
-        # Right side: physical canvas above, group-canvas panel below.
-        right_split = QSplitter(Qt.Orientation.Vertical)
-        # Wrap each view with a tiny header label so it's clear which is which.
-        right_split.addWidget(self._wrap_panel("Physical layout", self.view))
-        right_split.addWidget(self._wrap_panel(
-            "Group canvases (rendering surfaces)", self.group_view))
-        right_split.setStretchFactor(0, 1)
-        right_split.setStretchFactor(1, 0)
-        right_split.setSizes([600, 300])
+        # Emulator toolbar — Launch/Stop, weather set/state dropdowns,
+        # connection indicator. Only enabled while the engine is running.
+        self._build_emulator_toolbar(outer)
+
+        # Right side: tabs for the two canvases so each gets the full
+        # panel area when active. Stacked-splitter mode was cramped on
+        # Fan (300-row group canvas) and on multi-object physical
+        # layouts where the geometry needs room.
+        self.canvas_tabs = QTabWidget()
+        self.canvas_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.canvas_tabs.addTab(self.view, "Physical layout")
+        self.canvas_tabs.addTab(self.group_view, "Group canvases")
+
+        # Engine log panel (collapsed unless engine is running)
+        self.log_panel = QPlainTextEdit()
+        self.log_panel.setReadOnly(True)
+        self.log_panel.setMaximumBlockCount(2000)
+        f = QFont("Consolas", 8)
+        self.log_panel.setFont(f)
+        self.log_panel.setVisible(False)
+
+        right_col = QSplitter(Qt.Orientation.Vertical)
+        right_col.addWidget(self.canvas_tabs)
+        right_col.addWidget(self.log_panel)
+        right_col.setSizes([900, 0])
+        self._right_col = right_col
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.tabs)
-        splitter.addWidget(right_split)
+        splitter.addWidget(right_col)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([520, 880])
@@ -1850,6 +3174,122 @@ class EditorWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self._update_status()
+
+        # Use QUndoStack's own factory actions for Undo / Redo. They
+        # auto-enable/disable based on the stack's state and update
+        # their menu text to reflect the next action ("Undo Move
+        # vertex", etc.) so the operator can confirm something will
+        # happen before pressing the shortcut.
+        # NB: ``QKeySequence.StandardKey.Undo`` resolves to ``Ctrl+Z`` on
+        # Windows/Linux and ``⌘Z`` on macOS, so we don't combine it with
+        # an explicit ``Ctrl+Z`` — that yields duplicate registrations
+        # and Qt logs "Ambiguous shortcut overload" each keypress. Use
+        # the StandardKey alone for the platform-native binding, and
+        # add only the *non-overlapping* extras explicitly.
+        self.act_undo = self.undo_stack.createUndoAction(self, "&Undo")
+        self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        self.act_undo.setShortcutContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self.act_redo = self.undo_stack.createRedoAction(self, "&Redo")
+        # Redo gets the platform default (Ctrl+Y on Win/Linux, ⇧⌘Z on
+        # mac) plus Ctrl+Shift+Z which is widely expected on every
+        # platform and doesn't collide with anything the standard
+        # binding already covers on Windows.
+        self.act_redo.setShortcuts([
+            QKeySequence.StandardKey.Redo,
+            QKeySequence("Ctrl+Shift+Z"),
+        ])
+        self.act_redo.setShortcutContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        # Adding to the window AND to a menubar makes the shortcuts
+        # active regardless of which child widget currently has focus
+        # — without this, a focused QTableView eats Ctrl+Z to do its
+        # own in-cell editing undo, never reaching our stack.
+        self.addAction(self.act_undo)
+        self.addAction(self.act_redo)
+        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.addAction(self.act_undo)
+        edit_menu.addAction(self.act_redo)
+
+        # Emulator runtime state. Started/stopped by toolbar buttons.
+        self._engine_proc: Optional[QProcess] = None
+        self._emu_client: Optional[EmulatorClient] = None
+        self._emu_overlay: Optional[EmulatorOverlay] = None
+        self._emu_port: int = 0
+        # Sequence the overlay last painted, so the timer skips any
+        # tick where the engine hasn't published a new frame.
+        self._emu_last_seq: int = -1
+        # 20 Hz frame poll. The render loop emits ~30 Hz but every
+        # numpy-paint of Fan's 40k LEDs costs a few ms on the Qt main
+        # thread; polling slower keeps the UI responsive without
+        # noticeable visual lag (snapshot returns the *latest* frame).
+        self._emu_timer = QTimer(self)
+        self._emu_timer.setInterval(50)
+        self._emu_timer.timeout.connect(self._on_emu_tick)
+        # Slower (1 Hz) polling for connection state + weather sync.
+        self._emu_state_timer = QTimer(self)
+        self._emu_state_timer.setInterval(1000)
+        self._emu_state_timer.timeout.connect(self._on_emu_state_poll)
+
+        # Engine stdout buffer + flush timer. Engine logs can fire
+        # many readyRead events per second on boot; appendPlainText
+        # on the GUI thread per event is what stalled the UI in
+        # earlier runs. We accumulate raw bytes here and flush them
+        # to the log panel at 5 Hz so the GUI sees one repaint per
+        # 200 ms regardless of engine verbosity.
+        self._log_buffer = bytearray()
+        self._log_flush_timer = QTimer(self)
+        self._log_flush_timer.setInterval(200)
+        self._log_flush_timer.timeout.connect(self._flush_log_buffer)
+
+        # Worker-thread → GUI-thread signal bridges (urllib runs off
+        # the main thread to keep the UI responsive).
+        self.weather_info_received.connect(self._on_weather_info)
+        self.post_failed.connect(self._append_log)
+
+    def _build_emulator_toolbar(self, outer_layout: QVBoxLayout):
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+
+        self.run_btn = QPushButton("▶ Run engine")
+        self.run_btn.clicked.connect(self._toggle_engine)
+        bar.addWidget(self.run_btn)
+
+        self._engine_status = QLabel("Engine: stopped")
+        self._engine_status.setStyleSheet("color: #888; padding: 0 8px;")
+        bar.addWidget(self._engine_status)
+
+        bar.addWidget(QLabel("Weather set:"))
+        self.weather_set_picker = QComboBox()
+        self.weather_set_picker.setEnabled(False)
+        self.weather_set_picker.setMinimumWidth(140)
+        self.weather_set_picker.activated.connect(self._on_pick_weather_set)
+        bar.addWidget(self.weather_set_picker)
+
+        bar.addWidget(QLabel("State:"))
+        self.weather_state_picker = QComboBox()
+        self.weather_state_picker.setEnabled(False)
+        self.weather_state_picker.setMinimumWidth(180)
+        self.weather_state_picker.activated.connect(self._on_pick_weather_state)
+        bar.addWidget(self.weather_state_picker)
+
+        self.live_preview_chk = QPushButton("Live preview")
+        self.live_preview_chk.setCheckable(True)
+        self.live_preview_chk.setChecked(True)
+        self.live_preview_chk.toggled.connect(self._on_toggle_live_preview)
+        self.live_preview_chk.setEnabled(False)
+        bar.addWidget(self.live_preview_chk)
+
+        bar.addStretch(1)
+
+        self.show_log_btn = QPushButton("Show log")
+        self.show_log_btn.setCheckable(True)
+        self.show_log_btn.toggled.connect(self._on_toggle_log)
+        bar.addWidget(self.show_log_btn)
+
+        outer_layout.addLayout(bar)
 
     def _wrap_panel(self, title: str, view: QWidget) -> QWidget:
         """Add a small italic header above a QGraphicsView."""
@@ -1899,6 +3339,28 @@ class EditorWindow(QMainWindow):
                 _ChoiceDelegate(["right", "left", "down", "up"], view))
             view.setItemDelegateForColumn(StripsModel.COL_RECEIVER,
                 _ReceiverDelegate(lambda: self.doc, view))
+            # Tighten column widths for fields that hold short content
+            # (single integers / 2-letter direction codes / one-word
+            # kinds) so the wider ``group``, ``receiver``, and
+            # ``polyline`` columns get more visual breathing room.
+            view.horizontalHeader().setStretchLastSection(False)
+            tight = {
+                StripsModel.COL_STRIP_IDX: 60,
+                StripsModel.COL_KIND:      60,
+                StripsModel.COL_CANVAS_POS: 80,
+                StripsModel.COL_START:     56,
+                StripsModel.COL_LENGTH:    62,
+                StripsModel.COL_DIRECTION: 70,
+            }
+            for col, width in tight.items():
+                view.setColumnWidth(col, width)
+            # Group + receiver get more room; polyline summary stretches
+            view.setColumnWidth(StripsModel.COL_GROUP, 78)
+            view.setColumnWidth(StripsModel.COL_RECEIVER, 180)
+            view.horizontalHeader().setSectionResizeMode(
+                StripsModel.COL_POLYLINE,
+                QHeaderView.ResizeMode.Stretch,
+            )
         elif isinstance(model, BoxesModel):
             view.setItemDelegateForColumn(6, _ChoiceDelegate(["sacn", "ddp"], view))  # protocol
 
@@ -1959,16 +3421,26 @@ class EditorWindow(QMainWindow):
 
     # ----- canvas → table sync -----
     def _on_object_moved_on_canvas(self, obj_idx: int, x: int, y: int):
-        if 0 <= obj_idx < len(self.doc.boxes):
-            self.doc.boxes[obj_idx].x = x
-            self.doc.boxes[obj_idx].y = y
-            # Notify the boxes model (the x/y columns are 2 and 3)
-            tl = self.boxes_m.index(obj_idx, 2)
-            br = self.boxes_m.index(obj_idx, 3)
-            self.boxes_m.dataChanged.emit(tl, br)
-            # Reflect tooltip + label on canvas
-            self.scene.update_object(obj_idx, self.doc.boxes[obj_idx])
-            self._mark_dirty()
+        if not (0 <= obj_idx < len(self.doc.boxes)):
+            return
+        self.doc.boxes[obj_idx].x = x
+        self.doc.boxes[obj_idx].y = y
+        tl = self.boxes_m.index(obj_idx, 2)
+        br = self.boxes_m.index(obj_idx, 3)
+        self.boxes_m.dataChanged.emit(tl, br)
+        self.scene.update_object(obj_idx, self.doc.boxes[obj_idx])
+
+        # Group drag: if the primary object moves and we have a
+        # multi-item group captured (objects + strips), propagate the
+        # delta to all other group participants.
+        if (self._drag_primary_obj_idx == obj_idx
+                and (len(self._group_obj_pre) + len(self._group_strip_pre)) > 1):
+            primary_pre = self._group_obj_pre.get(obj_idx)
+            if primary_pre is not None:
+                dx = x - primary_pre[0]
+                dy = y - primary_pre[1]
+                self._apply_group_delta(dx, dy, skip_obj_idx=obj_idx)
+        self._mark_dirty()
 
     def _on_vertex_moved_on_canvas(self, strip_idx: int, vertex_idx: int,
                                    x: int, y: int):
@@ -1978,6 +3450,11 @@ class EditorWindow(QMainWindow):
         if not (0 <= vertex_idx < len(s.polyline)):
             return
         s.polyline[vertex_idx] = [x, y]
+        # Dragging a vertex on an arc-shaped strip means the user is
+        # explicitly reshaping it as a polyline; flip the shape so
+        # subsequent loads keep their hand-edits intact.
+        if s.shape == "arc":
+            s.shape = "polyline"
         # Redraw the strip's path. Pass the vertex_idx so the scene
         # doesn't reposition the handle the user is actively dragging.
         self.scene.update_strip_polyline(strip_idx, s.polyline,
@@ -1986,6 +3463,488 @@ class EditorWindow(QMainWindow):
         idx = self.strips_m.index(strip_idx, StripsModel.COL_POLYLINE)
         self.strips_m.dataChanged.emit(idx, idx)
         self._mark_dirty()
+
+    def _on_arc_handle_moved(self, strip_idx: int, role: str,
+                             x: int, y: int):
+        """Recompute arc params from the dragged handle's new position
+        and regenerate the strip's polyline. Other handles get
+        repositioned to track the new shape; the dragged handle is
+        skipped to avoid feedback loops."""
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        s = self.doc.strips[strip_idx]
+        if s.shape != "arc":
+            return
+        import math
+        cx, cy = s.arc_center
+        if role == "center":
+            # Pan: shift center, keep radius and angles.
+            s.arc_center = (int(x), int(y))
+        elif role == "start":
+            # New start angle (canvas y inverted), radius unchanged.
+            dx = x - cx
+            dy = y - cy
+            s.arc_start_deg = math.degrees(math.atan2(-dy, dx))
+        elif role == "end":
+            dx = x - cx
+            dy = y - cy
+            s.arc_end_deg = math.degrees(math.atan2(-dy, dx))
+        elif role == "radius":
+            # New radius from drag distance to center (min 1 to avoid
+            # the arc collapsing to a point and breaking handle math).
+            r = math.hypot(x - cx, y - cy)
+            s.arc_radius = max(1.0, r)
+
+        s.polyline = _arc_to_polyline(
+            s.arc_center, s.arc_radius,
+            s.arc_start_deg, s.arc_end_deg, s.arc_segments,
+        )
+        # Update strip path on canvas; skip vertex-handle reposition
+        # entirely (arc strips have no vertex handles).
+        self.scene._strips[strip_idx].set_points(s.polyline)
+        # Reposition the other arc handles so they track the new shape.
+        self.scene.update_arc_handles(
+            strip_idx,
+            float(s.arc_center[0]), float(s.arc_center[1]),
+            float(s.arc_radius),
+            float(s.arc_start_deg), float(s.arc_end_deg),
+            except_role=role,
+        )
+        # Refresh polyline summary cell.
+        idx = self.strips_m.index(strip_idx, StripsModel.COL_POLYLINE)
+        self.strips_m.dataChanged.emit(idx, idx)
+        self._mark_dirty()
+
+    # ----- drag undo: capture pre-state on press, push command on release -----
+    def _on_vertex_drag_started(self, strip_idx: int):
+        if 0 <= strip_idx < len(self.doc.strips):
+            self._drag_strip_pre[strip_idx] = _strip_snapshot(
+                self.doc.strips[strip_idx]
+            )
+
+    def _on_vertex_drag_finished(self, strip_idx: int):
+        before = self._drag_strip_pre.pop(strip_idx, None)
+        if before is None or not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        after = _strip_snapshot(self.doc.strips[strip_idx])
+        # Skip no-op drags (click without movement).
+        if before["polyline"] == after["polyline"] and \
+                before["shape"] == after["shape"]:
+            return
+        # ``from_drag`` skips the redundant scene rebuild at push time
+        # — the live drag updates already kept the canvas in sync.
+        self.undo_stack.push(_StripPolylineCmd(
+            self, strip_idx, before, after, "Move vertex", from_drag=True))
+
+    def _on_scene_selection_changed(self):
+        """Refresh selection trackers (objects + strips) whenever the
+        canvas selection changes."""
+        obj_idxs = set()
+        strip_idxs = set()
+        for item in self.scene.selectedItems():
+            if isinstance(item, _ObjectItem):
+                obj_idxs.add(item.obj_idx)
+            elif isinstance(item, _StripItem):
+                strip_idxs.add(item.strip_idx)
+        self._selected_obj_idxs = obj_idxs
+        self._selected_strip_idxs = strip_idxs
+
+    def _capture_group_drag(self, primary_kind: str, primary_idx: int):
+        """Snapshot every selected object + strip's pre-drag state so
+        a press anywhere in the selection drags everything together.
+
+        Called from both ``_on_object_drag_started`` (press on an
+        object dot) and ``_on_strip_translate_started`` (press on a
+        strip path body). Uses the union of the tracker (updated via
+        selectionChanged) and a live scene query so neither path is
+        missed by signal-ordering quirks across Qt versions."""
+        live_objs = {item.obj_idx for item in self.scene.selectedItems()
+                     if isinstance(item, _ObjectItem)}
+        live_strips = {item.strip_idx for item in self.scene.selectedItems()
+                       if isinstance(item, _StripItem)}
+        all_objs = self._selected_obj_idxs | live_objs
+        all_strips = self._selected_strip_idxs | live_strips
+
+        # If the primary is in the multi-selection, the drag is a
+        # group-drag — capture everyone. Otherwise, solo drag.
+        primary_in_group = (
+            (primary_kind == "object" and primary_idx in all_objs)
+            or (primary_kind == "strip" and primary_idx in all_strips)
+        )
+        total_selected = len(all_objs) + len(all_strips)
+        if primary_in_group and total_selected > 1:
+            obj_participants = all_objs
+            strip_participants = all_strips
+        else:
+            obj_participants = {primary_idx} if primary_kind == "object" else set()
+            strip_participants = {primary_idx} if primary_kind == "strip" else set()
+
+        self._group_obj_pre = {}
+        for i in obj_participants:
+            if 0 <= i < len(self.doc.boxes):
+                b = self.doc.boxes[i]
+                self._group_obj_pre[i] = (b.x, b.y)
+        self._group_strip_pre = {}
+        for i in strip_participants:
+            if 0 <= i < len(self.doc.strips):
+                self._group_strip_pre[i] = _strip_snapshot(self.doc.strips[i])
+
+        if primary_kind == "object":
+            self._drag_primary_obj_idx = primary_idx
+            self._drag_primary_strip_idx = -1
+        else:
+            self._drag_primary_strip_idx = primary_idx
+            self._drag_primary_obj_idx = -1
+
+        n = len(self._group_obj_pre) + len(self._group_strip_pre)
+        if n > 1:
+            obj_n = len(self._group_obj_pre)
+            strip_n = len(self._group_strip_pre)
+            parts = []
+            if obj_n: parts.append(f"{obj_n} object{'s' if obj_n != 1 else ''}")
+            if strip_n: parts.append(f"{strip_n} strip{'s' if strip_n != 1 else ''}")
+            self.status.showMessage(f"Group drag: {' + '.join(parts)}", 3000)
+
+    def _apply_group_delta(self, dx: int, dy: int,
+                           skip_obj_idx: int = -1,
+                           skip_strip_idx: int = -1):
+        """Apply ``(dx, dy)`` to every captured group-drag participant
+        EXCEPT the primary (whose move triggered this propagation).
+        Computes each participant's target as ``pre + delta`` so live
+        drags track the cursor without rounding drift."""
+        for i, pre_xy in self._group_obj_pre.items():
+            if i == skip_obj_idx:
+                continue
+            if not (0 <= i < len(self.doc.boxes)):
+                continue
+            target_x = int(pre_xy[0] + dx)
+            target_y = int(pre_xy[1] + dy)
+            b = self.doc.boxes[i]
+            if (b.x, b.y) == (target_x, target_y):
+                continue
+            b.x = target_x
+            b.y = target_y
+            if i < len(self.scene._objects):
+                item = self.scene._objects[i]
+                item.setFlag(
+                    QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
+                    False,
+                )
+                item.setPos(target_x, target_y)
+                item.setFlag(
+                    QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
+                    True,
+                )
+            self.scene.update_object(i, b)
+            tl_i = self.boxes_m.index(i, 2)
+            br_i = self.boxes_m.index(i, 3)
+            self.boxes_m.dataChanged.emit(tl_i, br_i)
+
+        for i, pre in self._group_strip_pre.items():
+            if i == skip_strip_idx:
+                continue
+            if not (0 <= i < len(self.doc.strips)):
+                continue
+            s = self.doc.strips[i]
+            s.polyline = [
+                [int(p[0]) + dx, int(p[1]) + dy] for p in pre["polyline"]
+            ]
+            if s.shape == "arc":
+                s.arc_center = (
+                    int(pre["arc_center"][0]) + dx,
+                    int(pre["arc_center"][1]) + dy,
+                )
+            self.scene.update_strip_polyline(i, s.polyline)
+            if s.shape == "arc":
+                self.scene.update_arc_handles(
+                    i,
+                    float(s.arc_center[0]), float(s.arc_center[1]),
+                    float(s.arc_radius),
+                    float(s.arc_start_deg), float(s.arc_end_deg),
+                )
+
+    def _on_object_drag_started(self, obj_idx: int):
+        self._capture_group_drag("object", obj_idx)
+        # Backwards compat: keep the old _drag_object_pre populated
+        # so legacy paths (single-object drag undo) still work.
+        self._drag_object_pre = dict(self._group_obj_pre)
+
+    # ----- strip-line translation (drag the path body, not a handle) -----
+    def _on_strip_translate_started(self, strip_idx: int):
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        # Capture the entire selection (mixed types) so dragging this
+        # strip translates any other selected strips and objects too.
+        self._capture_group_drag("strip", strip_idx)
+
+    def _on_strip_translated(self, strip_idx: int, dx: int, dy: int):
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        # Apply delta to the primary first, then propagate.
+        primary_pre = self._group_strip_pre.get(strip_idx)
+        if primary_pre is None:
+            return
+        s = self.doc.strips[strip_idx]
+        s.polyline = [
+            [int(p[0]) + dx, int(p[1]) + dy] for p in primary_pre["polyline"]
+        ]
+        if s.shape == "arc":
+            s.arc_center = (
+                int(primary_pre["arc_center"][0]) + dx,
+                int(primary_pre["arc_center"][1]) + dy,
+            )
+        self.scene.update_strip_polyline(strip_idx, s.polyline)
+        if s.shape == "arc":
+            self.scene.update_arc_handles(
+                strip_idx,
+                float(s.arc_center[0]), float(s.arc_center[1]),
+                float(s.arc_radius),
+                float(s.arc_start_deg), float(s.arc_end_deg),
+            )
+        # Propagate to the other group participants (other strips +
+        # any selected objects) — same delta from each one's pre.
+        if (len(self._group_obj_pre) + len(self._group_strip_pre)) > 1:
+            self._apply_group_delta(dx, dy, skip_strip_idx=strip_idx)
+
+    def _on_strip_translate_finished(self, strip_idx: int):
+        self._finalize_group_drag(f"Move strip {strip_idx}")
+        self._drag_primary_strip_idx = -1
+
+    def _on_object_drag_finished(self, obj_idx: int):
+        self._finalize_group_drag("Move group")
+        self._drag_object_pre = {}
+        self._drag_primary_obj_idx = -1
+
+    def _finalize_group_drag(self, default_label: str):
+        """Build before/after move lists for every captured object +
+        strip, then push the right undo command.
+
+        Pushed command:
+          * 1 object only      → ``_ObjectMoveCmd``
+          * many objects only  → ``_MultiObjectMoveCmd``
+          * any strips involved or mixed types → ``_GroupTranslateCmd``
+        """
+        obj_pre = self._group_obj_pre
+        strip_pre = self._group_strip_pre
+        self._group_obj_pre = {}
+        self._group_strip_pre = {}
+        if not obj_pre and not strip_pre:
+            return
+        obj_moves: list = []
+        for i, before_xy in obj_pre.items():
+            if not (0 <= i < len(self.doc.boxes)):
+                continue
+            b = self.doc.boxes[i]
+            after_xy = (b.x, b.y)
+            if before_xy != after_xy:
+                obj_moves.append((i, before_xy, after_xy))
+        strip_moves: list = []
+        for i, before_snap in strip_pre.items():
+            if not (0 <= i < len(self.doc.strips)):
+                continue
+            after_snap = _strip_snapshot(self.doc.strips[i])
+            if before_snap["polyline"] != after_snap["polyline"] or \
+                    before_snap.get("arc_center") != after_snap.get("arc_center"):
+                strip_moves.append((i, before_snap, after_snap))
+        if not obj_moves and not strip_moves:
+            return
+        if strip_moves:
+            # Mixed group — single unified undo command.
+            label = (
+                f"Move group ({len(obj_moves)} obj, {len(strip_moves)} strip)"
+                if obj_moves else
+                f"Move {len(strip_moves)} strip{'s' if len(strip_moves) != 1 else ''}"
+            )
+            self.undo_stack.push(_GroupTranslateCmd(
+                self, obj_moves, strip_moves, label
+            ))
+        elif len(obj_moves) == 1:
+            i, b_xy, a_xy = obj_moves[0]
+            self.undo_stack.push(_ObjectMoveCmd(self, i, b_xy, a_xy))
+        else:
+            self.undo_stack.push(_MultiObjectMoveCmd(self, obj_moves))
+
+    # ----- right-click on strip / vertex (canvas) -----
+    def _on_strip_context_menu(self, strip_idx: int,
+                               scene_x: int, scene_y: int,
+                               screen_x: int, screen_y: int):
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        s = self.doc.strips[strip_idx]
+        is_multi_object = (self.doc.geometry_type == "multi_object")
+        menu = QMenu(self)
+        # Add-vertex options extend the polyline at one of its
+        # endpoints; the user adjusts that vertex (and any existing
+        # ones) by dragging. Splitting a segment in the middle is
+        # rarely what's wanted when building a path, so we don't
+        # offer it here.
+        if is_multi_object and s.shape == "polyline":
+            act_add_end = menu.addAction("Add vertex at end (extend chain)")
+            act_add_start = menu.addAction("Add vertex at start")
+            act_split = menu.addAction("Split segment at click")
+        else:
+            act_add_end = act_add_start = act_split = None
+        if is_multi_object:
+            if s.shape == "arc":
+                act_arc = menu.addAction("Edit arc parameters…")
+                act_to_poly = menu.addAction("Convert to polyline")
+            else:
+                act_arc = menu.addAction("Convert to arc…")
+                act_to_poly = None
+        else:
+            act_arc = act_to_poly = None
+        chosen = menu.exec(QPointF(screen_x, screen_y).toPoint())
+        if chosen is None:
+            return
+        if chosen is act_add_end:
+            self._extend_polyline(strip_idx, scene_x, scene_y, at_end=True)
+        elif chosen is act_add_start:
+            self._extend_polyline(strip_idx, scene_x, scene_y, at_end=False)
+        elif chosen is act_split:
+            self._split_segment_on_strip(strip_idx, scene_x, scene_y)
+        elif chosen is act_arc:
+            self._show_arc_dialog(strip_idx)
+        elif chosen is act_to_poly:
+            before = _strip_snapshot(s)
+            s.shape = "polyline"
+            after = _strip_snapshot(s)
+            self.undo_stack.push(_StripPolylineCmd(
+                self, strip_idx, before, after, "Convert to polyline"))
+
+    def _on_vertex_context_menu(self, strip_idx: int, vertex_idx: int,
+                                screen_x: int, screen_y: int):
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        s = self.doc.strips[strip_idx]
+        if s.shape == "arc":
+            return   # vertices on an arc are derived; no per-vertex ops
+        if len(s.polyline) <= 2:
+            return   # need at least 2 vertices remaining
+        menu = QMenu(self)
+        act_del = menu.addAction(f"Delete vertex {vertex_idx}")
+        chosen = menu.exec(QPointF(screen_x, screen_y).toPoint())
+        if chosen is act_del:
+            self._delete_vertex_on_strip(strip_idx, vertex_idx)
+
+    def _extend_polyline(self, strip_idx: int,
+                         scene_x: int, scene_y: int,
+                         at_end: bool):
+        """Add a new vertex at one end of the strip's polyline,
+        extending the path with a new segment. ``at_end=True``
+        appends after the last vertex (chain-end side); ``False``
+        prepends before the first (chain-start side). The new
+        vertex is placed at the click position; the user can then
+        drag any vertex to fine-tune."""
+        s = self.doc.strips[strip_idx]
+        before = _strip_snapshot(s)
+        new_vertex = [int(scene_x), int(scene_y)]
+        if at_end:
+            s.polyline.append(new_vertex)
+            label = "Add vertex (end)"
+        else:
+            s.polyline.insert(0, new_vertex)
+            label = "Add vertex (start)"
+        after = _strip_snapshot(s)
+        self.undo_stack.push(_StripPolylineCmd(
+            self, strip_idx, before, after, label))
+
+    def _split_segment_on_strip(self, strip_idx: int,
+                                scene_x: int, scene_y: int):
+        """Insert a vertex *into* the existing path at the segment
+        nearest the click — useful when the operator wants to refine
+        an existing curve rather than extend it."""
+        s = self.doc.strips[strip_idx]
+        if len(s.polyline) < 2:
+            return
+        before = _strip_snapshot(s)
+        best = (float("inf"), 1)
+        for i in range(len(s.polyline) - 1):
+            ax, ay = s.polyline[i]
+            bx, by = s.polyline[i + 1]
+            dx, dy = bx - ax, by - ay
+            seg_len_sq = max(dx * dx + dy * dy, 1e-6)
+            t = ((scene_x - ax) * dx + (scene_y - ay) * dy) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            fx = ax + t * dx
+            fy = ay + t * dy
+            d = (scene_x - fx) ** 2 + (scene_y - fy) ** 2
+            if d < best[0]:
+                best = (d, i + 1)
+        s.polyline.insert(best[1], [int(scene_x), int(scene_y)])
+        after = _strip_snapshot(s)
+        self.undo_stack.push(_StripPolylineCmd(
+            self, strip_idx, before, after, "Split segment"))
+
+    def _delete_vertex_on_strip(self, strip_idx: int, vertex_idx: int):
+        s = self.doc.strips[strip_idx]
+        if not (0 <= vertex_idx < len(s.polyline)):
+            return
+        if len(s.polyline) <= 2:
+            return
+        before = _strip_snapshot(s)
+        s.polyline.pop(vertex_idx)
+        after = _strip_snapshot(s)
+        self.undo_stack.push(_StripPolylineCmd(
+            self, strip_idx, before, after, "Delete vertex"))
+
+    def _show_arc_dialog(self, strip_idx: int):
+        s = self.doc.strips[strip_idx]
+        # Seed defaults from the current polyline endpoints if the
+        # strip isn't already an arc — center at midpoint, radius
+        # half the chord, end-angle a half-circle from start.
+        if s.shape != "arc":
+            if len(s.polyline) >= 2:
+                p0 = s.polyline[0]; p1 = s.polyline[-1]
+                cx = (p0[0] + p1[0]) // 2
+                cy = (p0[1] + p1[1]) // 2
+                import math
+                r = max(20.0, math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / 2)
+                start_deg = 180.0
+                end_deg = 0.0
+                segments = max(8, len(s.polyline))
+            else:
+                cx = self.doc.canvas_w // 2
+                cy = self.doc.canvas_h // 2
+                r = 100.0
+                start_deg = 0.0
+                end_deg = 180.0
+                segments = 16
+            s.arc_center = (cx, cy)
+            s.arc_radius = r
+            s.arc_start_deg = start_deg
+            s.arc_end_deg = end_deg
+            s.arc_segments = segments
+
+        before = _strip_snapshot(s)
+        dlg = _ArcParamDialog(s, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        # Apply the dialog's values back to the strip and regenerate
+        # its polyline from scratch.
+        dlg.apply_to(s)
+        s.shape = "arc"
+        s.polyline = _arc_to_polyline(
+            s.arc_center, s.arc_radius,
+            s.arc_start_deg, s.arc_end_deg, s.arc_segments,
+        )
+        after = _strip_snapshot(s)
+        self.undo_stack.push(_StripPolylineCmd(
+            self, strip_idx, before, after, "Edit arc"))
+        # Reveal the arc handles right away — without this the operator
+        # has to find the strip's path on canvas and click it before
+        # the handles appear, which is fiddly on small arcs.
+        self._select_strip_in_table(strip_idx)
+
+    def _select_strip_in_table(self, strip_idx: int):
+        """Switch to the Strips tab and select that strip's row,
+        which trips ``_on_table_selection_changed`` and reveals the
+        strip's handles on both canvases."""
+        if not (0 <= strip_idx < len(self.doc.strips)):
+            return
+        self.tabs.setCurrentIndex(2)
+        view = getattr(self.strips_m, "_view", None)
+        if view is not None:
+            view.selectRow(strip_idx)
 
     # ----- project switching -----
     def _switch_project(self, idx: int):
@@ -2013,6 +3972,11 @@ class EditorWindow(QMainWindow):
             if ans == QMessageBox.StandardButton.Save:
                 self.save()
         self._reload(project_id=new_id)
+        # If the engine is running, ask it to swap too — otherwise the
+        # editor would be showing a layout that doesn't match the
+        # frames the engine is broadcasting (different group ids).
+        if self._engine_proc is not None:
+            self._post_json_bg("/api/project/change", {"project_id": new_id})
 
     def _reload(self, project_id: Optional[str] = None):
         pid = project_id or self.doc.project_id
@@ -2024,15 +3988,65 @@ class EditorWindow(QMainWindow):
             m.beginResetModel()
             m.endResetModel()
         self.setWindowTitle(f"Layout Editor — {pid}")
-        self.scene.rebuild(self.doc)
-        self.group_scene.rebuild(self.doc)
+        self._rebuild_scenes()    # overlay-safe rebuild
         self._dirty = False
         self._update_status()
 
     # ----- canvas refresh -----
     def _refresh_canvas(self):
+        self._rebuild_scenes()
+
+    def _rebuild_scenes(self):
+        """Rebuild both scenes safely while the emulator overlay may be
+        active. ``QGraphicsScene.clear()`` destroys *every* item the
+        scene owns, including the overlay's pixmap items — leaving the
+        Python wrappers pointing at deleted C++ objects, so the next
+        ``setPixmap()`` raises RuntimeError. Drop the overlay first,
+        then rebuild, then construct a fresh overlay against the new
+        scene items. Used by every code path that calls scene.rebuild()
+        (model edits, Reload, project switch)."""
+        overlay_alive = self._emu_overlay is not None
+        overlay_visible = False
+        if overlay_alive:
+            try:
+                overlay_visible = self._emu_overlay._phys_pixmap_item.isVisible()
+            except RuntimeError:
+                overlay_visible = self.live_preview_chk.isChecked()
+            self._emu_overlay = None
+            # Reset seq so the next tick definitely repaints rather
+            # than thinking "same frame, skip" against the new overlay.
+            self._emu_last_seq = -1
+
         self.scene.rebuild(self.doc)
         self.group_scene.rebuild(self.doc)
+
+        if overlay_alive:
+            self._emu_overlay = EmulatorOverlay(
+                self.doc, self.scene, self.group_scene
+            )
+            self._emu_overlay.set_visible(overlay_visible)
+            self._set_strip_visuals_visible(not overlay_visible)
+
+        # Restore the highlighted strip's handles after the rebuild.
+        # The Strips-table selection survives (it lives outside the
+        # QGraphicsScene), but the highlight state inside the scene
+        # was wiped along with the items. Without this re-application,
+        # an undo or any model edit drops the visible handles even
+        # though the row is still selected — which looked to the
+        # operator like "undo doesn't work" or "I can't edit this
+        # strip after clicking another and clicking back".
+        self._restore_strip_highlight()
+
+    def _restore_strip_highlight(self):
+        view = getattr(self.strips_m, "_view", None)
+        if view is None:
+            return
+        rows = view.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        self.scene.highlight_strip(row)
+        self.group_scene.highlight_strip(row)
 
     # ----- save -----
     def save(self):
@@ -2080,7 +4094,339 @@ class EditorWindow(QMainWindow):
                 return
             if ans == QMessageBox.StandardButton.Save:
                 self.save()
+        # Tear down the engine subprocess + emulator client cleanly so
+        # we don't leak a child process when the editor closes.
+        self._stop_engine()
         event.accept()
+
+    # ======================================================================
+    # Emulator runtime: launch engine subprocess, listen for frames,
+    # wire weather dropdowns to the engine's REST API.
+    # ======================================================================
+
+    EMULATOR_PORT = 58741   # localhost only; not exposed to network
+    # Web API base — port read from config.yaml at __init__ so the
+    # editor follows whatever port the engine's Flask server actually
+    # binds (the runtime default is 80; some configs use 5000).
+    WEB_API_BASE = "http://127.0.0.1:5000"
+
+    def _toggle_engine(self):
+        if self._engine_proc is not None:
+            self._stop_engine()
+        else:
+            self._start_engine()
+
+    def _start_engine(self):
+        if self._dirty:
+            ans = QMessageBox.question(
+                self, "Unsaved layout",
+                "You have unsaved edits in the layout. The engine reads "
+                "the YAML files on disk — save before launching?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                return
+            if ans == QMessageBox.StandardButton.Save:
+                self.save()
+
+        # Tear down the existing scene's strip-line visuals so they
+        # don't draw on top of the LED overlay; rebuild later when we
+        # stop or the user toggles live preview off.
+        self._emu_overlay = EmulatorOverlay(
+            self.doc, self.scene, self.group_scene
+        )
+        self._set_strip_visuals_visible(False)
+
+        self._emu_port = self.EMULATOR_PORT
+        # Spawn the engine. QProcess merges stderr+stdout for the log.
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.setProgram(sys.executable)
+        proc.setArguments([
+            "-X", "utf8",
+            str(ROOT / "Stories_OGL.py"),
+            "--project", self.doc.project_id,
+            "--emulator-port", str(self._emu_port),
+            # Engine watches our PID and exits when we disappear, so a
+            # crashed editor doesn't leave an orphan engine running.
+            "--parent-pid", str(os.getpid()),
+        ])
+        proc.setWorkingDirectory(str(ROOT))
+        # Force UTF-8 stdio so unicode characters in engine prints
+        # don't crash the engine when its output is piped to us
+        # (Windows defaults to cp1252 in piped mode). PyQt6 only
+        # supports the QProcessEnvironment-based API.
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUTF8", "1")
+        proc.setProcessEnvironment(env)
+        proc.readyReadStandardOutput.connect(self._on_engine_stdout)
+        proc.finished.connect(self._on_engine_finished)
+        proc.errorOccurred.connect(self._on_engine_error)
+        self.log_panel.clear()
+        self._append_log(
+            f"$ {sys.executable} Stories_OGL.py --project {self.doc.project_id} "
+            f"--emulator-port {self._emu_port}\n"
+        )
+        proc.start()
+        self._engine_proc = proc
+
+        # Start the TCP listener. It retries the connect for ~6 s while
+        # the engine boots, then settles into reading frames.
+        self._emu_client = EmulatorClient(port=self._emu_port)
+        self._emu_client.start()
+
+        self._emu_timer.start()
+        self._emu_state_timer.start()
+        self._log_flush_timer.start()
+
+        self.run_btn.setText("■ Stop engine")
+        self._engine_status.setText("Engine: starting…")
+        self._engine_status.setStyleSheet("color: #f7c46c; padding: 0 8px;")
+        self.live_preview_chk.setEnabled(True)
+
+    def _stop_engine(self):
+        self._emu_timer.stop()
+        self._emu_state_timer.stop()
+        self._log_flush_timer.stop()
+        self._flush_log_buffer()   # drain anything still pending
+
+        if self._emu_client is not None:
+            self._emu_client.stop()
+            self._emu_client = None
+
+        if self._emu_overlay is not None:
+            self._emu_overlay.teardown()
+            self._emu_overlay = None
+            self._set_strip_visuals_visible(True)
+
+        if self._engine_proc is not None:
+            proc = self._engine_proc
+            self._engine_proc = None
+            try:
+                proc.terminate()
+                if not proc.waitForFinished(2000):
+                    proc.kill()
+                    proc.waitForFinished(1000)
+            except Exception:
+                pass
+
+        self.run_btn.setText("▶ Run engine")
+        self._engine_status.setText("Engine: stopped")
+        self._engine_status.setStyleSheet("color: #888; padding: 0 8px;")
+        self.live_preview_chk.setEnabled(False)
+        self.weather_set_picker.setEnabled(False)
+        self.weather_state_picker.setEnabled(False)
+        self.weather_set_picker.clear()
+        self.weather_state_picker.clear()
+
+    # ----- engine process I/O -----
+    def _on_engine_stdout(self):
+        # Hot path — fires per kernel readyRead, which can be many
+        # times per second on a chatty engine boot. Just append the
+        # raw bytes; the slow 5 Hz flush timer turns them into log
+        # entries on its own schedule.
+        if self._engine_proc is None:
+            return
+        data = bytes(self._engine_proc.readAllStandardOutput())
+        if data:
+            self._log_buffer.extend(data)
+
+    def _flush_log_buffer(self):
+        if not self._log_buffer:
+            return
+        try:
+            text = self._log_buffer.decode("utf-8", errors="replace")
+        except Exception:
+            text = repr(bytes(self._log_buffer))
+        self._log_buffer.clear()
+        # appendPlainText splits on its own; trim the trailing newline
+        # so we don't get a phantom blank line at the bottom each flush.
+        self.log_panel.appendPlainText(text.rstrip("\n"))
+
+    def _on_engine_finished(self, _code, _status):
+        # Mirror _stop_engine but skip the QProcess.terminate path
+        # since the process has already finished.
+        self._engine_proc = None
+        self._emu_timer.stop()
+        self._emu_state_timer.stop()
+        self._log_flush_timer.stop()
+        self._flush_log_buffer()
+        self.log_panel.appendPlainText("[engine exited]")
+        if self._emu_client is not None:
+            self._emu_client.stop()
+            self._emu_client = None
+        if self._emu_overlay is not None:
+            self._emu_overlay.teardown()
+            self._emu_overlay = None
+            self._set_strip_visuals_visible(True)
+        self.run_btn.setText("▶ Run engine")
+        self._engine_status.setText("Engine: stopped")
+        self._engine_status.setStyleSheet("color: #888; padding: 0 8px;")
+        self.live_preview_chk.setEnabled(False)
+        self.weather_set_picker.setEnabled(False)
+        self.weather_state_picker.setEnabled(False)
+
+    def _on_engine_error(self, err):
+        self._append_log(f"\n[QProcess error: {err}]\n")
+
+    def _append_log(self, text: str):
+        self.log_panel.appendPlainText(text.rstrip("\n"))
+
+    def _on_toggle_log(self, on: bool):
+        self.log_panel.setVisible(on)
+        if on:
+            self._right_col.setSizes([550, 200])
+            self.show_log_btn.setText("Hide log")
+        else:
+            self._right_col.setSizes([700, 0])
+            self.show_log_btn.setText("Show log")
+
+    # ----- frame poll (~20 Hz) -----
+    def _on_emu_tick(self):
+        if self._emu_client is None or self._emu_overlay is None:
+            return
+        if not self._emu_client.is_connected():
+            return
+        raw, corrected, seq = self._emu_client.snapshot()
+        if not raw and not corrected:
+            return
+        # Skip if the engine hasn't published a new frame since the
+        # last paint — saves the per-tick numpy + pixmap cost.
+        if seq == self._emu_last_seq:
+            return
+        if self._engine_status.text() != "Engine: connected":
+            self._engine_status.setText("Engine: connected")
+            self._engine_status.setStyleSheet("color: #7be59a; padding: 0 8px;")
+            self._emu_overlay.set_visible(self.live_preview_chk.isChecked())
+        try:
+            self._emu_overlay.update_frame(raw, corrected)
+        except RuntimeError:
+            # Overlay's pixmap items got destroyed underneath us between
+            # the None-check above and this call (e.g. a model edit
+            # racing the timer). Rebuild and let the next tick paint.
+            self._emu_overlay = None
+            self._rebuild_scenes()
+            return
+        self._emu_last_seq = seq
+
+    def _on_toggle_live_preview(self, on: bool):
+        if self._emu_overlay is not None:
+            self._emu_overlay.set_visible(on)
+            self._set_strip_visuals_visible(not on)
+
+    def _set_strip_visuals_visible(self, on: bool):
+        """Hide the schematic strip lines + arrows on both scenes
+        when the LED overlay is active so colors aren't fighting the
+        group-color schematic."""
+        for item in self.scene._strips:
+            item.setVisible(on)
+        for item in self.group_scene._strip_items.values():
+            item.setVisible(on)
+
+    # ----- weather control via REST API (engine's web_controller) -----
+    # All urllib calls run on a daemon worker thread so the Qt main
+    # thread never blocks on network I/O. Results come back through
+    # signals so dropdown updates stay on the GUI thread.
+    weather_info_received = pyqtSignal(dict)
+    post_failed = pyqtSignal(str)
+
+    def _on_emu_state_poll(self):
+        """Background-fetch project/weather state every second so the
+        dropdowns stay in sync. Skipped until the engine's emulator
+        feed is connected — the web server typically isn't up before
+        that, and a tight loop of refused connections just adds
+        latency."""
+        if self._emu_client is None or not self._emu_client.is_connected():
+            return
+        threading.Thread(
+            target=self._fetch_weather_info_bg, name="WeatherFetch",
+            daemon=True,
+        ).start()
+
+    def _fetch_weather_info_bg(self):
+        try:
+            import urllib.request
+            import json
+            with urllib.request.urlopen(
+                f"{self.WEB_API_BASE}/api/weather_set/info", timeout=0.5
+            ) as resp:
+                info = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return   # web server not up yet; quietly retry next tick
+        # Marshal back to the GUI thread.
+        self.weather_info_received.emit(info)
+
+    def _on_weather_info(self, info: dict):
+        sets = info.get("available_sets", [])
+        cur_set = info.get("current_set", "")
+        states = info.get("available_weather_states", [])
+        cur_state = info.get("current_weather", "")
+
+        existing_sets = [self.weather_set_picker.itemText(i)
+                         for i in range(self.weather_set_picker.count())]
+        if existing_sets != sets:
+            self.weather_set_picker.blockSignals(True)
+            self.weather_set_picker.clear()
+            self.weather_set_picker.addItems(sets)
+            self.weather_set_picker.blockSignals(False)
+        idx = self.weather_set_picker.findText(cur_set)
+        if idx >= 0 and self.weather_set_picker.currentIndex() != idx:
+            self.weather_set_picker.blockSignals(True)
+            self.weather_set_picker.setCurrentIndex(idx)
+            self.weather_set_picker.blockSignals(False)
+
+        existing_states = [self.weather_state_picker.itemText(i)
+                           for i in range(self.weather_state_picker.count())]
+        if existing_states != states:
+            self.weather_state_picker.blockSignals(True)
+            self.weather_state_picker.clear()
+            self.weather_state_picker.addItems(states)
+            self.weather_state_picker.blockSignals(False)
+        idx = self.weather_state_picker.findText(cur_state)
+        if idx >= 0 and self.weather_state_picker.currentIndex() != idx:
+            self.weather_state_picker.blockSignals(True)
+            self.weather_state_picker.setCurrentIndex(idx)
+            self.weather_state_picker.blockSignals(False)
+
+        self.weather_set_picker.setEnabled(True)
+        self.weather_state_picker.setEnabled(True)
+
+    def _on_pick_weather_set(self, _idx: int):
+        name = self.weather_set_picker.currentText()
+        if name:
+            self._post_json_bg("/api/weather_set/change", {"set_name": name})
+
+    def _on_pick_weather_state(self, _idx: int):
+        name = self.weather_state_picker.currentText()
+        if name:
+            self._post_json_bg("/api/weather_state/change", {"state_name": name})
+
+    def _post_json_bg(self, path: str, payload: dict):
+        """Fire-and-forget POST on a worker thread. Failures surface
+        through the ``post_failed`` signal so they reach the log panel
+        without blocking the GUI."""
+        threading.Thread(
+            target=self._do_post_json, args=(path, payload),
+            name=f"POST {path}", daemon=True,
+        ).start()
+
+    def _do_post_json(self, path: str, payload: dict):
+        try:
+            import urllib.request
+            import json
+            req = urllib.request.Request(
+                f"{self.WEB_API_BASE}{path}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                resp.read()
+        except Exception as e:
+            self.post_failed.emit(f"[POST {path} failed: {e}]")
 
 
 # ---------------------------------------------------------------------------
@@ -2108,6 +4454,23 @@ def main():
     app = QApplication(sys.argv)
     win = EditorWindow(initial)
     win.show()
+
+    # Clean Ctrl+C handling. Without this, SIGINT lands inside whatever
+    # Python frame happened to be active (often the QProcess readyRead
+    # callback) and unwinds the editor without going through closeEvent
+    # — so the engine subprocess stays alive and threads aren't joined.
+    # The wakeup timer is needed because Qt's event loop sleeps in the
+    # OS waitqueue and won't notice Python signals otherwise.
+    import signal
+    def _on_sigint(*_):
+        win.close()
+        app.quit()
+    signal.signal(signal.SIGINT, _on_sigint)
+    sigint_wakeup = QTimer()
+    sigint_wakeup.setInterval(200)
+    sigint_wakeup.timeout.connect(lambda: None)
+    sigint_wakeup.start()
+
     return app.exec()
 
 

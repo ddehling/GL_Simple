@@ -17,13 +17,29 @@ presets, sensor-driven params) goes here too; for now the placeholder
 set lights all three groups with weather-state-independent effects so
 the operator sees obviously-different patterns per group.
 """
+from copy import deepcopy
+
 from lib.weather_params import *  # noqa: F401,F403
 from lib.weather_params import (  # noqa: F401  explicit re-exports
     WeatherState,
     PARAMETER_DEFINITIONS,
     DEFAULT_WEATHER_PARAMS,
-    WEATHER_PRESETS,
+    WEATHER_PRESETS as _FAN_WEATHER_PRESETS,
 )
+
+
+# Strip ``ambient_sound`` entries off the inherited Fan presets — those
+# point at .wav files that live in ``projects/fan/media/sounds/`` only.
+# When WoL is the active project the audio engine resolves ambient
+# paths against ``state['media_root']`` = WoL's media folder, where
+# none of those files exist, and the lookup throws a popup
+# FileNotFoundError. Silence ambient until WoL ships its own audio
+# kit (or until the engine grows a multi-root resolver). Per-state
+# audio reactivity unaffected; only the looped ambient backdrop.
+WEATHER_PRESETS = deepcopy(_FAN_WEATHER_PRESETS)
+for _state, _preset in WEATHER_PRESETS.items():
+    if isinstance(_preset, dict) and "ambient_sound" in _preset:
+        _preset["ambient_sound"] = None
 
 
 # Three operator-switchable visual themes. Each theme is its own weather
@@ -77,6 +93,20 @@ WEATHER_SETS = {
             "wol_isovalues_trunk",
             "wol_tentacle_leaves",
             "wol_isovalues_ambient",
+        ],
+    },
+    # Test set — bouncing blue ball on the leaves canvas only. Trunk
+    # and ambient have no events scheduled, so they stay black. Useful
+    # as a smoke test for the per-pixel physical-position metadata
+    # path (the ball's collision is in normalized [-0.5, +0.5] space,
+    # not FBO pixels) and as a template for future test shaders.
+    "wol_test": {
+        **_BASE,
+        "name": "Weight of Light — Test",
+        "description": "Test set: bouncing blue ball in physical space, "
+                       "leaves group only. Other groups dark.",
+        "background_events": [
+            "wol_test_bouncing_ball",
         ],
     },
 }

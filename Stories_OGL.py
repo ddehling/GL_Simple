@@ -91,13 +91,87 @@ def _parse_cli_args():
         default=None,
         help="Active project id (overrides config.yaml). Looks for projects/<id>/project.yaml.",
     )
+    parser.add_argument(
+        "--emulator-port",
+        type=int,
+        default=None,
+        help="If set, broadcast per-frame group canvases on this localhost "
+             "TCP port for the layout editor's emulator preview. Off by default.",
+    )
+    parser.add_argument(
+        "--parent-pid",
+        type=int,
+        default=None,
+        help="If set, the engine self-terminates when this PID disappears. "
+             "Used by the layout editor's launch button so a crashed editor "
+             "doesn't leave the engine orphaned.",
+    )
     # parse_known_args so future flags / IDE-injected args don't blow up.
     args, _ = parser.parse_known_args()
     return args
 
 
+def _start_parent_watcher(parent_pid: int) -> None:
+    """Spawn a daemon thread that polls the given PID once a second and
+    forces the engine to exit when the parent process disappears.
+
+    On POSIX, ``os.kill(pid, 0)`` is the standard "is this process
+    alive" probe — sends no signal, only does the permission check.
+    DO NOT USE IT ON WINDOWS: CPython implements ``os.kill`` on
+    Windows by calling ``TerminateProcess(pid, sig)``, which actually
+    *terminates* the target. Using sig=0 there silently killed the
+    editor every poll. The Windows path uses ``OpenProcess`` +
+    ``GetExitCodeProcess`` instead, which observes the parent without
+    affecting it.
+    """
+    import os
+    import sys
+    import threading
+    import time
+
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+
+        def _alive() -> bool:
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, parent_pid
+            )
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+    else:
+        def _alive() -> bool:
+            try:
+                os.kill(parent_pid, 0)
+                return True
+            except (ProcessLookupError, PermissionError, OSError):
+                return False
+
+    def _watch():
+        while True:
+            if not _alive():
+                # Parent gone — exit immediately. Use os._exit so we
+                # skip cleanup paths that might hang on hardware locks
+                # the parent's death cut us off from.
+                print(f"[ParentWatcher] Parent PID {parent_pid} gone; exiting.")
+                os._exit(0)
+            time.sleep(1.0)
+
+    threading.Thread(target=_watch, name="ParentWatcher", daemon=True).start()
+
+
 class EnvironmentalSystem:
-    def __init__(self, project_override: str | None = None):
+    def __init__(self, project_override: str | None = None,
+                 emulator_port: int | None = None):
         cfg, self.project = load_config(project_override=project_override)
         # Hold onto cfg so swap_project can rebuild from machine-local
         # settings (DMX bind IP, legacy receiver fallback) without
@@ -149,6 +223,16 @@ class EnvironmentalSystem:
         # the override is project-specific.
         self._refresh_weather_module(self.project)
 
+        # Emulator broadcaster — only instantiated when the editor passed
+        # --emulator-port. start() may fail (port in use); on failure we
+        # log and continue without emulation rather than abort the run.
+        emu = None
+        if emulator_port is not None:
+            from lib.emulator_broadcaster import EmulatorBroadcaster
+            emu = EmulatorBroadcaster(emulator_port)
+            if not emu.start():
+                emu = None
+
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
             receivers=receivers,
@@ -157,7 +241,26 @@ class EnvironmentalSystem:
             dmx_bind_ip=dmx_cfg.get("bind_ip", ""),
             geometry_provider=self.geometry_provider,
             group_ids=group_ids,
+            emulator=emu,
         )
+        self._emulator = emu
+
+        # Per-project brightness ceiling. Each piece has its own PSU
+        # budget; the project.yaml ``brightness_limit:`` key seeds
+        # both the pipeline's hardware limiter and the web slider's
+        # initial position. Falls through to RenderPipeline's default
+        # when the project doesn't declare one.
+        if self.project.brightness_limit is not None:
+            self.scheduler.brightness_setpoint = self.project.brightness_limit
+            self.scheduler.state["brightness_limit"] = self.project.brightness_limit
+            print(f"[Project] brightness_limit = {self.project.brightness_limit}")
+
+        # Expose strip metadata to the rendering engine so effects can
+        # query the active project's strip table — e.g. drive
+        # per-object behaviours, count strips per group, look up which
+        # receiver a particular strip lives on. Updated again in
+        # _swap_project_unsafe whenever the project changes.
+        self._publish_strip_metadata(receivers_list)
         self.weather_state = WeatherStateController(
             weather_state_enum=self._weather_state_enum,
             weather_presets=self._weather_presets,
@@ -332,6 +435,11 @@ class EnvironmentalSystem:
                 if ip is None:
                     continue
                 strips = strips_from_yaml_list(rx['strips'])
+                # Tag each strip with its receiver's object_id so
+                # effects can correlate strips with physical objects.
+                oid = int(rx.get('object_id', -1))
+                for s in strips:
+                    s.object_id = oid
                 out.append({
                     'ip': ip,
                     'protocol': rx.get('protocol', 'sacn'),
@@ -498,6 +606,172 @@ class EnvironmentalSystem:
         
         return True
     
+    def _publish_strip_metadata(self, receivers_list: list) -> None:
+        """Expose the active project's strip table + per-pixel
+        metadata atlas to effects via the scheduler's shared state.
+
+        Keys published:
+          * ``state["project"]`` — the active Project
+          * ``state["strips_by_group"]`` — group_id → list[StripBinding]
+          * ``state["strips_by_object"]`` — object_id → list[StripBinding]
+          * ``state["receivers"]`` — raw list as built for the DMX
+            sender (entries: {ip, host, protocol, strips, object_id})
+
+        Plus the *render-aware* additions:
+          * ``state["strip_table"]`` — list[dict], one per strip, each
+            with a globally unique ``uid``, plus ``group_id``,
+            ``strip_idx``, ``receiver_idx``, ``object_id``, ``length``,
+            ``positions`` (Nx2 float32 of physical (x, y) per LED, NaN
+            where layout is unknown). Effects iterate this list to do
+            per-strip work without juggling receivers.
+          * ``state["group_metadata"]`` — dict[group_id, dict] where
+            each entry is a stack of (H, W) numpy arrays mirroring
+            the FBO. Per-pixel lookup answers the four awareness
+            questions:
+                strip_uid    — which strip owns this pixel (-1 = none)
+                strip_idx    — wire-order index within receiver
+                receiver_idx — which receiver
+                object_id    — which physical object
+                led_chain_idx— LED's index within its strip (0..L-1)
+                pos_x, pos_y — real-world (x, y) on composite canvas,
+                              in pixels (NaN if no physical layout)
+                pos_u, pos_v — same position, NORMALIZED to
+                              ``[-0.5, +0.5]`` per-axis, origin at
+                              canvas center. Recommended for pattern
+                              math because it's scale-independent —
+                              ``r = sqrt(u² + v²)`` works identically
+                              on Fan (1024×600) and WoL (1024×768).
+            Effects sample these with ``arr[row, col]``; shaders that
+            want them can upload as textures.
+          * ``state["composite_canvas_size"]`` — ``(width, height)``
+            tuple in pixels. Useful when an effect mixes normalized
+            and pixel coordinates.
+        """
+        import numpy as _np
+        from core.strip import strips_from_yaml_list
+
+        # Build the strip table and metadata atlases from the project
+        # YAML's FULL receiver list — *not* the runtime-filtered
+        # ``receivers_list``. The latter drops receivers whose mDNS
+        # hostnames couldn't be resolved (correct policy for DMX
+        # output: don't try to send to unreachable hosts), but a
+        # strip's PHYSICAL POSITION on the layout canvas is the same
+        # whether or not its receiver is online. Effects need to know
+        # about every strip the project declares so per-pixel
+        # rendering uses the right coordinates regardless of network
+        # state. Without this decoupling, only strips on resolved
+        # receivers had non-NaN entries in the atlas, and shaders
+        # using ``isnan(pos_u)`` would discard every other strip's
+        # fragments — exactly the symptom that surfaced on WoL where
+        # only one receiver hostname resolves locally.
+        project_receivers = self.project.raw.get("receivers") or []
+
+        strips_by_group: dict = {}
+        strips_by_object: dict = {}
+        # Flat strip table — unique id per strip, all metadata in one
+        # row so effects can iterate without joining across dicts.
+        strip_table: list[dict] = []
+
+        canvas_w, canvas_h = self.geometry_provider.composite_canvas_size()
+        canvas_w = max(int(canvas_w), 1)
+        canvas_h = max(int(canvas_h), 1)
+
+        for rx_idx, rx in enumerate(project_receivers):
+            if not isinstance(rx, dict):
+                continue
+            try:
+                strips = strips_from_yaml_list(rx.get("strips", []) or [])
+            except Exception as e:
+                print(f"[Project] receiver {rx_idx} strip load failed for "
+                      f"metadata atlas: {e}")
+                continue
+            oid = int(rx.get("object_id", -1))
+            for s in strips:
+                s.object_id = oid
+                uid = len(strip_table)
+                positions = self.geometry_provider.led_positions(
+                    s.group_id, s.strip_idx, s.length
+                )
+                positions_norm = _np.empty_like(positions)
+                positions_norm[:, 0] = positions[:, 0] / canvas_w - 0.5
+                positions_norm[:, 1] = positions[:, 1] / canvas_h - 0.5
+                strip_table.append({
+                    "uid": uid,
+                    "group_id": s.group_id,
+                    "strip_idx": s.strip_idx,
+                    "receiver_idx": rx_idx,
+                    "object_id": oid,
+                    "length": s.length,
+                    "pixel_indices": s.pixel_indices,
+                    "positions": positions,
+                    "positions_norm": positions_norm,
+                })
+                strips_by_group.setdefault(s.group_id, []).append(s)
+                strips_by_object.setdefault(oid, []).append(s)
+
+        # Per-group metadata atlas. Allocate sized to each group's FBO
+        # (the same dims the renderer's GroupCanvas uses), then write
+        # each strip's per-LED metadata at its FBO indices. Pixels not
+        # covered by any strip stay at the "no-strip" sentinel values.
+        group_metadata: dict = {}
+        group_dims = {g.id: (g.height, g.width) for g in self.project.groups}
+        for gid, (gh, gw) in group_dims.items():
+            atlas = {
+                "strip_uid":     _np.full((gh, gw), -1, dtype=_np.int32),
+                "strip_idx":     _np.full((gh, gw), -1, dtype=_np.int32),
+                "receiver_idx":  _np.full((gh, gw), -1, dtype=_np.int32),
+                "object_id":     _np.full((gh, gw), -1, dtype=_np.int32),
+                "led_chain_idx": _np.full((gh, gw), -1, dtype=_np.int32),
+                # Pixel-space coords on the composite canvas (NaN if
+                # the project has no physical layout for this pixel).
+                "pos_x":         _np.full((gh, gw), _np.nan, dtype=_np.float32),
+                "pos_y":         _np.full((gh, gw), _np.nan, dtype=_np.float32),
+                # Normalized to [-0.5, +0.5] per axis, origin at the
+                # composite canvas center. Recommended for patterns
+                # — scale-independent, doesn't change with project.
+                "pos_u":         _np.full((gh, gw), _np.nan, dtype=_np.float32),
+                "pos_v":         _np.full((gh, gw), _np.nan, dtype=_np.float32),
+            }
+            group_metadata[gid] = atlas
+
+        for entry in strip_table:
+            atlas = group_metadata.get(entry["group_id"])
+            if atlas is None:
+                continue
+            idx = entry["pixel_indices"]
+            if idx is None or len(idx) == 0:
+                continue
+            rows = idx[:, 0]
+            cols = idx[:, 1]
+            gh, gw = atlas["strip_uid"].shape
+            ok = ((rows >= 0) & (rows < gh) & (cols >= 0) & (cols < gw))
+            if not ok.all():
+                rows = rows[ok]; cols = cols[ok]
+                positions = entry["positions"][ok]
+                chain = _np.arange(len(idx))[ok]
+            else:
+                positions = entry["positions"]
+                chain = _np.arange(len(idx))
+            atlas["strip_uid"][rows, cols] = entry["uid"]
+            atlas["strip_idx"][rows, cols] = entry["strip_idx"]
+            atlas["receiver_idx"][rows, cols] = entry["receiver_idx"]
+            atlas["object_id"][rows, cols] = entry["object_id"]
+            atlas["led_chain_idx"][rows, cols] = chain
+            if positions.shape[0] == len(rows):
+                atlas["pos_x"][rows, cols] = positions[:, 0]
+                atlas["pos_y"][rows, cols] = positions[:, 1]
+                atlas["pos_u"][rows, cols] = positions[:, 0] / canvas_w - 0.5
+                atlas["pos_v"][rows, cols] = positions[:, 1] / canvas_h - 0.5
+
+        st = self.scheduler.state
+        st["project"] = self.project
+        st["strips_by_group"] = strips_by_group
+        st["strips_by_object"] = strips_by_object
+        st["receivers"] = receivers_list
+        st["strip_table"] = strip_table
+        st["group_metadata"] = group_metadata
+        st["composite_canvas_size"] = (canvas_w, canvas_h)
+
     def swap_project(self, new_project_id: str) -> bool:
         """Hot-swap the active art-piece project.
 
@@ -669,6 +943,19 @@ class EnvironmentalSystem:
         self.scheduler.state["media_root"] = str(new_project.media_root)
         self.scheduler.frame_dimensions = new_dims
         self.scheduler.group_ids = list(new_group_ids)
+
+        # Per-project brightness ceiling — same logic as __init__, run
+        # again on swap so each piece's PSU budget is respected.
+        if new_project.brightness_limit is not None:
+            self.scheduler.brightness_setpoint = new_project.brightness_limit
+            self.scheduler.state["brightness_limit"] = new_project.brightness_limit
+            if self.web_controller is not None:
+                self.web_controller.set("brightness_limit",
+                                        new_project.brightness_limit)
+            print(f"[Project] brightness_limit = {new_project.brightness_limit}")
+
+        # Refresh strip metadata for effects to read.
+        self._publish_strip_metadata(new_receivers)
         # Resize per-canvas brightness state to match the new canvas count.
         self.scheduler.brightness_state = [
             {'divisor': 1.0, 'bright_factor': 0.0, 'last_logged_divisor': 0.0}
@@ -1094,7 +1381,12 @@ class EnvironmentalSystem:
 # Main execution
 if __name__ == "__main__":
     _args = _parse_cli_args()
-    env_system = EnvironmentalSystem(project_override=_args.project)
+    if _args.parent_pid is not None:
+        _start_parent_watcher(_args.parent_pid)
+    env_system = EnvironmentalSystem(
+        project_override=_args.project,
+        emulator_port=_args.emulator_port,
+    )
 
     # Optional startup weather pick (project.yaml fields):
     #   startup_weather_set:   name of a weather set in this project's

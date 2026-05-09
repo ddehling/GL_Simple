@@ -122,6 +122,31 @@ class MultiObjectGeometryProvider(GeometryProvider):
             }
         return self._json_cache
 
+    def composite_canvas_size(self) -> tuple[int, int]:
+        return (self.canvas_w, self.canvas_h)
+
+    def led_positions(self, group_id: str, strip_idx: int,
+                      length: int) -> np.ndarray:
+        """Per-LED (x, y) positions in composite-canvas pixels.
+
+        Multi-object polylines were already resampled to the strip's
+        declared length at __init__, so this is a direct lookup —
+        if the requested length differs from the cached one, we
+        resample on the fly (rare, only happens if a strip's length
+        was edited in the YAML between geometry.yaml and the
+        receivers' strip entries)."""
+        for s in self._strips:
+            if s["group"] == group_id and s["strip_idx"] == strip_idx:
+                cached = s["samples"]
+                if cached.shape[0] == length:
+                    return cached.astype(np.float32, copy=False)
+                # Resample to the requested length.
+                from numpy import asarray
+                return _resample_polyline(asarray(cached), length).astype(
+                    np.float32, copy=False
+                )
+        return np.full((length, 2), np.nan, dtype=np.float32)
+
     def make_composite_frame(self, frames) -> np.ndarray:
         """For each strip, sample its row from the strip's group canvas and
         paint the LEDs along the strip's polyline onto the composite."""

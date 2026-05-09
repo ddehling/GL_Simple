@@ -38,11 +38,15 @@ class RenderPipeline:
     def __init__(self, frame_dimensions: list, receivers: list,
                  magnification: int = 1, headless: bool = False,
                  dmx_bind_ip: str = "", geometry_provider=None,
-                 group_ids: list | None = None):
+                 group_ids: list | None = None,
+                 emulator=None):
         self._scheduler = EventScheduler()
         self.should_exit = False
         self._cleaned_up = False
         self._geometry_provider = geometry_provider
+        # Optional EmulatorBroadcaster — set by Stories_OGL when the
+        # editor passes --emulator-port. None for normal CLI runs.
+        self._emulator = emulator
 
         if group_ids is None:
             group_ids = ["main"] + [f"group{i}" for i in range(1, len(frame_dimensions))]
@@ -233,6 +237,15 @@ class RenderPipeline:
                 sender.send(corrected)
             except OSError as e:
                 print(f"[RenderPipeline] Network error sending: {e}")
+
+        # Emulator feed — broadcast both the raw shader output and the
+        # post-correction wire-bound frames so the editor can show each
+        # on the appropriate canvas. Failure is non-fatal.
+        if self._emulator is not None:
+            try:
+                self._emulator.publish(frames_dict, corrected)
+            except Exception as e:
+                print(f"[RenderPipeline] Emulator publish failed: {e}")
 
         self._shader_renderer.swap_buffers()
 

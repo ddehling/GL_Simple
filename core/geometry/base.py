@@ -32,3 +32,33 @@ class GeometryProvider:
         strip's row from its group canvas onto a composite preview.
         """
         raise NotImplementedError
+
+    def led_positions(self, group_id: str, strip_idx: int,
+                      length: int) -> np.ndarray:
+        """Return real-world (x, y) positions for each LED of this
+        strip, in chain order.
+
+        Shape: ``(length, 2)`` float32. Coordinates are in the
+        composite-canvas pixel space the project uses for its
+        ``geometry`` block.
+
+        Default implementation returns an array of ``NaN`` so the
+        rendering engine can detect "no physical layout known" and
+        fall back to FBO coordinates if it cares. Concrete providers
+        (``FanGeometryProvider``, ``MultiObjectGeometryProvider``)
+        override this with their actual layout math.
+        """
+        return np.full((length, 2), np.nan, dtype=np.float32)
+
+    def composite_canvas_size(self) -> tuple[int, int]:
+        """Return the ``(width, height)`` in pixels of the composite
+        canvas this geometry is authored against.
+
+        Used by the rendering engine to derive a normalized
+        coordinate space (each axis in ``[-0.5, +0.5]``, origin at
+        canvas center) that's independent of the project's pixel
+        dimensions — saner than raw pixels for pattern math.
+        Default is a 1024×768 placeholder; concrete providers
+        override.
+        """
+        return (1024, 768)

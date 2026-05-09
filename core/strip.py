@@ -41,6 +41,13 @@ class StripBinding:
     group_id: str
     strip_idx: int
     pixel_indices: np.ndarray  # (N, 2) int32, [row, col] into group canvas
+    # Project-level identifier of the physical box (receiver) this strip
+    # is wired to. Effects can read this from ``state['strips_by_group']``
+    # to drive per-object behaviours (e.g. light up object 3's leaves
+    # when its sensor fires). ``-1`` means "no associated object".
+    # Populated by Stories_OGL._build_receivers after the YAML loader
+    # returns the strips, since that's where the receiver context lives.
+    object_id: int = -1
 
     def __post_init__(self):
         if self.pixel_indices.dtype != np.int32:

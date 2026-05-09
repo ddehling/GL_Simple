@@ -26,4 +26,15 @@ EVENT_MAP = {
     "wol_isovalues_trunk":   (fx.shader_noise_isovalues, {}, {"group": "trunk"}),
     "wol_tentacle_leaves":   (fx.shader_tentacle,        {}, {"group": "leaves"}),
     "wol_isovalues_ambient": (fx.shader_noise_isovalues, {}, {"group": "ambient"}),
+
+    # ---- Test theme — bouncing blue ball on the leaves canvas only.
+    # ``shader_test_bouncing_ball`` lives in
+    # projects/weight_of_light/shaders/ and is auto-imported into the
+    # ``fx`` namespace by core.shader_loader on project boot/swap.
+    "wol_test_bouncing_ball": (
+        fx.shader_test_bouncing_ball,
+        {"radius": 0.1, "speed_x": 0.25, "speed_y": 0.31,
+         "color_rgb": (0.0, 0.3, 1.0)},
+        {"group": "leaves"},
+    ),
 }

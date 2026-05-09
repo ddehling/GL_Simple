@@ -39,6 +39,14 @@ objects:
   x: 414
   y: 286
 strips:
+- group: leaves
+  strip_idx: 0
+  length: 96
+  polyline:
+  - - 640
+    - 512
+  - - 572
+    - 444
 - group: trunk
   strip_idx: 0
   length: 144
@@ -48,14 +56,6 @@ strips:
   - - 640
     - 368
 - group: leaves
-  strip_idx: 0
-  length: 96
-  polyline:
-  - - 640
-    - 512
-  - - 572
-    - 444
-- group: leaves
   strip_idx: 1
   length: 96
   polyline:
@@ -63,6 +63,22 @@ strips:
     - 512
   - - 708
     - 444
+- group: ambient
+  strip_idx: 9
+  length: 64
+  polyline:
+  - - 608
+    - 512
+  - - 672
+    - 512
+- group: ambient
+  strip_idx: 0
+  length: 60
+  polyline:
+  - - 640
+    - 192
+  - - 640
+    - 252
 - group: trunk
   strip_idx: 1
   length: 144
@@ -88,13 +104,13 @@ strips:
   - - 708
     - 124
 - group: ambient
-  strip_idx: 0
+  strip_idx: 1
   length: 60
   polyline:
-  - - 640
-    - 192
-  - - 640
-    - 252
+  - - 866
+    - 286
+  - - 824
+    - 328
 - group: trunk
   strip_idx: 2
   length: 144
@@ -120,13 +136,13 @@ strips:
   - - 962
     - 286
 - group: ambient
-  strip_idx: 1
+  strip_idx: 2
   length: 60
   polyline:
-  - - 866
-    - 286
-  - - 824
-    - 328
+  - - 960
+    - 512
+  - - 900
+    - 512
 - group: trunk
   strip_idx: 3
   length: 144
@@ -152,13 +168,13 @@ strips:
   - - 1028
     - 580
 - group: ambient
-  strip_idx: 2
+  strip_idx: 3
   length: 60
   polyline:
-  - - 960
-    - 512
-  - - 900
-    - 512
+  - - 866
+    - 738
+  - - 824
+    - 696
 - group: trunk
   strip_idx: 4
   length: 144
@@ -184,13 +200,13 @@ strips:
   - - 866
     - 834
 - group: ambient
-  strip_idx: 3
+  strip_idx: 4
   length: 60
   polyline:
-  - - 866
-    - 738
-  - - 824
-    - 696
+  - - 640
+    - 832
+  - - 640
+    - 772
 - group: trunk
   strip_idx: 5
   length: 144
@@ -216,13 +232,13 @@ strips:
   - - 572
     - 900
 - group: ambient
-  strip_idx: 4
+  strip_idx: 5
   length: 60
   polyline:
-  - - 640
-    - 832
-  - - 640
-    - 772
+  - - 414
+    - 738
+  - - 456
+    - 696
 - group: trunk
   strip_idx: 6
   length: 144
@@ -248,13 +264,13 @@ strips:
   - - 318
     - 738
 - group: ambient
-  strip_idx: 5
+  strip_idx: 6
   length: 60
   polyline:
-  - - 414
-    - 738
-  - - 456
-    - 696
+  - - 320
+    - 512
+  - - 380
+    - 512
 - group: trunk
   strip_idx: 7
   length: 144
@@ -280,13 +296,13 @@ strips:
   - - 252
     - 444
 - group: ambient
-  strip_idx: 6
+  strip_idx: 7
   length: 60
   polyline:
-  - - 320
-    - 512
-  - - 380
-    - 512
+  - - 414
+    - 286
+  - - 456
+    - 328
 - group: trunk
   strip_idx: 8
   length: 144
@@ -311,11 +327,3 @@ strips:
     - 286
   - - 414
     - 190
-- group: ambient
-  strip_idx: 7
-  length: 60
-  polyline:
-  - - 414
-    - 286
-  - - 456
-    - 328
