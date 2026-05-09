@@ -281,8 +281,13 @@ class SACNPixelSender:
 
             try:
                 self.udp_socket.sendto(packet, (ip, self.DDP_PORT))
-            except BlockingIOError:
-                pass  # send buffer full, skip
+            except OSError:
+                # BlockingIOError = send buffer full;
+                # gaierror / ENETUNREACH = bad address or unreachable host.
+                # Either way one frame to one receiver is dropped and the
+                # render loop keeps going — alternative is a crash on the
+                # first bogus IP in config.yaml.
+                pass
 
             offset += chunk_size
 
@@ -307,8 +312,11 @@ class SACNPixelSender:
             # Send via UDP to port 5568 (sACN)
             try:
                 self.udp_socket.sendto(packet, (ip, 5568))
-            except BlockingIOError:
-                pass  # Socket buffer full, skip this packet
+            except OSError:
+                # See _send_ddp_receiver for the rationale — drop the
+                # packet rather than letting one bad receiver crash the
+                # render loop.
+                pass
             
             # Increment sequence number (0-255)
             sequences[u] = (seq + 1) % 256

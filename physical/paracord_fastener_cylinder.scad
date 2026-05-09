@@ -67,13 +67,15 @@ peg_shaft_d = 8;
 peg_cap_d   = 12;
 peg_cap_h   = 2.5;
 peg_height  = 6;            // height above the local body surface
-peg_y_top   = body_l/2 - 5; // Y of the radial peg pair
+// Y of the radial peg pair — pushed out toward the +Y face so
+// the peg shafts sit flush against it (peg outer edge at face).
+peg_y_top   = body_l/2 - peg_shaft_d/2;
 peg_y_bot   = -12;          // Y of peg C (vertical, top center)
 peg_clearance = 1;
-// Radial pegs are tilted away from the equator so they sit
-// BETWEEN the outer side grooves (az 90°/270°) and the inner
-// top grooves (az 160°/200°) instead of dead-on the equator.
-// Tilt factor = fraction of 90°: 0.6 → 54° tilt → az 126°/234°.
+// Radial pegs sit BETWEEN the outer side grooves (az 90°/270°)
+// and the inner top grooves (az 160°/200°). Tilt factor is the
+// fraction of 90°: 0.6 → 54° tilt → peg az 126°/234° (midpoint
+// of the two groove gaps).
 peg_tilt_factor = 0.6;
 
 // Ring channel around peg C — a full 360° trench centered on
@@ -206,8 +208,7 @@ module peg_shape() {
     //     the original abrupt step — self-supporting on FDM)
     //   • short flat disc at peg_cap_d filling any remaining cap
     //     height (peg_cap_h - cone height)
-    //   • flattened half-sphere dome at peg_cap_d on top, for
-    //     cord retention and rounded grip
+    //   • flattened half-sphere dome at peg_cap_d on top
     cone_h  = (peg_cap_d - peg_shaft_d) / 2;   // 45° ⇒ cone_h = radial growth
     flat_h  = max(0, peg_cap_h - cone_h);
     shaft_h = R + peg_height - peg_cap_h;
@@ -240,6 +241,37 @@ module mooring_peg_radial(side_factor, y) {
             peg_shape();
 }
 
+module peg_support_wedge(support_l, support_h, thickness, sign_y, dive) {
+    // Wedge gusset built as the convex hull of an apex line
+    // (above body surface) and a rectangular root box (below
+    // body surface). Cross-section in X-Z at any Y is a TRIANGLE
+    // peaked at peg-local X=0 — cord wrapping the peg can ride
+    // over the X=0 ridge rather than catching on a flat top.
+    //
+    //  peg apex (0, 0, R+H) ─╮
+    //                          ╲     ridge sloping down to nub
+    //   nub apex (0, L, R) ─────╯    ← body surface
+    //
+    //   base   (±t/2, 0..L, R-dive)  ← root, inside body
+    //
+    // Peak height tapers linearly from H above body surface at
+    // Y=0 (peg side) to 0 at Y=L (nub side). Root depth `dive`
+    // gives solid fusion with the cylinder body in CSG union.
+    L = sign_y * support_l;
+    H = support_h;
+    t = thickness;
+    d = dive;
+
+    hull() {
+        translate([0,    0, R + H])  cube(0.001, center=true);  // peg apex
+        translate([0,    L, R    ])  cube(0.001, center=true);  // nub apex
+        translate([-t/2, 0, R - d])  cube(0.001, center=true);  // root corners
+        translate([+t/2, 0, R - d])  cube(0.001, center=true);
+        translate([+t/2, L, R - d])  cube(0.001, center=true);
+        translate([-t/2, L, R - d])  cube(0.001, center=true);
+    }
+}
+
 module zt_groove() {
     translate([0, zt_y, 0])
         difference() {
@@ -251,18 +283,45 @@ module zt_groove() {
 }
 
 // === BUILD ===
-difference() {
-    union() {
-        body_solid();
-        mooring_peg_radial(-peg_tilt_factor, peg_y_top);  // peg A
-        mooring_peg_radial(+peg_tilt_factor, peg_y_top);  // peg B
-        mooring_peg_vertical(0, peg_y_bot);   // peg C (top center)
+// All pegs and their gussets are wrapped in a 2 mm world -Z
+// translate (everything lowered by 2 mm). Body and cutouts stay
+// at their original Z.
+union() {
+    difference() {
+        union() {
+            body_solid();
+            translate([0, 0, -2]) {
+                mooring_peg_radial(-peg_tilt_factor, peg_y_top);  // peg A
+                mooring_peg_radial(+peg_tilt_factor, peg_y_top);  // peg B
+                mooring_peg_vertical(0, peg_y_bot);               // peg C
+
+                // Gussets for pegs A & B
+                rotate([0, -peg_tilt_factor * 90, 0])
+                    translate([0, peg_y_top, 0])
+                        peg_support_wedge(9, 9, peg_shaft_d, -1, 2);
+                rotate([0, +peg_tilt_factor * 90, 0])
+                    translate([0, peg_y_top, 0])
+                        peg_support_wedge(9, 9, peg_shaft_d, -1, 2);
+            }
+        }
+        through_hole();
+        top_groove(groove_az_1);              // outer, full length
+        top_groove(groove_az_2);              // outer, full length
+        inner_top_groove(inner_groove_az_1);  // U leg
+        inner_top_groove(inner_groove_az_2);  // U leg
+        ring_around_peg_c();                  // full ring around peg C
+        zt_groove();
     }
-    through_hole();
-    top_groove(groove_az_1);              // outer, full length
-    top_groove(groove_az_2);              // outer, full length
-    inner_top_groove(inner_groove_az_1);  // U leg
-    inner_top_groove(inner_groove_az_2);  // U leg
-    ring_around_peg_c();                  // full ring around peg C
-    zt_groove();
+
+    // Peg C gusset added AFTER the difference so the ring trench
+    // around peg C doesn't carve through it. Also lowered 2 mm.
+    translate([0, 0, -2])
+        translate([0, peg_y_bot, 0])
+            peg_support_wedge(
+                (zt_y - zt_w/2 - 1) - peg_y_bot,  // length to nub
+                peg_height,                        // height
+                peg_shaft_d,                       // thickness
+                +1,                                // +Y direction
+                5                                  // dive
+            );
 }

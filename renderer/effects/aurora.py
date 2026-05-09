@@ -1,6 +1,7 @@
 """
 Aurora shader effect - Flowing northern lights at top of screen
 """
+import ctypes
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GL import shaders
@@ -11,46 +12,43 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_aurora(state, outstate, height_ratio=0.75, depth=96.0, intensity=1.0, speed=1.0,
-                  bass_sensitivity=0.5, mid_sensitivity=0.3, high_sensitivity=0.2):
+def shader_aurora(state, outstate, height_ratio=0.90, depth=96.0,
+                  intensity=1.0, speed=1.0):
     """
-    Shader-based aurora effect compatible with EventScheduler
-    
-    Creates flowing northern lights at the top of the screen with animated
-    waves and color gradients. Responds to audio with height pulsing (bass),
-    brightness changes (mids), and speed modulation (highs).
-    
+    Shader-based aurora effect compatible with EventScheduler.
+
+    Creates flowing northern lights at the top of the screen with sparse
+    bright zones (horizontal envelope), fine vertical filaments, and a slow,
+    mostly-per-column color flow through green / cyan / purple / pink.
+
     Usage:
-        scheduler.schedule_event(0, 60, shader_aurora, height_ratio=0.3, depth=75, 
-                               bass_sensitivity=0.8, frame_id=0)
-    
+        scheduler.schedule_event(0, 60, shader_aurora, height_ratio=0.3,
+                                 depth=75, frame_id=0)
+
     Args:
-        state: Event state dict (contains start_time, elapsed_time, count, frame_id)
-        outstate: Global state dict (from EventScheduler)
-        height_ratio: Height of aurora as proportion of viewport height (0.0-1.0, default: 0.25)
-        depth: Z-depth of aurora (0=near, 100=far, default: 75)
-        intensity: Base brightness multiplier (default: 1.0)
-        speed: Base animation speed multiplier (default: 1.0)
-        bass_sensitivity: How much bass frequencies affect height (default: 0.5)
-        mid_sensitivity: How much mid frequencies affect brightness (default: 0.3)
-        high_sensitivity: How much high frequencies affect speed (default: 0.2)
+        state: Event state dict (start_time, elapsed_time, count, frame_id).
+        outstate: Global state dict (from EventScheduler).
+        height_ratio: Height of aurora as proportion of viewport height.
+        depth: Z-depth of aurora (0=near, 100=far).
+        intensity: Base brightness multiplier.
+        speed: Base animation speed multiplier.
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
-    
+
     if shader_renderer is None:
         print("WARNING: shader_renderer not found in state!")
         return
-    
+
     viewport = shader_renderer.get_viewport(frame_id)
     if viewport is None:
         print(f"WARNING: viewport {frame_id} not found!")
         return
-    
+
     # Initialize on first call
     if state['count'] == 0:
         print(f"Initializing aurora for frame {frame_id}")
-        
+
         try:
             effect = viewport.add_effect(
                 Aurora,
@@ -58,9 +56,6 @@ def shader_aurora(state, outstate, height_ratio=0.75, depth=96.0, intensity=1.0,
                 depth=depth,
                 intensity=intensity,
                 speed=speed,
-                bass_sensitivity=bass_sensitivity,
-                mid_sensitivity=mid_sensitivity,
-                high_sensitivity=high_sensitivity
             )
             state['effect'] = effect
             print(f"✓ Initialized shader aurora for frame {frame_id}")
@@ -69,49 +64,26 @@ def shader_aurora(state, outstate, height_ratio=0.75, depth=96.0, intensity=1.0,
             import traceback
             traceback.print_exc()
             return
-    
-    # Update from audio data and global state
+
     if 'effect' in state:
-        audio_data = outstate.get('sound')
-        
-        # Process audio data if available
-        if audio_data is not None:
-            # Get current normalized bands (use short-term for beat response)
-            bands = audio_data['norm_short'][0]  # Shape: (32,)
-            
-            # Extract frequency ranges
-            bass_energy = np.mean(bands[0:8])      # Bass: 40-300 Hz
-            mid_energy = np.mean(bands[8:20])      # Mids: 300-2000 Hz
-            high_energy = np.mean(bands[20:32])    # Highs: 2000-16000 Hz
-            
-            # Apply audio modulation to effect parameters
-            state['effect'].audio_bass = bass_energy * bass_sensitivity
-            state['effect'].audio_mid = mid_energy * mid_sensitivity
-            state['effect'].audio_high = high_energy * high_sensitivity
-        else:
-            # No audio - zero out audio modulation
-            state['effect'].audio_bass = 0.0
-            state['effect'].audio_mid = 0.0
-            state['effect'].audio_high = 0.0
-        
         # Update from global state (optional)
         state['effect'].base_intensity = outstate.get('aurora_intensity', intensity)
         state['effect'].base_speed = outstate.get('aurora_speed', speed)
-        
-        # Implement fade in/out
+
+        # Fade in/out
         elapsed_time = state['elapsed_time']
         total_duration = state.get('duration', 60)
         fade_duration = 2.0
-        
+
         if elapsed_time < fade_duration:
             fade_factor = elapsed_time / fade_duration
         elif elapsed_time > (total_duration - fade_duration):
             fade_factor = (total_duration - elapsed_time) / fade_duration
         else:
             fade_factor = 1.0
-        
-        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
-    
+
+        state['effect'].fade_factor = float(np.clip(fade_factor, 0, 1))
+
     # Cleanup on close
     if state['count'] == -1:
         if 'effect' in state:
@@ -127,90 +99,75 @@ def shader_aurora(state, outstate, height_ratio=0.75, depth=96.0, intensity=1.0,
 
 class Aurora(ShaderEffect):
     """
-    Aurora borealis effect with flowing waves and color gradients
-    
-    Creates animated northern lights at the top of the screen using
-    layered sine waves with varying frequencies and amplitudes.
+    Aurora borealis effect with sparse bright zones and vertical filaments.
+
+    The horizontal envelope concentrates brightness into a few traveling
+    regions instead of running uniformly across the strip. Filaments are
+    fine vertical striations that only appear inside the bright zones, and
+    color is mostly stable per-column (a column reads as one hue top to
+    bottom) so the eye sees coherent curtains rather than rainbow gradients.
     """
-    
-    def __init__(self, viewport, height_ratio: float = 0.75, depth: float = 96.0,
-                 intensity: float = 1.0, speed: float = 1.0,
-                 bass_sensitivity: float = 0.5, mid_sensitivity: float = 0.3,
-                 high_sensitivity: float = 0.2):
+
+    def __init__(self, viewport, height_ratio: float = 0.90, depth: float = 96.0,
+                 intensity: float = 1.0, speed: float = 1.0):
         super().__init__(viewport)
         self.render_priority = 5.5  # After BART map (5), before clouds (6)
         self.height_ratio = height_ratio
-        self.height = int(viewport.height * height_ratio)  # Calculate actual pixel height
+        self.height = int(viewport.height * height_ratio)
         self.depth = depth
         self.base_intensity = intensity
         self.base_speed = speed
-        self.time = 0.0
         self.fade_factor = 0.0
-        
-        # Audio sensitivity parameters
-        self.bass_sensitivity = bass_sensitivity
-        self.mid_sensitivity = mid_sensitivity
-        self.high_sensitivity = high_sensitivity
-        
-        # Audio modulation values (updated from wrapper)
-        self.audio_bass = 0.0
-        self.audio_mid = 0.0
-        self.audio_high = 0.0
-        
-        # Smoothed audio values for stable modulation (with decay)
-        self.audio_bass_smooth = 0.0
-        self.audio_mid_smooth = 0.0
-        self.audio_high_smooth = 0.0
-        
-        # Color flow offset - only moves forward, never backward
-        self.color_flow_offset = 0.0
-        
+
+        # CPU-integrated phases. base_speed is a varying uniform (interpolates
+        # during weather transitions), so we must NOT multiply it by an
+        # in-shader u_time — we integrate dt * base_speed here and pass the
+        # monotonic phase to the shader. See docs/shader_info.txt
+        # "Time-based Animation".
+        self.wave_phase = 0.0   # drives wave displacement & band motion
+        self.color_phase = 0.0  # drives color cycle & envelope drift
+
         # Buffer objects
         self.VAO = None
         self.position_VBO = None
         self.EBO = None
-        
-                # Mesh resolution (higher = smoother waves)
-        self.segments_x = 100  # Horizontal segments
-        self.segments_y = 20   # Vertical segments
-        
+
+        # Mesh resolution (higher = smoother waves)
+        self.segments_x = 100
+        self.segments_y = 20
+
         self._initialize_data()
-    
+
     def _initialize_data(self):
         """Initialize mesh data for aurora plane"""
-        # Create a grid mesh at the top of the screen
         width = self.viewport.width
-        
-        # Generate vertex positions for a grid
+
         vertices = []
         for y in range(self.segments_y + 1):
             y_pos = (y / self.segments_y) * self.height
             for x in range(self.segments_x + 1):
                 x_pos = (x / self.segments_x) * width
                 vertices.append([x_pos, y_pos])
-        
+
         self.vertices = np.array(vertices, dtype=np.float32)
-        
-        # Generate indices for triangle strip rendering
+
+        # Triangle-strip indices with degenerate triangles between rows
         indices = []
         for y in range(self.segments_y):
             for x in range(self.segments_x + 1):
-                # Two vertices per column (current row and next row)
                 indices.append(y * (self.segments_x + 1) + x)
                 indices.append((y + 1) * (self.segments_x + 1) + x)
-            # Degenerate triangles to connect strips
             if y < self.segments_y - 1:
                 indices.append((y + 1) * (self.segments_x + 1) + self.segments_x)
                 indices.append((y + 1) * (self.segments_x + 1))
-        
+
         self.indices = np.array(indices, dtype=np.uint32)
         self.index_count = len(self.indices)
-    
+
     def compile_shader(self):
-        """Compile and link aurora shaders"""
         vertex_shader = self.get_vertex_shader()
         fragment_shader = self.get_fragment_shader()
-        
+
         try:
             vert = shaders.compileShader(vertex_shader, GL_VERTEX_SHADER)
             frag = shaders.compileShader(fragment_shader, GL_FRAGMENT_SHADER)
@@ -219,311 +176,242 @@ class Aurora(ShaderEffect):
         except Exception as e:
             print(f"Aurora shader compilation error: {e}")
             raise
-    
+
     def get_vertex_shader(self):
         return """
         #version 310 es
         precision highp float;
-        
+
         layout(location = 0) in vec2 position;
-        
+
         uniform vec2 resolution;
         uniform float depth;
-        uniform float time;
+        uniform float wavePhase;
         uniform float height;
-        uniform float speed;
-        uniform float audioBass;  // Bass energy for height modulation
-        uniform float colorFlowOffset;  // Monotonically increasing color flow
-        
+
         out vec2 vTexCoord;
         out float vWave;
-        out float vCurtainDepth;
-        out float vColorFlow;
-        
+
         void main() {
             vec2 pos = position;
-            
-            // Calculate normalized coordinates
-            float normY = pos.y / height;  // 0 at top, 1 at bottom
+
+            float normY = pos.y / height;          // 0 at top, 1 at bottom
             float normX = pos.x / resolution.x;
-            
-            // Create flowing wave pattern with multiple layers
-            float wave1 = sin(normX * 6.28318 * 2.0 + time * speed * 0.5) * 0.3;
-            float wave2 = sin(normX * 6.28318 * 3.0 - time * speed * 0.7) * 0.2;
-            float wave3 = sin(normX * 6.28318 * 1.5 + time * speed * 0.3) * 0.25;
-            
-            // Add curtain-like vertical waves that flow down
-            float curtainWave1 = sin(normX * 6.28318 * 8.0 + normY * 12.0 - time * speed * 1.2) * 0.15;
-            float curtainWave2 = sin(normX * 6.28318 * 5.0 - normY * 8.0 + time * speed * 0.8) * 0.12;
-            
-            // Create rippling effect that gives depth perception
-            float ripple = sin(normX * 6.28318 * 10.0 + time * speed) * 
-                          cos(normY * 6.28318 * 2.0 - time * speed * 0.5) * 0.08;
-            
-            // Modulate wave amplitude with bass - more bass = bigger waves
-            float bassModulation = 1.0 + audioBass * 2.0;
-            float totalWave = (wave1 + wave2 + wave3 + curtainWave1 + curtainWave2 + ripple) 
-                             * normY * 30.0 * bassModulation;
+
+            // Three layered horizontal waves shape the aurora's lower edge.
+            // Anchored at the top (multiplied by normY) so the top edge stays
+            // straight and the bottom edge undulates.
+            float wave1 = sin(normX * 6.28318 * 2.0 + wavePhase * 0.5) * 0.30;
+            float wave2 = sin(normX * 6.28318 * 3.0 - wavePhase * 0.7) * 0.20;
+            float wave3 = sin(normX * 6.28318 * 1.5 + wavePhase * 0.3) * 0.25;
+
+            float totalWave = (wave1 + wave2 + wave3) * normY * 30.0;
             pos.y += totalWave;
-            
+
             // Convert to clip space
             vec2 clipPos = (pos / resolution) * 2.0 - 1.0;
             clipPos.y = -clipPos.y;
-            
-            // Standard depth mapping
-            float mappedDepth = depth / 100.0;
-            mappedDepth = clamp(mappedDepth, 0.0, 1.0);
-            
+
+            float mappedDepth = clamp(depth / 100.0, 0.0, 1.0);
             gl_Position = vec4(clipPos, mappedDepth, 1.0);
-            
-            // Pass data to fragment shader
+
             vTexCoord = vec2(normX, normY);
-            vWave = (wave1 + wave2 + wave3) * 0.5 + 0.5;  // Normalize to 0-1
-            vCurtainDepth = (curtainWave1 + curtainWave2) * 0.5 + 0.5;
-            // Color flows downward - subtract normY so colors advance as y increases
-            vColorFlow = colorFlowOffset - normY * 2.0;
+            vWave = (wave1 + wave2 + wave3) * 0.5 + 0.5;  // 0..1
         }
         """
-    
+
     def get_fragment_shader(self):
         return """
         #version 310 es
         precision highp float;
-        
+
         in vec2 vTexCoord;
         in float vWave;
-        in float vCurtainDepth;
-        in float vColorFlow;
-        
-        uniform float time;
+
+        uniform float wavePhase;
+        uniform float colorPhase;
         uniform float intensity;
-        uniform float speed;
         uniform float fadeAlpha;
-        uniform float audioMid;   // Mid energy for brightness
-        uniform float audioHigh;  // High energy for speed/shimmer
-        
+
         out vec4 outColor;
-        
-        // Aurora color palette
-        vec3 getAuroraColor(float flowPosition, float wave) {
-            // Blend between aurora colors: green, blue, purple, pink
-            vec3 color1 = vec3(0.0, 1.0, 0.4);    // Bright green
-            vec3 color2 = vec3(0.0, 0.8, 1.0);    // Cyan
-            vec3 color3 = vec3(0.5, 0.0, 1.0);    // Purple
-            vec3 color4 = vec3(1.0, 0.2, 0.8);    // Pink
-            
-            // Add wave influence to flow position
-            float waveInfluence = wave * 0.3;
-            
-            // Seamless cyclic blending through all 4 colors
-            // flowPosition only increases, so colors only flow forward
-            float blendPos = fract(flowPosition + waveInfluence) * 4.0;
-            
-            vec3 color;
-            if (blendPos < 1.0) {
-                color = mix(color1, color2, blendPos);
-            } else if (blendPos < 2.0) {
-                color = mix(color2, color3, blendPos - 1.0);
-            } else if (blendPos < 3.0) {
-                color = mix(color3, color4, blendPos - 2.0);
-            } else {
-                // Smooth transition back to color1 to complete the cycle
-                color = mix(color4, color1, blendPos - 3.0);
-            }
-            
-            return color;
+
+        // Aurora palette — green dominant with cyan / purple / pink fringes.
+        vec3 getAuroraColor(float t) {
+            vec3 cGreen  = vec3(0.05, 1.00, 0.40);
+            vec3 cCyan   = vec3(0.10, 0.85, 1.00);
+            vec3 cPurple = vec3(0.55, 0.10, 1.00);
+            vec3 cPink   = vec3(1.00, 0.25, 0.85);
+
+            float p = fract(t) * 4.0;
+            if (p < 1.0) return mix(cGreen,  cCyan,   p);
+            if (p < 2.0) return mix(cCyan,   cPurple, p - 1.0);
+            if (p < 3.0) return mix(cPurple, cPink,   p - 2.0);
+            return mix(cPink, cGreen, p - 3.0);
         }
-        
+
         void main() {
             float x = vTexCoord.x;
             float y = vTexCoord.y;
-            
-            // Create multiple overlapping band layers for depth
-            // Use mod to ensure seamless wrapping
-            float xWrapped = mod(x, 1.0);
-            float bands1 = sin(xWrapped * 6.28318 * 4.0 + time * speed * 0.8 + vWave * 2.0) * 0.5 + 0.5;
-            float bands2 = sin(xWrapped * 6.28318 * 6.0 - time * speed * 0.5 + y * 3.0) * 0.5 + 0.5;
-            float bands3 = sin(xWrapped * 6.28318 * 3.0 + time * speed * 0.3 - y * 2.0) * 0.5 + 0.5;
-            
-            // Combine bands with different weights for layered effect
-            float bands = (bands1 * 0.5 + bands2 * 0.3 + bands3 * 0.2);
-            bands = pow(bands, 1.3);
-            
-            // Add vertical curtain structures
-            float curtainPattern = sin(xWrapped * 6.28318 * 12.0 + y * 8.0 - time * speed) * 
-                                  sin(xWrapped * 6.28318 * 7.0 - y * 5.0 + time * speed * 0.7);
-            curtainPattern = curtainPattern * 0.5 + 0.5;
-            curtainPattern = smoothstep(0.3, 0.7, curtainPattern);
-            
-            // Create ray-like structures emanating downward
-            float rays = 0.0;
-            for (float i = 0.0; i < 5.0; i += 1.0) {
-                float offset = i * 0.2 + time * speed * 0.1;
-                float rayX = fract(xWrapped * 3.0 + offset);
-                float rayIntensity = exp(-20.0 * pow(rayX - 0.5, 2.0));
-                rays += rayIntensity * (1.0 - y * 0.7);
-            }
-            rays *= 0.3;
-            
-            // Vertical gradient - brighter at top, fade toward bottom
-            float verticalFade = 1.0 - y;
-            verticalFade = pow(verticalFade, 0.7);
-            
-            // Add soft edge falloff at the bottom to prevent sharp edges on short viewports
-            // This creates a smooth transition in the bottom 30% of the aurora
-            float edgeFalloff = smoothstep(1.0, 0.7, y);
-            verticalFade *= edgeFalloff;
-            
-            // Add shimmer effect - enhanced by high frequencies
-            float shimmerSpeed = 1.0 + audioHigh * 2.0;
-            float shimmer = sin(xWrapped * 20.0 + time * speed * 2.0 * shimmerSpeed) * 
-                          sin(y * 15.0 - time * speed * 1.5) * 0.1 + 0.9;
-            
-            // Create spatial variation in color across the aurora
-            float colorVariation = sin(xWrapped * 6.28318 * 2.5) * 0.2;
-            
-            // Get aurora color - flows downward only via vColorFlow
-            vec3 color = getAuroraColor(vColorFlow + xWrapped * 0.5 + colorVariation, 
-                                       vWave * 0.7 + vCurtainDepth * 0.3);
-            
-            // Combine all structural elements
-            float structure = bands * (0.7 + curtainPattern * 0.3) + rays;
-            
-            // Combine effects - mid frequencies boost brightness
-            float audioBrightness = 1.0 + audioMid * 1.5;
-            float brightness = structure * verticalFade * shimmer * intensity * audioBrightness;
-            
-            // Add subtle glow at edges of bands
-            float edgeGlow = smoothstep(0.3, 0.7, bands) * (1.0 - smoothstep(0.7, 1.0, bands));
-            brightness += edgeGlow * 0.3;
-            
-            // Add depth-based brightness variation (curtain depth affects intensity)
-            brightness *= (0.8 + vCurtainDepth * 0.4);
-            
-            // Calculate alpha with more variation
-            float alpha = verticalFade * structure * 0.7;
-            alpha = clamp(alpha, 0.0, 0.85);
-            
-            // Apply fade in/out
+            float xw = mod(x, 1.0);  // wrap-safe x
+
+            // ---- Horizontal envelope: traveling bright zones with floor ----
+            // Sum of low-frequency sines, smoothstepped for shape, then a
+            // baseline floor so the aurora is always visibly present across
+            // the full width. Peaks still reach 1.0 in the brightest zones,
+            // but the dimmest regions stay at ~0.45 — no dead gaps.
+            float e1 = sin(xw * 6.28318 * 0.7 + colorPhase * 1.2);
+            float e2 = sin(xw * 6.28318 * 1.4 - colorPhase * 0.7 + 1.7);
+            float e3 = sin(xw * 6.28318 * 0.4 + colorPhase * 0.5 + 3.1);
+            float envelope = (e1 + e2 + e3) / 3.0;
+            envelope = smoothstep(-0.4, 0.5, envelope);
+            envelope = max(envelope, 0.45);
+
+            // ---- Sheet: continuous broad glow (the body of the curtain) ----
+            // Smooth large-scale variation in x with a baseline so the sheet
+            // never goes to zero inside a bright zone — this is what was
+            // missing before (the old `band` term went all the way to 0
+            // between cycles, leaving stripey gaps). 0.55 baseline keeps the
+            // glow continuous; the sin terms breathe slowly across width.
+            float sheet = 0.55
+                        + 0.25 * sin(xw * 6.28318         + wavePhase * 0.20 + vWave * 1.5)
+                        + 0.15 * sin(xw * 6.28318 * 2.0   - wavePhase * 0.13 + 1.7);
+            sheet = clamp(sheet, 0.0, 1.0);
+
+            // ---- Folds: broad mid-width vertical drapes ----
+            // 6 soft-edged folds across width, with a gentle y-dependent
+            // curl. Tighter smoothstep range gives crisper drape edges so
+            // bright/dim folds read clearly on a low-resolution display.
+            float foldArg = xw * 6.0 + wavePhase * 0.05
+                          + sin(y * 3.0 + wavePhase * 0.25) * 0.15;
+            float folds = sin(foldArg * 6.28318) * 0.5 + 0.5;
+            folds = smoothstep(0.30, 0.80, folds);
+
+            // ---- Filaments: irregularly-spaced vertical striations ----
+            // FM-warp the stripe coordinate so spacing bunches and stretches
+            // along x — this is what kills the even-comb look. Integer
+            // frequencies keep the pattern continuous across the wrap.
+            // Total warp amplitude (0.075) is ~1.65 stripe-widths, so peaks
+            // visibly cluster; max derivative stays < 1 so stripes never
+            // reverse direction.
+            float warp = sin(xw * 6.28318         + colorPhase * 0.30) * 0.050
+                       + sin(xw * 6.28318 * 2.0   - colorPhase * 0.50 + 1.1) * 0.025;
+            // Y-dependent micro-warp gives each stripe a gentle curl as it
+            // descends (follows the field-line shape of real aurorae).
+            float wavyX = xw + warp + sin(y * 5.0 + wavePhase * 0.4) * 0.006;
+
+            // 22 nominal stripes per width — bunched/stretched by warp.
+            // pow exponent 2.5 (was 4.0) gives slightly wider, softer
+            // filaments so they read as glowing accents on the sheet
+            // rather than razor-thin lines.
+            float stripeArg = wavyX * 22.0 + wavePhase * 0.15;
+            float stripe = pow(max(sin(stripeArg * 6.28318), 0.0), 2.5);
+
+            // Per-stripe brightness variation: each integer stripe index
+            // hashes to a different intensity so the curtain has bright/dim
+            // filaments side by side. mod-22 keeps the wrap seam clean.
+            float stripeIdx = mod(floor(stripeArg), 22.0);
+            float perStripe = 0.25 + 0.75 * fract(sin(stripeIdx * 12.9898 + 7.13) * 43758.5453);
+
+            // Mid-frequency cluster mask drifts slowly so clumps fade in/out.
+            float stripeMask = 0.4 + 0.6 * (sin(xw * 6.28318 * 5.0 - wavePhase * 0.25) * 0.5 + 0.5);
+
+            float filaments = stripe * perStripe * stripeMask;
+            // Stronger near the top of the curtain, fading downward.
+            filaments *= 0.6 + 0.4 * (1.0 - y);
+
+            // ---- Vertical fade ----
+            // Softer falloff (exponent 0.35 vs 0.7) keeps the curtain bright
+            // through more of its height so the aurora reads as a tall
+            // luminous body, not just a thin band at the top. Bottom edge
+            // softens only in the last ~12% of the strip.
+            float verticalFade = pow(1.0 - y, 0.35);
+            verticalFade *= smoothstep(1.0, 0.88, y);
+
+            // ---- Color: mostly per-column, slow time drift ----
+            // Each vertical column reads as a single hue. The y term is
+            // intentionally tiny — just enough to prevent dead-flat columns.
+            float colorT = colorPhase * 0.25 + xw * 0.6 + y * 0.05;
+            vec3 color = getAuroraColor(colorT);
+
+            // ---- Combine ----
+            // Sheet is the continuous body of the curtain. Folds drape
+            // texture across the sheet. Filaments are bright accents on
+            // top — pushed hard enough that peak brightness saturates
+            // color channels above 1.0, giving near-white hotspots that
+            // read sharply against the colored sheet (high contrast on a
+            // low-resolution LED display).
+            float structure = sheet * 0.85
+                            + folds * sheet * 0.65
+                            + filaments * sheet * 1.8;
+            // Built-in 1.5x boost so the aurora reads as a dominant layer
+            // rather than a subtle accent. `intensity` is still the user
+            // knob on top of this.
+            float brightness = envelope * structure * verticalFade * intensity * 1.5;
+
+            // Soft inner glow at fold peaks — pushes drape ridges further.
+            float glow = smoothstep(0.4, 0.85, folds) * (1.0 - smoothstep(0.85, 1.0, folds));
+            brightness += glow * envelope * verticalFade * 0.6;
+
+            // Straight (NOT pre-multiplied) alpha — see shader_info.txt.
+            // Aggressive midtone lift (exponent 0.55) means even moderate
+            // brightness regions read as nearly opaque, so the curtain
+            // body punches through whatever is behind it.
+            float alpha = envelope * structure * verticalFade;
+            alpha = pow(clamp(alpha, 0.0, 1.0), 0.55) * 0.97;
             alpha *= fadeAlpha;
 
-            // Discard transparent fragments to prevent depth buffer blocking
             if (alpha < 0.01) discard;
 
             outColor = vec4(color * brightness, alpha);
         }
         """
-    
+
     def setup_buffers(self):
-        """Initialize OpenGL buffers"""
-        # Generate VAO
         self.VAO = glGenVertexArrays(1)
         glBindVertexArray(self.VAO)
-        
-        # Generate and bind position VBO
+
         self.position_VBO = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.position_VBO)
         glBufferData(GL_ARRAY_BUFFER, self.vertices.nbytes, self.vertices, GL_STATIC_DRAW)
-        
-        # Position attribute
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
-        
-        # Generate and bind EBO
+
         self.EBO = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.EBO)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, self.indices.nbytes, self.indices, GL_STATIC_DRAW)
-        
+
         glBindVertexArray(0)
-    
+
     def update(self, dt: float, state: Dict):
-        """Update effect state each frame"""
         if not self.enabled:
             return
-        
-        # Update animation time
-        self.time += dt
-        
-        # Smooth audio values with exponential decay (prevents flickering)
-        # Attack time: 0.05s, Decay time: 0.3s
-        attack_factor = 1.0 - np.exp(-dt / 0.05)
-        decay_factor = 1.0 - np.exp(-dt / 0.3)
-        
-        # Bass: quick attack, medium decay
-        if self.audio_bass > self.audio_bass_smooth:
-            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * attack_factor
-        else:
-            self.audio_bass_smooth += (self.audio_bass - self.audio_bass_smooth) * decay_factor
-        
-        # Mid: quick attack, medium decay
-        if self.audio_mid > self.audio_mid_smooth:
-            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * attack_factor
-        else:
-            self.audio_mid_smooth += (self.audio_mid - self.audio_mid_smooth) * decay_factor
-        
-        # High: quick attack, slower decay (for smoother color shifts)
-        high_decay_factor = 1.0 - np.exp(-dt / 0.5)
-        if self.audio_high > self.audio_high_smooth:
-            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * attack_factor
-        else:
-            self.audio_high_smooth += (self.audio_high - self.audio_high_smooth) * high_decay_factor
-        
-        # Update color flow offset - always moves forward, speed affected by audio
-        flow_speed = self.base_speed * (1.0 + self.audio_high_smooth * 0.5)
-        self.color_flow_offset += dt * flow_speed * 0.15
-    
+        # Phase integration — base_speed can interpolate, so we integrate
+        # rate * dt rather than multiplying u_time by base_speed in the shader.
+        self.wave_phase += dt * self.base_speed
+        self.color_phase += dt * self.base_speed * 0.15
+
     def render(self, state: Dict):
-        """Render the aurora effect"""
         if not self.enabled:
             return
-        
+
         glUseProgram(self.shader)
-        
-        # Set uniforms
-        resolution_loc = glGetUniformLocation(self.shader, "resolution")
-        glUniform2f(resolution_loc, float(self.viewport.width), float(self.viewport.height))
-        
-        depth_loc = glGetUniformLocation(self.shader, "depth")
-        glUniform1f(depth_loc, self.depth)
-        
-        time_loc = glGetUniformLocation(self.shader, "time")
-        glUniform1f(time_loc, self.time)
-        
-        height_loc = glGetUniformLocation(self.shader, "height")
-        glUniform1f(height_loc, self.height)
-        
-        intensity_loc = glGetUniformLocation(self.shader, "intensity")
-        glUniform1f(intensity_loc, self.base_intensity)
-        
-        speed_loc = glGetUniformLocation(self.shader, "speed")
-        glUniform1f(speed_loc, self.base_speed)
-        
-        fade_loc = glGetUniformLocation(self.shader, "fadeAlpha")
-        glUniform1f(fade_loc, self.fade_factor)
-        
-        # Set audio modulation uniforms (using smoothed values)
-        bass_loc = glGetUniformLocation(self.shader, "audioBass")
-        glUniform1f(bass_loc, self.audio_bass_smooth)
-        
-        mid_loc = glGetUniformLocation(self.shader, "audioMid")
-        glUniform1f(mid_loc, self.audio_mid_smooth)
-        
-        high_loc = glGetUniformLocation(self.shader, "audioHigh")
-        glUniform1f(high_loc, self.audio_high_smooth)
-        
-        # Set color flow offset (monotonically increasing)
-        color_flow_loc = glGetUniformLocation(self.shader, "colorFlowOffset")
-        glUniform1f(color_flow_loc, self.color_flow_offset)
-        
-        # Render mesh
+
+        glUniform2f(glGetUniformLocation(self.shader, "resolution"),
+                    float(self.viewport.width), float(self.viewport.height))
+        glUniform1f(glGetUniformLocation(self.shader, "depth"), self.depth)
+        glUniform1f(glGetUniformLocation(self.shader, "wavePhase"), self.wave_phase)
+        glUniform1f(glGetUniformLocation(self.shader, "colorPhase"), self.color_phase)
+        glUniform1f(glGetUniformLocation(self.shader, "height"), float(self.height))
+        glUniform1f(glGetUniformLocation(self.shader, "intensity"), self.base_intensity)
+        glUniform1f(glGetUniformLocation(self.shader, "fadeAlpha"), self.fade_factor)
+
         glBindVertexArray(self.VAO)
         glDrawElements(GL_TRIANGLE_STRIP, self.index_count, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
-        
+
         glUseProgram(0)
-    
+
     def cleanup(self):
-        """Clean up OpenGL resources"""
         if self.position_VBO is not None:
             glDeleteBuffers(1, [self.position_VBO])
         if self.EBO is not None:

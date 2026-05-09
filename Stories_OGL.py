@@ -4,6 +4,8 @@ from pathlib import Path
 import yaml
 from engine.render_pipeline import RenderPipeline
 import lib.dmx_sender as imdmx
+from lib.osc_listener import OscListener
+from lib.mdns_resolve import resolve as mdns_resolve
 
 from lib.audio_analyzer import MicrophoneAnalyzer
 from lib.weather_params import (
@@ -22,6 +24,11 @@ def load_config():
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "device_name": "TONOR"},
         "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
+        # OSC listener — observability only at this stage. Receives messages
+        # from Weight_Of_Light boxes (button presses, analog samples,
+        # 1-Wire temps) and prints them. Mapping into actual events is a
+        # later step.
+        "osc": {"enabled": True, "port": 9001, "bind_ip": "0.0.0.0"},
         "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
             {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
@@ -30,7 +37,10 @@ def load_config():
         ]},
     }
     if config_path.exists():
-        with open(config_path, "r") as f:
+        # Force UTF-8 — Python on Windows defaults to cp1252, which trips
+        # on non-ASCII bytes anywhere in the file (a stray smart-quote, an
+        # editor's BOM, etc.). YAML is UTF-8 by spec.
+        with open(config_path, "r", encoding="utf-8") as f:
             loaded = yaml.safe_load(f) or {}
         # Merge: loaded sections override defaults
         for section in defaults:
@@ -49,6 +59,7 @@ class EnvironmentalSystem:
         audio_cfg = cfg["audio"]
         web_cfg = cfg["web"]
         dmx_cfg = cfg["dmx"]
+        osc_cfg = cfg.get("osc", {})
 
         frame_dimensions = [
             (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
@@ -57,8 +68,21 @@ class EnvironmentalSystem:
         # Hardware receiver configuration — built from config.yaml.
         # Per-receiver `protocol` (default "sacn"; "ddp" supported) is passed
         # through to the sender so it can dispatch on the right transport.
+        # Each entry may use either `ip:` (literal dotted-quad) or `host:`
+        # (mDNS-resolvable name like "wol-7f928c"); host takes precedence
+        # when both are given. Unresolvable hosts log and skip rather than
+        # blocking the whole show.
         receivers_list = []
         for rx in dmx_cfg['receivers']:
+            # YAML parses a bare `-` (no content / fully-commented item) as
+            # None. Skip those rather than crash so a typo in config.yaml
+            # doesn't take the whole show down.
+            if not isinstance(rx, dict):
+                print(f"[Config] Skipping malformed receiver entry: {rx!r}")
+                continue
+            ip = self._resolve_receiver_address(rx)
+            if ip is None:
+                continue
             protocol = rx.get('protocol', 'sacn')
             if 'addressing' in rx:
                 mode = rx['addressing']['mode']
@@ -70,14 +94,14 @@ class EnvironmentalSystem:
                 else:
                     raise ValueError(f"Unknown addressing mode: {mode}")
                 receivers_list.append({
-                    'ip': rx['ip'],
+                    'ip': ip,
                     'pixel_count': len(addr),
                     'addressing_array': addr,
                     'protocol': protocol,
                 })
             else:
                 receivers_list.append({
-                    'ip': rx['ip'],
+                    'ip': ip,
                     'pixel_count': disp["height"] * rx['columns'],
                     'addressing_array': imdmx.make_indices_V_rect_alternate(
                         rx['columns'], disp["height"], rx['column_offset']
@@ -131,6 +155,16 @@ class EnvironmentalSystem:
             self.web_controller.start(threaded=True)
             # Register viewports so socket handlers can mutate them directly
             self.web_controller.control_dict['_viewports'] = self.scheduler._shader_renderer.viewports
+
+        # OSC listener (observability only for now). Started after the web
+        # controller so any future shutdown ordering matches startup. Failure
+        # to bind is logged but non-fatal — the show keeps running.
+        self.osc_listener = None
+        if osc_cfg.get("enabled", True):
+            self.osc_listener = OscListener(
+                port=int(osc_cfg.get("port", 9001)),
+                bind_ip=osc_cfg.get("bind_ip", "0.0.0.0"))
+            self.osc_listener.start()
 
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
@@ -253,9 +287,49 @@ class EnvironmentalSystem:
         
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
-        
+
         self.whompcount = 0
-    
+
+    @staticmethod
+    def _resolve_receiver_address(rx: dict):
+        """Pick a literal IP for one receiver entry.
+
+        - ``host:`` (mDNS name) is preferred when set; resolved via
+          ``lib.mdns_resolve.resolve``.
+        - ``ip:`` is treated as a candidate too — also routed through
+          ``mdns_resolve`` so invalid addresses (typos like
+          ``192.168.68.401``) get caught here rather than blowing up
+          the render loop with ``socket.gaierror`` on every send.
+        - Failed resolutions log and return None — the caller skips the
+          entry so one missing box doesn't block the rest of the show
+          from coming up.
+        """
+        host = rx.get('host')
+        ip = rx.get('ip')
+        if host:
+            resolved = mdns_resolve(host)
+            if resolved is not None:
+                print(f"[mDNS] {host} → {resolved}")
+                return resolved
+            # Fall through to ip if both are given.
+            if ip:
+                print(f"[mDNS] {host!r} not found; trying ip {ip!r}")
+            else:
+                print(f"[mDNS] {host!r} not found; skipping receiver")
+                return None
+        if ip:
+            # mdns_resolve passes valid IPv4 strings through unchanged; an
+            # invalid one (bad octet, unreachable hostname-in-ip-field,
+            # etc.) returns None and the receiver is skipped.
+            resolved = mdns_resolve(ip)
+            if resolved is not None:
+                return resolved
+            print(f"[mDNS] {ip!r} is not a valid IP and didn't resolve as "
+                  f"a hostname; skipping receiver")
+            return None
+        print(f"[mDNS] receiver entry has neither 'host' nor 'ip'; skipping: {rx}")
+        return None
+
     def update(self):
         """Update the environmental system - should be called each frame"""
         self.current_time = time.time()
@@ -759,6 +833,8 @@ class EnvironmentalSystem:
             engine.stop_ambient()
         if self.analyzer:
             self.analyzer.stop()
+        if self.osc_listener is not None:
+            self.osc_listener.stop()
 
 
 # Main execution

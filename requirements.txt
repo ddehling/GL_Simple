@@ -19,3 +19,4 @@ zeroconf
 flask
 flask-socketio
 pyyaml
+python-osc

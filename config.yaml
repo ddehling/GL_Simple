@@ -18,19 +18,41 @@ web:
   bind_ip: ""  # Advertise mDNS (lucifera.local) on this interface only (empty = all interfaces)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
 
+osc:
+  # Listen for inbound OSC from Weight_Of_Light boxes (button presses,
+  # analog samples, 1-Wire temps). Observability only for now —
+  # incoming messages get logged via print(). Mapping into actual
+  # events is a later step.
+  enabled: true
+  port: 9001
+  bind_ip: "0.0.0.0"   # all interfaces; set to a specific IP to pin
+
 dmx:
   bind_ip: ""  # Send DMX from this interface (empty = default route)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
-  # Per-receiver `protocol` (default "sacn"):
-  #   sacn: E1.31 multicast/unicast on UDP 5568, 510 bytes/packet
-  #   ddp:  Distributed Display Protocol on UDP 4048, ~1440 bytes/packet
-  #         (preferred for big pixel counts — fewer packets per frame avoids
-  #         the receiver's ETH RX buffer cliff at ~6 packets/burst)
+  # Per-receiver:
+  #   `ip:`       literal dotted-quad (always works)
+  #   `host:`     mDNS hostname like "wol-7f928c" — resolved at startup
+  #               via the OS resolver, falling back to a _wol._tcp.local
+  #               zeroconf browse. Survives DHCP changes; preferred when
+  #               available. If both `ip:` and `host:` are set, host
+  #               wins, with ip as a fallback if mDNS misses.
+  #   `protocol:` (default "sacn")
+  #     sacn: E1.31 multicast/unicast on UDP 5568, 510 bytes/packet
+  #     ddp:  Distributed Display Protocol on UDP 4048, ~1440 bytes/packet
+  #           (preferred for big pixel counts — fewer packets per frame
+  #           avoids the receiver's ETH RX buffer cliff at ~6 packets/burst)
   receivers:
     # Lucifera
+    # Example: addressing by mDNS hostname instead of IP. Uncomment to use.
+    # - host: "wol-7f928c"   # ← stable across DHCP rotations
+    #   ip:   "192.168.68.140"   # optional fallback if mDNS misses
+    #   protocol: "sacn"
+    #   columns: 32
+    #   column_offset: 0
     - ip: "192.168.68.140"
-      protocol: "sacn"
-      columns: 32
+      protocol: "ddp"
+      columns: 8
       column_offset: 0
     - ip: "192.168.68.141"
       columns: 32
@@ -41,6 +63,10 @@ dmx:
     - ip: "192.168.68.143"
       columns: 32
       column_offset: 96
+    - host: "wol-7f928c.local"
+      protocol: "ddp"
+      columns: 8
+      column_offset: 6  
     # Bean
     # - ip: "192.168.68.111"
     #   addressing: { mode: "hs", file: "config/UnitA.txt" }
