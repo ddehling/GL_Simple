@@ -1,0 +1,38 @@
+# Per-object hardware addresses for the Weight of Light receivers.
+#
+# Copy this file to ``receiver_addresses.yaml`` (drop the ``.example``)
+# and edit the entries to match your hardware. Then re-run:
+#
+#     python tools/build_wol_layout.py
+#
+# to bake the addresses into ``project.yaml``. The build script reads
+# this file (if present) and uses each entry to replace the default
+# ``wol-{name}.local`` placeholder host.
+#
+# Each object name corresponds to one of the 9 physical receivers in the
+# ring layout: ``center`` plus the 8 peripherals (north, northeast, ...
+# clockwise from north). The strip layout per receiver (1 trunk + 2 leaves
+# + 1 ambient on peripherals; no ambient on center) is fixed in the build
+# script, so this file is *only* about how to address each box.
+#
+# Each entry can supply any combination of:
+#   ip:       literal IPv4 dotted-quad ("192.168.0.50")
+#   host:     mDNS / DNS hostname ("wol-7c12da.local"); resolved at
+#             startup. If both ``host`` and ``ip`` are given, host wins
+#             with ip as fallback when mDNS misses.
+#   protocol: "ddp" (default) or "sacn"
+
+center:    { host: wol-center.local }
+north:     { host: wol-north.local }
+northeast: { host: wol-northeast.local }
+east:      { host: wol-east.local }
+southeast: { host: wol-southeast.local }
+south:     { host: wol-south.local }
+southwest: { host: wol-southwest.local }
+west:      { host: wol-west.local }
+northwest: { host: wol-northwest.local }
+
+# Mixed example (typical real-world):
+# center:    { host: wol-7c12da.local }
+# north:     { ip: 192.168.0.51, protocol: ddp }
+# northeast: { host: wol-aabbcc.local, ip: 192.168.0.52 }   # host with ip fallback

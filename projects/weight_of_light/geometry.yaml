@@ -1,0 +1,321 @@
+canvas:
+  width: 1280
+  height: 1024
+objects:
+- id: 0
+  name: center
+  x: 640
+  y: 512
+- id: 1
+  name: north
+  x: 640
+  y: 192
+- id: 2
+  name: northeast
+  x: 866
+  y: 286
+- id: 3
+  name: east
+  x: 960
+  y: 512
+- id: 4
+  name: southeast
+  x: 866
+  y: 738
+- id: 5
+  name: south
+  x: 640
+  y: 832
+- id: 6
+  name: southwest
+  x: 414
+  y: 738
+- id: 7
+  name: west
+  x: 320
+  y: 512
+- id: 8
+  name: northwest
+  x: 414
+  y: 286
+strips:
+- group: trunk
+  strip_idx: 0
+  length: 144
+  polyline:
+  - - 640
+    - 512
+  - - 640
+    - 368
+- group: leaves
+  strip_idx: 0
+  length: 96
+  polyline:
+  - - 640
+    - 512
+  - - 572
+    - 444
+- group: leaves
+  strip_idx: 1
+  length: 96
+  polyline:
+  - - 640
+    - 512
+  - - 708
+    - 444
+- group: trunk
+  strip_idx: 1
+  length: 144
+  polyline:
+  - - 640
+    - 192
+  - - 640
+    - 48
+- group: leaves
+  strip_idx: 2
+  length: 96
+  polyline:
+  - - 640
+    - 192
+  - - 572
+    - 124
+- group: leaves
+  strip_idx: 3
+  length: 96
+  polyline:
+  - - 640
+    - 192
+  - - 708
+    - 124
+- group: ambient
+  strip_idx: 0
+  length: 60
+  polyline:
+  - - 640
+    - 192
+  - - 640
+    - 252
+- group: trunk
+  strip_idx: 2
+  length: 144
+  polyline:
+  - - 866
+    - 286
+  - - 968
+    - 184
+- group: leaves
+  strip_idx: 4
+  length: 96
+  polyline:
+  - - 866
+    - 286
+  - - 866
+    - 190
+- group: leaves
+  strip_idx: 5
+  length: 96
+  polyline:
+  - - 866
+    - 286
+  - - 962
+    - 286
+- group: ambient
+  strip_idx: 1
+  length: 60
+  polyline:
+  - - 866
+    - 286
+  - - 824
+    - 328
+- group: trunk
+  strip_idx: 3
+  length: 144
+  polyline:
+  - - 960
+    - 512
+  - - 1104
+    - 512
+- group: leaves
+  strip_idx: 6
+  length: 96
+  polyline:
+  - - 960
+    - 512
+  - - 1028
+    - 444
+- group: leaves
+  strip_idx: 7
+  length: 96
+  polyline:
+  - - 960
+    - 512
+  - - 1028
+    - 580
+- group: ambient
+  strip_idx: 2
+  length: 60
+  polyline:
+  - - 960
+    - 512
+  - - 900
+    - 512
+- group: trunk
+  strip_idx: 4
+  length: 144
+  polyline:
+  - - 866
+    - 738
+  - - 968
+    - 840
+- group: leaves
+  strip_idx: 8
+  length: 96
+  polyline:
+  - - 866
+    - 738
+  - - 962
+    - 738
+- group: leaves
+  strip_idx: 9
+  length: 96
+  polyline:
+  - - 866
+    - 738
+  - - 866
+    - 834
+- group: ambient
+  strip_idx: 3
+  length: 60
+  polyline:
+  - - 866
+    - 738
+  - - 824
+    - 696
+- group: trunk
+  strip_idx: 5
+  length: 144
+  polyline:
+  - - 640
+    - 832
+  - - 640
+    - 976
+- group: leaves
+  strip_idx: 10
+  length: 96
+  polyline:
+  - - 640
+    - 832
+  - - 708
+    - 900
+- group: leaves
+  strip_idx: 11
+  length: 96
+  polyline:
+  - - 640
+    - 832
+  - - 572
+    - 900
+- group: ambient
+  strip_idx: 4
+  length: 60
+  polyline:
+  - - 640
+    - 832
+  - - 640
+    - 772
+- group: trunk
+  strip_idx: 6
+  length: 144
+  polyline:
+  - - 414
+    - 738
+  - - 312
+    - 840
+- group: leaves
+  strip_idx: 12
+  length: 96
+  polyline:
+  - - 414
+    - 738
+  - - 414
+    - 834
+- group: leaves
+  strip_idx: 13
+  length: 96
+  polyline:
+  - - 414
+    - 738
+  - - 318
+    - 738
+- group: ambient
+  strip_idx: 5
+  length: 60
+  polyline:
+  - - 414
+    - 738
+  - - 456
+    - 696
+- group: trunk
+  strip_idx: 7
+  length: 144
+  polyline:
+  - - 320
+    - 512
+  - - 176
+    - 512
+- group: leaves
+  strip_idx: 14
+  length: 96
+  polyline:
+  - - 320
+    - 512
+  - - 252
+    - 580
+- group: leaves
+  strip_idx: 15
+  length: 96
+  polyline:
+  - - 320
+    - 512
+  - - 252
+    - 444
+- group: ambient
+  strip_idx: 6
+  length: 60
+  polyline:
+  - - 320
+    - 512
+  - - 380
+    - 512
+- group: trunk
+  strip_idx: 8
+  length: 144
+  polyline:
+  - - 414
+    - 286
+  - - 312
+    - 184
+- group: leaves
+  strip_idx: 16
+  length: 96
+  polyline:
+  - - 414
+    - 286
+  - - 318
+    - 286
+- group: leaves
+  strip_idx: 17
+  length: 96
+  polyline:
+  - - 414
+    - 286
+  - - 414
+    - 190
+- group: ambient
+  strip_idx: 7
+  length: 60
+  polyline:
+  - - 414
+    - 286
+  - - 456
+    - 328

@@ -1,0 +1,230 @@
+id: weight_of_light
+display_name: Weight of Light
+weather_sets_module: projects.weight_of_light.weather_params
+event_map_module: projects.weight_of_light.event_map
+groups:
+- id: trunk
+  width: 144
+  height: 9
+- id: leaves
+  width: 96
+  height: 18
+- id: ambient
+  width: 60
+  height: 8
+enable_random_events: false
+geometry:
+  type: multi_object
+  file: projects/weight_of_light/geometry.yaml
+receivers:
+- host: wol-center.local
+  protocol: ddp
+  object_id: 0
+  strips:
+  - group: trunk
+    strip_idx: 0
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 0
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 1
+    kind: row
+    length: 96
+    direction: right
+- host: wol-north.local
+  protocol: ddp
+  object_id: 1
+  strips:
+  - group: trunk
+    strip_idx: 1
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 2
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 3
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 0
+    kind: row
+    length: 60
+    direction: right
+- host: wol-northeast.local
+  protocol: ddp
+  object_id: 2
+  strips:
+  - group: trunk
+    strip_idx: 2
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 4
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 5
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 1
+    kind: row
+    length: 60
+    direction: right
+- host: wol-east.local
+  protocol: ddp
+  object_id: 3
+  strips:
+  - group: trunk
+    strip_idx: 3
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 6
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 7
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 2
+    kind: row
+    length: 60
+    direction: right
+- host: wol-southeast.local
+  protocol: ddp
+  object_id: 4
+  strips:
+  - group: trunk
+    strip_idx: 4
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 8
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 9
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 3
+    kind: row
+    length: 60
+    direction: right
+- host: wol-south.local
+  protocol: ddp
+  object_id: 5
+  strips:
+  - group: trunk
+    strip_idx: 5
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 10
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 11
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 4
+    kind: row
+    length: 60
+    direction: right
+- host: wol-southwest.local
+  protocol: ddp
+  object_id: 6
+  strips:
+  - group: trunk
+    strip_idx: 6
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 12
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 13
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 5
+    kind: row
+    length: 60
+    direction: right
+- host: wol-west.local
+  protocol: ddp
+  object_id: 7
+  strips:
+  - group: trunk
+    strip_idx: 7
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 14
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 15
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 6
+    kind: row
+    length: 60
+    direction: right
+- host: wol-northwest.local
+  protocol: ddp
+  object_id: 8
+  strips:
+  - group: trunk
+    strip_idx: 8
+    kind: row
+    length: 144
+    direction: right
+  - group: leaves
+    strip_idx: 16
+    kind: row
+    length: 96
+    direction: right
+  - group: leaves
+    strip_idx: 17
+    kind: row
+    length: 96
+    direction: right
+  - group: ambient
+    strip_idx: 7
+    kind: row
+    length: 60
+    direction: right
