@@ -5,8 +5,13 @@ them to physical LED receivers over the network. Supports both the sacn
 library (standard) and raw UDP sockets (lower latency), and optional
 Numba-accelerated pixel extraction for high pixel counts.
 
-Pixel coordinates are specified via per-receiver ``addressing_array`` (Nx2
-arrays of [row, col] indices into the source frame).
+Pixel coordinates are specified per receiver in one of two equivalent forms:
+  1. Legacy: ``addressing_array`` (Nx2 array of [row, col] indices) plus
+     ``pixel_count`` (= len(addressing_array)).
+  2. Strip-based: ``strips`` (list of ``core.strip.StripBinding``); the
+     sender concatenates each strip's pixel_indices to form the same Nx2
+     addressing array internally. Strips are the path forward; the legacy
+     form is kept for backwards compatibility.
 """
 
 import numpy as np
@@ -16,22 +21,57 @@ import threading
 import queue
 import socket
 import struct
+import time
+import traceback
+
+from core.strip import StripBinding, addressing_array_from_strips
 try:
     from lib.pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
     print("[DMXSender] Warning: Numba not available, using slower numpy operations")
+def _normalize_receiver(rx: dict) -> dict:
+    """Return a dict that has both ``addressing_array`` + ``pixel_count``
+    populated, regardless of whether the input used the legacy or strip-based
+    form. The strip list (when present) is preserved on the output for any
+    downstream consumer that wants to reason per-strip later (Phase 6+).
+    """
+    if 'strips' in rx and rx['strips']:
+        strips = rx['strips']
+        # Accept either StripBinding instances or dicts.
+        if not isinstance(strips[0], StripBinding):
+            from core.strip import strips_from_yaml_list  # local to avoid cycle at import
+            strips = strips_from_yaml_list(strips)
+        addr = addressing_array_from_strips(strips)
+        out = dict(rx)
+        out['strips'] = strips
+        out['addressing_array'] = addr
+        out['pixel_count'] = int(addr.shape[0])
+        return out
+    if 'addressing_array' not in rx:
+        raise ValueError(
+            "Receiver must specify either 'addressing_array' or 'strips'."
+        )
+    out = dict(rx)
+    if 'pixel_count' not in out:
+        out['pixel_count'] = int(np.asarray(out['addressing_array']).shape[0])
+    return out
+
+
 class SACNPixelSender:
     def __init__(self, receivers,start_universe=1, skip_network=True, use_raw_udp=False, per_receiver_universe=False, bind_ip=""):
         """
         Initialize the SACNPixelSender with receiver configurations.
-        :param receivers: List of dicts, each with 'ip', 'pixel_count', and 'addressing_array' keys.
+        :param receivers: List of dicts. Each dict has 'ip' + 'protocol' plus
+                          either ('pixel_count', 'addressing_array') for the
+                          legacy form or ('strips') for the strip-based form.
         :param skip_network: If True, skip actual network transmission (for testing)
         :param use_raw_udp: If True, use raw UDP sockets instead of sACN library (much faster)
         :param per_receiver_universe: If True, each receiver restarts at start_universe. If False, use global sequential universes.
         :param bind_ip: If set, bind UDP socket to this IP (forces traffic out a specific interface)
         """
+        receivers = [_normalize_receiver(rx) for rx in receivers]
         self.receivers = receivers
         self.skip_network = skip_network
         self.use_raw_udp = use_raw_udp
@@ -132,7 +172,7 @@ class SACNPixelSender:
             x_coords = np.clip(receiver['addressing_array'][:, 0], 0, max_x).astype(np.int32)
             y_coords = np.clip(receiver['addressing_array'][:, 1], 0, max_y).astype(np.int32)
             self._cached_coords.append((x_coords, y_coords))
-            
+
             # Pre-compute universe slice ranges for this receiver
             slices = []
             for i in range(universe_count):
@@ -141,6 +181,38 @@ class SACNPixelSender:
                 needs_padding = (end - start) * 3 < 510
                 slices.append((start, end, needs_padding))
             self._universe_slices.append(slices)
+
+        # Per-receiver strip plans: list of {group_id, x_coords, y_coords,
+        # byte_offset, byte_count}. The hot path iterates these to extract
+        # each strip from its own group canvas (Phase 6+); for legacy
+        # single-source callers, a 'main' group is synthesized below.
+        self._strip_plans: list[list[dict]] = []
+        for receiver in receivers:
+            plans = []
+            byte_offset = 0
+            for strip in (receiver.get('strips') or []):
+                idx = np.asarray(strip.pixel_indices, dtype=np.int32)
+                length = int(idx.shape[0])
+                plans.append({
+                    'group_id': strip.group_id,
+                    'x_coords': idx[:, 0].copy(),
+                    'y_coords': idx[:, 1].copy(),
+                    'byte_offset': byte_offset,
+                    'byte_count': length * 3,
+                })
+                byte_offset += length * 3
+            if not plans:
+                # Receiver has no strips (legacy addressing_array-only form);
+                # treat the full array as one anonymous strip on 'main'.
+                addr = np.asarray(receiver['addressing_array'], dtype=np.int32)
+                plans.append({
+                    'group_id': 'main',
+                    'x_coords': addr[:, 0].copy(),
+                    'y_coords': addr[:, 1].copy(),
+                    'byte_offset': 0,
+                    'byte_count': int(addr.shape[0]) * 3,
+                })
+            self._strip_plans.append(plans)
         
         # Pre-allocate buffers for data extraction (avoids allocations during send)
         self._receiver_buffers = []
@@ -169,11 +241,19 @@ class SACNPixelSender:
             universe_memviews = [memoryview(universe_buffer_2d[u]) for u in range(universe_count)]
             self._universe_memviews.append(universe_memviews)
         
-        # Async sending support
-        self._send_queue = queue.Queue(maxsize=2)  # Small queue to avoid lag
+        # Async sending support. Queue size 4 absorbs short scheduling
+        # hiccups (Windows timer jitter, browser keystroke contention)
+        # without snowballing into stale lag — at 40 FPS that's 100ms
+        # of buffering before frames get dropped. Smaller numbers (the
+        # original 2) caused visible LED flicker any time the worker
+        # paused for a single frame.
+        self._send_queue = queue.Queue(maxsize=4)
         self._send_thread = None
         self._stop_thread = False
         self._async_enabled = False
+        # Counters for diagnostics — printed periodically by the worker.
+        self._frames_sent = 0
+        self._frames_errored = 0
 
     def enable_async_send(self):
         """Enable asynchronous sending in a background thread"""
@@ -198,19 +278,52 @@ class SACNPixelSender:
         print("[DMXSender] Async sending disabled")
     
     def _send_worker(self):
-        """Background worker that sends frames from queue"""
+        """Background worker that drains the send queue.
+
+        Originally only caught ``queue.Empty``; any other exception in
+        ``_send_immediate`` (transient network error, malformed frame,
+        Numba compile bailout, etc.) killed the daemon thread silently
+        and the LED output went dark / flickery while ``send()`` kept
+        queueing frames into a queue with no consumer.
+
+        Now: catch every exception, log it once per minute (so a
+        sustained network outage doesn't spam), and keep going. The
+        thread only stops on the explicit ``_stop_thread`` flag or a
+        ``None`` poison pill.
+        """
+        last_error_log = 0.0
+        last_status_log = time.monotonic()
+        last_status_sent = 0
         while not self._stop_thread:
+            now = time.monotonic()
+            # Periodic alive/throughput log so the operator can see whether
+            # the worker is processing frames at all. Fires regardless of
+            # queue state; first occurrence at +5s after start.
+            if now - last_status_log > 5.0:
+                delta = self._frames_sent - last_status_sent
+                last_status_log = now
+                last_status_sent = self._frames_sent
+                print(f"[DMXSender] worker: sent={self._frames_sent} "
+                      f"(+{delta} in 5s) errored={self._frames_errored} "
+                      f"qsize={self._send_queue.qsize()}")
             try:
-                # Get frame data from queue (timeout to check stop flag)
                 frame_data = self._send_queue.get(timeout=0.1)
-                if frame_data is None:  # Poison pill to stop
-                    break
-                
-                # Actually send the data
-                self._send_immediate(frame_data)
-                
             except queue.Empty:
                 continue
+            if frame_data is None:
+                break
+            try:
+                self._send_immediate(frame_data)
+                self._frames_sent += 1
+            except Exception as e:
+                self._frames_errored += 1
+                # Fast initial errors so a regression shows up immediately;
+                # then throttle to once per 5s if errors persist.
+                if now - last_error_log > 5.0:
+                    last_error_log = now
+                    print(f"[DMXSender] worker exception "
+                          f"(errored={self._frames_errored}, sent={self._frames_sent}): {e}")
+                    traceback.print_exc()
     
     def _build_sacn_header(self, universe):
         """Build a pre-formatted sACN E1.31 packet header (126 bytes)"""
@@ -341,54 +454,67 @@ class SACNPixelSender:
             
         return mask
 
-    def send(self, source_array, verify=False):
-        """
-        Send pixel data to all configured receivers.
+    def send(self, frames, verify=False):
+        """Send pixel data to all configured receivers.
+
+        ``frames`` is a dict ``{group_id: source_array}`` (Phase 6+
+        multi-group form). Single-source callers may pass a bare ndarray;
+        it's treated as the ``'main'`` group canvas for back-compat.
+
         If async is enabled, queues data for background sending.
         Otherwise sends immediately.
         """
         if self._async_enabled:
             # Drop frame if queue is full (prevents lag buildup)
-            # Note: We don't copy the array - caller must not modify after calling send()
+            # Note: We don't copy arrays — caller must not modify after calling send()
             try:
-                self._send_queue.put_nowait((source_array, verify))
+                self._send_queue.put_nowait((frames, verify))
             except queue.Full:
                 pass  # Skip this frame if queue is full
         else:
-            self._send_immediate((source_array, verify))
-    
+            self._send_immediate((frames, verify))
+
     def _send_immediate(self, frame_data):
+        """Send pixel data using optimized Numba functions (releases GIL).
+
+        :param frame_data: Tuple of (frames, verify). ``frames`` is either
+            a dict ``{group_id: ndarray}`` or a bare ndarray (legacy).
         """
-        Send pixel data using optimized Numba functions (releases GIL).
-        :param frame_data: Tuple of (source_array, verify)
-        """
-        source_array, verify = frame_data
-        
+        frames, verify = frame_data
+
+        if not isinstance(frames, dict):
+            # Legacy single-source callers — wrap as a one-group dict.
+            frames = {'main': frames}
+
         if verify:
-            print(f"[DMXSender] Sending frame shape={source_array.shape}")
-        
+            shapes = {gid: f.shape for gid, f in frames.items()}
+            print(f"[DMXSender] Sending frames {shapes}")
+
         # Process each receiver using optimized Numba (releases GIL)
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
-            x_coords, y_coords = self._cached_coords[rx_idx]
             pixel_buffer = self._receiver_buffers[rx_idx]
             protocol = self.receiver_protocols[rx_idx]
 
-            # ---- pixel extraction (same for both protocols) ----
-            if NUMBA_AVAILABLE:
-                # Ultra-fast: extract pixels with no bounds checking (coords pre-validated)
-                extract_and_pack_pixels_unchecked(
-                    source_array,
-                    x_coords,
-                    y_coords,
-                    pixel_buffer
-                )
-            else:
-                # Fallback to numpy
-                height, width = source_array.shape[:2]
-                x_valid = np.minimum(x_coords, height - 1)
-                y_valid = np.minimum(y_coords, width - 1)
-                pixels = source_array[x_valid, y_valid]
-                pixel_buffer[:] = pixels.flatten()
+            # ---- per-strip pixel extraction (each strip pulls from its
+            # own group canvas; receiver buffer is the concatenation) ----
+            for plan in self._strip_plans[rx_idx]:
+                source = frames.get(plan['group_id'])
+                if source is None:
+                    # Group not in this frame; leave the prior strip data in
+                    # the buffer rather than blanking it.
+                    continue
+                buf_slice = pixel_buffer[plan['byte_offset']:
+                                         plan['byte_offset'] + plan['byte_count']]
+                if NUMBA_AVAILABLE:
+                    extract_and_pack_pixels_unchecked(
+                        source, plan['x_coords'], plan['y_coords'], buf_slice,
+                    )
+                else:
+                    h, w = source.shape[:2]
+                    x_valid = np.minimum(plan['x_coords'], h - 1)
+                    y_valid = np.minimum(plan['y_coords'], w - 1)
+                    pixels = source[x_valid, y_valid]
+                    buf_slice[:] = pixels.flatten()
 
             if self.skip_network:
                 continue

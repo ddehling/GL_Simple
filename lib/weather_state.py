@@ -3,34 +3,58 @@
 WeatherStateController tracks the current and target WeatherState, interpolates
 parameters between them during a transition, and chooses the next state using
 season-biased probability weights. Has no audio, scheduler, or web dependencies.
+
+Phase-8 multi-project work: the WeatherState enum, default params dict, and
+weather presets dict are project-specific. They can be passed in at
+construction; ``lib.weather_params`` defaults are kept for backward compat.
 """
 
 import numpy as np
 import time
 
 from lib.weather_params import (
-    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS,
+    WeatherState as _DEFAULT_WEATHER_STATE_ENUM,
+    DEFAULT_WEATHER_PARAMS as _DEFAULT_WEATHER_PARAMS,
+    WEATHER_PRESETS as _DEFAULT_WEATHER_PRESETS,
 )
 
 
 class WeatherStateController:
     """Pure weather state management with no audio, scheduler, or web dependencies."""
 
-    def __init__(self, initial_weather: WeatherState = WeatherState.CLEAR):
+    def __init__(
+        self,
+        initial_weather=None,
+        weather_state_enum=None,
+        default_weather_params: dict | None = None,
+        weather_presets: dict | None = None,
+    ):
+        self._weather_state_enum = (
+            weather_state_enum if weather_state_enum is not None else _DEFAULT_WEATHER_STATE_ENUM
+        )
+        if initial_weather is None:
+            # Default to the enum's CLEAR if it has one; otherwise the first member.
+            initial_weather = getattr(self._weather_state_enum, "CLEAR", None) \
+                or next(iter(self._weather_state_enum))
+        self.default_weather_params = (
+            default_weather_params.copy() if default_weather_params is not None
+            else _DEFAULT_WEATHER_PARAMS.copy()
+        )
+        self.weather_presets = (
+            weather_presets if weather_presets is not None else _DEFAULT_WEATHER_PRESETS
+        )
         self.current_weather = initial_weather
         self.target_weather = initial_weather
         self.transition_time = 0
         self.transition_start = 0
         self.progress = 0
-        self.default_weather_params = DEFAULT_WEATHER_PARAMS.copy()
-        self.weather_presets = WEATHER_PRESETS
         # Initialize weather_params from the actual initial state, not just defaults
         self.weather_params = self.get_weather_params(initial_weather)
         # Snapshot of weather_params at the moment a transition started (used as
         # interpolation start so mid-transition redirects don't snap back to presets)
         self.transition_start_params = self.weather_params.copy()
 
-    def get_weather_params(self, weather_state: WeatherState) -> dict:
+    def get_weather_params(self, weather_state) -> dict:
         """Get the complete set of parameters for a weather state by combining with defaults."""
         params = self.default_weather_params.copy()
         params.update(self.weather_presets[weather_state])
@@ -38,7 +62,7 @@ class WeatherStateController:
 
     def start_transition(
         self,
-        new_weather: WeatherState,
+        new_weather,
         transition_duration: float,
         current_time: float,
     ) -> dict:
@@ -154,11 +178,11 @@ class WeatherStateController:
 
     def select_next_weather(
         self,
-        current_weather: WeatherState,
+        current_weather,
         set_states: list,
         season: float,
         season_extremity: float,
-    ) -> WeatherState:
+    ):
         """Choose the next weather state using transition weights adjusted for season.
 
         Args:
@@ -171,7 +195,8 @@ class WeatherStateController:
             A WeatherState chosen probabilistically from the candidates.
         """
         current_preset = self.weather_presets[current_weather]
-        possible_states = [WeatherState(s) for s in current_preset["possible_transitions"]]
+        enum_cls = self._weather_state_enum
+        possible_states = [enum_cls(s) for s in current_preset["possible_transitions"]]
 
         # Restrict to states that exist in the active set
         possible_states = [s for s in possible_states if s in set_states]

@@ -15,18 +15,18 @@ The same FBO data is streamed as PNG to the web preview at /preview.
 
 Classes:
   ShaderRenderer  -- owns the GLFW window and manages viewports
-  ShaderViewport  -- FBO + effect pipeline + display mode delegation
+  ShaderViewport  -- window-display wrapper that holds a GroupCanvas
+                     (the actual FBO + effect pipeline lives in GroupCanvas)
 """
 
-import ctypes
 import os
 import OpenGL
 import glfw
 from OpenGL.GL import *
-import numpy as np
 from typing import List, Tuple, Dict, Optional
 from renderer.fan_geometry import FanGeometry
 from renderer.display_modes import FlatSmooth, FanSmooth, LEDDots
+from renderer.group_canvas import GroupCanvas
 
 # EGL for headless GPU rendering (no display server required)
 _egl_available = False
@@ -42,11 +42,28 @@ OpenGL.ERROR_CHECKING = False
 
 
 class ShaderRenderer:
-    """Owns the GLFW window, creates viewports, and handles keyboard input."""
+    """Owns the GLFW window, creates viewports, and handles keyboard input.
 
-    def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False, magnification=1):
+    ``frame_dimensions`` and ``group_ids`` are index-aligned: ``frame_id=i``
+    selects the canvas for ``group_ids[i]`` with size
+    ``frame_dimensions[i]``. Phase-6 multi-canvas projects pass N groups;
+    Fan-style single-canvas projects pass N=1 with id ``"main"``.
+    """
+
+    def __init__(self, frame_dimensions: List[Tuple[int, int]], padding=20, headless=False, magnification=1, group_ids: Optional[List[str]] = None):
         self.frame_dimensions = frame_dimensions
         self.num_frames = len(frame_dimensions)
+        if group_ids is None:
+            group_ids = [f"group{i}" if i > 0 else "main" for i in range(self.num_frames)]
+        if len(group_ids) != self.num_frames:
+            raise ValueError(
+                f"group_ids length ({len(group_ids)}) must match "
+                f"frame_dimensions length ({self.num_frames})"
+            )
+        self.group_ids = list(group_ids)
+        # Lookup used by the event dispatcher to translate `{"group": "..."}`
+        # metadata into the integer frame_id the existing effects API uses.
+        self.group_to_frame_id = {gid: i for i, gid in enumerate(self.group_ids)}
         self.headless = headless
         self.window = None
         self.viewports = []
@@ -416,7 +433,8 @@ class ShaderRenderer:
         viewport = ShaderViewport(frame_id, width, height,
                                   x_offset, y_offset,
                                   display_width, display_height,
-                                  self.window, headless=self.headless)
+                                  self.window, headless=self.headless,
+                                  group_id=self.group_ids[frame_id])
         viewport.init_framebuffer()
         self.viewports.append(viewport)
         return viewport
@@ -504,37 +522,37 @@ class ShaderRenderer:
 
 
 class ShaderViewport:
-    """One LED panel's render target and display pipeline.
+    """Window-display wrapper around one GroupCanvas.
 
-    Owns a 128x300 FBO where shader effects draw each frame.  The FBO
-    is read by get_frame() for DMX output, and displayed in the GLFW
-    window via one of four view modes (flat/fan x smooth/LED).
+    The FBO + effect pipeline + readback live on ``self.canvas`` (a
+    GroupCanvas). ShaderViewport adds the GLFW window-display layer:
+    flat/fan view modes, smooth/LED render styles, zoom and pan.
 
-    Display mode rendering is delegated to DisplayMode subclasses
-    in renderer/display_modes/.
+    Effects, display modes, the render pipeline, and the web controller
+    all read attributes like ``width``, ``height``, ``fbo``,
+    ``color_texture``, ``depth_texture``, ``effects``, and ``flip_x``.
+    Those are forwarded to the canvas via properties, so callers don't
+    need to know whether they hold the canvas or its window wrapper.
     """
 
     def __init__(self, frame_id: int, width: int, height: int,
                  window_x: int, window_y: int,
                  display_width: int, display_height: int,
-                 glfw_window, headless=False):
+                 glfw_window, headless=False, group_id: str = "main"):
         self.frame_id = frame_id
-        self.width = width            # FBO width  (= number of LED strips, e.g. 128)
-        self.height = height          # FBO height (= LEDs per strip, e.g. 300)
-        self.led_width = width        # Alias used by FanGeometry
-        self.led_height = height
+        self.canvas = GroupCanvas(
+            group_id=group_id,
+            width=width,
+            height=height,
+            glfw_window=glfw_window,
+            frame_id=frame_id,
+        )
         self.window_x = window_x      # Position in the GLFW window (always 0)
         self.window_y = window_y
         self.display_width = display_width    # Window pixel size (may differ from FBO)
         self.display_height = display_height
         self.glfw_window = glfw_window
         self.headless = headless
-        self.effects = []
-
-        # --- FBO (render target at native LED resolution) ---
-        self.fbo = None
-        self.color_texture = None
-        self.depth_texture = None
 
         # --- Display mode state ---
         self.fan_mode = False    # False = flat, True = fan (semicircle)
@@ -542,7 +560,6 @@ class ShaderViewport:
         self.zoom = 1.0          # View zoom level (scroll wheel)
         self.pan_x = 0.0         # Pan offset in clip space
         self.pan_y = 0.0
-        self.flip_x = False      # Horizontal flip applied at FBO readback
 
         # --- Shared geometry (FanGeometry, rebuilt when aspect changes) ---
         self._geometry = None
@@ -554,6 +571,47 @@ class ShaderViewport:
             ('flat', 'led'):    LEDDots(fan=False),
             ('fan', 'led'):     LEDDots(fan=True),
         }
+
+    # --- forwarded canvas attributes (kept on the wrapper for API stability) ---
+    @property
+    def width(self) -> int:
+        return self.canvas.width
+
+    @property
+    def height(self) -> int:
+        return self.canvas.height
+
+    @property
+    def led_width(self) -> int:
+        return self.canvas.led_width
+
+    @property
+    def led_height(self) -> int:
+        return self.canvas.led_height
+
+    @property
+    def fbo(self):
+        return self.canvas.fbo
+
+    @property
+    def color_texture(self):
+        return self.canvas.color_texture
+
+    @property
+    def depth_texture(self):
+        return self.canvas.depth_texture
+
+    @property
+    def effects(self) -> list:
+        return self.canvas.effects
+
+    @property
+    def flip_x(self) -> bool:
+        return self.canvas.flip_x
+
+    @flip_x.setter
+    def flip_x(self, value: bool) -> None:
+        self.canvas.flip_x = bool(value)
 
     def _make_current(self):
         """Activate GL context (no-op when window is None, i.e. EGL headless)."""
@@ -582,115 +640,32 @@ class ShaderViewport:
         print(f"[ShaderViewport] Fan view: {'ON' if self.fan_mode else 'OFF'}")
 
     # ------------------------------------------------------------------
-    # Framebuffer setup
+    # FBO / effect operations — delegated to the canvas.
     # ------------------------------------------------------------------
 
     def init_framebuffer(self):
-        """Create framebuffer for offscreen rendering (for LED output)"""
-        self._make_current()
-
-        # Create color texture
-        self.color_texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.color_texture)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.width, self.height,
-                     0, GL_RGBA, GL_UNSIGNED_BYTE, None)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-
-        # Create depth texture
-        self.depth_texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16,
-                     self.width, self.height,
-                     0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, None)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-
-        # Create framebuffer
-        self.fbo = glGenFramebuffers(1)
-        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, self.color_texture, 0)
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                               GL_TEXTURE_2D, self.depth_texture, 0)
-
-        status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
-        if status != GL_FRAMEBUFFER_COMPLETE:
-            raise RuntimeError(f"Framebuffer incomplete: {status}")
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-        # Pixel Pack Buffers for asynchronous glReadPixels (ping-pong, 2 PBOs).
-        # Frame N issues a non-blocking read into pbo[write], while frame N-1's
-        # data is mapped from pbo[read]. This decouples GPU readback from CPU.
-        self._pbo_size = self.width * self.height * 4  # RGBA8
-        self._pbos = glGenBuffers(2)
-        for pbo in self._pbos:
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo)
-            glBufferData(GL_PIXEL_PACK_BUFFER, self._pbo_size, None, GL_STREAM_READ)
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        self._pbo_index = 0       # which PBO we issue the new read into
-        self._pbo_primed = False  # becomes True after first issued read
-
-        print(f"[ShaderViewport] Framebuffer created: {self.width}x{self.height} (frame {self.frame_id})")
-
-    # ------------------------------------------------------------------
-    # Effect pipeline
-    # ------------------------------------------------------------------
+        self.canvas.init_framebuffer()
 
     def add_effect(self, effect_class, **params):
-        """Add a shader effect to the rendering pipeline"""
-        self._make_current()
-        effect = effect_class(self, **params)
-        effect.init()
-        self.effects.append(effect)
-        if not getattr(effect, '_silent', False):
-            print(f"[ShaderViewport] Added effect: {effect.__class__.__name__} (frame {self.frame_id})")
-        return effect
+        return self.canvas.add_effect(effect_class, **params)
 
     def clear(self):
-        """Clear the viewport in both window and framebuffer"""
-        self._make_current()
-        glDepthMask(GL_TRUE)
-
-        # Clear FBO
-        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        glViewport(0, 0, self.width, self.height)
-        glScissor(0, 0, self.width, self.height)
-        glClearColor(0.0, 0.0, 0.0, 0.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-        # Clear window region
+        """Clear both the FBO (delegated) and the window region."""
+        self.canvas.clear()
         if not self.headless and self.display_width > 0:
+            self._make_current()
             glViewport(self.window_x, self.window_y, self.display_width, self.display_height)
             glScissor(self.window_x, self.window_y, self.display_width, self.display_height)
             glClearColor(0.0, 0.0, 0.0, 1.0)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
     def update(self, dt: float, state: Dict):
-        """Update all effects (sorted by priority)"""
-        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
-        for effect in sorted_effects:
-            if effect.enabled:
-                effect.update(dt, state)
+        self.canvas.update(dt, state)
 
     def render(self, state: Dict):
-        """Render effects to FBO, then display in window."""
-        # 1. Render effects to FBO at native LED resolution
-        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
-        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        glViewport(0, 0, self.width, self.height)
-        glScissor(0, 0, self.width, self.height)
-        for effect in sorted_effects:
-            if effect.enabled:
-                effect.render(state)
+        """Render effects to FBO (via canvas), then display in window."""
+        self.canvas.render(state)
 
-        # 2. Display FBO in window via the active display mode
         if not self.headless and self.display_width > 0:
             mode = self._display_modes[self._current_mode_key]
             if not mode._initialized:
@@ -698,75 +673,21 @@ class ShaderViewport:
                 mode.init(self)
             mode.render(self)
 
-    # ------------------------------------------------------------------
-    # Frame readback for DMX output
-    # ------------------------------------------------------------------
-
-    def get_frame(self) -> np.ndarray:
-        """Read framebuffer into numpy array for LED output (async via PBOs).
-
-        Uses ping-pong Pixel Pack Buffers so glReadPixels never stalls the CPU:
-          - Issue an async read of THIS frame's FBO into pbo[write].
-          - Map and copy out pbo[read] which holds the PREVIOUS frame's data.
-        Result: 1-frame latency on the LED output but no per-frame GPU stall.
-        On the very first call we have no previous data yet, so we return zeros.
-        """
-        self._make_current()
-        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-
-        write_idx = self._pbo_index
-        read_idx = 1 - self._pbo_index
-
-        # 1) Issue async read of the current frame into pbo[write_idx]
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, self._pbos[write_idx])
-        glReadPixels(0, 0, self.width, self.height,
-                     GL_RGBA, GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
-
-        # 2) Map and copy out the PREVIOUS frame's data from pbo[read_idx]
-        if self._pbo_primed:
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, self._pbos[read_idx])
-            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self._pbo_size, GL_MAP_READ_BIT)
-            try:
-                # Copy bytes out of the mapped buffer immediately so we can unmap
-                buf = (ctypes.c_ubyte * self._pbo_size).from_address(int(ptr))
-                frame = np.frombuffer(buf, dtype=np.uint8).reshape(
-                    self.height, self.width, 4).copy()
-            finally:
-                glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
-        else:
-            frame = np.zeros((self.height, self.width, 4), dtype=np.uint8)
-            self._pbo_primed = True
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-        # Swap PBOs for next call
-        self._pbo_index = read_idx
-
-        # Flip Y axis and drop alpha
-        frame = np.flipud(frame)
-        if self.flip_x:
-            frame = np.fliplr(frame)
-        # Force contiguous so downstream cv2/sACN consumers honor the flips
-        return np.ascontiguousarray(frame[:, :, :3])
-
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
+    def get_frame(self):
+        return self.canvas.get_frame()
 
     def cleanup(self):
-        """Clean up resources"""
-        self._make_current()
-        for effect in self.effects:
-            effect.cleanup()
-        if self.fbo:
-            glDeleteFramebuffers(1, [self.fbo])
-        if getattr(self, '_pbos', None) is not None:
-            glDeleteBuffers(2, self._pbos)
-            self._pbos = None
-        if self.color_texture:
-            glDeleteTextures([self.color_texture])
-        if self.depth_texture:
-            glDeleteTextures([self.depth_texture])
+        self.canvas.cleanup()
         for mode in self._display_modes.values():
             mode.cleanup()
+
+    def resize_canvas(self, new_width: int, new_height: int):
+        """Resize the underlying GroupCanvas (used by project-swap).
+
+        The window dims (display_width/height) stay the same; only the
+        FBO render target changes resolution. Display modes are marked
+        dirty so they re-init against the new aspect on the next render.
+        """
+        self.canvas.resize(new_width, new_height)
+        self._geometry = None
+        self.mark_display_modes_dirty()

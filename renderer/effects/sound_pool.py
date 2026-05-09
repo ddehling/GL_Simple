@@ -199,6 +199,14 @@ def shader_sound_pool(state: dict, outstate: dict,
     else:
         desired = sound_dir or ''
 
+    # Resolve relative paths against the active project's media_root so
+    # weather sets can use ``sound_pool_dir: 'sounds/foo'`` portably.
+    if desired:
+        from pathlib import Path as _Path
+        p = _Path(desired)
+        if not p.is_absolute() and 'media_root' in outstate:
+            desired = str(_Path(outstate['media_root']) / p)
+
     if state['count'] == 0:
         viewport = renderer.get_viewport(frame_id)
         viewport.add_effect(SoundPoolEffect,

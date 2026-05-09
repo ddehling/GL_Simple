@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import time
 from pathlib import Path
@@ -8,19 +9,33 @@ from lib.osc_listener import OscListener
 from lib.mdns_resolve import resolve as mdns_resolve
 
 from lib.audio_analyzer import MicrophoneAnalyzer
+# WeatherState is kept as a fallback type for projects that don't override
+# the enum; runtime code reads ``self._weather_state_enum`` instead so a
+# project can swap in its own enum.
 from lib.weather_params import (
-    WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
+    WeatherState as _LIB_WEATHER_STATE,
+    WEATHER_SETS as _LIB_WEATHER_SETS,
+    DEFAULT_WEATHER_SET as _LIB_DEFAULT_WEATHER_SET,
 )
 from lib.weather_state import WeatherStateController
 from lib.weather_set import WeatherSetManager
 from renderer.effects.celestial_bodies import CELESTIAL_BODIES
 from renderer import effects as fx
 from web.web_controller import WebController
+from core.project import load_project, list_projects
+from core.shader_loader import load_project_shaders
 
-def load_config():
-    """Load config.yaml, falling back to defaults if missing."""
+def load_config(project_override: str | None = None):
+    """Load config.yaml, falling back to defaults if missing.
+
+    Returns (cfg, project) where ``project`` is the resolved active
+    Project (loaded from ``projects/<id>/project.yaml``). The active id
+    comes from ``project_override`` if given, else config.yaml's
+    top-level ``project:`` field, else ``"fan"``.
+    """
     config_path = Path(__file__).parent / "config.yaml"
     defaults = {
+        "project": "fan",
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "device_name": "TONOR"},
         "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
@@ -42,73 +57,97 @@ def load_config():
         # editor's BOM, etc.). YAML is UTF-8 by spec.
         with open(config_path, "r", encoding="utf-8") as f:
             loaded = yaml.safe_load(f) or {}
-        # Merge: loaded sections override defaults
+        # Top-level scalars (project) merge directly; named sections do a
+        # shallow update so user values override defaults key-by-key.
+        if "project" in loaded:
+            defaults["project"] = loaded["project"]
         for section in defaults:
+            if section == "project":
+                continue
             if section in loaded:
                 defaults[section].update(loaded[section])
         print(f"[Config] Loaded from {config_path}")
     else:
         print(f"[Config] {config_path} not found, using defaults")
-    return defaults
+
+    project_id = project_override or defaults["project"]
+    project = load_project(project_id)
+    print(f"[Project] Active: {project.display_name} (id={project.id})")
+
+    # project.yaml may override machine-local display dims so each piece
+    # gets its native canvas size without the operator editing config.yaml.
+    proj_display = project.raw.get("display") if isinstance(project.raw, dict) else None
+    if isinstance(proj_display, dict):
+        defaults["display"].update(proj_display)
+        print(f"[Project] display override: "
+              f"{defaults['display']['width']}x{defaults['display']['height']}")
+    return defaults, project
+
+
+def _parse_cli_args():
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--project",
+        default=None,
+        help="Active project id (overrides config.yaml). Looks for projects/<id>/project.yaml.",
+    )
+    # parse_known_args so future flags / IDE-injected args don't blow up.
+    args, _ = parser.parse_known_args()
+    return args
 
 
 class EnvironmentalSystem:
-    def __init__(self):
-        cfg = load_config()
+    def __init__(self, project_override: str | None = None):
+        cfg, self.project = load_config(project_override=project_override)
+        # Hold onto cfg so swap_project can rebuild from machine-local
+        # settings (DMX bind IP, legacy receiver fallback) without
+        # re-reading from disk.
+        self._cfg = cfg
         disp = cfg["display"]
         audio_cfg = cfg["audio"]
         web_cfg = cfg["web"]
         dmx_cfg = cfg["dmx"]
         osc_cfg = cfg.get("osc", {})
 
-        frame_dimensions = [
-            (disp["width"], disp["height"]),  # Frame 0 (primary/main display)
-        ]
+        # One canvas per project group (Phase 6). Order is authoritative —
+        # frame_id == index in self.project.groups.
+        frame_dimensions = [(g.width, g.height) for g in self.project.groups]
+        group_ids = [g.id for g in self.project.groups]
 
-        # Hardware receiver configuration — built from config.yaml.
-        # Per-receiver `protocol` (default "sacn"; "ddp" supported) is passed
-        # through to the sender so it can dispatch on the right transport.
-        # Each entry may use either `ip:` (literal dotted-quad) or `host:`
-        # (mDNS-resolvable name like "wol-7f928c"); host takes precedence
-        # when both are given. Unresolvable hosts log and skip rather than
-        # blocking the whole show.
-        receivers_list = []
-        for rx in dmx_cfg['receivers']:
-            # YAML parses a bare `-` (no content / fully-commented item) as
-            # None. Skip those rather than crash so a typo in config.yaml
-            # doesn't take the whole show down.
-            if not isinstance(rx, dict):
-                print(f"[Config] Skipping malformed receiver entry: {rx!r}")
-                continue
-            ip = self._resolve_receiver_address(rx)
-            if ip is None:
-                continue
-            protocol = rx.get('protocol', 'sacn')
-            if 'addressing' in rx:
-                mode = rx['addressing']['mode']
-                filepath = rx['addressing']['file']
-                if mode == 'hs':
-                    addr = imdmx.make_indicesHS(filepath)
-                elif mode == 'vs':
-                    addr = imdmx.make_indicesVS(filepath)
-                else:
-                    raise ValueError(f"Unknown addressing mode: {mode}")
-                receivers_list.append({
-                    'ip': ip,
-                    'pixel_count': len(addr),
-                    'addressing_array': addr,
-                    'protocol': protocol,
-                })
-            else:
-                receivers_list.append({
-                    'ip': ip,
-                    'pixel_count': disp["height"] * rx['columns'],
-                    'addressing_array': imdmx.make_indices_V_rect_alternate(
-                        rx['columns'], disp["height"], rx['column_offset']
-                    ),
-                    'protocol': protocol,
-                })
+        # Hardware receiver configuration. Source of truth (in priority):
+        #   1. project.yaml's top-level `receivers:` list (strip-based).
+        #   2. config.yaml's `dmx.receivers` (legacy column-rect / HS / VS).
+        # Each entry's address is resolved via `_resolve_receiver_address` so
+        # mDNS hostnames work either way; per-receiver `protocol` (default
+        # "sacn"; "ddp" supported) is passed through to the sender.
+        receivers_list = self._build_receivers(
+            project_receivers=self.project.raw.get('receivers'),
+            legacy_receivers=dmx_cfg['receivers'],
+            display_height=disp["height"],
+        )
         receivers = [receivers_list]
+
+        # Project-local shaders: merge into ``renderer.effects`` namespace
+        # so existing ``fx.shader_xxx`` references resolve to the project's
+        # files. Fan moves all its themed shaders (BarTiki/Ocean/Forest/
+        # Desert/Spooky/Beloved) into projects/fan/shaders/ and this call
+        # auto-loads them; WoL has none today so this is a no-op.
+        load_project_shaders(self.project)
+
+        # Geometry provider — drives the web preview's geometry JSON and the
+        # PNG-encode composite path. Built once from the active project's
+        # ``geometry:`` block and shared with both RenderPipeline and the
+        # WebController.
+        self.geometry_provider = self.project.load_geometry()
+
+        # Project-specific weather machinery (Phase 8): the project's
+        # weather_params module exports its own WEATHER_SETS / DEFAULT_WEATHER_SET
+        # / WeatherState / WEATHER_PRESETS / DEFAULT_WEATHER_PARAMS. When a
+        # project re-exports lib.weather_params via ``from ... import *``
+        # (Fan today), these resolve to lib's globals; when a project
+        # overrides one (WoL: WEATHER_SETS + DEFAULT_WEATHER_SET only), only
+        # the override is project-specific.
+        self._refresh_weather_module(self.project)
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
@@ -116,8 +155,14 @@ class EnvironmentalSystem:
             magnification=disp["magnification"],
             headless=disp["headless"],
             dmx_bind_ip=dmx_cfg.get("bind_ip", ""),
+            geometry_provider=self.geometry_provider,
+            group_ids=group_ids,
         )
-        self.weather_state = WeatherStateController()
+        self.weather_state = WeatherStateController(
+            weather_state_enum=self._weather_state_enum,
+            weather_presets=self._weather_presets,
+            default_weather_params=self._default_weather_params,
+        )
         self.season = 0.0
         self.analyzer = None
         if audio_cfg.get("enabled", True):
@@ -136,14 +181,23 @@ class EnvironmentalSystem:
 
         if self.enable_web_control:
             self.web_controls = {
-                "current_weather_set": DEFAULT_WEATHER_SET,
-                "available_sets": list(WEATHER_SETS.keys()),
-                "available_weather_states": list(WEATHER_SETS[DEFAULT_WEATHER_SET]["states"]),
-                "all_weather_states": [s.value for s in WeatherState],
+                "current_weather_set": self._default_weather_set,
+                "available_sets": list(self._weather_sets.keys()),
+                "available_weather_states": list(
+                    self._weather_sets[self._default_weather_set]["states"]
+                ),
+                "all_weather_states": [s.value for s in self._weather_state_enum],
                 "state_switch_locked": True,
                 "weather_state_locked": False,
                 "led_width": frame_dimensions[0][0],
                 "led_height": frame_dimensions[0][1],
+                "current_project": self.project.id,
+                "current_project_name": self.project.display_name,
+                "available_projects": list_projects(),
+                # Project-local media root, exposed so the narrative
+                # editor can enumerate scripts/pools in the active
+                # project's folder rather than a hardcoded ``media/``.
+                "media_root": str(self.project.media_root),
             }
             self.web_controller = WebController(
                 self.web_controls,
@@ -151,6 +205,7 @@ class EnvironmentalSystem:
                 service_name="lucifera",
                 admin_password=web_cfg["admin_password"],
                 bind_ip=web_cfg.get("bind_ip", ""),
+                geometry_provider=self.geometry_provider,
             )
             self.web_controller.start(threaded=True)
             # Register viewports so socket handlers can mutate them directly
@@ -174,100 +229,23 @@ class EnvironmentalSystem:
         self.scheduler.state["tree"] = False
         self.scheduler.state["skyfull"] = False
         self.scheduler.state["simulate"] = True  # Display the leds in an opencv window for visualization
+        # Project-local media root. Effects + random_events resolve sound /
+        # narrative paths against this rather than against the cwd, so
+        # WoL doesn't try to load Fan media (and vice versa).
+        self.scheduler.state["media_root"] = str(self.project.media_root)
         self.active_effects = {"world": None, "ambient_sound": None}
-        # Event map - maps event names to shader effects and their parameters
-        # This is used for both background events and on-transition events
-        # Format: "event_name": (shader_function, {params_dict})
-        self.event_map = {
-            "clouds": (fx.shader_drifting_clouds, {}),
-            "firefly": (fx.shader_firefly, {}),
-            "stars": (fx.shader_stars, {"num_stars": 2000, "audio_sensitivity": 0, "drift_x": 0.3}),
-            "rain": (fx.shader_rain, {}),
-            "fog": (fx.shader_fog, {
-                "strength": 0.0,
-                "color": (0.7, 0.7, 0.8),
-                "fog_near": 0.0,
-                "fog_far": 30.0
-            }),
-            "sandstorm": (fx.shader_sandstorm, {}),
-            "desert_dunes": (fx.shader_desert_dunes, {}),
-            "desert_sky": (fx.shader_desert_sky, {}),
-            "desert_creatures": (fx.shader_desert_creatures, {}),
-            "desert_rain": (fx.shader_desert_rain, {}),
-            "fog_beings": (fx.shader_chromatic_fog_beings, {}),
-            "falling_leaves": (fx.shader_falling_leaves, {}), 
-            "audio_balls": (fx.shader_audio_balls, {}),
-            "audio_curve": (fx.shader_audio_curve, {}),
-            "sunrise": (fx.shader_sunrise, {}),
-            "game_of_life": (fx.shader_gameoflife, {}),
-            "fractal_fog": (fx.shader_fractal_fog, {}),
-            "noise_isovalues": (fx.shader_noise_isovalues, {}),
-            "tentacle": (fx.shader_tentacle, {}),
-            "tunnel_raymarch": (fx.shader_tunnel_raymarch, {}),
-            "tunnel": (fx.shader_tunnel, {}),
-            "voronoi_sphere": (fx.shader_voronoi_sphere, {}),
-            "wave_terrain": (fx.shader_wave_terrain, {}),
-            "wave_equation": (fx.shader_wave_equation, {}),
-            "audio_scan_line": (fx.shader_audio_scan_line, {
-                "scan_speed": 50.0,
-                "trail_length": 75,
-                "intensity_sensitivity": 2.0,
-                "width_sensitivity": 0.5,
-                "base_width": 2.0,
-                "max_width": 20.0,
-                "color_hue": 0.5
-            }),
-            "pixel_spots": (fx.shader_pixel_spots, {}),
-            "vortex": (fx.shader_vortex, {}),
-            "hurricane": (fx.shader_hurricane, {}),
-            "lightning": (fx.shader_lightning, {}),
-            "ocean_waves": (fx.shader_ocean_waves, {}),
-            "kelp": (fx.shader_kelp, {}),
-            "coral": (fx.shader_coral, {}),
-            "tube_worms": (fx.shader_tube_worms, {}),
-            "Bioluminescence": (fx.shader_bioluminescence, {}),
-            "bubbles": (fx.shader_bubbles, {}),
-            "fish": (fx.shader_fish, {}),
-            "smoker": (fx.shader_smoker, {}),
-            "test_pattern": (fx.shader_test_pattern, {"orientation": "vertical"}),
-            "bart_map": (fx.shader_bart_map, {}),
-            "highway_traffic": (fx.shader_highway_traffic, {}),
-            "test_fan_coords": (fx.shader_test_fan_coords, {}),
-            "city_lights": (fx.shader_city_lights, {}),
-            "bay_shimmer": (fx.shader_bay_shimmer, {}),
-            "pride_flag": (fx.shader_pride_flag, {}),
-            "heart_pulse": (fx.shader_heart_pulse, {}),
-            "thread_bonds": (fx.shader_thread_bonds, {}),
-            "warm_bloom": (fx.shader_warm_bloom, {}),
-            "distant_lights": (fx.shader_distant_lights, {}),
-            # Depth 88 (gl_Position.z = 0.88) so aurora sits just in front
-            # of canopy_godrays' sky backdrop at 0.95 — otherwise the sky
-            # depth-writes occlude the aurora.
-            "aurora": (fx.shader_aurora, {"depth": 88.0}),
-            "canopy_godrays": (fx.shader_canopy_godrays, {}),
-            "forest_canopy": (fx.shader_forest_canopy, {}),
-            "dappled_shadows": (fx.shader_dappled_shadows, {}),
-            "snowfall": (fx.shader_snowfall, {}),
-            "rain_on_leaves": (fx.shader_rain_on_leaves, {}),
-            "spore_drift": (fx.shader_spore_drift, {}),
-            "stream_flow": (fx.shader_stream_flow, {}),
-            "forest_eyes": (fx.shader_forest_eyes, {}),
-            "narrative_player": (fx.shader_narrative_player, {
-                # No script_path here: the active weather set declares its
-                # own narrative via its `narrative_script` field, which is
-                # published to outstate['narrative_script'] and read by
-                # the event wrapper. Sets without a script leave the
-                # effect silent.
-                "node_delay": 3.0,
-                "restart_delay": 10.0,
-            }),
-            # Random ambient audio pool. Directory is driven per-set by
-            # the active set's `sound_pool_dir` via outstate.
-            "sound_pool": (fx.shader_sound_pool, {}),
-        }
-        
+        # Event map — pulled from the active project module. Copied so any
+        # in-place mutation here doesn't bleed back into the module-level
+        # constant.
+        self.event_map = dict(self.project.load_event_map())
+
         # WeatherSetManager owns the event_map from here on
-        self.weather_set = WeatherSetManager(self.event_map)
+        self.weather_set = WeatherSetManager(
+            self.event_map,
+            weather_sets=self._weather_sets,
+            default_set=self._default_weather_set,
+            weather_state_enum=self._weather_state_enum,
+        )
         del self.event_map  # WeatherSetManager is the single owner
 
         # Pass event names to web controller if enabled
@@ -289,6 +267,114 @@ class EnvironmentalSystem:
         self._initialize_weather_set_events()
 
         self.whompcount = 0
+
+    def _refresh_weather_module(self, project) -> None:
+        """Cache the project's weather machinery on self.
+
+        Pulled out as its own helper so ``__init__`` and ``swap_project``
+        share the same logic. ``getattr(..., default)`` falls back to the
+        ``lib.weather_params`` globals so a project that doesn't override
+        a particular field (e.g. WoL inherits Fan's WeatherState enum and
+        presets) keeps working.
+        """
+        try:
+            mod = project.load_weather_module()
+        except Exception as e:
+            print(f"[Project] weather module load failed ({e}); using lib defaults")
+            mod = None
+        from lib.weather_params import (
+            DEFAULT_WEATHER_PARAMS as _LIB_DEFAULT_PARAMS,
+            WEATHER_PRESETS as _LIB_PRESETS,
+        )
+        self._weather_state_enum = getattr(mod, "WeatherState", _LIB_WEATHER_STATE)
+        self._weather_sets = getattr(mod, "WEATHER_SETS", _LIB_WEATHER_SETS)
+        self._default_weather_set = getattr(mod, "DEFAULT_WEATHER_SET", _LIB_DEFAULT_WEATHER_SET)
+        self._weather_presets = getattr(mod, "WEATHER_PRESETS", _LIB_PRESETS)
+        self._default_weather_params = getattr(mod, "DEFAULT_WEATHER_PARAMS", _LIB_DEFAULT_PARAMS)
+
+    def _build_receivers(self, project_receivers, legacy_receivers, display_height: int):
+        """Resolve receiver entries from project.yaml strips or config.yaml legacy.
+
+        Returns a list of receiver dicts ready for ``SACNPixelSender``: each
+        either carries a ``strips`` list (project form) or
+        ``addressing_array`` + ``pixel_count`` (legacy form). The sender
+        normalizes both into the same Nx2 internal layout, so output is
+        byte-identical regardless of which path produced the receiver.
+
+        mDNS resolution runs in parallel: each unresolvable hostname costs
+        ~3s on the render thread, so a project with 9 missing hosts would
+        otherwise serialize into ~27s of pause during a swap. The pool
+        also warms ``mdns_resolve``'s success cache so subsequent rebuilds
+        for the same hosts are instant.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from core.strip import strips_from_yaml_list
+
+        def _resolve_pool(entries):
+            entries = list(entries) if entries else []
+            if not entries:
+                return []
+            workers = min(16, max(1, len(entries)))
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                return list(ex.map(
+                    lambda rx: self._resolve_receiver_address(rx)
+                    if isinstance(rx, dict) else None,
+                    entries,
+                ))
+
+        out: list[dict] = []
+        if project_receivers:
+            ips = _resolve_pool(project_receivers)
+            for rx, ip in zip(project_receivers, ips):
+                if not isinstance(rx, dict):
+                    print(f"[Project] Skipping malformed receiver entry: {rx!r}")
+                    continue
+                if ip is None:
+                    continue
+                strips = strips_from_yaml_list(rx['strips'])
+                out.append({
+                    'ip': ip,
+                    'protocol': rx.get('protocol', 'sacn'),
+                    'strips': strips,
+                })
+            print(f"[Project] Loaded {len(out)} receivers from project.yaml "
+                  f"({sum(len(r['strips']) for r in out)} strips)")
+            return out
+
+        # Legacy fallback — config.yaml column-rect / HS / VS receivers.
+        legacy_ips = _resolve_pool(legacy_receivers)
+        for rx, ip in zip(legacy_receivers, legacy_ips):
+            if not isinstance(rx, dict):
+                print(f"[Config] Skipping malformed receiver entry: {rx!r}")
+                continue
+            if ip is None:
+                continue
+            protocol = rx.get('protocol', 'sacn')
+            if 'addressing' in rx:
+                mode = rx['addressing']['mode']
+                filepath = rx['addressing']['file']
+                if mode == 'hs':
+                    addr = imdmx.make_indicesHS(filepath)
+                elif mode == 'vs':
+                    addr = imdmx.make_indicesVS(filepath)
+                else:
+                    raise ValueError(f"Unknown addressing mode: {mode}")
+                out.append({
+                    'ip': ip,
+                    'pixel_count': len(addr),
+                    'addressing_array': addr,
+                    'protocol': protocol,
+                })
+            else:
+                out.append({
+                    'ip': ip,
+                    'pixel_count': display_height * rx['columns'],
+                    'addressing_array': imdmx.make_indices_V_rect_alternate(
+                        rx['columns'], display_height, rx['column_offset']
+                    ),
+                    'protocol': protocol,
+                })
+        return out
 
     @staticmethod
     def _resolve_receiver_address(rx: dict):
@@ -361,7 +447,7 @@ class EnvironmentalSystem:
                 self.web_controller.control_dict['_frame_png'] = png
 
     def change_weather_set(self, new_set_name: str, immediate: bool = False,
-                           initial_weather: WeatherState = None):
+                           initial_weather=None):
         """Request a change to a different weather set.
 
         Args:
@@ -412,6 +498,187 @@ class EnvironmentalSystem:
         
         return True
     
+    def swap_project(self, new_project_id: str) -> bool:
+        """Hot-swap the active art-piece project.
+
+        Must run on the render thread (apply_web_controls is the entry
+        point). Pre-validates the new project so a failed load doesn't
+        tear down the running one. Steps:
+
+          1. Load + validate the new project (no side effects yet).
+          2. Cancel events, stop ambient + transient audio.
+          3. Resize each canvas to the new project's display dims
+             (this also tears down all current effects via cleanup()).
+          4. Close current DMX senders, open new ones for the new
+             project's receivers.
+          5. Replace geometry provider in the pipeline + web controller.
+          6. Replace event_map + WeatherSetManager + WeatherStateController.
+          7. Reseed the web control_dict so the UI reflects the new project.
+          8. Re-initialize background events for the new active weather set.
+        """
+        if new_project_id == self.project.id:
+            print(f"[Project] Already on '{new_project_id}'; no-op")
+            return True
+        print(f"[Project] Swap requested: {self.project.id} -> {new_project_id}")
+
+        # ---- Phase A: pre-validate (no side effects) ----
+        try:
+            new_project = load_project(new_project_id)
+            new_geometry = new_project.load_geometry()
+            new_event_map = dict(new_project.load_event_map())
+        except Exception as e:
+            print(f"[Project] Swap aborted; load failed: {e}")
+            return False
+
+        # display_height is only consumed by the legacy column-rect fallback
+        # in _build_receivers. Use the new project's first group's height.
+        first_group_h = new_project.groups[0].height if new_project.groups else \
+            int(self._cfg["display"]["height"])
+
+        new_receivers = self._build_receivers(
+            project_receivers=new_project.raw.get("receivers"),
+            legacy_receivers=self._cfg["dmx"]["receivers"],
+            display_height=first_group_h,
+        )
+
+        try:
+            return self._swap_project_unsafe(new_project, new_geometry, new_event_map, new_receivers)
+        except Exception as e:
+            import traceback
+            print(f"[Project] !! swap raised mid-flight: {e}")
+            traceback.print_exc()
+            print("[Project] !! state may be inconsistent; subsequent swap should recover")
+            return False
+
+    def _swap_project_unsafe(self, new_project, new_geometry, new_event_map, new_receivers):
+        # Phase 6: groups vary in count between projects (Fan: 1, WoL: 3).
+        # Fully tear down + rebuild the canvas list rather than just
+        # resizing, so canvas count can grow or shrink across swaps.
+        new_groups = new_project.groups
+        new_dims = [(g.width, g.height) for g in new_groups]
+        new_group_ids = [g.id for g in new_groups]
+
+        # ---- Phase B: tear down current state ----
+        self.scheduler.cancel_all_events()
+        engine = self.scheduler.state.get("soundengine")
+        if engine is not None:
+            try:
+                engine.stop_all(duration=0.0)
+            except Exception as e:
+                print(f"[Project]   stop_all error (ignoring): {e}")
+            try:
+                engine.stop_ambient()
+            except Exception as e:
+                print(f"[Project]   stop_ambient error (ignoring): {e}")
+
+        renderer = self.scheduler._shader_renderer
+        for vp in renderer.viewports:
+            try:
+                vp.cleanup()
+            except Exception as e:
+                print(f"[Project]   viewport cleanup error (ignoring): {e}")
+        renderer.viewports = []
+        renderer.frame_dimensions = new_dims
+        renderer.num_frames = len(new_dims)
+        renderer.group_ids = list(new_group_ids)
+        renderer.group_to_frame_id = {gid: i for i, gid in enumerate(new_group_ids)}
+        for fid in range(len(new_dims)):
+            renderer.create_viewport(fid)
+
+        for sender in list(self.scheduler.state.get("screens", [])):
+            try:
+                sender.close()
+            except Exception as e:
+                print(f"[Project]   sender close error (ignoring): {e}")
+
+        # ---- Phase C: build new state ----
+        new_screens = []
+        if new_receivers:
+            sender = imdmx.SACNPixelSender(
+                new_receivers, skip_network=False,
+                use_raw_udp=True, per_receiver_universe=True,
+                bind_ip=self._cfg["dmx"].get("bind_ip", ""),
+            )
+            sender.enable_async_send()
+            new_screens.append(sender)
+        self.scheduler.state["screens"] = new_screens
+
+        self.geometry_provider = new_geometry
+        self.scheduler.replace_geometry_provider(new_geometry)
+        if self.web_controller is not None:
+            self.web_controller.replace_geometry_provider(new_geometry)
+
+        # Phase 8: refresh project-specific weather machinery before
+        # rebuilding the managers so they get the new project's enum, sets,
+        # default, presets, and default params.
+        self._refresh_weather_module(new_project)
+
+        # Phase 9: swap project-local shaders so Fan's themed shaders
+        # don't leak into WoL (and vice versa).
+        load_project_shaders(new_project)
+
+        self.event_map = new_event_map
+        self.weather_set = WeatherSetManager(
+            self.event_map,
+            weather_sets=self._weather_sets,
+            default_set=self._default_weather_set,
+            weather_state_enum=self._weather_state_enum,
+        )
+        self.weather_state = WeatherStateController(
+            weather_state_enum=self._weather_state_enum,
+            weather_presets=self._weather_presets,
+            default_weather_params=self._default_weather_params,
+        )
+        self.active_effects = {"world": None, "ambient_sound": None}
+
+        # ---- Phase D: republish to the web UI ----
+        if self.web_controller is not None:
+            from lib.weather_set import IMPLICIT_BACKGROUND_EVENTS
+            event_list = self.weather_set.get_event_names()
+            bg_events = [e for e in event_list if e not in IMPLICIT_BACKGROUND_EVENTS]
+            self.web_controller.set_available_events(
+                all_events=event_list,
+                background_events=bg_events,
+            )
+            self.web_controller.set("current_weather_set", self.weather_set.current_set)
+            self.web_controller.set("available_sets", list(self._weather_sets.keys()))
+            self.web_controller.set(
+                "available_weather_states",
+                list(self._weather_sets[self.weather_set.current_set]["states"]),
+            )
+            self.web_controller.set(
+                "all_weather_states",
+                [s.value for s in self._weather_state_enum],
+            )
+            # led_width/led_height: the first group's dims (used by the
+            # JS preview's flat-mode aspect calc on Fan-style projects;
+            # multi-object projects override aspect via their own
+            # geometry JSON anyway).
+            self.web_controller.set("led_width", new_dims[0][0])
+            self.web_controller.set("led_height", new_dims[0][1])
+            self.web_controller.set("current_project", new_project.id)
+            self.web_controller.set("current_project_name", new_project.display_name)
+            self.web_controller.set("media_root", str(new_project.media_root))
+            # Stale parameter overrides reference the old project's params;
+            # drop them rather than carry forward what may be invalid keys.
+            self.web_controller.web_param_overrides = {}
+
+        self.project = new_project
+        # Repoint state['media_root'] at the new project's media folder so
+        # subsequent random_events / ambient sound lookups go to the right place.
+        self.scheduler.state["media_root"] = str(new_project.media_root)
+        self.scheduler.frame_dimensions = new_dims
+        self.scheduler.group_ids = list(new_group_ids)
+        # Resize per-canvas brightness state to match the new canvas count.
+        self.scheduler.brightness_state = [
+            {'divisor': 1.0, 'bright_factor': 0.0, 'last_logged_divisor': 0.0}
+            for _ in new_dims
+        ]
+        self._initialize_weather_set_events()
+        dims_str = ", ".join(f"{gid}={w}x{h}" for gid, (w, h) in zip(new_group_ids, new_dims))
+        print(f"[Project] Swap complete: now {new_project.display_name} [{dims_str}]")
+        return True
+
     def _initialize_weather_set_events(self):
         """Cancel all events and start background events for the current weather set"""
         print(f"[WEATHER] Initializing events for weather set: '{self.weather_set.current_set}'")
@@ -432,16 +699,32 @@ class EnvironmentalSystem:
         print(f"[WEATHER] Background events initialized for '{self.weather_set.current_set}'")
     
     def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
-        """Schedule an event from the event map"""
+        """Schedule an event from the event map.
+
+        If the event_map entry includes a ``{"group": "..."}`` meta dict,
+        the group name is translated to the matching canvas's frame_id
+        (overriding the default 0). Unknown group names fall back to the
+        passed ``frame_id`` with a warning. Phase 6+ effects use this to
+        target one canvas; legacy 2-tuple entries route to frame_id=0
+        ("main") on Fan, the default group on any project.
+        """
         entry = self.weather_set.resolve_event(event_name)
         if entry is None:
             print(f"[WEATHER] Unknown event: {event_name}")
             return None
 
-        effect_func, params = entry
+        effect_func, params, meta = entry
+        target_group = meta.get("group") if isinstance(meta, dict) else None
+        if target_group is not None:
+            mapping = self.scheduler._shader_renderer.group_to_frame_id
+            if target_group in mapping:
+                frame_id = mapping[target_group]
+            else:
+                print(f"[WEATHER]   '{event_name}' targets unknown group "
+                      f"{target_group!r}; falling back to frame_id={frame_id}")
         return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
 
-    def transition_to_weather(self, new_weather: WeatherState, transition_duration: float = 10.0):
+    def transition_to_weather(self, new_weather, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
         target_params = self.weather_state.start_transition(new_weather, transition_duration, time.time())
         
@@ -461,7 +744,8 @@ class EnvironmentalSystem:
         ari = target_params.get("ARI", 0.0)
         engine = self.scheduler.state["soundengine"]
         if ambient_sound:
-            sound_path = Path("media") / Path("sounds") / ambient_sound
+            media_root = Path(self.scheduler.state.get("media_root", "media"))
+            sound_path = media_root / "sounds" / ambient_sound
             engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
         else:
             engine.stop_ambient()
@@ -483,6 +767,14 @@ class EnvironmentalSystem:
 
         self._last_web_check = self.current_time
 
+        # Check for project swap first — it invalidates everything else
+        # below, so we handle and return early on swap.
+        with self.web_controller._dict_lock:
+            request_swap = self.web_controller.control_dict.pop('request_project_swap', None)
+        if request_swap:
+            self.swap_project(request_swap)
+            return
+
         # Check for weather set/state change requests (read and clear atomically)
         with self.web_controller._dict_lock:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
@@ -494,9 +786,9 @@ class EnvironmentalSystem:
 
         if new_state is not None:
             locked = self.web_controller.get('state_switch_locked', True)
-            all_states = [s.value for s in WeatherState]
+            all_states = [s.value for s in self._weather_state_enum]
             if new_state in all_states and (not locked or new_state in [s.value for s in self.weather_set.get_set_states()]):
-                state_enum = WeatherState(new_state)
+                state_enum = self._weather_state_enum(new_state)
                 t_duration = self.weather_state.get_weather_params(state_enum)["transition_duration"]
                 if self.web_controller.get('instant_transitions', False):
                     t_duration = 0.01
@@ -608,7 +900,7 @@ class EnvironmentalSystem:
 
     def _get_allowed_output_params(self):
         """Return the set of output param keys allowed for the current weather set."""
-        set_config = WEATHER_SETS.get(self.weather_set.current_set, {})
+        set_config = self._weather_sets.get(self.weather_set.current_set, {})
         allowed_input = set_config.get("allowed_parameters", [])
         if not allowed_input:
             return None  # No restrictions (e.g. test set)
@@ -696,88 +988,50 @@ class EnvironmentalSystem:
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):
-        randcheck = np.random.random()
-        
-        # Random events from current weather set configuration
+        """Per-frame random-event roll.
+
+        Two responsibilities, both project-aware:
+
+        1. Generic: trigger one of the active set's ``random_events`` list
+           based on its ``random_event_rate`` and the current season. This
+           works for any project that defines a ``random_events:`` list in
+           a weather set.
+        2. Project hook: any further random scheduling that's project-
+           specific lives in a ``random_events`` hook module declared in
+           project.yaml's ``hooks:`` block. Fan declares one in
+           ``projects.fan.random_events``; WoL doesn't declare one so
+           nothing extra fires there.
+
+        The legacy global gate ``enable_random_events: false`` in
+        project.yaml still short-circuits both halves for projects that
+        want zero random scheduling.
+        """
+        if not self.project.raw.get("enable_random_events", True):
+            return
+
+        # ---- generic set-level random events ----
         random_events, random_event_rate = self.weather_set.get_random_events_config()
-        
-        # Check if a random event should trigger based on the set's rate
-        if random_events and randcheck < random_event_rate:
-            # Assign each event a seasonal position based on its index
-            # and select the one closest to the current season
-            num_events = len(random_events)
-            event_positions = np.linspace(0, 1, num_events, endpoint=False)
-            
-            # Find the event closest to the current season
-            seasonal_distances = np.abs(event_positions - self.season)
-            # Account for wraparound (e.g., season 0.95 is close to position 0.05)
-            seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
-            closest_index = np.argmin(seasonal_distances)
-            
-            event_name = random_events[closest_index]
-            print(f"   🎲 Seasonal event triggered: {event_name} (season: {self.season:.3f}, position: {event_positions[closest_index]:.3f})")
-            self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
-        
-        if (randcheck < self.weather_state.weather_params["tree_prob"] / 10000):
-            self.scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0) # noqa: F405
+        if random_events:
+            randcheck = np.random.random()
+            if randcheck < random_event_rate:
+                num_events = len(random_events)
+                event_positions = np.linspace(0, 1, num_events, endpoint=False)
+                seasonal_distances = np.abs(event_positions - self.season)
+                seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
+                closest_index = np.argmin(seasonal_distances)
+                event_name = random_events[closest_index]
+                print(f"   🎲 Seasonal event triggered: {event_name} "
+                      f"(season: {self.season:.3f}, "
+                      f"position: {event_positions[closest_index]:.3f})")
+                self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
 
-        if randcheck < self.weather_state.weather_params["Aurora_probability"] / 1000:
-            self.scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0) # noqa: F405
-
-        if randcheck < self.weather_state.weather_params["lightning_probability"] / 500:
-            self.scheduler.schedule_event(0, 1, fx.shader_lightning, frame_id=0) # noqa: F405
-            # Pair the visual lightning with a randomized thunder rumble.
-            thunder_sounds = [
-                "thunder-307513.mp3",
-                "loud-thunder-192165.mp3",
-                "peals-of-thunder-191992.mp3",
-            ]
-            thunder_file = Path("media/sounds") / np.random.choice(thunder_sounds)
-            engine = self.scheduler.state.get("soundengine")
-            if engine:
-                engine.schedule_event(thunder_file, volume=0.7)
-
-
-        randcheck = np.random.random()
-
-        # Sand storms
-        if randcheck < self.weather_state.weather_params["sand_density"] / 2000:
-            self.scheduler.schedule_event(0, 45, fx.shader_sandstorm, frame_id=0) # noqa: F405
-
-
-        # # Spooky giant eye
-        if randcheck < self.weather_state.weather_params["spookyness"] / 1000:
-            self.scheduler.schedule_event(0, 30, fx.shader_eye, frame_id=0) # noqa: F405
-
-        # Wolf howl one-shot sounds
-        if randcheck < self.weather_state.weather_params["Wolfy"] / 2500:
-            wolf_sounds = [
-                "howling-wolves-6965.mp3",
-                "wolf-howling-140235.mp3",
-                "duskwolf-101348.mp3",
-            ]
-            wolf_file = Path("media/sounds") / np.random.choice(wolf_sounds)
-            engine = self.scheduler.state.get("soundengine")
-            if engine:
-                engine.schedule_event(wolf_file, volume=1.0)
-
-        # Owl hoot one-shot sounds (low probability, half volume).
-        # Divisor is 5x larger than wolves because the owl clip is ~23s
-        # long — without this, hoots would overlap continuously.
-        if randcheck < self.weather_state.weather_params.get("Owly", 0.0) / 12500:
-            owl_sounds = ["Owls Hooting.wav"]
-            owl_file = Path("media/sounds") / np.random.choice(owl_sounds)
-            engine = self.scheduler.state.get("soundengine")
-            if engine:
-                engine.schedule_event(owl_file, volume=0.5)
-
-        # # Random meteor events
-        if randcheck < self.weather_state.weather_params["meteor_rate"] / 800:
-            self.scheduler.schedule_event(0, 25, fx.shader_meteor, frame_id=0) # noqa: F405
-
-
-        # Dancing cactus events
-        randcheck = np.random.random()
+        # ---- project-specific hook ----
+        hook = self.project.load_hook("random_events")
+        if hook is not None:
+            try:
+                hook.run(self)
+            except Exception as e:
+                print(f"[Project] random_events hook error: {e}")
 
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
@@ -839,13 +1093,32 @@ class EnvironmentalSystem:
 
 # Main execution
 if __name__ == "__main__":
-    env_system = EnvironmentalSystem()
+    _args = _parse_cli_args()
+    env_system = EnvironmentalSystem(project_override=_args.project)
 
-    #TODO: A way to set a weather state independently of set for testing
-
-    # Change to a specific weather set and state on startup
-    env_system.change_weather_set("ocean", immediate=True,
-                                  initial_weather=WeatherState.OCEAN_KELP_FOREST)
+    # Optional startup weather pick (project.yaml fields):
+    #   startup_weather_set:   name of a weather set in this project's
+    #                          WEATHER_SETS (defaults: just stay on the
+    #                          project's DEFAULT_WEATHER_SET, no transition).
+    #   startup_weather_state: name of a state in that set; the controller
+    #                          transitions to it on launch. Falls back to a
+    #                          random pick from the set's states if absent.
+    _startup_set = env_system.project.raw.get("startup_weather_set")
+    _startup_state = env_system.project.raw.get("startup_weather_state")
+    if _startup_set:
+        try:
+            _initial_weather = (
+                env_system._weather_state_enum(_startup_state)
+                if _startup_state else None
+            )
+            env_system.change_weather_set(
+                _startup_set,
+                immediate=True,
+                initial_weather=_initial_weather,
+            )
+        except Exception as _e:
+            print(f"[Project] startup weather pick failed ({_e}); "
+                  f"using project default")
     FRAME_TIME = 1 / 40
     frame_count = 0
     fps_start_time = time.perf_counter()

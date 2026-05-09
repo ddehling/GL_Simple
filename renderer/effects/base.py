@@ -6,6 +6,12 @@ import numpy as np
 class ShaderEffect:
     """Base class for shader-based effects"""
     def __init__(self, viewport):
+        # `viewport` is whichever object owns the FBO this effect draws into.
+        # Phase 2 of the multi-project refactor: this is now a GroupCanvas
+        # (passed by GroupCanvas.add_effect). The `self.viewport` name is
+        # kept as an alias of `self.canvas` for backwards compatibility with
+        # existing effects that read self.viewport.{width,height,fbo,...}.
+        self.canvas = viewport
         self.viewport = viewport
         self.enabled = True
         self.shader = None

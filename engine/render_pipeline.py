@@ -37,10 +37,21 @@ class RenderPipeline:
 
     def __init__(self, frame_dimensions: list, receivers: list,
                  magnification: int = 1, headless: bool = False,
-                 dmx_bind_ip: str = ""):
+                 dmx_bind_ip: str = "", geometry_provider=None,
+                 group_ids: list | None = None):
         self._scheduler = EventScheduler()
         self.should_exit = False
         self._cleaned_up = False
+        self._geometry_provider = geometry_provider
+
+        if group_ids is None:
+            group_ids = ["main"] + [f"group{i}" for i in range(1, len(frame_dimensions))]
+        if len(group_ids) != len(frame_dimensions):
+            raise ValueError(
+                f"group_ids length ({len(group_ids)}) must match "
+                f"frame_dimensions length ({len(frame_dimensions)})"
+            )
+        self.group_ids = list(group_ids)
 
         # --- Renderer ---
         mode = "headless GPU" if headless else "GPU"
@@ -49,11 +60,13 @@ class RenderPipeline:
             frame_dimensions=frame_dimensions,
             headless=headless,
             magnification=magnification,
+            group_ids=self.group_ids,
         )
         for frame_id in range(len(frame_dimensions)):
             self._shader_renderer.create_viewport(frame_id)
             if not headless:
-                print(f"[RenderPipeline]   Viewport {frame_id}: {frame_dimensions[frame_id]}")
+                print(f"[RenderPipeline]   Viewport {frame_id} "
+                      f"({self.group_ids[frame_id]}): {frame_dimensions[frame_id]}")
 
         # Seed the shared state dict with hardware references
         state = self._scheduler.state
@@ -133,6 +146,11 @@ class RenderPipeline:
     def cancel_all_events(self):
         self._scheduler.cancel_all_events()
 
+    def replace_geometry_provider(self, provider) -> None:
+        """Repoint the preview composite at a different GeometryProvider
+        (used by project-swap; safe to call from the render thread)."""
+        self._geometry_provider = provider
+
     # ------------------------------------------------------------------
     # Per-frame pipeline
     # ------------------------------------------------------------------
@@ -154,18 +172,26 @@ class RenderPipeline:
         frames = self._render_shader(dt)
         self._send_to_displays(frames)
 
-        # PNG-encode first frame for web preview, ONLY if a client is subscribed.
+        # PNG-encode the preview composite, ONLY if a client is subscribed.
+        # The geometry provider produces the composite (Fan: just frames[0];
+        # multi-object: per-strip rasterization onto a polyline canvas).
         # Encoding is ~10-20ms/frame; rate-limited to the emitter rate (15 Hz)
         # so we don't burn CPU producing frames the emitter throws away.
         if frames and self.state.get('_preview_active'):
             now = time.perf_counter()
             if now - self._last_preview_encode >= self._preview_encode_interval:
                 self._last_preview_encode = now
-                bgr = np.ascontiguousarray(frames[0][:, :, ::-1])
+                if self._geometry_provider is not None:
+                    composite = self._geometry_provider.make_composite_frame(frames)
+                else:
+                    # No provider: pick whatever the first canvas produced.
+                    composite = next(iter(frames.values()))
+                bgr = np.ascontiguousarray(composite[:, :, ::-1])
                 _, png_buf = cv2.imencode('.png', bgr)
                 self.state['_frame_png'] = png_buf.tobytes()
 
-    def _render_shader(self, dt: float) -> list:
+    def _render_shader(self, dt: float) -> dict:
+        """Run effects on each canvas; return frames keyed by group_id."""
         self._shader_renderer.clear_window()
 
         for viewport in self._shader_renderer.viewports:
@@ -174,26 +200,39 @@ class RenderPipeline:
             viewport.render(self.state)
 
         self._shader_renderer.sync_gpu()
-        return [viewport.get_frame() for viewport in self._shader_renderer.viewports]
+        # Dict keyed by group_id so the DMX sender + geometry rasterizer
+        # can pull the right canvas for each strip.
+        return {
+            self.group_ids[i]: vp.get_frame()
+            for i, vp in enumerate(self._shader_renderer.viewports)
+        }
 
-    def _send_to_displays(self, frames: list):
+    def _send_to_displays(self, frames_dict: dict):
+        """Apply gamma + brightness per-group, then hand the dict of corrected
+        frames to each DMX sender so it can extract per-strip from the right
+        group canvas."""
         gamma = float(self.state.get("web_gamma", 2.0))
-        for i, frame in enumerate(frames):
-            frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
 
+        corrected: dict = {}
+        for i, gid in enumerate(self.group_ids):
+            frame = frames_dict.get(gid)
+            if frame is None:
+                continue
+            frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
             if gamma != 1:
                 frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
             else:
                 frame_corrected = frame_rgb.astype(np.float32)
-
             frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
+            corrected[gid] = frame_corrected
 
-            screens = self.state['screens']
-            if i < len(screens) and screens[i] is not None:
-                try:
-                    screens[i].send(frame_corrected[:, :, [0, 1, 2]])
-                except OSError as e:
-                    print(f"[RenderPipeline] Network error sending to display {i}: {e}")
+        for sender in self.state.get('screens', []):
+            if sender is None:
+                continue
+            try:
+                sender.send(corrected)
+            except OSError as e:
+                print(f"[RenderPipeline] Network error sending: {e}")
 
         self._shader_renderer.swap_buffers()
 

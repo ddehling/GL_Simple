@@ -251,10 +251,19 @@ void main() {
     }
 
     function buildAllGeometry(geo) {
+        // flat-smooth is universal: just a textured quad, no project-specific
+        // geometry. Used for any project that supplies a composite frame.
         buildFlatQuad();
-        buildFanMesh(geo);
-        buildDots(geo, "flat-led", geo.flat_dots.instances, geo.flat_dots.dot_radius);
-        buildDots(geo, "fan-led", geo.fan_dots.instances, geo.fan_dots.dot_radius);
+
+        // Fan-only modes (fan-smooth, fan-led, flat-led) need extra geometry
+        // arrays from FanGeometry. type !== "fan" projects (e.g. multi_object)
+        // don't carry these fields; skip the builds and the corresponding
+        // mode buttons won't have shaders to bind to.
+        if (geo.type === "fan" || (geo.fan_mesh && geo.flat_dots && geo.fan_dots)) {
+            buildFanMesh(geo);
+            buildDots(geo, "flat-led", geo.flat_dots.instances, geo.flat_dots.dot_radius);
+            buildDots(geo, "fan-led", geo.fan_dots.instances, geo.fan_dots.dot_radius);
+        }
     }
 
     // ---- Render ----
@@ -322,10 +331,18 @@ void main() {
         const px = isFanMode ? panX : 0.0;
         const py = isFanMode ? panY : 0.0;
 
-        if (mode === "flat-smooth" || mode === "fan-smooth") {
-            const prog = programs[mode];
-            const vao = vaos[mode];
-            const info = buffers[mode];
+        // Multi-object projects don't ship fan/dot geometry — silently fall
+        // back to flat-smooth (the universal textured-quad path) so toggle
+        // buttons don't blank the canvas.
+        let renderMode = mode;
+        if (!programs[renderMode]) {
+            renderMode = "flat-smooth";
+        }
+
+        if (renderMode === "flat-smooth" || renderMode === "fan-smooth") {
+            const prog = programs[renderMode];
+            const vao = vaos[renderMode];
+            const info = buffers[renderMode];
             gl.useProgram(prog);
             gl.uniform1i(gl.getUniformLocation(prog, "uTexture"), 0);
             gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
@@ -333,16 +350,16 @@ void main() {
             gl.uniform2f(gl.getUniformLocation(prog, "uPan"), px, py);
             gl.bindVertexArray(vao);
 
-            if (mode === "fan-smooth") {
+            if (renderMode === "fan-smooth") {
                 gl.drawElements(gl.TRIANGLES, info.indexCount, gl.UNSIGNED_INT, 0);
             } else {
                 gl.drawArrays(gl.TRIANGLES, 0, info.count);
             }
         } else {
             // Dot modes
-            const prog = programs[mode];
-            const vao = vaos[mode];
-            const info = buffers[mode];
+            const prog = programs[renderMode];
+            const vao = vaos[renderMode];
+            const info = buffers[renderMode];
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             gl.useProgram(prog);

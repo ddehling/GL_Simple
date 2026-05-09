@@ -276,15 +276,27 @@ class NarrativePlayer(ShaderEffect):
 
         # Use the node's explicit "file" field if set, otherwise fall back
         # to the convention of {node_id}.mp3 in the script directory.
-        # The "file" field is stored relative to the project root.
+        #
+        # Resolution order (in priority):
+        #   1. ``basename(file)`` next to the script — works for the
+        #      common case where audio is colocated with script.json
+        #      (true after the Phase-9 media move into projects/<id>/media/).
+        #   2. The literal ``file:`` value resolved relative to the repo
+        #      root — legacy behavior for pre-Phase-9 scripts that stored
+        #      ``media/sounds/foo/bar.mp3`` paths.
+        #   3. ``{node_id}.mp3`` next to the script (fallback when file
+        #      field is missing).
         file_rel = nd.get('file', '')
         if file_rel:
-            # Normalize path separators for cross-platform compatibility
             file_rel = file_rel.replace('\\', '/')
-            audio_file = Path(file_rel)
-            if not audio_file.is_absolute():
-                repo_root = Path(__file__).parent.parent.parent
-                audio_file = repo_root / audio_file
+            colocated = self._audio_dir / Path(file_rel).name
+            if colocated.exists():
+                audio_file = colocated
+            else:
+                audio_file = Path(file_rel)
+                if not audio_file.is_absolute():
+                    repo_root = Path(__file__).parent.parent.parent
+                    audio_file = repo_root / audio_file
         else:
             audio_file = self._audio_dir / f'{node_id}.mp3'
         if audio_file.exists():
@@ -412,6 +424,15 @@ def shader_narrative_player(state: dict, outstate: dict,
         desired = outstate['narrative_script'] or ''
     else:
         desired = script_path or ''
+
+    # Resolve relative paths against the active project's media root so
+    # weather sets can use ``narrative_script: 'sounds/foo/script.json'``
+    # without hardcoding the project subdir. Absolute paths pass through.
+    if desired:
+        from pathlib import Path as _Path
+        p = _Path(desired)
+        if not p.is_absolute() and 'media_root' in outstate:
+            desired = str(_Path(outstate['media_root']) / p)
 
     if state['count'] == 0:
         viewport = renderer.get_viewport(frame_id)

@@ -584,8 +584,14 @@ def shader_lightning(state, outstate, bolt_interval=2.0, bolt_duration=0.3,
 
 
 
-        parent_path = Path(__file__).parent.parent.parent
-        sound_path = parent_path / 'media' / 'sounds'
+        # Resolve the boom sample relative to the active project's media
+        # folder; falls back to legacy ``<repo>/media/sounds`` only if
+        # the active project hasn't seeded ``media_root`` yet.
+        media_root = outstate.get('media_root')
+        if media_root:
+            sound_path = Path(media_root) / 'sounds'
+        else:
+            sound_path = Path(__file__).parent.parent.parent / 'media' / 'sounds'
         boom_path = sound_path / spath
         outstate['soundengine'].schedule_event(boom_path, duration=10.0)
         try:

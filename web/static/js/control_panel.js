@@ -189,6 +189,9 @@ async function init() {
 
     await loadWeatherSetInfo();
     setInterval(loadWeatherSetInfo, 3000);
+
+    await loadProjectInfo();
+    setInterval(loadProjectInfo, 3000);
 }
 
 // ---- Global Modifiers ----
@@ -743,7 +746,62 @@ document.addEventListener('DOMContentLoaded', () => {
             socket.emit('change_weather_state', { state_name: newState });
         }
     });
+
+    const projectSel = document.getElementById('project-selector');
+    if (projectSel) {
+        projectSel.addEventListener('change', (e) => {
+            const newId = e.target.value;
+            if (!newId) return;
+            if (socket && socket.connected) {
+                socket.emit('change_project', { project_id: newId });
+                const status = document.getElementById('project-swap-status');
+                if (status) status.textContent =
+                    'Swapping… render may pause for ~1s.';
+                // Refresh project info shortly so the active label updates.
+                setTimeout(loadProjectInfo, 1500);
+                setTimeout(() => {
+                    const s = document.getElementById('project-swap-status');
+                    if (s) s.textContent = '';
+                }, 4000);
+            }
+        });
+    }
 });
+
+let _lastProjectId = null;
+async function loadProjectInfo() {
+    try {
+        const response = await fetch('/api/project/info');
+        const data = await response.json();
+
+        const label = document.getElementById('current-project');
+        if (label) label.textContent = data.current_name || data.current || 'unknown';
+
+        const sel = document.getElementById('project-selector');
+        if (!sel) return;
+
+        // Rebuild only if the active project or the available list changed.
+        const currentId = data.current || '';
+        const list = Array.isArray(data.available) ? data.available : [];
+        const fingerprint = currentId + '|' + list.map(p => p.id).join(',');
+        if (fingerprint !== _lastProjectId) {
+            _lastProjectId = fingerprint;
+            sel.innerHTML = '';
+            list.forEach(proj => {
+                const opt = document.createElement('option');
+                opt.value = proj.id;
+                opt.textContent = proj.display_name || proj.id;
+                if (proj.id === currentId) {
+                    opt.textContent += ' (current)';
+                    opt.selected = true;
+                }
+                sel.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load project info:', e);
+    }
+}
 
 let _eventLocked = true;
 let _lastEventList = null;

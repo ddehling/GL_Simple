@@ -24,6 +24,24 @@
             <a href="/admin" class="tab" id="admin-tab">Admin</a>
         </div>
 
+        <!-- Project Switcher -->
+        <div class="section-panel">
+            <div class="section-header">
+                <h3>Project</h3>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Active Piece:</span>
+                <span class="info-value" id="current-project">Loading...</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <label class="control-label" style="margin-bottom: 6px;"><span>Switch to:</span></label>
+                <select id="project-selector">
+                    <option value="">Loading...</option>
+                </select>
+            </div>
+            <div id="project-swap-status" style="margin-top: 8px; font-size: 0.85em; opacity: 0.7; min-height: 1em;"></div>
+        </div>
+
         <!-- Weather Set Info Panel -->
         <div class="section-panel">
             <div class="section-header">

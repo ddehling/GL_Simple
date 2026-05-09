@@ -29,6 +29,13 @@ except ImportError:
     _ZC_AVAILABLE = False
 
 
+# Process-level cache of successful resolutions. Failed lookups do NOT cache
+# — a host that's offline now might come up later, and we'd rather pay the
+# timeout again than permanently exclude it. Hit-cache means project-swap
+# back to a previously-resolved hostname is instant.
+_RESOLVED_CACHE: dict[str, str] = {}
+
+
 def _strip_local(name: str) -> str:
     """Normalise a hostname by removing trailing ``.local`` / ``.``"""
     n = name.rstrip('.')
@@ -99,8 +106,13 @@ def resolve(name: str, timeout: float = 3.0) -> Optional[str]:
     except OSError:
         pass
 
-    ip = _try_os_resolve(name)
-    if ip is not None:
-        return ip
+    cached = _RESOLVED_CACHE.get(name)
+    if cached is not None:
+        return cached
 
-    return _try_zeroconf(name, timeout)
+    ip = _try_os_resolve(name)
+    if ip is None:
+        ip = _try_zeroconf(name, timeout)
+    if ip is not None:
+        _RESOLVED_CACHE[name] = ip
+    return ip

@@ -4,10 +4,19 @@ WeatherSetManager owns the event_map (passed in at construction) and provides
 typed accessors for all set-level configuration keys so call sites don't need
 to dig into the raw WEATHER_SETS dict. Has no scheduler, web_controller, or
 audio dependencies.
+
+Phase-8 multi-project work: weather sets, default set, and the WeatherState
+enum are now project-specific. They can be passed in at construction; the
+``lib.weather_params`` defaults are kept as a fallback so any standalone
+caller (tests, editor utilities) that doesn't have a Project keeps working.
 """
 
 from typing import Optional
-from lib.weather_params import WeatherState, WEATHER_SETS, DEFAULT_WEATHER_SET
+from lib.weather_params import (
+    WeatherState as _DEFAULT_WEATHER_STATE_ENUM,
+    WEATHER_SETS as _DEFAULT_WEATHER_SETS,
+    DEFAULT_WEATHER_SET as _DEFAULT_WEATHER_SET,
+)
 
 
 # Events that are scheduled automatically from per-set config fields
@@ -26,10 +35,26 @@ class WeatherSetManager:
     or audio dependencies.
     """
 
-    def __init__(self, event_map: dict) -> None:
-        self.current_set: str = DEFAULT_WEATHER_SET
+    def __init__(
+        self,
+        event_map: dict,
+        weather_sets: Optional[dict] = None,
+        default_set: Optional[str] = None,
+        weather_state_enum=None,
+    ) -> None:
+        self.weather_sets: dict = (
+            weather_sets if weather_sets is not None else _DEFAULT_WEATHER_SETS
+        )
+        self.current_set: str = (
+            default_set if default_set is not None else _DEFAULT_WEATHER_SET
+        )
+        # WeatherState enum used for casting state strings → enum values in
+        # ``get_set_states``. Project-specific so WoL can use a different
+        # enum (or just the same one with WoL-only sets).
+        self._weather_state_enum = (
+            weather_state_enum if weather_state_enum is not None else _DEFAULT_WEATHER_STATE_ENUM
+        )
         self.target_set: Optional[str] = None
-        self.weather_sets: dict = WEATHER_SETS
         self.event_map: dict = event_map
         self._cached_set_config: Optional[tuple] = None  # (set_name, config)
 
@@ -46,7 +71,8 @@ class WeatherSetManager:
     def get_set_states(self, set_name: Optional[str] = None) -> list:
         """Return list of WeatherState enums for the given (or current) set."""
         target = set_name or self.current_set
-        return [WeatherState(s) for s in self.weather_sets[target]["states"]]
+        enum_cls = self._weather_state_enum
+        return [enum_cls(s) for s in self.weather_sets[target]["states"]]
 
     def is_valid_set(self, set_name: str) -> bool:
         return set_name in self.weather_sets
@@ -121,8 +147,24 @@ class WeatherSetManager:
         return list(self.event_map.keys())
 
     def resolve_event(self, event_name: str) -> Optional[tuple]:
-        """Return (effect_func, params) tuple for event_name, or None if unknown."""
-        return self.event_map.get(event_name)
+        """Return ``(effect_func, params, meta)`` for event_name, or None.
+
+        Supports both 2-tuple (legacy: effect_func, params) and 3-tuple
+        (Phase-6: effect_func, params, meta) entries. Meta is the
+        per-entry options dict, e.g. ``{"group": "leaves"}``; an empty
+        dict is returned when none was supplied.
+        """
+        entry = self.event_map.get(event_name)
+        if entry is None:
+            return None
+        if len(entry) == 2:
+            effect_func, params = entry
+            return effect_func, params, {}
+        if len(entry) == 3:
+            return entry
+        raise ValueError(
+            f"event_map[{event_name!r}] must be a 2- or 3-tuple, got {entry!r}"
+        )
 
     # ------------------------------------------------------------------
     # Set change management

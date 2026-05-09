@@ -13,7 +13,6 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from pathlib import Path
 import json
 from zeroconf import Zeroconf, ServiceInfo
-from renderer.fan_geometry import FanGeometry
 import numpy as np
 
 
@@ -41,21 +40,25 @@ class WebController:
     Thread-safe dictionary updates with real-time web interface.
     """
     
-    def __init__(self, control_dict=None, port=5000, service_name="lucifera", admin_password=None, bind_ip=""):
+    def __init__(self, control_dict=None, port=5000, service_name="lucifera", admin_password=None, bind_ip="", geometry_provider=None):
         """
         Initialize the web controller.
-        
+
         Args:
             control_dict: Dictionary to be controlled (default: creates new dict)
             port: Port number for the web server (default: 5000)
             service_name: mDNS service name (default: "lucifera")
                          Will be accessible at http://{service_name}.local:{port}
             admin_password: Password for admin panel (default: None = no admin access)
+            geometry_provider: Active GeometryProvider for /api/preview/geometry.
+                If None, a default FanGeometryProvider is built lazily so the
+                preview keeps working in standalone use.
         """
         self.control_dict = control_dict if control_dict is not None else {}
         self.port = port
         self.service_name = service_name
         self.bind_ip = bind_ip
+        self._geometry_provider = geometry_provider
         
         # Add thread lock for thread-safe dictionary access
         self._dict_lock = threading.RLock()
@@ -169,7 +172,22 @@ class WebController:
 
         # Preview frame streaming
         # Preview clients are tracked via Socket.IO 'preview' room
-        self._geometry_json = None  # cached FanGeometry JSON
+        self._geometry_json = None  # cached provider.to_json()
+
+    def replace_geometry_provider(self, provider):
+        """Hot-swap the active geometry provider (used by project-swap)."""
+        self._geometry_provider = provider
+        self._geometry_json = None
+
+    def _resolve_active_media_sounds_dir(self):
+        """Return the active project's ``media/sounds`` directory, or fall
+        back to the legacy repo-root ``media/sounds`` for callers that
+        haven't set ``control_dict['media_root']`` yet (tests, standalone)."""
+        from pathlib import Path
+        media_root = self.control_dict.get('media_root') if self.control_dict else None
+        if media_root:
+            return Path(media_root) / 'sounds'
+        return Path(__file__).parent.parent / 'media' / 'sounds'
     
     def _setup_routes(self):
         """Setup Flask routes for the web interface."""
@@ -196,15 +214,36 @@ class WebController:
 
         @self.app.route('/api/preview/geometry')
         def preview_geometry():
-            """Return fan geometry JSON (fetched once by the WebGL client)."""
+            """Return geometry JSON from the active GeometryProvider.
+
+            The JS client branches on the top-level ``type`` field
+            (currently ``"fan"``; multi-object lands later).
+            """
             if self._geometry_json is None:
-                # Build geometry using LED dimensions from control_dict
-                w = self.control_dict.get('led_width', 128)
-                h = self.control_dict.get('led_height', 300)
-                # Use the fan window aspect ratio (900x500)
-                geo = FanGeometry(w, h, 900 / 500)
-                self._geometry_json = geo.to_json()
+                if self._geometry_provider is None:
+                    # Standalone fallback: rebuild a Fan provider from the
+                    # LED dimensions cached in control_dict.
+                    from core.geometry.fan import FanGeometryProvider
+                    w = self.control_dict.get('led_width', 128)
+                    h = self.control_dict.get('led_height', 300)
+                    self._geometry_provider = FanGeometryProvider(
+                        num_strips=w, num_leds=h, display_aspect=900 / 500,
+                    )
+                self._geometry_json = self._geometry_provider.to_json()
             return jsonify(self._geometry_json)
+
+        @self.app.route('/api/project/info')
+        def project_info():
+            """Return active project + the list of switchable projects."""
+            with self._dict_lock:
+                current = self.control_dict.get('current_project', 'unknown')
+                current_name = self.control_dict.get('current_project_name', current)
+                available = self.control_dict.get('available_projects', [])
+            return jsonify({
+                "current": current,
+                "current_name": current_name,
+                "available": available,
+            })
 
         @self.app.route('/admin')
         def admin_panel():
@@ -513,9 +552,12 @@ class WebController:
                     else:
                         return obj
                 
-                # Get available sound files (only once)
+                # Get available sound files (only once). Resolves the
+                # active project's media folder via the geometry provider's
+                # group cache (set at startup) — falls back to the legacy
+                # repo-root ``media/sounds`` if no project context.
                 sound_files = []
-                sounds_dir = Path(__file__).parent.parent / 'media' / 'sounds'
+                sounds_dir = self._resolve_active_media_sounds_dir()
                 if sounds_dir.exists():
                     sound_files = [f.name for f in sounds_dir.iterdir() if f.is_file()]
                     sound_files.sort()
@@ -534,7 +576,11 @@ class WebController:
                             continue
                         script_file = sub / 'script.json'
                         if script_file.is_file():
-                            rel_path = f"media/sounds/{sub.name}/script.json"
+                            # Stored as media_root-relative so the narrative
+                            # player resolves it against the active project's
+                            # media folder. (Was ``media/sounds/...`` when
+                            # all media lived at the repo root.)
+                            rel_path = f"sounds/{sub.name}/script.json"
                             display = sub.name
                             try:
                                 data = _json.loads(script_file.read_text(encoding='utf-8'))
@@ -555,7 +601,7 @@ class WebController:
                         )
                         if audio_count > 0:
                             sound_pool_dirs.append({
-                                "path": f"media/sounds/{sub.name}",
+                                "path": f"sounds/{sub.name}",
                                 "name": sub.name,
                                 "count": audio_count,
                             })
@@ -783,6 +829,24 @@ class WebController:
                     if viewports:
                         for vp in viewports:
                             vp.flip_x = bool(value)
+
+        @self.socketio.on('change_project')
+        def handle_change_project(data):
+            new_id = (data or {}).get('project_id') if isinstance(data, dict) else None
+            if not new_id:
+                return
+            with self._dict_lock:
+                avail = self.control_dict.get('available_projects', []) or []
+                ids = {p.get('id') for p in avail if isinstance(p, dict)}
+                current = self.control_dict.get('current_project')
+            if new_id not in ids:
+                print(f"[WebController] change_project: unknown project {new_id!r}")
+                return
+            if new_id == current:
+                return
+            with self._dict_lock:
+                self.control_dict['request_project_swap'] = new_id
+            self._values_cache = None
 
         @self.socketio.on('change_weather_set')
         def handle_change_set(data):
