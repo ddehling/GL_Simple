@@ -255,6 +255,14 @@ class EnvironmentalSystem:
             self.scheduler.state["brightness_limit"] = self.project.brightness_limit
             print(f"[Project] brightness_limit = {self.project.brightness_limit}")
 
+        # Per-project target render FPS. Read from project.yaml's
+        # ``target_fps:`` key; main loop reads ``env_system.frame_time``
+        # each tick so a project swap re-paces the render loop without
+        # restart. Default 40 fps when the project doesn't declare one.
+        self.frame_time = self._compute_frame_time(self.project)
+        print(f"[Project] target_fps = {1.0 / self.frame_time:.1f} "
+              f"(frame_time = {self.frame_time*1000:.1f} ms)")
+
         # Expose strip metadata to the rendering engine so effects can
         # query the active project's strip table — e.g. drive
         # per-object behaviours, count strips per group, look up which
@@ -314,15 +322,26 @@ class EnvironmentalSystem:
             # Register viewports so socket handlers can mutate them directly
             self.web_controller.control_dict['_viewports'] = self.scheduler._shader_renderer.viewports
 
-        # OSC listener (observability only for now). Started after the web
-        # controller so any future shutdown ordering matches startup. Failure
-        # to bind is logged but non-fatal — the show keeps running.
+        # OSC listener — observability + project-side routing. The
+        # listener stays a print-only catch-all by default; the active
+        # project's ``button_router`` hook (if declared) registers
+        # prefix routes to handle structured input addresses (button
+        # presses, sensor streams). Failure to bind is logged but
+        # non-fatal — the show keeps running.
         self.osc_listener = None
         if osc_cfg.get("enabled", True):
             self.osc_listener = OscListener(
                 port=int(osc_cfg.get("port", 9001)),
                 bind_ip=osc_cfg.get("bind_ip", "0.0.0.0"))
             self.osc_listener.start()
+
+        # Project ``button_router`` hook: project.yaml may declare
+        # ``hooks: { button_router: <module.path> }``. The module's
+        # ``register(env_system)`` is called once at boot — typically
+        # to wire OSC route handlers, build per-project name maps, etc.
+        # Errors are logged but never fatal (a buggy router shouldn't
+        # take the show down).
+        self._call_button_router_hook()
 
         # Initialize celestial bodies
         self.celestial_bodies = CELESTIAL_BODIES.copy()
@@ -363,6 +382,18 @@ class EnvironmentalSystem:
                 all_events=event_list,
                 background_events=bg_events,
             )
+            # Push the active project's weather machinery into the web
+            # UI so the editor surfaces the right enum / presets / sets
+            # instead of the lib-level union of every project's states.
+            self.web_controller.set_weather_module(
+                weather_state_enum=self._weather_state_enum,
+                weather_presets=self._weather_presets,
+                weather_sets=self._weather_sets,
+                default_weather_params=self._default_weather_params,
+                default_weather_set=self._default_weather_set,
+                weather_module_path=self._weather_module_path,
+                weather_module_name=self._weather_module_name,
+            )
             # Sync initial set name now that WeatherSetManager is ready
             self.web_controller.set("current_weather_set", self.weather_set.current_set)
         
@@ -370,6 +401,15 @@ class EnvironmentalSystem:
         self._initialize_weather_set_events()
 
         self.whompcount = 0
+
+    @staticmethod
+    def _compute_frame_time(project) -> float:
+        """Return seconds-per-frame for the project's target FPS.
+        Falls back to 1/40 when the project doesn't declare one."""
+        fps = getattr(project, "target_fps", None)
+        if fps is None or fps <= 0:
+            return 1.0 / 40.0
+        return 1.0 / float(fps)
 
     def _refresh_weather_module(self, project) -> None:
         """Cache the project's weather machinery on self.
@@ -394,6 +434,12 @@ class EnvironmentalSystem:
         self._default_weather_set = getattr(mod, "DEFAULT_WEATHER_SET", _LIB_DEFAULT_WEATHER_SET)
         self._weather_presets = getattr(mod, "WEATHER_PRESETS", _LIB_PRESETS)
         self._default_weather_params = getattr(mod, "DEFAULT_WEATHER_PARAMS", _LIB_DEFAULT_PARAMS)
+        # Module identity — used by the web editor save / reload paths
+        # to write back to the project's own weather_params.py rather
+        # than lib's (saves to lib are silently overridden by any
+        # project module that defines its own WEATHER_SETS).
+        self._weather_module_name = getattr(project, "weather_sets_module", None)
+        self._weather_module_path = getattr(mod, "__file__", None) if mod else None
 
     def _build_receivers(self, project_receivers, legacy_receivers, display_height: int):
         """Resolve receiver entries from project.yaml strips or config.yaml legacy.
@@ -763,6 +809,58 @@ class EnvironmentalSystem:
                 atlas["pos_u"][rows, cols] = positions[:, 0] / canvas_w - 0.5
                 atlas["pos_v"][rows, cols] = positions[:, 1] / canvas_h - 0.5
 
+        # Object names + bidirectional id<->name maps. The
+        # multi_object geometry provider exposes its parsed
+        # ``objects: [{id, name, x, y}]`` list as ``.objects``;
+        # geometries that don't model named objects (e.g. Fan) just
+        # leave both maps empty. Effects/handlers can then reference
+        # boxes by display name ("center", "north") instead of
+        # memorising numeric ids.
+        object_names: dict[int, str] = {}
+        name_to_object_id: dict[str, int] = {}
+        objects_yaml = list(getattr(self.geometry_provider, "objects", []) or [])
+        for o in objects_yaml:
+            if not isinstance(o, dict):
+                continue
+            try:
+                oid = int(o.get("id"))
+                name = (o.get("name") or "").strip()
+            except (TypeError, ValueError):
+                continue
+            if name:
+                object_names[oid] = name
+                name_to_object_id[name] = oid
+
+        # Outbound OSC targets per object_id. Built from the receiver
+        # list's ``host``/``ip`` fields. Hostnames stay unresolved here
+        # — ProjectOscSender resolves lazily on first send so an
+        # unreachable host doesn't stall startup. Port defaults to the
+        # project-level ``osc.return_port`` (default 9000).
+        osc_cfg = (self.project.raw or {}).get("osc") or {}
+        return_port = int(osc_cfg.get("return_port", 9000))
+        object_osc_targets: dict[int, tuple[str, int]] = {}
+        for rx in project_receivers:
+            if not isinstance(rx, dict):
+                continue
+            try:
+                oid = int(rx.get("object_id", -1))
+            except (TypeError, ValueError):
+                continue
+            if oid < 0:
+                continue
+            host = rx.get("host") or rx.get("ip")
+            if host:
+                object_osc_targets[oid] = (str(host), return_port)
+
+        # Replace any prior sender (project-swap path) with one bound
+        # to this project's targets.
+        from lib.osc_sender import ProjectOscSender, make_send_callable
+        self._osc_sender = ProjectOscSender(
+            targets_by_id=object_osc_targets,
+            name_to_id=name_to_object_id,
+            return_port=return_port,
+        )
+
         st = self.scheduler.state
         st["project"] = self.project
         st["strips_by_group"] = strips_by_group
@@ -771,6 +869,12 @@ class EnvironmentalSystem:
         st["strip_table"] = strip_table
         st["group_metadata"] = group_metadata
         st["composite_canvas_size"] = (canvas_w, canvas_h)
+        # Per-project name maps + outbound OSC. Effects, button
+        # handlers, and weather hooks can reach any box by name or id.
+        st["object_names"] = object_names
+        st["name_to_object_id"] = name_to_object_id
+        st["object_osc_targets"] = object_osc_targets
+        st["osc_send"] = make_send_callable(self._osc_sender)
 
     def swap_project(self, new_project_id: str) -> bool:
         """Hot-swap the active art-piece project.
@@ -795,11 +899,31 @@ class EnvironmentalSystem:
             return True
         print(f"[Project] Swap requested: {self.project.id} -> {new_project_id}")
 
-        # ---- Phase A: pre-validate (no side effects) ----
+        # ---- Phase A: pre-validate ----
+        # Loading the new project's event_map is the gating step:
+        # project event_map modules reference project-local shader
+        # symbols (e.g. ``fx.shader_test_bouncing_ball``) which must
+        # already be on ``renderer.effects`` at import time. So we
+        # swap the project-local shader namespace BEFORE importing
+        # the event_map. If the import fails we restore the previous
+        # project's shaders so the running show keeps rendering.
+        prev_project = self.project
         try:
             new_project = load_project(new_project_id)
             new_geometry = new_project.load_geometry()
-            new_event_map = dict(new_project.load_event_map())
+            load_project_shaders(new_project)
+            try:
+                new_event_map = dict(new_project.load_event_map())
+            except Exception:
+                # Restore prior project's shader namespace before
+                # propagating so the running effects' references
+                # remain valid.
+                try:
+                    load_project_shaders(prev_project)
+                except Exception as restore_err:
+                    print(f"[Project] !! shader rollback after load fail "
+                          f"raised: {restore_err}")
+                raise
         except Exception as e:
             print(f"[Project] Swap aborted; load failed: {e}")
             return False
@@ -887,9 +1011,11 @@ class EnvironmentalSystem:
         # default, presets, and default params.
         self._refresh_weather_module(new_project)
 
-        # Phase 9: swap project-local shaders so Fan's themed shaders
-        # don't leak into WoL (and vice versa).
-        load_project_shaders(new_project)
+        # Project-local shaders were already swapped in by
+        # ``swap_project``'s Phase A (must happen before the new
+        # project's event_map can import). Keep it that way — calling
+        # load_project_shaders here would be a no-op (idempotent for
+        # the same project id) but is misleading.
 
         self.event_map = new_event_map
         self.weather_set = WeatherSetManager(
@@ -913,6 +1039,18 @@ class EnvironmentalSystem:
             self.web_controller.set_available_events(
                 all_events=event_list,
                 background_events=bg_events,
+            )
+            # Repush the new project's weather machinery so the editor
+            # endpoint serves the right enum / presets / sets after
+            # the swap. Both calls invalidate the editor cache.
+            self.web_controller.set_weather_module(
+                weather_state_enum=self._weather_state_enum,
+                weather_presets=self._weather_presets,
+                weather_sets=self._weather_sets,
+                default_weather_params=self._default_weather_params,
+                default_weather_set=self._default_weather_set,
+                weather_module_path=self._weather_module_path,
+                weather_module_name=self._weather_module_name,
             )
             self.web_controller.set("current_weather_set", self.weather_set.current_set)
             self.web_controller.set("available_sets", list(self._weather_sets.keys()))
@@ -954,6 +1092,13 @@ class EnvironmentalSystem:
                                         new_project.brightness_limit)
             print(f"[Project] brightness_limit = {new_project.brightness_limit}")
 
+        # Per-project target FPS. Main loop re-reads
+        # ``env_system.frame_time`` each tick so this updates without a
+        # restart. Default 40 fps when the new project omits it.
+        self.frame_time = self._compute_frame_time(new_project)
+        print(f"[Project] target_fps = {1.0 / self.frame_time:.1f} "
+              f"(frame_time = {self.frame_time*1000:.1f} ms)")
+
         # Refresh strip metadata for effects to read.
         self._publish_strip_metadata(new_receivers)
         # Resize per-canvas brightness state to match the new canvas count.
@@ -961,10 +1106,45 @@ class EnvironmentalSystem:
             {'divisor': 1.0, 'bright_factor': 0.0, 'last_logged_divisor': 0.0}
             for _ in new_dims
         ]
+        # Re-register the project's OSC button routes against the new
+        # project's name maps. The previous project's prefix handlers
+        # remain on the listener (first-match-wins still routes
+        # correctly because the new ones are appended); a future
+        # cleanup hook can drop stale routes if duplication starts to
+        # matter.
+        self._call_button_router_hook()
         self._initialize_weather_set_events()
         dims_str = ", ".join(f"{gid}={w}x{h}" for gid, (w, h) in zip(new_group_ids, new_dims))
         print(f"[Project] Swap complete: now {new_project.display_name} [{dims_str}]")
         return True
+
+    def _call_button_router_hook(self) -> None:
+        """Run the active project's ``button_router`` hook (if any).
+
+        Convention: project.yaml declares ``hooks: { button_router: <mod> }``
+        and that module exposes ``register(env_system)``. Called once at
+        boot AND after every project swap so a hot-swap to a new project
+        re-registers OSC routes against the new project's name maps.
+
+        The router is responsible for clearing any prior project's
+        prefix handlers from ``self.osc_listener`` if it cares about
+        idempotence — for the typical PoC case (re-register on top of
+        the previous list) the listener happily fans out duplicate
+        prefixes; first-match-wins still reaches the right handler.
+        """
+        hook = self.project.load_hook("button_router")
+        if hook is None:
+            return
+        register = getattr(hook, "register", None)
+        if not callable(register):
+            print(f"[Project] button_router hook missing register(env_system) "
+                  f"function; skipping")
+            return
+        try:
+            register(self)
+        except Exception as e:
+            print(f"[Project] button_router hook failed: {e}")
+            import traceback; traceback.print_exc()
 
     def _initialize_weather_set_events(self):
         """Cancel all events and start background events for the current weather set"""
@@ -1411,7 +1591,10 @@ if __name__ == "__main__":
         except Exception as _e:
             print(f"[Project] startup weather pick failed ({_e}); "
                   f"using project default")
-    FRAME_TIME = 1 / 40
+    # Frame pacing: read the per-project target FPS from env_system on
+    # every iteration so a project swap re-paces the loop without
+    # restart. ``env_system.frame_time`` is set by ``_compute_frame_time``
+    # in __init__ and refreshed in _swap_project_unsafe.
     frame_count = 0
     fps_start_time = time.perf_counter()
     work_time_accum = 0.0  # sum of per-frame work time (no waits) over the window
@@ -1423,11 +1606,12 @@ if __name__ == "__main__":
         winmm = ctypes.WinDLL('winmm')
         winmm.timeBeginPeriod(1)  # Set 1ms timer resolution
 
-    next_deadline = time.perf_counter() + FRAME_TIME
+    next_deadline = time.perf_counter() + env_system.frame_time
 
     try:
         while True:
             frame_start = time.perf_counter()
+            frame_time = env_system.frame_time   # may change on project swap
 
             # Update environmental system (includes scheduler.update())
             env_system.update()
@@ -1445,17 +1629,17 @@ if __name__ == "__main__":
             while time.perf_counter() < next_deadline:
                 pass
 
-            next_deadline += FRAME_TIME
+            next_deadline += frame_time
             # If we're more than 2 frames behind, drop the debt rather than burst-render
-            if time.perf_counter() - next_deadline > 2 * FRAME_TIME:
-                next_deadline = time.perf_counter() + FRAME_TIME
+            if time.perf_counter() - next_deadline > 2 * frame_time:
+                next_deadline = time.perf_counter() + frame_time
 
             frame_count += 1
             if frame_count % 500 == 0:  # Print FPS every 500 frames
                 current_time = time.perf_counter()
                 window = current_time - fps_start_time
                 actual_fps = 500.0 / window
-                target_fps = 1.0 / FRAME_TIME
+                target_fps = 1.0 / frame_time
                 avg_work = work_time_accum / 500.0
                 uncapped_fps = (1.0 / avg_work) if avg_work > 0 else 0.0
                 env_system._current_fps = round(actual_fps, 1)

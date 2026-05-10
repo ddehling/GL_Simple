@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 try:
     from pythonosc.dispatcher import Dispatcher
@@ -25,14 +25,29 @@ except ImportError:
     _PYTHONOSC_AVAILABLE = False
 
 
-class OscListener:
-    """Print-only OSC listener. Start once at app boot, stop at shutdown.
+# Type alias: a route handler is called with the full address + raw args.
+RouteHandler = Callable[..., None]
 
-    Usage:
+
+class OscListener:
+    """OSC listener with optional prefix-route handlers.
+
+    Default behavior is print-only — every message hits the catch-all log.
+    Projects (via their ``button_router`` hook or similar) can install
+    prefix routes that override the log for matching addresses, so the
+    same listener serves both observability and routed handling.
+
+    Usage::
+
         listener = OscListener(port=9001)
         listener.start()
+        listener.register_prefix("/wol/", on_wol_message)
         ...
         listener.stop()
+
+    Handler signature: ``handler(address: str, *args)`` — same shape as
+    the underlying python-osc default handler. Handlers run in the OSC
+    server's worker thread; they should be fast and non-blocking.
     """
 
     def __init__(self, port: int = 9001, bind_ip: str = "0.0.0.0"):
@@ -41,6 +56,12 @@ class OscListener:
         self._server: Optional[ThreadingOSCUDPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._stopped = False
+        # First-match-wins prefix routes. Threading: appended only via
+        # register_prefix() which is normally called at boot from the
+        # main thread; reads happen in the OSC worker thread. The list
+        # is replaced atomically (Python list .append is thread-safe
+        # for the single-writer case), so no lock needed.
+        self._prefix_routes: List[Tuple[str, RouteHandler]] = []
 
     def start(self) -> bool:
         """Bind the socket and start the listener thread. Returns False if
@@ -88,10 +109,33 @@ class OscListener:
             self._thread.join(timeout=1.0)
         print("[OSC] listener stopped")
 
-    @staticmethod
-    def _on_message(address: str, *args: Any) -> None:
-        # Format args compactly so a flood of high-rate messages
-        # (e.g. analog at 50Hz) stays one line each.
+    def register_prefix(self, prefix: str, handler: RouteHandler) -> None:
+        """Route any message whose address starts with ``prefix`` to
+        ``handler(address, *args)``. First-match-wins if multiple
+        prefixes register; longer / more specific prefixes should be
+        registered first.
+
+        Routed messages skip the catch-all log so the operator's
+        terminal isn't flooded with high-rate routed traffic. Use
+        ``register_prefix("/", h)`` to capture everything (and disable
+        the log)."""
+        self._prefix_routes.append((prefix, handler))
+
+    def _on_message(self, address: str, *args: Any) -> None:
+        # First, try registered prefix routes. First match wins.
+        for prefix, handler in self._prefix_routes:
+            if address.startswith(prefix):
+                try:
+                    handler(address, *args)
+                except Exception as e:
+                    # Don't let one buggy handler take down the whole
+                    # listener thread; log and keep serving.
+                    print(f"[OSC] handler for {prefix!r} raised on "
+                          f"{address!r}: {e}")
+                return
+
+        # Catch-all: format args compactly so a flood of high-rate
+        # unrouted messages stays one line each.
         if not args:
             payload = ""
         elif len(args) == 1:

@@ -1,237 +1,280 @@
 id: weight_of_light
 display_name: Weight of Light
-brightness_limit: 0.1
+brightness_limit: 0.2
+# Target render FPS for the main loop. Lower values save CPU + DDP
+# bandwidth on bandwidth-tight networks. Engine default is 40 fps
+# when this key is absent.
+target_fps: 40
 weather_sets_module: projects.weight_of_light.weather_params
 event_map_module: projects.weight_of_light.event_map
+# Per-project capability hooks. Imported on engine boot and again on
+# project swap. ``button_router`` registers OSC route handlers + builds
+# the host -> object_id map for incoming /wol/<host>/button/<idx>
+# messages. See projects/weight_of_light/button_router.py.
+hooks:
+  button_router: projects.weight_of_light.button_router
+# Outbound OSC port that ProjectOscSender targets when sending feedback
+# back to a box. Boxes should listen on this port; resolver looks up
+# the host portion via mDNS.
+osc:
+  return_port: 9000
 groups:
-- id: trunk
-  width: 144
+- id: Sky
+  width: 300
+  height: 19
+- id: Ground
+  width: 300
   height: 9
-- id: leaves
-  width: 96
-  height: 18
-- id: ambient
-  width: 60
-  height: 8
 enable_random_events: false
 geometry:
   type: multi_object
   file: projects/weight_of_light/geometry.yaml
 receivers:
-- host: wol-7f928c.local
+- host: wol-central.local
   protocol: ddp
   object_id: 0
   strips:
-  - group: leaves
+  - group: Ground
     strip_idx: 0
     kind: row
-    length: 96
+    length: 300
     direction: right
-  - group: trunk
+    shape: arc
+    arc_center:
+    - 640
+    - 512
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 0
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
+  - group: Sky
     strip_idx: 1
     kind: row
-    length: 96
+    length: 300
     direction: right
-  - group: ambient
-    strip_idx: 9
+  - group: Sky
+    strip_idx: 2
     kind: row
-    length: 64
+    length: 300
     direction: right
-    row: 0
 - host: wol-north.local
   protocol: ddp
   object_id: 1
   strips:
-  - group: ambient
-    strip_idx: 0
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 1
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 2
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 640
+    - 192
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 3
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 4
+    kind: row
+    length: 300
     direction: right
 - host: wol-northeast.local
   protocol: ddp
   object_id: 2
   strips:
-  - group: ambient
-    strip_idx: 1
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 2
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 4
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 866
+    - 286
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 5
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 6
+    kind: row
+    length: 300
     direction: right
 - host: wol-east.local
   protocol: ddp
   object_id: 3
   strips:
-  - group: ambient
-    strip_idx: 2
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 3
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 6
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 961
+    - 514
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 7
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 8
+    kind: row
+    length: 300
     direction: right
 - host: wol-southeast.local
   protocol: ddp
   object_id: 4
   strips:
-  - group: ambient
-    strip_idx: 3
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 4
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 8
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 866
+    - 738
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 9
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 10
+    kind: row
+    length: 300
     direction: right
 - host: wol-south.local
   protocol: ddp
   object_id: 5
   strips:
-  - group: ambient
-    strip_idx: 4
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 5
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 10
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 640
+    - 832
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 11
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 12
+    kind: row
+    length: 300
     direction: right
 - host: wol-southwest.local
   protocol: ddp
   object_id: 6
   strips:
-  - group: ambient
-    strip_idx: 5
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 6
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 12
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 414
+    - 738
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 13
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 14
+    kind: row
+    length: 300
     direction: right
 - host: wol-west.local
   protocol: ddp
   object_id: 7
   strips:
-  - group: ambient
-    strip_idx: 6
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 7
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 14
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 320
+    - 512
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 15
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 16
+    kind: row
+    length: 300
     direction: right
 - host: wol-northwest.local
   protocol: ddp
   object_id: 8
   strips:
-  - group: ambient
-    strip_idx: 7
-    kind: row
-    length: 60
-    direction: right
-  - group: trunk
+  - group: Ground
     strip_idx: 8
     kind: row
-    length: 144
+    length: 300
     direction: right
-  - group: leaves
-    strip_idx: 16
-    kind: row
-    length: 96
-    direction: right
-  - group: leaves
+    shape: arc
+    arc_center:
+    - 414
+    - 286
+    arc_radius: 80.0
+    arc_start_deg: 90.0
+    arc_end_deg: -270.0
+    arc_segments: 16
+  - group: Sky
     strip_idx: 17
     kind: row
-    length: 96
+    length: 300
+    direction: right
+  - group: Sky
+    strip_idx: 18
+    kind: row
+    length: 300
     direction: right

@@ -47,6 +47,12 @@ class Project:
     # PSU capacities. ``None`` means "use the pipeline default" so
     # legacy projects without the key keep their existing behaviour.
     brightness_limit: float | None = None
+    # Target render frames per second. Read from project.yaml's
+    # ``target_fps`` key. ``None`` means "use the engine default"
+    # (40 fps). Per-project so a piece with heavy-render shaders or
+    # bandwidth-limited DDP receivers can dial FPS down without
+    # affecting other pieces.
+    target_fps: float | None = None
 
     @property
     def root(self) -> Path:
@@ -203,6 +209,9 @@ def load_project(project_id: str) -> Project:
     bl = raw.get("brightness_limit")
     brightness_limit = float(bl) if bl is not None else None
 
+    fps = raw.get("target_fps")
+    target_fps = float(fps) if fps is not None else None
+
     return Project(
         id=pid,
         display_name=raw.get("display_name", pid),
@@ -212,4 +221,5 @@ def load_project(project_id: str) -> Project:
         hooks=hooks,
         raw=raw,
         brightness_limit=brightness_limit,
+        target_fps=target_fps,
     )

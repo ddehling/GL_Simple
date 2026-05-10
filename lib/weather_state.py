@@ -47,7 +47,17 @@ class WeatherStateController:
         self.target_weather = initial_weather
         self.transition_time = 0
         self.transition_start = 0
-        self.progress = 0
+        # Start at "transition complete" so ``random_state_change``'s
+        # ``progress >= 1.0`` gate is open from the first frame —
+        # otherwise projects without an explicit ``startup_weather_set``
+        # in project.yaml never bootstrap their first state change
+        # (initial progress=0 stays stuck because the if-branch in
+        # update() only runs when current != target). Fan-style
+        # projects that DO use ``startup_weather_set`` are unaffected:
+        # their main-thread kickoff calls transition_to_weather, which
+        # sets target!=current and update() drives progress 0..1 from
+        # whatever it was.
+        self.progress = 1.0
         # Initialize weather_params from the actual initial state, not just defaults
         self.weather_params = self.get_weather_params(initial_weather)
         # Snapshot of weather_params at the moment a transition started (used as
@@ -169,6 +179,7 @@ class WeatherStateController:
             "frost_level": self.weather_params.get("frost_level", 0.0),
             "spookyness": self.weather_params.get("spookyness", 0.0),
             "season_preference": self.weather_params.get("season_preference", 0.5),
+            "rainbow_intensity": self.weather_params.get("rainbow_intensity", 0.0),
             # Ambient light level in [0.25, 1.0]: peaks at noon (season=0.5),
             # minimum at midnight (season=0 / 1). In the ocean set season is
             # repurposed as time of day, so effects that want to dim at
@@ -196,7 +207,18 @@ class WeatherStateController:
         """
         current_preset = self.weather_presets[current_weather]
         enum_cls = self._weather_state_enum
-        possible_states = [enum_cls(s) for s in current_preset["possible_transitions"]]
+        # Filter out preset entries that don't correspond to states
+        # this project's enum knows about. Projects can prune the
+        # global lib WeatherState (e.g. WoL keeps only CLEAR + WOL_*),
+        # leaving legacy ``possible_transitions`` strings that no
+        # longer resolve. Skip them silently rather than crashing
+        # with ValueError on the first bad entry.
+        possible_states = []
+        for s in current_preset["possible_transitions"]:
+            try:
+                possible_states.append(enum_cls(s))
+            except (ValueError, KeyError):
+                continue
 
         # Restrict to states that exist in the active set
         possible_states = [s for s in possible_states if s in set_states]

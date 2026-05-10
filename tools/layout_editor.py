@@ -151,12 +151,16 @@ class EmulatorClient:
                 self._corrected.clear()
 
     def _connect_with_retry(self) -> bool:
-        # Retry a few times so the editor's "Launch" button isn't racing
-        # the engine's bind. ~6 seconds total before giving up.
-        deadline = 6.0
+        # Keep retrying every ``delay`` seconds until either the
+        # connect succeeds or stop() is called. The earlier 6-second
+        # deadline gave up too fast on cold Python launches (imports
+        # + GL context + mDNS can easily run 8–10 s before the
+        # engine's emulator broadcaster binds), and once the deadline
+        # was spent the client thread exited permanently, leaving the
+        # editor's status stuck on "Engine: starting…" with no
+        # recovery path. An indefinite retry instead just waits.
         delay = 0.2
-        elapsed = 0.0
-        while not self._stop.is_set() and elapsed < deadline:
+        while not self._stop.is_set():
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(0.5)
@@ -172,7 +176,6 @@ class EmulatorClient:
                 except OSError:
                     pass
                 self._stop.wait(delay)
-                elapsed += delay
         return False
 
     def _read_exact(self, n: int) -> Optional[bytes]:
@@ -356,6 +359,19 @@ class EmulatorOverlay:
     # tick on Fan's 40k-LED canvas).
     LED_RADIUS = 2
 
+    # Perceptual gamma applied to the on-screen physical-canvas
+    # blit. The corrected frame coming over the wire is already
+    # gamma-pre-corrected for the LEDs (~1/2.0) AND scaled down by
+    # the engine's brightness_limit (0.2 on WoL), so a shader's
+    # 10 %-bright output lands at ~16/255 going to the strip. LEDs
+    # at 16/255 are visibly lit on hardware (LED response is
+    # non-linear + human eyes are logarithmic), but a monitor pixel
+    # at 16/255 is virtually black. This power < 1 boosts the dim
+    # region disproportionately on screen so the preview matches
+    # what the eye sees from the strip rather than what the byte
+    # value is. 0.45 ≈ inverse of a typical 2.2 display gamma.
+    DISPLAY_GAMMA = 0.45
+
     def __init__(self, doc: 'LayoutDoc',
                  phys_scene: 'LayoutScene',
                  group_scene: 'GroupCanvasScene'):
@@ -450,6 +466,15 @@ class EmulatorOverlay:
             except ImportError:
                 pass
 
+        # Display-gamma LUT: 256-entry map from byte → boosted byte
+        # so the per-tick path is one fancy-indexed read, no float
+        # math. ``DISPLAY_GAMMA`` is set < 1 to brighten the dim end
+        # without crushing the bright end. cv2.LUT (when available)
+        # is faster than numpy fancy indexing on big buffers.
+        x = np.arange(256, dtype=np.float32) / 255.0
+        boosted = np.clip(np.power(x, self.DISPLAY_GAMMA), 0.0, 1.0)
+        self._gamma_lut = (boosted * 255.0).astype(np.uint8)
+
     def _allocate_group_pixmaps(self):
         # Place one pixmap item per group at its origin in the group
         # scene. Sized to the display rect; nearest-neighbour scaling
@@ -496,7 +521,18 @@ class EmulatorOverlay:
                 import cv2
                 cv2.dilate(self._phys_buf, self._dilate_kernel,
                            dst=self._phys_buf)
-            self._phys_pixmap_item.setPixmap(_pixmap_from_rgb(self._phys_buf))
+            # Display-gamma boost. Done AFTER dilate so the dilated
+            # neighbourhood inherits the LUT-mapped brightness and
+            # the preview matches what the eye sees from a real LED
+            # rather than the literal byte value going to the strip.
+            # Applied via a 256-entry LUT — single indexed read per
+            # pixel, well under a millisecond on Fan-sized canvases.
+            try:
+                import cv2
+                disp = cv2.LUT(self._phys_buf, self._gamma_lut)
+            except ImportError:
+                disp = self._gamma_lut[self._phys_buf]
+            self._phys_pixmap_item.setPixmap(_pixmap_from_rgb(disp))
 
         # Group canvases: blit the raw FBO directly.
         for gid, item in self._group_pixmap_items.items():
@@ -937,21 +973,32 @@ def load_doc(project_id: str) -> LayoutDoc:
             else:   # up
                 spec.polyline = [outer, inner]
 
-    # multi_object: merge per-strip polylines from geometry.yaml by (group, strip_idx)
+    # multi_object: merge per-strip polylines from geometry.yaml by (group, strip_idx).
+    # Polylines are queued per-key in declared order rather than dict-overwritten:
+    # if an earlier buggy save produced duplicate (group, strip_idx) entries (a
+    # symptom of per-receiver strip_idx renumbering on multi_object, where
+    # strip_idx must be unique per-group), the duplicates are still recoverable
+    # so long as geometry.yaml's strip ordering matches the receiver-sorted
+    # doc.strips order. Each matching strip pulls the next queued polyline.
     if geometry_type == "multi_object":
-        polylines: dict[tuple[str, int], list] = {}
-        lengths: dict[tuple[str, int], int] = {}
+        poly_queue: dict[tuple[str, int], list[list]] = {}
+        length_queue: dict[tuple[str, int], list[int]] = {}
         for s in (raw_g.get("strips") or []):
             key = (str(s.get("group", "")), int(s.get("strip_idx", 0)))
-            polylines[key] = [list(map(int, p)) for p in (s.get("polyline") or [])]
-            lengths[key] = int(s.get("length", 0))
+            poly_queue.setdefault(key, []).append(
+                [list(map(int, p)) for p in (s.get("polyline") or [])]
+            )
+            length_queue.setdefault(key, []).append(int(s.get("length", 0)))
         for spec in doc.strips:
             key = (spec.group, spec.strip_idx)
-            if key in polylines:
-                spec.polyline = polylines[key]
-            # geometry.yaml's length wins if project.yaml didn't carry one
-            if spec.length == 0 and key in lengths:
-                spec.length = lengths[key]
+            q = poly_queue.get(key)
+            if q:
+                spec.polyline = q.pop(0)
+            lq = length_queue.get(key)
+            if lq:
+                length = lq.pop(0)
+                if spec.length == 0 and length:
+                    spec.length = length
 
     # Regenerate arc-shaped polylines from their stored params so the
     # editor canvas reflects the latest arc settings even if the
@@ -1607,28 +1654,51 @@ class StripsModel(_BaseModel):
             )
         )
 
-    def _renumber_strip_idx_per_receiver(self):
-        """Reassign ``strip_idx`` to sequential 0..N-1 within each
-        receiver group. Closes gaps left by removals and avoids
-        collisions when a strip moves between receivers — every wire
-        slot stays densely numbered.
+    def _renumber_strip_idx(self):
+        """Reassign ``strip_idx`` to a dense 0..N-1 sequence in the
+        dimension that the active geometry type considers the
+        identity domain.
 
-        Multi-object row strips track ``s.row == s.strip_idx`` by
-        default; that coupling is preserved so the canvas-row mapping
-        stays consistent with the new wire-order index. Strips whose
-        ``row`` was hand-edited away from ``strip_idx`` are left alone
-        (the operator's override wins over the renumbering)."""
-        counters: dict[int, int] = {}
+        - **multi_object**: ``strip_idx`` is the canvas-row identifier
+          for kind=row strips and is keyed-on by ``geometry.yaml``
+          (one polyline per ``(group, strip_idx)`` pair). It MUST be
+          unique within each group, so we renumber per-group. Walking
+          ``doc.strips`` in current order means the table's
+          (receiver-sorted) ordering stays visually grouped.
+        - **other (Fan-style)**: ``strip_idx`` is the wire slot within
+          a receiver — it doesn't appear in geometry.yaml and the
+          canvas-axis position lives in ``col``. Renumber per-receiver
+          so each receiver's strip_idx values are dense 0..K-1.
+
+        Default canvas-pos coupling (``s.row == s.strip_idx`` for
+        kind=row, ``s.col == s.strip_idx`` for kind=column) is carried
+        across the renumber so default strips don't get stranded on a
+        stale canvas index. Hand-edited overrides are preserved.
+        """
+        is_multi = (self.doc.geometry_type == "multi_object")
+        counters: dict = {}
         for s in self.doc.strips:
-            rx = s.receiver_idx
-            next_idx = counters.get(rx, 0)
-            if s.strip_idx != next_idx:
-                # Carry the row coupling along so default-row strips
-                # don't get stranded on a stale canvas row index.
-                if s.kind == "row" and s.row == s.strip_idx:
-                    s.row = next_idx
+            bucket = s.group if is_multi else s.receiver_idx
+            next_idx = counters.get(bucket, 0)
+            old_idx = s.strip_idx
+            if old_idx != next_idx:
+                # Canvas-pos coupling only applies under multi_object,
+                # where row/col default to strip_idx. Under Fan-style
+                # geometry, col is the *physical* canvas column,
+                # decoupled from per-receiver strip_idx — touching it
+                # here would silently corrupt installations where col
+                # happens to numerically match strip_idx.
+                if is_multi:
+                    if s.kind == "row" and s.row == old_idx:
+                        s.row = next_idx
+                    elif s.kind == "column" and s.col == old_idx:
+                        s.col = next_idx
                 s.strip_idx = next_idx
-            counters[rx] = next_idx + 1
+            counters[bucket] = next_idx + 1
+
+    # Backwards-compat alias — older call sites referenced the
+    # per-receiver name from when that was the only mode.
+    _renumber_strip_idx_per_receiver = _renumber_strip_idx
 
     def remove_rows(self, rows: list[int]):
         # Pop the rows top-down (unchanged), then renumber and reset
@@ -1643,6 +1713,33 @@ class StripsModel(_BaseModel):
         # strip_idx by the removed rows.
         self.beginResetModel()
         self._renumber_strip_idx_per_receiver()
+        self.endResetModel()
+        self.emit_layout_changed()
+
+    def fix_strip_indexes_and_canvas_pos(self):
+        """Re-sort strips by receiver, then densely renumber
+        ``strip_idx`` according to the active geometry type:
+
+        - **multi_object**: per-group 0..N-1. Forces ``row``/``col`` to
+          match ``strip_idx`` for kind=row/column strips so the
+          canvas-row identity stays coupled (the runtime samples
+          ``group_frame[strip_idx, …]`` and geometry.yaml is keyed by
+          ``(group, strip_idx)`` — duplicates corrupt polylines).
+        - **other (Fan-style)**: per-receiver 0..N-1. Leaves ``col``
+          alone — Fan's canvas column is the *physical* column index
+          across all receivers, decoupled from the per-receiver wire
+          slot.
+
+        Idempotent."""
+        self.beginResetModel()
+        self._sort_strips_by_receiver()
+        self._renumber_strip_idx()
+        if self.doc.geometry_type == "multi_object":
+            for s in self.doc.strips:
+                if s.kind == "row":
+                    s.row = s.strip_idx
+                elif s.kind == "column":
+                    s.col = s.strip_idx
         self.endResetModel()
         self.emit_layout_changed()
 
@@ -2056,6 +2153,24 @@ class _StripItem(QGraphicsPathItem):
             self._drag_emitted_started = False
         else:
             self._press_scene_pos = None
+        # If this strip is already part of a multi-selection AND the
+        # user pressed without a modifier, skip Qt's default selection
+        # logic (which would clear the others and select only this).
+        # Preserving the multi-selection lets the subsequent drag move
+        # the whole group together.
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.isSelected()
+                and isinstance(scene, LayoutScene)
+                and not (event.modifiers() & (
+                    Qt.KeyboardModifier.ControlModifier
+                    | Qt.KeyboardModifier.ShiftModifier))):
+            multi = sum(
+                1 for it in scene.selectedItems()
+                if isinstance(it, _StripItem)
+            ) > 1
+            if multi:
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -2304,17 +2419,40 @@ class LayoutScene(QGraphicsScene):
             item.setPen(pen)
 
     def highlight_strip(self, strip_idx: int):
-        for i, item in enumerate(self._strips):
-            pen = item.pen()
-            pen.setWidthF(4.5 if i == strip_idx else 2.5)
-            item.setPen(pen)
-        # Show vertex / arc handles for the highlighted strip only.
+        self.highlight_strips({strip_idx} if strip_idx >= 0 else set())
+
+    def highlight_strips(self, indices):
+        """Multi-select variant: bumps the pen width on every strip in
+        ``indices`` AND sets the underlying ``QGraphicsItem`` selection
+        state so the editor's group-drag capture (which reads from
+        ``scene.selectedItems()``) sees the multi-selection. Vertex /
+        arc handles only show when exactly one strip is selected —
+        multi-select would flood the canvas with handles and the
+        operator can't drag-edit shape across multiple strips at once
+        anyway."""
+        indices = set(indices) if indices else set()
+        # Block selectionChanged emissions while we sync N items, then
+        # fire one consolidated update so trackers (objects + strips)
+        # refresh exactly once.
+        self.blockSignals(True)
+        try:
+            for i, item in enumerate(self._strips):
+                pen = item.pen()
+                pen.setWidthF(4.5 if i in indices else 2.5)
+                item.setPen(pen)
+                want = (i in indices)
+                if item.isSelected() != want:
+                    item.setSelected(want)
+        finally:
+            self.blockSignals(False)
+        self.selectionChanged.emit()
+        single = next(iter(indices)) if len(indices) == 1 else -1
         for i, handles in enumerate(self._handles):
-            visible = (i == strip_idx)
+            visible = (i == single)
             for h in handles:
                 h.setVisible(visible)
         for i, handles in enumerate(self._arc_handles):
-            visible = (i == strip_idx)
+            visible = (i == single)
             for h in handles.values():
                 h.setVisible(visible)
 
@@ -2594,12 +2732,16 @@ class GroupCanvasScene(QGraphicsScene):
         self.setSceneRect(QRectF(-30, -10, max_w + 60, cursor_y + 20))
 
     def highlight_strip(self, strip_idx: int):
+        self.highlight_strips({strip_idx} if strip_idx >= 0 else set())
+
+    def highlight_strips(self, indices):
+        indices = set(indices) if indices else set()
         for idx, item in self._strip_items.items():
             if isinstance(item, _GroupStripItem):
-                item.set_highlighted(idx == strip_idx)
+                item.set_highlighted(idx in indices)
             else:
                 pen = item.pen()
-                pen.setWidthF(4.5 if idx == strip_idx else 2.0)
+                pen.setWidthF(4.5 if idx in indices else 2.0)
                 item.setPen(pen)
 
     def _on_strip_clicked(self, strip_idx: int):
@@ -3377,6 +3519,17 @@ class EditorWindow(QMainWindow):
             rem.clicked.connect(lambda: self._remove_selected(model, view))
             row.addWidget(add)
             row.addWidget(rem)
+            if isinstance(model, StripsModel):
+                fix = QPushButton("Fix indexes & canvas pos")
+                fix.setToolTip(
+                    "Sort by receiver, renumber strip_idx densely per "
+                    "receiver, and reassign each group's row/col to "
+                    "0..N-1 in receiver/wire order."
+                )
+                fix.clicked.connect(
+                    lambda _=False, m=model: m.fix_strip_indexes_and_canvas_pos()
+                )
+                row.addWidget(fix)
             row.addStretch(1)
             layout.addLayout(row)
 
@@ -3394,15 +3547,16 @@ class EditorWindow(QMainWindow):
 
     def _on_table_selection_changed(self, model: _BaseModel, view: QTableView):
         rows = view.selectionModel().selectedRows()
-        row = rows[0].row() if rows else -1
         if isinstance(model, BoxesModel):
+            row = rows[0].row() if rows else -1
             self.scene.highlight_object(row)
             self.scene.highlight_strip(-1)
             self.group_scene.highlight_strip(-1)
         elif isinstance(model, StripsModel):
-            self.scene.highlight_strip(row)
+            rows_set = {r.row() for r in rows}
+            self.scene.highlight_strips(rows_set)
             self.scene.highlight_object(-1)
-            self.group_scene.highlight_strip(row)
+            self.group_scene.highlight_strips(rows_set)
         else:
             self.scene.highlight_object(-1)
             self.scene.highlight_strip(-1)
@@ -3411,13 +3565,21 @@ class EditorWindow(QMainWindow):
     def _on_strip_clicked_on_canvas(self, strip_idx: int):
         """User clicked a strip on either canvas. Switch to the Strips
         tab and select that row — which in turn highlights it on both
-        canvases and reveals its polyline vertex handles."""
+        canvases and reveals its polyline vertex handles.
+
+        If the clicked strip is already in the table's multi-selection,
+        leave the selection alone so the subsequent drag can translate
+        the whole group together."""
         if not (0 <= strip_idx < len(self.doc.strips)):
             return
         self.tabs.setCurrentIndex(2)   # Boxes(0), Groups(1), Strips(2)
         view = getattr(self.strips_m, "_view", None)
-        if view is not None:
-            view.selectRow(strip_idx)
+        if view is None:
+            return
+        selected_rows = {i.row() for i in view.selectionModel().selectedRows()}
+        if strip_idx in selected_rows:
+            return
+        view.selectRow(strip_idx)
 
     # ----- canvas → table sync -----
     def _on_object_moved_on_canvas(self, obj_idx: int, x: int, y: int):
@@ -4026,6 +4188,7 @@ class EditorWindow(QMainWindow):
             )
             self._emu_overlay.set_visible(overlay_visible)
             self._set_strip_visuals_visible(not overlay_visible)
+            self._set_object_visuals_visible(not overlay_visible)
 
         # Restore the highlighted strip's handles after the rebuild.
         # The Strips-table selection survives (it lives outside the
@@ -4044,9 +4207,9 @@ class EditorWindow(QMainWindow):
         rows = view.selectionModel().selectedRows()
         if not rows:
             return
-        row = rows[0].row()
-        self.scene.highlight_strip(row)
-        self.group_scene.highlight_strip(row)
+        rows_set = {r.row() for r in rows}
+        self.scene.highlight_strips(rows_set)
+        self.group_scene.highlight_strips(rows_set)
 
     # ----- save -----
     def save(self):
@@ -4288,10 +4451,35 @@ class EditorWindow(QMainWindow):
     def _on_emu_tick(self):
         if self._emu_client is None or self._emu_overlay is None:
             return
+
+        # Surface the actual connection state in the status field so
+        # the user can tell which step in the launch chain is stalled.
+        # Order of states the editor passes through during a launch:
+        #   "Engine: starting…"  — set by _start_engine before client
+        #                          first sees the engine's TCP listener
+        #   "Engine: connecting…" — TCP retry loop running, listener
+        #                          not yet bound (engine still in
+        #                          imports / GL init)
+        #   "Engine: waiting for frames…" — TCP connected but no
+        #                          frame has arrived yet
+        #   "Engine: connected"   — frames flowing
         if not self._emu_client.is_connected():
+            cur = self._engine_status.text()
+            if cur not in ("Engine: connecting…", "Engine: stopped"):
+                self._engine_status.setText("Engine: connecting…")
+                self._engine_status.setStyleSheet(
+                    "color: #f7c46c; padding: 0 8px;")
             return
+
         raw, corrected, seq = self._emu_client.snapshot()
         if not raw and not corrected:
+            # TCP up, no frames yet. Distinct from "starting…" so the
+            # operator can see the chain is one step further along.
+            cur = self._engine_status.text()
+            if cur not in ("Engine: waiting for frames…", "Engine: connected"):
+                self._engine_status.setText("Engine: waiting for frames…")
+                self._engine_status.setStyleSheet(
+                    "color: #f7c46c; padding: 0 8px;")
             return
         # Skip if the engine hasn't published a new frame since the
         # last paint — saves the per-tick numpy + pixmap cost.
@@ -4300,7 +4488,13 @@ class EditorWindow(QMainWindow):
         if self._engine_status.text() != "Engine: connected":
             self._engine_status.setText("Engine: connected")
             self._engine_status.setStyleSheet("color: #7be59a; padding: 0 8px;")
-            self._emu_overlay.set_visible(self.live_preview_chk.isChecked())
+            on = self.live_preview_chk.isChecked()
+            self._emu_overlay.set_visible(on)
+            # Sync schematic chrome visibility too — engine just came
+            # up, so if the user has live preview ticked we need the
+            # strip lines + object dots/labels out of the way.
+            self._set_strip_visuals_visible(not on)
+            self._set_object_visuals_visible(not on)
         try:
             self._emu_overlay.update_frame(raw, corrected)
         except RuntimeError:
@@ -4316,6 +4510,7 @@ class EditorWindow(QMainWindow):
         if self._emu_overlay is not None:
             self._emu_overlay.set_visible(on)
             self._set_strip_visuals_visible(not on)
+            self._set_object_visuals_visible(not on)
 
     def _set_strip_visuals_visible(self, on: bool):
         """Hide the schematic strip lines + arrows on both scenes
@@ -4325,6 +4520,17 @@ class EditorWindow(QMainWindow):
             item.setVisible(on)
         for item in self.group_scene._strip_items.values():
             item.setVisible(on)
+
+    def _set_object_visuals_visible(self, on: bool):
+        """Hide the labeled object dots + their name labels on the
+        physical-layout scene when LED overlay is active. The dots
+        otherwise sit on top of the LED render and obscure live
+        colors, plus the labels add visual noise that has no place
+        in a "show" view of the piece."""
+        for item in self.scene._objects:
+            item.setVisible(on)
+        for label in self.scene._labels:
+            label.setVisible(on)
 
     # ----- weather control via REST API (engine's web_controller) -----
     # All urllib calls run on a daemon worker thread so the Qt main

@@ -59,16 +59,24 @@ def validate_weather_params(weather_states, weather_presets, weather_sets):
     }
 
 
-def save_weather_params(weather_states, weather_presets, weather_sets, global_parameters=None):
+def save_weather_params(weather_states, weather_presets, weather_sets,
+                        global_parameters=None, target_path=None):
     """
-    Save weather parameters back to weather_params.py file.
-    
+    Save weather parameters back to a weather_params.py file.
+
     Args:
         weather_states: List of weather state strings
         weather_presets: Dictionary of weather state -> parameters
         weather_sets: Dictionary of set_id -> set configuration
         global_parameters: List of parameter names that are global (optional)
-    
+        target_path: Path to write to. Defaults to lib/weather_params.py
+            for backwards compatibility, but project-aware callers
+            should pass the active project's weather_params.py path
+            (e.g. ``projects/<id>/weather_params.py``) so per-project
+            overrides actually persist — saves to the lib-level file
+            get silently overridden at runtime by any project module
+            that defines its own WEATHER_SETS / WEATHER_PRESETS.
+
     Returns:
         dict: {"success": bool, "message": str, "error": str (optional)}
     """
@@ -76,7 +84,7 @@ def save_weather_params(weather_states, weather_presets, weather_sets, global_pa
         # Default global parameters if not provided
         if global_parameters is None:
             global_parameters = ["possible_transitions", "transition_weights", "transition_duration", "Sound_volume"]
-        
+
         # Validate first
         validation = validate_weather_params(weather_states, weather_presets, weather_sets)
         if not validation["valid"]:
@@ -84,10 +92,14 @@ def save_weather_params(weather_states, weather_presets, weather_sets, global_pa
                 "success": False,
                 "error": "Validation failed: " + "; ".join(validation["errors"])
             }
-        
-        # Get the path to weather_params.py (now lives in lib/)
-        current_dir = Path(__file__).parent.parent
-        weather_params_path = current_dir / "lib" / "weather_params.py"
+
+        # Resolve the target file path. ``target_path`` from the caller
+        # wins; otherwise fall back to the legacy lib path.
+        if target_path:
+            weather_params_path = Path(target_path)
+        else:
+            current_dir = Path(__file__).parent.parent
+            weather_params_path = current_dir / "lib" / "weather_params.py"
         
         # Create backup
         backup_path = weather_params_path.with_suffix('.py.backup')

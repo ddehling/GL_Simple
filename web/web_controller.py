@@ -179,6 +179,55 @@ class WebController:
         self._geometry_provider = provider
         self._geometry_json = None
 
+    def set_weather_module(self, *, weather_state_enum=None,
+                           weather_presets=None, weather_sets=None,
+                           default_weather_params=None,
+                           default_weather_set=None,
+                           weather_module_path=None,
+                           weather_module_name=None):
+        """Push the active project's weather data into the web UI's
+        backing store.
+
+        Called by ``EnvironmentalSystem`` at boot and after every
+        project swap so the weather editor's ``/api/weather/all``
+        endpoint surfaces the active project's enum / presets / sets
+        rather than the lib-level globals (which are a union of
+        every project's contributions and would confuse the UI).
+
+        ``weather_module_path`` is the filesystem path to the active
+        project's ``weather_params.py`` (typically
+        ``projects/<id>/weather_params.py``). The save endpoint writes
+        edited data back to this path so per-project overrides
+        (WEATHER_SETS, etc.) actually take effect — saves to the
+        lib-level file get clobbered by the project's runtime
+        override.
+
+        ``weather_module_name`` is the importable module name
+        (e.g. ``projects.weight_of_light.weather_params``); the
+        reload endpoint uses it to refresh the right module.
+
+        Any argument left as ``None`` keeps the previous value.
+        """
+        if weather_state_enum is not None:
+            self._project_weather_state_enum = weather_state_enum
+        if weather_presets is not None:
+            self._project_weather_presets = weather_presets
+        if weather_sets is not None:
+            self._project_weather_sets = weather_sets
+        if default_weather_params is not None:
+            self._project_default_weather_params = default_weather_params
+        if default_weather_set is not None:
+            self._project_default_weather_set = default_weather_set
+        if weather_module_path is not None:
+            self._project_weather_module_path = str(weather_module_path)
+        if weather_module_name is not None:
+            self._project_weather_module_name = str(weather_module_name)
+        # Drop the cached weather_data response so the next GET sees
+        # the new project. set_available_events does the same thing
+        # for its dimension; both are needed.
+        if hasattr(self, '_weather_data_cache'):
+            delattr(self, '_weather_data_cache')
+
     def _resolve_active_media_sounds_dir(self):
         """Return the active project's ``media/sounds`` directory, or fall
         back to the legacy repo-root ``media/sounds`` for callers that
@@ -559,10 +608,29 @@ class WebController:
             
             # Cache this expensive operation (but allow refresh)
             if not hasattr(self, '_weather_data_cache') or refresh:
+                # Prefer the active project's stashed weather data
+                # (pushed in via set_weather_module on boot / project
+                # swap). Fall back to the lib-level globals only when
+                # the engine hasn't wired anything yet — useful for
+                # standalone tests that boot the WebController without
+                # an EnvironmentalSystem.
                 from lib.weather_params import (
-                    WeatherState, DEFAULT_WEATHER_PARAMS, WEATHER_PRESETS, WEATHER_SETS,
-                    GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS, AVAILABLE_BACKGROUND_EVENTS
+                    WeatherState as _LIB_STATE_ENUM,
+                    DEFAULT_WEATHER_PARAMS as _LIB_DEFAULT_PARAMS,
+                    WEATHER_PRESETS as _LIB_PRESETS,
+                    WEATHER_SETS as _LIB_SETS,
+                    GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS,
+                    AVAILABLE_BACKGROUND_EVENTS,
                 )
+                WeatherState = getattr(self, "_project_weather_state_enum",
+                                       None) or _LIB_STATE_ENUM
+                DEFAULT_WEATHER_PARAMS = getattr(
+                    self, "_project_default_weather_params", None) \
+                    or _LIB_DEFAULT_PARAMS
+                WEATHER_PRESETS = getattr(self, "_project_weather_presets",
+                                          None) or _LIB_PRESETS
+                WEATHER_SETS = getattr(self, "_project_weather_sets",
+                                       None) or _LIB_SETS
                 import numpy as np
                 from pathlib import Path
                 
@@ -631,19 +699,48 @@ class WebController:
                                 "count": audio_count,
                             })
                 
-                # Convert WeatherState enum to list of strings
-                weather_states = [state.value for state in WeatherState]
-                
-                # Convert WEATHER_PRESETS dict (with WeatherState keys) to JSON-friendly format
-                presets = {}
-                for state, params in WEATHER_PRESETS.items():
-                    state_key = state.value if hasattr(state, 'value') else str(state)
-                    params_copy = convert_to_json_serializable(params.copy())
-                    presets[state_key] = params_copy
-                
+                # Scope to the active project's relevant states.
+                # WoL's weather_params.py inherits the lib-level
+                # WeatherState enum (which carries every project's
+                # values, hundreds of them), so iterating it raw
+                # would surface forest/bartiki/ocean/etc. states in
+                # the UI even when the project doesn't use them.
+                # Compute the union of state values across this
+                # project's WEATHER_SETS and filter the enum +
+                # presets through that.
+                _project_state_values = set()
+                for _set in WEATHER_SETS.values():
+                    if isinstance(_set, dict):
+                        for _sv in (_set.get("states") or []):
+                            _project_state_values.add(_sv)
+
+                if _project_state_values:
+                    weather_states = [
+                        s.value for s in WeatherState
+                        if s.value in _project_state_values
+                    ]
+                    presets = {}
+                    for state, params in WEATHER_PRESETS.items():
+                        state_key = state.value if hasattr(state, 'value') else str(state)
+                        if state_key not in _project_state_values:
+                            continue
+                        params_copy = convert_to_json_serializable(params.copy())
+                        presets[state_key] = params_copy
+                else:
+                    # No project sets configured (very early boot);
+                    # fall back to the unfiltered enum + presets so
+                    # standalone tests of the WebController still
+                    # have something to render.
+                    weather_states = [s.value for s in WeatherState]
+                    presets = {}
+                    for state, params in WEATHER_PRESETS.items():
+                        state_key = state.value if hasattr(state, 'value') else str(state)
+                        params_copy = convert_to_json_serializable(params.copy())
+                        presets[state_key] = params_copy
+
                 # Convert default params
                 default_params = convert_to_json_serializable(DEFAULT_WEATHER_PARAMS.copy())
-                
+
                 # Convert weather sets
                 weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
                 
@@ -673,48 +770,71 @@ class WebController:
         
         @self.app.route('/api/weather_editor/save', methods=['POST'])
         def save_weather_data():
-            """Save modified weather data back to weather_params.py."""
+            """Save modified weather data back to the active project's
+            weather_params.py.
+
+            The target file path is the active project's module
+            (pushed in via ``set_weather_module(weather_module_path=...)``
+            on engine boot / project swap). Falls back to the lib-level
+            file only when no project has been wired in — kept that way
+            so standalone WebController tests still write somewhere
+            sensible.
+            """
             try:
                 data = request.json
                 from lib.weather_editor_utils import save_weather_params
-                
+
+                target = getattr(self, "_project_weather_module_path", None)
+
                 result = save_weather_params(
                     weather_states=data.get('weather_states', []),
                     weather_presets=data.get('weather_presets', {}),
                     weather_sets=data.get('weather_sets', {}),
-                    global_parameters=data.get('global_parameters', [])
+                    global_parameters=data.get('global_parameters', []),
+                    target_path=target,
                 )
-                
+
                 # Clear cache since data has changed
                 self.clear_weather_data_cache()
-                
+
                 if result['success']:
                     return jsonify(result)
                 else:
                     return jsonify(result), 500
-                    
+
             except Exception as e:
                 return jsonify({
                     "success": False,
                     "error": str(e)
                 }), 500
-        
+
         @self.app.route('/api/weather_editor/reload', methods=['POST'])
         def reload_weather_module():
-            """Reload the weather_params module to reflect saved changes."""
+            """Reload the active project's weather_params module so
+            the editor sees just-saved changes. The engine still needs
+            a separate restart to pick up new presets/sets at runtime
+            (no in-flight reload of the WeatherStateController + scheduler
+            yet)."""
             try:
                 import importlib
-                from lib import weather_params
-                importlib.reload(weather_params)
-                
+                # Reload lib (always — its definitions back the schema).
+                from lib import weather_params as _lib_wp
+                importlib.reload(_lib_wp)
+                # Reload the active project's module if one is wired in.
+                proj_mod_name = getattr(self, "_project_weather_module_name", None)
+                if proj_mod_name:
+                    proj_mod = importlib.import_module(proj_mod_name)
+                    importlib.reload(proj_mod)
+
                 # Clear cache since module has been reloaded
                 self.clear_weather_data_cache()
-                
+
                 return jsonify({
                     "success": True,
-                    "message": "Weather parameters reloaded"
+                    "message": "Weather parameters reloaded "
+                               + (f"({proj_mod_name})" if proj_mod_name else "(lib only)")
                 })
-                    
+
             except Exception as e:
                 return jsonify({
                     "success": False,

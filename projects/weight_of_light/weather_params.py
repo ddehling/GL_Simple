@@ -64,6 +64,57 @@ _BASE = {
 }
 
 WEATHER_SETS = {
+    # ----- Native day/night cycle (proof of concept) -----
+    # Linear progression DAWN → DAY → DUSK → NIGHT → DAWN, driven by
+    # WeatherStateController's per-frame transition probability
+    # (Switch_rate × transition_speed × 1/800 base). The 4 states each
+    # set a sky_horizon_color / sky_zenith_color pair that the sky
+    # gradient shader reads from outstate; transitions interpolate
+    # automatically because both params are np.ndarray.
+    #
+    # Two background events:
+    #   * wol_sky_daynight  → Sky group (300×19) — atmospheric gradient
+    #   * wol_ground_passive → Ground group (300×9) — slow per-arc hue
+    "wol_natural": {
+        "name": "Weight of Light — Natural",
+        "description": "Permanent day/night sky + ground twinkle, with rain / "
+                       "stars / rainbow weather overlays.",
+        "states": [
+            WeatherState.WOL_CLEAR.value,
+            WeatherState.WOL_RAIN.value,
+            WeatherState.WOL_STARS.value,
+            WeatherState.WOL_RAINBOW.value,
+        ],
+        # season_speed > 0 keeps ``ambient_light`` (used by the
+        # ground twinkle's brightness multiplier) actually moving.
+        # season_extremity=0 keeps state transitions strictly
+        # weighted by transition_weights, not by season position.
+        "season_speed": 1.0,
+        "transition_speed": 1.0,
+        "season_extremity": 0.0,
+        "allowed_parameters": [
+            "Switch_rate", "transition_duration",
+            "rain_rate", "starryness",
+            "rainbow_intensity",
+            "celestial_visibility", "fog",
+        ],
+        "random_events": [],
+        "random_event_rate": 0.0,
+        # All five run continuously; per-state intensity params decide
+        # what's visible. The day/night sky shader runs forever; the
+        # weather overlays gate on rain_rate / starryness /
+        # rainbow_intensity and contribute zero alpha when their gate
+        # is 0.
+        "background_events": [
+            "wol_sky_daynight",
+            "wol_stars",
+            "wol_rain",
+            "wol_ground_twinkle",
+            "wol_rain_ground",
+            "wol_rainbow",
+        ],
+    },
+
     "wol_pattern": {
         **_BASE,
         "name": "Weight of Light — Pattern",
@@ -111,4 +162,4 @@ WEATHER_SETS = {
     },
 }
 
-DEFAULT_WEATHER_SET = "wol_pattern"
+DEFAULT_WEATHER_SET = "wol_natural"

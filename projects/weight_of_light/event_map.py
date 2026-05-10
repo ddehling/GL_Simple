@@ -37,4 +37,67 @@ EVENT_MAP = {
          "color_rgb": (0.0, 0.3, 1.0)},
         {"group": "leaves"},
     ),
+
+    # ---- Natural set: permanent sky/ground + weather overlays --------
+    # All five run continuously as background events; intensity gates
+    # (rain_rate / starryness / rainbow_intensity / celestial_visibility)
+    # decide what's visible in any given weather state. Smooth
+    # crossfades come for free from WeatherStateController's param
+    # interpolation. Group ids must match projects/weight_of_light/
+    # project.yaml.
+    "wol_sky_daynight": (
+        fx.shader_wol_sky_daynight,
+        {"cycle_seconds": 600.0, "shimmer": 0.06,
+         "shimmer_speed": 0.05, "dim_strength": 0.85},
+        {"group": "Sky"},
+    ),
+    "wol_rain": (
+        fx.shader_wol_rain,
+        {"color_rgb": (0.85, 0.95, 1.0), "drops_per_strip": 3.0,
+         "fall_speed": 0.8, "streak_length": 0.10},
+        {"group": "Sky"},
+    ),
+    # Parallel rain instance on the Ground canvas. Same shader; the
+    # u_rows uniform lets it autoadapt to the 9-row Ground canvas
+    # without a separate fragment program. Slightly fewer drops per
+    # strip and shorter streaks read better on the tighter ground
+    # arcs.
+    "wol_rain_ground": (
+        fx.shader_wol_rain,
+        {"color_rgb": (0.75, 0.85, 1.0), "drops_per_strip": 2.0,
+         "fall_speed": 0.6, "streak_length": 0.08},
+        {"group": "Ground"},
+    ),
+    "wol_stars": (
+        fx.shader_wol_stars,
+        {"stars_per_strip": 4.0, "twinkle_speed": 0.4,
+         "star_radius": 0.012},
+        {"group": "Sky"},
+    ),
+    "wol_ground_twinkle": (
+        fx.shader_wol_ground_twinkle,
+        {"spawn_chance": 0.12, "cycle_seconds": 2.0,
+         "decay_rate": 1.6, "max_brightness": 1.0,
+         "echo_chance": 0.30},
+        {"group": "Ground"},
+    ),
+    "wol_rainbow": (
+        fx.shader_wol_rainbow,
+        {"max_alpha": 0.30, "walk_speed": 0.05,
+         "glimmer_speed": 1.5, "glimmer_amp": 0.35},
+        {"group": "Ground"},
+    ),
+
+    # ---- Lightning (button-driven one-shot, scoped to one object) ----
+    # Scheduled by projects.weight_of_light.button_router with
+    # ``target_object_id`` baked in via functools.partial so concurrent
+    # flashes on different boxes don't trip the scheduler's coarse
+    # dedup-by-action.
+    "wol_lightning_flash": (
+        fx.shader_wol_lightning_flash,
+        {"color_rgb": (1.0, 1.0, 1.0),
+         "strip_delay": 0.04, "propagation_time": 0.06,
+         "decay": 0.4, "dim_alpha": 0.4, "dim_recovery": 2.5},
+        {"group": "Sky"},
+    ),
 }
