@@ -112,6 +112,7 @@ WEATHER_SETS = {
             "wol_ground_twinkle",
             "wol_rain_ground",
             "wol_rainbow",
+            "wol_presence_glow",
         ],
     },
 

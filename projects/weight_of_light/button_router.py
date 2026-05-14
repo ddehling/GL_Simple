@@ -25,6 +25,7 @@ The default catch-all just logs.
 from __future__ import annotations
 
 import functools
+import random
 from typing import Any, Callable, Dict
 
 
@@ -47,6 +48,26 @@ _LIGHTNING_GROUPS = (
     ("Sky", True),
     ("Ground", False),
 )
+
+# Multi-strike behaviour: after the primary strike, roll successive
+# geometric "extra strike" probabilities so a typical press resolves
+# to 1–3 visible bolts with the occasional 4-bolt cluster. Each
+# follow-up has a chance of jumping to a different (usually adjacent)
+# box. Numbers tuned by feel; tweak in place rather than building a
+# config surface for them.
+_FOLLOWUP_PROBS = (0.55, 0.35, 0.20)   # P(2nd | 1st), P(3rd | 2nd), P(4th | 3rd)
+# Delay after the *primary* strike before the 2nd. Pulled longer
+# than later follow-ups so the second bolt feels like a separate
+# beat rather than a tight burst with the first — real lightning
+# clusters often have a brief gap, then a flurry.
+_SECOND_STRIKE_MIN_DELAY_S = 0.60
+_SECOND_STRIKE_MAX_DELAY_S = 2.00
+# Delay between any subsequent follow-ups (3rd onwards). Tighter
+# range so later strikes register as the rumble of a multi-bolt
+# storm cluster.
+_FOLLOWUP_MIN_DELAY_S = 0.20
+_FOLLOWUP_MAX_DELAY_S = 1.20
+_FOLLOWUP_OTHER_OBJECT_PROB = 0.20     # P(follow-up jumps to a different box)
 
 
 # ---------------------------------------------------------------------------
@@ -98,42 +119,61 @@ def register(env_system) -> None:
 
 def _dispatch(env_system, host_map: Dict[str, int],
               address: str, *args: Any) -> None:
-    """Parse ``/wol/<host>/<kind>/<idx>``. Currently only ``kind=button``
-    is wired; other kinds (sensor, status, etc.) silently fall through
-    so the catch-all log doesn't fire on them either. Adjust if you
-    want unknown kinds to log."""
+    """Parse ``/wol/<host>/<kind>[/...]``. ``kind=button`` dispatches to
+    the per-button-index handler table; ``kind=radar`` delegates to
+    ``radar.handle_osc``; anything else is silently ignored.
+    """
     parts = address.strip("/").split("/")
-    # Expect: ["wol", "<host>", "<kind>", "<idx>"], so 4 parts. Be
-    # tolerant of trailing segments — first 4 are what we route on.
-    if len(parts) < 4:
+    # Need at least /wol/<host>/<kind> (3 parts). Some kinds carry a
+    # trailing segment (button index, radar sub-key); each branch
+    # checks length as needed.
+    if len(parts) < 3:
         return
 
     host = parts[1]
     kind = parts[2]
-    if kind != "button":
-        # Reserved for future kinds — silently ignore for now.
-        return
-
-    try:
-        button_idx = int(parts[3])
-    except ValueError:
-        return
 
     object_id = host_map.get(host, -1)
     if object_id < 0:
         # Unknown device; log once-ish (real dedup belongs in the
         # listener if needed — for now this is rare enough that one
         # warning per stray message is OK).
-        print(f"[wol_button] unknown host {host!r} on {address}; "
+        print(f"[wol_router] unknown host {host!r} on {address}; "
               f"args={args}")
         return
 
-    handler = _BUTTON_HANDLERS.get(button_idx, _default_button_handler)
-    try:
-        handler(env_system, object_id, button_idx, *args)
-    except Exception as e:
-        print(f"[wol_button] handler for button {button_idx} "
-              f"on object {object_id} raised: {e}")
+    if kind == "button":
+        if len(parts) < 4:
+            return
+        try:
+            button_idx = int(parts[3])
+        except ValueError:
+            return
+        handler = _BUTTON_HANDLERS.get(button_idx, _default_button_handler)
+        try:
+            handler(env_system, object_id, button_idx, *args)
+        except Exception as e:
+            print(f"[wol_button] handler for button {button_idx} "
+                  f"on object {object_id} raised: {e}")
+        return
+
+    if kind == "radar":
+        # Lazy-import so a project that doesn't ship radar.py still
+        # boots (we just won't process radar messages).
+        try:
+            from projects.weight_of_light import radar
+        except Exception as e:
+            print(f"[wol_radar] module load failed: {e}")
+            return
+        try:
+            radar.handle_osc(env_system, object_id, parts[3:], *args)
+        except Exception as e:
+            print(f"[wol_radar] handle_osc on object {object_id} "
+                  f"raised: {e}  (address={address})")
+        return
+
+    # Unknown kind — silently ignore. Add cases above as new kinds
+    # come online.
 
 
 # ---------------------------------------------------------------------------
@@ -160,63 +200,125 @@ def _default_button_handler(env_system, object_id: int,
         osc_send(object_id, f"/wol/feedback/button/{button_idx}", *args)
 
 
-def _on_button_3(env_system, object_id: int,
-                 button_idx: int, *args: Any) -> None:
-    """Button 3: schedule a dramatic lightning flash on the box that
-    sent the press. Lights up the box's strips on BOTH the Sky and
-    Ground groups (atlases gate per-pixel to that object only). The
-    Sky pass also dims the surrounding non-target sky pixels for a
-    couple of seconds — the "flash blindness" effect — recovering
-    smoothly to the day/night gradient. Ground pass doesn't dim
-    (a darkened ring around the lit ground arc reads as a bug
-    rather than drama).
-
-    Each press uses ``functools.partial`` to bake in target_object_id
-    + the event_map-side params, producing a unique action object so
-    EventScheduler's dedup-by-action doesn't drop concurrent flashes
-    on different boxes.
-    """
-    state = env_system.scheduler.state
-    name = state.get("object_names", {}).get(object_id, f"id={object_id}")
-
+def _schedule_one_strike(env_system, target_object_id: int,
+                         delay: float) -> list[str]:
+    """Schedule one lightning strike on ``target_object_id``: one
+    event per group in ``_LIGHTNING_GROUPS``, all sharing the same
+    ``delay``. Sky's pass plays a thunder sample (Ground's doesn't,
+    so a single visible bolt produces one boom rather than two).
+    Returns the list of group names that successfully scheduled."""
     entry = env_system.weather_set.resolve_event(_LIGHTNING_EVENT)
     if entry is None:
-        print(f"[wol_button_3] event {_LIGHTNING_EVENT!r} not in event_map; "
-              f"flash skipped")
-        return
+        print(f"[wol_lightning] event {_LIGHTNING_EVENT!r} not in event_map; "
+              f"strike skipped")
+        return []
     effect_func, params, _ = entry
-
     g2f = env_system.project.group_to_frame_id()
 
-    # Schedule one event per group the lightning should touch. Each
-    # gets a fresh partial so the scheduler's coarse dedup-by-action
-    # check (event.action == action) doesn't reject the second.
-    fired_groups = []
+    fired = []
     for group_name, dim_enable in _LIGHTNING_GROUPS:
         if group_name not in g2f:
             continue
+        # Sky carries the thunder; Ground stays silent so the visible
+        # multi-group strike registers as one boom.
+        play_sound = (group_name == "Sky")
         action = functools.partial(
             effect_func,
-            target_object_id=object_id,
+            target_object_id=target_object_id,
             dim_enable=dim_enable,
+            play_sound=play_sound,
             **params,
         )
         ev = env_system.scheduler.schedule_event(
-            0.0,
+            float(delay),
             _LIGHTNING_DURATION_S,
             action,
             frame_id=g2f[group_name],
-            name=f"lightning_obj{object_id}_{group_name}",
+            name=f"lightning_obj{target_object_id}_{group_name}_d{delay:.2f}",
         )
         if ev is not None:
-            fired_groups.append(group_name)
-        else:
-            print(f"[wol_button_3] schedule rejected (dedup) for "
-                  f"{name} on {group_name}")
+            fired.append(group_name)
+    return fired
 
-    if fired_groups:
-        print(f"[wol_button_3] FLASH on {name!r} "
-              f"(object_id={object_id}, groups={fired_groups})")
+
+def _pick_followup_target(originator: int, all_object_ids: list[int]) -> int:
+    """Decide who the next strike hits. Most of the time it stays on
+    the originating box; a small fraction of the time it jumps to a
+    different box. Without an explicit adjacency map we just pick a
+    uniform-random other object — adjacency-aware routing can layer
+    in later if the visual benefit justifies it."""
+    others = [oid for oid in all_object_ids if oid != originator]
+    if others and random.random() < _FOLLOWUP_OTHER_OBJECT_PROB:
+        return random.choice(others)
+    return originator
+
+
+def fire_lightning_chain(env_system, object_id: int,
+                         tag: str = "lightning") -> int:
+    """Schedule a complete lightning chain on ``object_id``: primary
+    strike + a geometric tail of 0–3 follow-ups (mostly on the same
+    box, occasionally jumping). Returns the total number of strikes
+    that scheduled successfully.
+
+    Used by both the OSC button-3 handler and WoL's per-frame
+    random_events hook so any caller that wants "fire a dramatic
+    lightning event on this box" gets the same behaviour without
+    duplicating the chain math. ``tag`` is just a log label
+    distinguishing the source ("lightning", "rand_lightning", etc.).
+    """
+    state = env_system.scheduler.state
+    names = state.get("object_names", {})
+    primary_name = names.get(object_id, f"id={object_id}")
+    all_object_ids = sorted(names.keys()) if names else [object_id]
+
+    fired_groups = _schedule_one_strike(env_system, object_id, 0.0)
+    if not fired_groups:
+        return 0
+
+    strikes = [(0.0, object_id)]
+    cumulative_delay = 0.0
+    last_target = object_id
+    for i, prob in enumerate(_FOLLOWUP_PROBS):
+        if random.random() >= prob:
+            break
+        # The 2nd strike (i == 0, the first follow-up) gets a
+        # longer gap range than subsequent ones so the chain has
+        # a real "primary then aftershocks" beat rather than one
+        # tight burst.
+        if i == 0:
+            gap = random.uniform(
+                _SECOND_STRIKE_MIN_DELAY_S, _SECOND_STRIKE_MAX_DELAY_S)
+        else:
+            gap = random.uniform(
+                _FOLLOWUP_MIN_DELAY_S, _FOLLOWUP_MAX_DELAY_S)
+        cumulative_delay += gap
+        next_target = _pick_followup_target(last_target, all_object_ids)
+        groups = _schedule_one_strike(env_system, next_target, cumulative_delay)
+        if not groups:
+            break
+        strikes.append((cumulative_delay, next_target))
+        last_target = next_target
+
+    if len(strikes) == 1:
+        print(f"[wol_{tag}] FLASH on {primary_name!r} "
+              f"(object_id={object_id})")
+    else:
+        chain = ", ".join(
+            f"+{d*1000:.0f}ms→{names.get(t, t)!r}" for d, t in strikes
+        )
+        print(f"[wol_{tag}] FLASH x{len(strikes)} starting on "
+              f"{primary_name!r}: {chain}")
+    return len(strikes)
+
+
+def _on_button_3(env_system, object_id: int,
+                 button_idx: int, *args: Any) -> None:
+    """Button 3: dramatic lightning flash, possibly with follow-ups.
+    Thin wrapper over ``fire_lightning_chain`` so the per-frame
+    random-events path and the OSC button path produce identical
+    multi-strike behaviour.
+    """
+    fire_lightning_chain(env_system, object_id, tag="button_3")
 
 
 # Per-button-index dispatch table. Keys are button indices, values are

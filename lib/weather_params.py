@@ -162,6 +162,7 @@ WEATHER_PRESETS = {
         "Switch_rate": 1,
         "celestial_visibility": 0.4,
         "fog": 0.2,
+        "lightning_probability": 0.1,
         "possible_transitions": ["wol_clear", "wol_stars", "wol_rainbow"],
         "rain_rate": 1,
         "rainbow_intensity": 0,

@@ -87,6 +87,28 @@ EVENT_MAP = {
          "glimmer_speed": 1.5, "glimmer_amp": 0.35},
         {"group": "Ground"},
     ),
+    # Presence glow — extra brightness on a box's ground arc the
+    # closer its LD2412 radar's strongest gate is, with hue and
+    # shimmer driven by the static/motion energy split:
+    #   * stationary person → warm settled glow (color_warm)
+    #   * walking person    → cool active glow with shimmer (color_cool)
+    # Reads ``state['radar']`` via the wrapper; quiet when no one's
+    # near any box.
+    "wol_presence_glow": (
+        fx.shader_wol_presence_glow,
+        {"color_warm":       (1.0, 0.55, 0.15),    # saturated amber
+         "color_cool":       (0.20, 0.55, 1.0),    # saturated cool blue
+         "max_alpha":        1.0,
+         "shimmer_freq":     1.6,                  # subtler breathing,
+         "shimmer_max_amp":  0.18,                 # not flicker
+         "motion_norm":      150.0,
+         # Smoothstep pivots remap real-world motion_ratio range
+         # (~0.1 standing, ~0.55 walking) onto the full warm→cool
+         # lerp so the hue actually flips end-to-end.
+         "color_pivot_low":  0.10,
+         "color_pivot_high": 0.55},
+        {"group": "Ground"},
+    ),
 
     # ---- Lightning (button-driven one-shot, scoped to one object) ----
     # Scheduled by projects.weight_of_light.button_router with

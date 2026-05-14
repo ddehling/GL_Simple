@@ -180,6 +180,7 @@ class WeatherStateController:
             "spookyness": self.weather_params.get("spookyness", 0.0),
             "season_preference": self.weather_params.get("season_preference", 0.5),
             "rainbow_intensity": self.weather_params.get("rainbow_intensity", 0.0),
+            "lightning_probability": self.weather_params.get("lightning_probability", 0.0),
             # Ambient light level in [0.25, 1.0]: peaks at noon (season=0.5),
             # minimum at midnight (season=0 / 1). In the ocean set season is
             # repurposed as time of day, so effects that want to dim at

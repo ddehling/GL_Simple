@@ -10,9 +10,12 @@ event_map_module: projects.weight_of_light.event_map
 # Per-project capability hooks. Imported on engine boot and again on
 # project swap. ``button_router`` registers OSC route handlers + builds
 # the host -> object_id map for incoming /wol/<host>/button/<idx>
-# messages. See projects/weight_of_light/button_router.py.
+# messages. ``random_events`` runs once per frame for project-specific
+# probability rolls (currently: lightning when in WOL_RAIN). See
+# projects/weight_of_light/{button_router,random_events}.py.
 hooks:
   button_router: projects.weight_of_light.button_router
+  random_events: projects.weight_of_light.random_events
 # Outbound OSC port that ProjectOscSender targets when sending feedback
 # back to a box. Boxes should listen on this port; resolver looks up
 # the host portion via mDNS.
@@ -25,7 +28,7 @@ groups:
 - id: Ground
   width: 300
   height: 9
-enable_random_events: false
+enable_random_events: true
 geometry:
   type: multi_object
   file: projects/weight_of_light/geometry.yaml

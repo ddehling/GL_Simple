@@ -35,6 +35,8 @@ through the wrapper's group_metadata lookup.
 from __future__ import annotations
 
 import ctypes
+import random
+from pathlib import Path
 from typing import Dict
 
 import numpy as np
@@ -42,6 +44,21 @@ from OpenGL.GL import *
 from OpenGL.GL import shaders
 
 from renderer.effects.base import ShaderEffect
+
+
+# Thunder samples shipped under projects/weight_of_light/media/sounds/.
+# One is randomly picked per strike via Python's stdlib ``random``
+# (deliberately NOT ``np.random.choice``: a couple of Fan-era shaders
+# call ``np.random.seed(42)`` for deterministic placement and never
+# restore the global state, so anything that picks via numpy after
+# they've run keeps drawing the same value forever. stdlib ``random``
+# has its own independent state and isn't affected.).
+_THUNDER_SAMPLES = (
+    "Thunder Clap Loud.wav",
+    "loud-thunder-192165.mp3",
+    "peals-of-thunder-191992.mp3",
+    "thunder-307513.mp3",
+)
 
 
 def shader_wol_lightning_flash(state, outstate,
@@ -52,7 +69,8 @@ def shader_wol_lightning_flash(state, outstate,
                                decay: float = 0.4,
                                dim_alpha: float = 0.4,
                                dim_recovery: float = 2.5,
-                               dim_enable: bool = True):
+                               dim_enable: bool = True,
+                               play_sound: bool = False):
     """Spawn / tick / clean up a dramatic lightning flash.
 
     Schedule with ``frame_id`` set to the target group's frame id
@@ -71,6 +89,11 @@ def shader_wol_lightning_flash(state, outstate,
         pixels. 0.4 = 40 % darkening.
     ``dim_recovery``: seconds for the dim to fade back to 0.
     ``dim_enable``: True for the Sky group, False for Ground.
+    ``play_sound``: True schedules a random thunder sample on
+        ``outstate['soundengine']`` at init. Set True for one of
+        the per-strike events (typically Sky) and False for the
+        others to avoid stacking the same boom multiple times for
+        a single visible strike.
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -81,6 +104,24 @@ def shader_wol_lightning_flash(state, outstate,
         return
 
     if state['count'] == 0:
+        # Thunder playback. Random sample picked here once per
+        # strike. Resolve relative to the active project's media
+        # folder; missing samples fall back silently rather than
+        # crashing the shader init. Only one of the multi-group
+        # strikes (typically Sky) sets play_sound=True so the
+        # operator hears one boom per visible bolt.
+        if play_sound:
+            engine = outstate.get('soundengine')
+            media_root = outstate.get('media_root')
+            if engine is not None and media_root:
+                sample_name = random.choice(_THUNDER_SAMPLES)
+                sample_path = Path(media_root) / 'sounds' / sample_name
+                try:
+                    engine.schedule_event(sample_path, duration=10.0)
+                    print(f"[wol_lightning_flash] thunder: {sample_name}")
+                except Exception as e:
+                    print(f"[wol_lightning_flash] thunder play failed: {e}")
+
         # Resolve which group this frame_id maps to so we read the
         # right atlas (Sky on Sky-frame, Ground on Ground-frame).
         group_ids = getattr(shader_renderer, 'group_ids', None) or []
