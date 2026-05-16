@@ -143,46 +143,44 @@ void main() {
     // dissolves smoothly into open sky toward the fan's inner ring.
     float canopy_band = smoothstep(0.20, 0.55, uv.y);
 
-    // SPARSE-BRIGHT RESTRUCTURE — render only the brightest noise peaks
-    // (visible leaf clusters). Everything below the threshold discards
-    // entirely (contributes zero output instead of "leaf body at dim
-    // color"). Under brightness_limit=0.1 the un-painted pixels free
-    // budget so visible leaves stay near-full brightness.
-    //
-    // Threshold transition is SHARP (0.06 wide instead of 0.16) so
-    // each leaf reads as a distinct small feature with crisp edges,
-    // not a soft puff. Density drives the visibility threshold:
+    // SPARSE-BRIGHT RESTRUCTURE — render only the brightest noise peaks.
+    // Below threshold → discard (zero output). Density drives the
+    // visibility threshold:
     //   density=0.45 → tip_lo 0.74 (sparse)
     //   density=1.00 → tip_lo 0.58 (dense)
     float tip_lo = mix(0.74, 0.58, density);
-    float tip_factor = smoothstep(tip_lo, tip_lo + 0.06, leaf_n);
+    // VISIBILITY (alpha): wider smoothstep so leaves on the edge of
+    // threshold fade gently rather than pop in binary on/off.
+    float visibility = smoothstep(tip_lo, tip_lo + 0.12, leaf_n);
+    float effective = visibility * canopy_band;
+    if (effective < 0.02) discard;
 
-    float effective = tip_factor * canopy_band;
-    if (effective < 0.04) discard;
+    // ---------- Per-leaf intensity from noise value itself ----------
+    // INTENSITY CONTRAST per individual leaf: how far above threshold
+    // a leaf's noise value sits determines its brightness. Leaves just
+    // barely above threshold are DIM; leaves at high noise peaks are
+    // BRIGHT. Range 0.20..1.00 so dimmest visible leaves are 20% of
+    // brightest — substantial luminance variation across the canopy.
+    //
+    // Previously used a slow exposure noise (4.5/6 freq) which couldn't
+    // distinguish adjacent leaves; all leaves in a region got the same
+    // exposure. Now intensity varies per individual leaf because it's
+    // sourced from the same high-freq noise that defines the leaves.
+    float leaf_strength = clamp((leaf_n - tip_lo) / max(0.001, 1.0 - tip_lo),
+                                0.0, 1.0);
+    float intensity = 0.20 + 0.80 * leaf_strength;
 
-    // ---------- Per-leaf intensity variation ----------
-    // INTENSITY CONTRAST comes from DIFFERENT LEAVES being at different
-    // brightness levels — some leaves brightly sunlit, others in
-    // partial shadow, etc. Driven by a slow-varying exposure noise
-    // independent of the high-freq leaf mask. Range 0.35..1.00 means
-    // dimmest leaves are at ~35% of brightest, big luminance variation
-    // across the canopy without resorting to per-leaf white hot-spots
-    // (which made each leaf look like a cloud puff).
-    vec2 expose_p = vec2(uv.x * 4.5 + u_time * 0.015,
-                         uv.y * 6.0);
-    float expose = fbm(expose_p);
-    float intensity = 0.35 + 0.65 * expose;
-
-    // ---------- Leaf color ----------
-    // Saturated base by season + day/night, scaled by per-leaf intensity.
-    // No per-tip white hot-spot — that produced fluffy cloud-looking
-    // blobs. Intensity variation across DIFFERENT leaves provides the
-    // luminance contrast.
+    // ---------- Leaf color (naturalistic) ----------
+    // Naturalistic forest palette — earlier "neon lime" and "silver-blue
+    // fairy moonlight" tested as visually wrong. These read as forest
+    // leaves at different times of day rather than as synthetic
+    // theatre lighting, while still distinct enough from sky/godray
+    // hues to give clean hue separation under the brightness limiter.
     float warm_factor = 1.0 - smoothstep(0.0, 0.4, abs(u_season - 0.5));
-    vec3 day_lit_midday = vec3(0.28, 1.00, 0.16);   // saturated vivid green
-    vec3 day_lit_dd     = vec3(0.85, 0.95, 0.20);   // saturated yellow-green
+    vec3 day_lit_midday = vec3(0.15, 0.75, 0.20);   // clear emerald green
+    vec3 day_lit_dd     = vec3(0.55, 0.60, 0.15);   // warm olive
     vec3 day_col  = mix(day_lit_dd, day_lit_midday, warm_factor);
-    vec3 night_col = vec3(0.25, 0.45, 0.65);        // moonlit silver-blue
+    vec3 night_col = vec3(0.12, 0.20, 0.28);        // dark cool blue-grey (moonlit)
     vec3 leaf_base = mix(day_col, night_col, u_starryness);
 
     vec3 leaf_col = leaf_base * intensity;
