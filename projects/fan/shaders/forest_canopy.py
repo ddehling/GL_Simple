@@ -129,14 +129,34 @@ void main() {
     // 80% of the fan's radial extent.
     if (uv.y < 0.20) discard;
 
-    // Wind-swept HIGH-FREQUENCY leaf grain. Much higher spatial
-    // frequency than the old version (12/22 -> 30/55) so blobs are
-    // small and read as individual leaves, not cloud puffs. The
-    // previous low-frequency mask produced smooth round patches that
-    // looked like sparse green clouds — wrong shape for canopy.
-    float leaf_sway = sin(u_time * 0.5) * u_wind * 0.04;
-    vec2 leaf_p = vec2(uv.x * 30.0 + leaf_sway * 30.0,
-                       uv.y * 55.0 + u_time * 0.06);
+    // ---------- Per-region wind field ----------
+    // Slow-varying 2D direction field — each region of the canopy has
+    // its own drift angle from a low-freq noise lookup, so different
+    // patches sway in different directions. The field itself slowly
+    // evolves over time (the wind aloft isn't static). Combined with
+    // a time-oscillating amplitude (gust/rest cycle) and modulated by
+    // overall wind strength (still air → minimal sway, breezy → clear
+    // motion), individual leaves in a region move together while
+    // neighboring regions drift differently.
+    vec2 wf_p = vec2(uv.x * 2.5, uv.y * 3.0) + vec2(u_time * 0.05,
+                                                     u_time * 0.03);
+    float wind_angle = vnoise(wf_p) * 6.2832;
+    vec2 wind_dir = vec2(cos(wind_angle), sin(wind_angle));
+    // Per-region gust amplitude — sinusoidal over time with a spatial
+    // offset so different regions are at different phases of their
+    // gust cycle. Multiplied by u_wind so calm air shows almost no
+    // motion, breezy air shows clear sway.
+    float gust = 0.35 + 0.65 * sin(u_time * 0.40 + uv.x * 2.7 + uv.y * 1.9);
+    float sway_amp = gust * (0.10 + 0.90 * clamp(abs(u_wind), 0.0, 1.5)) * 0.10;
+    vec2 sway = wind_dir * sway_amp;
+
+    // HIGH-FREQUENCY leaf grain (small individual leaves, not cloud puffs).
+    // Sway shifts the sample position; different canopy regions take
+    // samples from different offsets, so each region's leaves move
+    // independently. Slow vertical drift retained as ambient canopy
+    // animation (subtle growth/movement even when wind=0).
+    vec2 leaf_p = vec2(uv.x * 30.0 + sway.x * 30.0,
+                       uv.y * 55.0 + sway.y * 55.0 + u_time * 0.06);
     float leaf_n = fbm(leaf_p);
 
     // Soft fade-in over a wider range (0.20 -> 0.55) so the inner edge
