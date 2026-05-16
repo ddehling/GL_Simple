@@ -24,13 +24,15 @@ this scene-rotation system supports.
 import random
 
 
-# Storm-intensity falling-edge detection. ``THRESHOLD_ENTER`` is the
-# value the intensity must rise above to count as "in a storm" — below
-# this, brief weather flickers don't count. ``THRESHOLD_EXIT`` is
-# lower (hysteresis) so a noisy signal sitting near the boundary
-# doesn't toggle the falling-edge detector every frame.
-_THRESHOLD_ENTER = 0.45
-_THRESHOLD_EXIT  = 0.25
+# Storm-intensity falling-edge detection. The intensity is the max of
+# ``sand_density`` and ``rain_rate``, both of which are 0 in clear
+# weather. ``THRESHOLD_ENTER`` is the value the intensity must rise
+# above to count as "in a storm" — below this, brief weather flickers
+# don't count. ``THRESHOLD_EXIT`` is lower (hysteresis) so a noisy
+# signal sitting near the boundary doesn't toggle the falling-edge
+# detector every frame.
+_THRESHOLD_ENTER = 0.40
+_THRESHOLD_EXIT  = 0.10
 
 # Cooldown bounds (seconds). After incrementing scene_id, the next
 # storm's falling edge can't increment again until at least this much
@@ -77,14 +79,14 @@ def shader_background_director(state, outstate, fade_duration=0.0):
         # would no-op anyway.
         return
 
-    # Derive storm intensity. Wind is signed (~-2..2), rain_rate is 0..1
-    # already. Sandstorm states use both, so taking max gives the right
-    # "how obscured is the sky" reading either way.
-    wind = abs(float(outstate.get('wind', 0.0)))
+    # Derive storm intensity from actual storm signals — NOT wind,
+    # which is always non-zero (ambient breeze exists in clear states
+    # too) and would leave background silhouettes permanently
+    # half-transparent. ``sand_density`` and ``rain_rate`` are 0 in
+    # clear weather and ramp up only when a real storm is active.
+    sand = float(outstate.get('sand_density', 0.0))
     rain = float(outstate.get('rain_rate', 0.0))
-    # Wind ~0..2 in practice; halve so 1.0 reads as "full storm" parity
-    # with rain. Capping at 1.0 keeps obscuration sane.
-    intensity = max(min(wind * 0.5, 1.0), rain)
+    intensity = max(sand, rain)
 
     # Smooth obscuration with a one-pole filter so it doesn't twitch on
     # noisy weather signals. Tau ~ 1.5 s — slow enough to feel like

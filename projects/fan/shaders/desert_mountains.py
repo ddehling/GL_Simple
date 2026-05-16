@@ -88,14 +88,20 @@ float mountain_height(float x_ft, int scene) {{
         float fine = (vnoise1(x_ft * 1.40 + 41.3) - 0.5) * 0.6;
         return baseline + low + mid + fine;
     }} else {{
-        // Angular spires: sharper, sparser peaks. Use a low-freq base
-        // PLUS occasional sharp upward bumps from a power-curve on
-        // noise (concentrates output at high values).
+        // Angular spires: sharper, sparser, much taller peaks. Sparse
+        // tall spikes (up to ~17 ft) reach into the lower half of the
+        // sun's mid-arc, so the sun is visibly silhouetted by spires
+        // during morning/afternoon transitions. Baseline body stays
+        // at ~9 ft so most of the horizon still reads as distant low
+        // mountains; only the occasional spike sticks up dramatically.
         float low  = sin(x_ft * 0.22 + 5.1) * 0.7;
         float n    = vnoise1(x_ft * 0.85 + 91.2);
-        // Sharpen toward the upper tail: 0.6 threshold then steep
-        float spike_mask = smoothstep(0.60, 0.85, n);
-        float spike = pow(spike_mask, 1.5) * 3.6;
+        // Sharpen toward the upper tail: 0.55 threshold (slightly more
+        // peaks) then steep — gives ~15% of the horizon length some
+        // amount of spike. Spike height up to 7.0 ft so tallest peaks
+        // hit ~17 ft (baseline 9 + low 0.7 + spike 7.0 + jitter 0.25).
+        float spike_mask = smoothstep(0.55, 0.85, n);
+        float spike = pow(spike_mask, 1.4) * 7.0;
         float jitter = (vnoise1(x_ft * 2.30 + 173.9) - 0.5) * 0.5;
         return baseline + low + spike + jitter;
     }}

@@ -193,6 +193,11 @@ def shader_desert_sky(state, outstate, fade_duration=4.0):
         sp     = float(outstate.get('spookyness', 0.0))
         fc_raw = outstate.get('fog_color', (0.7, 0.7, 0.7))
         fc     = (float(fc_raw[0]), float(fc_raw[1]), float(fc_raw[2]))
+        # Storm obscuration (published by shader_background_director) dims
+        # the sun/moon disc so the sky goes dark during sandstorms — without
+        # this the sun pokes through partial-alpha background silhouettes
+        # (mountains) as they fade for the scene-swap hide.
+        obs = float(outstate.get('storm_obscuration', 0.0))
 
         elapsed = state['elapsed_time']
         duration = state.get('duration')
@@ -213,6 +218,10 @@ def shader_desert_sky(state, outstate, fade_duration=4.0):
             eff.spookyness = sp
             eff.fog_color = fc
             eff.fade = fade
+        # Only the disc gets obscuration — the backdrop is the sky
+        # gradient itself, which the sandstorm shader paints over
+        # separately; fading it would reveal black behind.
+        state['disc'].obscuration = obs
 
     if state['count'] == -1:
         for key in ('backdrop', 'disc'):
@@ -398,6 +407,9 @@ class _DesertSkyBase(ShaderEffect):
         self.spookyness = 0.0
         self.fog_color = (0.7, 0.7, 0.7)
         self.fade = 0.0
+        # Storm obscuration multiplier — only the disc subclass actually
+        # reads this in render(); backdrop ignores it.
+        self.obscuration = 0.0
         self._time = 0.0
         self._fan = FanCoords(viewport.width, viewport.height)
 
