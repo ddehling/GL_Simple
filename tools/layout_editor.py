@@ -804,10 +804,18 @@ _INIT_PY = ""
 _WEATHER_PARAMS_PY = '''"""{name} — weather machinery.
 
 A fresh project starts with a single CLEAR state and a single
-"default" weather set with no background events. Author shaders in
-``projects/{id}/shaders/`` and register them in ``event_map.py``,
-then add their names to ``background_events`` below to make them
-fire when this set is active.
+"default" weather set. The scaffolded state and set both include the
+fields needed to enable per-state ambient sounds, per-set narratives,
+and per-set random sound pools — leave the values as ``None`` until
+you drop matching media into ``projects/{id}/media/sounds/`` and
+author the corresponding scripts / pool directories.
+
+Author shaders in ``projects/{id}/shaders/`` and register them in
+``event_map.py``, then add their names to ``background_events`` below
+to make them fire when this set is active. ``narrative_player`` and
+``sound_pool`` are auto-inherited from ``core.default_events`` —
+adding them to ``background_events`` and giving the set a
+``narrative_script`` / ``sound_pool_dir`` is enough.
 """
 from enum import Enum
 
@@ -833,6 +841,10 @@ WEATHER_PRESETS = {{
         "transition_duration": 1.0,
         "possible_transitions": ["clear"],
         "transition_weights": [1.0],
+        # Per-state ambient background sound. ``None`` keeps silent;
+        # set to a filename under ``projects/{id}/media/sounds/`` to
+        # surface a picker in the weather editor.
+        "ambient_sound": None,
     }},
 }}
 
@@ -848,6 +860,18 @@ WEATHER_SETS = {{
         "allowed_parameters": [],
         "random_events": [],
         "random_event_rate": 0.0,
+        # Set-level audio hooks. Both are inert unless the matching
+        # event is also listed in ``background_events``:
+        #   - ``narrative_script``: path (relative to
+        #     ``projects/{id}/media/``) to a ``script.json`` authored
+        #     in the narrative editor. Pair with
+        #     ``"narrative_player"`` in ``background_events``.
+        #   - ``sound_pool_dir``: directory (relative to
+        #     ``projects/{id}/media/``) of clips for the random
+        #     ambient sound pool. Pair with ``"sound_pool"`` in
+        #     ``background_events``.
+        "narrative_script": None,
+        "sound_pool_dir": None,
         "background_events": [],
     }},
 }}
@@ -872,12 +896,20 @@ Each entry: (effect_func, params_dict, meta_dict).
 Example::
 
     "my_glow": (fx.shader_my_glow, {{"speed": 0.5}}, {{"group": "main"}}),
+
+Note: ``narrative_player`` and ``sound_pool`` are auto-inherited from
+``core.default_events.DEFAULT_EVENT_MAP`` — you do NOT need to
+re-register them here. Just add their names to a weather set's
+``background_events`` list. Override only if this project needs
+different params (e.g. a non-default ``node_delay``).
 """
 from renderer import effects as fx  # noqa: F401  used by EVENT_MAP entries
 
 
 EVENT_MAP = {{
-    # Add your events here.
+    # Add your project-specific events here. Universal events
+    # (narrative_player, sound_pool) come from core.default_events
+    # automatically.
 }}
 '''
 
