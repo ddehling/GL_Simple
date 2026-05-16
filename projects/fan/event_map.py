@@ -15,8 +15,12 @@ EVENT_MAP = {
     "sandstorm": (fx.shader_sandstorm, {}),
     "desert_dunes": (fx.shader_desert_dunes, {}),
     "desert_sky": (fx.shader_desert_sky, {}),
+    "desert_mountains": (fx.shader_desert_mountains, {}),
     "desert_creatures": (fx.shader_desert_creatures, {}),
     "desert_rain": (fx.shader_desert_rain, {}),
+    # Storm-driven scene rotation for desert backgrounds. Publishes
+    # outstate['scene_id'] and outstate['storm_obscuration'].
+    "background_director": (fx.shader_background_director, {}),
     "fog_beings": (fx.shader_chromatic_fog_beings, {}),
     "falling_leaves": (fx.shader_falling_leaves, {}),
     "audio_balls": (fx.shader_audio_balls, {}),

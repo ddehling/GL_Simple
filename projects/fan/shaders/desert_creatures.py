@@ -360,18 +360,31 @@ class DesertCreaturesEffect(ShaderEffect):
         day = self._day_factor()
         night = self._night_factor()
 
-        # Target rate (creatures-per-second) by kind, weighted by TOD
+        # Target rate (creatures-per-second) by kind, weighted by TOD.
+        # Bird rate boosted (0.04 -> 0.12) so the day sky has 4-5 birds
+        # active instead of 1-2 — populates the bright daytime sky with
+        # dark silhouettes, which is the cheapest way to add brightness
+        # contrast (the sky pays the energy cost, the silhouettes are
+        # zero-output). See docs/shader_contrast_playbook.md "Silhouette
+        # against a band" pattern.
         rates = {
             T_GROUND_LIZARD: 0.06 * day,
             T_GROUND_EYES:   0.10 * night,
-            T_SKY_BIRD:      0.04 * day,
+            T_SKY_BIRD:      0.12 * day,
             T_SKY_BAT:       0.05 * night,
         }
         for kind, rate in rates.items():
             self._spawn_acc[kind] += dt * rate
             if self._spawn_acc[kind] >= 1.0 and len(self._creatures) < MAX_CREATURES:
                 self._spawn_acc[kind] -= 1.0
-                self._spawn_one(kind)
+                # Occasional flock spawning for birds — 25% chance a bird
+                # spawn brings 2-3 wingmates with it at similar altitude
+                # and close x. Singletons still dominate so the sky feels
+                # alive rather than crowded.
+                if kind == T_SKY_BIRD and np.random.random() < 0.25:
+                    self._spawn_flock(kind)
+                else:
+                    self._spawn_one(kind)
 
     def _spawn_one(self, kind):
         # Direction: 50/50 left-to-right or right-to-left
@@ -408,6 +421,40 @@ class DesertCreaturesEffect(ShaderEffect):
             life = 18.0
 
         self._creatures.append(_Creature(kind, x0, y, vx, vy, life))
+
+    def _spawn_flock(self, kind):
+        """Spawn 2-3 creatures of the same kind in loose formation.
+
+        All members share entry direction and approximate altitude,
+        but each gets independent small jitter in y / speed so they
+        don't move as a rigid clone — feels like a real flock. The
+        leader spawns first at the normal entry x; followers spawn
+        slightly behind, so they trail across the sky.
+        """
+        n_followers = int(np.random.randint(2, 4))
+        # Leader determines direction + lane
+        rtl = np.random.random() < 0.5
+        sign = -1.0 if rtl else 1.0
+        x_lead = self.SPAWN_X if rtl else -self.SPAWN_X
+        y_lead = float(np.random.uniform(11.0, 17.0))
+        speed_lead = float(np.random.uniform(1.0, 2.0))
+
+        # Leader
+        self._creatures.append(_Creature(
+            kind, x_lead, y_lead, sign * speed_lead,
+            float(np.random.uniform(-0.05, 0.05)), 40.0,
+        ))
+        # Followers, lagging behind by a few feet in -sign direction
+        for _ in range(n_followers):
+            if len(self._creatures) >= MAX_CREATURES:
+                break
+            x_off = float(np.random.uniform(1.0, 3.0)) * sign  # behind leader
+            y_off = float(np.random.uniform(-0.6, 0.6))
+            speed = speed_lead * float(np.random.uniform(0.95, 1.05))
+            self._creatures.append(_Creature(
+                kind, x_lead - x_off, y_lead + y_off, sign * speed,
+                float(np.random.uniform(-0.05, 0.05)), 40.0,
+            ))
 
     # -- Update + render ----------------------------------------------------
 

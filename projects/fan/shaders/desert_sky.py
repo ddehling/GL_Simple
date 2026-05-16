@@ -249,17 +249,20 @@ def _resolve_sky(season, fog_color, spookyness):
     # keeps warmth but with cooler/desaturated red, sunset reads as
     # warm magenta rather than pure orange. This gives the warm dune
     # silhouette an opponent-hue backdrop so it stays distinct after
-    # the per-receiver brightness limiter compresses everything. See
-    # docs/shader_contrast_playbook.md "Hue separation between paired
-    # layers" for the rationale.
+    # the per-receiver brightness limiter compresses everything.
+    #
+    # Saturation pushed further in the daytime stops by pulling the
+    # weakest channel down — under the 0.1 brightness limiter, saturated
+    # chroma reads more strongly than equivalent-luminance neutrals
+    # (see docs/shader_contrast_playbook.md "Saturation over brightness").
     midnight_z = (0.005, 0.008, 0.020)
     midnight_h = (0.010, 0.012, 0.030)
-    sunrise_z  = (0.30, 0.40, 0.70)
-    sunrise_h  = (0.85, 0.55, 0.40)
-    noon_z     = (0.30, 0.65, 1.00)
-    noon_h     = (0.55, 0.80, 0.95)
-    sunset_z   = (0.30, 0.30, 0.60)
-    sunset_h   = (0.75, 0.40, 0.45)
+    sunrise_z  = (0.18, 0.30, 0.78)
+    sunrise_h  = (0.95, 0.50, 0.30)
+    noon_z     = (0.15, 0.55, 1.00)
+    noon_h     = (0.30, 0.75, 0.98)
+    sunset_z   = (0.18, 0.15, 0.65)
+    sunset_h   = (0.85, 0.30, 0.40)
 
     # Cycle bands (in season units):
     #   0.00–0.18 : deep night  (midnight plateau)
