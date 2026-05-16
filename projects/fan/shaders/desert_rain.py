@@ -65,7 +65,13 @@ void main() {{
     float streak_w = max(0.05, 0.7 * local_dx_ft);
 
     const float COL_W      = 0.55;    // ft between drops horizontally
-    const float STREAK_LEN = 1.20;    // ft, length of motion-blur streak
+    // Streak length kept short (was 1.20 ft) so even on the middle
+    // strip — which is itself vertical in physical space, and would
+    // otherwise show a 1.20-ft streak as a long radial line spanning
+    // ~22 LEDs — the visual stays a brief downward fleck rather than
+    // a "radially inward" line. Drops still aim straight down (v_streak
+    // is unchanged); only the trail length changed.
+    const float STREAK_LEN = 0.35;    // ft, length of motion-blur streak
     const float TOP_Y      = 21.5;    // ft, drops spawn above the fan
     const float BOTTOM_Y   = -2.0;    // ft, drops recycle below the fan
     const float FALL_SPEED = 14.0;    // ft/s — constant so u_time × FALL is safe
