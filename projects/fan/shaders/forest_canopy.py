@@ -139,46 +139,46 @@ void main() {
     // dissolves smoothly into open sky toward the fan's inner ring.
     float canopy_band = smoothstep(0.20, 0.55, uv.y);
 
-    // Threshold: higher density → lower threshold → more pixels render
-    // leaves. Range tuned so even max density leaves visible sky gaps.
-    //   density=0.45 (snowfall)      → thresh ~0.56 (sparse, lots of sky)
-    //   density=0.85 (forest_dawn)   → thresh ~0.30 (dense with small gaps)
-    //   density=1.00 (forest_morning) → thresh ~0.20 (~80% coverage)
-    float leaf_thresh = mix(0.85, 0.20, density);
-    float leaf_mask = smoothstep(leaf_thresh - 0.08,
-                                 leaf_thresh + 0.12,
-                                 leaf_n);
+    // SPARSE-BRIGHT RESTRUCTURE — render only the brightest noise peaks
+    // (lit leaf tips). Everything below the threshold discards entirely,
+    // contributing zero output instead of "leaf body at dim color." Under
+    // the per-receiver brightness limiter (0.1 on Fan), pixels that paint
+    // nothing free up budget so the visible tips can stay near-full
+    // brightness — sparse bright features against negative space, exactly
+    // the pattern docs/shader_contrast_playbook.md prescribes.
+    //
+    // Density now controls the bright-tip threshold: higher density →
+    // lower threshold → more visible tip pixels (but each tip is still
+    // at full saturation, never dim leaf-body color).
+    //   density=0.45 (snowfall)      → tip_lo 0.75 (very sparse tips)
+    //   density=0.85 (forest_dawn)   → tip_lo 0.65 (more tips)
+    //   density=1.00 (forest_morning) → tip_lo 0.60 (densest tips)
+    float tip_lo = mix(0.78, 0.60, density);
+    float tip_hi = tip_lo + 0.16;
+    float tip_factor = smoothstep(tip_lo, tip_hi, leaf_n);
 
-    // Only render LEAF cells. Gap cells discard so depth is not written
-    // there — that lets canopy_godrays' sky backdrop (at depth 0.95)
-    // remain visible AND allows clouds (depth 0.15-0.30) to drift in
-    // front of the sky through the leaf gaps.
-    float effective_mask = leaf_mask * canopy_band;
-    if (effective_mask < 0.05) discard;
-
-    float lit_amount = smoothstep(0.40, 0.90, leaf_n);
+    float effective = tip_factor * canopy_band;
+    if (effective < 0.04) discard;
 
     // ---------- Leaf color ----------
-    // Leaves stay GREEN across all daytime seasons so they contrast
-    // against the warm/blue sky behind them.
+    // No more "leaf body shadowed interior" color — that's just dark
+    // green that pulls the canopy toward muddy low-contrast wash. Each
+    // visible tip renders at a single SATURATED color, picked by
+    // season + day/night. The eye reconstructs canopy density from the
+    // pattern of bright tips against the dark sky behind.
     float warm_factor = 1.0 - smoothstep(0.0, 0.4, abs(u_season - 0.5));
-    vec3 day_lit_midday = vec3(0.45, 0.95, 0.30);   // vivid midday green
-    vec3 day_lit_dd     = vec3(0.70, 0.85, 0.25);   // yellow-green at dawn/dusk
-    vec3 day_high = mix(day_lit_dd, day_lit_midday, warm_factor);
-    vec3 day_dark = vec3(0.10, 0.30, 0.10);          // shadowed leaf interior
-    vec3 day_col  = mix(day_dark, day_high, lit_amount);
-
-    vec3 night_dark = vec3(0.06, 0.18, 0.12);
-    vec3 night_lit  = vec3(0.30, 0.55, 0.32);
-    vec3 night_col  = mix(night_dark, night_lit, lit_amount);
+    vec3 day_lit_midday = vec3(0.28, 1.00, 0.16);   // saturated vivid green
+    vec3 day_lit_dd     = vec3(0.85, 0.95, 0.20);   // saturated yellow-green
+    vec3 day_col  = mix(day_lit_dd, day_lit_midday, warm_factor);
+    // Night palette goes moonlit cool — silver-blue rather than dim green.
+    // This is the chromatic shift between day forest and night forest,
+    // not just a luminance drop.
+    vec3 night_col = vec3(0.25, 0.45, 0.65);
 
     vec3 leaf_col = mix(day_col, night_col, u_starryness);
 
-    // Bright/lit leaves are nearly opaque; shadowed leaves slightly
-    // translucent. effective_mask carries the soft band edge.
-    float leaf_alpha = mix(0.50, 1.0, lit_amount);
-    float max_leaf_alpha = mix(0.98, 0.85, u_starryness);
-    float total_alpha = leaf_alpha * max_leaf_alpha * effective_mask * u_fade;
+    float max_alpha = mix(0.98, 0.85, u_starryness);
+    float total_alpha = effective * max_alpha * u_fade;
     if (total_alpha < 0.02) discard;
 
     fragColor = vec4(leaf_col, total_alpha);
