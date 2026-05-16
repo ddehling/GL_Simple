@@ -306,12 +306,18 @@ void main() {{
     float a_mid  = dune_alpha(phys, h_mid);
     float a_fr   = dune_alpha(phys, h_fr);
 
-    // Day/night base color
+    // Day/night base color. The atmospheric tint contribution is
+    // small (0.15) so dunes stay in their characteristic warm-ochre
+    // hue instead of being pulled toward whatever fog_color/u_tint
+    // happens to be — that previously collapsed dune and sky into the
+    // same warm-mud family under the brightness limiter. See
+    // docs/shader_contrast_playbook.md "Common failure" note on
+    // u_tint contamination.
     float day = 1.0 - abs(u_season - 0.5) * 2.0;
     vec3 warm = vec3(0.85, 0.55, 0.32);
     vec3 cool = vec3(0.10, 0.12, 0.22);
     vec3 base = mix(cool, warm, day);
-    vec3 dune_color = mix(base, u_tint, 0.35);
+    vec3 dune_color = mix(base, u_tint, 0.15);
 
     // Atmospheric perspective per layer
     vec3 col_back = dune_color * 1.10;
