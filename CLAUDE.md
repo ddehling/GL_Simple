@@ -169,3 +169,4 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/MEDIA_SUBMODULES.md` — Per-project media (submodule) workflow + new-project setup
 - `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
 - `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)
+- `docs/shader_contrast_playbook.md` — How to design shaders that read well under Fan's fixed `brightness_limit: 0.1` (read when authoring or editing visuals — hue/spatial/saturation levers under an energy budget)
