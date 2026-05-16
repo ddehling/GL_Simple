@@ -244,8 +244,11 @@ float slope_shading(float slope) {{
     float inv_len = inversesqrt(1.0 + slope * slope);
     vec2 n = vec2(-slope * inv_len, inv_len);
     float lambert = dot(n, u_light_dir);
-    // Map to [0.35, 1.30] so even shadow faces have some color
-    return 0.35 + 0.95 * clamp(lambert * 0.5 + 0.5, 0.0, 1.0);
+    // Map to [0.20, 1.30]. Wider range than the previous [0.35, 1.30]
+    // pushes the shadow face into near-silhouette under the brightness
+    // limiter, letting the windward face read with higher contrast.
+    // See docs/shader_contrast_playbook.md "Rim light" pattern.
+    return 0.20 + 1.10 * clamp(lambert * 0.5 + 0.5, 0.0, 1.0);
 }}
 
 // Per-layer parameters. Wavelengths are NOMINAL spacings — actual dune-to-
@@ -319,10 +322,13 @@ void main() {{
     vec3 base = mix(cool, warm, day);
     vec3 dune_color = mix(base, u_tint, 0.15);
 
-    // Atmospheric perspective per layer
-    vec3 col_back = dune_color * 1.10;
-    vec3 col_mid  = dune_color * 0.90;
-    vec3 col_fr   = dune_color * 0.65;
+    // Atmospheric perspective per layer. Range widened (1.30 / 0.85 /
+    // 0.45) so distant dunes glow brighter against the sky and the
+    // foreground sits deeper in silhouette — bigger depth-luminance
+    // contrast under the brightness limiter.
+    vec3 col_back = dune_color * 1.30;
+    vec3 col_mid  = dune_color * 0.85;
+    vec3 col_fr   = dune_color * 0.45;
 
     // Slope shading (3D form)
     col_back *= slope_shading(s_back);
@@ -362,6 +368,22 @@ void main() {{
     fragColor = c;        // straight alpha, per docs
 }}
 """
+
+
+def _horizon_fade_scalar(cy_ft, lo_ft=2.0, hi_ft=7.0):
+    """Smoothstep 0..1 as a body's center rises from lo_ft to hi_ft.
+
+    Matches ``desert_sky._horizon_fade`` exactly so dune lighting fades
+    sun/moon contributions in lockstep with how desert_sky fades the
+    body discs themselves. Used by ``DesertDunesEffect._light_direction``
+    to blend sun and moon directions across dawn/dusk.
+    """
+    t = (cy_ft - lo_ft) / max(1e-3, hi_ft - lo_ft)
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return t * t * (3.0 - 2.0 * t)
 
 
 def shader_desert_dunes(state, outstate, fade_duration=4.0):
@@ -470,24 +492,40 @@ class DesertDunesEffect(ShaderEffect):
         self._ripple_phase += dt * 9.0 * abs(w)
 
     def _light_direction(self):
-        """Return a normalized 2D (lx, ly) pointing TOWARD the sun/moon,
-        used by the shader for Lambert slope shading.
+        """Return a normalized 2D (lx, ly) pointing TOWARD the visible
+        celestial body, used by the shader for Lambert slope shading.
 
-        The arc mirrors desert_sky's disc placement so dunes are lit from
-        wherever the visible body is.
+        The sun and the moon ride opposite phases of the same arc (the
+        moon is desert_sky's _resolve_moon: half-day phase-shifted).
+        Each contributes weighted by its horizon-fade visibility, then
+        the directions are summed and normalized. As one body sinks
+        below the horizon its weight goes to 0 and the other takes
+        over smoothly — fixes the one-frame shadow flip that happened
+        at sunrise/sunset when only the sun's geometry was consulted
+        regardless of which body was actually overhead.
         """
-        s = self.season
-        if 0.25 <= s <= 0.75:
-            t = (s - 0.25) / 0.5            # 0 sunrise → 1 sunset
-        elif s >= 0.75:
-            t = (s - 0.75) / 0.5             # 0 dusk → 0.5 midnight
-        else:
-            t = (s + 0.25) / 0.5             # 0.5 midnight → 1 dawn
-        arc = math.sin(math.pi * t)          # 0..1..0
-        # Sun position in feet (matches desert_sky._resolve_disc geometry)
-        lx = -16.0 + 32.0 * t
-        ly = 6.0 + 12.0 * arc
-        # Vector from a reference dune (origin in physical space) to light
+        # Sun arc — visible across the daytime half of the cycle.
+        sun_t = (self.season - 0.25) / 0.5
+        sun_arc = math.sin(math.pi * sun_t)
+        sun_lx = -16.0 + 32.0 * sun_t
+        sun_ly = 6.0 + 12.0 * sun_arc
+        sun_vis = _horizon_fade_scalar(sun_ly)
+
+        # Moon arc — same shape, half a day out of phase.
+        moon_s = (self.season + 0.5) % 1.0
+        moon_t = (moon_s - 0.25) / 0.5
+        moon_arc = math.sin(math.pi * moon_t)
+        moon_lx = -16.0 + 32.0 * moon_t
+        moon_ly = 6.0 + 12.0 * moon_arc
+        moon_vis = _horizon_fade_scalar(moon_ly)
+
+        total_vis = sun_vis + moon_vis
+        if total_vis < 1e-3:
+            # Both bodies below horizon — direction doesn't matter (the
+            # whole scene is near-black anyway); fall back to straight up.
+            return (0.0, 1.0)
+        lx = (sun_lx * sun_vis + moon_lx * moon_vis) / total_vis
+        ly = (sun_ly * sun_vis + moon_ly * moon_vis) / total_vis
         n = math.hypot(lx, ly)
         if n < 1e-3:
             return (0.0, 1.0)
