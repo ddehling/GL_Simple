@@ -16,6 +16,7 @@ EVENT_MAP = {
     "desert_dunes": (fx.shader_desert_dunes, {}),
     "desert_sky": (fx.shader_desert_sky, {}),
     "desert_mountains": (fx.shader_desert_mountains, {}),
+    "desert_clouds": (fx.shader_desert_clouds, {"density": 0.6}),
     "desert_creatures": (fx.shader_desert_creatures, {}),
     "desert_rain": (fx.shader_desert_rain, {}),
     # Storm-driven scene rotation for desert backgrounds. Publishes

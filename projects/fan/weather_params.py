@@ -1719,7 +1719,7 @@ WEATHER_SETS = {
 
     "desert_realm": {
         "allowed_parameters": ["wind_speed", "sand_density", "volcano_level", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "lightning_probability", "rain_rate", "spookyness", "Wolfy", "meteor_rate", "Sound_volume", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration", "season_preference"],
-        "background_events": ["background_director", "desert_sky", "desert_mountains", "desert_dunes", "desert_creatures", "sandstorm", "stars", "clouds", "fog", "firefly", "desert_rain"],
+        "background_events": ["background_director", "desert_sky", "desert_mountains", "desert_clouds", "desert_dunes", "desert_creatures", "sandstorm", "stars", "fog", "firefly", "desert_rain"],
         "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "description": "Harsh desert with sandstorms and a full day/night cycle of dust, heat, and starlight",
         "name": "Desert Realm",
