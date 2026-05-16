@@ -97,8 +97,18 @@ void main() {{
         float jitter_x = (hash11(ci * 7.13)  - 0.5) * COL_W * 0.6;
         float phase    =  hash11(ci * 11.3 + 5.7);
 
-        // Drop's cycle position
-        float t = fract(u_time * FALL_SPEED / fall_dist + phase);
+        // Per-column fall-speed multiplier (0.7..1.3). Deterministic via
+        // a column hash so a given column always falls at its own
+        // characteristic rate — variety between columns rather than
+        // every drop drifting at the same uniform speed. Streak length
+        // scales with the multiplier so faster drops have longer
+        // motion-blur trails (and vice versa).
+        float speed_mult = 0.7 + 0.6 * hash11(ci * 19.31 + 3.7);
+        float streak_len = STREAK_LEN * speed_mult;
+
+        // Drop's cycle position. Multiplying inside the fract() is safe
+        // because speed_mult is constant per column.
+        float t = fract(u_time * FALL_SPEED * speed_mult / fall_dist + phase);
         float drop_y = TOP_Y - t * fall_dist;
         float drop_x = (ci + 0.5) * COL_W + jitter_x
                      + u_wind_tilt * (TOP_Y - drop_y);
@@ -107,8 +117,8 @@ void main() {{
         float along  = dot(d, v_streak);
         float across = dot(d, perp);
 
-        if (along >= 0.0 && along <= STREAK_LEN && abs(across) < streak_w) {{
-            float a = (1.0 - along / STREAK_LEN)
+        if (along >= 0.0 && along <= streak_len && abs(across) < streak_w) {{
+            float a = (1.0 - along / streak_len)
                     * smoothstep(streak_w, streak_w * 0.3, abs(across));
             rain = max(rain, a);
         }}
