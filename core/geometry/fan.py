@@ -4,7 +4,13 @@ project-level GeometryProvider interface.
 The Fan piece's preview is a direct PNG of the single group canvas plus
 a polar overlay rendered client-side from FanGeometry's serialized
 geometry. So ``make_composite_frame`` is a passthrough and ``to_json``
-delegates to FanGeometry plus a ``type: fan`` discriminator.
+delegates to FanGeometry. The emitted ``type`` is ``multi_object`` so
+the browser doesn't branch on project-level geometry kind; the
+fan-specific render payload (``fan_mesh`` / ``fan_dots`` / ``flat_dots``)
+lives alongside it and the JS picks it up by field presence. The
+storage-convention difference (Fan: strips-as-columns of a 128×300
+canvas; MultiObject: strips-as-rows) is real but is an internal
+provider concern, not a user-facing distinction.
 
 Construction parameters (all optional; defaults reproduce the existing
 runtime values):
@@ -41,7 +47,10 @@ class FanGeometryProvider(GeometryProvider):
     def to_json(self) -> dict:
         if self._json_cache is None:
             data = self._fan.to_json()
-            data["type"] = "fan"
+            # Uniform external type — the browser distinguishes fan-mode
+            # rendering by the presence of ``fan_mesh`` / ``fan_dots`` /
+            # ``flat_dots``, not by a project-level ``type`` field.
+            data["type"] = "multi_object"
             self._json_cache = data
         return self._json_cache
 

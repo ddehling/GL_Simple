@@ -3,9 +3,11 @@
 Two responsibilities:
 
 1. ``to_json()`` — serializable geometry data for the WebGL preview client.
-   The dict must include a top-level ``"type"`` key so the JS branches on
-   the right rendering path. Existing types: ``"fan"`` (semicircular mesh),
-   future: ``"multi_object"`` (free-standing objects laid out in 2-D).
+   The dict carries a top-level ``"type"`` field, always ``"multi_object"``;
+   the JS distinguishes render paths by which optional fields are present
+   (e.g. ``fan_mesh`` / ``fan_dots`` / ``flat_dots`` enable the fan
+   semicircle and per-LED dot modes). FanGeometryProvider populates those
+   alongside its multi_object type tag.
 
 2. ``make_composite_frame(frames)`` — produce the single RGB image that
    gets PNG-encoded and streamed to ``/preview``. For Fan this is just

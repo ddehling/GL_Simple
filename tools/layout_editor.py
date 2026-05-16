@@ -65,7 +65,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QHeaderView, QStyledItemDelegate, QStatusBar, QFrame, QPlainTextEdit,
     QMenu, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QSpinBox,
-    QLineEdit, QRadioButton, QButtonGroup,
+    QLineEdit,
 )
 
 from core.project import list_projects
@@ -1043,25 +1043,9 @@ class _NewProjectDialog(QDialog):
         self._name_edit.setPlaceholderText("e.g. Glimmering Shell")
         layout.addRow("Display name", self._name_edit)
 
-        # Geometry type — radio so the choice is obvious. Multi-object
-        # surfaces extra canvas-size fields below; fan-style hides them.
-        self._geom_group = QButtonGroup(self)
-        self._geom_fan = QRadioButton("Fan-style (single rectangular canvas)")
-        self._geom_multi = QRadioButton("Multi-object (per-object positions)")
-        self._geom_multi.setChecked(True)   # most new projects today
-        self._geom_group.addButton(self._geom_fan, 0)
-        self._geom_group.addButton(self._geom_multi, 1)
-        self._geom_group.idToggled.connect(self._on_geom_changed)
-        geom_box = QVBoxLayout()
-        geom_box.addWidget(self._geom_fan)
-        geom_box.addWidget(self._geom_multi)
-        geom_box_widget = QWidget()
-        geom_box_widget.setLayout(geom_box)
-        layout.addRow("Geometry", geom_box_widget)
-
-        # Canvas size — only relevant for multi_object. Pre-filled to
-        # the dimensions WoL uses; operator changes if their physical
-        # setup differs.
+        # Canvas size. New projects are always multi_object — the only
+        # other geometry today (``fan``) is tied to one specific physical
+        # piece, so there's no meaningful choice to surface.
         self._canvas_w = QSpinBox()
         self._canvas_w.setRange(1, 16384)
         self._canvas_w.setValue(1280)
@@ -1076,10 +1060,6 @@ class _NewProjectDialog(QDialog):
         size_widget = QWidget()
         size_widget.setLayout(size_row)
         layout.addRow("Canvas size (px)", size_widget)
-        self._size_row_label = layout.labelForField(size_widget)
-        self._size_widget = size_widget
-        # Visible initially because multi_object is the default; gets
-        # toggled by _on_geom_changed.
 
         # OK / Cancel.
         self._buttons = QDialogButtonBox(
@@ -1120,14 +1100,6 @@ class _NewProjectDialog(QDialog):
             self._buttons.button(
                 QDialogButtonBox.StandardButton.Ok).setEnabled(False)
 
-    def _on_geom_changed(self, _id: int, _checked: bool) -> None:
-        # Hide canvas-size fields when fan-style — Fan derives canvas
-        # dims from groups, not from a canvas declaration.
-        is_multi = self._geom_multi.isChecked()
-        self._size_widget.setVisible(is_multi)
-        if self._size_row_label is not None:
-            self._size_row_label.setVisible(is_multi)
-
     def result_spec(self) -> dict:
         """Return the validated form values as a dict. Caller passes
         this to ``scaffold_new_project``."""
@@ -1138,9 +1110,7 @@ class _NewProjectDialog(QDialog):
             # Display name falls back to a Title-Case version of the
             # slug if the operator left it empty.
             "display_name": name or pid.replace("_", " ").title(),
-            "geometry_type": (
-                "multi_object" if self._geom_multi.isChecked() else "fan"
-            ),
+            "geometry_type": "multi_object",
             "canvas_w": int(self._canvas_w.value()),
             "canvas_h": int(self._canvas_h.value()),
         }

@@ -255,11 +255,12 @@ void main() {
         // geometry. Used for any project that supplies a composite frame.
         buildFlatQuad();
 
-        // Fan-only modes (fan-smooth, fan-led, flat-led) need extra geometry
-        // arrays from FanGeometry. type !== "fan" projects (e.g. multi_object)
-        // don't carry these fields; skip the builds and the corresponding
-        // mode buttons won't have shaders to bind to.
-        if (geo.type === "fan" || (geo.fan_mesh && geo.flat_dots && geo.fan_dots)) {
+        // Fan-style render modes (fan-smooth, fan-led, flat-led) need
+        // extra geometry arrays from FanGeometry. We key off field
+        // presence rather than a project-level discriminator: any
+        // project whose payload carries fan_mesh + dots arrays gets
+        // these modes wired up; the others stay flat-smooth-only.
+        if (geo.fan_mesh && geo.flat_dots && geo.fan_dots) {
             buildFanMesh(geo);
             buildDots(geo, "flat-led", geo.flat_dots.instances, geo.flat_dots.dot_radius);
             buildDots(geo, "fan-led", geo.fan_dots.instances, geo.fan_dots.dot_radius);
