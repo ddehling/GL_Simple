@@ -191,11 +191,26 @@ void main() {
     // sourced from the same high-freq noise that defines the leaves.
     float leaf_strength = clamp((leaf_n - tip_lo) / max(0.001, 1.0 - tip_lo),
                                 0.0, 1.0);
-    // Floor at 0.35 (was 0.20) so dim leaves still read as recognizable
-    // leaves rather than fading toward invisible. Range 0.35..1.00 still
-    // gives ~3x brightest-to-dimmest spread — clear intensity contrast
-    // per leaf without the bottom of the range disappearing.
-    float intensity = 0.35 + 0.65 * leaf_strength;
+    // Per-leaf intensity floor at 0.35: dim leaves still recognizable.
+    float leaf_intensity = 0.35 + 0.65 * leaf_strength;
+
+    // ---------- Per-region exposure ----------
+    // SPATIAL intensity contrast — adjacent canopy patches at different
+    // brightness levels, like sunlit clearings vs deeper shade. Driven
+    // by a mid-frequency exposure noise (slower than the leaf grain so
+    // many leaves share a brightness band, but fast enough that
+    // multiple bands are visible across the canopy). Slowly drifts so
+    // the bright/dim regions migrate gently. Range 0.25..1.00 → 4x
+    // regional brightness spread; multiplied with per-leaf intensity
+    // gives roughly 11x total brightest-to-dimmest spread (bright leaf
+    // in sunny region vs dim leaf in shadow region). Without this layer
+    // every region of the canopy reads at uniform overall brightness,
+    // which is what made forest_midday feel flat even with dappled
+    // shadows on top.
+    vec2 expose_p = vec2(uv.x * 3.0 + u_time * 0.02, uv.y * 5.0);
+    float region_brightness = 0.25 + 0.75 * fbm(expose_p);
+
+    float intensity = leaf_intensity * region_brightness;
 
     // ---------- Leaf color (naturalistic) ----------
     // Naturalistic forest palette — earlier "neon lime" and "silver-blue
