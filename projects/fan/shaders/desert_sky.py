@@ -500,7 +500,14 @@ class DesertSunMoonEffect(_DesertSkyBase):
     def render(self, state: Dict):
         if not self.enabled or self.fade < 0.01:
             return
-        intensity = self.celestial_visibility * self.fade
+        # Storm obscuration dims the disc in lockstep with how it fades
+        # the background silhouettes (mountains). Without this, the sun
+        # stays bright while mountains drop to partial alpha during a
+        # storm ramp, and the sun shows through the half-transparent
+        # silhouette. With it, both fade together — at obscuration=1
+        # there's nothing to see through, and at obscuration=0 mountains
+        # are solid silhouettes so it doesn't matter.
+        intensity = self.celestial_visibility * self.fade * (1.0 - self.obscuration)
         if intensity < 0.01:
             return
 
