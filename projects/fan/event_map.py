@@ -75,16 +75,8 @@ EVENT_MAP = {
     "spore_drift": (fx.shader_spore_drift, {}),
     "stream_flow": (fx.shader_stream_flow, {}),
     "forest_eyes": (fx.shader_forest_eyes, {}),
-    "narrative_player": (fx.shader_narrative_player, {
-        # No script_path here: the active weather set declares its
-        # own narrative via its `narrative_script` field, which is
-        # published to outstate['narrative_script'] and read by
-        # the event wrapper. Sets without a script leave the
-        # effect silent.
-        "node_delay": 3.0,
-        "restart_delay": 10.0,
-    }),
-    # Random ambient audio pool. Directory is driven per-set by
-    # the active set's `sound_pool_dir` via outstate.
-    "sound_pool": (fx.shader_sound_pool, {}),
+    # ``narrative_player`` and ``sound_pool`` used to be declared here
+    # but are now auto-inherited from ``core.default_events.DEFAULT_EVENT_MAP``.
+    # Redeclare a key here if Fan ever needs different params for one
+    # of them — project entries override the defaults.
 }

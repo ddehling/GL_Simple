@@ -76,8 +76,18 @@ class Project:
         return self.root / "shaders"
 
     def load_event_map(self) -> dict:
+        """Return the active event map = default universal events
+        merged with this project's own ``EVENT_MAP``.
+
+        Project entries override defaults if they redeclare a key.
+        Defaults live in ``core.default_events.DEFAULT_EVENT_MAP``
+        and currently cover ``narrative_player`` and ``sound_pool`` —
+        universal features that every project gets without having to
+        re-register them.
+        """
+        from core.default_events import DEFAULT_EVENT_MAP
         mod = importlib.import_module(self.event_map_module)
-        return mod.EVENT_MAP
+        return {**DEFAULT_EVENT_MAP, **mod.EVENT_MAP}
 
     def load_weather_module(self):
         return importlib.import_module(self.weather_sets_module)
