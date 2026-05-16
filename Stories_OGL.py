@@ -330,9 +330,16 @@ class EnvironmentalSystem:
         # non-fatal — the show keeps running.
         self.osc_listener = None
         if osc_cfg.get("enabled", True):
+            # ``log_unrouted`` toggles the catch-all console log for
+            # any OSC message no project hook has claimed. Off by
+            # default so radar firmware bursts don't flood the
+            # console when a non-WoL project is active; opt back in
+            # via ``osc.log_unrouted: true`` in config.yaml when
+            # diagnosing message-shape problems.
             self.osc_listener = OscListener(
                 port=int(osc_cfg.get("port", 9001)),
-                bind_ip=osc_cfg.get("bind_ip", "0.0.0.0"))
+                bind_ip=osc_cfg.get("bind_ip", "0.0.0.0"),
+                log_unrouted=bool(osc_cfg.get("log_unrouted", False)))
             self.osc_listener.start()
 
         # Project ``button_router`` hook: project.yaml may declare

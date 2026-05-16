@@ -1,17 +1,25 @@
-"""Weight of Light — LD2412 radar router and per-frame derivation.
+"""Weight of Light — radar router and per-frame derivation.
 
-Each WoL box has an LD2412 24 GHz mmWave radar wired to its Q1+Q2 UART.
-The firmware emits an OSC bundle every ~200 ms containing the sensor's
-current detection state, distances, energies, and per-gate energy
-arrays.  This module receives those messages, maintains per-object
-state, and computes derived signals (smoothed distance, approach
-speed, presence weight, baseline-subtracted gate energies) so effect
-authors can read clean values without re-implementing the filtering.
+Each WoL box has a 24 GHz mmWave radar (LD2412 *or* LD2450) wired to its
+Q1+Q2 UART. The firmware emits an OSC bundle every ~200 ms containing the
+sensor's current state, distances, and either gate-energy arrays
+(LD2412) or per-target X/Y/speed/resolution tuples (LD2450). This
+module receives those messages, maintains per-object state, and computes
+derived signals (smoothed distance, approach speed, presence weight,
+baseline-subtracted gate energies) so effect authors can read clean
+values without re-implementing the filtering.
 
-OSC addresses consumed (already routed by `button_router._dispatch`
-when ``kind == "radar"``):
+The bundle includes a ``/model`` string ("ld2412" or "ld2450") so a
+single receiver can branch on it instead of pattern-matching the
+sub-address set. The shared ``BASE/d`` (closest distance in cm) means
+the basic "how close?" signal works against either model with no code
+changes.
 
-    /wol/<host>/radar           <int state 0..3>
+LD2412 OSC addresses consumed (already routed by
+``button_router._dispatch`` when ``kind == "radar"``):
+
+    /wol/<host>/radar           <int state 0..3 (none/mov/stat/both)>
+    /wol/<host>/radar/model     <str "ld2412">
     /wol/<host>/radar/m         <int moving distance cm>
     /wol/<host>/radar/s         <int stationary distance cm>
     /wol/<host>/radar/d         <int closest detected distance cm>
@@ -20,8 +28,19 @@ when ``kind == "radar"``):
     /wol/<host>/radar/gm        <14 ints, moving gate energies, gates 0..13>
     /wol/<host>/radar/gs        <14 ints, stationary gate energies, gates 0..13>
 
-Each gate spans 0.75 m of range, so gate 0 is 0–0.75 m and gate 13 is
-9.75–10.5 m.
+LD2450 OSC addresses:
+
+    /wol/<host>/radar           <int target_count 0..3>
+    /wol/<host>/radar/model     <str "ld2450">
+    /wol/<host>/radar/d         <int closest active target's Y distance, cm>
+    /wol/<host>/radar/t0        <4 ints: x_mm, y_mm, speed_cm_s, res_mm>
+    /wol/<host>/radar/t1        <same shape>
+    /wol/<host>/radar/t2        <same shape; zeros when slot is inactive>
+
+Each LD2412 gate spans 0.75 m of range, so gate 0 is 0–0.75 m and gate
+13 is 9.75–10.5 m. LD2450 reports inactive target slots as all-zero
+4-tuples; ``target_count`` is the number of slots that are actually
+producing data this frame.
 
 State exposed under ``env_system.scheduler.state['radar'][object_id]``.
 The structure is documented on `_make_record()` below; effect code
@@ -98,15 +117,32 @@ def _make_record() -> dict:
     and may change. Numeric defaults are zeros so a freshly-seen
     object reads cleanly even before its first packet."""
     return {
+        # ---- Model tag — "ld2412" or "ld2450". Defaults to "ld2412" so
+        # records from old firmware (no /model message) still drive the
+        # LD2412 derivation path. Updated by the first /model packet.
+        'model':         'ld2412',
+
         # ---- Raw, written by handle_osc when the corresponding message arrives.
-        'state':         0,                 # 0=none 1=moving 2=stationary 3=both
+        # 'state' carries different semantics per model: LD2412 = detection
+        # bitfield (0=none 1=moving 2=stationary 3=both); LD2450 = active
+        # target count 0..3. Read via the model-aware helpers below if
+        # you need a single "anyone present?" boolean.
+        'state':         0,                 # see comment above
+        'target_count':  0,                 # LD2450 only; LD2412 stays 0
         'moving_cm':     0,
         'static_cm':     0,
-        'detect_cm':     0,
-        'moving_e':      0,                 # 0..100 overall energies
+        'detect_cm':     0,                 # closest target distance, cm
+                                            # (works for both models)
+        'moving_e':      0,                 # LD2412: 0..100 overall energies
         'static_e':      0,
-        'gm':            [0] * N_GATES,     # raw gate arrays (latest packet)
+        'gm':            [0] * N_GATES,     # LD2412 raw gate arrays
         'gs':            [0] * N_GATES,
+        # LD2450 per-target snapshots; each is {x_mm, y_mm, speed_cm_s,
+        # res_mm, active}. Inactive slots have all-zero numerics and
+        # active=False. Index matches t0/t1/t2.
+        'targets':       [
+            {'x_mm': 0, 'y_mm': 0, 'speed_cm_s': 0, 'res_mm': 0,
+             'active': False} for _ in range(3)],
         'last_packet_t': 0.0,               # time.time() of last update
 
         # ---- Derived, refreshed each frame by tick().
@@ -178,13 +214,31 @@ def handle_osc(env_system, object_id: int,
     rec['last_packet_t'] = time.time()
 
     if not sub_parts:
-        # /wol/<host>/radar — bare = detection state int
+        # /wol/<host>/radar — bare int. LD2412: detection state 0..3.
+        # LD2450: number of active targets 0..3. Same field stores both
+        # since the int range matches; consumers branch on rec['model'].
+        # We also mirror into 'target_count' when the current record
+        # already knows it's an LD2450 (the /model message in the same
+        # bundle may arrive either side of the bare int).
         if args:
-            rec['state'] = _safe_int(args[0])
+            n = _safe_int(args[0])
+            rec['state'] = n
+            if rec.get('model') == 'ld2450':
+                rec['target_count'] = n
         return
 
     key = sub_parts[0]
-    if key == 'm':
+    if key == 'model':
+        # Update model and retroactively reinterpret 'state' as
+        # 'target_count' when the /model packet arrived after the bare
+        # BASE int within the same bundle.
+        if args:
+            m = str(args[0]).strip().lower()
+            if m in ('ld2412', 'ld2450'):
+                rec['model'] = m
+                if m == 'ld2450':
+                    rec['target_count'] = rec['state']
+    elif key == 'm':
         if args: rec['moving_cm'] = _safe_int(args[0])
     elif key == 's':
         if args: rec['static_cm'] = _safe_int(args[0])
@@ -198,6 +252,17 @@ def handle_osc(env_system, object_id: int,
         rec['gm'] = _ints_padded(args, N_GATES)
     elif key == 'gs':
         rec['gs'] = _ints_padded(args, N_GATES)
+    elif key in ('t0', 't1', 't2'):
+        # LD2450 per-target tuple: [x_mm, y_mm, speed_cm_s, res_mm].
+        idx = int(key[1])
+        vals = _ints_padded(args, 4)
+        rec['targets'][idx] = {
+            'x_mm':       vals[0],
+            'y_mm':       vals[1],
+            'speed_cm_s': vals[2],
+            'res_mm':     vals[3],
+            'active':     any(v != 0 for v in vals),
+        }
     # Anything else (e.g. legacy per-gate /gm/<n> from older firmware
     # builds) is silently ignored — the bundle form covers everything
     # the current firmware emits.
@@ -252,11 +317,19 @@ def _update_one(rec: dict, now: float) -> None:
     rec['approach_speed'] = max(0.0, delta / dt) if dt > 0 else 0.0
 
     # ---- Presence weight ---------------------------------------------------
-    # Target value: 1 if a stationary or both-target is present at near
-    # range, falling linearly to 0 at far range; 0 if no target. EMA on
-    # this gives a "soft on" / "soft off" curve that won't flicker on
-    # marginal detection.
-    if rec['state'] in (2, 3):
+    # Target value: 1 if someone is present at near range, falling linearly
+    # to 0 at far range; 0 if no target. EMA on this gives a "soft on" /
+    # "soft off" curve that won't flicker on marginal detection.
+    #
+    # Model-aware "is anyone there?":
+    #   LD2412 — state in (2, 3): a stationary or "both" target is present.
+    #            (1 = moving only is treated as transient and ignored here.)
+    #   LD2450 — target_count > 0: at least one active target slot.
+    if rec['model'] == 'ld2450':
+        present = rec['target_count'] > 0
+    else:
+        present = rec['state'] in (2, 3)
+    if present:
         d = rec['detect_smooth']
         if d <= PRESENCE_NEAR_CM:
             target = 1.0

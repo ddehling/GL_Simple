@@ -1,15 +1,33 @@
+"""Project-agnostic schema for the weather machinery.
+
+Each project's weather data (``WeatherState`` enum, ``WEATHER_PRESETS``,
+``WEATHER_SETS``, ``DEFAULT_WEATHER_SET``) lives in that project's
+own ``projects/<id>/weather_params.py``. Lib owns only what's shared
+across every project: parameter type definitions, the param defaults,
+the ``GLOBAL_PARAMETERS`` list, and a fallback list of background
+event names for the web editor.
+
+A minimal ``WeatherState`` (just ``CLEAR``) is kept here as a safety
+fallback for code paths constructed without an active project (tests,
+early boot). At runtime ``EnvironmentalSystem._refresh_weather_module``
+pulls the active project's enum and never falls back to this one — so
+adding new states here doesn't reach the engine.
+
+See ``projects/<id>/weather_params.py`` for the runtime data.
+"""
 import numpy as np
 from enum import Enum
 
-class WeatherState(Enum):
-    CLEAR = "clear"
-    WOL_CLEAR = "wol_clear"
-    WOL_RAIN = "wol_rain"
-    WOL_STARS = "wol_stars"
-    WOL_RAINBOW = "wol_rainbow"
 
-# Global parameters that are always available in every weather set
-# These cannot be removed from sets but their values can be customized per weather state
+class WeatherState(Enum):
+    """Minimal default enum. Each project supplies its own
+    ``WeatherState`` containing the states it actually uses; the
+    engine prefers the project's enum at runtime."""
+    CLEAR = "clear"
+
+
+# Global parameters that are always available in every weather set —
+# every project's editor exposes these as un-removable knobs.
 GLOBAL_PARAMETERS = [
     "possible_transitions",
     "transition_weights",
@@ -23,9 +41,12 @@ GLOBAL_PARAMETERS = [
     "on_transition_events",
 ]
 
-# Available background events (always-active effects)
-# This is the single source of truth for which events can be used as continuous background effects.
-# Add new background-capable events here. They must also exist in Stories_OGL.py's event_map.
+# Fallback list of background-event names shown in the web editor's
+# "add background event" dropdown when the active project hasn't
+# pushed its own list via ``WebController.set_available_events``.
+# In normal operation ``EnvironmentalSystem.__init__`` pushes the
+# active project's event_map keys before the UI is reachable, so
+# this list is effectively a safety net.
 AVAILABLE_BACKGROUND_EVENTS = [
     'clouds',
     'firefly',
@@ -37,8 +58,10 @@ AVAILABLE_BACKGROUND_EVENTS = [
     'falling_leaves',
 ]
 
-# Parameter definitions for the weather editor
-# Defines the type and input configuration for each parameter
+# Parameter definitions for the weather editor — type metadata that's
+# shared across every project. Adding a new param here makes it
+# editable in any project's web UI; the project's preset dicts pick
+# whether to actually use it.
 PARAMETER_DEFINITIONS = {
     'ARI': {'type': 'number', 'step': 1},
     'Aurora_probability': {'type': 'number', 'step': 0.1},
@@ -99,7 +122,9 @@ PARAMETER_DEFINITIONS = {
     'wind_speed': {'type': 'number', 'step': 0.1},
 }
 
-# Default weather parameters
+# Default values for any param a project's preset doesn't override.
+# Project-agnostic — every project's WeatherStateController uses
+# these as the floor for ``get_weather_params``.
 DEFAULT_WEATHER_PARAMS = {
     "wind_speed": 0,
     "rain_rate": 0,
@@ -128,158 +153,33 @@ DEFAULT_WEATHER_PARAMS = {
     "ARI": 0.0,
 }
 
-# Weather presets
-# Weather state parameters
-WEATHER_PRESETS = {
-    WeatherState.CLEAR: {
-        "ARI": 40,
-        "Aurora_probability": 0.5,
-        "Switch_rate": 0.9,
-        "Weird": 1,
-        "ambient_sound": None,
-        "canopy_density": 0.8,
-        "meteor_rate": 0.25,
-        "possible_transitions": ["light_rain", "foggy", "windy_night", "firefly", "mushroom", "leaves", "bloom", "forest_morning", "desert_blazing_noon", "desert_dusk_embers", "desert_starlit_night", "desert_dust_devil", "desert_meteor_shower"],
-        "season_preference": 0.375,
-        "transition_weights": [1, 1, 0.75, 0.5, 0.2, 0.75, 0.75, 0.8, 1, 0.6, 0.5, 0.4, 0.2],
-        "tree_prob": 1,
-        "wind_speed": 0.2,
-    },
-
-    WeatherState.WOL_CLEAR: {
-        "Switch_rate": 1,
-        "celestial_visibility": 0,
-        "fog": 0.05,
-        "possible_transitions": ["wol_rain", "wol_stars", "wol_rainbow"],
-        "rain_rate": 0,
-        "rainbow_intensity": 0,
-        "starryness": 0,
-        "transition_duration": 12,
-        "transition_weights": [1, 1, 0.4],
-    },
-
-    WeatherState.WOL_RAIN: {
-        "Switch_rate": 1,
-        "celestial_visibility": 0.4,
-        "fog": 0.2,
-        "lightning_probability": 0.1,
-        "possible_transitions": ["wol_clear", "wol_stars", "wol_rainbow"],
-        "rain_rate": 1,
-        "rainbow_intensity": 0,
-        "starryness": 0,
-        "transition_duration": 12,
-        "transition_weights": [2, 0.4, 0.3],
-    },
-
-    WeatherState.WOL_RAINBOW: {
-        "Switch_rate": 1,
-        "celestial_visibility": 0.2,
-        "fog": 0,
-        "possible_transitions": ["wol_clear"],
-        "rain_rate": 0,
-        "rainbow_intensity": 1,
-        "starryness": 0,
-        "transition_duration": 18,
-        "transition_weights": [1],
-    },
-
-    WeatherState.WOL_STARS: {
-        "Switch_rate": 1,
-        "celestial_visibility": 1,
-        "fog": 0,
-        "possible_transitions": ["wol_clear", "wol_rain"],
-        "rain_rate": 0,
-        "rainbow_intensity": 0,
-        "season_preference": 0,
-        "starryness": 1,
-        "transition_duration": 12,
-        "transition_weights": [2, 0.4],
-    },
-
-}
-
-# Weather Sets - Mutually exclusive collections of weather states
-WEATHER_SETS = {
-    "wol_gentle": {
-        "allowed_parameters": [],
-        "background_events": ["wol_fog_trunk", "wol_spots_leaves", "wol_voronoi_ambient"],
-        "description": "Softer, slower-evolving patterns; quieter overall mood.",
-        "name": "Weight of Light — Gentle",
-        "random_event_rate": 0,
-        "random_events": [],
-        "season_extremity": 0,
-        "season_speed": 0,
-        "states": ["clear"],
-        "transition_speed": 1,
-    },
-
-    "wol_geometric": {
-        "allowed_parameters": [],
-        "background_events": ["wol_isovalues_trunk", "wol_tentacle_leaves", "wol_isovalues_ambient"],
-        "description": "Crystalline, angular patterns with sharper boundaries.",
-        "name": "Weight of Light — Geometric",
-        "random_event_rate": 0,
-        "random_events": [],
-        "season_extremity": 0,
-        "season_speed": 0,
-        "states": ["clear"],
-        "transition_speed": 1,
-    },
-
-    "wol_natural": {
-        "allowed_parameters": ["Switch_rate", "transition_duration", "rain_rate", "starryness", "rainbow_intensity", "celestial_visibility", "fog"],
-        "background_events": ["wol_sky_daynight", "wol_stars", "wol_rain", "wol_ground_twinkle", "wol_rainbow"],
-        "description": "Permanent day/night sky + ground twinkle, with rain / stars / rainbow weather overlays.",
-        "name": "Weight of Light — Natural",
-        "random_event_rate": 0,
-        "random_events": [],
-        "season_extremity": 0,
-        "season_speed": 1,
-        "states": ["wol_clear", "wol_rain", "wol_stars", "wol_rainbow"],
-        "transition_speed": 1,
-    },
-
-    "wol_pattern": {
-        "allowed_parameters": [],
-        "background_events": ["wol_voronoi_trunk", "wol_wave_leaves", "wol_tunnel_ambient"],
-        "description": "3D abstract patterns; each canvas shows a different cross-section of the underlying field.",
-        "name": "Weight of Light — Pattern",
-        "random_event_rate": 0,
-        "random_events": [],
-        "season_extremity": 0,
-        "season_speed": 0,
-        "states": ["clear"],
-        "transition_speed": 1,
-    },
-
-    "wol_test": {
-        "allowed_parameters": [],
-        "background_events": ["wol_test_bouncing_ball"],
-        "description": "Test set: bouncing blue ball in physical space, leaves group only. Other groups dark.",
-        "name": "Weight of Light — Test",
-        "random_event_rate": 0,
-        "random_events": [],
-        "season_extremity": 0,
-        "season_speed": 0,
-        "states": ["clear"],
-        "transition_speed": 1,
-    },
-
-}
-
-DEFAULT_WEATHER_SET = "wol_gentle"
-
+# Empty defaults — projects own their content. Used only as fallbacks
+# when a project module doesn't provide its own (rare; ``_refresh_
+# weather_module`` warns at boot if this happens). ``WEATHER_PRESETS``
+# has an empty CLEAR entry so the controller's lookup
+# ``weather_presets[weather_state]`` doesn't KeyError on the default
+# fallback state.
+WEATHER_PRESETS = {WeatherState.CLEAR: {}}
+WEATHER_SETS = {}
+DEFAULT_WEATHER_SET = None
 
 
 def _validate_parameter_definitions():
-    """Sanity-check that every parameter referenced by a weather set or
-    preset has a PARAMETER_DEFINITIONS entry.
+    """Sanity-check that every parameter referenced by a weather set
+    or preset has a ``PARAMETER_DEFINITIONS`` entry.
 
-    Missing entries cause the web weather editor to silently skip the
-    parameter (see the `if (!paramDef) continue;` in weather_editor.html),
-    so even though the parameter still affects rendering, the user can't
-    see or change its value. Surfacing the problem at import time turns a
-    "why can't I edit this" mystery into an obvious warning.
+    Missing entries cause the web weather editor to silently skip
+    the parameter (see the ``if (!paramDef) continue;`` in
+    ``weather_editor.html``), so the parameter still affects
+    rendering but the user can't see or change its value. Surfacing
+    the problem at import time turns a "why can't I edit this"
+    mystery into an obvious warning.
+
+    With lib now holding no project data, this validates only
+    against the empty default — projects can call this on their
+    own data if they want the same check. ``EnvironmentalSystem``
+    doesn't auto-invoke it on project modules; it runs only at
+    lib import time.
     """
     import sys
 

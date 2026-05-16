@@ -620,7 +620,6 @@ class WebController:
                     WEATHER_PRESETS as _LIB_PRESETS,
                     WEATHER_SETS as _LIB_SETS,
                     GLOBAL_PARAMETERS, PARAMETER_DEFINITIONS,
-                    AVAILABLE_BACKGROUND_EVENTS,
                 )
                 WeatherState = getattr(self, "_project_weather_state_enum",
                                        None) or _LIB_STATE_ENUM
@@ -744,11 +743,18 @@ class WebController:
                 # Convert weather sets
                 weather_sets = convert_to_json_serializable(WEATHER_SETS.copy())
                 
-                # Use dynamically provided background events if available, otherwise fall back to static list
+                # Background events: prefer the active project's dynamic
+                # list (pushed by ``EnvironmentalSystem.set_available_events``
+                # at boot + on project swap). Fall back to an empty list
+                # if the engine hasn't wired one in yet — using lib's
+                # static list would surface Fan-flavored event names
+                # on a WoL boot before set_available_events runs, which
+                # was a subtle source of stale dropdown options. An
+                # empty fallback shows "no options yet" instead.
                 background_events = (
-                    sorted(self.available_background_events) 
-                    if hasattr(self, 'available_background_events') 
-                    else AVAILABLE_BACKGROUND_EVENTS
+                    sorted(self.available_background_events)
+                    if hasattr(self, 'available_background_events')
+                    else []
                 )
                 
                 # Cache the result

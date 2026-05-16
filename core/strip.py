@@ -24,8 +24,7 @@ YAML schema (a strip entry under a receiver's ``strips:`` list is one of):
   #   direction=left  → start defaults to length-1 (LED 0 at high col)
   - { group, strip_idx, kind: row, row, length, direction: right|left, start? }
 
-  # Verbose escape hatch — explicit Nx2 indices (used by the legacy
-  # HS/VS file paths and by the legacy_to_strips fallback).
+  # Verbose escape hatch — explicit Nx2 indices.
   - { group, strip_idx, kind: raw, indices: [[r0,c0], [r1,c1], ...] }
 """
 from __future__ import annotations

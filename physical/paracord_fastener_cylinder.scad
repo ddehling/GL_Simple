@@ -76,7 +76,7 @@ peg_clearance = 1;
 // and the inner top grooves (az 160°/200°). Tilt factor is the
 // fraction of 90°: 0.6 → 54° tilt → peg az 126°/234° (midpoint
 // of the two groove gaps).
-peg_tilt_factor = 0.6;
+peg_tilt_factor = 0.54;
 
 // Ring channel around peg C — a full 360° trench centered on
 // the peg, so the cord can wrap the peg from any direction.
@@ -298,10 +298,10 @@ union() {
                 // Gussets for pegs A & B
                 rotate([0, -peg_tilt_factor * 90, 0])
                     translate([0, peg_y_top, 0])
-                        peg_support_wedge(9, 9, peg_shaft_d, -1, 2);
+                        peg_support_wedge(9, 9, peg_shaft_d, -2, 2);
                 rotate([0, +peg_tilt_factor * 90, 0])
                     translate([0, peg_y_top, 0])
-                        peg_support_wedge(9, 9, peg_shaft_d, -1, 2);
+                        peg_support_wedge(9, 9, peg_shaft_d, -2, 2);
             }
         }
         through_hole();
@@ -318,10 +318,10 @@ union() {
     translate([0, 0, -2])
         translate([0, peg_y_bot, 0])
             peg_support_wedge(
-                (zt_y - zt_w/2 - 1) - peg_y_bot,  // length to nub
-                peg_height,                        // height
-                peg_shaft_d,                       // thickness
+                (zt_y - zt_w/2 - 1) - peg_y_bot+2,  // length to nub
+                peg_height+3,                        // height
+                peg_shaft_d-2,                       // thickness
                 +1,                                // +Y direction
-                5                                  // dive
+                4                                  // dive
             );
 }

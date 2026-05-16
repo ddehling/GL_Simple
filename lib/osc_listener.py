@@ -50,9 +50,17 @@ class OscListener:
     server's worker thread; they should be fast and non-blocking.
     """
 
-    def __init__(self, port: int = 9001, bind_ip: str = "0.0.0.0"):
+    def __init__(self, port: int = 9001, bind_ip: str = "0.0.0.0",
+                 log_unrouted: bool = False):
         self.port = port
         self.bind_ip = bind_ip
+        # Off by default — radar firmware broadcasts ~360 msgs/sec
+        # across all boxes, and any project that doesn't register a
+        # ``/wol/`` route (e.g. Fan) sees every message fall through
+        # to the catch-all log and floods the console. Flip to True
+        # via ``osc.log_unrouted: true`` in config.yaml when
+        # diagnosing message-shape problems.
+        self.log_unrouted = bool(log_unrouted)
         self._server: Optional[ThreadingOSCUDPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._stopped = False
@@ -134,8 +142,12 @@ class OscListener:
                           f"{address!r}: {e}")
                 return
 
-        # Catch-all: format args compactly so a flood of high-rate
-        # unrouted messages stays one line each.
+        # Unrouted message — silent by default, opt-in log via
+        # ``log_unrouted=True`` for diagnosis. Default-on flooded
+        # the console under WoL traffic when the active project's
+        # hook hadn't claimed the ``/wol/`` prefix.
+        if not self.log_unrouted:
+            return
         if not args:
             payload = ""
         elif len(args) == 1:

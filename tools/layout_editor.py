@@ -15,9 +15,7 @@ Run::
 The editor opens a project picker (defaults to the first project whose
 ``geometry.type`` is ``multi_object``). Edits in the GUI are the source
 of truth — saving writes directly to ``projects/<id>/geometry.yaml`` and
-``projects/<id>/project.yaml``. The Phase-9 ``build_wol_layout.py``
-script remains a one-shot bootstrapper for new projects, but the editor
-no longer defers to it for ongoing edits.
+``projects/<id>/project.yaml``.
 
 v1 capabilities (this revision):
   * Project picker + auto-detect multi_object projects
@@ -67,6 +65,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QHeaderView, QStyledItemDelegate, QStatusBar, QFrame, QPlainTextEdit,
     QMenu, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QSpinBox,
+    QLineEdit, QRadioButton, QButtonGroup,
 )
 
 from core.project import list_projects
@@ -765,6 +764,386 @@ def find_editable_projects() -> list[dict]:
         except Exception:
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# New-project scaffolding — invoked by the "+ New" button in the toolbar
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Project-id slug: lowercase letters + digits + underscore, must start
+# with a letter. Used as the directory name AND as a Python package
+# component, so it has to be import-safe.
+_SLUG_RE = _re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _slug_problem(slug: str, existing_ids: set[str]) -> str | None:
+    """Return None if slug is valid + unused; otherwise a one-line
+    explanation suitable for showing under the input field."""
+    if not slug:
+        return "Project id is required."
+    if not _SLUG_RE.match(slug):
+        return ("Use lowercase letters, digits, and underscores. "
+                "Must start with a letter.")
+    if slug in existing_ids:
+        return f"A project with id {slug!r} already exists."
+    return None
+
+
+# Skeleton file templates — kept here (next to the only callsite) so
+# the editor is self-contained. If a project file's shape changes
+# across the codebase, this is the only place that mirrors it; the
+# scaffold is intentionally minimal so subsequent customisation is
+# obvious. Format strings use ``{id}`` / ``{name}`` / ``{cw}`` /
+# ``{ch}`` placeholders; ``str.format`` is fine because none of the
+# templates need raw braces.
+
+_INIT_PY = ""
+
+_WEATHER_PARAMS_PY = '''"""{name} — weather machinery.
+
+A fresh project starts with a single CLEAR state and a single
+"default" weather set with no background events. Author shaders in
+``projects/{id}/shaders/`` and register them in ``event_map.py``,
+then add their names to ``background_events`` below to make them
+fire when this set is active.
+"""
+from enum import Enum
+
+# Schema bits are shared across every project.
+from lib.weather_params import (  # noqa: F401  explicit re-export
+    DEFAULT_WEATHER_PARAMS,
+    PARAMETER_DEFINITIONS,
+    GLOBAL_PARAMETERS,
+    AVAILABLE_BACKGROUND_EVENTS,
+)
+
+
+class WeatherState(Enum):
+    """States this project uses. Add new members here and a matching
+    preset below, then list the state's value in a WEATHER_SETS entry
+    to make it reachable at runtime."""
+    CLEAR = "clear"
+
+
+WEATHER_PRESETS = {{
+    WeatherState.CLEAR: {{
+        "Switch_rate": 0.0,             # never auto-transition
+        "transition_duration": 1.0,
+        "possible_transitions": ["clear"],
+        "transition_weights": [1.0],
+    }},
+}}
+
+
+WEATHER_SETS = {{
+    "default": {{
+        "name": "Default",
+        "description": "Starter set — add background_events as you author them.",
+        "states": [WeatherState.CLEAR.value],
+        "season_speed": 0.0,
+        "transition_speed": 1.0,
+        "season_extremity": 0.0,
+        "allowed_parameters": [],
+        "random_events": [],
+        "random_event_rate": 0.0,
+        "background_events": [],
+    }},
+}}
+
+
+DEFAULT_WEATHER_SET = "default"
+'''
+
+_EVENT_MAP_PY = '''"""{name} — event registry.
+
+Each entry: (effect_func, params_dict, meta_dict).
+
+  * ``effect_func`` is a ``shader_*`` function from either the shared
+    library (``renderer.effects.shader_*``) or this project's local
+    ``projects/{id}/shaders/`` directory (auto-imported into ``fx``
+    by ``core.shader_loader`` at project boot).
+  * ``params_dict`` is passed as keyword args to the effect function.
+  * ``meta_dict`` carries ``{{"group": "<group_id>"}}`` so the
+    scheduler dispatches the event onto the right canvas. Omit it
+    (or use ``{{}}``) to fall through to frame_id 0.
+
+Example::
+
+    "my_glow": (fx.shader_my_glow, {{"speed": 0.5}}, {{"group": "main"}}),
+"""
+from renderer import effects as fx  # noqa: F401  used by EVENT_MAP entries
+
+
+EVENT_MAP = {{
+    # Add your events here.
+}}
+'''
+
+_SHADERS_INIT_PY = '''"""{name} project-local shaders.
+
+Any ``shader_*`` function or ``*Effect`` class defined in a module in
+this directory is auto-imported into ``renderer.effects`` when this
+project is active (see ``core.shader_loader``). Reference them in
+``event_map.py`` as ``fx.shader_<your_name>``.
+"""
+'''
+
+_GEOMETRY_YAML_MULTI = """canvas:
+  width: {cw}
+  height: {ch}
+objects: []
+strips: []
+"""
+
+
+def _project_yaml_template(spec: dict) -> dict:
+    """Build the project.yaml dict for a new project. Returned as a
+    dict so the caller can dump with the same yaml settings as the
+    rest of the editor uses."""
+    pid = spec["id"]
+    name = spec["display_name"]
+    geometry_type = spec["geometry_type"]
+
+    out: dict = {
+        "id": pid,
+        "display_name": name,
+        "brightness_limit": 0.4,
+        "target_fps": 40,
+        "weather_sets_module": f"projects.{pid}.weather_params",
+        "event_map_module":   f"projects.{pid}.event_map",
+        # One starter group; operator adds more in the editor or by
+        # editing this file. Multi_object projects typically end up
+        # with 2-3 groups (sky / ground / etc.).
+        "groups": [
+            {"id": "main", "width": 300, "height": 1},
+        ],
+        # Off by default — the random-events hook is opt-in per
+        # project. Flip to true and declare ``hooks.random_events``
+        # below when authoring probability-driven scheduling.
+        "enable_random_events": False,
+    }
+    if geometry_type == "multi_object":
+        out["geometry"] = {
+            "type": "multi_object",
+            "file": f"projects/{pid}/geometry.yaml",
+        }
+    else:
+        # Fan-style — sensible defaults for a small dome / fan canvas.
+        # Operator overrides via the geometry block in project.yaml.
+        out["geometry"] = {
+            "type": "fan",
+            "inner_r_ft": 4.0,
+            "outer_r_ft": 20.6,
+        }
+    # No receivers configured yet — operator adds them via this editor
+    # or by editing project.yaml directly. The empty list keeps the
+    # engine's startup happy (no hardware to send to, but the boot
+    # path doesn't blow up).
+    out["receivers"] = []
+    return out
+
+
+def scaffold_new_project(spec: dict) -> Path:
+    """Write a fresh project skeleton to ``projects/<id>/`` and return
+    the new project's root path. ``spec`` is the dict produced by
+    ``_NewProjectDialog.result_spec()``.
+
+    Files written:
+      * ``__init__.py`` — empty (Python package marker)
+      * ``project.yaml`` — manifest with one starter group + empty receivers
+      * ``weather_params.py`` — single CLEAR state + "default" empty set
+      * ``event_map.py`` — empty ``EVENT_MAP`` with usage docstring
+      * ``shaders/__init__.py`` — project-local shader package
+      * ``geometry.yaml`` — only for ``geometry_type == "multi_object"``
+      * ``media/sounds/`` — empty directory for per-project audio
+
+    Raises FileExistsError if ``projects/<id>/`` already exists; the
+    caller (the dialog) validates against this with ``_slug_problem``
+    before invoking, but the guard here is a belt-and-suspenders
+    against a TOCTOU race.
+    """
+    pid = spec["id"]
+    name = spec["display_name"]
+    geometry_type = spec["geometry_type"]
+    cw = int(spec.get("canvas_w", 1280))
+    ch = int(spec.get("canvas_h", 1024))
+
+    root = ROOT / "projects" / pid
+    if root.exists():
+        raise FileExistsError(f"Project directory already exists: {root}")
+
+    # Create all directories first so write failures don't leave a
+    # half-built project (the subsequent file writes still might,
+    # but at least the layout is consistent).
+    root.mkdir(parents=True, exist_ok=False)
+    (root / "shaders").mkdir(exist_ok=False)
+    (root / "media" / "sounds").mkdir(parents=True, exist_ok=False)
+    (root / "media" / "images").mkdir(parents=True, exist_ok=False)
+
+    # __init__.py
+    (root / "__init__.py").write_text(_INIT_PY, encoding="utf-8")
+    (root / "shaders" / "__init__.py").write_text(
+        _SHADERS_INIT_PY.format(name=name), encoding="utf-8"
+    )
+
+    # project.yaml — use the same yaml settings the rest of the editor
+    # uses (sort_keys=False, flow style off) so re-saves stay diff-clean.
+    with open(root / "project.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(_project_yaml_template(spec), f,
+                       sort_keys=False, default_flow_style=False)
+
+    # weather_params.py + event_map.py
+    (root / "weather_params.py").write_text(
+        _WEATHER_PARAMS_PY.format(id=pid, name=name), encoding="utf-8"
+    )
+    (root / "event_map.py").write_text(
+        _EVENT_MAP_PY.format(id=pid, name=name), encoding="utf-8"
+    )
+
+    # geometry.yaml only when the project declared multi_object
+    if geometry_type == "multi_object":
+        (root / "geometry.yaml").write_text(
+            _GEOMETRY_YAML_MULTI.format(cw=cw, ch=ch), encoding="utf-8"
+        )
+
+    return root
+
+
+class _NewProjectDialog(QDialog):
+    """Modal dialog for the layout-editor's "+ New Project" button.
+
+    Asks for project id (slug, live-validated against existing ids),
+    display name, geometry type (fan vs multi_object), and — for
+    multi_object only — initial canvas dimensions. The Create button
+    stays disabled until the slug passes validation.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New project")
+        self._existing_ids = {p["id"] for p in find_editable_projects()}
+
+        layout = QFormLayout(self)
+
+        # Project id — slug, live-validated.
+        self._id_edit = QLineEdit()
+        self._id_edit.setPlaceholderText("e.g. glimmering_shell")
+        self._id_edit.textChanged.connect(self._on_id_changed)
+        layout.addRow("Project id", self._id_edit)
+
+        # Live status under the id field — green check vs red explanation.
+        self._id_status = QLabel("Project id is required.")
+        self._id_status.setStyleSheet("color: #cc6666;")
+        layout.addRow("", self._id_status)
+
+        # Display name (free text).
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("e.g. Glimmering Shell")
+        layout.addRow("Display name", self._name_edit)
+
+        # Geometry type — radio so the choice is obvious. Multi-object
+        # surfaces extra canvas-size fields below; fan-style hides them.
+        self._geom_group = QButtonGroup(self)
+        self._geom_fan = QRadioButton("Fan-style (single rectangular canvas)")
+        self._geom_multi = QRadioButton("Multi-object (per-object positions)")
+        self._geom_multi.setChecked(True)   # most new projects today
+        self._geom_group.addButton(self._geom_fan, 0)
+        self._geom_group.addButton(self._geom_multi, 1)
+        self._geom_group.idToggled.connect(self._on_geom_changed)
+        geom_box = QVBoxLayout()
+        geom_box.addWidget(self._geom_fan)
+        geom_box.addWidget(self._geom_multi)
+        geom_box_widget = QWidget()
+        geom_box_widget.setLayout(geom_box)
+        layout.addRow("Geometry", geom_box_widget)
+
+        # Canvas size — only relevant for multi_object. Pre-filled to
+        # the dimensions WoL uses; operator changes if their physical
+        # setup differs.
+        self._canvas_w = QSpinBox()
+        self._canvas_w.setRange(1, 16384)
+        self._canvas_w.setValue(1280)
+        self._canvas_h = QSpinBox()
+        self._canvas_h.setRange(1, 16384)
+        self._canvas_h.setValue(1024)
+        size_row = QHBoxLayout()
+        size_row.addWidget(self._canvas_w)
+        size_row.addWidget(QLabel("×"))
+        size_row.addWidget(self._canvas_h)
+        size_row.addStretch(1)
+        size_widget = QWidget()
+        size_widget.setLayout(size_row)
+        layout.addRow("Canvas size (px)", size_widget)
+        self._size_row_label = layout.labelForField(size_widget)
+        self._size_widget = size_widget
+        # Visible initially because multi_object is the default; gets
+        # toggled by _on_geom_changed.
+
+        # OK / Cancel.
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._buttons.button(
+            QDialogButtonBox.StandardButton.Ok).setText("Create")
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addRow(self._buttons)
+
+        # Disable Create until slug is valid.
+        self._buttons.button(
+            QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+
+    def _on_id_changed(self, text: str) -> None:
+        # Lowercase-normalize as the user types so they don't have to
+        # remember the case rule, but only intercept when they typed a
+        # capital letter — otherwise the cursor would jump on every
+        # keystroke and selection would be lost.
+        if text != text.lower():
+            cursor = self._id_edit.cursorPosition()
+            self._id_edit.blockSignals(True)
+            self._id_edit.setText(text.lower())
+            self._id_edit.blockSignals(False)
+            self._id_edit.setCursorPosition(cursor)
+            text = text.lower()
+        problem = _slug_problem(text, self._existing_ids)
+        if problem is None:
+            self._id_status.setText(f"✓ Will create projects/{text}/")
+            self._id_status.setStyleSheet("color: #66cc66;")
+            self._buttons.button(
+                QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+        else:
+            self._id_status.setText(problem)
+            self._id_status.setStyleSheet("color: #cc6666;")
+            self._buttons.button(
+                QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+
+    def _on_geom_changed(self, _id: int, _checked: bool) -> None:
+        # Hide canvas-size fields when fan-style — Fan derives canvas
+        # dims from groups, not from a canvas declaration.
+        is_multi = self._geom_multi.isChecked()
+        self._size_widget.setVisible(is_multi)
+        if self._size_row_label is not None:
+            self._size_row_label.setVisible(is_multi)
+
+    def result_spec(self) -> dict:
+        """Return the validated form values as a dict. Caller passes
+        this to ``scaffold_new_project``."""
+        name = self._name_edit.text().strip()
+        pid = self._id_edit.text().strip()
+        return {
+            "id": pid,
+            # Display name falls back to a Title-Case version of the
+            # slug if the operator left it empty.
+            "display_name": name or pid.replace("_", " ").title(),
+            "geometry_type": (
+                "multi_object" if self._geom_multi.isChecked() else "fan"
+            ),
+            "canvas_w": int(self._canvas_w.value()),
+            "canvas_h": int(self._canvas_h.value()),
+        }
 
 
 def load_doc(project_id: str) -> LayoutDoc:
@@ -3265,6 +3644,11 @@ class EditorWindow(QMainWindow):
         self.project_picker.currentIndexChanged.connect(self._switch_project)
         top.addWidget(self.project_picker, 1)
 
+        new_btn = QPushButton("+ New")
+        new_btn.setToolTip("Scaffold a new project under projects/<id>/")
+        new_btn.clicked.connect(self._on_new_project_clicked)
+        top.addWidget(new_btn)
+
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.save)
         save_btn.setShortcut("Ctrl+S")
@@ -4109,6 +4493,64 @@ class EditorWindow(QMainWindow):
             view.selectRow(strip_idx)
 
     # ----- project switching -----
+    def _on_new_project_clicked(self) -> None:
+        """Pop the new-project dialog, scaffold on accept, then switch
+        the picker (and editor) onto the freshly-created project. Logs
+        a 'now do these next' checklist into the engine log panel so the
+        operator knows what's still hand-edit territory after scaffold."""
+        dlg = _NewProjectDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        spec = dlg.result_spec()
+        try:
+            root = scaffold_new_project(spec)
+        except FileExistsError as e:
+            QMessageBox.warning(self, "Project exists", str(e))
+            return
+        except OSError as e:
+            QMessageBox.critical(
+                self, "Failed to create project",
+                f"Couldn't write project files:\n{e}",
+            )
+            return
+
+        new_id = spec["id"]
+
+        # Refresh picker from disk so the freshly-scaffolded project
+        # shows up. Block signals while we rebuild so the index churn
+        # doesn't trigger _switch_project mid-rebuild.
+        self.project_picker.blockSignals(True)
+        self.project_picker.clear()
+        target_index = 0
+        for i, p in enumerate(find_editable_projects()):
+            label = f"{p['display_name']}  ({p.get('geometry_type', '?')})"
+            self.project_picker.addItem(label, p["id"])
+            if p["id"] == new_id:
+                target_index = i
+        self.project_picker.setCurrentIndex(target_index)
+        self.project_picker.blockSignals(False)
+
+        # Now actually load the new project into the editor.
+        self._reload(project_id=new_id)
+        if self._engine_proc is not None:
+            self._post_json_bg("/api/project/change", {"project_id": new_id})
+
+        # Surface a next-steps checklist in the log panel — scaffold
+        # writes empty receivers/event_map/weather_sets, so the operator
+        # still has hand-edits to do before the project actually runs.
+        self.log_panel.appendPlainText(
+            f"[scaffold] Created projects/{new_id}/ at {root}\n"
+            f"[scaffold] Next steps:\n"
+            f"  1. Add receivers (Boxes tab) with their IPs/protocols\n"
+            f"  2. Add groups (Groups tab) sized to your physical strips\n"
+            f"  3. Add strips (Strips tab) and bind them to receivers\n"
+            f"  4. Edit projects/{new_id}/event_map.py to register effects\n"
+            f"  5. Edit projects/{new_id}/weather_params.py to define states\n"
+            f"  6. Drop ambient audio into projects/{new_id}/media/sounds/\n"
+        )
+        self.log_panel.setVisible(True)
+        self._right_col.setSizes([550, 200])
+
     def _switch_project(self, idx: int):
         new_id = self.project_picker.itemData(idx)
         if new_id == self.doc.project_id:
