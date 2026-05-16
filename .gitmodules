@@ -1,0 +1,6 @@
+[submodule "projects/fan/media"]
+	path = projects/fan/media
+	url = https://github.com/ddehling/GL_Simple_fan_media.git
+[submodule "projects/weight_of_light/media"]
+	path = projects/weight_of_light/media
+	url = https://github.com/ddehling/GL_Simple_wol_media.git
