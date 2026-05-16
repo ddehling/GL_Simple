@@ -7,6 +7,23 @@ echo "  GL_Simple Setup & Launcher (Ubuntu)"
 echo "====================================="
 
 # This script is prescriptive for Ubuntu/Debian systems. It assumes `apt-get` is available
+# Auto-init the active project's media submodule. Per-project media
+# lives in its own GitHub repo (GL_Simple_<id>_media) and is mounted at
+# projects/<id>/media/ — operators clone main + opt in to one project's
+# media. If the submodule directory is empty (fresh clone) this fills
+# it; if already populated, the call is a fast no-op. We grep the
+# config to find the active project rather than parse YAML so this
+# step doesn't require Python yet (Python install happens below).
+if [ -f config.yaml ] && [ -f .gitmodules ]; then
+    PROJECT_ID=$(grep -E '^project:' config.yaml | head -1 \
+        | sed -E 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]+$//')
+    if [ -n "${PROJECT_ID:-}" ] && grep -q "projects/$PROJECT_ID/media" .gitmodules 2>/dev/null; then
+        echo "[init] Ensuring projects/$PROJECT_ID/media submodule is populated..."
+        git submodule update --init "projects/$PROJECT_ID/media" \
+            || echo "  (submodule init failed; you can retry manually with: git submodule update --init projects/$PROJECT_ID/media)"
+    fi
+fi
+
 echo "[1/4] Updating apt and installing required system packages (non-interactive)..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

@@ -13,6 +13,27 @@ Write-Host "  GL_Simple Setup & Launcher" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Auto-init the active project's media submodule. Per-project media
+# lives in its own GitHub repo (GL_Simple_<id>_media) mounted at
+# projects/<id>/media/. Operators clone main + opt in to one project's
+# media — this step picks the right one based on config.yaml's
+# ``project:`` field. Regex-parse rather than YAML so we don't need
+# Python installed yet (that happens further down).
+if ((Test-Path "config.yaml") -and (Test-Path ".gitmodules")) {
+    $configText = Get-Content "config.yaml" -Raw
+    if ($configText -match '(?m)^project:\s*([^\s#]+)') {
+        $projectId = $Matches[1] -replace '["'']', ''
+        $gitmodulesText = Get-Content ".gitmodules" -Raw
+        if ($gitmodulesText -match [regex]::Escape("projects/$projectId/media")) {
+            Write-Host "[init] Ensuring projects/$projectId/media submodule is populated..." -ForegroundColor Yellow
+            & git submodule update --init "projects/$projectId/media"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  (submodule init failed; retry manually with: git submodule update --init projects/$projectId/media)" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
 # Function to install Python using winget
 function Install-Python {
     Write-Host "  Attempting to install Python automatically using winget..." -ForegroundColor Cyan

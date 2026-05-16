@@ -1,4 +1,5 @@
 import argparse
+import sys
 import numpy as np
 import time
 from pathlib import Path
@@ -177,6 +178,16 @@ class EnvironmentalSystem:
         # settings (DMX bind IP, legacy receiver fallback) without
         # re-reading from disk.
         self._cfg = cfg
+
+        # Submodule sanity check. Per-project media (projects/<id>/media/)
+        # lives in its own GitHub repo mounted as a submodule. If the
+        # operator cloned main but didn't init the submodule, the directory
+        # exists but is empty — sounds will fail to load with cryptic
+        # FileNotFoundErrors later. Catch it up front with the exact fix
+        # command. Warning-only, not fatal: new projects pre-submodule
+        # legitimately have empty media trees, and developers may want to
+        # boot without ambient audio.
+        self._check_media_submodule()
         disp = cfg["display"]
         audio_cfg = cfg["audio"]
         web_cfg = cfg["web"]
@@ -447,6 +458,59 @@ class EnvironmentalSystem:
         # project module that defines its own WEATHER_SETS).
         self._weather_module_name = getattr(project, "weather_sets_module", None)
         self._weather_module_path = getattr(mod, "__file__", None) if mod else None
+
+    def _check_media_submodule(self) -> None:
+        """Warn the operator if the active project's media submodule
+        looks uninitialized.
+
+        Per-project media lives in its own GitHub repo (``GL_Simple_<id>_media``)
+        mounted at ``projects/<id>/media/``. A fresh clone of the main
+        repo leaves that directory empty until the operator runs
+        ``git submodule update --init``. Without this check, sounds
+        fail to load downstream with FileNotFoundErrors that don't
+        suggest the actual cause — print the fix command up front.
+
+        Heuristic: the directory exists, contains no real files (only
+        possibly ``.git`` / ``.gitkeep`` markers), AND the project is
+        listed in ``.gitmodules``. New projects without submodules
+        wired up legitimately have empty media trees, so we gate on
+        the .gitmodules presence to distinguish.
+        """
+        media_root = self.project.media_root
+        if not media_root.is_dir():
+            return    # No media dir declared at all — fine.
+
+        gitmodules = Path(__file__).parent / ".gitmodules"
+        if not gitmodules.is_file():
+            return    # Not a submodule-managed repo; skip.
+
+        # Is this project's media listed in .gitmodules?
+        try:
+            gm_text = gitmodules.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        rel_path = f"projects/{self.project.id}/media"
+        if rel_path not in gm_text:
+            return    # This project's media isn't a submodule — fine.
+
+        # Filter out .git / .gitkeep / hidden markers; if anything real
+        # remains, the submodule is populated and we're done.
+        real_entries = [p for p in media_root.rglob("*")
+                        if p.is_file() and not any(part.startswith(".")
+                                                   for part in p.relative_to(media_root).parts)]
+        if real_entries:
+            return
+
+        print()
+        print("=" * 70, file=sys.stderr)
+        print(f"  WARNING: {rel_path}/ is empty.", file=sys.stderr)
+        print(f"  This project's media is in a git submodule that hasn't", file=sys.stderr)
+        print(f"  been initialized yet. Audio/narrative will fail to load.", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"  Fix:", file=sys.stderr)
+        print(f"    git submodule update --init {rel_path}", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
+        print()
 
     def _build_receivers(self, project_receivers, legacy_receivers, display_height: int):
         """Resolve receiver entries from project.yaml strips or config.yaml legacy.
