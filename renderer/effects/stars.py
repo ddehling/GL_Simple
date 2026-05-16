@@ -142,18 +142,29 @@ class TwinklingStarsEffect(ShaderEffect):
         # All stars are single-pixel points
         self.sizes = np.ones(n, dtype=np.float32)
         
-        # Colors - full hue range via HSV, 20% pure white rest saturated
-        from colorsys import hsv_to_rgb
-        colors = np.empty((n, 3), dtype=np.float32)
-        n_white = int(n * 0.2)
-        colors[:n_white] = 1.0  # pure white
-        for i in range(n_white, n):
-            h = np.random.random()
-            s = np.random.uniform(0.5, 1.0)
-            v = 1.0
-            colors[i] = hsv_to_rgb(h, s, v)
-        # Shuffle so whites aren't all at the start
-        np.random.shuffle(colors)
+        # Colors — sampled from a stellar-class palette, weighted by
+        # rough observational frequency. Real starlight clusters along
+        # a blackbody temperature curve from cool red through yellow
+        # to hot blue-white, NOT uniformly around the hue wheel. Pure
+        # full-spectrum-random colors (greens, magentas, cyans) read
+        # as "Christmas lights" rather than a night sky. Small per-
+        # star jitter prevents the palette from looking like five
+        # discrete swatches.
+        classes = np.array([
+            # (r, g, b, weight)
+            (1.00, 0.65, 0.45, 0.10),   # M — cool red
+            (1.00, 0.82, 0.60, 0.15),   # K — orange
+            (1.00, 0.95, 0.85, 0.35),   # G — yellow-white (sunlike)
+            (1.00, 1.00, 0.98, 0.25),   # F — white
+            (0.80, 0.90, 1.00, 0.15),   # A/B — blue-white
+        ], dtype=np.float32)
+        weights = classes[:, 3]
+        weights = weights / weights.sum()
+        # One class assignment per star
+        idx = np.random.choice(len(classes), size=n, p=weights)
+        base = classes[idx, :3]                                  # (n, 3)
+        jitter = np.random.uniform(-0.05, 0.05, (n, 3)).astype(np.float32)
+        colors = np.clip(base + jitter, 0.0, 1.0)
         self.colors = colors
         
                 # Audio band assignment - each star assigned to one of 16 bands

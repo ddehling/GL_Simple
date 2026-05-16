@@ -4,7 +4,7 @@ from renderer import effects as fx
 EVENT_MAP = {
     "clouds": (fx.shader_drifting_clouds, {}),
     "firefly": (fx.shader_firefly, {}),
-    "stars": (fx.shader_stars, {"num_stars": 2000, "audio_sensitivity": 0, "drift_x": 0.3}),
+    "stars": (fx.shader_stars, {"num_stars": 3500, "audio_sensitivity": 0, "drift_x": 0.3}),
     "rain": (fx.shader_rain, {}),
     "fog": (fx.shader_fog, {
         "strength": 0.0,
