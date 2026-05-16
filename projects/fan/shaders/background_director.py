@@ -24,15 +24,20 @@ this scene-rotation system supports.
 import random
 
 
-# Storm-intensity falling-edge detection. The intensity is the max of
-# ``sand_density`` and ``rain_rate``, both of which are 0 in clear
-# weather. ``THRESHOLD_ENTER`` is the value the intensity must rise
-# above to count as "in a storm" — below this, brief weather flickers
-# don't count. ``THRESHOLD_EXIT`` is lower (hysteresis) so a noisy
-# signal sitting near the boundary doesn't toggle the falling-edge
-# detector every frame.
-_THRESHOLD_ENTER = 0.40
-_THRESHOLD_EXIT  = 0.10
+# Scene-change triggering thresholds (operate on the SMOOTHED
+# obscuration value, not raw intensity, so we change scenes at the
+# point in time when backgrounds are most-hidden — not at storm
+# start before obscuration has had time to ramp up, and not at storm
+# end after silhouettes have re-emerged). Without this the swap was
+# visible as a one-frame silhouette change.
+#
+# Increment scene_id once per storm cycle, when obscuration first
+# crosses ``_OBSCURE_TO_SWAP``. Reset the "ready for next swap" flag
+# when obscuration falls back below ``_OBSCURE_TO_RESET`` — at that
+# point the storm has cleared, the new preset is fully visible, and
+# we're armed for the next storm.
+_OBSCURE_TO_SWAP  = 0.80
+_OBSCURE_TO_RESET = 0.20
 
 # Cooldown bounds (seconds). After incrementing scene_id, the next
 # storm's falling edge can't increment again until at least this much
@@ -67,7 +72,9 @@ def shader_background_director(state, outstate, fade_duration=0.0):
         # First call: seed scene_id if no one else has, snapshot baseline.
         if 'scene_id' not in outstate:
             outstate['scene_id'] = random.randrange(_SEED_RANGE)
-        state['was_in_storm'] = False
+        # True once this storm cycle has triggered a scene change;
+        # reset when obscuration falls back below the reset threshold.
+        state['swapped_this_cycle'] = False
         # Elapsed time at the *last* successful increment. -inf means
         # "never" — the first storm encountered will increment without
         # being held off by the cooldown.
@@ -100,17 +107,22 @@ def shader_background_director(state, outstate, fade_duration=0.0):
     obscuration = prev_obscuration + (intensity - prev_obscuration) * alpha
     outstate['storm_obscuration'] = max(0.0, min(1.0, obscuration))
 
-    # Falling-edge detector with hysteresis on the RAW intensity (not
-    # the smoothed obscuration — using the smoothed signal would lag
-    # the falling edge into the post-storm period, which is exactly
-    # when shaders are visually returning).
-    if intensity >= _THRESHOLD_ENTER:
-        state['was_in_storm'] = True
-    elif state['was_in_storm'] and intensity <= _THRESHOLD_EXIT:
-        # Storm just cleared. Check cooldown.
+    # Scene-change trigger fires on the SMOOTHED obscuration crossing
+    # the high threshold — i.e. when silhouettes are actually obscured.
+    # If we triggered on falling-edge instead, the swap would happen
+    # AFTER backgrounds had re-emerged, producing a visible one-frame
+    # silhouette flip (the bug this replaces). One swap per storm
+    # cycle: ``swapped_this_cycle`` clamps until obscuration falls
+    # back below the reset threshold.
+    obs = outstate['storm_obscuration']
+    if obs >= _OBSCURE_TO_SWAP and not state['swapped_this_cycle']:
         since_last = elapsed - state['last_change_time']
         if since_last >= state['next_min_interval']:
             outstate['scene_id'] = int(outstate.get('scene_id', 0)) + 1
             state['last_change_time'] = elapsed
             state['next_min_interval'] = _MIN_INTERVAL_S + random.uniform(0, _JITTER_S)
-        state['was_in_storm'] = False
+        # Mark cycle as handled even if we skipped due to cooldown,
+        # so we don't try again on every frame this storm.
+        state['swapped_this_cycle'] = True
+    elif obs <= _OBSCURE_TO_RESET:
+        state['swapped_this_cycle'] = False
