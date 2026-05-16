@@ -143,12 +143,15 @@ void main() {
     // dissolves smoothly into open sky toward the fan's inner ring.
     float canopy_band = smoothstep(0.20, 0.55, uv.y);
 
-    // SPARSE-BRIGHT RESTRUCTURE — render only the brightest noise peaks.
+    // SPARSE-BRIGHT RESTRUCTURE — render only the brighter noise peaks.
     // Below threshold → discard (zero output). Density drives the
-    // visibility threshold:
-    //   density=0.45 → tip_lo 0.74 (sparse)
-    //   density=1.00 → tip_lo 0.58 (dense)
-    float tip_lo = mix(0.74, 0.58, density);
+    // visibility threshold. Range chosen so peaceful_forest at typical
+    // density values (0.45..1.0) shows recognizable canopy coverage,
+    // not just scattered flecks — operator-tested at the previous
+    // (0.74, 0.58) values the canopy read as "really sparse":
+    //   density=0.45 → tip_lo 0.65 (moderate)
+    //   density=1.00 → tip_lo 0.45 (dense)
+    float tip_lo = mix(0.65, 0.45, density);
     // VISIBILITY (alpha): wider smoothstep so leaves on the edge of
     // threshold fade gently rather than pop in binary on/off.
     float visibility = smoothstep(tip_lo, tip_lo + 0.12, leaf_n);
@@ -168,7 +171,11 @@ void main() {
     // sourced from the same high-freq noise that defines the leaves.
     float leaf_strength = clamp((leaf_n - tip_lo) / max(0.001, 1.0 - tip_lo),
                                 0.0, 1.0);
-    float intensity = 0.20 + 0.80 * leaf_strength;
+    // Floor at 0.35 (was 0.20) so dim leaves still read as recognizable
+    // leaves rather than fading toward invisible. Range 0.35..1.00 still
+    // gives ~3x brightest-to-dimmest spread — clear intensity contrast
+    // per leaf without the bottom of the range disappearing.
+    float intensity = 0.35 + 0.65 * leaf_strength;
 
     // ---------- Leaf color (naturalistic) ----------
     // Naturalistic forest palette — earlier "neon lime" and "silver-blue
@@ -180,7 +187,13 @@ void main() {
     vec3 day_lit_midday = vec3(0.15, 0.75, 0.20);   // clear emerald green
     vec3 day_lit_dd     = vec3(0.55, 0.60, 0.15);   // warm olive
     vec3 day_col  = mix(day_lit_dd, day_lit_midday, warm_factor);
-    vec3 night_col = vec3(0.12, 0.20, 0.28);        // dark cool blue-grey (moonlit)
+    // Night palette pushed toward silver-green (was dark blue-grey).
+    // The previous (0.12, 0.20, 0.28) was too dim AND too blue — at
+    // intensity*0.35 floor it produced uniformly dark-blue dots
+    // through the night/rain states. (0.22, 0.42, 0.30) reads as
+    // moonlit forest: clearly green-leaning but cool-shifted, with
+    // enough luminance that the brightest leaves are visible.
+    vec3 night_col = vec3(0.22, 0.42, 0.30);
     vec3 leaf_base = mix(day_col, night_col, u_starryness);
 
     vec3 leaf_col = leaf_base * intensity;
