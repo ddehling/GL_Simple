@@ -1192,8 +1192,10 @@ WEATHER_PRESETS = {
         "firefly_density": 1.0,
         "fog": 0.10,
         "fog_color": np.array([0.10, 0.14, 0.20]),
-        "possible_transitions": ["forest_late_night", "forest_bioluminescent", "forest_night"],
-        "season_preference": 0.08,
+        "possible_transitions": ["forest_night", "forest_late_night", "forest_bioluminescent"],
+        # Early evening — fireflies peak shortly after sunset. Was 0.08
+        # (pre-dawn), which is when fireflies are NOT active.
+        "season_preference": 0.82,
         "starryness": 0.85,
         "transition_duration": 28,
         "transition_weights": [1, 0.5, 0.7],
