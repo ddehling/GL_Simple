@@ -29,15 +29,17 @@ from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 
 # Hard cap on birds alive at once (matches the shader array size).
-# Was 24; bumped to accommodate migration state's 5x spawn rate so
-# the cap doesn't artificially thin the dense bird sky.
-MAX_BIRDS = 96
+# Bumped iteratively: 24 -> 96 -> 160 to accommodate migration state's
+# increasing density. 160 vec4s of uniform storage is comfortable for
+# ES3.10 (well under the 256-vector minimum required).
+MAX_BIRDS = 160
 
-# Bird altitude in physical feet. Wide range (was 14..19) so birds
-# cover most of the visible fan vertically — from the upper canopy
-# (~7 ft) up to the open sky near the outer ring (~20 ft).
-ALT_MIN = 7.0
-ALT_MAX = 20.0
+# Bird altitude in physical feet. Full visible vertical range — from
+# the inner ring (r = 4 ft, the inner edge of the LED area) to the
+# outer ring (r = 20.6 ft). Below 4 ft is the empty inner zone with
+# no LEDs, so spawning birds there would just waste slots.
+ALT_MIN = 4.0
+ALT_MAX = 20.6
 
 # Spawn just off the fan edges so birds enter visibly.
 SPAWN_X = 21.0

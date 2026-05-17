@@ -1167,10 +1167,11 @@ WEATHER_PRESETS = {
         "fog": 0.06,
         "fog_color": np.array([0.55, 0.65, 0.55]),
         "godray_strength": 0.6,
-        # State signature is the dense bird sky — bird_density 5.0
-        # gives ~5x the normal spawn rate (forest_birds caps at
-        # MAX_BIRDS=96 active so the sky never empties).
-        "bird_density": 5.0,
+        # State signature is the dense bird sky. bird_density 10.0
+        # gives 10x the base spawn rate; combined with MAX_BIRDS=160
+        # the sky stays near that cap, so the migration reads as a
+        # genuinely overwhelming flock event.
+        "bird_density": 10.0,
         # Switch_rate slightly higher so the state doesn't dwell
         # forever; meant as a "passage" rather than a destination.
         "possible_transitions": ["forest_midday", "forest_morning", "forest_dusk"],
