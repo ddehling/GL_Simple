@@ -73,8 +73,9 @@ uniform int  u_active_count;
 uniform float u_time;
 
 // V-shape silhouette in fan-cartesian space at ``center``, scaled.
-// Reuses the desert_creatures bird geometry: two diagonal strokes
-// meeting at a body, wingspan ~1.1 ft scaled.
+// Wingspan ~1.7 ft scaled (about 1.5x the previous version) with
+// thicker wings and an explicit body so birds read clearly as birds
+// rather than thin V lines.
 vec4 draw_bird(vec2 phys, vec4 bird) {{
     vec2 center = bird.xy;
     float scale = bird.z;
@@ -91,19 +92,29 @@ vec4 draw_bird(vec2 phys, vec4 bird) {{
     // V opens upward; left wing slope -slope, right wing slope +slope.
     float wing_l = abs(d.y - (-d.x * slope));
     float wing_r = abs(d.y - ( d.x * slope));
-    float span = 0.55 * scale;
+    // Bigger wingspan and chunkier wing lines for stronger visibility.
+    float span = 0.85 * scale;
     float wing_extent = step(abs(d.x), span);
-    float thickness_lo = 0.07 * scale;
-    float thickness_hi = 0.02 * scale;
+    float thickness_lo = 0.14 * scale;
+    float thickness_hi = 0.04 * scale;
     float wing = smoothstep(thickness_lo, thickness_hi,
                             min(wing_l, wing_r)) * wing_extent;
-    if (wing < 0.005) return vec4(0.0);
 
-    // Dark silhouette — slight color so the silhouette doesn't read as
-    // pure black holes when composited; a touch of warm brown gives
-    // it organic feel.
-    vec3 col = vec3(0.10, 0.07, 0.05);
-    return vec4(col, wing * bright);
+    // Body: small ellipse at center — narrower in x than y. Reads as
+    // a bird torso between the wings rather than a bare line meeting.
+    float body_x = d.x / (0.18 * scale);
+    float body_y = d.y / (0.10 * scale);
+    float body_r2 = body_x * body_x + body_y * body_y;
+    float body = smoothstep(1.0, 0.5, body_r2);
+
+    float silh = max(wing, body);
+    if (silh < 0.005) return vec4(0.0);
+
+    // Pure black silhouette — maximum contrast against the bright sky
+    // backdrop. (Previously (0.10, 0.07, 0.05) warm brown read as
+    // very subtle on the actual hardware.)
+    vec3 col = vec3(0.0, 0.0, 0.0);
+    return vec4(col, silh * bright);
 }}
 
 void main() {{
@@ -277,9 +288,10 @@ class ForestBirdsEffect(ShaderEffect):
     def _try_spawn(self, dt: float):
         if len(self._birds) >= MAX_BIRDS:
             return
-        # ~0.18 birds/sec at full daytime — comparable to desert sky bird
-        # density (slightly higher since forest is more bird-rich).
-        rate = 0.18 * max(0.0, self.day_factor)
+        # 0.35 birds/sec at full daytime — bumped from 0.18 for visibility.
+        # With ~45 s lifetime and flock spawns, expect ~8-12 birds active
+        # at any moment in midday.
+        rate = 0.35 * max(0.0, self.day_factor)
         self._spawn_acc += dt * rate
         if self._spawn_acc >= 1.0 and len(self._birds) < MAX_BIRDS:
             self._spawn_acc -= 1.0
