@@ -439,16 +439,23 @@ class OceanWaves(ShaderEffect):
             float foamNoise2 = noise(foamCoord * 2.3 + vec2(1.7, 3.2));
             float foamTexture = foamNoise1 * 0.6 + foamNoise2 * 0.4;
             
-            float waveCrestFoam = smoothstep(0.65, 0.95, vWaveIntensity);
+            // Lower the crest-foam threshold so foam appears on more
+            // wave peaks, not just the tallest. Combined with the
+            // wider wave-intensity lighting below, this gives the
+            // wave structure visible spatial contrast across the
+            // surface.
+            float waveCrestFoam = smoothstep(0.50, 0.90, vWaveIntensity);
             float shoreFoam = smoothstep(0.25, 0.0, depth);
-            
+
             float breakingFoam = 0.0;
             if (depth < 0.15) {
                 float breakingNoise = noise(vWorldPos * 0.2 + vec2(0.0, phase * 2.5));
                 breakingFoam = (0.15 - depth) / 0.15 * breakingNoise;
             }
-            
-            float foamFactor = (waveCrestFoam * 0.4 + shoreFoam * 0.6 + breakingFoam * 0.8) * foamTexture * foamAmount;
+
+            // Foam contributions bumped (crest 0.4 -> 0.6, shore 0.6 -> 0.8)
+            // for stronger highlight intensity at crests/shoreline.
+            float foamFactor = (waveCrestFoam * 0.6 + shoreFoam * 0.8 + breakingFoam * 0.8) * foamTexture * foamAmount;
             foamFactor = clamp(foamFactor, 0.0, 1.0);
             
             // Apply time of day brightness (day/night cycle)
@@ -462,7 +469,14 @@ class OceanWaves(ShaderEffect):
             vec3 waterColor = getOceanColor(depth, vWaveIntensity, foamFactor);
             float shimmer = noise(vWorldPos * 0.3 + vec2(phase * 1.25, 0.0)) * 0.15 + 0.85;
             waterColor *= shimmer;
-            float lighting = 0.75 + vWaveIntensity * 0.5;
+            // Wider lighting range driven by wave intensity. Was
+            // 0.75..1.25; now 0.35..1.45. Troughs go visibly DARKER
+            // (deep blue silhouette), crests go visibly BRIGHTER —
+            // intensity contrast within the wave structure itself
+            // rather than a uniform-bright wash. The visible
+            // peak-to-trough light shift is what reads as "rolling
+            // wave structure" rather than a smooth gradient.
+            float lighting = 0.35 + vWaveIntensity * 1.10;
             waterColor *= lighting;
             
             waterColor *= dayBrightness;
@@ -502,18 +516,23 @@ class OceanWaves(ShaderEffect):
                     alpha = 0.95;
                 }
             } else {
-                // Pure water — alpha pulled back from 0.5-0.95 to 0.2-0.5
-                // so the wave wash doesn't dominate the per-receiver
-                // energy budget under brightness_limit=0.1. Foam crests
-                // still get their full bright accent (they're the
-                // sparse-bright feature in the wave field). The blue
-                // body fades enough that bioluminescence, kelp, fish
-                // and other layers can punch through visually instead
-                // of all being compressed by the wash.
+                // Pure water — alpha now varies with wave intensity
+                // for spatial contrast. Trough fragments (low
+                // vWaveIntensity) drop to near-transparent so the
+                // shaders below can show through; crest fragments
+                // (high vWaveIntensity) go more opaque so peaks
+                // read as solid water swells. Foam contribution
+                // pushed up so crest highlights are clearly bright.
+                //
+                // Wave-intensity range is roughly 0..1.5 (the 0.4-0.6
+                // power-curve waves combined with shoaling can exceed
+                // 1.0 near shore). Capped via clamp.
                 color = waterColor;
-                alpha = 0.20 + (1.0 - depth) * 0.20;
-                alpha += foamFactor * 0.45;
-                alpha = clamp(alpha, 0.0, 0.85);
+                alpha = 0.10
+                      + (1.0 - depth) * 0.12
+                      + vWaveIntensity * 0.30;
+                alpha += foamFactor * 0.55;
+                alpha = clamp(alpha, 0.0, 0.90);
             }
             
             alpha *= fadeAlpha;
