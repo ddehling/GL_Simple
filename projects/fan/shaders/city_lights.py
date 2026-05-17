@@ -185,8 +185,14 @@ class CityLightsEffect(ShaderEffect):
             lat_min, lat_max = min(lats), max(lats)
             lon_min, lon_max = min(lons), max(lons)
 
-            # Scatter points inside polygon
-            n_attempts = 80
+            # Scatter points inside polygon. Bumped 80 -> 140 so the
+            # bay-area urban field reads as a properly dense night
+            # skyline rather than sparse dots scattered across each
+            # district. Combined with the expanded polygon list,
+            # this roughly triples the total visible light count
+            # while staying within the per-receiver energy budget
+            # (each light is still a single pixel point).
+            n_attempts = 140
             for _ in range(n_attempts):
                 lat = np.random.uniform(lat_min, lat_max)
                 lon = np.random.uniform(lon_min, lon_max)

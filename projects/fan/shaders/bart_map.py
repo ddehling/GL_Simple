@@ -291,8 +291,14 @@ _SAN_PABLO_BAY_POLYGON: List[Tuple[float, float]] = [
     (37.97, -122.33), (37.97, -122.35),
 ]
 
-# Urban areas — warm grey, brighter than land
+# Urban areas — warm grey, brighter than land. Used both by bart_map
+# (geographic shading) and city_lights (scatter point placement). Each
+# polygon is a closed rectangle (4 corner pts + closing pt) covering
+# a bay-area urban district. Density of nighttime lights is set per
+# polygon by city_lights' n_attempts parameter.
 _URBAN_POLYGONS: List[List[Tuple[float, float]]] = [
+    # ===== Original 12 districts =====
+
     # San Francisco proper
     [(37.81, -122.48), (37.81, -122.39), (37.71, -122.39),
      (37.71, -122.48), (37.81, -122.48)],
@@ -329,6 +335,60 @@ _URBAN_POLYGONS: List[List[Tuple[float, float]]] = [
     # Livermore / Dublin / Pleasanton
     [(37.72, -121.92), (37.72, -121.75), (37.66, -121.75),
      (37.66, -121.92), (37.72, -121.92)],
+
+    # ===== Marin County (north bay, west side) =====
+
+    # Sausalito / Mill Valley / Tiburon (south Marin)
+    [(37.93, -122.55), (37.93, -122.46), (37.85, -122.46),
+     (37.85, -122.55), (37.93, -122.55)],
+    # San Rafael / Larkspur / Corte Madera
+    [(38.02, -122.55), (38.02, -122.48), (37.94, -122.48),
+     (37.94, -122.55), (38.02, -122.55)],
+    # Novato
+    [(38.13, -122.60), (38.13, -122.52), (38.08, -122.52),
+     (38.08, -122.60), (38.13, -122.60)],
+
+    # ===== North bay (Carquinez Strait area) =====
+
+    # Vallejo / Benicia
+    [(38.13, -122.30), (38.13, -122.13), (38.06, -122.13),
+     (38.06, -122.30), (38.13, -122.30)],
+    # Hercules / Pinole / San Pablo
+    [(38.02, -122.36), (38.02, -122.28), (37.96, -122.28),
+     (37.96, -122.36), (38.02, -122.36)],
+
+    # ===== East bay fill (Oakland → Fremont gap) =====
+
+    # San Leandro
+    [(37.74, -122.18), (37.74, -122.10), (37.69, -122.10),
+     (37.69, -122.18), (37.74, -122.18)],
+    # Castro Valley
+    [(37.72, -122.10), (37.72, -122.04), (37.68, -122.04),
+     (37.68, -122.10), (37.72, -122.10)],
+
+    # ===== Peninsula coast (west) =====
+
+    # Pacifica
+    [(37.66, -122.50), (37.66, -122.46), (37.59, -122.46),
+     (37.59, -122.50), (37.66, -122.50)],
+    # Brisbane / Bayshore / north Bay Area shipyard fringe
+    [(37.69, -122.41), (37.69, -122.37), (37.66, -122.37),
+     (37.66, -122.41), (37.69, -122.41)],
+    # Foster City / Belmont
+    [(37.57, -122.28), (37.57, -122.22), (37.53, -122.22),
+     (37.53, -122.28), (37.57, -122.28)],
+    # Half Moon Bay (coastal pocket)
+    [(37.48, -122.46), (37.48, -122.43), (37.45, -122.43),
+     (37.45, -122.46), (37.48, -122.46)],
+
+    # ===== South Peninsula fill =====
+
+    # Cupertino / Saratoga / Los Gatos
+    [(37.38, -122.05), (37.38, -121.96), (37.31, -121.96),
+     (37.31, -122.05), (37.38, -122.05)],
+    # Campbell / Los Altos
+    [(37.40, -122.13), (37.40, -122.05), (37.34, -122.05),
+     (37.34, -122.13), (37.40, -122.13)],
 ]
 
 # Parks / open space / forests — green
