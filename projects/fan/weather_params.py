@@ -917,7 +917,9 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.5,
         "Switch_rate": 0.45,
         "Wolfy": 0.4,
-        "ambient_sound": "High Desert Crickets.wav",
+        # Was "High Desert Crickets.wav" — wrong biome. Owl hoots
+        # fit a deep-forest night state where Owly is already 0.7.
+        "ambient_sound": "Owls Hooting.wav",
         "canopy_density": 0.65,
         "celestial_visibility": 1,
         "eye_density": 0.7,
@@ -980,7 +982,9 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.4,
         "Switch_rate": 0.55,
         "Wolfy": 0.2,
-        "ambient_sound": "High Desert Crickets.wav",
+        # Was "High Desert Crickets.wav" — desert sound in a forest set.
+        # Forest Cicadas reads as the right biome for a forest night.
+        "ambient_sound": "Forest Cicadas EDITED.wav",
         "canopy_density": 0.75,
         "celestial_visibility": 0.95,
         "firefly_density": 0.7,
@@ -1074,7 +1078,10 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.4,
         "Switch_rate": 0.4,
         "Wolfy": 0.2,
-        "ambient_sound": "High Desert Crickets.wav",
+        # Was "High Desert Crickets.wav" — desert sound in a damp
+        # forest-floor magic state. Swamp ambience reads as the right
+        # damp / nocturnal-fungi feel for bioluminescent grove.
+        "ambient_sound": "25 Swamp Ambience 2 Special Mix Light Chorus of Frogs Croa EDITED.wav",
         "canopy_density": 0.55,
         "celestial_visibility": 0.7,
         "dapple_strength": 0,
@@ -1249,7 +1256,9 @@ WEATHER_PRESETS = {
         "ARI": 30,
         "Sound_volume": 1.0,
         "Switch_rate": 0.45,
-        "ambient_sound": "09 Nightingale.mp3",
+        # Was Nightingale (night bird) on a day-state. Rain-into-puddle
+        # reads as the wet-leaves drip aftermath of a storm.
+        "ambient_sound": "Rain Into Puddle EDITED.wav",
         "canopy_density": 0.95,
         "celestial_visibility": 0.6,
         # Strong residual dappling — sun cutting through wet leaves.
@@ -1301,7 +1310,9 @@ WEATHER_PRESETS = {
         "Owly": 0.1,
         "Sound_volume": 1.6,
         "Switch_rate": 0.8,
-        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        # Differentiate from full night_storm (Rain Heavy) — squall
+        # is mid-tier, so use the on-leaves rain mix.
+        "ambient_sound": "rain_on_leaves.mp3",
         "canopy_density": 0.7,
         "celestial_visibility": 0.1,
         "dapple_strength": 0,
