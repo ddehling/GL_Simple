@@ -246,20 +246,28 @@ void main() {
     vec3 leaf_col = leaf_base * intensity;
 
     // ---------- Bioluminescent leaf glow (night only) ----------
-    // A small fraction of leaves emit a soft cool-teal glow at night,
-    // like real bioluminescent forest fungi/foxfire on a hosted leaf
-    // surface. Driven by a separate coarse noise channel (different
-    // freqs from the hot-leaf channel) so the glowing leaves are
-    // spatially distinct from sun-hot ones, and gated by starryness
-    // so the effect is invisible during the day. Slight per-region
-    // pulse so the glow breathes rather than reading as static
-    // emission.
+    // A substantial fraction of leaves (~25%) emit a strong cool-teal
+    // glow at night — bright enough to dominate the canopy color on
+    // those leaves, like foxfire on real bioluminescent fungi. Driven
+    // by a coarse noise channel separate from the hot-leaf channel so
+    // glowing leaves are spatially distinct from sun-hot ones, and
+    // gated by starryness so the effect is invisible during the day.
+    // Slight per-region pulse so the glow breathes rather than reading
+    // as static emission.
     float bio_n = vnoise(uv * vec2(6.5, 10.0) + 73.1);
-    float bio_select = smoothstep(0.74, 0.86, bio_n);
+    // Lowered threshold range (0.62..0.78 vs 0.74..0.86) so roughly
+    // double the leaves glow, with a longer ramp so transitions
+    // between glowing and non-glowing leaves are smoother.
+    float bio_select = smoothstep(0.62, 0.78, bio_n);
     float bio_pulse = 0.70 + 0.30 * sin(u_time * 0.45 + uv.x * 3.7);
-    vec3 bio_emit = vec3(0.15, 0.85, 0.55);   // cool teal-green
+    // Brighter, more saturated emission.
+    vec3 bio_emit = vec3(0.20, 1.00, 0.65);
     float bio_amt = bio_select * bio_pulse * u_starryness;
-    leaf_col += bio_emit * bio_amt * 0.55;
+    // Higher multiplier (was 0.55 -> 1.30) so glowing leaves go well
+    // beyond the base leaf color — at peak the glow channel pushes
+    // green close to 1.0 even on dim base leaves, giving real
+    // bright-on-dark contrast.
+    leaf_col += bio_emit * bio_amt * 1.30;
 
     float max_alpha = mix(0.98, 0.85, u_starryness);
     float total_alpha = effective * max_alpha * u_fade;
