@@ -120,8 +120,14 @@ void main() {
     float dist = length(vQuad);
     if (dist > 1.0) discard;
 
-    // Slow twinkle
-    float twinkle = 0.7 + 0.3 * sin(uTime * 1.5 + vPhase);
+    // Twinkle — wider range (0.40-1.00 vs 0.70-1.00) and with a
+    // secondary higher-frequency component so individual lights
+    // actually flicker visibly rather than reading as steady-bright.
+    // Compound sine produces beats that vary the per-light intensity
+    // unpredictably, like real city lights from a distance.
+    float twink1 = 0.5 + 0.5 * sin(uTime * 1.5 + vPhase);
+    float twink2 = 0.5 + 0.5 * sin(uTime * 3.7 + vPhase * 1.7);
+    float twinkle = 0.40 + 0.45 * twink1 + 0.15 * twink2;
 
     float alpha = uNightFactor * twinkle;
     if (alpha < 0.01) discard;
@@ -152,6 +158,26 @@ class CityLightsEffect(ShaderEffect):
         city_phases = []
 
         np.random.seed(42)  # deterministic placement
+        # City-light species mix. Most lights are deep warm amber
+        # (streetlights, residential windows); a smaller fraction are
+        # cool office-window white, a sparse fraction are saturated
+        # red neon / sign accents, and the rarest are LED blue
+        # billboard tints. This urban color variety gives the night
+        # skyline real visual variety instead of a uniform amber haze.
+        #   (r_lo, r_hi, g_lo, g_hi, b_lo, b_hi, weight)
+        light_species = [
+            # Deep warm amber — common streetlight / window
+            (0.95, 1.00, 0.45, 0.70, 0.05, 0.15, 0.75),
+            # Cool office-window white — offices, apartments
+            (0.80, 0.95, 0.85, 0.95, 0.85, 1.00, 0.12),
+            # Saturated red neon — signs, late-night bars
+            (0.95, 1.00, 0.05, 0.25, 0.05, 0.18, 0.07),
+            # LED blue / billboard tint
+            (0.10, 0.35, 0.40, 0.65, 0.85, 1.00, 0.06),
+        ]
+        weights = np.array([s[6] for s in light_species], dtype=np.float64)
+        weights /= weights.sum()
+
         for poly in _URBAN_POLYGONS:
             # Bounding box of polygon
             lats = [p[0] for p in poly]
@@ -167,14 +193,20 @@ class CityLightsEffect(ShaderEffect):
                 if _point_in_polygon(lon, lat, poly):
                     px, py = _geo_to_fan_px(lat, lon, w, h)
                     city_positions.append([px, py])
-                    # Warm yellow-orange colors with variation
-                    r = np.random.uniform(0.9, 1.0)
-                    g = np.random.uniform(0.6, 0.85)
-                    b = np.random.uniform(0.1, 0.3)
+                    # Pick a species and sample a color from its range
+                    sp = light_species[int(np.random.choice(len(light_species), p=weights))]
+                    r = np.random.uniform(sp[0], sp[1])
+                    g = np.random.uniform(sp[2], sp[3])
+                    b = np.random.uniform(sp[4], sp[5])
                     city_colors.append([r, g, b])
                     city_phases.append(np.random.uniform(0, 2 * np.pi))
 
-        # Generate bridge light positions
+        # Generate bridge light positions. Two bridges, distinct hues:
+        # Golden Gate keeps its iconic warm-amber (matches the bridge's
+        # real-world International Orange paint); Bay Bridge is the
+        # cool cyan-white LED-era look. Pushed slightly more chromatic
+        # than the previous (warm-white / desaturated-white) pair so
+        # the two bridges read as distinct accents in the night scene.
         bridge_positions = []
         bridge_colors = []
         bridge_phases = []
@@ -182,13 +214,13 @@ class CityLightsEffect(ShaderEffect):
         for lat, lon in _GOLDEN_GATE:
             px, py = _geo_to_fan_px(lat, lon, w, h)
             bridge_positions.append([px, py])
-            bridge_colors.append([1.0, 0.85, 0.6])  # warm white
+            bridge_colors.append([1.00, 0.55, 0.20])  # deep warm amber
             bridge_phases.append(np.random.uniform(0, 2 * np.pi))
 
         for lat, lon in _BAY_BRIDGE:
             px, py = _geo_to_fan_px(lat, lon, w, h)
             bridge_positions.append([px, py])
-            bridge_colors.append([0.9, 0.95, 1.0])  # cool white
+            bridge_colors.append([0.55, 0.85, 1.00])  # cool cyan-white
             bridge_phases.append(np.random.uniform(0, 2 * np.pi))
 
         np.random.seed(None)  # restore random seed
