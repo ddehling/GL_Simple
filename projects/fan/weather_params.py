@@ -121,6 +121,13 @@ class WeatherState(Enum):
     FOREST_BREEZY = "forest_breezy"
     FOREST_MIGRATION = "forest_migration"
     FOREST_FIREFLY = "forest_firefly"
+    # Rain-cluster additions — day + night variants spanning the
+    # light-rain / brief-thunder / aftermath / drizzle spectrum.
+    FOREST_DRIZZLE = "forest_drizzle"
+    FOREST_THUNDERSHOWER = "forest_thundershower"
+    FOREST_POST_RAIN = "forest_post_rain"
+    FOREST_NIGHT_DRIZZLE = "forest_night_drizzle"
+    FOREST_NIGHT_SQUALL = "forest_night_squall"
     TEST_RGB = "test_rgb"
     TEST_HUE_BIN = "test_hue_bin"
 
@@ -918,11 +925,11 @@ WEATHER_PRESETS = {
         "fog": 0.15,
         "fog_color": np.array([0.05, 0.07, 0.18]),
         "meteor_rate": 0.2,
-        "possible_transitions": ["forest_dawn", "aurora_grove", "spirit_grove", "snowfall", "forest_night_storm", "forest_bioluminescent", "forest_firefly"],
+        "possible_transitions": ["forest_dawn", "aurora_grove", "spirit_grove", "snowfall", "forest_night_storm", "forest_bioluminescent", "forest_firefly", "forest_night_drizzle"],
         "season_preference": 0.06,
         "starryness": 1,
         "transition_duration": 30,
-        "transition_weights": [1, 0.3, 0.25, 0.2, 0.3, 0.5, 0.5],
+        "transition_weights": [1, 0.3, 0.25, 0.2, 0.3, 0.5, 0.5, 0.5],
         "tree_prob": 0.2,
         "wind_speed": 0.05,
     },
@@ -938,11 +945,11 @@ WEATHER_PRESETS = {
         "fog": 0.05,
         "fog_color": np.array([0.4, 0.6, 0.4]),
         "godray_strength": 0.7,
-        "possible_transitions": ["forest_dusk", "forest_storm", "autumn_blaze", "forest_breezy", "forest_migration", "forest_golden_hour"],
+        "possible_transitions": ["forest_dusk", "forest_storm", "autumn_blaze", "forest_breezy", "forest_migration", "forest_golden_hour", "forest_drizzle", "forest_thundershower"],
         "season_preference": 0.5,
         "starryness": 0,
         "transition_duration": 25,
-        "transition_weights": [1, 0.3, 0.4, 0.4, 0.3, 0.4],
+        "transition_weights": [1, 0.3, 0.4, 0.4, 0.3, 0.4, 0.5, 0.3],
         "tree_prob": 1,
         "wind_speed": 0.25,
     },
@@ -958,11 +965,11 @@ WEATHER_PRESETS = {
         "fog": 0.25,
         "fog_color": np.array([0.45, 0.55, 0.42]),
         "godray_strength": 1,
-        "possible_transitions": ["forest_midday", "forest_storm", "pollen_drift", "forest_misty_dawn", "forest_migration", "forest_breezy"],
+        "possible_transitions": ["forest_midday", "forest_storm", "pollen_drift", "forest_misty_dawn", "forest_migration", "forest_breezy", "forest_drizzle"],
         "season_preference": 0.42,
         "starryness": 0,
         "transition_duration": 25,
-        "transition_weights": [1, 0.25, 0.5, 0.4, 0.4, 0.3],
+        "transition_weights": [1, 0.25, 0.5, 0.4, 0.4, 0.3, 0.5],
         "tree_prob": 0.8,
         "wind_speed": 0.2,
     },
@@ -1004,13 +1011,13 @@ WEATHER_PRESETS = {
         "godray_strength": 0,
         "lightning_probability": 0.7,
         "on_transition_events": [['lightning', 6, 0], ['lightning', 6, 8], ['lightning', 6, 18], ['rain_on_leaves', 120, 0]],
-        "possible_transitions": ["forest_late_night", "forest_night", "light_rain", "forest_storm"],
+        "possible_transitions": ["forest_late_night", "forest_night", "forest_night_squall", "forest_storm", "forest_night_drizzle"],
         "rain_rate": 1,
         "season_preference": 0.9,
         "spookyness": 0.3,
         "starryness": 1,
         "transition_duration": 25,
-        "transition_weights": [1, 0.8, 0.6, 0.4],
+        "transition_weights": [1, 0.8, 0.7, 0.4, 0.6],
         "tree_prob": 0.5,
         "wind_speed": 1.3,
     },
@@ -1181,6 +1188,140 @@ WEATHER_PRESETS = {
         "transition_weights": [1, 0.7, 0.4],
         "tree_prob": 0.9,
         "wind_speed": 0.45,
+    },
+
+    # ---- Rain cluster ----
+
+    WeatherState.FOREST_DRIZZLE: {
+        "ARI": 30,
+        "Sound_volume": 1.2,
+        "Switch_rate": 0.6,
+        "ambient_sound": "01 Rain Light EDITED.wav",
+        "canopy_density": 0.85,
+        "celestial_visibility": 0.5,
+        "dapple_strength": 0.25,
+        "fog": 0.25,
+        # Cool grey-green wet-air tint.
+        "fog_color": np.array([0.50, 0.58, 0.55]),
+        "godray_strength": 0.35,
+        "lightning_probability": 0,
+        "on_transition_events": [['rain_on_leaves', 60, 0]],
+        "possible_transitions": ["forest_morning", "forest_midday",
+                                 "forest_storm", "forest_post_rain"],
+        "rain_rate": 0.3,
+        "season_preference": 0.42,
+        "starryness": 0,
+        "transition_duration": 22,
+        "transition_weights": [0.7, 0.6, 0.5, 0.8],
+        "tree_prob": 0.6,
+        "wind_speed": 0.35,
+    },
+
+    WeatherState.FOREST_THUNDERSHOWER: {
+        "ARI": 28,
+        "Sound_volume": 1.8,
+        # High switch rate — thundershowers pass quickly. Brief intense
+        # event rather than dwelling.
+        "Switch_rate": 1.5,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "canopy_density": 0.8,
+        "celestial_visibility": 0.05,
+        "dapple_strength": 0,
+        "fog": 0.5,
+        "fog_color": np.array([0.30, 0.35, 0.40]),
+        "godray_strength": 0,
+        # Heavy lightning during the brief peak.
+        "lightning_probability": 1.0,
+        "on_transition_events": [['lightning', 6, 0], ['lightning', 6, 8],
+                                 ['rain_on_leaves', 60, 0]],
+        "possible_transitions": ["forest_post_rain", "forest_storm",
+                                 "forest_midday"],
+        "rain_rate": 0.95,
+        "season_preference": 0.55,
+        "starryness": 0,
+        "transition_duration": 18,
+        "transition_weights": [1.2, 0.5, 0.4],
+        "tree_prob": 0.5,
+        "wind_speed": 1.1,
+    },
+
+    WeatherState.FOREST_POST_RAIN: {
+        "ARI": 30,
+        "Sound_volume": 1.0,
+        "Switch_rate": 0.45,
+        "ambient_sound": "09 Nightingale.mp3",
+        "canopy_density": 0.95,
+        "celestial_visibility": 0.6,
+        # Strong residual dappling — sun cutting through wet leaves.
+        "dapple_strength": 0.9,
+        # Lingering ground mist.
+        "fog": 0.30,
+        "fog_color": np.array([0.65, 0.72, 0.62]),
+        # Sun returning, strong godrays through the moisture-laden air.
+        "godray_strength": 0.95,
+        "possible_transitions": ["forest_midday", "forest_golden_hour",
+                                 "forest_morning", "forest_misty_dawn"],
+        "rain_rate": 0,
+        "season_preference": 0.5,
+        "starryness": 0,
+        "transition_duration": 28,
+        "transition_weights": [1, 0.7, 0.6, 0.3],
+        "tree_prob": 0.8,
+        "wind_speed": 0.2,
+    },
+
+    WeatherState.FOREST_NIGHT_DRIZZLE: {
+        "ARI": 30,
+        "Owly": 0.3,
+        "Sound_volume": 1.0,
+        "Switch_rate": 0.5,
+        "ambient_sound": "01 Rain Light EDITED.wav",
+        "canopy_density": 0.7,
+        "celestial_visibility": 0.5,
+        "dapple_strength": 0,
+        "fog": 0.30,
+        # Deep cool blue-grey night-rain palette.
+        "fog_color": np.array([0.10, 0.14, 0.20]),
+        "godray_strength": 0,
+        "lightning_probability": 0,
+        "on_transition_events": [['rain_on_leaves', 80, 0]],
+        "possible_transitions": ["forest_night", "forest_late_night",
+                                 "forest_night_squall", "forest_night_storm"],
+        "rain_rate": 0.3,
+        "season_preference": 0.92,
+        "starryness": 1,
+        "transition_duration": 24,
+        "transition_weights": [1, 0.8, 0.6, 0.4],
+        "tree_prob": 0.4,
+        "wind_speed": 0.25,
+    },
+
+    WeatherState.FOREST_NIGHT_SQUALL: {
+        "ARI": 30,
+        "Owly": 0.1,
+        "Sound_volume": 1.6,
+        "Switch_rate": 0.8,
+        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "canopy_density": 0.7,
+        "celestial_visibility": 0.1,
+        "dapple_strength": 0,
+        "fog": 0.5,
+        "fog_color": np.array([0.10, 0.14, 0.20]),
+        "godray_strength": 0,
+        # Some lightning but less than full forest_night_storm.
+        "lightning_probability": 0.3,
+        "on_transition_events": [['lightning', 6, 0],
+                                 ['rain_on_leaves', 90, 0]],
+        "possible_transitions": ["forest_night_storm", "forest_night_drizzle",
+                                 "forest_night", "forest_late_night"],
+        "rain_rate": 0.65,
+        "season_preference": 0.94,
+        "spookyness": 0.1,
+        "starryness": 1,
+        "transition_duration": 22,
+        "transition_weights": [0.7, 0.7, 0.6, 0.4],
+        "tree_prob": 0.45,
+        "wind_speed": 1.2,
     },
 
     WeatherState.FOREST_FIREFLY: {
@@ -1971,7 +2112,7 @@ WEATHER_SETS = {
         "season_extremity": 1,
         "season_speed": 1,
         "sound_pool_dir": None,
-        "states": ["forest_dawn", "forest_morning", "forest_midday", "forest_dusk", "forest_night", "forest_late_night", "forest_night_storm", "snowfall", "first_frost", "autumn_blaze", "aurora_grove", "spirit_grove", "forest_storm", "pollen_drift", "mushroom", "bloom", "leaves", "forest_golden_hour", "forest_bioluminescent", "forest_misty_dawn", "forest_pre_storm", "forest_breezy", "forest_migration", "forest_firefly"],
+        "states": ["forest_dawn", "forest_morning", "forest_midday", "forest_dusk", "forest_night", "forest_late_night", "forest_night_storm", "snowfall", "first_frost", "autumn_blaze", "aurora_grove", "spirit_grove", "forest_storm", "pollen_drift", "mushroom", "bloom", "leaves", "forest_golden_hour", "forest_bioluminescent", "forest_misty_dawn", "forest_pre_storm", "forest_breezy", "forest_migration", "forest_firefly", "forest_drizzle", "forest_thundershower", "forest_post_rain", "forest_night_drizzle", "forest_night_squall"],
         "transition_speed": 1,
     },
 
