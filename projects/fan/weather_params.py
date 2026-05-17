@@ -1254,7 +1254,11 @@ WEATHER_PRESETS = {
 
     WeatherState.FOREST_POST_RAIN: {
         "ARI": 30,
-        "Sound_volume": 1.0,
+        # Sound_volume 0.33 (3x quieter than default 1.0) — the
+        # rain-into-puddle recording is much louder per second than
+        # the other forest ambient sounds; without attenuation it
+        # dominated the scene rather than reading as a residual drip.
+        "Sound_volume": 0.33,
         "Switch_rate": 0.45,
         # Was Nightingale (night bird) on a day-state. Rain-into-puddle
         # reads as the wet-leaves drip aftermath of a storm.
