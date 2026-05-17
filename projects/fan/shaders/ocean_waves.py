@@ -364,9 +364,17 @@ class OceanWaves(ShaderEffect):
         
         // Ocean color palette
         vec3 getOceanColor(float depth, float waveIntensity, float foam) {
-            vec3 deepColor = vec3(0.0, 0.15, 0.3);
-            vec3 midColor = vec3(0.0, 0.4, 0.5);
-            vec3 shallowColor = vec3(0.1, 0.6, 0.7);
+            // Saturated water palette — pushed deeper and more vivid
+            // than the previous (0.0, 0.15, 0.3) / (0.0, 0.4, 0.5) /
+            // (0.1, 0.6, 0.7) gradient. The previous palette was
+            // hue-saturated but luminance-dim, so after the lighting
+            // and trough-darkening curves it read as muddy teal.
+            // These have higher peak channels (B 0.30 -> 0.65, B 0.50 ->
+            // 0.85, B 0.70 -> 0.95) while keeping low R for vivid
+            // chroma.
+            vec3 deepColor = vec3(0.00, 0.18, 0.65);
+            vec3 midColor = vec3(0.02, 0.52, 0.85);
+            vec3 shallowColor = vec3(0.08, 0.78, 0.95);
             vec3 foamColor = vec3(0.9, 0.95, 1.0);
             
             vec3 baseColor;
