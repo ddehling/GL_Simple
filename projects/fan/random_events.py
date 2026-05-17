@@ -38,8 +38,11 @@ def run(env_system) -> None:
     # ---- atmospheric group ----
     randcheck = np.random.random()
 
-    if randcheck < weather_params["tree_prob"] / 10000:
-        scheduler.schedule_event(0, 80, fx.shader_tree, frame_id=0)
+    # Tree-spawn event removed: didn't mesh visually with the forest
+    # theme (single-instance projected tree clashed with the dense
+    # procedural canopy). The ``tree_prob`` weather param is left in
+    # presets as inert metadata; shader_tree itself is retained for
+    # potential reuse but no longer scheduled by random_events.
 
     if randcheck < weather_params["Aurora_probability"] / 1000:
         scheduler.schedule_event(0, 50, fx.shader_aurora, frame_id=0)
