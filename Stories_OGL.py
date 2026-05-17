@@ -1497,11 +1497,19 @@ class EnvironmentalSystem:
             state["web_gamma"] = gamma_mod
             state["brightness_limit"] = brightness_limit_mod
 
-            # Volume controls — both applied in real time in the audio engine mixer
+            # Volume controls — all applied in real time in the audio
+            # engine mixer. Master + narrative come from the web UI's
+            # global_modifiers; ambient comes from the active weather
+            # state's Sound_volume param (blended during transitions
+            # by WeatherStateController). Without the ambient hookup
+            # Sound_volume was edit-but-no-effect — visible in the
+            # weather editor but never reaching playback.
             master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
             narrative_vol = self.web_controller.global_modifiers.get('narrative_volume', 1.0)
+            ambient_vol = float(self.weather_state.weather_params.get('Sound_volume', 1.0))
             state["soundengine"].master_volume = master_vol
             state["soundengine"].narrative_volume = narrative_vol
+            state["soundengine"].ambient_volume = ambient_vol
 
             # Cache the final output for the web UI snapshot (post-overrides)
             self._last_web_output = output

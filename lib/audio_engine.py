@@ -273,6 +273,11 @@ class AudioEngine:
         self._device = None
         self.master_volume = 1.0    # scales all audio output
         self.narrative_volume = 1.0  # scales non-ambient (oneshot) tracks in real time
+        # Scales is_ambient tracks at mix time. Stories_OGL pushes the
+        # active weather state's ``Sound_volume`` parameter here each
+        # frame; weather editor edits to Sound_volume therefore take
+        # effect immediately without restart. 1.0 = no attenuation.
+        self.ambient_volume = 1.0
 
     # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
@@ -400,6 +405,7 @@ class AudioEngine:
             other_buf = np.zeros((required_frames, CHANNELS), dtype=np.float32)
             dead = []
             narr_vol = self.narrative_volume
+            amb_vol = self.ambient_volume
             for key, track in tracks.items():
                 try:
                     chunk = track.read(required_frames)
@@ -411,6 +417,13 @@ class AudioEngine:
                 else:
                     if track.is_narrative:
                         narr_buf[:len(chunk)] += chunk * narr_vol
+                    elif track.is_ambient:
+                        # Ambient tracks scale by the per-state
+                        # Sound_volume parameter pushed in from the
+                        # weather scheduler — editing Sound_volume in
+                        # the weather editor takes effect at the next
+                        # frame, no restart needed.
+                        other_buf[:len(chunk)] += chunk * amb_vol
                     else:
                         other_buf[:len(chunk)] += chunk
             for key in dead:
