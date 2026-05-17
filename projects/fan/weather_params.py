@@ -1,30 +1,5 @@
-"""Weight of Light's lib was pruned to just the WoL states + sets; Fan's
-data was orphaned in the process. This module restores Fan's full
-enum + presets + sets locally so the project boots without leaning on
-lib for project-specific content. Lib continues to own the schema
-(``PARAMETER_DEFINITIONS``, ``DEFAULT_WEATHER_PARAMS``,
-``GLOBAL_PARAMETERS``, ``AVAILABLE_BACKGROUND_EVENTS``) which is
-project-agnostic.
-
-The shape mirrors what ``projects/weight_of_light/weather_params.py``
-used to look like before its data got pulled up into lib — local
-``WeatherState`` enum, local presets, local sets. ``WeatherStateController``
-picks up ``mod.WeatherState`` when the project is active so the engine
-runs against Fan's enum without any code-path branching.
-"""
 import numpy as np
 from enum import Enum
-
-# Schema bits that ARE project-agnostic still come from lib so we
-# don't fork them — adding a new param definition lib-side is
-# visible to both projects automatically.
-from lib.weather_params import (  # noqa: F401  explicit re-export
-    DEFAULT_WEATHER_PARAMS,
-    PARAMETER_DEFINITIONS,
-    GLOBAL_PARAMETERS,
-    AVAILABLE_BACKGROUND_EVENTS,
-)
-
 
 class WeatherState(Enum):
     CLEAR = "clear"
@@ -36,7 +11,6 @@ class WeatherState(Enum):
     HEAVY_FOG = "heavy_fog"
     SPOOKY = "spooky"
     FIREFLY = "firefly"
-    VOLCANO = "volcano"
     SANDSTORM = "sandstorm"
     HURRICANE = "hurricane"
     ASTEROID = "asteroid"
@@ -112,8 +86,6 @@ class WeatherState(Enum):
     SPIRIT_GROVE = "spirit_grove"
     FOREST_STORM = "forest_storm"
     POLLEN_DRIFT = "pollen_drift"
-    # Forest-thematic additions — replace the generic clear/light_rain/
-    # foggy/firefly states with forest-specific scenes.
     FOREST_GOLDEN_HOUR = "forest_golden_hour"
     FOREST_BIOLUMINESCENT = "forest_bioluminescent"
     FOREST_MISTY_DAWN = "forest_misty_dawn"
@@ -121,8 +93,6 @@ class WeatherState(Enum):
     FOREST_BREEZY = "forest_breezy"
     FOREST_MIGRATION = "forest_migration"
     FOREST_FIREFLY = "forest_firefly"
-    # Rain-cluster additions — day + night variants spanning the
-    # light-rain / brief-thunder / aftermath / drizzle spectrum.
     FOREST_DRIZZLE = "forest_drizzle"
     FOREST_THUNDERSHOWER = "forest_thundershower"
     FOREST_POST_RAIN = "forest_post_rain"
@@ -131,7 +101,132 @@ class WeatherState(Enum):
     TEST_RGB = "test_rgb"
     TEST_HUE_BIN = "test_hue_bin"
 
-# Weather presets — Fan's catalogue of state→params lookup
+# Global parameters that are always available in every weather set
+# These cannot be removed from sets but their values can be customized per weather state
+GLOBAL_PARAMETERS = [
+    "possible_transitions",
+    "transition_weights",
+    "transition_duration",
+    "Sound_volume",
+    "ARI",
+    "fog",
+    "fog_color",
+    "season_preference",
+    "Switch_rate",
+    "on_transition_events",
+]
+
+# Available background events (always-active effects)
+# This is the single source of truth for which events can be used as continuous background effects.
+# Add new background-capable events here. They must also exist in Stories_OGL.py's event_map.
+AVAILABLE_BACKGROUND_EVENTS = [
+    'clouds',
+    'firefly',
+    'stars',
+    'rain',
+    'fog',
+    'sandstorm',
+    'fog_beings',
+    'falling_leaves',
+]
+
+# Parameter definitions for the weather editor
+# Defines the type and input configuration for each parameter
+PARAMETER_DEFINITIONS = {
+    'ARI': {'type': 'number', 'step': 1},
+    'Aurora_probability': {'type': 'number', 'step': 0.1},
+    'Owly': {'type': 'number', 'step': 0.1},
+    'Sound_volume': {'type': 'number', 'step': 0.1},
+    'Switch_rate': {'type': 'number', 'step': 0.1},
+    'Weird': {'type': 'number', 'step': 0.1},
+    'Wolfy': {'type': 'number', 'step': 0.1},
+    'ambient_sound': {'type': 'text'},
+    # Multiplier on forest_birds spawn rate (1.0 default, larger for
+    # migration / flock-heavy states). Step 0.5 because step 0.05
+    # would be needlessly fine for what's essentially a flock-size dial.
+    'bird_density': {'type': 'number', 'step': 0.5},
+    'bioluminescence': {'type': 'number', 'step': 0.05},
+    'bubble_density': {'type': 'number', 'step': 0.05},
+    'canopy_density': {'type': 'number', 'step': 0.05},
+    'celestial_visibility': {'type': 'number', 'step': 0.1},
+    'dapple_strength': {'type': 'number', 'step': 0.05},
+    'data_flow_rate': {'type': 'number', 'step': 0.05},
+    'drone_activity': {'type': 'number', 'step': 0.05},
+    'electric_interference': {'type': 'number', 'step': 0.05},
+    'eye_density': {'type': 'number', 'step': 0.05},
+    'firefly_density': {'type': 'number', 'step': 0.1},
+    'fog': {'type': 'number', 'step': 0.05},
+    'fog_color': {'type': 'array', 'length': 3},
+    'frost_level': {'type': 'number', 'step': 0.05},
+    'glitch_probability': {'type': 'number', 'step': 0.05},
+    'godray_strength': {'type': 'number', 'step': 0.05},
+    'hologram_density': {'type': 'number', 'step': 0.05},
+    'kelp_density': {'type': 'number', 'step': 0.05},
+    'light_pollution': {'type': 'number', 'step': 0.05},
+    'lightning_probability': {'type': 'number', 'step': 0.05},
+    'marine_life_activity': {'type': 'number', 'step': 0.05},
+    'meteor_rate': {'type': 'number', 'step': 0.05},
+    'neon_intensity': {'type': 'number', 'step': 0.05},
+    'on_transition_events': {'type': 'event-list'},
+    'pollution_level': {'type': 'number', 'step': 0.05},
+    'possible_transitions': {'type': 'array-string'},
+    'pride_intensity': {'type': 'number', 'step': 0.05},
+    'rain_rate': {'type': 'number', 'step': 0.1},
+    'rainbow_intensity': {'type': 'number', 'step': 0.05},
+    'sand_density': {'type': 'number', 'step': 0.1},
+    'scan_line_intensity': {'type': 'number', 'step': 0.05},
+    'season_preference': {'type': 'number', 'step': 0.025},
+    'skiptime': {'type': 'number', 'step': 0.5},
+    'snow_rate': {'type': 'number', 'step': 0.05},
+    'spookyness': {'type': 'number', 'step': 0.1},
+    'spore_color': {'type': 'number', 'step': 0.05},
+    'spore_density': {'type': 'number', 'step': 0.05},
+    'starryness': {'type': 'number', 'step': 0.1},
+    'stream_flow_rate': {'type': 'number', 'step': 0.05},
+    'tide_level': {'type': 'number', 'step': 0.05},
+    'train_density': {'type': 'number', 'step': 0.1},
+    'train_speed': {'type': 'number', 'step': 0.5},
+    'transition_duration': {'type': 'number', 'step': 1},
+    'transition_weights': {'type': 'array-number'},
+    'tree_prob': {'type': 'number', 'step': 0.1},
+    'vent_activity': {'type': 'number', 'step': 0.05},
+    'volcano_level': {'type': 'number', 'step': 0.1},
+    'wave_amplitude': {'type': 'number', 'step': 0.05},
+    'wave_speed': {'type': 'number', 'step': 0.05},
+    'wind_speed': {'type': 'number', 'step': 0.1},
+}
+
+# Default weather parameters
+DEFAULT_WEATHER_PARAMS = {
+    "wind_speed": 0,
+    "rain_rate": 0,
+    "lightning_probability": 0,
+    "starryness": 1.0,
+    "spookyness": 0.0,
+    "fog": 0.0,
+    "fog_color": np.array([0.7, 0.7, 0.7]),
+    "possible_transitions": ['light_rain', 'foggy', 'windy_night'],
+    "transition_weights": [1.0, 2.0, 0.5],
+    "transition_duration": 20.0,
+    "celestial_visibility": 1.0,
+    "firefly_density": 0.0,
+    "Aurora_probability": 0.0,
+    "Wolfy": 0.0,
+    "Switch_rate": 1.0,
+    "meteor_rate": 0.0,
+    "volcano_level": 0.0,
+    "sand_density": 0.0,
+    "skiptime": 0.0,
+    "tree_prob": 0.0,
+    "Weird": 0.0,
+    "Sound_volume": 1.0,
+    "season_preference": 0.375,
+    "ambient_sound": None,
+    "ARI": 0.0,
+}
+
+# Weather presets
+# Weather state parameters
 WEATHER_PRESETS = {
     WeatherState.ASTEROID: {
         "ARI": 40,
@@ -871,6 +966,52 @@ WEATHER_PRESETS = {
         "wind_speed": 0.1,
     },
 
+    WeatherState.FOREST_BIOLUMINESCENT: {
+        "ARI": 30,
+        "Owly": 0.6,
+        "Sound_volume": 1.4,
+        "Switch_rate": 1,
+        "Wolfy": 0.2,
+        "ambient_sound": "25 Swamp Ambience 2 Special Mix Light Chorus of Frogs Croa EDITED.wav",
+        "canopy_density": 0.55,
+        "celestial_visibility": 0.7,
+        "dapple_strength": 0,
+        "eye_density": 0.85,
+        "firefly_density": 0.3,
+        "fog": 0.12,
+        "fog_color": np.array([0.04, 0.1, 0.14]),
+        "meteor_rate": 0,
+        "possible_transitions": ["forest_late_night", "spirit_grove", "forest_firefly"],
+        "season_preference": 0.05,
+        "spore_color": 0,
+        "spore_density": 0.5,
+        "starryness": 1,
+        "transition_duration": 20,
+        "transition_weights": [1, 0.3, 0.5],
+        "tree_prob": 0.2,
+        "wind_speed": 0.05,
+    },
+
+    WeatherState.FOREST_BREEZY: {
+        "ARI": 30,
+        "Sound_volume": 1.1,
+        "Switch_rate": 0.7,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "canopy_density": 1,
+        "celestial_visibility": 0,
+        "dapple_strength": 0.7,
+        "fog": 0.08,
+        "fog_color": np.array([0.45, 0.55, 0.55]),
+        "godray_strength": 0.55,
+        "possible_transitions": ["forest_midday", "forest_morning", "forest_pre_storm"],
+        "season_preference": 0.5,
+        "starryness": 0,
+        "transition_duration": 22,
+        "transition_weights": [1, 0.7, 0.3],
+        "tree_prob": 0.8,
+        "wind_speed": 1.4,
+    },
+
     WeatherState.FOREST_DAWN: {
         "ARI": 35,
         "Sound_volume": 1,
@@ -889,6 +1030,29 @@ WEATHER_PRESETS = {
         "transition_weights": [1, 0.25, 0.4, 0.6],
         "tree_prob": 0.6,
         "wind_speed": 0.15,
+    },
+
+    WeatherState.FOREST_DRIZZLE: {
+        "ARI": 30,
+        "Sound_volume": 1.2,
+        "Switch_rate": 0.6,
+        "ambient_sound": "01 Rain Light EDITED.wav",
+        "canopy_density": 0.85,
+        "celestial_visibility": 0.5,
+        "dapple_strength": 0.25,
+        "fog": 0.25,
+        "fog_color": np.array([0.5, 0.58, 0.55]),
+        "godray_strength": 0.35,
+        "lightning_probability": 0,
+        "on_transition_events": [['rain_on_leaves', 60, 0]],
+        "possible_transitions": ["forest_morning", "forest_midday", "forest_storm", "forest_post_rain"],
+        "rain_rate": 0.3,
+        "season_preference": 0.42,
+        "starryness": 0,
+        "transition_duration": 22,
+        "transition_weights": [0.7, 0.6, 0.5, 0.8],
+        "tree_prob": 0.6,
+        "wind_speed": 0.35,
     },
 
     WeatherState.FOREST_DUSK: {
@@ -911,14 +1075,54 @@ WEATHER_PRESETS = {
         "wind_speed": 0.2,
     },
 
+    WeatherState.FOREST_FIREFLY: {
+        "ARI": 32,
+        "Owly": 0.5,
+        "Sound_volume": 1.2,
+        "Switch_rate": 0.5,
+        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "canopy_density": 0.7,
+        "celestial_visibility": 0.4,
+        "dapple_strength": 0,
+        "eye_density": 0.4,
+        "firefly_density": 1,
+        "fog": 0.1,
+        "fog_color": np.array([0.1, 0.14, 0.2]),
+        "possible_transitions": ["forest_night", "forest_late_night", "forest_bioluminescent"],
+        "season_preference": 0.82,
+        "starryness": 0.85,
+        "transition_duration": 28,
+        "transition_weights": [1, 0.5, 0.7],
+        "tree_prob": 0.5,
+        "wind_speed": 0.12,
+    },
+
+    WeatherState.FOREST_GOLDEN_HOUR: {
+        "ARI": 30,
+        "Sound_volume": 1,
+        "Switch_rate": 0.7,
+        "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
+        "canopy_density": 1,
+        "celestial_visibility": 0,
+        "dapple_strength": 1,
+        "fog": 0.12,
+        "fog_color": np.array([0.85, 0.55, 0.25]),
+        "godray_strength": 1,
+        "possible_transitions": ["forest_dusk", "forest_midday", "autumn_blaze"],
+        "season_preference": 0.7,
+        "starryness": 0,
+        "transition_duration": 25,
+        "transition_weights": [1, 0.6, 0.5],
+        "tree_prob": 1,
+        "wind_speed": 0.2,
+    },
+
     WeatherState.FOREST_LATE_NIGHT: {
         "ARI": 32,
         "Owly": 0.7,
         "Sound_volume": 1.5,
         "Switch_rate": 0.45,
         "Wolfy": 0.4,
-        # Was "High Desert Crickets.wav" — wrong biome. Owl hoots
-        # fit a deep-forest night state where Owly is already 0.7.
         "ambient_sound": "Owls Hooting.wav",
         "canopy_density": 0.65,
         "celestial_visibility": 1,
@@ -956,6 +1160,47 @@ WEATHER_PRESETS = {
         "wind_speed": 0.25,
     },
 
+    WeatherState.FOREST_MIGRATION: {
+        "ARI": 28,
+        "Sound_volume": 1.3,
+        "Switch_rate": 0.65,
+        "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
+        "bird_density": 10,
+        "canopy_density": 0.7,
+        "celestial_visibility": 0,
+        "dapple_strength": 0.6,
+        "fog": 0.06,
+        "fog_color": np.array([0.55, 0.65, 0.55]),
+        "godray_strength": 0.6,
+        "possible_transitions": ["forest_midday", "forest_morning", "forest_dusk"],
+        "season_preference": 0.45,
+        "starryness": 0,
+        "transition_duration": 22,
+        "transition_weights": [1, 0.7, 0.4],
+        "tree_prob": 0.9,
+        "wind_speed": 0.45,
+    },
+
+    WeatherState.FOREST_MISTY_DAWN: {
+        "ARI": 30,
+        "Sound_volume": 1.2,
+        "Switch_rate": 0.55,
+        "ambient_sound": "09 Nightingale.mp3",
+        "canopy_density": 0.85,
+        "celestial_visibility": 0.4,
+        "dapple_strength": 0.5,
+        "fog": 0.65,
+        "fog_color": np.array([0.55, 0.62, 0.7]),
+        "godray_strength": 0.75,
+        "possible_transitions": ["forest_dawn", "forest_morning", "forest_golden_hour"],
+        "season_preference": 0.22,
+        "starryness": 0.15,
+        "transition_duration": 28,
+        "transition_weights": [1, 0.7, 0.4],
+        "tree_prob": 0.6,
+        "wind_speed": 0.1,
+    },
+
     WeatherState.FOREST_MORNING: {
         "ARI": 30,
         "Sound_volume": 1.2,
@@ -982,8 +1227,6 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.4,
         "Switch_rate": 0.55,
         "Wolfy": 0.2,
-        # Was "High Desert Crickets.wav" — desert sound in a forest set.
-        # Forest Cicadas reads as the right biome for a forest night.
         "ambient_sound": "Forest Cicadas EDITED.wav",
         "canopy_density": 0.75,
         "celestial_visibility": 0.95,
@@ -997,6 +1240,55 @@ WEATHER_PRESETS = {
         "transition_weights": [1, 0.4, 0.3, 0.4, 0.6, 0.5],
         "tree_prob": 0.3,
         "wind_speed": 0.1,
+    },
+
+    WeatherState.FOREST_NIGHT_DRIZZLE: {
+        "ARI": 30,
+        "Owly": 0.3,
+        "Sound_volume": 1,
+        "Switch_rate": 0.5,
+        "ambient_sound": "01 Rain Light EDITED.wav",
+        "canopy_density": 0.7,
+        "celestial_visibility": 0.5,
+        "dapple_strength": 0,
+        "fog": 0.3,
+        "fog_color": np.array([0.1, 0.14, 0.2]),
+        "godray_strength": 0,
+        "lightning_probability": 0,
+        "on_transition_events": [['rain_on_leaves', 80, 0]],
+        "possible_transitions": ["forest_night", "forest_late_night", "forest_night_squall", "forest_night_storm"],
+        "rain_rate": 0.3,
+        "season_preference": 0.92,
+        "starryness": 1,
+        "transition_duration": 24,
+        "transition_weights": [1, 0.8, 0.6, 0.4],
+        "tree_prob": 0.4,
+        "wind_speed": 0.25,
+    },
+
+    WeatherState.FOREST_NIGHT_SQUALL: {
+        "ARI": 30,
+        "Owly": 0.1,
+        "Sound_volume": 1.6,
+        "Switch_rate": 0.8,
+        "ambient_sound": "rain_on_leaves.mp3",
+        "canopy_density": 0.7,
+        "celestial_visibility": 0.1,
+        "dapple_strength": 0,
+        "fog": 0.5,
+        "fog_color": np.array([0.1, 0.14, 0.2]),
+        "godray_strength": 0,
+        "lightning_probability": 0.3,
+        "on_transition_events": [['lightning', 6, 0], ['rain_on_leaves', 90, 0]],
+        "possible_transitions": ["forest_night_storm", "forest_night_drizzle", "forest_night", "forest_late_night"],
+        "rain_rate": 0.65,
+        "season_preference": 0.94,
+        "spookyness": 0.1,
+        "starryness": 1,
+        "transition_duration": 22,
+        "transition_weights": [0.7, 0.7, 0.6, 0.4],
+        "tree_prob": 0.45,
+        "wind_speed": 1.2,
     },
 
     WeatherState.FOREST_NIGHT_STORM: {
@@ -1026,6 +1318,48 @@ WEATHER_PRESETS = {
         "wind_speed": 1.3,
     },
 
+    WeatherState.FOREST_POST_RAIN: {
+        "ARI": 30,
+        "Sound_volume": 0.1,
+        "Switch_rate": 1,
+        "ambient_sound": "Rain Into Puddle EDITED.wav",
+        "canopy_density": 0.95,
+        "celestial_visibility": 0.6,
+        "dapple_strength": 0.9,
+        "fog": 0.3,
+        "fog_color": np.array([0.65, 0.72, 0.62]),
+        "godray_strength": 0.95,
+        "possible_transitions": ["forest_midday", "forest_golden_hour", "forest_morning", "forest_misty_dawn"],
+        "rain_rate": 0,
+        "season_preference": 0.5,
+        "starryness": 0,
+        "transition_duration": 28,
+        "transition_weights": [1, 0.7, 0.6, 0.3],
+        "tree_prob": 0.8,
+        "wind_speed": 0.2,
+    },
+
+    WeatherState.FOREST_PRE_STORM: {
+        "ARI": 32,
+        "Sound_volume": 0.9,
+        "Switch_rate": 0.95,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "canopy_density": 0.9,
+        "celestial_visibility": 0.15,
+        "dapple_strength": 0,
+        "fog": 0.4,
+        "fog_color": np.array([0.35, 0.4, 0.42]),
+        "godray_strength": 0,
+        "possible_transitions": ["forest_storm", "forest_night_storm", "forest_midday"],
+        "season_preference": 0.55,
+        "spookyness": 0.25,
+        "starryness": 0.2,
+        "transition_duration": 18,
+        "transition_weights": [1.4, 0.6, 0.2],
+        "tree_prob": 0.5,
+        "wind_speed": 0.05,
+    },
+
     WeatherState.FOREST_STORM: {
         "ARI": 30,
         "Sound_volume": 1.8,
@@ -1049,200 +1383,20 @@ WEATHER_PRESETS = {
         "wind_speed": 0.9,
     },
 
-    # ---- New forest-thematic states ----
-
-    WeatherState.FOREST_GOLDEN_HOUR: {
-        "ARI": 30,
-        "Sound_volume": 1,
-        "Switch_rate": 0.7,
-        "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
-        "canopy_density": 1,
-        "celestial_visibility": 0,
-        "dapple_strength": 1.0,
-        "fog": 0.12,
-        # Warm amber fog to push the whole scene toward golden-hour light.
-        "fog_color": np.array([0.85, 0.55, 0.25]),
-        "godray_strength": 1.0,
-        "possible_transitions": ["forest_dusk", "forest_midday", "autumn_blaze"],
-        "season_preference": 0.7,
-        "starryness": 0,
-        "transition_duration": 25,
-        "transition_weights": [1, 0.6, 0.5],
-        "tree_prob": 1,
-        "wind_speed": 0.20,
-    },
-
-    WeatherState.FOREST_BIOLUMINESCENT: {
-        "ARI": 30,
-        "Owly": 0.6,
-        "Sound_volume": 1.4,
-        "Switch_rate": 0.4,
-        "Wolfy": 0.2,
-        # Was "High Desert Crickets.wav" — desert sound in a damp
-        # forest-floor magic state. Swamp ambience reads as the right
-        # damp / nocturnal-fungi feel for bioluminescent grove.
-        "ambient_sound": "25 Swamp Ambience 2 Special Mix Light Chorus of Frogs Croa EDITED.wav",
-        "canopy_density": 0.55,
-        "celestial_visibility": 0.7,
-        "dapple_strength": 0,
-        "eye_density": 0.85,
-        "firefly_density": 0.3,
-        "fog": 0.12,
-        # Cool teal-leaning fog to harmonize with the bioluminescent
-        # palette (the glow shader runs cyan/teal/green by default).
-        "fog_color": np.array([0.04, 0.10, 0.14]),
-        "meteor_rate": 0.0,
-        "possible_transitions": ["forest_late_night", "spirit_grove", "forest_firefly"],
-        "season_preference": 0.05,
-        "spore_color": 0.0,
-        "spore_density": 0.5,
-        "starryness": 1,
-        "transition_duration": 30,
-        "transition_weights": [1, 0.3, 0.5],
-        "tree_prob": 0.2,
-        "wind_speed": 0.05,
-    },
-
-    WeatherState.FOREST_MISTY_DAWN: {
-        "ARI": 30,
-        "Sound_volume": 1.2,
-        "Switch_rate": 0.55,
-        "ambient_sound": "09 Nightingale.mp3",
-        "canopy_density": 0.85,
-        "celestial_visibility": 0.4,
-        "dapple_strength": 0.5,
-        "fog": 0.65,
-        # Cool blue-grey mist — the heavy-fog look that the generic
-        # ``foggy`` state was supposed to evoke, but tinted to read as
-        # forest morning rather than ambiguous biome.
-        "fog_color": np.array([0.55, 0.62, 0.70]),
-        "godray_strength": 0.75,
-        "possible_transitions": ["forest_dawn", "forest_morning", "forest_golden_hour"],
-        "season_preference": 0.22,
-        "starryness": 0.15,
-        "transition_duration": 28,
-        "transition_weights": [1, 0.7, 0.4],
-        "tree_prob": 0.6,
-        "wind_speed": 0.10,
-    },
-
-    WeatherState.FOREST_PRE_STORM: {
-        "ARI": 32,
-        "Sound_volume": 0.9,
-        "Switch_rate": 0.95,
-        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
-        "canopy_density": 0.9,
-        "celestial_visibility": 0.15,
-        "dapple_strength": 0.0,
-        "fog": 0.40,
-        "fog_color": np.array([0.35, 0.40, 0.42]),
-        "godray_strength": 0,
-        # Eerie quiet that transitions strongly into the storm states.
-        "possible_transitions": ["forest_storm", "forest_night_storm", "forest_midday"],
-        "season_preference": 0.55,
-        "spookyness": 0.25,
-        "starryness": 0.2,
-        "transition_duration": 18,
-        "transition_weights": [1.4, 0.6, 0.2],
-        "tree_prob": 0.5,
-        "wind_speed": 0.05,
-    },
-
-    WeatherState.FOREST_BREEZY: {
-        "ARI": 30,
-        "Sound_volume": 1.1,
-        "Switch_rate": 0.7,
-        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
-        "canopy_density": 1,
-        "celestial_visibility": 0,
-        "dapple_strength": 0.7,
-        "fog": 0.08,
-        "fog_color": np.array([0.45, 0.55, 0.55]),
-        "godray_strength": 0.55,
-        "possible_transitions": ["forest_midday", "forest_morning", "forest_pre_storm"],
-        "season_preference": 0.5,
-        "starryness": 0,
-        "transition_duration": 22,
-        "transition_weights": [1, 0.7, 0.3],
-        "tree_prob": 0.8,
-        "wind_speed": 1.4,
-    },
-
-    WeatherState.FOREST_MIGRATION: {
-        "ARI": 28,
-        "Sound_volume": 1.3,
-        "Switch_rate": 0.65,
-        "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
-        # Sparser canopy so the dense bird sky is visible against
-        # something other than wall-of-leaves.
-        "canopy_density": 0.7,
-        "celestial_visibility": 0,
-        "dapple_strength": 0.6,
-        "fog": 0.06,
-        "fog_color": np.array([0.55, 0.65, 0.55]),
-        "godray_strength": 0.6,
-        # State signature is the dense bird sky. bird_density 10.0
-        # gives 10x the base spawn rate; combined with MAX_BIRDS=160
-        # the sky stays near that cap, so the migration reads as a
-        # genuinely overwhelming flock event.
-        "bird_density": 10.0,
-        # Switch_rate slightly higher so the state doesn't dwell
-        # forever; meant as a "passage" rather than a destination.
-        "possible_transitions": ["forest_midday", "forest_morning", "forest_dusk"],
-        "season_preference": 0.45,
-        "starryness": 0,
-        "transition_duration": 22,
-        "transition_weights": [1, 0.7, 0.4],
-        "tree_prob": 0.9,
-        "wind_speed": 0.45,
-    },
-
-    # ---- Rain cluster ----
-
-    WeatherState.FOREST_DRIZZLE: {
-        "ARI": 30,
-        "Sound_volume": 1.2,
-        "Switch_rate": 0.6,
-        "ambient_sound": "01 Rain Light EDITED.wav",
-        "canopy_density": 0.85,
-        "celestial_visibility": 0.5,
-        "dapple_strength": 0.25,
-        "fog": 0.25,
-        # Cool grey-green wet-air tint.
-        "fog_color": np.array([0.50, 0.58, 0.55]),
-        "godray_strength": 0.35,
-        "lightning_probability": 0,
-        "on_transition_events": [['rain_on_leaves', 60, 0]],
-        "possible_transitions": ["forest_morning", "forest_midday",
-                                 "forest_storm", "forest_post_rain"],
-        "rain_rate": 0.3,
-        "season_preference": 0.42,
-        "starryness": 0,
-        "transition_duration": 22,
-        "transition_weights": [0.7, 0.6, 0.5, 0.8],
-        "tree_prob": 0.6,
-        "wind_speed": 0.35,
-    },
-
     WeatherState.FOREST_THUNDERSHOWER: {
         "ARI": 28,
         "Sound_volume": 1.8,
-        # High switch rate — thundershowers pass quickly. Brief intense
-        # event rather than dwelling.
         "Switch_rate": 1.5,
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "canopy_density": 0.8,
         "celestial_visibility": 0.05,
         "dapple_strength": 0,
         "fog": 0.5,
-        "fog_color": np.array([0.30, 0.35, 0.40]),
+        "fog_color": np.array([0.3, 0.35, 0.4]),
         "godray_strength": 0,
-        # Heavy lightning during the brief peak.
-        "lightning_probability": 1.0,
-        "on_transition_events": [['lightning', 6, 0], ['lightning', 6, 8],
-                                 ['rain_on_leaves', 60, 0]],
-        "possible_transitions": ["forest_post_rain", "forest_storm",
-                                 "forest_midday"],
+        "lightning_probability": 1,
+        "on_transition_events": [['lightning', 6, 0], ['lightning', 6, 8], ['rain_on_leaves', 60, 0]],
+        "possible_transitions": ["forest_post_rain", "forest_storm", "forest_midday"],
         "rain_rate": 0.95,
         "season_preference": 0.55,
         "starryness": 0,
@@ -1250,119 +1404,6 @@ WEATHER_PRESETS = {
         "transition_weights": [1.2, 0.5, 0.4],
         "tree_prob": 0.5,
         "wind_speed": 1.1,
-    },
-
-    WeatherState.FOREST_POST_RAIN: {
-        "ARI": 30,
-        # Sound_volume 0.33 (3x quieter than default 1.0) — the
-        # rain-into-puddle recording is much louder per second than
-        # the other forest ambient sounds; without attenuation it
-        # dominated the scene rather than reading as a residual drip.
-        "Sound_volume": 0.33,
-        "Switch_rate": 0.45,
-        # Was Nightingale (night bird) on a day-state. Rain-into-puddle
-        # reads as the wet-leaves drip aftermath of a storm.
-        "ambient_sound": "Rain Into Puddle EDITED.wav",
-        "canopy_density": 0.95,
-        "celestial_visibility": 0.6,
-        # Strong residual dappling — sun cutting through wet leaves.
-        "dapple_strength": 0.9,
-        # Lingering ground mist.
-        "fog": 0.30,
-        "fog_color": np.array([0.65, 0.72, 0.62]),
-        # Sun returning, strong godrays through the moisture-laden air.
-        "godray_strength": 0.95,
-        "possible_transitions": ["forest_midday", "forest_golden_hour",
-                                 "forest_morning", "forest_misty_dawn"],
-        "rain_rate": 0,
-        "season_preference": 0.5,
-        "starryness": 0,
-        "transition_duration": 28,
-        "transition_weights": [1, 0.7, 0.6, 0.3],
-        "tree_prob": 0.8,
-        "wind_speed": 0.2,
-    },
-
-    WeatherState.FOREST_NIGHT_DRIZZLE: {
-        "ARI": 30,
-        "Owly": 0.3,
-        "Sound_volume": 1.0,
-        "Switch_rate": 0.5,
-        "ambient_sound": "01 Rain Light EDITED.wav",
-        "canopy_density": 0.7,
-        "celestial_visibility": 0.5,
-        "dapple_strength": 0,
-        "fog": 0.30,
-        # Deep cool blue-grey night-rain palette.
-        "fog_color": np.array([0.10, 0.14, 0.20]),
-        "godray_strength": 0,
-        "lightning_probability": 0,
-        "on_transition_events": [['rain_on_leaves', 80, 0]],
-        "possible_transitions": ["forest_night", "forest_late_night",
-                                 "forest_night_squall", "forest_night_storm"],
-        "rain_rate": 0.3,
-        "season_preference": 0.92,
-        "starryness": 1,
-        "transition_duration": 24,
-        "transition_weights": [1, 0.8, 0.6, 0.4],
-        "tree_prob": 0.4,
-        "wind_speed": 0.25,
-    },
-
-    WeatherState.FOREST_NIGHT_SQUALL: {
-        "ARI": 30,
-        "Owly": 0.1,
-        "Sound_volume": 1.6,
-        "Switch_rate": 0.8,
-        # Differentiate from full night_storm (Rain Heavy) — squall
-        # is mid-tier, so use the on-leaves rain mix.
-        "ambient_sound": "rain_on_leaves.mp3",
-        "canopy_density": 0.7,
-        "celestial_visibility": 0.1,
-        "dapple_strength": 0,
-        "fog": 0.5,
-        "fog_color": np.array([0.10, 0.14, 0.20]),
-        "godray_strength": 0,
-        # Some lightning but less than full forest_night_storm.
-        "lightning_probability": 0.3,
-        "on_transition_events": [['lightning', 6, 0],
-                                 ['rain_on_leaves', 90, 0]],
-        "possible_transitions": ["forest_night_storm", "forest_night_drizzle",
-                                 "forest_night", "forest_late_night"],
-        "rain_rate": 0.65,
-        "season_preference": 0.94,
-        "spookyness": 0.1,
-        "starryness": 1,
-        "transition_duration": 22,
-        "transition_weights": [0.7, 0.7, 0.6, 0.4],
-        "tree_prob": 0.45,
-        "wind_speed": 1.2,
-    },
-
-    WeatherState.FOREST_FIREFLY: {
-        "ARI": 32,
-        "Owly": 0.5,
-        "Sound_volume": 1.2,
-        "Switch_rate": 0.5,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
-        "canopy_density": 0.7,
-        "celestial_visibility": 0.4,
-        "dapple_strength": 0,
-        "eye_density": 0.4,
-        # Warm-summer-evening firefly density bumped well above the
-        # generic ``firefly`` state's default.
-        "firefly_density": 1.0,
-        "fog": 0.10,
-        "fog_color": np.array([0.10, 0.14, 0.20]),
-        "possible_transitions": ["forest_night", "forest_late_night", "forest_bioluminescent"],
-        # Early evening — fireflies peak shortly after sunset. Was 0.08
-        # (pre-dawn), which is when fireflies are NOT active.
-        "season_preference": 0.82,
-        "starryness": 0.85,
-        "transition_duration": 28,
-        "transition_weights": [1, 0.5, 0.7],
-        "tree_prob": 0.5,
-        "wind_speed": 0.12,
     },
 
     WeatherState.HEAVY_FOG: {
@@ -1822,7 +1863,7 @@ WEATHER_PRESETS = {
     WeatherState.POLLEN_DRIFT: {
         "ARI": 35,
         "Sound_volume": 1,
-        "Switch_rate": 0.55,
+        "Switch_rate": 1,
         "ambient_sound": "09 Nightingale.mp3",
         "canopy_density": 0.9,
         "celestial_visibility": 0.2,
@@ -1880,7 +1921,7 @@ WEATHER_PRESETS = {
         "ARI": 28,
         "Owly": 0.4,
         "Sound_volume": 1.6,
-        "Switch_rate": 0.4,
+        "Switch_rate": 1,
         "Weird": 0.6,
         "Wolfy": 0.5,
         "ambient_sound": "Tinkle Atmosphere 01.wav",
@@ -1952,23 +1993,6 @@ WEATHER_PRESETS = {
         "wind_speed": 1,
     },
 
-    WeatherState.VOLCANO: {
-        "ARI": 65,
-        "Switch_rate": 1,
-        "Wolfy": 0.2,
-        "ambient_sound": "Volcano Lava Fire EDITED.wav",
-        "celestial_visibility": 0.8,
-        "firefly_density": 1,
-        "fog": 0.3,
-        "fog_color": np.array([0.7, 0.7, 0.7]),
-        "meteor_rate": 0.1,
-        "possible_transitions": ["clear", "foggy", "spooky", "sandstorm", "desert_blood_moon", "desert_dry_thunderstorm", "desert_starlit_night", "desert_harmattan"],
-        "season_preference": 0.5,
-        "transition_weights": [1, 0.5, 0.2, 0.5, 0.3, 0.5, 0.5, 0.4],
-        "volcano_level": 1,
-        "wind_speed": 0.7,
-    },
-
     WeatherState.WINDY_NIGHT: {
         "ARI": 20,
         "Aurora_probability": 0.5,
@@ -1990,7 +2014,7 @@ WEATHER_PRESETS = {
 
 }
 
-# Weather sets — Fan's curated theme bundles
+# Weather Sets - Mutually exclusive collections of weather states
 WEATHER_SETS = {
     "bartiki": {
         "allowed_parameters": ["train_speed", "train_density", "fog", "fog_color", "Switch_rate", "ARI", "possible_transitions", "transition_weights", "season_preference", "starryness", "celestial_visibility", "rain_rate", "meteor_rate", "wind_speed", "firefly_density", "ambient_sound", "lightning_probability", "pride_intensity"],
@@ -2162,3 +2186,55 @@ WEATHER_SETS = {
 }
 
 DEFAULT_WEATHER_SET = "bartiki"
+
+
+
+def _validate_parameter_definitions():
+    """Sanity-check that every parameter referenced by a weather set or
+    preset has a PARAMETER_DEFINITIONS entry.
+
+    Missing entries cause the web weather editor to silently skip the
+    parameter (see the `if (!paramDef) continue;` in weather_editor.html),
+    so even though the parameter still affects rendering, the user can't
+    see or change its value. Surfacing the problem at import time turns a
+    "why can't I edit this" mystery into an obvious warning.
+    """
+    import sys
+
+    known = set(PARAMETER_DEFINITIONS.keys())
+
+    missing_in_sets = {}
+    for set_name, set_data in WEATHER_SETS.items():
+        for param in set_data.get("allowed_parameters", []):
+            if param not in known:
+                missing_in_sets.setdefault(param, []).append(set_name)
+
+    missing_in_presets = {}
+    for state, preset in WEATHER_PRESETS.items():
+        for param in preset.keys():
+            if param not in known:
+                missing_in_presets.setdefault(param, []).append(state.value)
+
+    if not missing_in_sets and not missing_in_presets:
+        return
+
+    bar = "=" * 72
+    lines = [
+        "",
+        bar,
+        "[weather_params] parameters missing from PARAMETER_DEFINITIONS",
+        "These will be silently skipped by the web weather editor.",
+        "Add an entry in PARAMETER_DEFINITIONS for each one.",
+        bar,
+    ]
+    for param in sorted(missing_in_sets):
+        sets = ", ".join(sorted(missing_in_sets[param]))
+        lines.append(f"  [set]    {param}  (in allowed_parameters of: {sets})")
+    for param in sorted(missing_in_presets):
+        states = ", ".join(sorted(missing_in_presets[param]))
+        lines.append(f"  [preset] {param}  (in states: {states})")
+    lines.append(bar)
+    print("\n".join(lines), file=sys.stderr)
+
+
+_validate_parameter_definitions()
