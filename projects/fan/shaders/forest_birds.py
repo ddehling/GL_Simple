@@ -83,25 +83,36 @@ vec4 draw_bird(vec2 phys, vec4 bird) {{
     if (bright < 0.005) return vec4(0.0);
 
     vec2 d = phys - center;
-    // Slight time-based wing-flap modulating the V slope so birds
-    // don't read as static V cutouts. Frequency varies per bird via
+    // Slight time-based wing-flap modulating the M-slope so birds
+    // don't read as static cutouts. Frequency varies per bird via
     // its x position so they're not all flapping in sync.
     float flap = sin(u_time * 4.5 + center.x * 1.3) * 0.18;
     float slope = (0.40 + flap) / scale;
 
-    // V opens upward; left wing slope -slope, right wing slope +slope.
-    float wing_l = abs(d.y - (-d.x * slope));
-    float wing_r = abs(d.y - ( d.x * slope));
-    // Bigger wingspan and chunkier wing lines for stronger visibility.
+    // M-shape: wings extend DOWN-and-out from the body, like a soaring
+    // bird seen from below. The two line equations y = ±slope·x each
+    // pass through two quadrants; clipping to ``d.y <= 0`` keeps only
+    // the lower halves so we get an M not an X (the previous version
+    // drew both full lines, producing an X cutout instead of a bird).
+    //
+    //   left wing  — line y = slope·x   (going through lower-left)
+    //   right wing — line y = -slope·x  (going through lower-right)
+    float wing_l = abs(d.y - d.x * slope);
+    float wing_r = abs(d.y + d.x * slope);
     float span = 0.85 * scale;
     float wing_extent = step(abs(d.x), span);
     float thickness_lo = 0.14 * scale;
     float thickness_hi = 0.04 * scale;
+    // ``step(d.y, 0.0)`` returns 1 when d.y <= 0 (lower half).
+    float lower_half = step(d.y, 0.0);
     float wing = smoothstep(thickness_lo, thickness_hi,
-                            min(wing_l, wing_r)) * wing_extent;
+                            min(wing_l, wing_r))
+               * wing_extent
+               * lower_half;
 
-    // Body: small ellipse at center — narrower in x than y. Reads as
-    // a bird torso between the wings rather than a bare line meeting.
+    // Body: small ellipse at center — wider in x than y for a bird
+    // torso seen from below. Renders in both halves so the wing apex
+    // has something to meet at.
     float body_x = d.x / (0.18 * scale);
     float body_y = d.y / (0.10 * scale);
     float body_r2 = body_x * body_x + body_y * body_y;
