@@ -245,6 +245,22 @@ void main() {
 
     vec3 leaf_col = leaf_base * intensity;
 
+    // ---------- Bioluminescent leaf glow (night only) ----------
+    // A small fraction of leaves emit a soft cool-teal glow at night,
+    // like real bioluminescent forest fungi/foxfire on a hosted leaf
+    // surface. Driven by a separate coarse noise channel (different
+    // freqs from the hot-leaf channel) so the glowing leaves are
+    // spatially distinct from sun-hot ones, and gated by starryness
+    // so the effect is invisible during the day. Slight per-region
+    // pulse so the glow breathes rather than reading as static
+    // emission.
+    float bio_n = vnoise(uv * vec2(6.5, 10.0) + 73.1);
+    float bio_select = smoothstep(0.74, 0.86, bio_n);
+    float bio_pulse = 0.70 + 0.30 * sin(u_time * 0.45 + uv.x * 3.7);
+    vec3 bio_emit = vec3(0.15, 0.85, 0.55);   // cool teal-green
+    float bio_amt = bio_select * bio_pulse * u_starryness;
+    leaf_col += bio_emit * bio_amt * 0.55;
+
     float max_alpha = mix(0.98, 0.85, u_starryness);
     float total_alpha = effective * max_alpha * u_fade;
     if (total_alpha < 0.02) discard;
