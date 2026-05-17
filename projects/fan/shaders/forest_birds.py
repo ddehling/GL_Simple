@@ -201,6 +201,12 @@ class ForestBirdsEffect(ShaderEffect):
 
     def __init__(self, viewport):
         super().__init__(viewport)
+        # Higher than forest_canopy's render_priority (7.0) so birds
+        # paint ON TOP of the leaves rather than under them. The
+        # earlier gl_Position.z = 0.08 isn't enough because the group
+        # canvas sorts by ``render_priority``, not depth, when depth
+        # writes are disabled.
+        self.render_priority = 8.0
         self.day_factor = 1.0
         self.fade = 0.0
         self._time = 0.0
