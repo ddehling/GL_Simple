@@ -29,10 +29,13 @@ from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 
 # Hard cap on birds alive at once (matches the shader array size).
-# Bumped iteratively: 24 -> 96 -> 160 to accommodate migration state's
-# increasing density. 160 vec4s of uniform storage is comfortable for
-# ES3.10 (well under the 256-vector minimum required).
-MAX_BIRDS = 160
+# Pulled back from 160 to 96 — the fragment shader iterates through
+# all active birds per pixel, and at 160 the per-frame GPU cost was
+# dragging the framerate low enough that weather transitions
+# (probabilistic per-frame) felt like minutes-long delays. 96 still
+# gives migration state a dense overhead sky without choking the
+# Pi-class hardware on the receiver side.
+MAX_BIRDS = 96
 
 # Bird altitude in physical feet. Full visible vertical range — from
 # the inner ring (r = 4 ft, the inner edge of the LED area) to the

@@ -1165,7 +1165,7 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.3,
         "Switch_rate": 0.65,
         "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
-        "bird_density": 10,
+        "bird_density": 6,
         "canopy_density": 0.7,
         "celestial_visibility": 0,
         "dapple_strength": 0.6,
