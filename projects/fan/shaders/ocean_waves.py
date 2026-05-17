@@ -84,8 +84,14 @@ def shader_ocean_waves(state, outstate, height_ratio=0.9, depth=85.0,
             fade_factor = (total_duration - elapsed_time) / fade_duration
         else:
             fade_factor = 1.0
-        
-        state['effect'].fade_factor = np.clip(fade_factor, 0, 1)
+
+        # Storm-obscuration gate: fade ocean wash during high-fog /
+        # storm conditions so it doesn't compete with the storm's
+        # natural visibility drop. Multiplied into fade_factor so the
+        # event-lifecycle fade still works on top.
+        storm_obs = float(outstate.get('storm_obscuration', 0.0))
+        storm_gate = 1.0 - 0.7 * max(0.0, min(1.0, storm_obs))
+        state['effect'].fade_factor = float(np.clip(fade_factor * storm_gate, 0, 1))
     
     # Cleanup on close
     if state['count'] == -1:
@@ -496,11 +502,18 @@ class OceanWaves(ShaderEffect):
                     alpha = 0.95;
                 }
             } else {
-                // Pure water
+                // Pure water — alpha pulled back from 0.5-0.95 to 0.2-0.5
+                // so the wave wash doesn't dominate the per-receiver
+                // energy budget under brightness_limit=0.1. Foam crests
+                // still get their full bright accent (they're the
+                // sparse-bright feature in the wave field). The blue
+                // body fades enough that bioluminescence, kelp, fish
+                // and other layers can punch through visually instead
+                // of all being compressed by the wash.
                 color = waterColor;
-                alpha = 0.5 + (1.0 - depth) * 0.3;
-                alpha += foamFactor * 0.3;
-                alpha = clamp(alpha, 0.0, 0.95);
+                alpha = 0.20 + (1.0 - depth) * 0.20;
+                alpha += foamFactor * 0.45;
+                alpha = clamp(alpha, 0.0, 0.85);
             }
             
             alpha *= fadeAlpha;

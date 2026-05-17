@@ -67,7 +67,13 @@ def shader_bioluminescence(state, outstate, intensity=2.6, depth=50.0):
         # visibly drift one way, slow, then reverse -- the rapid speed/
         # direction change. Subsurface currents shouldn't flip with time of
         # day, so we use the unmodulated wind_speed instead.
-        state['effect'].target_bio_level = outstate.get('bioluminescence', 0.0)
+        # Storm-obscuration gate: turbid water hides bioluminescent
+        # particles. Multiplied into bio_level so the visible glow
+        # fades as obscuration rises (not all the way to zero — even
+        # in storm conditions some glow is preserved as a feature).
+        storm_obs = float(outstate.get('storm_obscuration', 0.0))
+        storm_gate = 1.0 - 0.7 * max(0.0, min(1.0, storm_obs))
+        state['effect'].target_bio_level = outstate.get('bioluminescence', 0.0) * storm_gate
         state['effect'].wave_speed = outstate.get('wave_speed', 0.5)
         state['effect'].current_strength = outstate.get('wind_speed', 0.0)
         state['effect'].tide_level = outstate.get('tide_level', 0.5)

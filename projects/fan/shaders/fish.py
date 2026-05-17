@@ -71,7 +71,14 @@ def shader_fish(state, outstate, activity=1.0):
     
     # Update activity every frame
     if 'fish_effect' in state:
-        marine_life_activity = outstate.get('marine_life_activity', activity)
+        # Storm-obscuration gate: fish are less visible (or simply
+        # active fewer of them) during high-fog / turbid conditions.
+        # 0.7 multiplier scales the visible-fish target down without
+        # going fully invisible, so a storm has impact without
+        # emptying the scene.
+        storm_obs = float(outstate.get('storm_obscuration', 0.0))
+        storm_gate = 1.0 - 0.7 * max(0.0, min(1.0, storm_obs))
+        marine_life_activity = outstate.get('marine_life_activity', activity) * storm_gate
         state['fish_effect'].set_target_activity(marine_life_activity)
 
         # Update squish width from scale
@@ -193,10 +200,15 @@ FISH_SPECIES = {
         'behavior': 'school',
         'size_range': (0.13, 0.20),
         'speed_range': (1.2, 1.7),
+        # Was blue-tinted silver (B > R, G) — reinforced the all-blue
+        # ocean monochrome at rarity 0.30 (the most common species).
+        # Now true neutral silver: equal RGB across the range so
+        # schools read as flashing chrome rather than another blue
+        # layer.
         'color': lambda n: np.column_stack([
-            np.random.uniform(0.75, 0.95, n),
-            np.random.uniform(0.75, 0.95, n),
-            np.random.uniform(0.85, 1.00, n),
+            np.random.uniform(0.78, 0.95, n),
+            np.random.uniform(0.78, 0.95, n),
+            np.random.uniform(0.78, 0.95, n),
         ]),
         'school_distance': 1.5,   # feet
         'school_strength': 0.5,
@@ -208,10 +220,13 @@ FISH_SPECIES = {
         'behavior': 'cruise',
         'size_range': (0.30, 0.50),
         'speed_range': (0.6, 1.0),
+        # Warm-teal palette (was blue-cyan) — breaks up the all-blue
+        # ocean monochrome. Naturalistic for warm-water tangs while
+        # carrying chromatic identity opposite to ocean_waves' blues.
         'color': lambda n: np.column_stack([
-            np.random.uniform(0.20, 0.40, n),
-            np.random.uniform(0.50, 0.70, n),
-            np.random.uniform(0.85, 1.00, n),
+            np.random.uniform(0.12, 0.30, n),
+            np.random.uniform(0.55, 0.75, n),
+            np.random.uniform(0.30, 0.45, n),
         ]),
         'school_distance': 0.0,
         'school_strength': 0.0,

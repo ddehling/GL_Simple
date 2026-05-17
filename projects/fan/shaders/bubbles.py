@@ -63,7 +63,11 @@ def shader_bubbles(state, outstate, density=1.0, audio_sensitivity=0.5):
     
     # Update density every frame
     if 'bubble_effect' in state:
-        bubble_density = outstate.get('bubble_density', density)
+        # Storm-obscuration suppresses bubbles partially (column
+        # clarity falls in turbid storm conditions).
+        storm_obs = float(outstate.get('storm_obscuration', 0.0))
+        storm_gate = 1.0 - 0.7 * max(0.0, min(1.0, storm_obs))
+        bubble_density = outstate.get('bubble_density', density) * storm_gate
         state['bubble_effect'].set_target_density(bubble_density)
 
         # Update squish width from scale
@@ -165,11 +169,15 @@ class BubbleEffect(ShaderEffect):
         # Alpha based on depth (more transparent overall)
         self.alphas = 0.15 + 0.25 * depth_factors  # Range: 0.15-0.4
         
-        # Colors: slight blue/cyan tint with shimmer
+        # Colors: shifted from blue/cyan shimmer to pale magenta so
+        # bubbles aren't yet another blue layer in the ocean set
+        # (ocean_waves, bioluminescence, blue-fish species all share
+        # the blue hue family — the bubbles are now a chromatic
+        # accent against them rather than reinforcing the wash).
         self.colors = np.column_stack([
-            np.random.uniform(0.6, 0.9, n),  # R
-            np.random.uniform(0.8, 1.0, n),  # G
-            np.ones(n)  # B: full blue
+            np.random.uniform(0.80, 0.95, n),  # R — high
+            np.random.uniform(0.65, 0.80, n),  # G — mid (cooler magenta)
+            np.random.uniform(0.85, 0.95, n),  # B — high (pale magenta)
         ])
         
     def _reset_bubbles(self, mask):
