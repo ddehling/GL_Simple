@@ -15,7 +15,6 @@ No network calls are made; everything is self-contained.
 import math
 import numpy as np
 import ctypes
-import time as _time
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from typing import Dict, List, Tuple
@@ -642,14 +641,15 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
     """
     BART Map background effect — compatible with EventScheduler.
 
-    Also drives BART ambient sounds and train arrival text announcements
-    so all bartiki-specific behavior lives in one place.
-
     Reads from outstate:
         train_speed   (float) real-time multiplier
         train_density (float) reserved for future headway scaling
         season        (float) time-of-day cycle
-        soundengine   (AudioEngine) for playing sounds
+
+    Ambient BART sounds are now driven by the bartiki weather set's
+    ``sound_pool_dir`` (handled by the generic sound_pool effect), not
+    by this shader directly. Per-arrival on-screen text announcements
+    were removed (unreadable at fan resolution).
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -668,7 +668,6 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
             )
             state['effect'] = effect
             state['_last_bart_sound_end'] = 0
-            state['_last_arrival_text'] = 0
             # Publish fog density texture so the fog effect can use it
             outstate['fog_density_texture'] = effect._fog_density_texture
             outstate['spatial_fog'] = True
@@ -686,35 +685,12 @@ def shader_bart_map(state, outstate, train_speed=40.0, train_density=1.0):
         state['effect'].time_of_day = tod
         outstate['spatial_fog_scale'] = _diurnal_fog_scale(tod)
 
-        now = _time.time()
-
-        # --- Train arrival text announcements ---
-        time_since_text = now - state.get('_last_arrival_text', 0)
-        if time_since_text > 60.0 and np.random.random() < 1 / 1200:
-            # text.py stayed in the shared library (renderer/effects/),
-            # so the relative import that worked when bart_map lived
-            # alongside it now needs the absolute path.
-            from renderer.effects.text import shader_text
-            dest = np.random.choice(_BART_DESTINATIONS)
-            mins = np.random.choice([2, 3, 5, 8])
-            cars = np.random.choice([6, 8, 10])
-
-            # Each line as separate text with unique lambda to bypass duplicate check
-            def _make_text_fn(txt, yp):
-                def _fn(st, os, **kw):
-                    shader_text(st, os, text=txt,
-                                color=(1.0, 0.2, 0.1), font_size=48,
-                                x_pos=0.5, y_pos=yp,
-                                auto_scale=True, scale_factor=1.0,
-                                height_scale=2.0)
-                return _fn
-
-            scheduler = outstate.get('event_scheduler')
-            if scheduler:
-                scheduler.schedule_event(0, 10, _make_text_fn(dest, 0.283), frame_id=frame_id)
-                scheduler.schedule_event(0, 10, _make_text_fn(f"{mins} min", 0.533), frame_id=frame_id)
-                scheduler.schedule_event(0, 10, _make_text_fn(f"{cars} car", 0.783), frame_id=frame_id)
-            state['_last_arrival_text'] = now
+        # Train-arrival text announcements (DEST / MIN / CAR via
+        # shader_text) were removed because the text was unreadable on
+        # the physical fan — too small relative to the strip pitch.
+        # _BART_DESTINATIONS list and the per-frame timer state are
+        # kept inert for now in case we re-add a different display
+        # mechanism later (e.g. spoken announcements via sound_pool).
 
     if state['count'] == -1:
         if 'effect' in state:
