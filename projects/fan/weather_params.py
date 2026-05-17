@@ -1159,15 +1159,20 @@ WEATHER_PRESETS = {
         "Sound_volume": 1.3,
         "Switch_rate": 0.65,
         "ambient_sound": "03 Forest Ambience 3 Distant Birds and Frogs With a Few Cl.mp3",
-        "canopy_density": 0.95,
+        # Sparser canopy so the dense bird sky is visible against
+        # something other than wall-of-leaves.
+        "canopy_density": 0.7,
         "celestial_visibility": 0,
         "dapple_strength": 0.6,
         "fog": 0.06,
         "fog_color": np.array([0.55, 0.65, 0.55]),
         "godray_strength": 0.6,
-        # State signature is the bird sky — Switch_rate slightly
-        # higher so it doesn't dwell forever; meant as a "passage"
-        # rather than a destination.
+        # State signature is the dense bird sky — bird_density 5.0
+        # gives ~5x the normal spawn rate (forest_birds caps at
+        # MAX_BIRDS=96 active so the sky never empties).
+        "bird_density": 5.0,
+        # Switch_rate slightly higher so the state doesn't dwell
+        # forever; meant as a "passage" rather than a destination.
         "possible_transitions": ["forest_midday", "forest_morning", "forest_dusk"],
         "season_preference": 0.45,
         "starryness": 0,

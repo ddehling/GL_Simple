@@ -29,13 +29,15 @@ from renderer.fan_coords import FAN_COORDS_UNIFORMS, FAN_COORDS_GLSL, FanCoords
 
 
 # Hard cap on birds alive at once (matches the shader array size).
-MAX_BIRDS = 24
+# Was 24; bumped to accommodate migration state's 5x spawn rate so
+# the cap doesn't artificially thin the dense bird sky.
+MAX_BIRDS = 96
 
-# Bird altitude in physical feet. Above the canopy crests (~7 ft for
-# trees, ~14 ft for the densest leaf area) but below the outer edge
-# of the fan (~20 ft).
-ALT_MIN = 14.0
-ALT_MAX = 19.0
+# Bird altitude in physical feet. Wide range (was 14..19) so birds
+# cover most of the visible fan vertically — from the upper canopy
+# (~7 ft) up to the open sky near the outer ring (~20 ft).
+ALT_MIN = 7.0
+ALT_MAX = 20.0
 
 # Spawn just off the fan edges so birds enter visibly.
 SPAWN_X = 21.0
@@ -178,6 +180,9 @@ def shader_forest_birds(state, outstate, fade_duration=4.0):
         # Daytime / nighttime modulation derived from starryness (rises
         # toward 1 at night). Day rate = max, night rate = 0.
         eff.day_factor = 1.0 - float(outstate.get('starryness', 0.0))
+        # Per-state density multiplier (default 1.0). Migration state
+        # sets this to 5.0 for a dense bird sky.
+        eff.density_mult = max(0.0, float(outstate.get('bird_density', 1.0)))
 
         elapsed = state['elapsed_time']
         duration = state.get('duration')
@@ -230,6 +235,7 @@ class ForestBirdsEffect(ShaderEffect):
         # writes are disabled.
         self.render_priority = 8.0
         self.day_factor = 1.0
+        self.density_mult = 1.0
         self.fade = 0.0
         self._time = 0.0
         self._spawn_acc = 0.0
@@ -276,8 +282,10 @@ class ForestBirdsEffect(ShaderEffect):
         if leader_y is None:
             y = float(np.random.uniform(ALT_MIN, ALT_MAX))
         else:
-            # Wingmate stays close to leader's altitude
-            y = float(np.clip(leader_y + np.random.uniform(-0.6, 0.6),
+            # Wingmate stays close to leader's altitude. Wider jitter
+            # (was 0.6, now 1.2) so flocks spread vertically across the
+            # wider altitude band rather than tight clumps.
+            y = float(np.clip(leader_y + np.random.uniform(-1.2, 1.2),
                               ALT_MIN, ALT_MAX))
 
         if leader_speed is None:
@@ -299,10 +307,11 @@ class ForestBirdsEffect(ShaderEffect):
     def _try_spawn(self, dt: float):
         if len(self._birds) >= MAX_BIRDS:
             return
-        # 0.35 birds/sec at full daytime — bumped from 0.18 for visibility.
-        # With ~45 s lifetime and flock spawns, expect ~8-12 birds active
-        # at any moment in midday.
-        rate = 0.35 * max(0.0, self.day_factor)
+        # 0.35 birds/sec at full daytime, multiplied by per-state
+        # density (1.0 default, 5.0 in migration). With ~45 s lifetime
+        # and flock spawns, midday holds ~8-12 active and migration
+        # pushes toward the MAX_BIRDS cap.
+        rate = 0.35 * max(0.0, self.day_factor) * self.density_mult
         self._spawn_acc += dt * rate
         if self._spawn_acc >= 1.0 and len(self._birds) < MAX_BIRDS:
             self._spawn_acc -= 1.0
