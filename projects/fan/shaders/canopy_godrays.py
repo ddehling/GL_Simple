@@ -144,7 +144,13 @@ void main() {
     vec2 np = vec2(uv.x * 4.0 + u_glow_drift_phase,
                    uv.y * 6.0 + u_time * 0.02);
     float texture_n = vnoise(np) * 0.6 + vnoise(np * 2.5 + 7.7) * 0.4;
-    float glow_modulation = 0.55 + 0.45 * texture_n;
+    // CONCENTRATED glow — was 0.55 + 0.45*texture_n (never below 0.55),
+    // which made warm glow effectively a uniform tint everywhere.
+    // pow(noise, 2) collapses most patches toward 0 and pushes the
+    // top of the distribution toward higher values; with the 1.5
+    // multiplier the peaks read as bright sun-shafts. Sparse-bright
+    // pattern per docs/shader_contrast_playbook.md.
+    float glow_modulation = pow(texture_n, 2.0) * 1.5;
 
     // Glow color is brighter / warmer than the sky.
     vec3 dawn_glow = vec3(1.00, 0.60, 0.28);
@@ -154,12 +160,20 @@ void main() {
     float glow_amount = radial * glow_modulation * u_strength * (1.0 - u_starryness);
 
     // Combine: base sky + warm glow added on top.
-    vec3 col = sky_col + glow_col * glow_amount * 0.5;
+    vec3 col = sky_col + glow_col * glow_amount * 0.6;
 
-    // Sky opacity — solid in daytime, fades to nearly transparent at
-    // night so stars / aurora rendered behind (deeper depth) can dominate
-    // the canopy gaps. Clouds always render in front via depth 0.15-0.30.
-    float sky_alpha = mix(0.85, 0.10, u_starryness);
+    // ---------- Sky opacity ----------
+    // Reduced base sky_alpha (was 0.85 -> 0.40 daytime) so the sky
+    // backdrop is atmospheric rather than a dominant wash that
+    // covered the entire canopy band in one uniform color. Per-region
+    // variation via slow noise (sky_p) breaks the remaining wash up
+    // into "denser" and "thinner" patches of sky — clouds-of-air
+    // feel rather than flat-painted color band.
+    vec2 sky_p = vec2(uv.x * 2.0 + u_time * 0.04, uv.y * 3.0);
+    float sky_mod = 0.5 + 0.5 * vnoise(sky_p);    // 0.5..1.0
+    float base_sky_alpha = mix(0.40, 0.10, u_starryness);
+    float sky_alpha = base_sky_alpha * sky_mod;
+
     float total_alpha = sky_alpha * band * u_fade;
     if (total_alpha < 0.01) discard;
     fragColor = vec4(col, total_alpha);
