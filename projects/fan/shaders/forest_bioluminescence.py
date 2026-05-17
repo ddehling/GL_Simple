@@ -138,10 +138,18 @@ def shader_forest_bioluminescence(state, outstate, density=1.0, fade_duration=4.
         eff.density = float(density)
         eff.obscuration = float(outstate.get('storm_obscuration', 0.0))
 
+        # Night-only gate. Bioluminescent fungi don't read against a
+        # bright sky — and operator-tested it looked perpetual in the
+        # midday states. Multiply the master strength by starryness so
+        # the glow is invisible at noon (starryness 0) and full at
+        # deep night (starryness 1). Cheap soft falloff in twilight.
+        starryness = float(outstate.get('starryness', 0.0))
+        night_gate = float(np.clip(starryness, 0.0, 1.0))
+
         elapsed = state['elapsed_time']
         duration = state.get('duration')
         if duration is None or duration <= 0:
-            eff.strength = 1.0
+            event_fade = 1.0
         else:
             if elapsed < fade_duration:
                 f = elapsed / fade_duration
@@ -149,7 +157,8 @@ def shader_forest_bioluminescence(state, outstate, density=1.0, fade_duration=4.
                 f = (duration - elapsed) / fade_duration
             else:
                 f = 1.0
-            eff.strength = float(np.clip(f, 0.0, 1.0))
+            event_fade = float(np.clip(f, 0.0, 1.0))
+        eff.strength = event_fade * night_gate
 
     if state['count'] == -1:
         if 'effect' in state:
@@ -177,20 +186,23 @@ _SPECIES = [
 
 
 class _Glow:
-    __slots__ = ('x', 'y', 'r', 'color', 'pulse_phase', 'pulse_freq',
-                 'life', 'max_life', 'fade_in', 'fade_out')
+    __slots__ = ('x', 'y', 'vx', 'vy', 'r', 'color', 'pulse_phase',
+                 'pulse_freq', 'life', 'max_life', 'fade_in', 'fade_out')
 
-    def __init__(self, x, y, r, color, pulse_phase, pulse_freq, max_life):
+    def __init__(self, x, y, vx, vy, r, color, pulse_phase, pulse_freq,
+                 max_life):
         self.x = float(x)
         self.y = float(y)
+        self.vx = float(vx)
+        self.vy = float(vy)
         self.r = float(r)
         self.color = color    # (r, g, b)
         self.pulse_phase = float(pulse_phase)
         self.pulse_freq = float(pulse_freq)
         self.life = 0.0
         self.max_life = float(max_life)
-        self.fade_in = 4.0
-        self.fade_out = 6.0
+        self.fade_in = 6.0
+        self.fade_out = 8.0
 
 
 class ForestBioluminescenceEffect(ShaderEffect):
@@ -246,12 +258,24 @@ class ForestBioluminescenceEffect(ShaderEffect):
         x = float(np.random.uniform(-X_RANGE * 0.5, X_RANGE * 0.5))
         y = float(np.random.uniform(ALT_MIN, ALT_MAX))
         r = float(np.random.uniform(0.45, 0.95))
+        # Slow drift so glows don't stay pinned to the same pixel
+        # cluster — the eye reads them as ambient ground luminance
+        # that moves rather than blobs turning on/off in fixed spots.
+        # 0.05..0.25 ft/s, mostly horizontal with a tiny vertical
+        # component (some fungi drift on a breeze, others stay
+        # mostly put on the substrate).
+        vx = float(np.random.uniform(-0.20, 0.20))
+        vy = float(np.random.uniform(-0.06, 0.06))
+        # Pulse damped: lower frequencies and the alpha modulation
+        # itself in render() has a smaller swing (0.85..1.0 instead
+        # of 0.55..1.0) — looks like soft luminance breathing rather
+        # than visible on/off blinking.
         pulse_phase = float(np.random.uniform(0.0, 6.2832))
-        pulse_freq = float(np.random.uniform(0.25, 0.70))
-        max_life = float(np.random.uniform(18.0, 35.0))
-        g = _Glow(x, y, r, col, pulse_phase, pulse_freq, max_life)
+        pulse_freq = float(np.random.uniform(0.08, 0.22))
+        # Longer lifetimes so individual glows don't churn rapidly.
+        max_life = float(np.random.uniform(25.0, 55.0))
+        g = _Glow(x, y, vx, vy, r, col, pulse_phase, pulse_freq, max_life)
         if initial:
-            # Start mid-life so initial population isn't all fading in
             g.life = float(np.random.uniform(0.0, max_life * 0.5))
         self._glows.append(g)
 
@@ -260,10 +284,23 @@ class ForestBioluminescenceEffect(ShaderEffect):
             return
         self._time += dt
 
-        # Age, prune
+        # Age, drift, prune. Glows wander slowly across the forest
+        # floor so the field of light looks like ambient luminance
+        # that moves, not blobs blinking on/off in fixed positions.
         alive = []
         for g in self._glows:
             g.life += dt
+            g.x += g.vx * dt
+            g.y += g.vy * dt
+            # Reflect off the altitude bounds so glows stay in the
+            # floor band rather than drifting off.
+            if g.y < ALT_MIN and g.vy < 0.0:
+                g.vy = -g.vy
+            elif g.y > ALT_MAX and g.vy > 0.0:
+                g.vy = -g.vy
+            # Lose glows that drift well off-fan horizontally.
+            if abs(g.x) > X_RANGE * 0.7:
+                continue
             if g.life < g.max_life:
                 alive.append(g)
         self._glows = alive
@@ -298,9 +335,11 @@ class ForestBioluminescenceEffect(ShaderEffect):
                 life_a = 1.0
             life_a = max(0.0, min(1.0, life_a))
 
-            # Pulse: 0.5..1.0 modulation
-            pulse = 0.55 + 0.45 * math.sin(self._time * g.pulse_freq * 6.2832
-                                           + g.pulse_phase)
+            # Pulse: damped to 0.85..1.0 swing — soft luminance
+            # breathing rather than visible on/off blinking. Previous
+            # 0.55..1.0 swing read as deliberate cyclic flashing.
+            pulse = 0.925 + 0.075 * math.sin(self._time * g.pulse_freq
+                                             * 6.2832 + g.pulse_phase)
 
             self._upload[2 * i, 0] = g.x
             self._upload[2 * i, 1] = g.y
