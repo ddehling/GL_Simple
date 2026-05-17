@@ -210,7 +210,19 @@ void main() {
     vec2 expose_p = vec2(uv.x * 3.0 + u_time * 0.02, uv.y * 5.0);
     float region_brightness = 0.25 + 0.75 * fbm(expose_p);
 
-    float intensity = leaf_intensity * region_brightness;
+    // ---------- Rare "hot leaf" highlights ----------
+    // A small fraction of leaves (~5-10%) catch direct sunlight and
+    // read substantially brighter than their neighbors. Driven by a
+    // separate coarse noise channel so hot patches are spatially
+    // distinct from the per-region exposure bands. Adds high-luminance
+    // highlights against the rest of the canopy — punctuated bright
+    // features that the eye picks out as sun-catching leaves, not
+    // smooth gradient. Suppressed at night (no direct sun).
+    float hot_n = vnoise(uv * vec2(7.0, 11.0) + u_time * 0.03);
+    float hot_bonus = smoothstep(0.78, 0.92, hot_n)
+                    * (1.0 - u_starryness) * 0.6;
+
+    float intensity = leaf_intensity * region_brightness * (1.0 + hot_bonus);
 
     // ---------- Leaf color (naturalistic) ----------
     // Naturalistic forest palette — earlier "neon lime" and "silver-blue

@@ -1781,7 +1781,7 @@ WEATHER_SETS = {
 
     "peaceful_forest": {
         "allowed_parameters": ["wind_speed", "rain_rate", "fog", "fog_color", "starryness", "celestial_visibility", "firefly_density", "Aurora_probability", "meteor_rate", "tree_prob", "Weird", "Wolfy", "Owly", "Sound_volume", "skiptime", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "transition_duration", "season_preference", "Switch_rate", "spookyness", "lightning_probability", "godray_strength", "canopy_density", "snow_rate", "spore_density", "spore_color", "dapple_strength", "stream_flow_rate", "eye_density", "frost_level"],
-        "background_events": ["clouds", "firefly", "stars", "rain", "fog", "forest_canopy", "canopy_godrays", "dappled_shadows", "snowfall", "spore_drift", "stream_flow", "forest_eyes"],
+        "background_events": ["clouds", "firefly", "stars", "rain", "fog", "forest_canopy", "canopy_godrays", "dappled_shadows", "snowfall", "spore_drift", "stream_flow", "forest_eyes", "forest_birds"],
         "cycle_labels": ["Midnight", "Dawn", "Noon", "Dusk"],
         "description": "Forest with full day/night cycle, seasonal moods, and aurora/storm/spirit variants",
         "name": "Peaceful Forest",

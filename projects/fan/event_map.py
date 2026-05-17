@@ -80,6 +80,7 @@ EVENT_MAP = {
     "spore_drift": (fx.shader_spore_drift, {}),
     "stream_flow": (fx.shader_stream_flow, {}),
     "forest_eyes": (fx.shader_forest_eyes, {}),
+    "forest_birds": (fx.shader_forest_birds, {}),
     # ``narrative_player`` and ``sound_pool`` used to be declared here
     # but are now auto-inherited from ``core.default_events.DEFAULT_EVENT_MAP``.
     # Redeclare a key here if Fan ever needs different params for one
