@@ -800,12 +800,25 @@ class WebController:
                     target_path=target,
                 )
 
-                # Clear cache since data has changed
-                self.clear_weather_data_cache()
-
                 if result['success']:
+                    # Re-import the project's weather module and re-stash
+                    # the controller's in-memory references so the next
+                    # /load returns the values we just wrote. Without
+                    # this, the cache rebuild reads stale references
+                    # captured at engine boot — the editor saw "Save"
+                    # succeed but then displayed the original values
+                    # because /load served pre-edit data.
+                    try:
+                        self._refresh_weather_module()
+                    except Exception as refresh_err:
+                        # Save succeeded; only the in-memory refresh
+                        # failed. Surface as a warning but don't roll
+                        # the save back — the file is correct, just
+                        # may need a manual /reload to pick up.
+                        result["refresh_warning"] = str(refresh_err)
                     return jsonify(result)
                 else:
+                    self.clear_weather_data_cache()
                     return jsonify(result), 500
 
             except Exception as e:
@@ -822,19 +835,8 @@ class WebController:
             (no in-flight reload of the WeatherStateController + scheduler
             yet)."""
             try:
-                import importlib
-                # Reload lib (always — its definitions back the schema).
-                from lib import weather_params as _lib_wp
-                importlib.reload(_lib_wp)
-                # Reload the active project's module if one is wired in.
+                self._refresh_weather_module()
                 proj_mod_name = getattr(self, "_project_weather_module_name", None)
-                if proj_mod_name:
-                    proj_mod = importlib.import_module(proj_mod_name)
-                    importlib.reload(proj_mod)
-
-                # Clear cache since module has been reloaded
-                self.clear_weather_data_cache()
-
                 return jsonify({
                     "success": True,
                     "message": "Weather parameters reloaded "
@@ -868,6 +870,41 @@ class WebController:
                     "errors": [str(e)]
                 }), 500
     
+    def _refresh_weather_module(self):
+        """Reload the active project's weather module and re-stash the
+        controller's in-memory references to its WEATHER_PRESETS,
+        WEATHER_SETS, etc. so the next /api/weather_editor/load returns
+        the freshly-saved values.
+
+        Called from both the save endpoint (so saves are immediately
+        visible) and the reload endpoint (operator-triggered refresh).
+        Without re-stashing, ``importlib.reload`` only replaces the
+        module's attributes in-place; the controller's
+        ``self._project_weather_presets`` reference still points at
+        the OLD dict captured at engine boot, and the cache rebuild
+        serves stale data.
+        """
+        import importlib
+        from lib import weather_params as _lib_wp
+        importlib.reload(_lib_wp)
+
+        proj_mod_name = getattr(self, "_project_weather_module_name", None)
+        if proj_mod_name:
+            proj_mod = importlib.import_module(proj_mod_name)
+            importlib.reload(proj_mod)
+            # Re-stash references from the reloaded module so cache
+            # rebuilds pick up the new values.
+            if hasattr(proj_mod, "WeatherState"):
+                self._project_weather_state_enum = proj_mod.WeatherState
+            if hasattr(proj_mod, "WEATHER_PRESETS"):
+                self._project_weather_presets = proj_mod.WEATHER_PRESETS
+            if hasattr(proj_mod, "WEATHER_SETS"):
+                self._project_weather_sets = proj_mod.WEATHER_SETS
+            if hasattr(proj_mod, "DEFAULT_WEATHER_PARAMS"):
+                self._project_default_weather_params = proj_mod.DEFAULT_WEATHER_PARAMS
+
+        self.clear_weather_data_cache()
+
     def clear_weather_data_cache(self):
         """Clear cached weather data (call after saving changes)."""
         if hasattr(self, '_weather_data_cache'):
