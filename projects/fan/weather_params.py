@@ -27,6 +27,16 @@ class WeatherState(Enum):
     CYBER_GLITCH_FOG = "cyber_glitch_fog"
     CYBER_NEON_CLEAR = "cyber_neon_clear"
     CYBER_DRONE_PATROL = "cyber_drone_patrol"
+    # ── New states (cyberpunk scale-up) ─────────────────────────────────────
+    CYBER_DAWN_PIRATE = "cyber_dawn_pirate"
+    CYBER_CROWN_VAULT = "cyber_crown_vault"
+    CYBER_MIDDEN_MARKET = "cyber_midden_market"
+    CYBER_UNDERSIDE_FLOOD = "cyber_underside_flood"
+    CYBER_HOUR_OF_STATIC = "cyber_hour_of_static"
+    CYBER_AR_BLOOM = "cyber_ar_bloom"
+    CYBER_TRANSIT_CORRIDOR = "cyber_transit_corridor"
+    CYBER_RELAY_NODE = "cyber_relay_node"
+    CYBER_BROADCAST_NIGHT = "cyber_broadcast_night"
     DESERT_BLAZING_NOON = "desert_blazing_noon"
     DESERT_DUSK_EMBERS = "desert_dusk_embers"
     DESERT_STARLIT_NIGHT = "desert_starlit_night"
@@ -149,6 +159,14 @@ PARAMETER_DEFINITIONS = {
     'bubble_density': {'type': 'number', 'step': 0.05},
     'canopy_density': {'type': 'number', 'step': 0.05},
     'celestial_visibility': {'type': 'number', 'step': 0.1},
+    # ── New cyberpunk shader-specific params ────────────────────────────
+    'cyber_rain_color': {'type': 'array', 'length': 3},
+    'cyber_signage_density': {'type': 'number', 'step': 0.05},
+    'cyber_skyline_density': {'type': 'number', 'step': 0.05},
+    'cyber_transit_intensity': {'type': 'number', 'step': 0.05},
+    'cyber_underway_intensity': {'type': 'number', 'step': 0.05},
+    'velocity_direction': {'type': 'array', 'length': 2},
+    # ─────────────────────────────────────────────────────────────────────
     'dapple_strength': {'type': 'number', 'step': 0.05},
     'data_flow_rate': {'type': 'number', 'step': 0.05},
     'drone_activity': {'type': 'number', 'step': 0.05},
@@ -508,6 +526,7 @@ WEATHER_PRESETS = {
         "ARI": 42,
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "celestial_visibility": 0,
+        "cyber_rain_color": np.array([0.55, 1.00, 0.20]),   # acid green
         "fog": 0.6,
         "fog_color": np.array([0.5, 0.8, 0.2]),
         "light_pollution": 0.5,
@@ -574,6 +593,7 @@ WEATHER_PRESETS = {
         "ARI": 38,
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "celestial_visibility": 0,
+        "cyber_rain_color": np.array([0.30, 0.55, 1.00]),   # electric blue
         "electric_interference": 1,
         "fog": 0.4,
         "fog_color": np.array([0, 0.5, 1]),
@@ -641,13 +661,20 @@ WEATHER_PRESETS = {
         "ARI": 35,
         "ambient_sound": "01 Rain Light EDITED.wav",
         "celestial_visibility": 0.05,
+        "cyber_rain_color": np.array([0.20, 0.95, 1.00]),   # neon cyan
+        "cyber_signage_density": 0.55,     # wet streets glow with signage
+        "cyber_skyline_density": 0.55,     # buildings present
+        "data_flow_rate": 0.15,            # subtle data
         "fog": 0.2,
         "fog_color": np.array([0.1, 0.3, 0.6]),
+        "hologram_density": 0.35,          # some holograms catch the rain
         "light_pollution": 0.8,
         "neon_intensity": 0.9,
         "on_transition_events": [['sunrise', 60, 0]],
+        "pollution_level": 0.30,           # damp wet smog visible
         "possible_transitions": ["cyber_neon_clear", "cyber_acid_rain", "cyber_data_storm"],
         "rain_rate": 0.3,
+        "scan_line_intensity": 0.40,       # cyan scan-line accents
         "season_preference": 0.15,
         "starryness": 0.1,
         "transition_weights": [1.5, 0.5, 0.3],
@@ -666,6 +693,204 @@ WEATHER_PRESETS = {
         "season_preference": 0.6,
         "starryness": 0,
         "transition_weights": [0.7, 0.3, 1.2],
+    },
+
+    # ─────────────────────────────────────────────────────────────────────
+    # New cyberpunk states (scale-up)
+    # ─────────────────────────────────────────────────────────────────────
+
+    WeatherState.CYBER_DAWN_PIRATE: {
+        "ARI": 50,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "celestial_visibility": 0.2,
+        "cyber_signage_density": 0.55,    # amber-tinted signs through smog
+        "cyber_skyline_density": 0.75,    # solid building silhouettes
+        "data_flow_rate": 0.15,
+        "drone_activity": 0.08,            # rare drone presence at dawn
+        "fog": 0.55,                       # heavier dawn smog
+        "fog_color": np.array([0.85, 0.45, 0.15]),   # vivid sodium amber (was muted)
+        "hologram_density": 0.3,
+        "light_pollution": 0.55,
+        "neon_intensity": 0.5,
+        "pollution_level": 0.55,           # strong amber smog
+        "possible_transitions": ["cyber_broadcast_night", "cyber_neon_clear", "cyber_midden_market"],
+        "scan_line_intensity": 0.35,
+        "season_preference": 0.18,
+        "starryness": 0.1,
+        "transition_weights": [1.2, 1.0, 0.5],
+    },
+
+    WeatherState.CYBER_CROWN_VAULT: {
+        "ARI": 60,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "celestial_visibility": 0.0,
+        "cyber_signage_density": 0.10,
+        "cyber_skyline_density": 0.95,    # absolute max — wall of towers
+        "data_flow_rate": 0.55,            # corporate data streams everywhere
+        "drone_activity": 0.45,            # frequent surveillance drones
+        "fog": 0.15,
+        "fog_color": np.array([0.10, 0.18, 0.35]),  # cold cyan-blue (was washed)
+        "hologram_density": 0.65,          # corporate billboards everywhere
+        "light_pollution": 0.55,           # more sky band brightness
+        "neon_intensity": 0.30,
+        "pollution_level": 0.15,           # slight sterile haze
+        "possible_transitions": ["cyber_relay_node", "cyber_drone_patrol", "cyber_hologram_night", "cyber_ar_bloom"],
+        "scan_line_intensity": 0.85,       # heavy corporate-display scan lines
+        "season_preference": 0.5,
+        "starryness": 0.0,
+        "transition_weights": [0.8, 0.6, 1.0, 0.3],
+    },
+
+    WeatherState.CYBER_MIDDEN_MARKET: {
+        "ARI": 30,
+        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "celestial_visibility": 0.0,
+        "cyber_signage_density": 1.0,       # absolute max — every storefront lit
+        "cyber_skyline_density": 0.85,      # dense building cluster
+        "data_flow_rate": 0.35,
+        "drone_activity": 0.15,
+        "fog": 0.40,
+        "fog_color": np.array([0.55, 0.30, 0.20]),  # warm food-stall smog
+        "hologram_density": 0.65,           # crowded advertising
+        "light_pollution": 0.85,            # everywhere brightness
+        "neon_intensity": 1.0,              # neon at full
+        "pollution_level": 0.55,            # crowded street smog
+        "possible_transitions": ["cyber_neon_clear", "cyber_neon_drizzle", "cyber_broadcast_night", "cyber_smog_haze"],
+        "scan_line_intensity": 0.4,
+        "season_preference": 0.7,
+        "starryness": 0.0,
+        "transition_weights": [1.2, 0.8, 0.6, 0.6],
+    },
+
+    WeatherState.CYBER_UNDERSIDE_FLOOD: {
+        "ARI": 45,
+        "ambient_sound": "underwater_turbulent.mp3",
+        "celestial_visibility": 0.0,
+        "cyber_signage_density": 0.0,
+        "cyber_skyline_density": 0.0,
+        "cyber_underway_intensity": 1.0,
+        "data_flow_rate": 0.0,
+        "drone_activity": 0.0,
+        "fog": 0.45,
+        "fog_color": np.array([0.05, 0.35, 0.45]),   # vivid teal
+        "hologram_density": 0.0,
+        "light_pollution": 0.10,
+        "neon_intensity": 0.0,
+        "pollution_level": 0.30,                     # was 0.75 — was washing out flood features
+        "possible_transitions": ["cyber_relay_node", "cyber_broadcast_night", "cyber_blackout"],
+        "scan_line_intensity": 0.0,
+        "season_preference": 0.5,
+        "starryness": 0.0,
+        "transition_weights": [0.6, 0.8, 0.3],
+    },
+
+    WeatherState.CYBER_HOUR_OF_STATIC: {
+        "ARI": 40,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "celestial_visibility": 0.5,
+        "cyber_signage_density": 0.45,             # signs visible but unanimated
+        "cyber_skyline_density": 0.75,             # buildings strongly visible
+        "data_flow_rate": 0.0,
+        "drone_activity": 0.0,
+        "fog": 0.20,
+        "fog_color": np.array([0.30, 0.20, 0.45]), # vivid violet-night (was muddy)
+        "glitch_probability": 0.0,
+        "hologram_density": 0.0,                   # no AR overlays during static
+        "light_pollution": 0.40,                   # natural city glow
+        "neon_intensity": 0.55,                    # neon still on, just unsupervised
+        "pollution_level": 0.40,
+        "possible_transitions": ["cyber_neon_clear", "cyber_midden_market", "cyber_dawn_pirate"],
+        "scan_line_intensity": 0.0,
+        "season_preference": 0.85,
+        "starryness": 0.85,                        # stars actually visible (max)
+        "transition_weights": [1.0, 1.0, 0.5],
+    },
+
+    WeatherState.CYBER_AR_BLOOM: {
+        "ARI": 45,
+        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "celestial_visibility": 0.1,
+        "cyber_signage_density": 0.5,
+        "cyber_skyline_density": 0.7,
+        "data_flow_rate": 0.4,
+        "drone_activity": 0.2,
+        "electric_interference": 0.5,
+        "fog": 0.35,
+        "fog_color": np.array([0.30, 0.10, 0.45]),
+        "glitch_probability": 0.9,
+        "hologram_density": 1.0,
+        "light_pollution": 0.55,
+        "neon_intensity": 0.7,
+        "pollution_level": 0.25,
+        "possible_transitions": ["cyber_glitch_fog", "cyber_hologram_night", "cyber_data_storm"],
+        "scan_line_intensity": 0.8,
+        "season_preference": 0.4,
+        "starryness": 0.1,
+        "transition_weights": [1.0, 0.8, 0.7],
+    },
+
+    WeatherState.CYBER_TRANSIT_CORRIDOR: {
+        "ARI": 35,
+        "ambient_sound": "Wind Strong EDITED.wav",
+        "celestial_visibility": 0.0,
+        "cyber_signage_density": 0.0,         # no street signs inside a tunnel
+        "cyber_skyline_density": 0.0,         # no buildings inside a tunnel
+        "cyber_transit_intensity": 1.0,
+        "data_flow_rate": 0.20,
+        "drone_activity": 0.0,
+        "fog": 0.30,
+        "fog_color": np.array([0.10, 0.20, 0.55]),  # cool tunnel blue
+        "hologram_density": 0.0,              # no holograms in a tunnel
+        "light_pollution": 0.2,
+        "neon_intensity": 0.3,                # subtle floor grid only
+        "pollution_level": 0.40,              # interior haze
+        "possible_transitions": ["cyber_underside_flood", "cyber_midden_market", "cyber_neon_clear"],
+        "scan_line_intensity": 0.65,          # heavy CRT — this IS a HUD view
+        "season_preference": 0.5,
+        "starryness": 0.0,
+        "transition_weights": [0.7, 1.0, 1.0],
+    },
+
+    WeatherState.CYBER_RELAY_NODE: {
+        "ARI": 55,
+        "ambient_sound": "Wind Strong EDITED.wav",
+        "celestial_visibility": 0.0,
+        "cyber_signage_density": 0.0,
+        "cyber_skyline_density": 0.0,
+        "data_flow_rate": 1.0,
+        "drone_activity": 0.05,
+        "fog": 0.4,
+        "fog_color": np.array([0.05, 0.10, 0.20]),
+        "hologram_density": 0.4,
+        "light_pollution": 0.15,
+        "neon_intensity": 0.4,
+        "pollution_level": 0.2,
+        "possible_transitions": ["cyber_crown_vault", "cyber_data_storm", "cyber_glitch_fog", "cyber_underside_flood"],
+        "scan_line_intensity": 0.95,
+        "season_preference": 0.0,
+        "starryness": 0.0,
+        "transition_weights": [0.7, 1.0, 0.6, 0.4],
+    },
+
+    WeatherState.CYBER_BROADCAST_NIGHT: {
+        "ARI": 35,
+        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "celestial_visibility": 0.3,
+        "cyber_signage_density": 0.4,
+        "cyber_skyline_density": 0.55,
+        "data_flow_rate": 0.2,
+        "drone_activity": 0.1,
+        "fog": 0.45,
+        "fog_color": np.array([0.45, 0.30, 0.15]),
+        "hologram_density": 0.15,
+        "light_pollution": 0.5,
+        "neon_intensity": 0.6,
+        "pollution_level": 0.55,
+        "possible_transitions": ["cyber_dawn_pirate", "cyber_midden_market", "cyber_smog_haze", "cyber_underside_flood"],
+        "scan_line_intensity": 0.55,
+        "season_preference": 0.92,
+        "starryness": 0.2,
+        "transition_weights": [1.0, 0.8, 0.7, 0.5],
     },
 
     WeatherState.DESERT_BLAZING_NOON: {
@@ -2063,17 +2288,65 @@ WEATHER_SETS = {
     },
 
     "cyberpunk": {
-        "allowed_parameters": ["rain_rate", "wind_speed", "fog", "fog_color", "lightning_probability", "neon_intensity", "pollution_level", "hologram_density", "electric_interference", "data_flow_rate", "light_pollution", "drone_activity", "glitch_probability", "scan_line_intensity", "celestial_visibility", "starryness", "Switch_rate", "ambient_sound", "ARI", "possible_transitions", "transition_weights", "season_preference"],
-        "background_events": ["clouds", "rain"],
-        "description": "Neon-lit dystopian cityscape with digital rain and holographic advertisements",
+        "allowed_parameters": [
+            "rain_rate", "wind_speed", "fog", "fog_color",
+            "lightning_probability", "neon_intensity", "pollution_level",
+            "hologram_density", "electric_interference", "data_flow_rate",
+            "light_pollution", "drone_activity", "glitch_probability",
+            "scan_line_intensity",
+            # New cyberpunk shader params
+            "cyber_rain_color",
+            "cyber_signage_density", "cyber_skyline_density",
+            "cyber_transit_intensity", "cyber_underway_intensity",
+            "velocity_direction",
+            "celestial_visibility", "starryness", "Switch_rate",
+            "ambient_sound", "ARI", "possible_transitions",
+            "transition_weights", "season_preference",
+        ],
+        "background_events": [
+            # Generic shared shaders
+            "clouds",                # backdrop layer above the city
+            # State-tied cyberpunk backdrops (run continuously; controlled
+            # by per-state density params)
+            "cyber_smog_volume",
+            "cyber_underway_glow",
+            "cyber_transit_flow",
+            "cyber_neon_grid",
+            "cyber_city_skyline",
+            "cyber_drone_spotlight",
+            "cyber_neon_signs",
+            "cyber_hologram_billboards",
+            "cyber_data_rain",
+            "cyber_rain",             # reads rain_rate + cyber_rain_color
+            "cyber_electric_storm",   # reads lightning_probability + electric_interference
+            "cyber_ar_glitch",        # reads glitch_probability (threshold 0.40)
+            "cyber_scan_lines",
+            # Narrative-variable layer (threshold-gated at story_* >= 0.2)
+            "signal_carrier",
+            "dread_perimeter",
+            "yearning_gravity",
+            "defiance_inversion",
+            "dissolution_drift",
+            "velocity_streaks",
+        ],
+        "description": "Neon-lit dystopian cityscape — Bay Stack megacity. Six narrative-variable shaders respond to active arc; 10 state-tied backdrops define the place.",
         "name": "Cyberpunk Metropolis",
-        "narrative_script": None,
+        "narrative_script": "sounds/cyberpunk/sounds.json",
         "random_event_rate": 8e-05,
         "random_events": ["game_of_life", "tunnel", "pixel_spots"],
         "season_extremity": 0.5,
         "season_speed": 0.3,
         "sound_pool_dir": None,
-        "states": ["cyber_neon_clear", "cyber_neon_drizzle", "cyber_data_storm", "cyber_smog_haze", "cyber_electric_storm", "cyber_acid_rain", "cyber_hologram_night", "cyber_blackout", "cyber_glitch_fog", "cyber_drone_patrol"],
+        "states": [
+            "cyber_neon_clear", "cyber_neon_drizzle", "cyber_data_storm",
+            "cyber_smog_haze", "cyber_electric_storm", "cyber_acid_rain",
+            "cyber_hologram_night", "cyber_blackout", "cyber_glitch_fog",
+            "cyber_drone_patrol",
+            # New states
+            "cyber_dawn_pirate", "cyber_crown_vault", "cyber_midden_market",
+            "cyber_underside_flood", "cyber_hour_of_static", "cyber_ar_bloom",
+            "cyber_transit_corridor", "cyber_relay_node", "cyber_broadcast_night",
+        ],
         "transition_speed": 0.8,
     },
 

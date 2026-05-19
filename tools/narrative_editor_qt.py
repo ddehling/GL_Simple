@@ -173,6 +173,144 @@ SCRIPT_TEMPLATE = {
     "nodes": {},
 }
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Storytelling discipline — story-construction theory injected into every
+# node-generation system prompt. The goal: each node performs a real
+# TRANSFORMATION of the protagonist's state, not just another atmospheric
+# paragraph. To disable, set STORYTELLING_DISCIPLINE = "" and remove the
+# LAYER FUNCTION blocks in generate_single_node_sync / generate_batch_sync.
+# ─────────────────────────────────────────────────────────────────────────────
+
+STORYTELLING_DISCIPLINE = """
+
+STORYTELLING DISCIPLINE — read carefully. This overrides any temptation to
+write atmospheric prose without story-work.
+
+Every node performs ONE TRANSFORMATION of the protagonist's state. Before
+writing, declare to yourself in your head:
+  - What does the protagonist KNOW, where are they POSITIONED, and what
+    RESOURCE do they have at the START of this node?
+  - Which of {knowledge, position, resource} CHANGES by the end?
+
+If none of those three changes, the node is fluff. Reject and try again.
+
+A node should operate AT LEAST ONE engine — ideally two or three:
+  CAUSAL    — "because the previous node did X, this node does Y"
+  EMOTIONAL — "the protagonist now feels something they did not before"
+  EPISTEMIC — "the protagonist now knows something they did not before"
+
+If you cannot finish at least one of those three sentences for this node,
+the node is fluff.
+
+FORBIDDEN:
+  - "You remember..." / "You feel..." without naming SPECIFICALLY what
+    changed in what is remembered or felt.
+  - Introducing a new evocative image that does no transformation work.
+  - The arc's recurring motif appearing UNCHANGED from its previous
+    appearance — it must mutate, advance, or be deliberately absent.
+  - The same KIND of metaphor as the previous node (don't do "X is a Y"
+    twice in a row; vary the figure).
+  - Any sentence that could appear, unchanged, in a different beat of
+    this arc.
+  - Resolving a tension that belongs to a later beat (don't show the
+    discovery in the curiosity beat; don't decide before the turn beat;
+    don't deliver interior consequence before echo).
+  - Reaction-shot interiority before the action has actually happened.
+
+Sensory anchors from the world bible (tunnel iron, neon hum, condensation,
+pale-green status light, bioluminescence, etc.) are INSTRUMENTS of the
+transformation, not decoration. If a sensory detail is doing no work in
+the transformation, cut it.
+"""
+
+# Per-layer function descriptions. Injected into the per-call prompt
+# alongside (or instead of) the per-arc LAYER DIRECTION. Tells the AI
+# what story-machine work this beat is supposed to do.
+LAYER_FUNCTIONS = {
+    'arrival': (
+        "Establish the protagonist's blindspot by showing them in an "
+        "equilibrium we already know is doomed. They are comfortable doing "
+        "something they will not be doing by the end of the arc. Show them "
+        "in action within their equilibrium — not just scene-setting."
+    ),
+    'presence': (
+        "Establish the COST of the equilibrium. The protagonist's routine — "
+        "but plant ONE small detail that, in retrospect, will be the first "
+        "crack. Do not add new world; add internal pressure."
+    ),
+    'curiosity': (
+        "The crack OPENS — the protagonist notices something specific they "
+        "had been failing to notice. They do NOT yet understand what it "
+        "means. Do not spell out the conclusion — that belongs to discovery."
+    ),
+    'discovery': (
+        "The crack REVEALS what's behind it — the protagonist sees the shape "
+        "of what they had been missing. Frame as recognition, not analysis. "
+        "Discovery is felt before it is understood."
+    ),
+    'complication': (
+        "The COST of knowing. The discovery creates an obligation, threat, "
+        "debt, or trap. The story becomes IRREVERSIBLE at this beat. Show "
+        "the bind specifically — every available path costs them. Do not "
+        "have them decide yet — that's the turn."
+    ),
+    'intimacy': (
+        "The protagonist comes into DIRECT CONTACT with the thing they "
+        "care about most. The world NARROWS to a single point of contact. "
+        "Not romantic, not confessional — they are now standing in front "
+        "of whatever they had been moving toward. The story exhales."
+    ),
+    'turn': (
+        "The CHOICE that IS the story. An irreversible action that NAMES "
+        "the protagonist. They could not have done this before this beat; "
+        "they cannot undo it after. Show the action, not the deliberation."
+    ),
+    'consequence': (
+        "The world RECEIVES the choice. The system / corporation / city / "
+        "institution responds. Show the RIPPLE, not the protagonist's "
+        "reaction to it. They are now a smaller figure in a larger machine "
+        "that is moving."
+    ),
+    'echo': (
+        "The INTERIOR consequence — what the protagonist now carries that "
+        "they did not before. Not regret, not pride — a DIFFERENT TEXTURE "
+        "OF SELF. Felt, not narrated. Not a summary of what they did."
+    ),
+    'stillness': (
+        "The world WITHOUT the protagonist's attention. The motif finishes "
+        "on its own terms — the condensation line completes its path, the "
+        "clock starts over, the room is still there. Withdraw the protagonist. "
+        "Close by widening. Small."
+    ),
+}
+
+
+# Per-layer premise role and weight. The premise stays visible across ALL
+# layers — the weight modulates emphasis, not presence. The U-curve peaks at
+# arrival (establish), complication (the bind IS the premise), and turn (the
+# action IS the premise enacted); it dips slightly in the middle beats where
+# moment-to-moment causation drives the prose, and tapers at stillness where
+# the premise is afterimage.
+#
+# This replaces the original linear-fade `1.0 - 0.3 * layer_idx` formula,
+# which dropped the premise to 0% by layer 4 (complication) — meaning the
+# turn beat, the most important moment in any arc, was being generated
+# without the premise present in the prompt at all.
+LAYER_PREMISE_ROLES = {
+    'arrival':     (1.00, "establish this premise's world — the equilibrium you show exists FOR this premise"),
+    'presence':    (0.85, "extend the equilibrium implied by this premise; plant the small detail this premise will widen"),
+    'curiosity':   (0.75, "the noticing arises because of this premise — let it pull the protagonist's attention"),
+    'discovery':   (0.80, "this beat crystallizes the premise's shape — the protagonist begins to see what they have been missing"),
+    'complication':(0.90, "the bind IS this premise made specific — name the cost the premise demands"),
+    'intimacy':    (0.80, "the protagonist now stands in front of the heart of this premise — direct contact"),
+    'turn':        (0.95, "the action you write here MUST BE this premise enacted — the choice the premise was always going to require"),
+    'consequence': (0.80, "the world's response to this premise being acted on — the ripple, not the reaction"),
+    'echo':        (0.70, "what the protagonist now carries from having acted on this premise — interior, felt, not narrated"),
+    'stillness':   (0.55, "this premise's afterimage — the protagonist is gone but its residue remains"),
+}
+
+
 SYSTEM_GENERATE = """\
 You are a narrative script writer for an immersive audio installation.
 Scripts play as atmospheric spoken audio layered over weather and lighting effects.
@@ -500,7 +638,7 @@ VOICE SETTINGS: set voice_settings on every node (stability 0-1, similarity_boos
   turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
   echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
   Adjust within the layer to match the specific emotional intensity of the node's text.
-"""
+""" + STORYTELLING_DISCIPLINE
 
 SYSTEM_GENERATE_SINGLE_NODE = """\
 You are generating exactly ONE node for a narrative audio installation graph.
@@ -539,7 +677,7 @@ VOICE SETTINGS (stability 0-1, similarity_boost 0.75, style 0-1):
   turn        stab~0.38 style~0.55 | consequence stab~0.35 style~0.55
   echo        stab~0.40 style~0.50 | stillness   stab~0.60 style~0.15
   Adjust to match the specific emotional intensity of the node's text.
-"""
+""" + STORYTELLING_DISCIPLINE
 
 SYSTEM_CROSS_LINK = """\
 You are analyzing nodes in a narrative audio graph to find natural cross-branch connections.
@@ -1551,10 +1689,11 @@ class ParallelNodeOrchestrator:
                 parent_text = primary_nd.get('text', '')
                 parent_tags = primary_nd.get('tags', [])
 
-            # Calculate premise weight — 100% at layer 0, decreasing 30% per layer
-            # Layers 0-4 get premise; layer 5+ gets none
-            layer_idx = LAYER_ORDER.index(task.layer_name) if task.layer_name in LAYER_ORDER else 0
-            premise_weight = max(0.0, 1.0 - 0.3 * layer_idx) if layer_idx < 5 else 0.0
+            # Premise weight per layer — comes from LAYER_PREMISE_ROLES so the
+            # premise stays visible across ALL beats (peaks at arrival, complication,
+            # turn; tapers at stillness). The label text from the same dict tells
+            # the generator what ROLE the premise plays at this specific beat.
+            premise_weight, _ = LAYER_PREMISE_ROLES.get(task.layer_name, (0.0, ''))
 
             # Read the parent node's hint (author guidance for expansion)
             parent_hint = primary_nd.get('hint', '').strip()
@@ -2211,17 +2350,16 @@ class AIAssistant:
         """
         parts = []
 
-        # Premise — fades over layers via premise_weight
+        # Premise — visible across all layers; the LABEL tells the AI what
+        # role the premise plays at this specific beat (establish / unfold /
+        # bind / enact / ripple / carry / afterimage).
         if premise and premise_weight > 0.05:
             weight_pct = int(premise_weight * 100)
-            if premise_weight > 0.8:
-                label = "STORY PREMISE (this is the core vision — stay true to it)"
-            elif premise_weight > 0.5:
-                label = "STORY PREMISE (keep this present as an undercurrent)"
-            elif premise_weight > 0.3:
-                label = "STORY PREMISE (a distant echo — let it inform tone, not dictate content)"
+            _, role = LAYER_PREMISE_ROLES.get(layer_name, (premise_weight, ''))
+            if role:
+                label = f"STORY PREMISE — role at this beat: {role}"
             else:
-                label = "STORY PREMISE (faint background influence only)"
+                label = "STORY PREMISE"
             parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
 
         # Background (lowest weight)
@@ -2274,11 +2412,21 @@ class AIAssistant:
             for sib_id, sib_summary in sibling_summaries:
                 parts.append(f'  [{sib_id}]: {sib_summary}')
 
+        # Layer function (story-structure work this beat is supposed to do).
+        # Sits ABOVE layer_direction so the AI reads the universal beat-function
+        # first, then the per-arc specific intent.
+        layer_fn = LAYER_FUNCTIONS.get(layer_name, '')
+        if layer_fn:
+            parts.append(
+                f'\nLAYER FUNCTION — what this beat MUST do in story terms '
+                f'(universal across all arcs):\n  {layer_fn}'
+            )
+
         # Layer direction / motif
         if layer_direction:
-            parts.append(f'\nLAYER DIRECTION: {layer_direction}')
+            parts.append(f'\nLAYER DIRECTION (this arc\'s specific intent for this beat): {layer_direction}')
         if motif:
-            parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+            parts.append(f'RECURRING MOTIF (must mutate from prior appearance or be absent): {motif}')
         if themes:
             parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
 
@@ -2290,7 +2438,13 @@ class AIAssistant:
             f'  Text: "{parent_text}"'
         )
 
-        parts.append(f'\nGenerate exactly 1 node in the "{layer_name}" layer continuing from {parent_id}.')
+        parts.append(
+            f'\nGenerate exactly 1 node in the "{layer_name}" layer continuing from {parent_id}. '
+            f'The node MUST perform exactly ONE transformation '
+            f'(change in knowledge / position / resource between start and end of node) '
+            f'and operate at least one engine (causal / emotional / epistemic). '
+            f'See STORYTELLING DISCIPLINE in system prompt for forbidden patterns.'
+        )
         prompt = '\n'.join(parts)
 
         raw = self._run_claude(SYSTEM_GENERATE_SINGLE_NODE, prompt)
@@ -2314,17 +2468,15 @@ class AIAssistant:
         """
         parts = []
 
-        # Premise — fades over layers
+        # Premise — visible across all layers; the LABEL tells the AI what
+        # role the premise plays at this specific beat.
         if premise and premise_weight > 0.05:
             weight_pct = int(premise_weight * 100)
-            if premise_weight > 0.8:
-                label = "STORY PREMISE (core vision — stay true to it)"
-            elif premise_weight > 0.5:
-                label = "STORY PREMISE (keep as undercurrent)"
-            elif premise_weight > 0.3:
-                label = "STORY PREMISE (distant echo — inform tone only)"
+            _, role = LAYER_PREMISE_ROLES.get(layer_name, (premise_weight, ''))
+            if role:
+                label = f"STORY PREMISE — role at this beat: {role}"
             else:
-                label = "STORY PREMISE (faint background)"
+                label = "STORY PREMISE"
             parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
 
         if story_context:
@@ -2364,10 +2516,18 @@ class AIAssistant:
                 custom_tags = [t for t in tags if t not in set(LAYER_ORDER)]
                 parts.append(f'  [{nid}] tags: {custom_tags}, keywords: {", ".join(keywords)}')
 
+        # Layer function (story-structure work this beat is supposed to do).
+        layer_fn = LAYER_FUNCTIONS.get(layer_name, '')
+        if layer_fn:
+            parts.append(
+                f'\nLAYER FUNCTION — what this beat MUST do in story terms '
+                f'(universal across all arcs):\n  {layer_fn}'
+            )
+
         if layer_direction:
-            parts.append(f'\nLAYER DIRECTION: {layer_direction}')
+            parts.append(f'\nLAYER DIRECTION (this arc\'s specific intent for this beat): {layer_direction}')
         if motif:
-            parts.append(f'RECURRING MOTIF (weave naturally): {motif}')
+            parts.append(f'RECURRING MOTIF (must mutate from prior appearance or be absent): {motif}')
         if themes:
             parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
 
@@ -2380,8 +2540,16 @@ class AIAssistant:
             f'  Text: "{parent_text}"'
         )
 
-        parts.append(f'\nGenerate exactly {batch_size} continuation nodes in the '
-                     f'"{layer_name}" layer branching from this node.')
+        parts.append(
+            f'\nGenerate exactly {batch_size} continuation nodes in the '
+            f'"{layer_name}" layer branching from this node. '
+            f'Each node MUST perform exactly ONE transformation '
+            f'(change in knowledge / position / resource between start and end of node) '
+            f'and operate at least one engine (causal / emotional / epistemic). '
+            f'Siblings MUST perform DIFFERENT transformations from each other — '
+            f'not just take different angles on the same one. '
+            f'See STORYTELLING DISCIPLINE in system prompt for forbidden patterns.'
+        )
 
         # Author hint LAST — highest recency weight, overrides all other guidance
         if hint:

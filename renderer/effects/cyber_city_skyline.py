@@ -1,0 +1,322 @@
+"""
+Cyber city skyline — silhouetted vertical towers with sparse window-light
+grids. The buildings are dark bodies (zero output) against a smog-banded
+sky strip behind them. Window lights are sparse, randomized, with
+occasional flickers. Reads `outstate['cyber_skyline_density']` (0..1) for
+building density and `outstate['cyber_light_pollution']` for sky-band
+intensity.
+
+This is the FOUNDATION shader of the cyberpunk set — it defines what
+"the city" looks like. Per the contrast playbook: dark bodies + bright
+sparse features (window lights) = high-contrast under the limiter.
+"""
+import ctypes
+import numpy as np
+from OpenGL.GL import *
+from OpenGL.GL import shaders
+from typing import Dict
+from .base import ShaderEffect
+
+
+def shader_cyber_city_skyline(state, outstate, density=0.7, light_pollution=0.5):
+    frame_id = state.get('frame_id', 0)
+    renderer = outstate.get('shader_renderer')
+    if renderer is None:
+        return
+    viewport = renderer.get_viewport(frame_id)
+    if viewport is None:
+        return
+
+    if state['count'] == 0:
+        try:
+            effect = viewport.add_effect(CyberCitySkylineEffect,
+                                          density=density,
+                                          light_pollution=light_pollution)
+            state['effect'] = effect
+        except Exception as e:
+            print(f"[cyber_city_skyline] init failed: {e}")
+            import traceback; traceback.print_exc()
+            return
+
+    eff = state.get('effect')
+    if eff is None:
+        return
+
+    eff.density = float(outstate.get('cyber_skyline_density', density))
+    eff.light_pollution = float(outstate.get('light_pollution', light_pollution))
+    eff.season = float(outstate.get('season', 0.5))
+
+    if state['count'] == -1:
+        if 'effect' in state:
+            viewport.effects.remove(state['effect'])
+            state['effect'].cleanup()
+
+
+VERTEX = """#version 310 es
+precision highp float;
+layout(location = 0) in vec2 position;
+out vec2 v_uv;
+void main() {
+    v_uv = position * 0.5 + 0.5;
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"""
+
+FRAGMENT = """#version 310 es
+precision highp float;
+in vec2 v_uv;
+uniform float u_time;
+uniform float u_density;
+uniform float u_light_pollution;
+uniform float u_season;              // [0,1) time-of-day cycle
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash(float x) { return fract(sin(x * 12.9898) * 43758.5453); }
+float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// Per-column top edge — returns the v_uv.y value of the building's top
+// at this x position. Four building types selected by per-column hash so
+// the silhouette isn't a uniform row of rectangles:
+//   Type 0 (flat rect, 50% of columns) — top edge is constant per column
+//   Type 1 (stepped,  20%)             — center 50% is taller (notched silhouette)
+//   Type 2 (pyramid,  15%)             — top edge curves to a peak in the middle
+//   Type 3 (antenna,  15%)             — flat top + thin tall antenna spike at center
+//
+// Returns the building's top edge y for the pixel's x position within
+// the column. Pixels with uv.y > top_y are INSIDE the building.
+float column_top_y(float col_idx, float col_frac) {
+    float h_seed   = hash(col_idx * 1.7 + 3.0);
+    float base_top = 0.30 + h_seed * 0.50;        // building height fraction
+    float base_y   = 1.0 - base_top;              // top edge in v_uv
+
+    float type_seed = hash(col_idx * 5.3 + 11.0);
+
+    if (type_seed < 0.50) {
+        // Flat rectangle — top edge constant across the column
+        return base_y;
+    } else if (type_seed < 0.70) {
+        // Stepped — taller "penthouse" rectangle in the center 50%
+        float step_h = 0.05 + hash(col_idx * 7.1 + 13.0) * 0.06;
+        bool in_center = (col_frac > 0.25 && col_frac < 0.75);
+        return in_center ? base_y - step_h : base_y;
+    } else if (type_seed < 0.85) {
+        // Pyramidal — top edge curves up toward the center
+        float center_d = abs(col_frac - 0.5) * 2.0;          // 0 center, 1 sides
+        float taper    = (1.0 - center_d) * (0.05 + hash(col_idx * 9.3) * 0.06);
+        return base_y - taper;
+    } else {
+        // Antenna — flat rectangle with a thin tall spike at center
+        float antenna_h = 0.10 + hash(col_idx * 11.7) * 0.10;
+        bool in_antenna = (col_frac > 0.46 && col_frac < 0.54);
+        return in_antenna ? base_y - antenna_h : base_y;
+    }
+}
+
+// Sky band hue cycles with time-of-day. Eight anchor points across the
+// cycle give a much wider color range than four — there's purple at
+// pre-dawn and late night, golden yellow at dawn / morning, intense
+// blue at noon, and saturated red+violet at dusk. Lower vec3 of each
+// pair is the horizon (just above building tops); upper is zenith.
+void season_sky(float s, out vec3 horizon, out vec3 zenith) {
+    s = fract(s) * 8.0;                    // 8 segments
+    // 8 anchor stops at s = 0, 1, 2, ... 7 (then wraps to 0 again)
+    //   0.000  midnight       deep indigo horizon  +  near-black zenith
+    //   0.125  pre-dawn       saturated violet     +  deep blue zenith
+    //   0.250  dawn           amber/gold           +  bright cyan-blue
+    //   0.375  morning        pale yellow          +  intense pure blue
+    //   0.500  noon           washed cyan-blue     +  deep saturated blue
+    //   0.625  afternoon      warm cyan-amber      +  cool blue zenith
+    //   0.750  dusk           red-orange           +  electric violet
+    //   0.875  night          deep magenta         +  dark indigo
+    vec3 h0 = vec3(0.05, 0.05, 0.30);   // midnight horizon  (deep indigo)
+    vec3 z0 = vec3(0.02, 0.02, 0.10);   // midnight zenith
+    vec3 h1 = vec3(0.45, 0.10, 0.60);   // pre-dawn horizon  (saturated violet)
+    vec3 z1 = vec3(0.05, 0.05, 0.35);   // pre-dawn zenith
+    vec3 h2 = vec3(1.00, 0.55, 0.15);   // dawn horizon      (gold)
+    vec3 z2 = vec3(0.20, 0.50, 0.85);   // dawn zenith       (cyan-blue)
+    vec3 h3 = vec3(1.00, 0.90, 0.50);   // morning horizon   (pale yellow)
+    vec3 z3 = vec3(0.10, 0.55, 1.00);   // morning zenith    (intense blue)
+    vec3 h4 = vec3(0.45, 0.70, 0.95);   // noon horizon      (cyan-blue)
+    vec3 z4 = vec3(0.05, 0.30, 1.00);   // noon zenith       (deep pure blue)
+    vec3 h5 = vec3(0.85, 0.55, 0.30);   // afternoon horizon (warm amber)
+    vec3 z5 = vec3(0.10, 0.30, 0.80);   // afternoon zenith  (cool blue)
+    vec3 h6 = vec3(1.00, 0.25, 0.05);   // dusk horizon      (red-orange)
+    vec3 z6 = vec3(0.40, 0.10, 0.85);   // dusk zenith       (electric violet)
+    vec3 h7 = vec3(0.55, 0.10, 0.50);   // night horizon     (deep magenta)
+    vec3 z7 = vec3(0.05, 0.02, 0.25);   // night zenith      (dark indigo)
+
+    // Pick segment and interpolate
+    if      (s < 1.0) { horizon = mix(h0, h1, s);       zenith = mix(z0, z1, s); }
+    else if (s < 2.0) { horizon = mix(h1, h2, s - 1.0); zenith = mix(z1, z2, s - 1.0); }
+    else if (s < 3.0) { horizon = mix(h2, h3, s - 2.0); zenith = mix(z2, z3, s - 2.0); }
+    else if (s < 4.0) { horizon = mix(h3, h4, s - 3.0); zenith = mix(z3, z4, s - 3.0); }
+    else if (s < 5.0) { horizon = mix(h4, h5, s - 4.0); zenith = mix(z4, z5, s - 4.0); }
+    else if (s < 6.0) { horizon = mix(h5, h6, s - 5.0); zenith = mix(z5, z6, s - 5.0); }
+    else if (s < 7.0) { horizon = mix(h6, h7, s - 6.0); zenith = mix(z6, z7, s - 6.0); }
+    else              { horizon = mix(h7, h0, s - 7.0); zenith = mix(z7, z0, s - 7.0); }
+}
+
+// Window-lit probability shifts across the cycle. More windows lit at
+// night, fewer at noon (people are at work, not at home). Used as a
+// multiplier on per-state density.
+float window_lit_mult(float s) {
+    // 1.4x at midnight, 0.5x at noon, 1.2x at dusk, 1.0x at dawn
+    return 0.95 + 0.45 * cos(6.28318 * s);
+}
+
+void main() {
+    vec2 uv = v_uv;
+
+    // Building columns: 24 across the wrap, with per-column shape driven
+    // by hash. Wraps cleanly because we use floor(x * 24) which is integer-
+    // valued at the seam.
+    const float NUM_COLS = 24.0;
+    float col_x = uv.x * NUM_COLS;
+    float col_idx = floor(col_x);
+    float col_frac = fract(col_x);
+
+    // Per-column top edge (varies based on shape type — flat / stepped /
+    // pyramidal / antenna). For window-grid placement and sky-band
+    // gradient we still use the BASE rectangle top (sky band sits above
+    // the tallest possible building edge for this column).
+    float h_seed = hash(col_idx * 1.7 + 3.0);
+    float bldg_top = 0.30 + h_seed * 0.50;
+    float bldg_bottom_y = 1.0 - bldg_top;     // base rectangle top edge
+    float top_edge_y = column_top_y(col_idx, col_frac);  // shape-aware
+
+    // Sky band: gradient above all buildings, hue driven by the
+    // time-of-day cycle. Light pollution scales overall brightness.
+    // This is the ONLY part of the canvas that pays significant energy
+    // — buildings are dark silhouettes.
+    vec3 sky_horizon, sky_zenith;
+    season_sky(u_season, sky_horizon, sky_zenith);
+    float sky_t = clamp((bldg_bottom_y - uv.y) / max(0.05, bldg_bottom_y), 0.0, 1.0);
+    vec3 sky = mix(sky_horizon, sky_zenith, sky_t) * u_light_pollution;
+
+    // Are we in a building? Use the shape-aware top edge so steps,
+    // pyramids, and antennae carve out the correct silhouette.
+    bool in_building = (uv.y > top_edge_y);
+
+    // Per-column edge gap so columns read as distinct buildings. Skip
+    // the gap for antenna-spike pixels (the antenna is narrower than
+    // the gap and should always read as solid).
+    float edge = 0.06;
+    bool in_edge_gap = (col_frac < edge) || (col_frac > 1.0 - edge);
+    if (in_building && in_edge_gap) {
+        in_building = false;
+    }
+
+    vec3 col = sky;
+    float alpha = 0.85;   // sky always opaque enough to occlude what's behind
+
+    if (in_building) {
+        // Building body: nearly zero output (silhouette).
+        col = vec3(0.01, 0.01, 0.02);
+
+        // Window grid — only inside the base RECTANGLE (uv.y >= bldg_bottom_y).
+        // Pixels above the base rectangle (step / pyramid / antenna)
+        // skip windows; the silhouette there is just dark spire.
+        if (uv.y < bldg_bottom_y) {
+            // antenna / step / pyramid extension — no windows here
+            alpha = 0.95;
+            fragColor = vec4(col, alpha);
+            return;
+        }
+
+        // Window grid — 6 columns of windows per building, 18 rows down.
+        float win_x = (col_frac - edge) / (1.0 - 2.0 * edge);   // 0..1 inside building
+        float win_y_norm = (uv.y - bldg_bottom_y) / (1.0 - bldg_bottom_y);
+
+        const float WINDOWS_X = 6.0;
+        const float WINDOWS_Y = 18.0;
+        float wx = win_x * WINDOWS_X;
+        float wy = win_y_norm * WINDOWS_Y;
+        float wxi = floor(wx);
+        float wyi = floor(wy);
+        float wxf = fract(wx);
+        float wyf = fract(wy);
+
+        // Window cell shape: small bright rectangle in each cell
+        float in_window_x = step(0.25, wxf) * (1.0 - step(0.75, wxf));
+        float in_window_y = step(0.20, wyf) * (1.0 - step(0.65, wyf));
+        float in_window = in_window_x * in_window_y;
+
+        // Per-window on/off pattern (deterministic per column+window).
+        // Season multiplier: more lit windows at night, fewer at noon.
+        float win_seed = hash2(vec2(col_idx * 11.0 + wxi, wyi * 7.0));
+        float on_prob = (0.20 + u_density * 0.45) * window_lit_mult(u_season);
+        float lit = step(1.0 - on_prob, win_seed);
+
+        // Per-window flicker — rare, ~once per 4 sec
+        float flicker_t = u_time * 0.25 + win_seed * 13.7;
+        float flicker = step(0.92, fract(flicker_t));   // 8% of cycles
+        lit *= (1.0 - flicker * 0.7);
+
+        // Per-window color (warm vs cool — most warm, occasional cyan)
+        vec3 warm = vec3(1.0, 0.65, 0.30);
+        vec3 cool = vec3(0.30, 0.85, 1.00);
+        vec3 wcol = mix(warm, cool, step(0.85, win_seed));
+
+        col += wcol * in_window * lit * 1.0;
+        alpha = 0.95;
+    }
+
+    fragColor = vec4(col, alpha);
+}
+"""
+
+
+class CyberCitySkylineEffect(ShaderEffect):
+    def __init__(self, viewport, density: float = 0.7, light_pollution: float = 0.5):
+        super().__init__(viewport)
+        self.render_priority = 6.0   # Behind hologram/signs, in front of smog
+        self.density = density
+        self.light_pollution = light_pollution
+        self.season = 0.5            # set by wrapper from outstate['season']
+        self._time = 0.0
+
+    def compile_shader(self):
+        try:
+            vert = shaders.compileShader(VERTEX, GL_VERTEX_SHADER)
+            frag = shaders.compileShader(FRAGMENT, GL_FRAGMENT_SHADER)
+            return shaders.compileProgram(vert, frag)
+        except Exception as e:
+            print(f"CyberCitySkyline shader compile error: {e}")
+            raise
+
+    def setup_buffers(self):
+        verts = np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype=np.float32)
+        self.VAO = glGenVertexArrays(1)
+        glBindVertexArray(self.VAO)
+        vbo = glGenBuffers(1)
+        self.VBOs = [vbo]
+        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBufferData(GL_ARRAY_BUFFER, verts.nbytes, verts, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        glBindVertexArray(0)
+
+    def update(self, dt: float, state: Dict):
+        if not self.enabled:
+            return
+        self._time += dt
+
+    def render(self, state: Dict):
+        if not self.enabled:
+            return
+        glDepthFunc(GL_ALWAYS)
+        glDepthMask(GL_FALSE)
+        glUseProgram(self.shader)
+        glBindVertexArray(self.VAO)
+        glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
+        glUniform1f(glGetUniformLocation(self.shader, "u_density"), self.density)
+        glUniform1f(glGetUniformLocation(self.shader, "u_light_pollution"), self.light_pollution)
+        glUniform1f(glGetUniformLocation(self.shader, "u_season"), self.season)
+        glUniform2f(glGetUniformLocation(self.shader, "u_resolution"),
+                    float(self.viewport.width), float(self.viewport.height))
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        glBindVertexArray(0)
+        glUseProgram(0)
+        glDepthFunc(GL_LESS)
+        glDepthMask(GL_TRUE)

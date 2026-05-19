@@ -82,6 +82,35 @@ EVENT_MAP = {
     "forest_eyes": (fx.shader_forest_eyes, {}),
     "forest_birds": (fx.shader_forest_birds, {}),
     "forest_bioluminescence": (fx.shader_forest_bioluminescence, {"density": 1.0}),
+    # ─────────────────────────────────────────────────────────────────────
+    # Cyberpunk shaders — state-tied backdrops (10) + narrative-variable
+    # layer (6). The state-tied ones read existing weather params
+    # (neon_intensity, hologram_density, pollution_level, etc.) plus the
+    # new cyber_skyline_density / cyber_signage_density / cyber_underway_
+    # intensity / cyber_transit_intensity. The variable layer reads
+    # outstate['story_*'] keys published by NarrativePlayer.
+    # ─────────────────────────────────────────────────────────────────────
+    # State-tied (back-to-front, render_priority in shader controls order):
+    "cyber_smog_volume":         (fx.shader_cyber_smog_volume, {}),
+    "cyber_underway_glow":       (fx.shader_cyber_underway_glow, {}),
+    "cyber_transit_flow":        (fx.shader_cyber_transit_flow, {}),
+    "cyber_neon_grid":           (fx.shader_cyber_neon_grid, {}),
+    "cyber_city_skyline":        (fx.shader_cyber_city_skyline, {}),
+    "cyber_drone_spotlight":     (fx.shader_cyber_drone_spotlight, {}),
+    "cyber_neon_signs":          (fx.shader_cyber_neon_signs, {}),
+    "cyber_hologram_billboards": (fx.shader_cyber_hologram_billboards, {}),
+    "cyber_data_rain":           (fx.shader_cyber_data_rain, {}),
+    "cyber_rain":                (fx.shader_cyber_rain, {}),
+    "cyber_electric_storm":      (fx.shader_cyber_electric_storm, {}),
+    "cyber_ar_glitch":           (fx.shader_cyber_ar_glitch, {}),
+    "cyber_scan_lines":          (fx.shader_cyber_scan_lines, {}),
+    # Narrative-variable layer (threshold-gated at variable >= 0.2):
+    "signal_carrier":            (fx.shader_signal_carrier, {}),
+    "dread_perimeter":           (fx.shader_dread_perimeter, {}),
+    "yearning_gravity":          (fx.shader_yearning_gravity, {}),
+    "defiance_inversion":        (fx.shader_defiance_inversion, {}),
+    "dissolution_drift":         (fx.shader_dissolution_drift, {}),
+    "velocity_streaks":          (fx.shader_velocity_streaks, {}),
     # ``narrative_player`` and ``sound_pool`` used to be declared here
     # but are now auto-inherited from ``core.default_events.DEFAULT_EVENT_MAP``.
     # Redeclare a key here if Fan ever needs different params for one

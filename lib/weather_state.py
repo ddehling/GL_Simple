@@ -191,6 +191,32 @@ class WeatherStateController:
             # repurposed as time of day, so effects that want to dim at
             # night (fish, kelp) scale their output by this value.
             "ambient_light": 0.25 + 0.75 * (0.5 - 0.5 * np.cos(2 * np.pi * season)),
+            # ── Cyberpunk state-tied shader params ────────────────────
+            # Without these, every cyber_* shader runs at its wrapper
+            # default and is blind to per-state customization. See
+            # renderer/effects/cyber_*.py wrappers — each does
+            # outstate.get(<param>, <kwarg_default>).
+            "neon_intensity": self.weather_params.get("neon_intensity", 0.0),
+            "hologram_density": self.weather_params.get("hologram_density", 0.0),
+            "pollution_level": self.weather_params.get("pollution_level", 0.0),
+            "light_pollution": self.weather_params.get("light_pollution", 0.0),
+            "drone_activity": self.weather_params.get("drone_activity", 0.0),
+            "scan_line_intensity": self.weather_params.get("scan_line_intensity", 0.0),
+            "data_flow_rate": self.weather_params.get("data_flow_rate", 0.0),
+            "electric_interference": self.weather_params.get("electric_interference", 0.0),
+            "glitch_probability": self.weather_params.get("glitch_probability", 0.0),
+            "cyber_skyline_density": self.weather_params.get("cyber_skyline_density", 0.0),
+            "cyber_signage_density": self.weather_params.get("cyber_signage_density", 0.0),
+            "cyber_underway_intensity": self.weather_params.get("cyber_underway_intensity", 0.0),
+            "cyber_transit_intensity": self.weather_params.get("cyber_transit_intensity", 0.0),
+            # Color arrays: per-state palette overrides for cyber shaders.
+            # `cyber_rain_color` is consumed by cyber_rain to tint drops
+            # acid green / electric blue / sodium amber per state.
+            "cyber_rain_color": self.weather_params.get("cyber_rain_color"),
+            # `velocity_direction` is a unit vector consumed by
+            # velocity_streaks so each arc can pick its motion axis
+            # (e.g. (0, -1) for upward ascent in Subroutine 9).
+            "velocity_direction": self.weather_params.get("velocity_direction"),
         }
 
     def select_next_weather(
