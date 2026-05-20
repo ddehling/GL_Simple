@@ -895,9 +895,13 @@ Be specific — suggest actual text or directions, not just abstract advice.
 PREMISE — injected into every node call with a layer-specific role label ('establish this premise's
 world' at arrival, 'the bind IS this premise made specific' at complication, 'the action MUST BE this
 premise enacted' at turn, 'afterimage' at stillness). So premise suggestions you make must:
-  - Be 150-400 chars, 1-3 sentences.
+  - Be 600-1000 chars, several sentences. Long enough to carry both the character's durable anchors
+    (who they are, key recurring facts) AND the situation/stakes of this arc.
+  - Premise is the ONLY field that reliably reaches every node-generation call other than motif/themes/
+    beats, so character identity belongs HERE, not in `notes` (notes is consulted only on the first
+    seed call and ignored afterward).
   - Read cleanly through every layer role above (test it both ways).
-  - Capture the IRREDUCIBLE thing, not a plot summary or a theme list.
+  - Capture the IRREDUCIBLE thing — character + situation + what's at stake — not a plot summary.
 
 BEATS — each beat is the per-layer steering text the generator sees as 'LAYER DIRECTION'. The arc's
 story context is dense, so each beat needs to out-shout it by carrying three elements:
@@ -6348,7 +6352,7 @@ class ArcEditorDialog(QDialog):
             "Extract the following from the conversation and return ONLY a JSON object:\n"
             "{\n"
             '  "name": "Short arc title (2-5 words)",\n'
-            '  "premise": "1-3 sentences, 150-400 chars. See PREMISE RULES.",\n'
+            '  "premise": "Several sentences, 600-1000 chars. See PREMISE RULES.",\n'
             '  "themes": "Comma-separated themes (e.g. isolation, transformation, memory)",\n'
             '  "motif": "One concrete recurring sensory/symbolic thread (a smell, a sound, an object). 60-150 chars.",\n'
             '  "notes": "Character details, world-building, tone guidance — anything useful for generation",\n'
@@ -6358,13 +6362,17 @@ class ArcEditorDialog(QDialog):
             "The premise is injected into EVERY node generation call with a layer-specific role label\n"
             "('establish this premise's world' at arrival, 'the bind IS this premise made specific' at\n"
             "complication, 'the action MUST BE this premise enacted' at turn, 'afterimage' at stillness).\n"
-            "So the premise must read cleanly through ALL those role-frames.\n"
-            "  - Length: 150-400 chars, 1-3 sentences.\n"
+            "So the premise must read cleanly through ALL those role-frames AND must carry the durable\n"
+            "character anchors, because `notes` only reaches the first seed call and is ignored afterward.\n"
+            "  - Length: 600-1000 chars, several sentences.\n"
+            "  - Must include: who the character is, the key durable facts about them, the specific\n"
+            "    situation/action of this arc, and the irreducible stakes.\n"
             "  - Test before finalizing: can you literally say 'the bind is <PREMISE>' and 'the action\n"
             "    MUST BE <PREMISE> enacted' and have both make narrative sense? If not, sharpen.\n"
             "  - Capture the ESSENCE — the irreducible thing the arc is about — not a plot summary.\n"
             "  - Avoid abstract themes ('isolation', 'transformation'). Those go in `themes`.\n"
-            "  - Avoid worldbuilding detail. That goes in `notes` or already lives in the story context.\n\n"
+            "  - Worldbuilding details that already live in the story context don't need restating here;\n"
+            "    the character's specific anchors do, since the context is shared and the premise is not.\n\n"
             "── BEAT RULES ──\n"
             "Each beat is the per-layer steering text the generator sees as 'LAYER DIRECTION'. It must\n"
             "out-shout the dense story context, which means each beat carries THREE elements:\n"
