@@ -136,6 +136,18 @@ class NarrativePlayer(ShaderEffect):
         self._recency: dict = {}   # node_id -> float
         self._DECAY_PER_SEC: float = 1.0 / 36000.0  # lose 1 count per 10 hours
 
+        # ── Pending weather-transition request ─────────────────────────
+        # When a node with a non-null ``trigger_state`` field plays, that
+        # state name is stashed here along with the source node id (so
+        # logs can report which node fired the transition). ``update()``
+        # publishes both to the frame state dict as
+        # ``_weather_transition_request`` and ``_weather_transition_node``
+        # so the owning environmental system can pick them up and call
+        # ``transition_to_weather()``. Old scripts without the field are
+        # unaffected — ``nd.get('trigger_state')`` simply returns None.
+        self._pending_weather_request: Optional[str] = None
+        self._pending_weather_node:    Optional[str] = None
+
         # Disabled by default; _load_script flips enabled on success.
         self.enabled = False
         if script_path:
@@ -274,6 +286,16 @@ class NarrativePlayer(ShaderEffect):
         # Start variable ramp toward this node's values
         self._start_var_ramp(nd.get('vars', {}))
 
+        # Stash any node-triggered weather-state transition. Most nodes
+        # won't have this field (backwards-compatible with pre-feature
+        # scripts). ``update()`` publishes it to the shared state dict
+        # this frame so the env-system picks it up. Source node id is
+        # stashed alongside for logging.
+        trig = nd.get('trigger_state')
+        if trig:
+            self._pending_weather_request = str(trig)
+            self._pending_weather_node    = node_id
+
         # Use the node's explicit "file" field if set, otherwise fall back
         # to the convention of {node_id}.mp3 in the script directory.
         #
@@ -374,6 +396,17 @@ class NarrativePlayer(ShaderEffect):
                 print('[NarrativePlayer] Restarting.')
                 self._phase         = self.IDLE
                 self._phase_elapsed = 0.0
+
+        # Publish a pending weather-transition request, if any. The
+        # request was set in ``_play_node`` when a node with a
+        # ``trigger_state`` field began playing. The env-system consumes
+        # (pops) both keys in its main update loop. The node id is
+        # included so log messages can report which node fired it.
+        if self._pending_weather_request is not None:
+            state['_weather_transition_request'] = self._pending_weather_request
+            state['_weather_transition_node']    = self._pending_weather_node
+            self._pending_weather_request = None
+            self._pending_weather_node    = None
 
         # Interpolate variables and inject into shared state every frame
         self._update_var_ramp(dt)

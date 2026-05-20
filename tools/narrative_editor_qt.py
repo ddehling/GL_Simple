@@ -56,7 +56,41 @@ RECENTS_PATH = REPO_ROOT / "config" / "narrative_recents.json"
 RECENTS_MAX = 10
 
 NODE_PREVIEW_LEN = 60        # chars shown inside a node box
-FOCUSED_CONTEXT_MAX = 4000  # max chars of story_context_focused sent to AI
+# Maximum story_context size sent to AI per call. The previous 4000-char
+# limit was conservative; modern Claude models handle 50K+ tokens easily.
+# Combined with the CLI's automatic prompt caching (verified via
+# tools/test_claude_caching.py — ~80% of the prefix gets cached on
+# subsequent calls), there is no longer a reason to keep this small.
+# Keeping the constant name FOCUSED_CONTEXT_MAX as an alias for back-compat
+# with any external tools that read it.
+CONTEXT_MAX = 60000
+FOCUSED_CONTEXT_MAX = CONTEXT_MAX   # deprecated alias
+
+
+# Per-node word-count presets. Selected via dropdown in the Node Length
+# dialog (script-wide) and the Arc editor (per-arc override). Each entry
+# is (label, min_words, max_words). Times are approximate at ~150 wpm.
+NODE_LENGTH_PRESETS = [
+    # label                            min   max
+    ("Vignette  (40-100 words, 15-35 sec)",   40,  100),
+    ("Scene     (60-140 words, 20-48 sec)",   60,  140),
+    ("Passage   (80-180 words, 28-60 sec)",   80,  180),
+    ("Monologue (120-250 words, 40-85 sec)", 120,  250),
+    ("Long-form (180-350 words, 60-120 sec)", 180,  350),
+]
+
+
+def _find_node_length_preset_index(rng):
+    """Return the index of the preset matching (min, max) or -1 if no
+    preset matches. Used to set the dropdown to the right item when
+    loading an existing script/arc value."""
+    if not rng or len(rng) != 2:
+        return -1
+    lo, hi = int(rng[0]), int(rng[1])
+    for i, (_lbl, p_lo, p_hi) in enumerate(NODE_LENGTH_PRESETS):
+        if p_lo == lo and p_hi == hi:
+            return i
+    return -1
 
 PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
 
@@ -131,6 +165,41 @@ GENERATION_PROFILES = {
     },
 }
 
+# Global width preset scales — applied as a multiplier to a base profile's
+# `widths` (children-per-parent) AND `layer_caps` (total cap per layer). The
+# user picks one from the Story menu; it travels with the script as
+# `script.width_preset`. 'medium' is the canonical default.
+WIDTH_PRESETS = {
+    'small':  0.55,
+    'medium': 1.0,
+    'large':  1.6,
+}
+DEFAULT_WIDTH_PRESET = 'medium'
+
+
+def _scale_profile(profile: dict, preset: str) -> dict:
+    """Return a copy of `profile` with widths and layer_caps multiplied by
+    the named preset's scale factor. Width tuples are floored at (1, 2)
+    to avoid degenerate (0, 0)/(0, 1) ranges that would produce nothing."""
+    scale = WIDTH_PRESETS.get(preset, 1.0)
+    if scale == 1.0:
+        return profile  # no change needed
+    widths = {}
+    for k, v in profile.get('widths', {}).items():
+        if isinstance(v, tuple) and len(v) == 2:
+            lo, hi = v
+            new_lo = max(1, int(round(lo * scale)))
+            new_hi = max(new_lo + 1, int(round(hi * scale)))
+            widths[k] = (new_lo, new_hi)
+        else:
+            widths[k] = v
+    caps = {k: max(1, int(round(v * scale)))
+            for k, v in profile.get('layer_caps', {}).items()}
+    out = dict(profile)
+    out['widths'] = widths
+    out['layer_caps'] = caps
+    return out
+
 # Characters that break TTS and their plain-text replacements.
 _TTS_REPLACEMENTS = [
     ('\u2014', ', '),    # em dash  —
@@ -158,7 +227,6 @@ SCRIPT_TEMPLATE = {
     "name": "New Script",
     "description": "",
     "story_context": "",
-    "story_context_focused": "",
     "voice": "Rachel",
     "voice_settings": {
         "stability": 0.5,
@@ -660,7 +728,8 @@ Respond with ONLY a JSON object — no markdown fences, no explanation:
   "text": "Spoken text, 40-100 words.",
   "tags": ["layer_tag", "custom_tag_1", "custom_tag_2"],
   "voice_settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.35},
-  "vars": {}
+  "vars": {},
+  "vars_reasoning": "One short paragraph citing the specific words/moments in the node text that drive each non-zero variable. Variables at 0.00 don't need to be mentioned."
 }
 
 TAGGING RULES:
@@ -745,9 +814,10 @@ Keep individual segments in mind — each will be ~15–35 seconds of spoken aud
 When the user clicks "Generate Graph", you will produce the actual JSON structure.
 Until then, focus on ideas, themes, tone, and story development.
 
-IMPORTANT — when a "Story context" block is provided, treat it as BACKGROUND ATMOSPHERE ONLY
-(voice, tone, setting). It must NEVER override the subject of the user's actual message.
-The user's message defines the topic. Always stay on that topic.
+IMPORTANT — when a WORLD BIBLE block is appended below, treat it as REFERENCE MATERIAL ONLY
+(voice, tone, setting, characters, places). It must NEVER override the subject of the user's
+actual message. The user's message defines the topic. Always stay on that topic — use bible
+details only insofar as they are RELEVANT to what the user is asking.
 """
 
 SYSTEM_DETERMINE_VARS = """\
@@ -768,6 +838,43 @@ Respond with ONLY a JSON object mapping node IDs to their variable values:
 No markdown fences, no explanation — just the JSON object.
 """
 
+SYSTEM_SUGGEST_VARS = """\
+You are designing the NARRATIVE VARIABLES for a long-form audio narrative
+intended to drive a real-time visual installation.
+
+A narrative variable is a continuous lever in [0,1] that the AI sets per
+node and that visual/audio effects read each frame. Good variables:
+
+  - Name ONE clear emotional or structural dimension. Single words; lowercase.
+  - Are STRUCTURALLY INDEPENDENT — knowing one tells you little about another.
+    Variables that always co-vary (e.g. "fear" and "dread") are redundant.
+  - Can swing across the full 0..1 range over the course of an arc — they
+    are LEVERS, not statistics about the world. "weather" is a bad variable;
+    "exposure" or "danger" are better.
+  - Map intuitively to visual/audio cues a shader can read: color
+    temperature, motion, intensity, density, focus.
+  - Together cover the EMOTIONAL ARC the narrative is built around — the
+    set should answer "what does the audience FEEL changing across an arc?"
+
+Prefer ABSTRACT EMOTIONAL/STRUCTURAL terms over plot terms. Examples of
+good variable families:
+  - signal, dread, yearning, defiance, dissolution, velocity
+    (cyberpunk: perception, surveillance pull, loss, push-back, fade, motion)
+  - tension, intimacy, hope, grief, defiance, stillness
+  - urgency, isolation, devotion, decay, recognition, motion
+
+Output ONLY a JSON array (no markdown fences, no commentary, no explanation):
+[
+  {"name": "lowercase_word", "description": "One sentence: when this is high vs low, and what visual cue it might drive."},
+  ...
+]
+
+Aim for exactly 6 variables (or 4-6 if fewer truly cover the arc). Names
+should be single lowercase words (snake_case OK). Descriptions should be
+ONE sentence, ≤ 120 chars each, framed in terms of "high = X, low = Y;
+drives visual cue Z" where possible.
+"""
+
 SYSTEM_ARC_CHAT = """\
 You are helping an author develop a story arc for an immersive audio installation.
 Story arcs are used to guide generation of a narrative node graph — each arc has a premise,
@@ -782,11 +889,125 @@ develop themes and recurring motifs, identify character voices, and deepen the e
 When arc fields are shown, treat them as the current state. Respond conversationally.
 Keep suggestions practical and grounded in the established tone.
 Be specific — suggest actual text or directions, not just abstract advice.
+
+── HOW THESE FIELDS ARE USED DOWNSTREAM (so your suggestions land at the right grain) ──
+
+PREMISE — injected into every node call with a layer-specific role label ('establish this premise's
+world' at arrival, 'the bind IS this premise made specific' at complication, 'the action MUST BE this
+premise enacted' at turn, 'afterimage' at stillness). So premise suggestions you make must:
+  - Be 150-400 chars, 1-3 sentences.
+  - Read cleanly through every layer role above (test it both ways).
+  - Capture the IRREDUCIBLE thing, not a plot summary or a theme list.
+
+BEATS — each beat is the per-layer steering text the generator sees as 'LAYER DIRECTION'. The arc's
+story context is dense, so each beat needs to out-shout it by carrying three elements:
+  1. SCENE/SITUATION ANCHOR — a concrete moment, not a theme.
+  2. EMOTIONAL OR COGNITIVE MOVE — what specifically changes (one transformation).
+  3. BOUNDARY — what this beat is NOT, or a restraint to keep the AI from over-citing.
+Length per beat: 100-300 chars (2-3 sentences). Don't exceed ~400 chars — past that, the model
+reads the beat as text-to-deliver rather than guidance.
+
+MOTIF — must be CONCRETE and SENSORY (a smell, a sound, an object), not thematic. 60-150 chars.
+
+When the author asks for a draft premise, beat, or motif, write it at the above grain directly,
+not as advice about what one would look like.
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Model
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _load_project_weather_sets(script_path: Optional[Path]):
+    """Load the WEATHER_SETS dict from the project that owns this script.
+
+    Walks up from script_path looking for a directory containing
+    ``weather_params.py``, then imports it in an isolated namespace and
+    returns the WEATHER_SETS dict. Returns ``{}`` on any failure
+    (missing file, import error, missing/malformed WEATHER_SETS).
+    """
+    if script_path is None:
+        return {}
+    script_path = Path(script_path).resolve()
+    project_dir = None
+    candidate = script_path.parent
+    for _ in range(6):
+        if (candidate / 'weather_params.py').exists():
+            project_dir = candidate
+            break
+        if candidate == candidate.parent:
+            break
+        candidate = candidate.parent
+    if project_dir is None:
+        return {}
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        '_narr_editor_weather_params', project_dir / 'weather_params.py')
+    if spec is None or spec.loader is None:
+        return {}
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        print(f"[narrative_editor] failed to load {project_dir}/"
+              f"weather_params.py: {exc}")
+        return {}
+
+    weather_sets = getattr(mod, 'WEATHER_SETS', {})
+    return weather_sets if isinstance(weather_sets, dict) else {}
+
+
+def _reverse_lookup_weather_set(script_path: Optional[Path], weather_sets: dict):
+    """Given a script path and a WEATHER_SETS dict, find the set whose
+    narrative_script field matches this script. Returns the set name or
+    None.
+
+    Match strategy: a weather_set's narrative_script is typically
+    relative to the project's media root (e.g.
+    ``"sounds/cyberpunk/sounds.json"``). The script's absolute path
+    contains that suffix, so suffix-matching is robust.
+    """
+    if script_path is None or not weather_sets:
+        return None
+    script_str = str(Path(script_path).resolve()).replace('\\', '/').lower()
+    for set_name, set_data in weather_sets.items():
+        narr = (set_data or {}).get('narrative_script')
+        if not narr:
+            continue
+        narr_norm = str(narr).replace('\\', '/').lower()
+        if script_str.endswith(narr_norm):
+            return set_name
+    return None
+
+
+def _find_weather_states_for_script(script_path: Optional[Path],
+                                     explicit_set: Optional[str] = None):
+    """Given a script.json path, return ``(set_name, list_of_state_values)``
+    for the trigger-state dropdown.
+
+    If ``explicit_set`` is provided AND that set exists in the project's
+    WEATHER_SETS, it wins — the user has overridden the association via
+    the script's top-level ``weather_set`` field. Otherwise we
+    reverse-lookup which set's ``narrative_script`` points at this file.
+
+    Returns ``(None, [])`` if no association can be resolved.
+    """
+    weather_sets = _load_project_weather_sets(script_path)
+    if not weather_sets:
+        return None, []
+
+    # Explicit override wins
+    if explicit_set and explicit_set in weather_sets:
+        states = list((weather_sets[explicit_set] or {}).get('states', []))
+        return explicit_set, states
+
+    # Otherwise, reverse-lookup via narrative_script
+    set_name = _reverse_lookup_weather_set(script_path, weather_sets)
+    if set_name is None:
+        return None, []
+    states = list((weather_sets[set_name] or {}).get('states', []))
+    return set_name, states
+
 
 class ScriptData:
     """In-memory representation of a script.json file."""
@@ -795,6 +1016,10 @@ class ScriptData:
         self._data = deepcopy(data or SCRIPT_TEMPLATE)
         self.path: Optional[Path] = None
         self.dirty = False
+        # Cache for trigger_state dropdown — populated when path is set.
+        # (set_name, list[str]) of valid weather states for this script.
+        self._associated_set: Optional[str] = None
+        self._trigger_state_options: list = []
         self._migrate_layers()
 
     # ── Layer migration ───────────────────────────────────────────────────
@@ -839,15 +1064,27 @@ class ScriptData:
     def story_context(self) -> str: return self._data.get("story_context", "")
 
     @property
-    def story_context_focused(self) -> str: return self._data.get("story_context_focused", "")
+    def story_context_focused(self) -> str:
+        """Deprecated alias. The editor no longer distinguishes between
+        a full context and a "focused" subset — the single
+        ``story_context`` is what gets sent to the AI (with prompt
+        caching handling the size). Kept as a read-only alias so older
+        callsites that reference ``script.story_context_focused``
+        silently work against the unified context."""
+        return self._data.get("story_context", "")
 
     def set_story_context(self, text: str):
         self._data["story_context"] = text
+        # Drop the deprecated field if present so re-saved scripts are
+        # clean of the old dual-context layout.
+        self._data.pop("story_context_focused", None)
         self.dirty = True
 
     def set_story_context_focused(self, text: str):
-        self._data["story_context_focused"] = text
-        self.dirty = True
+        """Deprecated. Behaves as a setter on the unified
+        ``story_context`` field — silently routes through
+        ``set_story_context`` so legacy code paths keep working."""
+        self.set_story_context(text)
 
     @property
     def variables(self) -> list:
@@ -920,6 +1157,110 @@ class ScriptData:
         if not arc_id:
             return {}
         return self._data.get('arcs', {}).get(arc_id, {}) or {}
+
+    # ── Node length range ──────────────────────────────────────────────────
+    # Controls the per-node word-count target that gets injected into the
+    # system prompt as a LENGTH OVERRIDE. Resolution order:
+    #   1. arc.node_word_range (if the parent node belongs to an arc that
+    #      overrides the default)
+    #   2. script.node_word_range (story-wide default)
+    #   3. The hardcoded fallback (40, 100) — original system-prompt spec
+    DEFAULT_NODE_WORD_RANGE = (40, 100)
+
+    @property
+    def node_word_range(self) -> Optional[tuple]:
+        """Script-wide default. None = use the hardcoded (40, 100)."""
+        rng = self._data.get('node_word_range')
+        if isinstance(rng, (list, tuple)) and len(rng) == 2:
+            try:
+                lo, hi = int(rng[0]), int(rng[1])
+                if lo > 0 and hi >= lo:
+                    return (lo, hi)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def set_node_word_range(self, lo: Optional[int], hi: Optional[int]):
+        """Set the script-wide range, or clear it (pass None for either)."""
+        if lo is None or hi is None or lo <= 0 or hi < lo:
+            self._data.pop('node_word_range', None)
+        else:
+            self._data['node_word_range'] = [int(lo), int(hi)]
+        self.dirty = True
+
+    @property
+    def width_preset(self) -> str:
+        """Generation width — one of 'small' / 'medium' / 'large'.
+        Scales children-per-parent and per-layer caps in arc-driven
+        generation. Defaults to 'medium' for any script that doesn't
+        record a value."""
+        val = self._data.get('width_preset')
+        return val if val in WIDTH_PRESETS else DEFAULT_WIDTH_PRESET
+
+    def set_width_preset(self, preset: str):
+        if preset not in WIDTH_PRESETS:
+            preset = DEFAULT_WIDTH_PRESET
+        if self._data.get('width_preset') == preset:
+            return
+        self._data['width_preset'] = preset
+        self.dirty = True
+
+    def get_arc_width_preset(self, arc_id: str) -> Optional[str]:
+        """Per-arc override of width preset. None = inherit from script."""
+        arc = self.get_arc(arc_id)
+        val = arc.get('width_preset') if arc else None
+        return val if val in WIDTH_PRESETS else None
+
+    def set_arc_width_preset(self, arc_id: str, preset: Optional[str]):
+        """Set or clear a per-arc width override. None clears the override."""
+        if arc_id not in self.arcs:
+            return
+        if preset is None or preset not in WIDTH_PRESETS:
+            self.arcs[arc_id].pop('width_preset', None)
+        else:
+            self.arcs[arc_id]['width_preset'] = preset
+        self.dirty = True
+
+    def get_effective_width_preset(self, arc_id: str) -> str:
+        """Resolve the actual width preset to use for this arc:
+        per-arc override if set, otherwise script-wide default."""
+        return self.get_arc_width_preset(arc_id) or self.width_preset
+
+    def get_arc_node_word_range(self, arc_id: str) -> Optional[tuple]:
+        """Per-arc override. None = inherit from script-wide."""
+        arc = self.get_arc(arc_id)
+        rng = arc.get('node_word_range') if arc else None
+        if isinstance(rng, (list, tuple)) and len(rng) == 2:
+            try:
+                lo, hi = int(rng[0]), int(rng[1])
+                if lo > 0 and hi >= lo:
+                    return (lo, hi)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def set_arc_node_word_range(self, arc_id: str,
+                                  lo: Optional[int], hi: Optional[int]):
+        """Set or clear a per-arc override."""
+        if arc_id not in self.arcs:
+            return
+        if lo is None or hi is None or lo <= 0 or hi < lo:
+            self.arcs[arc_id].pop('node_word_range', None)
+        else:
+            self.arcs[arc_id]['node_word_range'] = [int(lo), int(hi)]
+        self.dirty = True
+
+    def get_effective_node_word_range(self, arc_id: str = '') -> tuple:
+        """Final resolved (lo, hi) for a node generation. Tries
+        per-arc → script-wide → DEFAULT_NODE_WORD_RANGE."""
+        if arc_id:
+            arc_rng = self.get_arc_node_word_range(arc_id)
+            if arc_rng:
+                return arc_rng
+        script_rng = self.node_word_range
+        if script_rng:
+            return script_rng
+        return self.DEFAULT_NODE_WORD_RANGE
 
     def summary(self, max_text: int = 80) -> str:
         """Compact text description of the script for AI context."""
@@ -1058,12 +1399,71 @@ class ScriptData:
         self.path = target
         self.dirty = False
 
+    @property
+    def associated_weather_set(self) -> Optional[str]:
+        """The weather set this script is currently associated with.
+        Reflects the explicit ``weather_set`` JSON field if present, or
+        whatever reverse-lookup found, or None."""
+        return self._associated_set
+
+    @property
+    def weather_set_explicit(self) -> Optional[str]:
+        """The user-pinned weather set override from the script JSON.
+        None means "auto-detect via reverse lookup"."""
+        v = self._data.get('weather_set')
+        return v if v else None
+
+    def set_weather_set_explicit(self, set_name: Optional[str]):
+        """Pin the script to a specific weather set (or pass None /
+        empty string to clear the pin and fall back to auto-detect)."""
+        if set_name:
+            self._data['weather_set'] = set_name
+        else:
+            self._data.pop('weather_set', None)
+        self.dirty = True
+        self.refresh_weather_association()
+
+    def available_weather_sets(self) -> list:
+        """All weather sets known to this script's owning project.
+        Used to populate the "Weather Set" selection dialog."""
+        return sorted(_load_project_weather_sets(self.path).keys())
+
+    @property
+    def trigger_state_options(self) -> list:
+        """List of weather-state value-strings the user can pick from for
+        a node's trigger_state field. Empty if no weather set has been
+        resolved for this script (in which case the editor will hide
+        the dropdown)."""
+        return list(self._trigger_state_options)
+
+    def refresh_weather_association(self):
+        """Re-resolve which weather set this script is associated with.
+        Uses the explicit ``weather_set`` field if set, otherwise
+        reverse-looks-up via narrative_script. Re-run after the user
+        changes the explicit field or reloads weather_params.py."""
+        self._associated_set, self._trigger_state_options = \
+            _find_weather_states_for_script(self.path, self.weather_set_explicit)
+
     @classmethod
     def load(cls, path: Path) -> "ScriptData":
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
+
+        # Migrate dual story_context / story_context_focused layout to
+        # a single story_context field. If only the focused version is
+        # set on an old script, promote it. If both are set, the longer
+        # story_context wins (it's the "real" content; focused was the
+        # truncated summary). Always drop the focused field so re-saved
+        # scripts are clean.
+        sc  = (data.get("story_context") or "").strip()
+        scf = (data.get("story_context_focused") or "").strip()
+        if not sc and scf:
+            data["story_context"] = scf
+        data.pop("story_context_focused", None)
+
         sd = cls(data)
         sd.path = Path(path)
+        sd.refresh_weather_association()
         # Ensure all nodes have required fields; sanitize spoken text on load
         for node in sd._data["nodes"].values():
             node.setdefault("pos",      [100, 100])
@@ -1168,6 +1568,10 @@ class ScriptData:
                 "tags":           tags,
                 "voice":          ndata.get("voice", None),
                 "voice_settings": ndata.get("voice_settings", {}),
+                "vars":           ndata.get("vars", {}),
+                "vars_reasoning": ndata.get("vars_reasoning", '').strip()
+                                    if isinstance(ndata.get("vars_reasoning"), str)
+                                    else '',
                 "pos":            [x, 80 + y_idx * 170],
             }
             _clamp_voice_settings(self._data["nodes"][nid].get("voice_settings", {}))
@@ -1245,6 +1649,9 @@ class ScriptData:
             'voice':          None,
             'voice_settings': node_data.get('voice_settings', {}),
             'vars':           node_data.get('vars', {}),
+            'vars_reasoning': node_data.get('vars_reasoning', '').strip()
+                                if isinstance(node_data.get('vars_reasoning'), str)
+                                else '',
             'duration':       None,
         }}
         # Clamp voice settings from AI to safe ranges
@@ -1363,10 +1770,14 @@ class ParallelNodeOrchestrator:
                  model: str = '', profile: str = 'full',
                  story_context: str = '', variables: list = None,
                  on_progress=None, on_complete=None, on_node_added=None,
-                 thinking: str = ''):
+                 thinking: str = '',
+                 width_preset: str = DEFAULT_WIDTH_PRESET):
         self._script       = script
         self._ui_queue     = ui_queue
-        self._profile      = GENERATION_PROFILES.get(profile, GENERATION_PROFILES['full'])
+        base_profile = GENERATION_PROFILES.get(profile, GENERATION_PROFILES['full'])
+        # Apply the width preset's scale factor to children-per-parent and
+        # per-layer caps. 'medium' is a no-op; 'small'/'large' shrink/grow.
+        self._profile      = _scale_profile(base_profile, width_preset)
         self._story_context = story_context
         self._variables    = variables or []
         self._on_progress  = on_progress   # callback(status_str)
@@ -1709,6 +2120,11 @@ class ParallelNodeOrchestrator:
 
             premise, motif, themes, _ = self._arc_fields_for_parent(primary_pid)
 
+            # Resolve the node word-count range from the parent's arc;
+            # falls through to script default then to (40, 100).
+            parent_arc_id = self._script.get_node_arc_id(primary_pid)
+            node_word_range = self._script.get_effective_node_word_range(parent_arc_id)
+
             result = worker.generate_batch_sync(
                 parent_id=primary_pid,
                 parent_text=parent_text,
@@ -1725,6 +2141,7 @@ class ParallelNodeOrchestrator:
                 variables=self._variables,
                 premise=premise,
                 premise_weight=premise_weight,
+                node_word_range=node_word_range,
             )
 
             if self._cancelled.is_set():
@@ -2000,24 +2417,67 @@ class AIAssistant:
         raise ValueError(f"Unbalanced braces in JSON response (depth={depth}, "
                          f"len={len(raw)}, start={start}). Preview: {preview[:200]}")
 
-    def _run_claude(self, system: str, prompt: str, max_retries: int = 5) -> str:
-        """Blocking call to `claude -p`. Retries with exponential backoff."""
+    def _run_claude(self, system: str, prompt: str, max_retries: int = 5,
+                    model_override: Optional[str] = None) -> str:
+        """Blocking call to `claude -p`. Retries with exponential backoff.
+
+        model_override: if provided, use this model id instead of the
+        AIAssistant's currently-selected model. Used to force Opus for
+        bibles/arc work while keeping the user's selection for node gen.
+
+        Windows' CreateProcess caps the entire command line at ~32,767
+        chars, which becomes a problem once the bible (passed via
+        --system-prompt) is large. We write the system prompt to a temp
+        file and use --system-prompt-file instead; the path is short,
+        argv stays small, and the CLI still applies cache_control to the
+        system content (cache hits preserved)."""
         prefix = self.THINKING_LEVELS.get(self._thinking, '')
         full_prompt = prefix + prompt if prefix else prompt
-        cmd = [
-            self._claude_exe,
-            "--no-session-persistence",
-            "--model", self._model,
-            "--system-prompt", system,
-            "--output-format", "text",
-            "-p", full_prompt,
-        ]
+        model = model_override or self._model
+
+        # Write system prompt to a temp file so we never put it on argv.
+        # NamedTemporaryFile(delete=False) is required on Windows because
+        # the file must be closed before another process can open it.
+        # The USER prompt is piped via stdin (claude -p with no arg reads
+        # the prompt from stdin) for the same reason — long chat histories
+        # or deep ancestor contexts can also blow Windows' argv limit.
+        import tempfile, os
+        sys_file = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.sysprompt.txt', delete=False, encoding='utf-8'
+        )
+        try:
+            sys_file.write(system)
+            sys_file.flush()
+            sys_file.close()
+            cmd = [
+                self._claude_exe,
+                "--no-session-persistence",
+                "--model", model,
+                "--system-prompt-file", sys_file.name,
+                "--output-format", "text",
+                "-p",
+            ]
+            return self._run_claude_cmd(cmd, max_retries=max_retries,
+                                         stdin_data=full_prompt)
+        finally:
+            try:
+                os.unlink(sys_file.name)
+            except OSError:
+                pass
+
+    def _run_claude_cmd(self, cmd: list, max_retries: int = 5,
+                         stdin_data: Optional[str] = None) -> str:
+        """Inner retry loop. Pulled out so _run_claude's temp-file
+        cleanup wraps it cleanly via try/finally.
+        stdin_data: if given, piped to the subprocess's stdin (used for the
+        user prompt so it doesn't sit on argv where Windows would cap it)."""
         last_error = None
         for attempt in range(max_retries):
             backoff = min(3 * (2 ** attempt), 30)  # 3, 6, 12, 24, 30 seconds
             try:
                 result = subprocess.run(
                     cmd,
+                    input=stdin_data,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -2049,33 +2509,180 @@ class AIAssistant:
         raise last_error or RuntimeError("claude CLI failed after all retries")
 
     @staticmethod
+    def _augment_system_with_context(system: str,
+                                       story_context: str,
+                                       node_word_range: Optional[tuple] = None) -> str:
+        """Append the world bible AND optional length-override to the
+        system prompt as a stable cache-friendly prefix.
+
+        - story_context: world bible (cached across calls in a session)
+        - node_word_range: optional (lo, hi) word target that overrides
+          the "40-100 words" spec baked into the SYSTEM_* prompts. Story-
+          and arc-level node-length settings flow in via this parameter.
+
+        Both blocks are pure suffixes on the SYSTEM prompt so the CLI's
+        automatic prompt caching can key on them consistently — as long
+        as the story_context AND the resolved word_range don't change
+        between calls, the prefix is identical and the cache hits."""
+        out = system
+        if node_word_range:
+            lo, hi = int(node_word_range[0]), int(node_word_range[1])
+            # ~ 150 wpm narration -> roughly lo*0.4 .. hi*0.4 seconds
+            t_lo = max(1, int(lo * 0.4))
+            t_hi = max(t_lo + 1, int(hi * 0.4))
+            out += (
+                "\n\n----- LENGTH OVERRIDE -----\n"
+                f"Override the word-count instruction in the rules above.\n"
+                f"Generate each node as a spoken segment of {lo}-{hi} words\n"
+                f"(approximately {t_lo}-{t_hi} seconds when read aloud).\n"
+                "Stay inside that range. Stop when the transformation\n"
+                "is complete; do not pad to hit the upper bound, but do\n"
+                "develop the beat fully — don't cut at the lower bound.\n"
+                "----- END LENGTH OVERRIDE -----"
+            )
+        if story_context:
+            sc = story_context[:CONTEXT_MAX]
+            if len(story_context) > CONTEXT_MAX:
+                sc += '\n[...truncated...]'
+            out += (
+                "\n\n----- WORLD BIBLE (reference material) -----\n"
+                "Use the following world bible as INSTRUMENTS of transformation,\n"
+                "not decoration. The user prompt's PARENT NODE and LAYER\n"
+                "FUNCTION take priority — write to advance THAT node's\n"
+                "transformation, not to showcase world details.\n\n"
+                + sc +
+                "\n----- END WORLD BIBLE -----"
+            )
+        return out
+
+    @staticmethod
     def _vars_prompt_section(variables: list) -> str:
-        """Build a prompt section telling the AI to set story variables on every node."""
+        """Build a prompt section telling the AI to set story variables on
+        every node. Strongly biases the model toward BIMODAL distributions
+        (mostly 0.0, with high commitments at 0.7+) instead of clustering
+        in the wishy-washy 0.2–0.6 middle. Also requires a one-line
+        'vars_reasoning' explanation in the output so the editor can show
+        the user WHY each value was chosen."""
         if not variables:
             return ''
         lines = ['STORY VARIABLES — set "vars" on every node (each value 0.0–1.0):']
         for v in variables:
             lines.append(f'  "{v["name"]}": {v["description"]}')
-        lines.append('CRITICAL: Use the FULL range. Default is 0.0 — use 0.0 when the variable\'s '
-                      'quality is NOT meaningfully present in the node text. Only use values above 0 '
-                      'when the text explicitly contains elements described by the variable. '
-                      'Most nodes should be 0.0 for most variables. '
-                      'Reserve 0.8–1.0 for nodes where that quality is the dominant force. '
-                      'Avoid clustering everything in the 0.2–0.6 range — be decisive.')
-        lines.append('Include "vars": {"name": value, ...} in every node object.')
+        lines.append(
+            'BE DECISIVE — bimodal distribution, not a wash of middle values. '
+            'Use ONE of these tiers for each variable, picking the closest fit:\n'
+            '   0.00 — absent.   The variable\'s quality does NOT appear in the\n'
+            '                    node text. Default; most variables on most nodes.\n'
+            '   0.30 — trace.    A faint hint, almost background. Use SPARINGLY —\n'
+            '                    only when the quality is genuinely glancing.\n'
+            '   0.70 — present.  Clearly and explicitly part of this node.\n'
+            '   1.00 — dominant. The defining force of this node.\n'
+            'FORBIDDEN: clustering values in 0.40–0.60. If you\'re tempted by\n'
+            'a "middle" value, pick 0.00 or 0.70 instead — commit to one.\n'
+            'Most nodes have 1–2 variables non-zero and the rest at 0.00.'
+        )
+        lines.append(
+            'OUTPUT TWO FIELDS for every node:\n'
+            '  "vars": {"name": value, ...}     — the numeric assignments\n'
+            '  "vars_reasoning": "..."           — ONE short paragraph explaining\n'
+            '                                      WHY each non-zero variable is\n'
+            '                                      non-zero. Cite specific words\n'
+            '                                      or moments from the node text.\n'
+            '                                      Variables at 0.00 do not need\n'
+            '                                      to be mentioned.'
+        )
         return '\n'.join(lines)
+
+    def suggest_variables(self, story_context: str,
+                            current_vars: list,
+                            sample_nodes: list,
+                            arcs_summary: str,
+                            ui_queue: queue.SimpleQueue,
+                            on_done, on_error,
+                            instructions: str = ''):
+        """Ask Claude to propose a fresh set of ~6 narrative variables
+        for the active script.
+
+        Inputs:
+          - story_context: the world bible (goes into the SYSTEM prompt as usual)
+          - current_vars: list of {"name","description"} the user already has
+                          (so the AI can either iterate on them or replace)
+          - sample_nodes: up to ~10 short node texts so the AI sees the
+                          script's actual register
+          - arcs_summary: short description of each arc (premise + themes)
+                          so the AI sees what emotional arc each arc traces
+          - instructions: optional free-form user guidance, e.g. "lean more
+                          emotional, less plot-driven" — empty for a fresh pass
+
+        Calls ``on_done(list_of_var_dicts)`` on success."""
+        if self._busy:
+            return
+        self._busy = True
+
+        parts = []
+        if instructions.strip():
+            parts.append(f"AUTHOR DIRECTION (highest priority):\n  {instructions.strip()}")
+        if current_vars:
+            cur_lines = ["CURRENT VARIABLES (the author has these already — you may keep, refine, or replace):"]
+            for v in current_vars:
+                cur_lines.append(f'  - "{v.get("name","")}": {v.get("description","")}')
+            parts.append('\n'.join(cur_lines))
+        if arcs_summary.strip():
+            parts.append(f"ARC SUMMARIES (what emotional/structural arcs the narrative will trace):\n{arcs_summary.strip()}")
+        if sample_nodes:
+            sn_lines = ["SAMPLE NODE TEXTS (a few representative segments, for tone/register):"]
+            for s in sample_nodes[:10]:
+                sn_lines.append(f'  - "{s[:240]}{"…" if len(s) > 240 else ""}"')
+            parts.append('\n'.join(sn_lines))
+        parts.append(
+            "Propose 4–6 narrative variables that together cover the emotional\n"
+            "arc this script seems to be tracing. Output the JSON array only."
+        )
+        prompt = '\n\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_SUGGEST_VARS, story_context)
+
+        def run():
+            try:
+                raw = self._run_claude(system, prompt)
+                data = self._extract_json(raw)
+                # The model returns an array. Sometimes it nests under a key
+                # like {"variables": [...]}. Be permissive.
+                if isinstance(data, list):
+                    var_list = data
+                elif isinstance(data, dict):
+                    var_list = data.get('variables') or data.get('vars') or []
+                else:
+                    var_list = []
+                # Sanitize: keep only well-formed entries
+                cleaned = []
+                for v in var_list:
+                    if not isinstance(v, dict):
+                        continue
+                    name = (v.get('name') or '').strip()
+                    desc = (v.get('description') or v.get('desc') or '').strip()
+                    if name:
+                        cleaned.append({'name': name[:30], 'description': desc[:300]})
+                ui_queue.put(lambda v=cleaned: on_done(v))
+            except json.JSONDecodeError as exc:
+                ui_queue.put(lambda e=exc: on_error(f"JSON parse error: {e}"))
+            except Exception as exc:
+                ui_queue.put(lambda e=exc: on_error(str(e)))
+            finally:
+                self._busy = False
+
+        threading.Thread(target=run, daemon=True).start()
 
     def chat(self, user_msg: str, ui_queue: queue.SimpleQueue,
              on_reply, on_error, script_summary: str = '', story_context: str = '',
-             _system_override: str = ''):
+             _system_override: str = '',
+             node_word_range: Optional[tuple] = None,
+             model_override: Optional[str] = None):
         if self._busy:
             return
         self._busy = True
         self._history.append({"role": "user", "content": user_msg})
 
         parts = []
-        if story_context:
-            parts.append(f"BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this override the topic of the user's message):\n{story_context}")
         if script_summary:
             parts.append(f"Current script:\n{script_summary}")
         transcript = self._transcript()
@@ -2083,11 +2690,14 @@ class AIAssistant:
             parts.append(transcript)
         parts.append(f"User: {user_msg}")
         full_prompt = "\n\n".join(parts)
-        system = _system_override or SYSTEM_CHAT
+        # World bible goes into the SYSTEM prompt (cache-friendly prefix).
+        system = self._augment_system_with_context(
+            _system_override or SYSTEM_CHAT, story_context, node_word_range)
 
         def run():
             try:
-                reply = self._run_claude(system, full_prompt)
+                reply = self._run_claude(system, full_prompt,
+                                         model_override=model_override)
                 self._history.append({"role": "assistant", "content": reply})
                 ui_queue.put(lambda: on_reply(reply))
             except Exception as exc:
@@ -2100,23 +2710,24 @@ class AIAssistant:
 
     def generate_graph(self, prompt: str, ui_queue: queue.SimpleQueue,
                        on_done, on_error, story_context: str = '',
-                       variables: list = None):
+                       variables: list = None,
+                       node_word_range: Optional[tuple] = None):
         if self._busy:
             return
         self._busy = True
 
         parts = []
-        if story_context:
-            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
         vars_sec = self._vars_prompt_section(variables or [])
         if vars_sec:
             parts.append(vars_sec)
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
+        # World bible into SYSTEM prompt — cache-friendly across calls.
+        system = self._augment_system_with_context(SYSTEM_GENERATE, story_context, node_word_range)
 
         def run():
             try:
-                raw   = self._run_claude(SYSTEM_GENERATE, full_prompt)
+                raw   = self._run_claude(system, full_prompt)
                 data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
@@ -2131,15 +2742,14 @@ class AIAssistant:
     def generate_seed(self, prompt: str, ui_queue: queue.SimpleQueue,
                       on_done, on_error, story_context: str = '',
                       layer_direction: str = '', motif: str = '',
-                      variables: list = None):
+                      variables: list = None,
+                      node_word_range: Optional[tuple] = None):
         """Generate only the arrival layer — no children. Used to seed iterative generation."""
         if self._busy:
             return
         self._busy = True
 
         parts = []
-        if story_context:
-            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do not let this dilute or override the subject below):\n{story_context}')
         vars_sec = self._vars_prompt_section(variables or [])
         if vars_sec:
             parts.append(vars_sec)
@@ -2149,11 +2759,12 @@ class AIAssistant:
             parts.append(f'RECURRING MOTIF (weave this through the text naturally in every node):\n{motif}')
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_GENERATE_SEED, story_context, node_word_range)
 
         def run():
             try:
                 print(f'[AI] generate_seed: calling claude...')
-                raw   = self._run_claude(SYSTEM_GENERATE_SEED, full_prompt)
+                raw   = self._run_claude(system, full_prompt)
                 print(f'[AI] generate_seed: got {len(raw)} chars, extracting JSON...')
                 data = self._extract_json(raw)
                 nodes = data.get('nodes', {})
@@ -2177,7 +2788,8 @@ class AIAssistant:
                        on_done, on_error, story_context: str = '',
                        existing_custom_tags: list = None,
                        layer_direction: str = '', motif: str = '',
-                       variables: list = None):
+                       variables: list = None,
+                       node_word_range: Optional[tuple] = None):
         """Generate the next layer for all frontier nodes in one AI call.
 
         frontier: list of (node_id, node_data) for all current leaf nodes.
@@ -2187,9 +2799,6 @@ class AIAssistant:
         self._busy = True
 
         parts = []
-        if story_context:
-            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
-            parts.append(f'BACKGROUND ATMOSPHERE (tone/voice/setting only — do NOT let this dilute or override the topic defined by the source nodes):\n  {sc}')
         vars_sec = self._vars_prompt_section(variables or [])
         if vars_sec:
             parts.append(vars_sec)
@@ -2210,10 +2819,11 @@ class AIAssistant:
         n_new = max(2, min(5, len(frontier) + 1))
         parts.append(f'Generate {n_new}–{n_new + 1} new nodes. Every source node must appear in at least one connect_from.')
         full_prompt = '\n\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_GENERATE_LAYER, story_context, node_word_range)
 
         def run():
             try:
-                raw   = self._run_claude(SYSTEM_GENERATE_LAYER, full_prompt)
+                raw   = self._run_claude(system, full_prompt)
                 data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
@@ -2231,7 +2841,8 @@ class AIAssistant:
                     upstream_path: list = None,
                     node_min: int = 2, node_max: int = 5,
                     existing_custom_tags: list = None,
-                    variables: list = None):
+                    variables: list = None,
+                    node_word_range: Optional[tuple] = None):
         if self._busy:
             return
         self._busy = True
@@ -2240,11 +2851,8 @@ class AIAssistant:
         # is closest to the generation point (recency bias).
         parts = []
 
-        # ── Background: story context (lowest weight, read first / least recent) ──
-        if story_context:
-            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
-                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
-            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+        # Background world bible is sent in the SYSTEM prompt below (cache
+        # friendly across calls). Per-call USER prompt stays small.
 
         if existing_custom_tags:
             parts.append(f'EXISTING CUSTOM TAGS in this script (prefer these when applicable): {", ".join(sorted(existing_custom_tags))}')
@@ -2317,10 +2925,11 @@ class AIAssistant:
 
         parts.append(f'\nGenerate {node_min}–{node_max} continuation nodes branching from this node.')
         prompt = '\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_EXPAND, story_context, node_word_range)
 
         def run():
             try:
-                raw   = self._run_claude(SYSTEM_EXPAND, prompt)
+                raw   = self._run_claude(system, prompt)
                 data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
@@ -2341,7 +2950,8 @@ class AIAssistant:
                                    existing_custom_tags: list = None,
                                    variables: list = None,
                                    premise: str = '',
-                                   premise_weight: float = 1.0) -> dict:
+                                   premise_weight: float = 1.0,
+                                   node_word_range: Optional[tuple] = None) -> dict:
         """Blocking call that generates exactly one node. Returns parsed dict.
 
         Designed to be called from worker threads in ParallelNodeOrchestrator.
@@ -2362,11 +2972,7 @@ class AIAssistant:
                 label = "STORY PREMISE"
             parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
 
-        # Background (lowest weight)
-        if story_context:
-            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
-                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
-            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+        # World bible is sent in the SYSTEM prompt below (cache friendly).
 
         if existing_custom_tags:
             parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
@@ -2446,8 +3052,9 @@ class AIAssistant:
             f'See STORYTELLING DISCIPLINE in system prompt for forbidden patterns.'
         )
         prompt = '\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_GENERATE_SINGLE_NODE, story_context, node_word_range)
 
-        raw = self._run_claude(SYSTEM_GENERATE_SINGLE_NODE, prompt)
+        raw = self._run_claude(system, prompt)
         return self._extract_json(raw)
 
     def generate_batch_sync(self, parent_id: str, parent_text: str,
@@ -2461,7 +3068,8 @@ class AIAssistant:
                              variables: list = None,
                              premise: str = '',
                              premise_weight: float = 1.0,
-                             themes: str = '') -> dict:
+                             themes: str = '',
+                             node_word_range: Optional[tuple] = None) -> dict:
         """Blocking call that generates multiple sibling nodes from one parent.
 
         Returns dict with 'nodes' and 'connect_from' keys (SYSTEM_EXPAND format).
@@ -2479,10 +3087,7 @@ class AIAssistant:
                 label = "STORY PREMISE"
             parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
 
-        if story_context:
-            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' \
-                if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
-            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
+        # World bible is sent in the SYSTEM prompt below (cache friendly).
 
         if existing_custom_tags:
             parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
@@ -2555,8 +3160,9 @@ class AIAssistant:
         if hint:
             parts.append(f'\nCRITICAL — AUTHOR DIRECTION (this overrides thematic continuity): {hint}')
         prompt = '\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_EXPAND, story_context, node_word_range)
 
-        raw = self._run_claude(SYSTEM_EXPAND, prompt)
+        raw = self._run_claude(system, prompt)
         return self._extract_json(raw)
 
     def suggest_cross_links_sync(self, layer_nodes: list,
@@ -2586,7 +3192,8 @@ class AIAssistant:
     def continue_from_node(self, source_id: str, source_text: str, source_tags: list,
                            ui_queue: queue.SimpleQueue, on_done, on_error,
                            story_context: str = '', node_hint: str = '',
-                           variables: list = None):
+                           variables: list = None,
+                           node_word_range: Optional[tuple] = None):
         if self._busy:
             return
         self._busy = True
@@ -2594,9 +3201,6 @@ class AIAssistant:
         source_layer = next((t for t in source_tags if t in LAYER_ORDER), 'discovery')
 
         parts = []
-        if story_context:
-            sc = story_context[:FOCUSED_CONTEXT_MAX] + '...' if len(story_context) > FOCUSED_CONTEXT_MAX else story_context
-            parts.append(f'BACKGROUND (story flavour only):\n  {sc}')
         vars_sec = self._vars_prompt_section(variables or [])
         if vars_sec:
             parts.append(vars_sec)
@@ -2609,10 +3213,11 @@ class AIAssistant:
             f'Generate the continuation layers that come AFTER "{source_layer}".'
         )
         full_prompt = '\n\n'.join(parts)
+        system = self._augment_system_with_context(SYSTEM_CONTINUE, story_context, node_word_range)
 
         def run():
             try:
-                raw   = self._run_claude(SYSTEM_CONTINUE, full_prompt)
+                raw   = self._run_claude(system, full_prompt)
                 data = self._extract_json(raw)
                 ui_queue.put(lambda: on_done(data))
             except json.JSONDecodeError as exc:
@@ -2664,7 +3269,7 @@ class AIAssistant:
             "for use during node expansion in a narrative audio script.\n\n"
             "Rules:\n"
             "- Output plain text only — no JSON, no markdown, no headers\n"
-            f"- Maximum {FOCUSED_CONTEXT_MAX} characters\n"
+            f"- Maximum {CONTEXT_MAX} characters\n"
             "- Keep: core character nature, tone/voice guidance, key sensory anchors\n"
             "- Drop: backstory detail, lists, repeated ideas, anything decorative\n"
             "- Write in present tense, dense and specific\n"
@@ -2689,26 +3294,36 @@ class AIAssistant:
         "narrative audio script. The bible is reference material — a dense, "
         "evocative portrait of premise, world, characters, voice, sensory "
         "anchors, and themes — that a human reads and edits.\n\n"
-        "How to behave:\n"
-        "- Listen to what the user actually asks. Sometimes they want a draft; "
-        "  sometimes they want to discuss, brainstorm, ask a question, or "
-        "  refine one section. Match the request.\n"
-        "- When the user asks for a draft, an expansion, or a revision: output "
-        "  the FULL revised bible as the body of your reply, in flowing prose. "
-        "  No preamble like \"Here's the revised version:\" — just the bible. "
-        "  No markdown, no headers, no bullet points. Present tense.\n"
-        "- When the user asks a question, wants to brainstorm, or pushes back: "
-        "  reply conversationally. Don't dump a fresh bible — talk with them.\n"
-        "- Feel free to ask clarifying questions before drafting if the brief "
-        "  is genuinely ambiguous. Otherwise commit and draft.\n"
-        "- Drafts should be 2000–4000 characters: dense, specific, sensory. "
-        "  Concrete details over abstractions.\n"
+        "There are TWO commit paths the human can use on your reply:\n"
+        "  (1) REPLACE — your reply becomes the new bible in full.\n"
+        "  (2) APPEND  — your reply is added to the END of the existing bible.\n"
+        "Choose your output shape based on what the user is asking for:\n\n"
+        "- REWRITE / REVISE / REDRAFT requests (\"revise the whole bible\", "
+        "  \"rewrite this to feel more bittersweet\", \"redo the protagonist\") → "
+        "  output the FULL revised bible. Flowing prose. No preamble.\n\n"
+        "- ADD / EXPAND / INTRODUCE requests (\"add a section on the harbor\", "
+        "  \"introduce a sister character\", \"expand on the sound of the kiln\", "
+        "  \"include the priestess subplot\") → output ONLY the new material as a "
+        "  self-contained addition that will sit at the end of the existing bible. "
+        "  Do NOT restate facts already established earlier in the conversation or "
+        "  in the initial bible. Open in a way that flows naturally after a "
+        "  paragraph break.\n\n"
+        "- Questions, brainstorming, pushback → reply conversationally. Don't "
+        "  dump prose. Just talk.\n\n"
+        "If the request is ambiguous between rewrite and add, default to ADD "
+        "(it's the safer non-destructive option) and tell the user which mode "
+        "you chose in a brief one-line preface that they can ignore.\n\n"
+        "Other rules:\n"
+        "- No markdown, no headers, no bullet points in the prose itself. Present tense.\n"
+        "- Full rewrites: 2000–4000 chars, dense, specific, sensory.\n"
+        "- Additions: as long as the request warrants. Don't pad.\n"
         "- Always carry forward the user's prior decisions. If they said the "
         "  protagonist is a tile-setter, do not later make them a librarian."
     )
 
     def chat_context(self, history: list, user_msg: str,
-                     ui_queue: queue.SimpleQueue, on_done, on_error):
+                     ui_queue: queue.SimpleQueue, on_done, on_error,
+                     model_override: Optional[str] = None):
         """Multi-turn collaboration on the Full Context.
 
         history: list of {"role": "user"|"assistant", "content": str} —
@@ -2739,7 +3354,8 @@ class AIAssistant:
 
         def run():
             try:
-                reply = self._run_claude(self.SYSTEM_CONTEXT_CHAT, prompt)
+                reply = self._run_claude(self.SYSTEM_CONTEXT_CHAT, prompt,
+                                         model_override=model_override)
                 ui_queue.put(lambda r=reply.strip(): on_done(r))
             except Exception as exc:
                 ui_queue.put(lambda e=exc: on_error(str(e)))
@@ -3026,6 +3642,71 @@ class NarrativeNode(BaseNode):
 # PropertiesPanel
 # ─────────────────────────────────────────────────────────────────────────────
 
+class _HighlightLineEdit(QLineEdit):
+    """QLineEdit that paints a translucent yellow highlight rectangle over
+    every substring matching a search term. QLineEdit has no native subrange
+    highlighting API, so we override paintEvent and overlay rects computed
+    via QFontMetrics + the style's content-rect for the widget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._highlight_term: str = ''
+
+    def set_highlight_term(self, term: str):
+        new = term or ''
+        if new == self._highlight_term:
+            return
+        self._highlight_term = new
+        self.update()  # trigger repaint
+
+    def paintEvent(self, event):
+        # Let QLineEdit paint normally first (border, bg, text, cursor).
+        super().paintEvent(event)
+        if not self._highlight_term:
+            return
+        text = self.text()
+        if not text:
+            return
+        qlow = self._highlight_term.lower()
+        tlow = text.lower()
+        if qlow not in tlow:
+            return
+
+        from PySide6.QtWidgets import QStyle, QStyleOptionFrame
+        from PySide6.QtGui import QPainter, QColor, QFontMetrics
+        from PySide6.QtCore import QRect, Qt as _Qt
+
+        # Find the content rect (where the text actually sits) via Qt's style.
+        opt = QStyleOptionFrame()
+        self.initStyleOption(opt)
+        contents = self.style().subElementRect(
+            QStyle.SubElement.SE_LineEditContents, opt, self
+        )
+        fm = QFontMetrics(self.font())
+        text_h = fm.height()
+        y_offset = contents.top() + (contents.height() - text_h) // 2
+        x_base = contents.left()
+
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            color = QColor(255, 220, 100, 150)  # translucent yellow
+            painter.setBrush(color)
+            painter.setPen(_Qt.PenStyle.NoPen)
+            start = 0
+            n = len(qlow)
+            while True:
+                idx = tlow.find(qlow, start)
+                if idx < 0:
+                    break
+                x = x_base + fm.horizontalAdvance(text[:idx])
+                w = fm.horizontalAdvance(text[idx:idx + n])
+                painter.drawRect(QRect(x, y_offset, w, text_h))
+                start = idx + max(1, n)
+        finally:
+            painter.end()
+
+
 class PropertiesPanel(QWidget):
     node_modified = Signal(str)  # node_id
 
@@ -3037,6 +3718,8 @@ class PropertiesPanel(QWidget):
         self._vm: Optional[VoiceManager] = None
         self._ai: Optional[AIAssistant] = None
         self._ui_queue: Optional[queue.SimpleQueue] = None
+        self._search_term: str = ''  # current main-window search term for in-text highlighting
+        self._arc_beat_raw: str = ''  # raw arc_beat text (so we can re-render with highlights)
         self._build_ui()
 
     def set_context(self, script: ScriptData, vm: VoiceManager,
@@ -3064,11 +3747,18 @@ class PropertiesPanel(QWidget):
         # Label (display name)
         label_row = QHBoxLayout()
         label_row.addWidget(QLabel("Name:"))
-        self.label_edit = QLineEdit()
+        self.label_edit = _HighlightLineEdit()
         self.label_edit.setPlaceholderText("Node name...")
         self.label_edit.textChanged.connect(self._autosave_label)
+        self.label_edit.textChanged.connect(self._apply_search_highlights)
         label_row.addWidget(self.label_edit)
         layout.addLayout(label_row)
+
+        # Arc — read-only, shows which story arc this node belongs to.
+        self._arc_name_lbl = QLabel('')
+        self._arc_name_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._arc_name_lbl.setWordWrap(True)
+        layout.addWidget(self._arc_name_lbl)
 
         # Text
         layout.addWidget(QLabel("Text:"))
@@ -3078,6 +3768,7 @@ class PropertiesPanel(QWidget):
         self.text_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         self.text_edit.textChanged.connect(self._autosave_text)
         self.text_edit.textChanged.connect(self._update_word_count)
+        self.text_edit.textChanged.connect(self._apply_search_highlights)
         layout.addWidget(self.text_edit)
 
         self._word_count_lbl = QLabel("")
@@ -3151,10 +3842,11 @@ class PropertiesPanel(QWidget):
         # Custom tags
         custom_row = QHBoxLayout()
         custom_row.addWidget(QLabel("Tags:"))
-        self.tags_edit = QLineEdit()
+        self.tags_edit = _HighlightLineEdit()
         self.tags_edit.setPlaceholderText("goat, toad, revelation, ...")
         self.tags_edit.setToolTip("Custom tags: characters, themes, locations — comma separated")
         self.tags_edit.textChanged.connect(self._autosave_tags)
+        self.tags_edit.textChanged.connect(self._apply_search_highlights)
         custom_row.addWidget(self.tags_edit)
         layout.addLayout(custom_row)
 
@@ -3167,10 +3859,48 @@ class PropertiesPanel(QWidget):
         self._vars_container.hide()
         layout.addWidget(self._vars_container)
 
+        # ── vars_reasoning display ──────────────────────────────────────
+        # Read-only explanation of WHY the AI assigned the current values.
+        # Populated when the AI generates a node; user can edit it
+        # manually too. Hidden if no value is set on the current node.
+        self._vars_reasoning_lbl = QLabel("Variable reasoning:")
+        self._vars_reasoning_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px; margin-top: 4px;")
+        self._vars_reasoning_edit = QTextEdit()
+        self._vars_reasoning_edit.setPlaceholderText(
+            "AI-generated explanation of why each variable was set this way. "
+            "Cite specific words/moments. Edit freely.")
+        self._vars_reasoning_edit.setFixedHeight(72)
+        self._vars_reasoning_edit.textChanged.connect(self._autosave_vars_reasoning)
+        self._vars_reasoning_lbl.hide()
+        self._vars_reasoning_edit.hide()
+        layout.addWidget(self._vars_reasoning_lbl)
+        layout.addWidget(self._vars_reasoning_edit)
+
         # Is start
         self.is_start_cb = QCheckBox("Start node")
         self.is_start_cb.stateChanged.connect(self._autosave_start)
         layout.addWidget(self.is_start_cb)
+
+        # Trigger weather state — optional. When this node STARTS, the
+        # narrative_player will request a transition to the chosen state.
+        # Populated with the script's associated-weather-set states; the
+        # row is hidden entirely if no weather set references this script.
+        self._trigger_row = QHBoxLayout()
+        self._trigger_label = QLabel("Trigger state:")
+        self._trigger_row.addWidget(self._trigger_label)
+        self.trigger_state_combo = QComboBox()
+        self.trigger_state_combo.setToolTip(
+            "Optional. When this node begins playing, the env-system\n"
+            "transitions to the chosen weather state. Most nodes leave\n"
+            "this blank — only set on 'anchor' nodes that should pull\n"
+            "the visuals to a specific state.")
+        self.trigger_state_combo.currentIndexChanged.connect(
+            self._autosave_trigger_state)
+        self._trigger_row.addWidget(self.trigger_state_combo)
+        # Wrap in a widget so we can show/hide the whole row at once
+        self._trigger_row_widget = QWidget()
+        self._trigger_row_widget.setLayout(self._trigger_row)
+        layout.addWidget(self._trigger_row_widget)
 
         # Outgoing edges
         layout.addWidget(QLabel("Outgoing Edges:"))
@@ -3256,6 +3986,110 @@ class PropertiesPanel(QWidget):
 
         self.setEnabled(False)
 
+    def set_search_term(self, term: str):
+        """Called by MainWindow when the search bar text changes.
+        Re-highlights any occurrences of `term` inside the node text view."""
+        new = (term or '').strip()
+        if new == self._search_term:
+            return
+        self._search_term = new
+        self._apply_search_highlights()
+
+    def _apply_search_highlights(self):
+        """Highlight occurrences of the current search term across every
+        property-panel field that participates in node search:
+          - text_edit (QTextEdit): range highlights via ExtraSelections
+          - label_edit, tags_edit (QLineEdit): tint the widget if it contains
+            the term (Qt can't subrange-highlight a QLineEdit without
+            subclassing it, so we tint as a 'contains-match' signal)
+          - _arc_beat_lbl (QLabel): re-render with <mark> spans around hits
+        """
+        from PySide6.QtWidgets import QTextEdit as _QTE
+        from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+        term = self._search_term
+        qlow = term.lower() if term else ''
+
+        # 1. text_edit — non-destructive range highlights.
+        selections = []
+        if qlow:
+            text = self.text_edit.toPlainText()
+            tlow = text.lower()
+            fmt = QTextCharFormat()
+            fmt.setBackground(QColor(255, 220, 100, 180))
+            fmt.setForeground(QColor(0, 0, 0))
+            start = 0
+            while True:
+                idx = tlow.find(qlow, start)
+                if idx < 0:
+                    break
+                cursor = self.text_edit.textCursor()
+                cursor.setPosition(idx)
+                cursor.setPosition(idx + len(qlow), QTextCursor.MoveMode.KeepAnchor)
+                sel = _QTE.ExtraSelection()
+                sel.cursor = cursor
+                sel.format = fmt
+                selections.append(sel)
+                start = idx + max(1, len(qlow))
+        self.text_edit.setExtraSelections(selections)
+
+        # 2 + 3. label_edit & tags_edit — push the term into our
+        # _HighlightLineEdit subclass, which overlays per-match rects.
+        self.label_edit.set_highlight_term(self._search_term)
+        self.tags_edit.set_highlight_term(self._search_term)
+
+        # 4. arc_beat_lbl — re-render with <mark> spans.
+        self._render_arc_beat_label()
+
+    def _render_arc_name_label(self, script: 'ScriptData', node_id: str):
+        """Update the small label below the Name field to show which arc
+        this node belongs to (or '(unassigned)' if it has no arc_id)."""
+        arc_id = script.get_node_arc_id(node_id) if script else ''
+        if arc_id:
+            arc = script.get_arc(arc_id)
+            name = (arc.get('name') or arc_id).strip() if arc else arc_id
+            self._arc_name_lbl.setText(
+                f'<span style="color:#aaccaa; font-size:10px;">'
+                f'<b>Arc:</b> {name}</span>'
+            )
+        else:
+            self._arc_name_lbl.setText(
+                '<span style="color:#888888; font-size:10px; font-style:italic;">'
+                'Arc: (unassigned)</span>'
+            )
+
+    def _render_arc_beat_label(self):
+        """Render the arc-beat label, marking any search-term occurrences."""
+        raw = self._arc_beat_raw
+        if not raw:
+            self._arc_beat_lbl.setText('')
+            return
+        import html as _html
+        body = _html.escape(raw)
+        qlow = self._search_term.lower()
+        if qlow:
+            # Walk lowercased body for case-insensitive hits, splice marks
+            # into the original-cased escaped body. Done on a copy so we
+            # can offset as we insert.
+            raw_low = raw.lower()
+            out = []
+            i = 0
+            while i < len(raw):
+                idx = raw_low.find(qlow, i)
+                if idx < 0:
+                    out.append(_html.escape(raw[i:]))
+                    break
+                out.append(_html.escape(raw[i:idx]))
+                out.append(
+                    '<span style="background-color:#ffdc64; color:#000;">'
+                    f'{_html.escape(raw[idx:idx + len(qlow)])}</span>'
+                )
+                i = idx + max(1, len(qlow))
+            body = ''.join(out)
+        self._arc_beat_lbl.setText(
+            f'<span style="color:#7799cc; font-size:10px;">'
+            f'<b>Arc beat:</b> {body}</span>'
+        )
+
     def load_node(self, script: ScriptData, node_id: str):
         self._script = script
         self._node_id = node_id
@@ -3265,6 +4099,7 @@ class PropertiesPanel(QWidget):
         try:
             self.id_edit.setText(node_id)
             self.label_edit.setText(nd.get("label") or node_id)
+            self._render_arc_name_label(script, node_id)
             self.text_edit.setPlainText(nd.get("text", ""))
             self.hint_edit.setPlainText(nd.get("hint", ""))
             self.rewrite_hint.clear()
@@ -3276,6 +4111,25 @@ class PropertiesPanel(QWidget):
             self.layer_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.tags_edit.setText(", ".join(custom_tags))
             self.is_start_cb.setChecked(node_id in script.start_nodes)
+
+            # Trigger-state dropdown: rebuild options from the script's
+            # associated weather set (reverse-lookup). Hide the row if
+            # the script isn't associated with any set.
+            options = script.trigger_state_options
+            self.trigger_state_combo.blockSignals(True)
+            self.trigger_state_combo.clear()
+            if options:
+                self.trigger_state_combo.addItem("(none)", "")
+                for sv in options:
+                    self.trigger_state_combo.addItem(sv, sv)
+                # Restore current value if any
+                current_trig = nd.get('trigger_state') or ""
+                idx = self.trigger_state_combo.findData(current_trig)
+                self.trigger_state_combo.setCurrentIndex(idx if idx >= 0 else 0)
+                self._trigger_row_widget.show()
+            else:
+                self._trigger_row_widget.hide()
+            self.trigger_state_combo.blockSignals(False)
 
             vs = nd.get("voice_settings", {})
             if _clamp_voice_settings(vs):
@@ -3309,12 +4163,8 @@ class PropertiesPanel(QWidget):
                 self.audio_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
 
             arc_beat = nd.get('arc_beat', '')
-            if arc_beat:
-                self._arc_beat_lbl.setText(
-                    f'<span style="color:#7799cc; font-size:10px;">'
-                    f'<b>Arc beat:</b> {arc_beat}</span>')
-            else:
-                self._arc_beat_lbl.setText('')
+            self._arc_beat_raw = arc_beat
+            self._render_arc_beat_label()
 
             self.rebuild_edge_list(script, node_id)
 
@@ -3322,6 +4172,14 @@ class PropertiesPanel(QWidget):
             node_vars = nd.get("vars", {})
             for name, spin in self._vars_spins.items():
                 spin.setValue(node_vars.get(name, 0.0))
+
+            # Variable reasoning (AI-generated explanation, user-editable)
+            reasoning = (nd.get("vars_reasoning") or "").strip()
+            self._vars_reasoning_edit.setPlainText(reasoning)
+            # Only show the field if the script has variables defined
+            has_vars = bool(self._vars_spins)
+            self._vars_reasoning_lbl.setVisible(has_vars)
+            self._vars_reasoning_edit.setVisible(has_vars)
         finally:
             self._blocking = False
 
@@ -3350,12 +4208,22 @@ class PropertiesPanel(QWidget):
         try:
             self.id_edit.setText("(multiple)" if multi_select else "")
             self.label_edit.setText("")
+            self._arc_name_lbl.setText('')
             self.text_edit.setPlainText("")
             self.hint_edit.setPlainText("")
             self.rewrite_hint.clear()
             self.layer_combo.setCurrentIndex(0)
             self.tags_edit.setText("")
             self.is_start_cb.setChecked(False)
+            # Hide the trigger-state row when no node is selected
+            self._trigger_row_widget.hide()
+            self.trigger_state_combo.blockSignals(True)
+            self.trigger_state_combo.clear()
+            self.trigger_state_combo.blockSignals(False)
+            # Hide vars_reasoning when nothing is selected
+            self._vars_reasoning_edit.clear()
+            self._vars_reasoning_lbl.hide()
+            self._vars_reasoning_edit.hide()
             self.stability_spin.setValue(0.5)
             self.similarity_spin.setValue(0.75)
             self.audio_file_edit.setText("")
@@ -3511,6 +4379,23 @@ class PropertiesPanel(QWidget):
         self._script.set_start(self._node_id, self.is_start_cb.isChecked())
         self.node_modified.emit(self._node_id)
 
+    def _autosave_trigger_state(self):
+        """Write the dropdown's current selection back to the node's
+        trigger_state field. Empty string ("(none)") removes the field
+        entirely so old scripts stay clean of empty values."""
+        if self._blocking or not self._node_id or not self._script:
+            return
+        nd = self._script.nodes.get(self._node_id)
+        if not nd:
+            return
+        val = self.trigger_state_combo.currentData() or ""
+        if val:
+            nd['trigger_state'] = val
+        else:
+            nd.pop('trigger_state', None)
+        self._script.dirty = True
+        self.node_modified.emit(self._node_id)
+
     def _autosave_vars(self):
         """Write current spinbox values back to the node's vars dict."""
         if self._blocking or not self._node_id or not self._script:
@@ -3521,6 +4406,21 @@ class PropertiesPanel(QWidget):
         nd.setdefault("vars", {})
         for name, spin in self._vars_spins.items():
             nd["vars"][name] = round(spin.value(), 2)
+        self._script.dirty = True
+
+    def _autosave_vars_reasoning(self):
+        """Write the vars_reasoning text back to the node. Empty string
+        removes the field entirely so re-saved scripts stay clean."""
+        if self._blocking or not self._node_id or not self._script:
+            return
+        nd = self._script.nodes.get(self._node_id)
+        if not nd:
+            return
+        text = self._vars_reasoning_edit.toPlainText().strip()
+        if text:
+            nd['vars_reasoning'] = text
+        else:
+            nd.pop('vars_reasoning', None)
         self._script.dirty = True
 
     def refresh_variable_widgets(self):
@@ -4288,6 +5188,7 @@ class AIChatPanel(QWidget):
                 ui_queue=self._ui_queue,
                 model=self._ai.model,
                 profile='full',
+                width_preset=self._script.width_preset,
                 story_context=self._script.story_context_focused,
                 variables=self._script.variables,
                 on_progress=lambda msg: (
@@ -4931,8 +5832,14 @@ class ArcEditorDialog(QDialog):
         self._arc_ai = AIAssistant()   # separate instance for arc chat
         self._current_arc_id: Optional[str] = None
         self._loading = False           # suppress dirty callbacks while populating fields
+        self._call_start_time: Optional[float] = None  # for elapsed-time status updates
         self._build_ui()
         self._refresh_arc_list()
+        # Tick the chat-status while an AI call is in flight so the user
+        # sees "thinking… 12s" instead of a frozen label.
+        self._tick_timer = QTimer(self)
+        self._tick_timer.timeout.connect(self._tick_thinking_status)
+        self._tick_timer.start(250)
         # Manually load the first arc since _refresh_arc_list blocks signals
         if self.script.arcs:
             first_id = next(iter(self.script.arcs))
@@ -5002,6 +5909,21 @@ class ArcEditorDialog(QDialog):
         form_mid.addRow("Recurring motif:", self.motif_edit)
         rl.addLayout(form_mid)
 
+        # Per-arc node-length override — single dropdown. First option
+        # is "Inherit from script default", then the canonical presets.
+        # If an arc has a non-preset value, a "Custom (lo-hi)" entry is
+        # added dynamically at load time.
+        nl_row = QHBoxLayout()
+        nl_row.addWidget(QLabel("Node length:"))
+        self.arc_nl_combo = QComboBox()
+        self.arc_nl_combo.addItem("Inherit from script default", None)
+        for label, lo, hi in NODE_LENGTH_PRESETS:
+            self.arc_nl_combo.addItem(label, (lo, hi))
+        self.arc_nl_combo.setMinimumWidth(360)
+        self.arc_nl_combo.currentIndexChanged.connect(self._on_field_changed)
+        nl_row.addWidget(self.arc_nl_combo, stretch=1)
+        rl.addLayout(nl_row)
+
         sep = QLabel("Story Beats")
         sep.setStyleSheet("font-weight: bold; margin-top: 6px;")
         rl.addWidget(sep)
@@ -5070,6 +5992,21 @@ class ArcEditorDialog(QDialog):
         self.gen_btn.clicked.connect(self._cmd_generate_from_arc_parallel)
         bot.addWidget(self.gen_btn)
 
+        # Per-arc generation-width override. First entry inherits from the
+        # script-wide setting; the other three pin a specific preset for
+        # this arc. Saved with the arc on close / save.
+        bot.addWidget(QLabel("Width:"))
+        self.gen_width_combo = QComboBox()
+        self.gen_width_combo.setToolTip(
+            "Per-arc generation width. 'Inherit from script' uses the "
+            "Story menu's Generation Width setting; the others pin this "
+            "arc to a specific size regardless of the script default.")
+        self.gen_width_combo.addItem("Inherit from script", None)
+        for preset in ('small', 'medium', 'large'):
+            self.gen_width_combo.addItem(preset.capitalize(), preset)
+        self.gen_width_combo.currentIndexChanged.connect(self._on_field_changed)
+        bot.addWidget(self.gen_width_combo)
+
         bot.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -5123,10 +6060,47 @@ class ArcEditorDialog(QDialog):
         for layer, edit in self._beat_edits.items():
             edit.setText(beats.get(layer, ''))
         self.notes_edit.setPlainText(arc.get('notes', ''))
+        # Per-arc node-length override dropdown. Default: "Inherit from
+        # script default" (item 0). If the arc has a custom range that
+        # doesn't match any preset, we add it as a "Custom (lo-hi)" item
+        # so the user can keep it without flipping back to inherit.
+        self._reset_arc_nl_combo()
+        arc_nwr = self.script.get_arc_node_word_range(arc_id)
+        if arc_nwr:
+            preset_idx = _find_node_length_preset_index(arc_nwr)
+            if preset_idx >= 0:
+                self.arc_nl_combo.setCurrentIndex(preset_idx + 1)   # +1 for inherit slot
+            else:
+                # Surface the custom value as an extra item
+                self.arc_nl_combo.addItem(
+                    f"Custom ({arc_nwr[0]}-{arc_nwr[1]} words)",
+                    tuple(arc_nwr))
+                self.arc_nl_combo.setCurrentIndex(self.arc_nl_combo.count() - 1)
+        else:
+            self.arc_nl_combo.setCurrentIndex(0)
+
+        # Per-arc generation-width override (None = inherit from script).
+        arc_width = self.script.get_arc_width_preset(arc_id)
+        self.gen_width_combo.blockSignals(True)
+        idx = self.gen_width_combo.findData(arc_width)
+        self.gen_width_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.gen_width_combo.blockSignals(False)
+
         self.chat_log.clear()
         for entry in arc.get('chat_history', []):
             self._append_chat(entry.get('role', 'user'), entry.get('content', ''))
         self._loading = False
+
+    def _reset_arc_nl_combo(self):
+        """Rebuild the per-arc node-length combo to its canonical list
+        (inherit + presets). Drops any stale 'Custom (...)' item that
+        was added for a previously-loaded arc."""
+        self.arc_nl_combo.blockSignals(True)
+        self.arc_nl_combo.clear()
+        self.arc_nl_combo.addItem("Inherit from script default", None)
+        for label, lo, hi in NODE_LENGTH_PRESETS:
+            self.arc_nl_combo.addItem(label, (lo, hi))
+        self.arc_nl_combo.blockSignals(False)
 
     def _clear_fields(self):
         self._loading = True
@@ -5137,6 +6111,11 @@ class ArcEditorDialog(QDialog):
         for edit in self._beat_edits.values():
             edit.clear()
         self.notes_edit.clear()
+        self._reset_arc_nl_combo()
+        self.arc_nl_combo.setCurrentIndex(0)
+        self.gen_width_combo.blockSignals(True)
+        self.gen_width_combo.setCurrentIndex(0)  # inherit
+        self.gen_width_combo.blockSignals(False)
         self.chat_log.clear()
         self._loading = False
 
@@ -5155,6 +6134,15 @@ class ArcEditorDialog(QDialog):
             'beats':   beats,
             'notes':   self.notes_edit.toPlainText(),
         })
+        # Per-arc node-length override — None = inherit (combo index 0)
+        data = self.arc_nl_combo.currentData()
+        if data is None:
+            self.script.set_arc_node_word_range(arc_id, None, None)
+        else:
+            lo, hi = data
+            self.script.set_arc_node_word_range(arc_id, int(lo), int(hi))
+        # Per-arc generation-width override — None = inherit
+        self.script.set_arc_width_preset(arc_id, self.gen_width_combo.currentData())
         self._refresh_list_item(arc_id)
 
     def _refresh_list_item(self, arc_id: str):
@@ -5249,6 +6237,7 @@ class ArcEditorDialog(QDialog):
                 model=self._main_ai.model,
                 thinking=self._main_ai.thinking,
                 profile='full',
+                width_preset=self.script.get_effective_width_preset(arc_id_for_seeds),
                 story_context=story_ctx,
                 variables=self.script.variables,
                 on_progress=lambda msg: self.chat_status.setText(msg),
@@ -5272,6 +6261,8 @@ class ArcEditorDialog(QDialog):
             layer_direction=arc_beats.get('arrival', ''),
             motif=arc_motif,
             variables=self.script.variables,
+            node_word_range=self.script.get_effective_node_word_range(
+                self._current_arc_id),
         )
 
     # ── Arc chat ─────────────────────────────────────────────────────────────
@@ -5303,6 +6294,13 @@ class ArcEditorDialog(QDialog):
         label = 'Claude' if role == 'assistant' else 'You'
         self.chat_log.append(
             f'<span style="color:{color};"><b>{label}:</b> {text}</span><br>')
+
+    def _tick_thinking_status(self):
+        """Refresh chat_status with elapsed seconds while a call is in flight."""
+        if self._call_start_time is None:
+            return
+        elapsed = time.time() - self._call_start_time
+        self.chat_status.setText(f"Claude (Opus) is thinking… {elapsed:0.0f}s")
 
     def _cmd_distill_chat_to_arc(self):
         """Use AI to extract structured arc fields from the chat conversation."""
@@ -5350,30 +6348,43 @@ class ArcEditorDialog(QDialog):
             "Extract the following from the conversation and return ONLY a JSON object:\n"
             "{\n"
             '  "name": "Short arc title (2-5 words)",\n'
-            '  "premise": "The core story premise — what is this about? 1-3 sentences.",\n'
+            '  "premise": "1-3 sentences, 150-400 chars. See PREMISE RULES.",\n'
             '  "themes": "Comma-separated themes (e.g. isolation, transformation, memory)",\n'
-            '  "motif": "One recurring sensory/symbolic thread to weave through every node",\n'
+            '  "motif": "One concrete recurring sensory/symbolic thread (a smell, a sound, an object). 60-150 chars.",\n'
             '  "notes": "Character details, world-building, tone guidance — anything useful for generation",\n'
-            '  "beats": {\n'
-            '    "arrival": "What the arrival layer should establish",\n'
-            '    "presence": "What presence should introduce",\n'
-            '    "curiosity": "...",\n'
-            '    "discovery": "...",\n'
-            '    "complication": "...",\n'
-            '    "intimacy": "...",\n'
-            '    "turn": "...",\n'
-            '    "consequence": "...",\n'
-            '    "echo": "...",\n'
-            '    "stillness": "What the final resting point should feel like"\n'
-            '  }\n'
+            '  "beats": { "arrival": "...", "presence": "...", ..., "stillness": "..." }\n'
             "}\n\n"
-            "Rules:\n"
-            "- The premise should capture the ESSENCE of what was discussed, not summarize the conversation\n"
-            "- Beats should be specific and actionable — not vague ('something changes') but concrete "
-            "('the character realizes the sound was always there')\n"
-            "- The motif should be a sensory detail that can appear in every node naturally\n"
-            "- If the conversation didn't cover a beat, write one that fits the arc's trajectory\n"
-            "- No markdown fences, no explanation — just the JSON"
+            "── PREMISE RULES ──\n"
+            "The premise is injected into EVERY node generation call with a layer-specific role label\n"
+            "('establish this premise's world' at arrival, 'the bind IS this premise made specific' at\n"
+            "complication, 'the action MUST BE this premise enacted' at turn, 'afterimage' at stillness).\n"
+            "So the premise must read cleanly through ALL those role-frames.\n"
+            "  - Length: 150-400 chars, 1-3 sentences.\n"
+            "  - Test before finalizing: can you literally say 'the bind is <PREMISE>' and 'the action\n"
+            "    MUST BE <PREMISE> enacted' and have both make narrative sense? If not, sharpen.\n"
+            "  - Capture the ESSENCE — the irreducible thing the arc is about — not a plot summary.\n"
+            "  - Avoid abstract themes ('isolation', 'transformation'). Those go in `themes`.\n"
+            "  - Avoid worldbuilding detail. That goes in `notes` or already lives in the story context.\n\n"
+            "── BEAT RULES ──\n"
+            "Each beat is the per-layer steering text the generator sees as 'LAYER DIRECTION'. It must\n"
+            "out-shout the dense story context, which means each beat carries THREE elements:\n"
+            "  1. SCENE/SITUATION ANCHOR — a concrete moment or setup, not just a theme.\n"
+            "       Good: 'she returns to the commissary after an austerity-rain stretch'\n"
+            "       Bad:  'isolation deepens'\n"
+            "  2. EMOTIONAL OR COGNITIVE MOVE — what specifically changes in this beat (knowledge,\n"
+            "       position, recognition, resource). One transformation per beat.\n"
+            "       Good: 'she notices the thermos is already on the counter and decides not to ask why'\n"
+            "       Bad:  'something shifts'\n"
+            "  3. BOUNDARY — what this beat is NOT, or a restraint on the AI.\n"
+            "       Good: 'do not name the Toad here — only the absence she leaves'\n"
+            "       Bad:  (no boundary at all — model will reach for the bible's most striking anchors)\n"
+            "Length per beat: 100-300 chars, typically 2-3 sentences carrying the three elements above.\n"
+            "Do NOT exceed ~400 chars — beats longer than that start competing with the bible and the\n"
+            "model reads them as text-to-deliver rather than guidance.\n\n"
+            "── OTHER RULES ──\n"
+            "- Motif must be CONCRETE and SENSORY (a smell, a sound, an object), not thematic.\n"
+            "- If the conversation did not cover a beat, write one that fits the arc's trajectory.\n"
+            "- No markdown fences, no explanation — just the JSON."
         )
 
         prompt_parts = []
@@ -5384,12 +6395,15 @@ class ArcEditorDialog(QDialog):
         prompt_parts.append(f'CONVERSATION TO DISTILL:\n{conversation}')
         prompt = '\n\n'.join(prompt_parts)
 
-        self.chat_status.setText("Distilling chat to arc fields...")
+        self._call_start_time = time.time()
+        self._tick_thinking_status()
         self._append_chat('assistant', '[Distilling conversation into arc fields...]')
 
         def on_done(data):
+            elapsed = (time.time() - self._call_start_time) if self._call_start_time else 0.0
+            self._call_start_time = None
             if not isinstance(data, dict):
-                self.chat_status.setText("Distill failed: invalid response")
+                self.chat_status.setText(f"Distill failed: invalid response ({elapsed:.1f}s)")
                 return
 
             # Fill in the arc fields
@@ -5409,17 +6423,21 @@ class ArcEditorDialog(QDialog):
                     self._beat_edits[layer].setText(text)
 
             self._on_field_changed()  # mark dirty
-            self.chat_status.setText("Arc fields updated from chat.")
+            self.chat_status.setText(f"Arc fields updated from chat. ({elapsed:.1f}s)")
             self._append_chat('assistant',
                 f'Distilled: "{data.get("name", "")}" — {data.get("premise", "")[:100]}...')
 
         def on_error(e):
+            self._call_start_time = None
             self.chat_status.setText(f"Distill error: {str(e)[:60]}")
             self._append_chat('assistant', f'[Distill error: {e}]')
 
         def run():
             try:
-                raw = self._main_ai._run_claude(system, prompt)
+                # Force Opus for arc distillation — extracts structured
+                # premise/themes/beats from chat and quality matters.
+                raw = self._main_ai._run_claude(system, prompt,
+                                                 model_override='claude-opus-4-6')
                 data = self._main_ai._extract_json(raw)
                 self.ui_queue.put(lambda: on_done(data))
             except Exception as exc:
@@ -5440,11 +6458,14 @@ class ArcEditorDialog(QDialog):
         self.chat_input.clear()
         self._append_chat('user', msg)
         arc_ctx = self._build_arc_context()
-        self.chat_status.setText("Thinking…")
+        self._call_start_time = time.time()
+        self._tick_thinking_status()
 
         def on_reply(reply):
+            elapsed = (time.time() - self._call_start_time) if self._call_start_time else 0.0
+            self._call_start_time = None
             self._append_chat('assistant', reply)
-            self.chat_status.setText('')
+            self.chat_status.setText(f'(last call: {elapsed:.1f}s)')
             if self._current_arc_id and self._current_arc_id in self.script.arcs:
                 hist = self.script.arcs[self._current_arc_id].setdefault('chat_history', [])
                 hist.append({'role': 'user',      'content': msg})
@@ -5452,6 +6473,7 @@ class ArcEditorDialog(QDialog):
                 self.script.dirty = True
 
         def on_error(e):
+            self._call_start_time = None
             self.chat_status.setText(f'Error: {e[:80]}')
 
         # Combine script-level story context with arc-specific context
@@ -5460,10 +6482,13 @@ class ArcEditorDialog(QDialog):
             full_ctx = f'STORY CONTEXT:\n{self.script.story_context_focused}\n\n'
         full_ctx += arc_ctx
 
+        # Force Opus for arc development — premise/themes/beats benefit
+        # from the smarter model and they're cached after the first call.
         self._arc_ai.chat(msg, self.ui_queue,
                           on_reply=on_reply, on_error=on_error,
                           story_context=full_ctx,
-                          _system_override=SYSTEM_ARC_CHAT)
+                          _system_override=SYSTEM_ARC_CHAT,
+                          model_override='claude-opus-4-6')
 
     def closeEvent(self, event):
         self._save_current()
@@ -5534,18 +6559,22 @@ class StoryContextChatDialog(QDialog):
         self._ui_queue = ui_queue
         self._history: list = []        # [{"role": "user"|"assistant", "content": str}, ...]
         self._latest_reply: str = ''    # most recent assistant message
-        self.committed_text: Optional[str] = None  # set on "Use as Full Context"
+        self.committed_text: Optional[str] = None  # set on either commit path
+        self.committed_mode: str = 'replace'        # 'replace' or 'append'
         self._initial_full = (initial_full or '').strip()
+        self._call_start_time: Optional[float] = None  # set when an AI call is in-flight
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
         info = QLabel(
-            "Chat with Claude to draft, expand, refine, or discuss the Full "
-            "Context. When Claude produces a draft you like, click "
-            "<b>Use Latest Reply as Full Context</b> to send it back. The "
-            "current Full Context (if any) is sent on your first message."
+            "Chat with Claude to draft, expand, refine, or discuss the story "
+            "context. Two commit paths: <b>Append</b> adds the reply to the "
+            "end of the existing context (non-destructive — use when you "
+            "asked Claude to add a section, character, etc). <b>Replace</b> "
+            "overwrites the whole context (use for full rewrites). The current "
+            "context is sent on your first message so Claude can build on it."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: #aaaaaa; font-size: 10px;")
@@ -5553,10 +6582,13 @@ class StoryContextChatDialog(QDialog):
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        self._log.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._log.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self._log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._log, stretch=1)
 
         self._input = QTextEdit()
+        self._input.setAcceptRichText(False)
         self._input.setPlaceholderText(
             "What would you like to do? "
             "(e.g. \"Draft a bible for a story about two siblings reuniting after years apart\", "
@@ -5565,7 +6597,9 @@ class StoryContextChatDialog(QDialog):
         )
         self._input.setMinimumHeight(70)
         self._input.setMaximumHeight(120)
-        self._input.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        self._input.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._input.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self._input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._input.installEventFilter(self)
         layout.addWidget(self._input)
 
@@ -5578,7 +6612,20 @@ class StoryContextChatDialog(QDialog):
         self._send_btn.clicked.connect(self._on_send)
         btn_row.addWidget(self._send_btn)
 
-        self._commit_btn = QPushButton("Use Latest Reply as Full Context")
+        self._append_btn = QPushButton("Append Latest Reply")
+        self._append_btn.setToolTip(
+            "Add Claude's latest reply to the END of the existing context.\n"
+            "Use when Claude wrote an addition (a new section, character, etc.)\n"
+            "rather than a full rewrite — your existing bible is preserved.")
+        self._append_btn.setEnabled(False)
+        self._append_btn.clicked.connect(self._on_append)
+        btn_row.addWidget(self._append_btn)
+
+        self._commit_btn = QPushButton("Replace Context with Reply")
+        self._commit_btn.setToolTip(
+            "REPLACE the entire story context with Claude's latest reply.\n"
+            "Use when Claude wrote a full rewrite of the whole bible.\n"
+            "Destructive — your prior context is overwritten.")
         self._commit_btn.setEnabled(False)
         self._commit_btn.clicked.connect(self._on_commit)
         btn_row.addWidget(self._commit_btn)
@@ -5666,9 +6713,11 @@ class StoryContextChatDialog(QDialog):
         self._append_message("user", msg)
         self._input.clear()
         self._send_btn.setEnabled(False)
-        self._status.setText("Claude is thinking...")
+        # status will tick via _drain_ui_queue once _call_start_time is set
 
         def on_done(reply: str):
+            elapsed = (time.time() - self._call_start_time) if self._call_start_time else 0.0
+            self._call_start_time = None
             # Update internal history with the *original* user message (not
             # the wrapped one), so subsequent transcripts stay clean.
             self._history.append({"role": "user", "content": msg_to_send})
@@ -5676,25 +6725,43 @@ class StoryContextChatDialog(QDialog):
             self._latest_reply = reply
             self._append_message("assistant", reply)
             self._append_system(
-                f"Latest reply: {len(reply)} chars. "
-                f"Click \"Use Latest Reply as Full Context\" to commit."
+                f"Latest reply: {len(reply)} chars in {elapsed:.1f}s. "
+                f"Use <b>Append</b> if Claude wrote an addition, or "
+                f"<b>Replace</b> if it's a full rewrite."
             )
             self._send_btn.setEnabled(True)
             self._commit_btn.setEnabled(True)
-            self._status.setText("Ready.")
+            self._append_btn.setEnabled(True)
+            self._status.setText(f"Ready. (last call: {elapsed:.1f}s)")
 
         def on_error(err: str):
+            self._call_start_time = None
             self._send_btn.setEnabled(True)
             self._status.setText(f"Error: {err[:80]}")
             self._append_system(f"Error: {err[:200]}")
 
+        # Force Opus for story-context drafting — quality matters far more
+        # than speed for the world bible, and it gets cached anyway.
+        self._call_start_time = time.time()
+        self._update_thinking_status()
         self._ai.chat_context(self._history, msg_to_send,
-                              self._ui_queue, on_done, on_error)
+                              self._ui_queue, on_done, on_error,
+                              model_override='claude-opus-4-6')
 
     def _on_commit(self):
+        """REPLACE: parent overwrites context with the latest reply."""
         if not self._latest_reply:
             return
         self.committed_text = self._latest_reply
+        self.committed_mode = 'replace'
+        self.accept()
+
+    def _on_append(self):
+        """APPEND: parent adds the latest reply to the end of the current context."""
+        if not self._latest_reply:
+            return
+        self.committed_text = self._latest_reply
+        self.committed_mode = 'append'
         self.accept()
 
     def _on_reset(self):
@@ -5702,6 +6769,7 @@ class StoryContextChatDialog(QDialog):
         self._latest_reply = ''
         self._log.clear()
         self._commit_btn.setEnabled(False)
+        self._append_btn.setEnabled(False)
         self._status.setText("Chat reset.")
         if self._initial_full:
             self._append_system(
@@ -5710,7 +6778,8 @@ class StoryContextChatDialog(QDialog):
             )
 
     def _drain_ui_queue(self):
-        """Run any pending UI callbacks posted by the AI worker thread."""
+        """Run any pending UI callbacks posted by the AI worker thread,
+        and update the elapsed-time status display while a call is in flight."""
         try:
             while True:
                 cb = self._ui_queue.get_nowait()
@@ -5720,6 +6789,16 @@ class StoryContextChatDialog(QDialog):
                     print(f"[StoryContextChatDialog] callback error: {e}")
         except queue.Empty:
             pass
+        self._update_thinking_status()
+
+    def _update_thinking_status(self):
+        if self._call_start_time is None:
+            return
+        elapsed = time.time() - self._call_start_time
+        # Use Opus name explicitly so the user knows why it's slower.
+        self._status.setText(
+            f"Claude (Opus) is thinking… {elapsed:0.0f}s"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -6009,6 +7088,67 @@ class MainWindow(QMainWindow):
         act_det_vars.triggered.connect(self._cmd_determine_variables)
         story_menu.addAction(act_det_vars)
 
+        act_weather = QAction("Weather Set…", self)
+        act_weather.setToolTip(
+            "Pin this script to a specific weather set so per-node "
+            "trigger_state dropdowns show that set's states. By default "
+            "the editor auto-detects via reverse lookup.")
+        act_weather.triggered.connect(self._cmd_open_weather_set_dialog)
+        story_menu.addAction(act_weather)
+
+        # Node Length submenu — same style as AI Model. Selecting a preset
+        # writes that range to the script's node_word_range field; selecting
+        # "Editor default" clears the field so the 40-100 baseline applies.
+        # Checkmarks are refreshed when the menu opens so they reflect the
+        # currently-loaded script.
+        node_len_menu = story_menu.addMenu("Node Length")
+        node_len_menu.setToolTip(
+            "Set the default per-node word range for this script. Each "
+            "arc can override the script default via the Arc editor.")
+        self._node_length_actions = {}   # key: (lo, hi) tuple or None
+        # First item: editor default (clears the field)
+        act_default = QAction(
+            "Editor default (40-100 words, 15-35 sec, vignette)",
+            self, checkable=True)
+        act_default.setData(None)
+        act_default.triggered.connect(
+            lambda checked: self._set_script_node_length(None))
+        node_len_menu.addAction(act_default)
+        self._node_length_actions[None] = act_default
+        node_len_menu.addSeparator()
+        # Preset items
+        for label, lo, hi in NODE_LENGTH_PRESETS:
+            act = QAction(label, self, checkable=True)
+            act.setData((lo, hi))
+            act.triggered.connect(
+                lambda checked, p_lo=lo, p_hi=hi:
+                    self._set_script_node_length((p_lo, p_hi)))
+            node_len_menu.addAction(act)
+            self._node_length_actions[(lo, hi)] = act
+        node_len_menu.aboutToShow.connect(self._refresh_node_length_checks)
+        # Make sure the right item is checked at startup too
+        self._refresh_node_length_checks()
+
+        # Generation width — Small / Medium / Large. Scales children-per-parent
+        # and per-layer caps in arc-driven generation.
+        width_menu = story_menu.addMenu("Generation Width")
+        width_menu.setToolTip(
+            "Scale how many child nodes are generated at each beat when "
+            "expanding a story arc. Small = tight & focused; Large = sprawling.")
+        self._width_actions = {}
+        for preset in ('small', 'medium', 'large'):
+            label = preset.capitalize()
+            if preset == 'medium':
+                label += '  (default)'
+            act = QAction(label, self, checkable=True)
+            act.setData(preset)
+            act.triggered.connect(
+                lambda checked, p=preset: self._set_script_width_preset(p))
+            width_menu.addAction(act)
+            self._width_actions[preset] = act
+        width_menu.aboutToShow.connect(self._refresh_width_checks)
+        self._refresh_width_checks()
+
         act_audit = QAction("Audit Audio Files…", self)
         act_audit.triggered.connect(self._cmd_audit_audio)
         story_menu.addAction(act_audit)
@@ -6065,110 +7205,262 @@ class MainWindow(QMainWindow):
         voice_menu.addAction(act_voice)
 
     def _cmd_open_arc_editor(self):
+        # Modeless so the main editor stays interactive while the arc
+        # editor is open. If one is already open, raise/focus it instead
+        # of stacking duplicates.
+        existing = getattr(self, '_arc_dlg', None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
         dlg = ArcEditorDialog(self.script, self.ai, self.ui_queue,
                               on_graph_generated=self._on_graph_generated,
                               parent=self)
-        dlg.exec()
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        # Refresh title after the dialog closes (the user may have
+        # renamed arcs, etc).
+        dlg.finished.connect(lambda _result: self._update_title())
+        # Drop the reference once the window is destroyed so a fresh
+        # open creates a new dialog instead of resurrecting a dead one.
+        dlg.destroyed.connect(lambda *_: setattr(self, '_arc_dlg', None))
+        self._arc_dlg = dlg
+        dlg.show()
+
+    def _set_script_width_preset(self, preset: str):
+        """Apply the chosen Small/Medium/Large generation width to the
+        active script. Affects future arc-driven generation only."""
+        self.script.set_width_preset(preset)
+        self._refresh_width_checks()
+        self.status_bar.showMessage(
+            f"Generation width: {preset} (affects future arc generation)", 3000)
         self._update_title()
 
+    def _refresh_width_checks(self):
+        current = self.script.width_preset
+        for preset, act in getattr(self, '_width_actions', {}).items():
+            try:
+                act.setChecked(preset == current)
+            except RuntimeError:
+                # Widget destroyed (project reload, etc.)
+                pass
+
+    def _set_script_node_length(self, rng):
+        """Apply a script-wide node-length selection. ``rng`` is None
+        (editor default — clears the field) or a (lo, hi) tuple."""
+        if rng is None:
+            self.script.set_node_word_range(None, None)
+        else:
+            lo, hi = rng
+            self.script.set_node_word_range(int(lo), int(hi))
+        self._refresh_node_length_checks()
+        # Status feedback like the AI Model menu does
+        if rng is None:
+            self.status_bar.showMessage("Node length: editor default (40-100 words)", 3000)
+        else:
+            self.status_bar.showMessage(
+                f"Node length: {rng[0]}-{rng[1]} words", 3000)
+
+    def _refresh_node_length_checks(self):
+        """Update the Node Length submenu checkmarks to reflect the
+        script's current node_word_range. Called on aboutToShow so the
+        UI stays in sync if the script changed between menu opens, and
+        on every set so the new selection sticks visually."""
+        if not hasattr(self, '_node_length_actions') or not self._node_length_actions:
+            return
+        current = self.script.node_word_range if self.script else None
+        # Normalize to a hashable key
+        current_key = tuple(current) if current else None
+
+        # Drop any stale "Custom" action from a previous load
+        for key in list(self._node_length_actions):
+            act = self._node_length_actions[key]
+            if key is not None and key not in {
+                (lo, hi) for (_lbl, lo, hi) in NODE_LENGTH_PRESETS
+            }:
+                # Stale custom item — remove
+                act.parent().removeAction(act) if act.parent() else None
+                act.deleteLater()
+                del self._node_length_actions[key]
+
+        # If the loaded script has a custom value not in any preset, add
+        # a checkable "Custom (lo-hi)" item so the user sees it.
+        if current_key is not None and current_key not in self._node_length_actions:
+            menu = None
+            # Reuse the parent menu from any existing action
+            for act in self._node_length_actions.values():
+                if act.parent() and hasattr(act.parent(), 'addAction'):
+                    menu = act.parent()
+                    break
+            if menu is not None:
+                custom = QAction(
+                    f"Custom ({current_key[0]}-{current_key[1]} words)",
+                    self, checkable=True)
+                custom.setData(current_key)
+                custom.triggered.connect(
+                    lambda checked, r=current_key: self._set_script_node_length(r))
+                menu.addAction(custom)
+                self._node_length_actions[current_key] = custom
+
+        # Set checkmarks
+        for key, act in self._node_length_actions.items():
+            act.setChecked(key == current_key)
+
+    def _cmd_open_weather_set_dialog(self):
+        """Pin (or unpin) the script's associated weather set. Affects
+        which states appear in per-node trigger_state dropdowns.
+        Default is auto-detect via reverse lookup on
+        narrative_script field in WEATHER_SETS."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Weather Set")
+        dlg.setMinimumWidth(440)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        all_sets = self.script.available_weather_sets()
+        if not all_sets:
+            layout.addWidget(QLabel(
+                "No weather_params.py found in the project containing this "
+                "script. Save the script inside a project directory first."))
+            close = QPushButton("Close")
+            close.clicked.connect(dlg.accept)
+            layout.addWidget(close)
+            dlg.exec()
+            return
+
+        # Detect what reverse-lookup would pick — useful info for the user
+        wsets = _load_project_weather_sets(self.script.path)
+        auto_pick = _reverse_lookup_weather_set(self.script.path, wsets)
+        explicit = self.script.weather_set_explicit
+
+        intro = QLabel(
+            "Pin this script to a weather set so per-node trigger_state\n"
+            "dropdowns show that set's states. Leave on auto-detect to\n"
+            "use the set whose <code>narrative_script</code> field references this script."
+        )
+        intro.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        intro.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(intro)
+
+        # Status line
+        status_lines = []
+        status_lines.append(
+            f"<b>Currently associated set:</b> "
+            f"<span style='color:#aaffaa'>{self.script.associated_weather_set or '(none)'}</span>"
+        )
+        if auto_pick:
+            status_lines.append(
+                f"<b>Auto-detect would pick:</b> "
+                f"<span style='color:#aaccff'>{auto_pick}</span>")
+        else:
+            status_lines.append(
+                f"<b>Auto-detect would pick:</b> "
+                f"<span style='color:#cc8888'>(none — no weather set "
+                f"references this script)</span>")
+        status_lines.append(
+            f"<b>Explicit pin:</b> "
+            f"<span style='color:#ffcc88'>{explicit or '(none)'}</span>")
+        status = QLabel("<br>".join(status_lines))
+        status.setTextFormat(Qt.TextFormat.RichText)
+        status.setStyleSheet("font-size: 11px; padding: 6px;")
+        layout.addWidget(status)
+
+        # Dropdown
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Pin to set:"))
+        combo = QComboBox()
+        combo.addItem("(auto-detect)", "")
+        for nm in all_sets:
+            combo.addItem(nm, nm)
+        # Restore the explicit value if set
+        cur_idx = combo.findData(explicit or "")
+        combo.setCurrentIndex(cur_idx if cur_idx >= 0 else 0)
+        row.addWidget(combo)
+        layout.addLayout(row)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel)
+        save = QPushButton("Save")
+        save.setDefault(True)
+
+        def _save():
+            pick = combo.currentData() or ""
+            self.script.set_weather_set_explicit(pick or None)
+            # Refresh whatever node-detail panel is currently showing so
+            # the dropdown options pick up the new set immediately
+            if self._selected_node_id and self._selected_node_id in self.script.nodes:
+                self.props_panel.load_node(self.script, self._selected_node_id)
+            dlg.accept()
+
+        save.clicked.connect(_save)
+        btn_row.addWidget(save)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
+
     def _cmd_open_story_context(self):
+        """Single-editor story context dialog. The previous split layout
+        (Full + Focused) was eliminated when the editor moved to a
+        unified context — the AI now sees the full story_context (capped
+        at CONTEXT_MAX, currently 60,000 chars) via the SYSTEM prompt,
+        and the CLI's automatic prompt caching keeps cost reasonable."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Story Context")
-        dlg.setMinimumWidth(820)
-        dlg.setMinimumHeight(460)
+        dlg.setMinimumWidth(720)
+        dlg.setMinimumHeight(520)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        header = QLabel(
+            "Story Context — sent to the AI on every generation call. "
+            "Cached automatically after the first call in a session."
+        )
+        header.setStyleSheet("color: #aaddaa; font-size: 11px; font-weight: bold;")
+        layout.addWidget(header)
 
-        # ── Left: full context (not sent to AI) ─────────────────────────────
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 4, 0)
-        left_lbl = QLabel("Full Context  (reference only — not seen by AI)")
-        left_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px; font-weight: bold;")
-        left_layout.addWidget(left_lbl)
-        full_edit = QTextEdit()
-        full_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        full_edit.setPlainText(self.script.story_context)
-        left_layout.addWidget(full_edit)
-        full_char_lbl = QLabel(f"{len(self.script.story_context)} characters")
-        full_char_lbl.setStyleSheet("color: #888888; font-size: 10px;")
-        full_edit.textChanged.connect(
-            lambda: full_char_lbl.setText(f"{len(full_edit.toPlainText())} characters"))
-        left_layout.addWidget(full_char_lbl)
+        ctx_edit = QTextEdit()
+        ctx_edit.setAcceptRichText(False)   # paste always lands as plain text
+        ctx_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        ctx_edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        ctx_edit.setLineWrapColumnOrWidth(0)
+        ctx_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        ctx_edit.setPlainText(self.script.story_context)
+        layout.addWidget(ctx_edit)
 
-        chat_btn = QPushButton("Develop Full Context with AI...")
-        chat_btn.setToolTip(
-            "Open a chat with Claude to build, expand, refine, or iterate on the "
-            "Full Context. Replies can be committed back to this box.")
-        left_layout.addWidget(chat_btn)
-        splitter.addWidget(left)
+        def _char_label_text():
+            n = len(ctx_edit.toPlainText())
+            color = "#ff7777" if n > CONTEXT_MAX else "#888888"
+            return (f'<span style="color:{color};font-size:10px;">'
+                    f'{n:,} / {CONTEXT_MAX:,} characters</span>')
 
-        # ── Right: focused context (sent to AI) ─────────────────────────────
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(4, 0, 0, 0)
-        right_lbl = QLabel(f"Focused Context  (seen by AI — max {FOCUSED_CONTEXT_MAX} characters)")
-        right_lbl.setStyleSheet("color: #aaddaa; font-size: 10px; font-weight: bold;")
-        right_layout.addWidget(right_lbl)
-        focused_edit = QTextEdit()
-        focused_edit.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        focused_edit.setPlainText(self.script.story_context_focused)
-        right_layout.addWidget(focused_edit)
+        char_lbl = QLabel(_char_label_text())
+        char_lbl.setTextFormat(Qt.TextFormat.RichText)
+        ctx_edit.textChanged.connect(lambda: char_lbl.setText(_char_label_text()))
+        layout.addWidget(char_lbl)
 
-        def _focused_char_text():
-            n = len(focused_edit.toPlainText())
-            color = "#ff7777" if n > FOCUSED_CONTEXT_MAX else "#888888"
-            return f'<span style="color:{color};font-size:10px;">{n} / {FOCUSED_CONTEXT_MAX} characters</span>'
-
-        focused_char_lbl = QLabel(_focused_char_text())
-        focused_char_lbl.setTextFormat(Qt.TextFormat.RichText)
-        focused_edit.textChanged.connect(lambda: focused_char_lbl.setText(_focused_char_text()))
-        right_layout.addWidget(focused_char_lbl)
-
-        gen_btn = QPushButton("Generate Focused Context from Full (AI)")
-        gen_btn.setToolTip("Use Claude to distill the full context into a focused ~800-char version")
-        right_layout.addWidget(gen_btn)
-        splitter.addWidget(right)
-
-        splitter.setSizes([400, 400])
-        layout.addWidget(splitter)
-
+        # Buttons
         btn_row = QHBoxLayout()
         status_lbl = QLabel("")
         status_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
         btn_row.addWidget(status_lbl)
-        btn_row.addStretch()
+        btn_row.addStretch(1)
+
+        chat_btn = QPushButton("Develop with AI…")
+        chat_btn.setToolTip(
+            "Open a chat with Claude to build, expand, refine, or iterate "
+            "on the story context. Replies can be committed back here.")
+        btn_row.addWidget(chat_btn)
+
         save_btn = QPushButton("Save & Close")
         save_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
-
-        def on_generate():
-            full = full_edit.toPlainText().strip()
-            if not full:
-                status_lbl.setText("Full context is empty.")
-                return
-            if not self.ai.ready:
-                status_lbl.setText("Claude CLI not found.")
-                return
-            if self.ai.busy:
-                status_lbl.setText("AI is busy...")
-                return
-            gen_btn.setEnabled(False)
-            status_lbl.setText("Generating...")
-            def on_done(text):
-                focused_edit.setPlainText(text)
-                gen_btn.setEnabled(True)
-                status_lbl.setText("Done.")
-            def on_error(e):
-                gen_btn.setEnabled(True)
-                status_lbl.setText(f"Error: {e[:60]}")
-            self.ai.generate_focused_context(full, self.ui_queue, on_done, on_error)
-
-        gen_btn.clicked.connect(on_generate)
 
         def on_chat():
             if not self.ai.ready:
@@ -6178,17 +7470,29 @@ class MainWindow(QMainWindow):
                 parent=dlg,
                 ai=self.ai,
                 ui_queue=self.ui_queue,
-                initial_full=full_edit.toPlainText(),
+                initial_full=ctx_edit.toPlainText(),
             )
             if sub.exec() and sub.committed_text is not None:
-                full_edit.setPlainText(sub.committed_text)
-                status_lbl.setText("Full context updated from chat.")
+                if sub.committed_mode == 'append':
+                    existing = ctx_edit.toPlainText().rstrip()
+                    addition = sub.committed_text.strip()
+                    if existing:
+                        merged = existing + "\n\n" + addition
+                    else:
+                        merged = addition
+                    ctx_edit.setPlainText(merged)
+                    status_lbl.setText(
+                        f"Appended {len(addition):,} chars "
+                        f"(total {len(merged):,}).")
+                else:
+                    ctx_edit.setPlainText(sub.committed_text)
+                    status_lbl.setText(
+                        f"Context replaced ({len(sub.committed_text):,} chars).")
 
         chat_btn.clicked.connect(on_chat)
 
         dlg.exec()
-        self.script.set_story_context(full_edit.toPlainText())
-        self.script.set_story_context_focused(focused_edit.toPlainText())
+        self.script.set_story_context(ctx_edit.toPlainText())
         self._update_title()
 
     def _set_ai_model(self, model_id: str):
@@ -6392,6 +7696,29 @@ class MainWindow(QMainWindow):
         add_btn.clicked.connect(lambda: add_row())
         main_layout.addWidget(add_btn)
 
+        # AI-suggest row
+        suggest_row = QHBoxLayout()
+        suggest_lbl = QLabel("Optional guidance for AI:")
+        suggest_lbl.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        suggest_row.addWidget(suggest_lbl)
+        suggest_hint = QLineEdit()
+        suggest_hint.setPlaceholderText(
+            'e.g. "more emotional, less plot-driven" — or leave blank')
+        suggest_row.addWidget(suggest_hint, stretch=1)
+        suggest_btn = QPushButton("Suggest with AI…")
+        suggest_btn.setToolTip(
+            "Ask Claude to propose a set of 4-6 narrative variables for this\n"
+            "script based on its story_context, current variables, sample node\n"
+            "texts, and arc summaries. Suggestions can be accepted (replace\n"
+            "current variables) or canceled.")
+        suggest_row.addWidget(suggest_btn)
+        main_layout.addLayout(suggest_row)
+
+        # Status line for the AI call
+        ai_status = QLabel("")
+        ai_status.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        main_layout.addWidget(ai_status)
+
         main_layout.addStretch()
 
         # Save & Close
@@ -6401,6 +7728,91 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(save_btn)
         main_layout.addLayout(btn_row)
+
+        # ── AI-suggest wiring ────────────────────────────────────────────
+        def _on_suggest():
+            if not self.ai.ready:
+                ai_status.setText("Claude CLI not found.")
+                return
+            if self.ai.busy:
+                ai_status.setText("AI is busy…")
+                return
+            # Collect current state for the prompt
+            current_vars = []
+            for ne, de, _, _ in row_widgets:
+                nm = ne.text().strip()
+                if nm:
+                    current_vars.append({'name': nm, 'description': de.text().strip()})
+            # Sample up to 10 representative node texts
+            sample_texts = []
+            for nid, nd in list(self.script.nodes.items())[:50]:
+                t = (nd.get('text') or '').strip()
+                if t:
+                    sample_texts.append(t)
+                if len(sample_texts) >= 10:
+                    break
+            # Arc summaries: name + premise + themes
+            arc_lines = []
+            for aid, arc in self.script.arcs.items():
+                nm = arc.get('name') or aid
+                pr = (arc.get('premise') or '').strip().replace('\n', ' ')
+                th = (arc.get('themes') or '').strip()
+                line = f"  - {nm}: {pr[:200]}"
+                if th:
+                    line += f"   [themes: {th[:120]}]"
+                arc_lines.append(line)
+            arcs_summary = '\n'.join(arc_lines)
+
+            instructions = suggest_hint.text().strip()
+            suggest_btn.setEnabled(False)
+            ai_status.setText("Asking Claude for variable suggestions…")
+
+            def on_done(suggested):
+                suggest_btn.setEnabled(True)
+                if not suggested:
+                    ai_status.setText("AI returned no variables.")
+                    return
+                # Confirm replacement
+                preview = '\n'.join(
+                    f'  • {v["name"]}: {v["description"][:80]}'
+                    + ('…' if len(v.get('description', '')) > 80 else '')
+                    for v in suggested
+                )
+                resp = QMessageBox.question(
+                    dlg,
+                    "Replace variables with AI suggestions?",
+                    f"Claude proposes {len(suggested)} variables:\n\n{preview}\n\n"
+                    "Replace your current variables with these? (You can edit "
+                    "each name/description afterward.)",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if resp != QMessageBox.Yes:
+                    ai_status.setText("Suggestions discarded.")
+                    return
+                # Clear current rows, populate with suggestions
+                for _ne, _de, _rb, rw in list(row_widgets):
+                    row_widgets.remove((_ne, _de, _rb, rw))
+                    rw.deleteLater()
+                for v in suggested[:6]:
+                    add_row(v.get('name', ''), v.get('description', ''))
+                ai_status.setText(f"Added {len(suggested)} suggested variables — edit and Save.")
+
+            def on_error(err):
+                suggest_btn.setEnabled(True)
+                ai_status.setText(f"AI error: {str(err)[:80]}")
+
+            self.ai.suggest_variables(
+                story_context=self.script.story_context,
+                current_vars=current_vars,
+                sample_nodes=sample_texts,
+                arcs_summary=arcs_summary,
+                ui_queue=self.ui_queue,
+                on_done=on_done,
+                on_error=on_error,
+                instructions=instructions,
+            )
+
+        suggest_btn.clicked.connect(_on_suggest)
 
         # Populate from current data
         for v in self.script.variables:
@@ -7617,8 +9029,12 @@ class MainWindow(QMainWindow):
             pipe.setOpacity(max(0.03, c / max_count))
 
     def _cmd_search(self, text: str):
-        """Apply crosshatch overlays to nodes matching the search term.
+        """Apply crosshatch overlays to nodes matching the search term, and
+        highlight occurrences of the term inside the selected node's text view.
         Does not change node opacity — selection highlight is fully independent."""
+        # Push the (possibly empty) term to the properties panel so in-node
+        # highlights track the search bar even when the term is cleared.
+        self.props_panel.set_search_term(text)
         if not text.strip():
             self._clear_search_overlays()
             return
@@ -7864,6 +9280,9 @@ class MainWindow(QMainWindow):
                                     self._on_graph_generated,
                                     on_nodes_incremental=self._add_nodes_incremental)
         self.play_panel.set_context(self.script, self.ui_queue)
+        # Re-sync the Node Length / Width submenus to the newly-loaded script
+        self._refresh_node_length_checks()
+        self._refresh_width_checks()
 
     def _update_title(self):
         if self.script.path:

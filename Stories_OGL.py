@@ -665,6 +665,41 @@ class EnvironmentalSystem:
         # Update the scheduler
         self.scheduler.update()
 
+        # Service a narrative-driven weather-transition request, if the
+        # narrative_player published one this frame. Backwards compatible
+        # — old scripts without per-node ``trigger_state`` fields never
+        # publish, and this block is a no-op. The source node id is
+        # published alongside the state name so every log line names
+        # which node fired the trigger.
+        req      = self.scheduler.state.pop('_weather_transition_request', None)
+        src_node = self.scheduler.state.pop('_weather_transition_node', None)
+        if req is not None:
+            node_tag = f"node '{src_node}'" if src_node else "node (unknown)"
+            try:
+                target = self._weather_state_enum(req)
+            except (ValueError, KeyError):
+                print(f"[NARRATIVE] {node_tag}: unknown weather state "
+                      f"'{req}' - ignored")
+                target = None
+            if target is not None:
+                set_states = self.weather_set.get_set_states()
+                if target not in set_states:
+                    print(f"[NARRATIVE] {node_tag}: state '{req}' not in "
+                          f"active set '{self.weather_set.current_set}' "
+                          f"- ignored")
+                elif (target == self.weather_state.target_weather
+                      and getattr(self.weather_state, 'progress', 1.0) >= 1.0):
+                    # Already in target state and not transitioning;
+                    # skip the redundant snap but log so it's visible.
+                    print(f"[NARRATIVE] {node_tag}: already in '{req}' "
+                          f"- transition skipped")
+                else:
+                    target_params = self.weather_state.get_weather_params(target)
+                    duration = float(target_params.get('transition_duration', 10.0))
+                    print(f"[NARRATIVE] {node_tag} triggered transition "
+                          f"to '{req}' ({duration:.1f}s)")
+                    self.transition_to_weather(target, duration)
+
         # Copy PNG frame to web controller for preview streaming
         if hasattr(self, 'web_controller'):
             png = self.scheduler.state.get('_frame_png')
