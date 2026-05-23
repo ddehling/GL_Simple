@@ -1454,6 +1454,15 @@ class EnvironmentalSystem:
                 d['active_effects'] = active_effects
                 d['ambient_sound'] = self.active_effects.get("ambient_sound")
                 d['allowed_output_params'] = self._get_allowed_output_params()
+                # Only surface narrative variables when the active set
+                # actually has a narrative script. Otherwise the stale
+                # list from a previous set (e.g. switching cyberpunk →
+                # forest) would hang around because NarrativePlayer's
+                # update() short-circuits when disabled.
+                if self.weather_set.get_narrative_script():
+                    d['narrative_vars'] = list(self.scheduler.state.get('narrative_vars', []))
+                else:
+                    d['narrative_vars'] = []
                 self.web_controller._values_cache = None  # Invalidate cache
             finally:
                 self.web_controller._dict_lock.release()
@@ -1522,9 +1531,14 @@ class EnvironmentalSystem:
                         output[key] = output[key] * intensity
 
             # Apply direct overrides to output (these replace values entirely)
+            # Narrative variables (story_*) live in state, not output — they
+            # are published by NarrativePlayer each frame, so a web override
+            # is applied directly to state and stomps the player's value.
             for param, value in overrides.items():
                 if param in output:
                     output[param] = value
+                elif param.startswith('story_'):
+                    state[param] = value
 
             # Store brightness modifier in state for render pipeline to apply
             # after the hardware limiter (can only dim, never brighten past limiter)

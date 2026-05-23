@@ -219,6 +219,7 @@ class NarrativePlayer(ShaderEffect):
         self._current_node = None
         self._nodes.clear()
         self._start_nodes = []
+        self._var_defs    = []
         self.enabled = False
 
     @property
@@ -262,10 +263,26 @@ class NarrativePlayer(ShaderEffect):
             self._var_ramping = False
 
     def _inject_vars(self, state: Dict) -> None:
-        """Write current variable values into the shared state dict."""
+        """Write current variable values into the shared state dict.
+
+        Also publishes a `narrative_vars` metadata list (name, narrative-
+        driven value, description) so the web control panel can render
+        sliders for whatever variables the active script declares. The
+        listed value is always the narrative-driven current value; web
+        overrides are applied later by Stories_OGL and stomp state[...]
+        independently.
+        """
+        meta = []
         for v in self._var_defs:
             name = v['name']
-            state[f'story_{name}'] = self._var_current[name]
+            cur  = self._var_current[name]
+            state[f'story_{name}'] = cur
+            meta.append({
+                'name': name,
+                'value': cur,
+                'description': v.get('description', ''),
+            })
+        state['narrative_vars'] = meta
 
     # ── Internal state-machine helpers ──────────────────────────────────────
 

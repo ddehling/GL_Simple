@@ -82,57 +82,62 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 
 void main() {
     vec2 uv = v_uv;
+    vec3 col   = vec3(0.0);
+    float alpha = 0.0;
 
-    // Per-pixel position in direction-aligned coords.
-    vec2 perp = vec2(-u_dir.y, u_dir.x);
-    float along = dot(uv, u_dir);
-    float across = dot(uv, perp);
+    // The transit-corridor shader already does directional dashes
+    // streaming through the field — so velocity does NOT do that.
+    // Instead, velocity expresses the SENSORY experience of speed:
+    // Doppler color shift, tunnel vision, and a forward shockwave.
 
-    // Each streak is a SHORT DASH at a random along-position, in a row
-    // indexed by perp position. Each dash has independent spawn time so
-    // dashes do not align into a continuous horizontal/vertical line.
-    // Few rows, sparse spawns, short dashes — no full-width banding.
-    float n_rows = 10.0 + u_velocity * 10.0;     // 10..20 rows
-    float row = floor(across * n_rows);
-    float row_frac = fract(across * n_rows);
-    float row_seed = hash(vec2(row, 1.7));
-    // Sparsity gate
-    if (row_seed > 0.45 + u_velocity * 0.35) discard;
+    vec2 uv_c   = uv - vec2(0.5);
+    float forward_t = dot(uv_c, u_dir);                // signed along motion
 
-    // Per-row dash speed (varies the kinetic feel)
-    float row_speed = 0.5 + hash(vec2(row, 3.1)) * 1.2;
+    // --- Doppler color split ---
+    // Leading half (forward_t > 0) tints cool cyan; trailing half
+    // tints warm red-orange. Strength rises with distance from the
+    // perpendicular midline through screen center, sharpened with pow
+    // so the edges are saturated and the midline is clean.
+    float d_strength = pow(clamp(abs(forward_t) * 2.0, 0.0, 1.0), 1.3) * u_velocity;
+    vec3 cool = vec3(0.25, 0.85, 1.00);
+    vec3 warm = vec3(1.00, 0.32, 0.15);
+    vec3 doppler_col = (forward_t > 0.0) ? cool : warm;
+    col   = max(col, doppler_col * d_strength * 0.85);
+    alpha = max(alpha, d_strength * 0.65);
 
-    // Position of dash leading edge in 'along' axis. fract gives one
-    // dash position per row, advancing with u_flow_phase. To prevent
-    // the dash spanning the full width, we cap dash length below.
-    float lead = fract(u_flow_phase * row_speed * 0.5 + hash(vec2(row, 5.3)));
+    // --- Tunnel vignette ---
+    // Darkens the corners — gives a strong sense of "everything outside
+    // my forward path is blurring out". Subtle on top of doppler.
+    float r = length(uv_c);
+    float vignette = smoothstep(0.18, 0.55, r) * u_velocity;
+    col   = mix(col, vec3(0.0, 0.0, 0.02), vignette * 0.45);
+    alpha = max(alpha, vignette * 0.40);
 
-    // Distance from THIS pixel to the dash leading edge (cyclic).
-    float d_along = lead - along;
-    // Wrap so a dash near the seam still works
-    if (d_along > 0.5) d_along -= 1.0;
-    if (d_along < -0.5) d_along += 1.0;
+    // --- Forward shockwave ring ---
+    // Pulsing concentric rings expanding outward from a point shifted
+    // toward the leading direction. Reads as "wavefront I'm pushing
+    // through". Two overlapping rings at different phases so there is
+    // always one visible.
+    vec2 lead_point = vec2(0.5) + u_dir * 0.30;
+    float ring_r = length(uv - lead_point);
+    for (int i = 0; i < 2; i++) {
+        float fi = float(i);
+        float phase  = fract(u_flow_phase * 0.45 + fi * 0.5);
+        float radius = phase * 0.55;
+        float thickness = 0.018;
+        float ring = smoothstep(thickness, 0.0, abs(ring_r - radius));
+        ring *= (1.0 - phase);                          // fades as it expands
+        ring *= u_velocity;
+        col   = max(col, vec3(0.95, 1.00, 1.00) * ring * 1.40);
+        alpha = max(alpha, ring * 0.90);
+    }
 
-    // Dash length — short. Hard-capped so even at max velocity a dash
-    // is at most ~15% of the screen, never a full-width bar.
-    float dash_len = 0.04 + u_velocity * 0.10;     // 0.04..0.14
+    // --- Bright burst at the leading point ---
+    float burst = smoothstep(0.075, 0.0, length(uv - lead_point));
+    burst *= u_velocity * 1.30;
+    col   = max(col, vec3(1.0, 1.0, 1.0) * burst);
+    alpha = max(alpha, burst);
 
-    // We want d_along in [0, dash_len] to be visible (dash tail behind
-    // leading edge). Anything else: invisible.
-    if (d_along < 0.0 || d_along > dash_len) discard;
-
-    // Brightness fades from bright at leading edge (d_along=0) to zero
-    // at tail (d_along=dash_len).
-    float trail = 1.0 - (d_along / dash_len);
-
-    // Cross-axis tightness — thin dashes
-    float thickness = 0.30;
-    float in_line = smoothstep(0.5 + thickness, 0.5 - thickness,
-                                abs(row_frac - 0.5));
-
-    float bright = trail * in_line;
-    vec3 col = vec3(0.85, 0.95, 1.00);
-    float alpha = bright * u_velocity * 0.90;
     if (alpha < 0.04) discard;
     fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
 }

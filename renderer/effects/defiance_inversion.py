@@ -74,64 +74,56 @@ void main() {
     vec3 col = vec3(0.0);
     float alpha = 0.0;
 
-    // --- Electric arcs ---
-    // Each arc is a thin jagged line between two random endpoints, lasting
-    // ~0.15 seconds. Number of active arcs scales with defiance.
-    int n_arcs = int(1.0 + u_defiance * 5.0);   // 1 to 6 arcs at max
-    for (int i = 0; i < 6; i++) {
+    // --- Electric arcs (fatter, more chaotic, more of them) ---
+    int n_arcs = int(2.0 + u_defiance * 6.0);   // 2 to 8 (was 1-6)
+    for (int i = 0; i < 8; i++) {
         if (i >= n_arcs) break;
         float fi = float(i);
-        // Each arc has its own period; pick a fresh seed every period
-        float period = 0.20 + hash1(fi * 7.0) * 0.30;
-        float arc_t = mod(u_time + fi * period * 0.3, period) / period;   // 0..1
-        // Only visible for first half of each period
+        float period = 0.15 + hash1(fi * 7.0) * 0.25;   // faster cycling
+        float arc_t = mod(u_time + fi * period * 0.3, period) / period;
         if (arc_t > 0.5) continue;
         float seed_t = floor((u_time + fi * 0.1) / period);
-        // Endpoints
         vec2 p0 = vec2(hash1(seed_t * 13.0 + fi), hash1(seed_t * 17.0 + fi * 3.0));
         vec2 p1 = vec2(hash1(seed_t * 19.0 + fi * 5.0), hash1(seed_t * 23.0 + fi * 7.0));
-        // Distance from uv to line segment
         vec2 ba = p1 - p0;
         vec2 pa = uv - p0;
         float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-        // Add per-position jitter to make the line jagged
-        vec2 jitter = vec2(sin(uv.x * 80.0 + seed_t * 5.0) * 0.008,
-                           sin(uv.y * 80.0 + seed_t * 7.0) * 0.008);
+        // 2.5x more jitter amplitude = more clearly jagged
+        vec2 jitter = vec2(sin(uv.x * 60.0 + seed_t * 5.0) * 0.020,
+                           sin(uv.y * 60.0 + seed_t * 7.0) * 0.020);
         float d = length(pa - ba * h + jitter);
-        // Bright thin arc
-        float arc = smoothstep(0.012, 0.0, d) * (1.0 - arc_t * 2.0);
-        // Color: bright white-cyan
-        col = max(col, vec3(0.9, 1.0, 1.0) * arc);
-        alpha = max(alpha, arc * 0.95);
+        // Almost 2x thicker than before
+        float arc = smoothstep(0.022, 0.0, d) * (1.0 - arc_t * 2.0);
+        col = max(col, vec3(0.95, 1.00, 1.00) * arc * 1.30);
+        alpha = max(alpha, arc * 1.00);
     }
 
-    // --- Counter-content tiles ---
-    // Small randomly-placed bright squares (ad-hijack icons), localized
-    // not banded. NO full-width horizontal stripes — those produce ugly
-    // concentric-ring artifacts in fan view and ugly solid horizontal
-    // lines in flat view.
-    int n_tiles = int(2.0 + u_defiance * 6.0);
-    for (int ti = 0; ti < 8; ti++) {
+    // --- Glitch hijack tiles (bigger, more, hotter palette) ---
+    int n_tiles = int(3.0 + u_defiance * 8.0);   // 3 to 11 (was 2-8)
+    for (int ti = 0; ti < 12; ti++) {
         if (ti >= n_tiles) break;
         float fi = float(ti);
-        float life = 0.6 + hash(vec2(fi, 11.7)) * 0.6;
+        float life = 0.5 + hash(vec2(fi, 11.7)) * 0.5;
         float tt = mod(u_time + fi * 0.31, life) / life;
-        if (tt > 0.4) continue;
+        if (tt > 0.40) continue;
         float seed_t = floor((u_time + fi * 0.07) / life);
         vec2 center = vec2(hash(vec2(seed_t * 9.0,  fi * 5.0)),
                            hash(vec2(seed_t * 11.0, fi * 7.0)));
-        vec2 size = vec2(0.030 + hash(vec2(seed_t * 3.1, fi)) * 0.020,
-                         0.020 + hash(vec2(seed_t * 4.7, fi)) * 0.015);
+        // 2x bigger tiles
+        vec2 size = vec2(0.060 + hash(vec2(seed_t * 3.1, fi)) * 0.040,
+                         0.045 + hash(vec2(seed_t * 4.7, fi)) * 0.030);
         vec2 d = abs(uv - center) / size;
         if (max(d.x, d.y) > 1.0) continue;
-        float edge = max(smoothstep(0.85, 0.98, d.x), smoothstep(0.85, 0.98, d.y));
-        float body = (1.0 - smoothstep(0.0, 1.0, max(d.x, d.y))) * 0.40 + edge * 1.0;
-        // Each tile picks ONE color, mostly hot pink, occasional acid green
+        float edge = max(smoothstep(0.80, 0.96, d.x), smoothstep(0.80, 0.96, d.y));
+        float body = (1.0 - smoothstep(0.0, 1.0, max(d.x, d.y))) * 0.60 + edge * 1.20;
+        // 3-color palette so the hijacks read more clearly as "wrong"
         float ch = hash(vec2(seed_t, fi + 17.0));
-        vec3 tile_col = mix(vec3(1.0, 0.05, 0.55), vec3(0.40, 1.0, 0.10),
-                            step(0.80, ch));
-        col = max(col, tile_col * body);
-        alpha = max(alpha, body * 0.85);
+        vec3 tile_col;
+        if      (ch < 0.55) tile_col = vec3(1.00, 0.08, 0.60);   // hot pink
+        else if (ch < 0.85) tile_col = vec3(0.45, 1.00, 0.12);   // acid green
+        else                tile_col = vec3(1.00, 0.80, 0.10);   // alarm yellow
+        col = max(col, tile_col * body * 1.20);
+        alpha = max(alpha, body * 0.95);
     }
 
     // --- Full-screen inversion flash ---

@@ -13,7 +13,10 @@ Requirements (beyond base project):
     pip install PySide6 NodeGraphQt qtpy
 """
 
+import datetime as _datetime
+import faulthandler
 import json
+import logging
 import os
 import queue
 import random
@@ -23,6 +26,7 @@ import sys
 import textwrap
 import threading
 import time
+import traceback
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -54,6 +58,12 @@ REPO_ROOT  = Path(__file__).parent.parent
 SOUNDS_DIR = REPO_ROOT / "media" / "sounds"
 RECENTS_PATH = REPO_ROOT / "config" / "narrative_recents.json"
 RECENTS_MAX = 10
+
+# Crash / autosave diagnostics
+LOG_DIR        = REPO_ROOT / "logs" / "narrative_editor"
+CRASH_LOG_PATH = LOG_DIR / "crash.log"
+APP_LOG_PATH   = LOG_DIR / "app.log"
+AUTOSAVE_SUFFIX = ".autosave.json"
 
 NODE_PREVIEW_LEN = 60        # chars shown inside a node box
 # Maximum story_context size sent to AI per call. The previous 4000-char
@@ -1805,6 +1815,13 @@ class ParallelNodeOrchestrator:
         self._total_created = 0
         self._total_completed = 0
         self._cancelled = threading.Event()
+        # Prompt-cache priming flag. The first AI call writes ~11K tokens of
+        # bible into Anthropic's prompt cache (1.25x rate). Subsequent calls
+        # read it back at 0.1x. If we let all 8 workers fire at once, all 8
+        # see a cache MISS and pay the 1.25x write rate — a 5-8x cost
+        # multiplier on the initial burst. So we serialize the very first
+        # call until it returns, then allow parallel dispatch.
+        self._cache_primed = False
 
         # Existing tags for reuse hints
         layer_tags = set(LAYER_ORDER)
@@ -1994,6 +2011,22 @@ class ParallelNodeOrchestrator:
                     break
                 print(f'[Parallel]   → Dispatch {task.task_id}: parent={task.parent_id} layer={task.layer_name}')
                 self._executor.submit(self._execute_task, task)
+
+                # Prompt-cache priming: hold off on parallel dispatch until
+                # this first call returns. After it completes, Anthropic's
+                # prompt cache holds the bible and subsequent calls read it
+                # at 0.1x instead of racing to write at 1.25x. Adds ~one-call
+                # wall time to the run; saves ~5-8x on the initial burst.
+                if not self._cache_primed:
+                    print(f'[Parallel] Priming prompt cache (waiting for {task.task_id} to return)...')
+                    while not self._cancelled.is_set():
+                        with self._lock:
+                            if self._active_count == 0:
+                                break
+                        time.sleep(0.1)
+                    self._cache_primed = True
+                    print('[Parallel] Cache primed; parallel dispatch enabled.')
+                    break  # re-scan pending — the first task may have spawned children
 
             # Brief sleep to avoid busy-waiting for new tasks from completions
             time.sleep(0.1)
@@ -2387,6 +2420,29 @@ class AIAssistant:
             lines.append(f"{prefix}: {msg['content'][:500]}")
         return "\n".join(lines)
 
+    def _reask_for_json(self, original_system: str, original_prompt: str, bad_raw: str) -> str:
+        """When _extract_json fails on a successful API response, ask the
+        model to re-output its content as valid JSON only. One retry —
+        recovers most parse failures (smart quotes, stray commas, fenced
+        code blocks, trailing commentary). Uses the SAME system prompt so
+        the cache stays warm for the retry.
+
+        Returns the raw text of the retry response. Caller still has to
+        call _extract_json on it (and is expected to let that raise if
+        the retry also fails — no infinite-loop)."""
+        fixer_prompt = (
+            "Your previous response failed to parse as JSON. Below is the "
+            "raw text you produced. Re-output the same content as a single "
+            "valid JSON object only — no markdown fences, no commentary, no "
+            "explanation. If the original output included preamble or "
+            "thinking notes, drop them. Keep the actual data identical.\n\n"
+            "----- YOUR PREVIOUS OUTPUT -----\n"
+            f"{bad_raw[:6000]}\n"
+            "----- END -----\n\n"
+            "Re-output now as a single valid JSON object:"
+        )
+        return self._run_claude(original_system, fixer_prompt)
+
     @staticmethod
     def _extract_json(raw: str) -> dict:
         """Extract the first balanced top-level JSON object from *raw* text."""
@@ -2512,22 +2568,33 @@ class AIAssistant:
                 continue
         raise last_error or RuntimeError("claude CLI failed after all retries")
 
-    @staticmethod
-    def _augment_system_with_context(system: str,
+    @classmethod
+    def _augment_system_with_context(cls,
+                                       system: str,
                                        story_context: str,
-                                       node_word_range: Optional[tuple] = None) -> str:
-        """Append the world bible AND optional length-override to the
-        system prompt as a stable cache-friendly prefix.
+                                       node_word_range: Optional[tuple] = None,
+                                       premise: str = '',
+                                       themes: str = '',
+                                       motif: str = '',
+                                       variables: list = None) -> str:
+        """Build the cache-friendly system prompt prefix.
 
-        - story_context: world bible (cached across calls in a session)
-        - node_word_range: optional (lo, hi) word target that overrides
-          the "40-100 words" spec baked into the SYSTEM_* prompts. Story-
-          and arc-level node-length settings flow in via this parameter.
+        Everything that is STABLE within an arc-generation run belongs here so
+        it lives in Anthropic's prompt cache across the run's many calls. Only
+        per-call content (parent text, ancestor chain, beat direction,
+        sibling summaries, batch_size instruction) stays in the user prompt.
 
-        Both blocks are pure suffixes on the SYSTEM prompt so the CLI's
-        automatic prompt caching can key on them consistently — as long
-        as the story_context AND the resolved word_range don't change
-        between calls, the prefix is identical and the cache hits."""
+        Blocks (in order, each cache-relevant chunk):
+          - LENGTH OVERRIDE       — per-script/per-arc, stable
+          - STORY PREMISE         — per-arc, stable
+          - THEMATIC THREADS      — per-arc, stable
+          - RECURRING MOTIF       — per-arc, stable
+          - STORY VARIABLES       — per-script, stable
+          - WORLD BIBLE           — per-script, stable (biggest by far)
+
+        Caller passes whatever they want appended. Empty / None → block skipped.
+        The premise role-label and weight are NOT included here (they vary per
+        layer) — those stay in the user prompt."""
         out = system
         if node_word_range:
             lo, hi = int(node_word_range[0]), int(node_word_range[1])
@@ -2544,6 +2611,36 @@ class AIAssistant:
                 "develop the beat fully — don't cut at the lower bound.\n"
                 "----- END LENGTH OVERRIDE -----"
             )
+        if premise:
+            out += (
+                "\n\n----- STORY PREMISE (active arc, stable across this run) -----\n"
+                + premise.strip() +
+                "\n----- END STORY PREMISE -----"
+            )
+        if themes:
+            out += (
+                "\n\n----- THEMATIC THREADS (active arc) -----\n"
+                "Let these resonate through the narrative as natural undercurrents:\n  "
+                + themes.strip() +
+                "\n----- END THEMATIC THREADS -----"
+            )
+        if motif:
+            out += (
+                "\n\n----- RECURRING MOTIF (active arc) -----\n"
+                "Weave this naturally through the text. When it returns, it must\n"
+                "mutate from its prior appearance or be absent altogether — never\n"
+                "repeated verbatim.\n\n"
+                + motif.strip() +
+                "\n----- END RECURRING MOTIF -----"
+            )
+        if variables:
+            vars_block = cls._vars_prompt_section(variables)
+            if vars_block:
+                out += (
+                    "\n\n----- STORY VARIABLES (active script) -----\n"
+                    + vars_block +
+                    "\n----- END STORY VARIABLES -----"
+                )
         if story_context:
             sc = story_context[:CONTEXT_MAX]
             if len(story_context) > CONTEXT_MAX:
@@ -2754,23 +2851,29 @@ class AIAssistant:
         self._busy = True
 
         parts = []
-        vars_sec = self._vars_prompt_section(variables or [])
-        if vars_sec:
-            parts.append(vars_sec)
         if layer_direction:
             parts.append(f'ARRIVAL LAYER DIRECTION (this is what the arrival nodes must cover):\n{layer_direction}')
-        if motif:
-            parts.append(f'RECURRING MOTIF (weave this through the text naturally in every node):\n{motif}')
+        # NOTE: motif and variables now live in the SYSTEM prompt (cache friendly).
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
         full_prompt = '\n\n'.join(parts)
-        system = self._augment_system_with_context(SYSTEM_GENERATE_SEED, story_context, node_word_range)
+        # Push motif + variables into the cached system prompt. (The arc's
+        # premise has already been baked into `prompt` as the subject — no
+        # need to duplicate it in the system block here.)
+        system = self._augment_system_with_context(
+            SYSTEM_GENERATE_SEED, story_context, node_word_range,
+            motif=motif, variables=variables,
+        )
 
         def run():
             try:
                 print(f'[AI] generate_seed: calling claude...')
                 raw   = self._run_claude(system, full_prompt)
                 print(f'[AI] generate_seed: got {len(raw)} chars, extracting JSON...')
-                data = self._extract_json(raw)
+                try:
+                    data = self._extract_json(raw)
+                except (ValueError, json.JSONDecodeError) as exc:
+                    print(f'[AI] generate_seed JSON parse failed ({exc}); re-asking...')
+                    data = self._extract_json(self._reask_for_json(system, full_prompt, raw))
                 nodes = data.get('nodes', {})
                 print(f'[AI] generate_seed: {len(nodes)} nodes parsed')
                 ui_queue.put(lambda: on_done(data))
@@ -2964,26 +3067,26 @@ class AIAssistant:
         """
         parts = []
 
-        # Premise — visible across all layers; the LABEL tells the AI what
-        # role the premise plays at this specific beat (establish / unfold /
-        # bind / enact / ripple / carry / afterimage).
+        # Premise — full text is in the SYSTEM prompt (cached). Here we
+        # only ship the per-layer role label + weight, which vary per beat.
         if premise and premise_weight > 0.05:
             weight_pct = int(premise_weight * 100)
             _, role = LAYER_PREMISE_ROLES.get(layer_name, (premise_weight, ''))
             if role:
-                label = f"STORY PREMISE — role at this beat: {role}"
+                parts.append(
+                    f'PREMISE ROLE AT THIS BEAT [{weight_pct}% influence]: {role}\n'
+                    f'(The full premise text is in the SYSTEM prompt above.)'
+                )
             else:
-                label = "STORY PREMISE"
-            parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
+                parts.append(
+                    f'PREMISE WEIGHT AT THIS BEAT: {weight_pct}%\n'
+                    f'(The full premise text is in the SYSTEM prompt above.)'
+                )
 
-        # World bible is sent in the SYSTEM prompt below (cache friendly).
+        # Bible, themes, motif, story-variables now live in the SYSTEM prompt.
 
         if existing_custom_tags:
             parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
-
-        vars_sec = self._vars_prompt_section(variables or [])
-        if vars_sec:
-            parts.append(vars_sec)
 
         # Ancestor context — keywords and tags, not raw truncated text.
         # Older ancestors are compressed more aggressively.
@@ -3032,13 +3135,10 @@ class AIAssistant:
                 f'(universal across all arcs):\n  {layer_fn}'
             )
 
-        # Layer direction / motif
+        # Layer direction (per-beat, varies per call).
         if layer_direction:
             parts.append(f'\nLAYER DIRECTION (this arc\'s specific intent for this beat): {layer_direction}')
-        if motif:
-            parts.append(f'RECURRING MOTIF (must mutate from prior appearance or be absent): {motif}')
-        if themes:
-            parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
+        # NOTE: motif and themes now live in the SYSTEM prompt (cached).
 
         # Parent node (highest weight)
         parts.append(
@@ -3056,10 +3156,17 @@ class AIAssistant:
             f'See STORYTELLING DISCIPLINE in system prompt for forbidden patterns.'
         )
         prompt = '\n'.join(parts)
-        system = self._augment_system_with_context(SYSTEM_GENERATE_SINGLE_NODE, story_context, node_word_range)
+        system = self._augment_system_with_context(
+            SYSTEM_GENERATE_SINGLE_NODE, story_context, node_word_range,
+            premise=premise, themes=themes, motif=motif, variables=variables,
+        )
 
         raw = self._run_claude(system, prompt)
-        return self._extract_json(raw)
+        try:
+            return self._extract_json(raw)
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f'[AI] generate_single_node_sync JSON parse failed ({exc}); re-asking...')
+            return self._extract_json(self._reask_for_json(system, prompt, raw))
 
     def generate_batch_sync(self, parent_id: str, parent_text: str,
                              parent_tags: list, ancestor_chain: list,
@@ -3080,25 +3187,29 @@ class AIAssistant:
         """
         parts = []
 
-        # Premise — visible across all layers; the LABEL tells the AI what
-        # role the premise plays at this specific beat.
+        # Premise — the full premise text now lives in the SYSTEM prompt (cached).
+        # Here in the user prompt we only include the layer-specific ROLE LABEL
+        # and WEIGHT, which vary per layer and would invalidate the cache if
+        # they sat in the system prompt.
         if premise and premise_weight > 0.05:
             weight_pct = int(premise_weight * 100)
             _, role = LAYER_PREMISE_ROLES.get(layer_name, (premise_weight, ''))
             if role:
-                label = f"STORY PREMISE — role at this beat: {role}"
+                parts.append(
+                    f'PREMISE ROLE AT THIS BEAT [{weight_pct}% influence]: {role}\n'
+                    f'(The full premise text is in the SYSTEM prompt above.)'
+                )
             else:
-                label = "STORY PREMISE"
-            parts.append(f'{label} [{weight_pct}% influence]:\n  {premise}')
+                parts.append(
+                    f'PREMISE WEIGHT AT THIS BEAT: {weight_pct}%\n'
+                    f'(The full premise text is in the SYSTEM prompt above.)'
+                )
 
-        # World bible is sent in the SYSTEM prompt below (cache friendly).
+        # Bible, themes, motif, story-variables all live in the SYSTEM prompt
+        # below (cache friendly across this entire arc-generation run).
 
         if existing_custom_tags:
             parts.append(f'EXISTING TAGS (prefer these): {", ".join(sorted(existing_custom_tags))}')
-
-        vars_sec = self._vars_prompt_section(variables or [])
-        if vars_sec:
-            parts.append(vars_sec)
 
         # Ancestor context — keywords and tags
         _STOPWORDS = frozenset({
@@ -3135,10 +3246,8 @@ class AIAssistant:
 
         if layer_direction:
             parts.append(f'\nLAYER DIRECTION (this arc\'s specific intent for this beat): {layer_direction}')
-        if motif:
-            parts.append(f'RECURRING MOTIF (must mutate from prior appearance or be absent): {motif}')
-        if themes:
-            parts.append(f'THEMATIC THREADS (let these resonate through the narrative): {themes}')
+        # NOTE: motif and themes now live in the SYSTEM prompt (cached).
+        # They are not re-included here to avoid paying full rate every call.
 
         # Author hint (high priority — right before source node)
         # Source node
@@ -3164,10 +3273,22 @@ class AIAssistant:
         if hint:
             parts.append(f'\nCRITICAL — AUTHOR DIRECTION (this overrides thematic continuity): {hint}')
         prompt = '\n'.join(parts)
-        system = self._augment_system_with_context(SYSTEM_EXPAND, story_context, node_word_range)
+        # Premise / themes / motif / variables go into the SYSTEM prompt now,
+        # making them part of the cache-friendly prefix for the whole arc run.
+        system = self._augment_system_with_context(
+            SYSTEM_EXPAND, story_context, node_word_range,
+            premise=premise, themes=themes, motif=motif, variables=variables,
+        )
 
         raw = self._run_claude(system, prompt)
-        return self._extract_json(raw)
+        try:
+            return self._extract_json(raw)
+        except (ValueError, json.JSONDecodeError) as exc:
+            # JSON parse failure — re-ask once. The model's first response was
+            # valid text but not valid JSON; one cheap retry usually recovers
+            # the call without losing the work it already did.
+            print(f'[AI] JSON parse failed ({exc}); re-asking for valid JSON only...')
+            return self._extract_json(self._reask_for_json(system, prompt, raw))
 
     def suggest_cross_links_sync(self, layer_nodes: list,
                                   children_map: dict) -> list:
@@ -6020,26 +6141,52 @@ class ArcEditorDialog(QDialog):
     # ── Arc list management ──────────────────────────────────────────────────
 
     def _refresh_arc_list(self):
+        # On the SELECTION-click path the arc set is unchanged — only the
+        # ★ active marker shifts. The previous implementation called
+        # clear() + addItem() each time, which (a) reset the scrollbar
+        # and (b) caused a native crash in PySide6 on at least one
+        # machine (see logs/narrative_editor/crash.log: native crash at
+        # arc_list.clear() called from _on_arc_selected). Detect "same
+        # arc IDs in same order" and update labels in place; only do a
+        # full clear/repopulate when the arc set actually changed.
+        scroll_value = self.arc_list.verticalScrollBar().value()
+        active_id    = self.script.active_arc_id
+        desired_ids  = list(self.script.arcs.keys())
+        current_ids  = [self.arc_list.item(i).data(Qt.ItemDataRole.UserRole)
+                        for i in range(self.arc_list.count())]
+
         self.arc_list.blockSignals(True)
         try:
-            self.arc_list.clear()
-            active_id = self.script.active_arc_id
-            for arc_id, arc in self.script.arcs.items():
-                name = arc.get('name') or arc_id
-                label = ('★ ' if arc_id == active_id else '  ') + name
-                item = QListWidgetItem(label)
-                item.setData(Qt.ItemDataRole.UserRole, arc_id)
-                self.arc_list.addItem(item)
-            # Restore selection while signals are still blocked
+            if current_ids == desired_ids and current_ids:
+                # In-place label update — no clear(), no item recreation.
+                for i, arc_id in enumerate(desired_ids):
+                    arc   = self.script.arcs[arc_id]
+                    name  = arc.get('name') or arc_id
+                    label = ('★ ' if arc_id == active_id else '  ') + name
+                    self.arc_list.item(i).setText(label)
+            else:
+                # Arc set genuinely changed (add / delete / rename / first
+                # population) — full rebuild is unavoidable.
+                self.arc_list.clear()
+                for arc_id, arc in self.script.arcs.items():
+                    name  = arc.get('name') or arc_id
+                    label = ('★ ' if arc_id == active_id else '  ') + name
+                    item  = QListWidgetItem(label)
+                    item.setData(Qt.ItemDataRole.UserRole, arc_id)
+                    self.arc_list.addItem(item)
+
+            # Sync selection to _current_arc_id
             target = self._current_arc_id
             for i in range(self.arc_list.count()):
                 if self.arc_list.item(i).data(Qt.ItemDataRole.UserRole) == target:
                     self.arc_list.setCurrentRow(i)
-                    return
-            if self.arc_list.count():
-                self.arc_list.setCurrentRow(0)
+                    break
+            else:
+                if self.arc_list.count():
+                    self.arc_list.setCurrentRow(0)
         finally:
             self.arc_list.blockSignals(False)
+            self.arc_list.verticalScrollBar().setValue(scroll_value)
 
     def _on_arc_selected(self, row):
         self._save_current()
@@ -9222,21 +9369,49 @@ class MainWindow(QMainWindow):
         self._save_recent_files()
         self._rebuild_recent_menu()
 
-    def _autosave(self):
-        """Silently save if dirty and a file path exists."""
-        if self.script.dirty and self.script.path:
+    def _autosave_path_for(self, script_path: Path) -> Path:
+        """Sidecar path used for crash-recovery snapshots."""
+        return script_path.with_suffix(script_path.suffix + AUTOSAVE_SUFFIX)
+
+    def _clear_autosave_sidecar(self):
+        """Remove the .autosave.json sidecar once a real save has succeeded."""
+        if self.script.path:
+            sidecar = self._autosave_path_for(self.script.path)
             try:
-                self._sync_positions()
-                self.script.save()
-                self._update_title()
-            except Exception:
-                pass  # autosave should never interrupt the user
+                if sidecar.exists():
+                    sidecar.unlink()
+            except OSError as exc:
+                logging.getLogger("narrative_editor").warning(
+                    "could not remove autosave sidecar %s: %s", sidecar, exc)
+
+    def _autosave(self):
+        """Silently snapshot to a .autosave.json sidecar if dirty.
+
+        Writes to <script>.autosave.json instead of the real file so a
+        post-crash autosave can never clobber the user's last good save.
+        Uses an atomic rename (write to .tmp, then os.replace) so a crash
+        mid-write can't leave a half-written sidecar.
+        """
+        if not (self.script.dirty and self.script.path):
+            return
+        try:
+            self._sync_positions()
+            sidecar = self._autosave_path_for(self.script.path)
+            tmp = sidecar.with_suffix(sidecar.suffix + ".tmp")
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.script._data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, sidecar)
+            self._update_title()
+        except Exception as exc:
+            logging.getLogger("narrative_editor").warning("autosave failed: %s", exc)
 
     def _cmd_save(self):
         self._sync_positions()
         if self.script.path:
             try:
                 self.script.save()
+                self._clear_autosave_sidecar()
                 self._update_title()
                 self.status_bar.showMessage(f"Saved: {self.script.path.name}")
             except Exception as exc:
@@ -9252,6 +9427,7 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 self.script.save(Path(path))
+                self._clear_autosave_sidecar()
                 self._update_title()
                 self.status_bar.showMessage(f"Saved: {Path(path).name}")
                 self._add_recent_file(Path(path))
@@ -9259,8 +9435,34 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Save error: {exc}")
 
     def _load_script(self, path: Path):
+        # Crash-recovery: if a sidecar exists and is newer than the real
+        # file, the editor probably died between an autosave and a real
+        # save. Offer to load the sidecar instead.
+        sidecar = self._autosave_path_for(path)
+        load_from = path
         try:
-            self.script = ScriptData.load(path)
+            if (sidecar.exists() and path.exists()
+                    and sidecar.stat().st_mtime > path.stat().st_mtime):
+                age_s = sidecar.stat().st_mtime - path.stat().st_mtime
+                reply = QMessageBox.question(
+                    self, "Recover Autosave?",
+                    f"An autosave for '{path.name}' was found that is "
+                    f"{age_s:.0f}s newer than the saved file — the editor "
+                    f"may have crashed before you could save.\n\n"
+                    f"Load the autosave?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    load_from = sidecar
+        except OSError:
+            pass
+        try:
+            self.script = ScriptData.load(load_from)
+            # Always keep the canonical path pointing at the real file, even
+            # if we loaded data from the sidecar.
+            self.script.path = path
+            if load_from is sidecar:
+                self.script.dirty = True  # so the user is nudged to save
             self._selected_node_id = None
             self._refresh_contexts()
             for nid, pos in _layout_tree(self.script).items():
@@ -9339,7 +9541,98 @@ class MainWindow(QMainWindow):
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _install_diagnostics():
+    """Wire up crash logging so 'hitch then crash' leaves a useful trail.
+
+    - faulthandler: native-level traceback for segfaults / aborts.
+    - logging: rotating-ish app log + crash log (both append).
+    - sys.excepthook: capture Python exceptions Qt would otherwise swallow.
+    - threading.excepthook: same, for worker threads.
+    - qInstallMessageHandler: capture Qt's own warnings (often print just
+      before a native crash and otherwise go to a stderr nobody reads).
+    Returns the open crash-log file (kept alive for faulthandler).
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # faulthandler writes a C-level traceback on segfault/abort/SIGFPE/etc.
+    # We keep the file handle open for the lifetime of the process.
+    crash_fp = open(CRASH_LOG_PATH, "a", buffering=1, encoding="utf-8")
+    crash_fp.write(
+        f"\n===== narrative_editor session start {_datetime.datetime.now().isoformat()} "
+        f"pid={os.getpid()} =====\n"
+    )
+    faulthandler.enable(file=crash_fp, all_threads=True)
+
+    # App log: timestamps + level for everything the editor logs explicitly.
+    logging.basicConfig(
+        filename=str(APP_LOG_PATH),
+        filemode="a",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    log = logging.getLogger("narrative_editor")
+    log.info("session start pid=%s argv=%s", os.getpid(), sys.argv)
+
+    # Surface unhandled Python exceptions (Qt slots sometimes swallow these).
+    def _excepthook(exc_type, exc_value, tb):
+        msg = "".join(traceback.format_exception(exc_type, exc_value, tb))
+        log.error("UNHANDLED EXCEPTION:\n%s", msg)
+        crash_fp.write(
+            f"--- python exception {_datetime.datetime.now().isoformat()} ---\n{msg}\n"
+        )
+        crash_fp.flush()
+        # Still print to stderr if someone is watching.
+        sys.__excepthook__(exc_type, exc_value, tb)
+    sys.excepthook = _excepthook
+
+    # threading.excepthook is 3.8+; guard just in case.
+    if hasattr(threading, "excepthook"):
+        def _thread_excepthook(args):
+            msg = "".join(traceback.format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback))
+            log.error("THREAD EXCEPTION in %s:\n%s",
+                      getattr(args.thread, "name", "?"), msg)
+            crash_fp.write(
+                f"--- thread exception {_datetime.datetime.now().isoformat()} "
+                f"thread={getattr(args.thread, 'name', '?')} ---\n{msg}\n"
+            )
+            crash_fp.flush()
+        threading.excepthook = _thread_excepthook
+
+    # Qt's own message stream — warnings here often immediately precede a
+    # native crash ("QObject::disconnect: ...", "QPainter::end: ...").
+    try:
+        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+        _qt_level = {
+            QtMsgType.QtDebugMsg:    logging.DEBUG,
+            QtMsgType.QtInfoMsg:     logging.INFO,
+            QtMsgType.QtWarningMsg:  logging.WARNING,
+            QtMsgType.QtCriticalMsg: logging.ERROR,
+            QtMsgType.QtFatalMsg:    logging.CRITICAL,
+        }
+        def _qt_handler(msg_type, ctx, message):
+            lvl = _qt_level.get(msg_type, logging.INFO)
+            where = ""
+            if ctx and ctx.file:
+                where = f" ({ctx.file}:{ctx.line})"
+            log.log(lvl, "Qt: %s%s", message, where)
+            if lvl >= logging.WARNING:
+                crash_fp.write(
+                    f"[qt {_datetime.datetime.now().isoformat()}] {message}{where}\n"
+                )
+                crash_fp.flush()
+        qInstallMessageHandler(_qt_handler)
+    except Exception as exc:
+        log.warning("could not install Qt message handler: %s", exc)
+
+    return crash_fp
+
+
 def main():
+    # Must happen before QApplication construction so we catch crashes
+    # during startup too.
+    _crash_fp = _install_diagnostics()  # kept alive for faulthandler
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 

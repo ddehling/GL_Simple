@@ -72,39 +72,56 @@ out vec4 fragColor;
 
 void main() {
     vec2 uv = v_uv;
+    vec3 col = vec3(0.0);
+    float alpha = 0.0;
 
-    // A smooth scrolling carrier waveform centered at mid-screen. Three
-    // sines composed at different frequencies and scroll rates. The
-    // signal value drives ONLY the color and slight thickness — no
-    // per-frame jitter, no dropouts. The earlier jumpy/strobe-y
-    // degradation effects were unpleasant; signal quality is now
-    // expressed purely through the trace's color and thickness.
+    // FOUR stacked oscilloscope traces — instantly reads as a broadcast
+    // monitor rather than an ambiguous wavy line. Each trace has its
+    // own frequency / scroll-direction / amplitude so the bundle looks
+    // like a real multi-channel scope.
+    float ys[4];      ys[0]    = 0.18; ys[1]    = 0.40; ys[2]    = 0.62; ys[3]    = 0.84;
+    float freqs[4];   freqs[0] = 18.0; freqs[1] = 30.0; freqs[2] = 22.0; freqs[3] = 44.0;
+    float speeds[4];  speeds[0]=  2.8; speeds[1]= -3.4; speeds[2]=  4.0; speeds[3]= -2.1;
+    float amps[4];    amps[0]  = 0.040; amps[1] = 0.028; amps[2] = 0.048; amps[3] = 0.022;
 
-    float center_y = 0.5;
+    // Traces are notably THICKER than before — at the small canvas
+    // size, the old 0.011 thickness was effectively sub-pixel in fan
+    // view. 0.022..0.034 reads as a real trace.
+    float thickness = 0.022 + u_signal * 0.012;
 
-    // Smooth composite waveform — scroll_phase is CPU-integrated so
-    // motion stays monotonic across signal-value interpolations.
-    float wave = sin(uv.x * 25.0 - u_scroll_phase * 3.0) * 0.05
-               + sin(uv.x * 12.0 + u_scroll_phase * 1.7) * 0.03
-               + sin(uv.x * 42.0 - u_scroll_phase * 5.0) * 0.015;
+    // Fan-radial reveal: in fan space, v_uv.y = 0 sits at the fan
+    // origin (inner arc) and v_uv.y = 1 sits at the outer arc — so
+    // "grow radially outward from the fan origin" maps to "grow
+    // upward from v_uv.y = 0 in the rectangle". At low signal only a
+    // small band near v_uv.y = 0 is visible; as signal climbs the band
+    // expands toward v_uv.y = 1. Combined with the dropout-dashes
+    // (below) this makes low signal feel like a faint broken inner-arc
+    // patch and high signal like a full clean broadcast spanning the
+    // fan, rather than all four traces popping in at once.
+    float reveal_top    = 0.10 + u_signal * 0.95;    // 0.10 → 1.05
+    float reveal_edge   = 0.12;
+    float reveal_mask   = 1.0 - smoothstep(reveal_top - reveal_edge, reveal_top, uv.y);
 
-    float wave_y = center_y + wave;
-    float dist_to_wave = abs(uv.y - wave_y);
+    for (int i = 0; i < 4; i++) {
+        float wave   = sin(uv.x * freqs[i] + u_scroll_phase * speeds[i]) * amps[i];
+        float wave_y = ys[i] + wave;
+        float dist   = abs(uv.y - wave_y);
+        float band   = smoothstep(thickness, 0.0, dist);
 
-    // Trace thickness slightly increases at low signal (a "thicker
-    // smear" reads as a degraded trace without strobing).
-    float deg = 1.0 - u_signal;
-    float thickness = 0.011 + deg * 0.006;
-    float trace = smoothstep(thickness, 0.0, dist_to_wave);
+        // Dropout-dashes at LOW signal: each trace breaks into gaps
+        // when signal degrades. At u_signal=1 the trace is solid.
+        float dash_period = fract(uv.x * 6.0 + float(i) * 0.4);
+        float min_visible = (1.0 - u_signal) * 0.45;
+        float continuity  = step(min_visible, dash_period);
+        float trace = band * continuity * reveal_mask;
 
-    // Color: bright cyan-white at high signal, smoothly shifts toward
-    // dimmer phosphor green at low signal. Pure interpolation — no
-    // per-pixel hash, no flashes.
-    vec3 hi  = vec3(0.20, 1.00, 0.95);
-    vec3 lo  = vec3(0.10, 0.80, 0.35);
-    vec3 col = mix(lo, hi, u_signal);
+        // Color: hot cyan-white at high signal → dim phosphor green at low.
+        vec3 trace_col = mix(vec3(0.10, 0.85, 0.35),
+                             vec3(0.35, 1.00, 0.95), u_signal);
+        col   = max(col, trace_col * trace * 1.15);
+        alpha = max(alpha, trace * 0.98);
+    }
 
-    float alpha = trace * 0.95;
     if (alpha < 0.03) discard;
     fragColor = vec4(col, alpha);
 }

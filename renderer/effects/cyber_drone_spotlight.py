@@ -71,58 +71,87 @@ void main() {
     // DUTY CYCLE — at intensity 1.0, the drone is on duty 100% of the time.
     // At intensity 0.3, it's on duty only 30% of each 18s patrol cycle.
     // This is what makes "drone occasionally appears" instead of "always on."
-    // Patrols cycle through period; on-duty fraction = intensity.
     const float PATROL_PERIOD = 18.0;
     float cycle_t = mod(u_time, PATROL_PERIOD) / PATROL_PERIOD;
     if (cycle_t > u_intensity) discard;     // off-duty pixel — no draw
 
-    // Smooth fade in/out at the start/end of the on-duty window so it
-    // doesn't pop in and out abruptly.
     float duty_fade = smoothstep(0.0, 0.05, cycle_t)
                     * smoothstep(u_intensity, u_intensity - 0.05, cycle_t);
 
-    // Drone position: hovers at top of screen, sweeps left-right with a
-    // pause-and-search rhythm (sin of sin gives uneven motion)
+    // Searcher drone position: hovers at top of screen, sweeps left-right
+    // with a pause-and-search rhythm (sin of sin gives uneven motion)
     float sweep_t = u_sweep_phase * 0.5;
     float drone_x = 0.5 + sin(sweep_t) * 0.4 + sin(sweep_t * 0.27) * 0.08;
     float drone_y = 0.05 + sin(sweep_t * 0.3) * 0.03;
 
-    // Beam target on the ground (mostly below drone, swings slightly)
+    // Beam target on the ground
     float target_x = drone_x + sin(sweep_t * 1.3 + 0.5) * 0.15;
     float target_y = 0.95;
 
-    // Distance from this pixel to the beam line (drone -> target)
     vec2 d_to_drone = uv - vec2(drone_x, drone_y);
     vec2 beam_dir = normalize(vec2(target_x, target_y) - vec2(drone_x, drone_y));
-    // Project pixel-to-drone onto beam dir
     float along = dot(d_to_drone, beam_dir);
-    // Only valid if pixel is "below" the drone along the beam direction
-    if (along < 0.0) discard;
-    // Perpendicular distance from beam axis
-    float perp = length(d_to_drone - beam_dir * along);
+    float perp  = length(d_to_drone - beam_dir * along);
 
-    // Beam cone widens with distance from drone
-    float beam_width = 0.02 + along * 0.10;
-    float beam = smoothstep(beam_width, beam_width * 0.3, perp);
-
-    // Dust in the beam — vertical bright striations
-    float dust_seed = hash(vec2(floor(uv.x * 80.0), floor(u_time * 4.0)));
-    float dust = step(0.85, dust_seed) * 0.4;
-    beam += beam * dust;
-
-    // Color: red-amber for surveillance / police register
     vec3 beam_color = vec3(1.0, 0.35, 0.10);
+
+    // --- Beam cone (only renders for pixels below the searcher) ---
+    float beam = 0.0;
+    if (along > 0.0) {
+        float beam_width = 0.02 + along * 0.10;
+        beam = smoothstep(beam_width, beam_width * 0.3, perp);
+        // Dust in the beam — vertical bright striations
+        float dust_seed = hash(vec2(floor(uv.x * 80.0), floor(u_time * 4.0)));
+        float dust = step(0.85, dust_seed) * 0.4;
+        beam += beam * dust;
+    }
 
     // Ground splash where beam hits — bright disc at target
     float splash_dist = length(uv - vec2(target_x, target_y));
     float splash = smoothstep(0.08, 0.0, splash_dist) * 0.8;
     beam = max(beam, splash);
 
-    // Apply the duty-cycle fade to alpha so the drone appears/disappears
-    // smoothly at each patrol-cycle boundary.
-    float alpha = beam * duty_fade * 0.95;
+    // --- Target drones: 3 quadcopters wandering in air space, invisible
+    //     until the searcher's cone passes over them, then briefly lit.
+    float drone_layer = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        // Wandering air-space position (LFOs, period ~80-150s per axis).
+        // Kept in upper / middle bands (the air, not the ground).
+        float tx = 0.12 + 0.76 * (sin(u_time * (0.043 + fi * 0.013) + fi * 1.81) * 0.5 + 0.5);
+        float ty = 0.20 + 0.42 * (sin(u_time * (0.061 + fi * 0.019) + fi * 2.41) * 0.5 + 0.5);
+
+        // Is THIS drone's center inside the searcher's cone right now?
+        // (Compute once per drone — independent of the pixel's position.)
+        vec2  t_off    = vec2(tx, ty) - vec2(drone_x, drone_y);
+        float t_along  = dot(t_off, beam_dir);
+        float t_in_cone = 0.0;
+        if (t_along > 0.0) {
+            float t_perp = length(t_off - beam_dir * t_along);
+            float t_cone_width = 0.02 + t_along * 0.10;
+            // Slightly wider tolerance than the visible beam so drones at
+            // the cone edge still light up.
+            t_in_cone = smoothstep(t_cone_width * 1.4, 0.0, t_perp);
+        }
+        if (t_in_cone < 0.02) continue;     // not lit — skip drawing
+
+        // Quadcopter silhouette: small bright body + four short rotor arms.
+        vec2  dp     = uv - vec2(tx, ty);
+        float dd     = length(dp);
+        float body   = smoothstep(0.018, 0.0, dd);
+        float arm_h  = smoothstep(0.0035, 0.0, abs(dp.y)) * step(abs(dp.x), 0.036);
+        float arm_v  = smoothstep(0.0035, 0.0, abs(dp.x)) * step(abs(dp.y), 0.036);
+        float halo   = smoothstep(0.055, 0.0, dd) * 0.35;
+        float shape  = max(max(body, halo), max(arm_h * 0.85, arm_v * 0.85));
+
+        drone_layer = max(drone_layer, shape * t_in_cone * 1.30);
+    }
+
+    // Combine beam + drones (both use the same red-amber color)
+    float intensity = max(beam, drone_layer);
+    float alpha = intensity * duty_fade * 0.95;
     if (alpha < 0.03) discard;
-    fragColor = vec4(beam_color, alpha);
+    fragColor = vec4(beam_color, clamp(alpha, 0.0, 1.0));
 }
 """
 

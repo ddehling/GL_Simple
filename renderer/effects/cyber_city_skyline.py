@@ -165,6 +165,46 @@ float window_lit_mult(float s) {
     return 0.95 + 0.45 * cos(6.28318 * s);
 }
 
+// Per-window color, weighted by the building's lighting "type". Cities
+// read cohesively because each building has a dominant lighting style:
+// residential = warm, corporate = cool white, neon-clad = magenta/cyan,
+// industrial = sodium yellow. We still allow outlier windows within
+// each building so it's not uniform.
+//
+// All colors stay on cyberpunk theme (no purples / blood-reds / nature
+// greens that would clash with the rest of the set).
+vec3 window_color(float seed, float bldg_type) {
+    // Palette
+    vec3 warm    = vec3(1.00, 0.65, 0.30);   // tungsten / incandescent
+    vec3 cyan    = vec3(0.30, 0.85, 1.00);   // LED / cool fluorescent
+    vec3 white   = vec3(0.90, 0.94, 1.00);   // office fluorescent
+    vec3 magenta = vec3(1.00, 0.35, 0.75);   // neon-pink bleed
+    vec3 sodium  = vec3(1.00, 0.80, 0.35);   // older sodium-vapor street/factory
+    vec3 acid    = vec3(0.55, 1.00, 0.40);   // terminal-green (rare accent)
+
+    if (bldg_type < 0.45) {
+        // 45% RESIDENTIAL: mostly warm, with cyan + occasional magenta
+        if      (seed < 0.72) return warm;
+        else if (seed < 0.90) return cyan;
+        else                  return magenta;
+    } else if (bldg_type < 0.70) {
+        // 25% CORPORATE: mostly cool white + cyan, occasional warm
+        if      (seed < 0.60) return white;
+        else if (seed < 0.88) return cyan;
+        else                  return warm;
+    } else if (bldg_type < 0.88) {
+        // 18% NEON-CLAD MID-RISE: magenta + cyan dominate, warm accents
+        if      (seed < 0.45) return magenta;
+        else if (seed < 0.82) return cyan;
+        else                  return warm;
+    } else {
+        // 12% INDUSTRIAL/OLDER: sodium dominant, rare acid-green accents
+        if      (seed < 0.70) return sodium;
+        else if (seed < 0.92) return warm;
+        else                  return acid;
+    }
+}
+
 void main() {
     vec2 uv = v_uv;
 
@@ -201,7 +241,20 @@ void main() {
     // Per-column edge gap so columns read as distinct buildings. Skip
     // the gap for antenna-spike pixels (the antenna is narrower than
     // the gap and should always read as solid).
+    //
+    // Setback: ~30% of FLAT-top buildings narrow in their upper third
+    // (Tyrell-pyramid / Empire-State ziggurat silhouette). Independent
+    // of shape type, only stacks with flat to avoid over-modulating
+    // pyramidal/antenna columns which already break silhouette.
+    float type_seed_again = hash(col_idx * 5.3 + 11.0);
+    bool is_flat_shape   = (type_seed_again < 0.50);
+    float setback_seed   = hash(col_idx * 4.7 + 23.0);
+    bool has_setback     = is_flat_shape && (setback_seed < 0.30);
+    float setback_height = bldg_bottom_y + (1.0 - bldg_bottom_y) * 0.35;
     float edge = 0.06;
+    if (has_setback && uv.y < setback_height) {
+        edge = 0.16;   // upper portion narrower than base
+    }
     bool in_edge_gap = (col_frac < edge) || (col_frac > 1.0 - edge);
     if (in_building && in_edge_gap) {
         in_building = false;
@@ -244,8 +297,12 @@ void main() {
 
         // Per-window on/off pattern (deterministic per column+window).
         // Season multiplier: more lit windows at night, fewer at noon.
+        // Baseline lowered from 0.20 to 0.05 so density=0 actually reads
+        // as a near-blackout (a handful of emergency lights only); scale
+        // bumped 0.45 → 0.60 so the max-lit case stays roughly where it
+        // was at u_density=1.0.
         float win_seed = hash2(vec2(col_idx * 11.0 + wxi, wyi * 7.0));
-        float on_prob = (0.20 + u_density * 0.45) * window_lit_mult(u_season);
+        float on_prob = (0.05 + u_density * 0.60) * window_lit_mult(u_season);
         float lit = step(1.0 - on_prob, win_seed);
 
         // Per-window flicker — rare, ~once per 4 sec
@@ -253,13 +310,64 @@ void main() {
         float flicker = step(0.92, fract(flicker_t));   // 8% of cycles
         lit *= (1.0 - flicker * 0.7);
 
-        // Per-window color (warm vs cool — most warm, occasional cyan)
-        vec3 warm = vec3(1.0, 0.65, 0.30);
-        vec3 cool = vec3(0.30, 0.85, 1.00);
-        vec3 wcol = mix(warm, cool, step(0.85, win_seed));
+        // Per-building lighting "type" — each column gets one of four
+        // dominant palettes so the city reads as distinct buildings with
+        // character rather than uniformly speckled random colors.
+        float bldg_type = hash(col_idx * 3.1 + 17.0);
+        vec3 wcol = window_color(win_seed, bldg_type);
+
+        // Service floor bands — every N floors, a row of lit windows
+        // marks a mechanical / transfer floor. KEEPS per-window x gaps
+        // so each band reads as several distinct lit windows in a row
+        // rather than a solid horizontal strip. Also gated on u_density
+        // so the bands fade out alongside the rest of the city in low-
+        // density states (blackout, tunnel interiors, etc.).
+        //
+        // ~40% of buildings have them; period varies 4/5/6 floors.
+        float band_seed     = hash(col_idx * 6.3 + 31.0);
+        float band_gate     = smoothstep(0.10, 0.55, u_density);     // 0 at blackout, 1 at typical
+        bool  building_has_bands = (band_seed < 0.40);
+        if (building_has_bands && band_gate > 0.01 && wyi > 0.5) {
+            float band_period = 4.0 + floor(hash(col_idx * 8.9 + 41.0) * 3.0);
+            bool is_band_row = (mod(wyi, band_period) < 0.5);
+            if (is_band_row) {
+                // Row of distinct windows — reuse the existing per-window
+                // x gating (in_window_x) so each band is several lit cells
+                // separated by the building's mullion gaps, not a solid bar.
+                float band_y = step(0.20, wyf) * (1.0 - step(0.65, wyf));
+                in_window = band_y * in_window_x;
+                lit       = band_gate;                  // fades with density
+                wcol      = wcol * 0.85 + 0.15;         // slightly brighter / desaturated
+            }
+        }
 
         col += wcol * in_window * lit * 1.0;
         alpha = 0.95;
+    }
+
+    // Crown beacon — small pulsing red light atop antenna-type towers
+    // and ~12% of tall flat towers. Sits just above the building edge,
+    // additive over sky. Classic aviation-warning red, slow asymmetric
+    // pulse so multiple towers blink out of phase.
+    bool has_antenna_type = (type_seed_again >= 0.85);
+    bool has_beacon = has_antenna_type ||
+                      (hash(col_idx * 13.1 + 53.0) < 0.12 && is_flat_shape && h_seed > 0.55);
+    if (has_beacon) {
+        // Beacon position: just above top_edge_y, centered horizontally
+        // in the column. Squished horizontally so it reads as a small dot.
+        vec2 d = vec2((col_frac - 0.5) * 14.0,
+                      (top_edge_y - 0.010 - uv.y) * 80.0);
+        float r = length(d);
+        float dot_intensity = 1.0 - smoothstep(0.0, 1.0, r);
+        if (dot_intensity > 0.001) {
+            // Asymmetric pulse: bright flash every ~1.3s, mostly dark between
+            float pulse_t = fract(u_time * 0.75 + col_idx * 0.137);
+            float pulse = 0.20 + 0.80 * smoothstep(0.82, 0.95, pulse_t)
+                              * (1.0 - smoothstep(0.95, 1.00, pulse_t));
+            vec3 beacon_col = vec3(1.00, 0.18, 0.12);
+            col += beacon_col * dot_intensity * pulse * 1.6;
+            alpha = max(alpha, dot_intensity * pulse);
+        }
     }
 
     fragColor = vec4(col, alpha);

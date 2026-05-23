@@ -70,39 +70,45 @@ out vec4 fragColor;
 void main() {
     vec2 uv = v_uv;
 
-    // Distance to focal point
-    float d = length(uv - u_focal);
+    vec2  to_pixel = uv - u_focal;
+    float d        = length(to_pixel);
 
-    // Bright core — small, very hot
-    float core = smoothstep(0.020, 0.0, d);
-    // Mid bloom — medium radius
-    float bloom = smoothstep(0.18, 0.0, d);
-    // Wide soft halo
-    float halo = smoothstep(0.45, 0.0, d);
+    // Core / bloom / halo — bolder radii AND intensities than before.
+    float core  = smoothstep(0.035, 0.0, d);    // was 0.020
+    float bloom = smoothstep(0.22,  0.0, d);    // was 0.18
+    float halo  = smoothstep(0.55,  0.0, d);    // was 0.45
 
-    // Color palette: warm pink in core, warm gold in bloom, dim rose halo
-    vec3 c_core  = vec3(1.00, 0.85, 0.70);
+    // Radial sun-ray spokes emanating from the focal point — the
+    // strongest "pulled toward this" iconography. Eight sharp spokes,
+    // sharpened with pow(), faded with distance so the focal stays the
+    // brightest thing.
+    float angle = atan(to_pixel.y, to_pixel.x);
+    float spoke = 0.5 + 0.5 * cos(angle * 8.0);
+    float ray_falloff = smoothstep(0.55, 0.10, d);
+    float rays = pow(spoke, 3.0) * ray_falloff;
+
+    vec3 c_core  = vec3(1.00, 0.90, 0.75);
     vec3 c_bloom = vec3(1.00, 0.55, 0.40);
-    vec3 c_halo  = vec3(0.65, 0.20, 0.30);
+    vec3 c_halo  = vec3(0.85, 0.30, 0.45);     // rosier than 0.65/0.20/0.30
+    vec3 c_rays  = vec3(1.00, 0.65, 0.50);
 
-    vec3 color = c_halo * halo * 0.35
-               + c_bloom * bloom * 0.70
-               + c_core * core * 1.00;
+    vec3 color = c_halo  * halo  * 0.55         // was 0.35
+               + c_bloom * bloom * 0.90         // was 0.70
+               + c_core  * core  * 1.25         // was 1.00
+               + c_rays  * rays  * 0.45;        // new layer
 
-    float alpha = (core * 1.00 + bloom * 0.55 + halo * 0.20) * u_yearning;
+    float alpha = (core * 1.25 + bloom * 0.75 + halo * 0.35 + rays * 0.30)
+                  * u_yearning;
 
-    // Radial vignette PULL — pixels far from the focal get slightly darker.
-    // This is the "gravity" effect: the whole frame tilts toward the warm
-    // point. We render this as additive on bright pixels and subtractive
-    // (negative-color illusion) on dark pixels via a low-alpha black halo
-    // ring at the OPPOSITE side of the screen.
+    // Anti-halo at opposite side — the "gravity pull" leaving the rest
+    // of the frame slightly dimmed. Wider reach and stronger tint than
+    // the previous near-invisible version.
     vec2 opp_focal = vec2(1.0) - u_focal;
     float od = length(uv - opp_focal);
-    float anti_halo = smoothstep(0.45, 0.15, od);
-    // Anti-halo darkens — we write near-black with moderate alpha
-    if (anti_halo > 0.0 && alpha < anti_halo * 0.25) {
-        color = vec3(0.02, 0.0, 0.04);
-        alpha = anti_halo * 0.30 * u_yearning;
+    float anti_halo = smoothstep(0.50, 0.12, od);
+    if (anti_halo > 0.0 && alpha < anti_halo * 0.35) {
+        color = mix(vec3(0.02, 0.0, 0.04), vec3(0.18, 0.05, 0.10), anti_halo);
+        alpha = anti_halo * 0.42 * u_yearning;
     }
 
     if (alpha < 0.03) discard;

@@ -343,10 +343,12 @@ class CyberRainEffect(ShaderEffect):
             n_to_add = min(self.target_raindrops - current, 5)
             self._add_raindrops(n_to_add)
 
-        # Scale per-drop velocity by intensity. Boost the baseline so even
-        # a light drizzle (rain=0.3) reads as kinetic. base is 150..400; at
-        # rain=0.3 we want effective ~140..380 (decent), at rain=1.0 ~300..800.
-        eff_factor = rain_intensity * 0.8 + 0.4
+        # Per-drop velocity varies only across a narrow 75–100% band so the
+        # dominant cue for rain intensity is the *number* of drops (spawn
+        # rate, controlled by target_raindrops above), not their speed.
+        # Light rain reads as sparse-and-slightly-slower, heavy rain as
+        # dense-and-full-speed.
+        eff_factor = 0.75 + rain_intensity * 0.25
         self.velocities = self.base_velocities * eff_factor
 
         # Horizontal velocity from wind (px/sec)

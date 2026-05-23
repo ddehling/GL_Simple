@@ -524,7 +524,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_ACID_RAIN: {
         "ARI": 42,
-        "ambient_sound": "Rain Heavy 01 EDITED.wav",
+        "ambient_sound": "Rain, Metallic Shelter.mp3",
         "celestial_visibility": 0,
         "cyber_rain_color": np.array([0.55, 1.00, 0.20]),   # acid green
         "fog": 0.6,
@@ -543,6 +543,8 @@ WEATHER_PRESETS = {
         "ARI": 35,
         "ambient_sound": "Wind Strong EDITED.wav",
         "celestial_visibility": 0.8,
+        "cyber_signage_density": 0.0,        # no neon signage during a blackout
+        "cyber_skyline_density": 0.0,        # only the shader's 5% emergency-lights baseline
         "fog": 0.3,
         "fog_color": np.array([0.1, 0.1, 0.15]),
         "glitch_probability": 0.2,
@@ -557,7 +559,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_DATA_STORM: {
         "ARI": 40,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ambient_sound": "Rain, Metallic Shelter.mp3",
         "celestial_visibility": 0,
         "data_flow_rate": 1,
         "electric_interference": 0.7,
@@ -574,7 +576,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_DRONE_PATROL: {
         "ARI": 38,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ambient_sound": "Vent Air Industrial.mp3",
         "celestial_visibility": 0.3,
         "drone_activity": 1,
         "fog": 0.2,
@@ -627,7 +629,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_HOLOGRAM_NIGHT: {
         "ARI": 40,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ambient_sound": "Constant Walla of about 1000 People.mp3",
         "celestial_visibility": 0.2,
         "drone_activity": 0.5,
         "fog": 0.1,
@@ -643,7 +645,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_NEON_CLEAR: {
         "ARI": 45,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ambient_sound": "room_interior_traffic.mp3",
         "celestial_visibility": 0.1,
         "fog": 0.1,
         "fog_color": np.array([0.2, 0.1, 0.4]),
@@ -659,7 +661,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_NEON_DRIZZLE: {
         "ARI": 35,
-        "ambient_sound": "01 Rain Light EDITED.wav",
+        "ambient_sound": "Rain Heavy Rain On Concrete and Wood.mp3",
         "celestial_visibility": 0.05,
         "cyber_rain_color": np.array([0.20, 0.95, 1.00]),   # neon cyan
         "cyber_signage_density": 0.55,     # wet streets glow with signage
@@ -682,7 +684,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_SMOG_HAZE: {
         "ARI": 50,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ambient_sound": "Vent Air Industrial.mp3",
         "celestial_visibility": 0.1,
         "fog": 0.9,
         "fog_color": np.array([0.7, 0.5, 0.2]),
@@ -701,7 +703,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_DAWN_PIRATE: {
         "ARI": 50,
-        "ambient_sound": "Low Wind & Tone Atmosphere.wav",
+        "ambient_sound": "room_interior_traffic.mp3",
         "celestial_visibility": 0.2,
         "cyber_signage_density": 0.55,    # amber-tinted signs through smog
         "cyber_skyline_density": 0.75,    # solid building silhouettes
@@ -722,7 +724,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_CROWN_VAULT: {
         "ARI": 60,
-        "ambient_sound": "Tinkle Atmosphere 01.wav",
+        "ambient_sound": "server room.mp3",
         "celestial_visibility": 0.0,
         "cyber_signage_density": 0.10,
         "cyber_skyline_density": 0.95,    # absolute max — wall of towers
@@ -743,7 +745,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_MIDDEN_MARKET: {
         "ARI": 30,
-        "ambient_sound": "Forest Cicadas EDITED.wav",
+        "ambient_sound": "Constant Walla of about 1000 People.mp3",
         "celestial_visibility": 0.0,
         "cyber_signage_density": 1.0,       # absolute max — every storefront lit
         "cyber_skyline_density": 0.85,      # dense building cluster
@@ -831,7 +833,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_TRANSIT_CORRIDOR: {
         "ARI": 35,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ambient_sound": "Train sounds.mp3",
         "celestial_visibility": 0.0,
         "cyber_signage_density": 0.0,         # no street signs inside a tunnel
         "cyber_skyline_density": 0.0,         # no buildings inside a tunnel
@@ -853,7 +855,7 @@ WEATHER_PRESETS = {
 
     WeatherState.CYBER_RELAY_NODE: {
         "ARI": 55,
-        "ambient_sound": "Wind Strong EDITED.wav",
+        "ambient_sound": "server room.mp3",
         "celestial_visibility": 0.0,
         "cyber_signage_density": 0.0,
         "cyber_skyline_density": 0.0,

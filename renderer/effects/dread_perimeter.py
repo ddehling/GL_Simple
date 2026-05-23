@@ -69,48 +69,53 @@ out vec4 fragColor;
 
 void main() {
     vec2 uv = v_uv;
+    vec3 col   = vec3(0.0);
+    float alpha = 0.0;
 
-    // --- Edge glow ---
-    // Distance from the nearest edge. We want bright at the edges, falling
-    // off toward center.
+    // --- RED CORNER VIGNETTE (always visible) ---
+    // Strong red wash radiating inward from the corners, leaving a
+    // dim window at center. Reads instantly as "horror-game / predator-
+    // vision". Pulses slowly with breath. NOT scanlines — the
+    // state-tied cyber_scan_lines shader already owns that look.
+    float r = length(uv - vec2(0.5)) * 2.0;          // 0 center, ~1.4 corners
+    float vignette = smoothstep(0.45, 1.30, r);      // 0 in center half, 1 at corners
+    float v_breath = 0.85 + 0.15 * sin(u_time * 1.0);
+    float vign_a   = vignette * u_dread * v_breath * 0.70;
+    col   = max(col, vec3(1.00, 0.08, 0.04) * vign_a * 1.40);
+    alpha = max(alpha, vign_a);
+
+    // --- Edge glow (deeper penetration, less breathing dropoff) ---
     float dx = min(uv.x, 1.0 - uv.x);
     float dy = min(uv.y, 1.0 - uv.y);
     float edge_dist = min(dx, dy);
-    // Bright band at edges (0..0.15 deep) — pulse with breathing rhythm
-    float edge_band = 1.0 - smoothstep(0.0, 0.18, edge_dist);
-    // Per-edge breathing — slow, ominous
-    float breath = 0.7 + 0.3 * sin(u_time * 1.3);
-    float edge_glow = edge_band * breath;
+    float edge_band = 1.0 - smoothstep(0.0, 0.30, edge_dist);
+    float breath = 0.92 + 0.08 * sin(u_time * 1.3);   // small breath only
+    float edge_glow = edge_band * breath * u_dread;
+    col   = max(col, vec3(1.0, 0.10, 0.05) * edge_glow * 1.40);
+    alpha = max(alpha, edge_glow * 0.95);
 
-    // --- Sweeping search beam ---
-    // A wide tilted line sweeps across the screen left to right, period
-    // proportional to u_dread (faster sweeps when dread maxes).
-    float sweep_speed = 0.3 + u_dread * 0.6;
+    // --- Sweep beam (wider, brighter — no drones to compete with) ---
+    float sweep_speed = 0.5 + u_dread * 0.5;
     float sweep_x = fract(u_sweep_phase * sweep_speed * 0.4);
-    // Beam axis is the vertical line at x = sweep_x; perpendicular distance
-    // is |uv.x - sweep_x| (with wrap consideration)
-    float beam_x = abs(uv.x - sweep_x);
-    beam_x = min(beam_x, 1.0 - beam_x);   // wrap
-    float beam_width = 0.05 + u_dread * 0.10;
+    float beam_x  = abs(uv.x - sweep_x);
+    beam_x = min(beam_x, 1.0 - beam_x);
+    float beam_width = 0.045 + u_dread * 0.065;
     float sweep_beam = smoothstep(beam_width, 0.0, beam_x);
-    // Beam dims top-to-bottom — comes from "above" the frame
-    sweep_beam *= mix(0.4, 1.0, 1.0 - uv.y);
+    sweep_beam *= mix(0.55, 1.0, 1.0 - uv.y);
+    sweep_beam *= u_dread;
+    col   = max(col, vec3(1.0, 0.20, 0.10) * sweep_beam * 1.30);
+    alpha = max(alpha, sweep_beam * 0.92);
 
-    // --- Random alarm flash (rare red pulse on edges) ---
-    float alarm_period = 4.0 - u_dread * 2.0;    // faster pulses at high dread
+    // --- Alarm flash (faster cycle, brighter) ---
+    float alarm_period = 3.0 - u_dread * 1.8;
     float alarm_t = fract(u_time / alarm_period);
-    float alarm_pulse = smoothstep(0.0, 0.05, alarm_t) * smoothstep(0.20, 0.05, alarm_t);
+    float alarm_pulse = smoothstep(0.0, 0.04, alarm_t) * smoothstep(0.16, 0.04, alarm_t);
     float alarm = alarm_pulse * edge_band * u_dread;
+    col   = max(col, vec3(1.0, 0.05, 0.05) * alarm * 1.4);
+    alpha = max(alpha, alarm * 1.2);
 
-    // --- Combine ---
-    vec3 red_amber = vec3(1.0, 0.20, 0.05);
-    vec3 hot_red   = vec3(1.0, 0.05, 0.05);
-
-    vec3 color = mix(red_amber, hot_red, alarm);
-    float intensity = (edge_glow * 0.9 + sweep_beam * 1.0 + alarm * 1.5) * u_dread;
-
-    if (intensity < 0.03) discard;
-    fragColor = vec4(color, clamp(intensity, 0.0, 1.0));
+    if (alpha < 0.04) discard;
+    fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
 }
 """
 
@@ -118,7 +123,7 @@ void main() {
 class DreadPerimeterEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 5.5    # Background edge layer, behind skyline
+        self.render_priority = 10.6   # HUD-style overlay: above skyline + most city, below ar_glitch
         self.dread_value = 0.0
         self._time = 0.0
         self._sweep_phase = 0.0

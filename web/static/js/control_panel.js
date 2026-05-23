@@ -9,6 +9,7 @@ let globalModifiers = {};
 let globalSchema = {};
 let weatherParams = {};
 let activeOverrides = {};
+let narrativeVars = [];   // [{name, value, description}] for current set, if any
 let audioSummary = {};
 let transitionState = {};
 let socket = null;
@@ -106,6 +107,7 @@ function connectSocket() {
         }
         weatherParams = data.weather_params || {};
         transitionState = data.transition || {};
+        narrativeVars = data.narrative_vars || [];
 
         // Track allowed output params for filtering
         if (data.allowed_output_params) {
@@ -277,6 +279,26 @@ function renderWeatherParams() {
             }
             numericParams[key] = (key in activeOverrides) ? activeOverrides[key] : val;
         }
+    }
+
+    // Narrative variables (story_*) — exposed by the active set's
+    // narrative script via NarrativePlayer. Treated as ordinary
+    // override-able params; we just register a default 0..1 range and
+    // group them under their own category for clarity.
+    const narrativeKeys = [];
+    for (const v of (narrativeVars || [])) {
+        const key = `story_${v.name}`;
+        if (!(key in PARAM_RANGES)) {
+            PARAM_RANGES[key] = { min: 0, max: 1, step: 0.01 };
+        }
+        numericParams[key] = (key in activeOverrides) ? activeOverrides[key] : v.value;
+        narrativeKeys.push(key);
+    }
+    if (narrativeKeys.length > 0) {
+        // (Re)build the category — variables can change when scripts swap
+        PARAM_CATEGORIES['Narrative'] = narrativeKeys;
+    } else {
+        delete PARAM_CATEGORIES['Narrative'];
     }
 
     const categorized = new Set();
