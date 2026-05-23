@@ -165,6 +165,10 @@ PARAMETER_DEFINITIONS = {
     'cyber_skyline_density': {'type': 'number', 'step': 0.05},
     'cyber_transit_intensity': {'type': 'number', 'step': 0.05},
     'cyber_underway_intensity': {'type': 'number', 'step': 0.05},
+    # Vertical position in the Stack: 0.0 = street/Underside (towers
+    # tower up over you), 1.0 = Crown (only roof tops visible). Scales
+    # building heights in cyber_city_skyline.
+    'cyber_view_elevation': {'type': 'number', 'step': 0.05},
     'velocity_direction': {'type': 'array', 'length': 2},
     # ─────────────────────────────────────────────────────────────────────
     'dapple_strength': {'type': 'number', 'step': 0.05},
@@ -578,6 +582,7 @@ WEATHER_PRESETS = {
         "ARI": 38,
         "ambient_sound": "Vent Air Industrial.mp3",
         "celestial_visibility": 0.3,
+        "cyber_view_elevation": -0.4,   # street level, drones flying overhead
         "drone_activity": 1,
         "fog": 0.2,
         "fog_color": np.array([0.2, 0.2, 0.3]),
@@ -647,6 +652,7 @@ WEATHER_PRESETS = {
         "ARI": 45,
         "ambient_sound": "room_interior_traffic.mp3",
         "celestial_visibility": 0.1,
+        "cyber_view_elevation": -0.6,    # walking the street at night, neon towering above
         "fog": 0.1,
         "fog_color": np.array([0.2, 0.1, 0.4]),
         "hologram_density": 0.3,
@@ -666,6 +672,7 @@ WEATHER_PRESETS = {
         "cyber_rain_color": np.array([0.20, 0.95, 1.00]),   # neon cyan
         "cyber_signage_density": 0.55,     # wet streets glow with signage
         "cyber_skyline_density": 0.55,     # buildings present
+        "cyber_view_elevation": -0.7,      # NEON DRIZZLE: street-level rain, towers above
         "data_flow_rate": 0.15,            # subtle data
         "fog": 0.2,
         "fog_color": np.array([0.1, 0.3, 0.6]),
@@ -707,6 +714,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.2,
         "cyber_signage_density": 0.55,    # amber-tinted signs through smog
         "cyber_skyline_density": 0.75,    # solid building silhouettes
+        "cyber_view_elevation": -0.5,     # DAWN PIRATE: docks / low — looking up at the smog band
         "data_flow_rate": 0.15,
         "drone_activity": 0.08,            # rare drone presence at dawn
         "fog": 0.55,                       # heavier dawn smog
@@ -728,6 +736,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.0,
         "cyber_signage_density": 0.10,
         "cyber_skyline_density": 0.95,    # absolute max — wall of towers
+        "cyber_view_elevation": 1.0,      # CROWN: looking down — only rooftops poke up
         "data_flow_rate": 0.55,            # corporate data streams everywhere
         "drone_activity": 0.45,            # frequent surveillance drones
         "fog": 0.15,
@@ -749,6 +758,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.0,
         "cyber_signage_density": 1.0,       # absolute max — every storefront lit
         "cyber_skyline_density": 0.85,      # dense building cluster
+        "cyber_view_elevation": -1.5,       # MIDDEN: looking straight up — towers tower way off-screen
         "data_flow_rate": 0.35,
         "drone_activity": 0.15,
         "fog": 0.40,
@@ -789,22 +799,23 @@ WEATHER_PRESETS = {
     WeatherState.CYBER_HOUR_OF_STATIC: {
         "ARI": 40,
         "ambient_sound": "Low Wind & Tone Atmosphere.wav",
-        "celestial_visibility": 0.5,
-        "cyber_signage_density": 0.45,             # signs visible but unanimated
-        "cyber_skyline_density": 0.75,             # buildings strongly visible
+        "celestial_visibility": 0.9,               # stars MAX visible — the whole point
+        "cyber_signage_density": 0.20,             # almost no signs (was 0.45)
+        "cyber_skyline_density": 0.70,             # buildings still visible as silhouettes
+        "cyber_view_elevation": 0.30,              # mid-Stack vantage during static hour
         "data_flow_rate": 0.0,
         "drone_activity": 0.0,
-        "fog": 0.20,
-        "fog_color": np.array([0.30, 0.20, 0.45]), # vivid violet-night (was muddy)
+        "fog": 0.08,                                # clear sky (was 0.20)
+        "fog_color": np.array([0.25, 0.15, 0.45]), # vivid violet-night
         "glitch_probability": 0.0,
         "hologram_density": 0.0,                   # no AR overlays during static
-        "light_pollution": 0.40,                   # natural city glow
-        "neon_intensity": 0.55,                    # neon still on, just unsupervised
-        "pollution_level": 0.40,
+        "light_pollution": 0.12,                   # REAL darkness — actual night (was 0.40)
+        "neon_intensity": 0.30,                    # dim, unsupervised neon (was 0.55)
+        "pollution_level": 0.12,                   # clear atmosphere (was 0.40)
         "possible_transitions": ["cyber_neon_clear", "cyber_midden_market", "cyber_dawn_pirate"],
         "scan_line_intensity": 0.0,
         "season_preference": 0.85,
-        "starryness": 0.85,                        # stars actually visible (max)
+        "starryness": 1.0,                         # max stars (was 0.85)
         "transition_weights": [1.0, 1.0, 0.5],
     },
 
@@ -814,6 +825,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.1,
         "cyber_signage_density": 0.5,
         "cyber_skyline_density": 0.7,
+        "cyber_view_elevation": 0.45,        # AR BLOOM: tower-mid view, AR glitches floating
         "data_flow_rate": 0.4,
         "drone_activity": 0.2,
         "electric_interference": 0.5,
@@ -880,6 +892,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.3,
         "cyber_signage_density": 0.4,
         "cyber_skyline_density": 0.55,
+        "cyber_view_elevation": 0.55,        # BROADCAST: mid-Stack broadcast tower
         "data_flow_rate": 0.2,
         "drone_activity": 0.1,
         "fog": 0.45,
@@ -2300,6 +2313,7 @@ WEATHER_SETS = {
             "cyber_rain_color",
             "cyber_signage_density", "cyber_skyline_density",
             "cyber_transit_intensity", "cyber_underway_intensity",
+            "cyber_view_elevation",
             "velocity_direction",
             "celestial_visibility", "starryness", "Switch_rate",
             "ambient_sound", "ARI", "possible_transitions",
@@ -2308,6 +2322,7 @@ WEATHER_SETS = {
         "background_events": [
             # Generic shared shaders
             "clouds",                # backdrop layer above the city
+            "stars",                 # twinkles in the sky; gated by 'starryness'
             # State-tied cyberpunk backdrops (run continuously; controlled
             # by per-state density params)
             "cyber_smog_volume",

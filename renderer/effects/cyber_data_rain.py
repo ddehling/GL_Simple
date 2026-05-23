@@ -51,7 +51,8 @@ def shader_cyber_data_rain(state, outstate, density=0.6):
     if eff is None:
         return
 
-    eff.density = float(outstate.get('data_flow_rate', density))
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    eff.density = float(outstate.get('data_flow_rate', 0.0))
 
     if state['count'] == -1:
         if 'effect' in state:

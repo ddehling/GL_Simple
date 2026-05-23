@@ -75,16 +75,17 @@ void main() {
     vec3 col = vec3(0.0);
     float alpha = 0.0;
 
-    // FOUR stacked oscilloscope traces — instantly reads as a broadcast
-    // monitor rather than an ambiguous wavy line. Each trace has its
-    // own frequency / scroll-direction / amplitude so the bundle looks
-    // like a real multi-channel scope.
-    float ys[4];      ys[0]    = 0.18; ys[1]    = 0.40; ys[2]    = 0.62; ys[3]    = 0.84;
-    float freqs[4];   freqs[0] = 18.0; freqs[1] = 30.0; freqs[2] = 22.0; freqs[3] = 44.0;
-    float speeds[4];  speeds[0]=  2.8; speeds[1]= -3.4; speeds[2]=  4.0; speeds[3]= -2.1;
-    float amps[4];    amps[0]  = 0.040; amps[1] = 0.028; amps[2] = 0.048; amps[3] = 0.022;
+    // THREE stacked oscilloscope traces — reads as a broadcast monitor
+    // without crowding the field. Each trace has its own frequency /
+    // scroll direction / amplitude so the bundle looks like a real
+    // multi-channel scope. Was four traces but at full signal the
+    // bundle was visually overwhelming; three breathes better.
+    float ys[3];      ys[0]    = 0.25; ys[1]    = 0.50; ys[2]    = 0.75;
+    float freqs[3];   freqs[0] = 18.0; freqs[1] = 30.0; freqs[2] = 22.0;
+    float speeds[3];  speeds[0]=  2.8; speeds[1]= -3.4; speeds[2]=  4.0;
+    float amps[3];    amps[0]  = 0.040; amps[1] = 0.028; amps[2] = 0.048;
 
-    // Traces are notably THICKER than before — at the small canvas
+    // Traces are notably THICKER than the original — at the small canvas
     // size, the old 0.011 thickness was effectively sub-pixel in fan
     // view. 0.022..0.034 reads as a real trace.
     float thickness = 0.022 + u_signal * 0.012;
@@ -102,7 +103,7 @@ void main() {
     float reveal_edge   = 0.12;
     float reveal_mask   = 1.0 - smoothstep(reveal_top - reveal_edge, reveal_top, uv.y);
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         float wave   = sin(uv.x * freqs[i] + u_scroll_phase * speeds[i]) * amps[i];
         float wave_y = ys[i] + wave;
         float dist   = abs(uv.y - wave_y);
@@ -115,11 +116,13 @@ void main() {
         float continuity  = step(min_visible, dash_period);
         float trace = band * continuity * reveal_mask;
 
-        // Color: hot cyan-white at high signal → dim phosphor green at low.
+        // Color: cyan-white at high signal → dim phosphor green at low.
+        // Alpha lowered (0.98 → 0.55) so the trace bundle sits as a
+        // legible overlay instead of dominating the frame.
         vec3 trace_col = mix(vec3(0.10, 0.85, 0.35),
                              vec3(0.35, 1.00, 0.95), u_signal);
-        col   = max(col, trace_col * trace * 1.15);
-        alpha = max(alpha, trace * 0.98);
+        col   = max(col, trace_col * trace * 0.95);
+        alpha = max(alpha, trace * 0.55);
     }
 
     if (alpha < 0.03) discard;

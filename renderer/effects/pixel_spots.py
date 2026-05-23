@@ -105,7 +105,17 @@ class PixelSpotsEffect(ShaderEffect):
         super().__init__(viewport)
         self.intensity = intensity
         self.audio_sensitivity = audio_sensitivity
-        
+
+        # Must render AFTER cyber_city_skyline (priority 6.0) so the
+        # building silhouette's depth values (written by skyline as
+        # gl_FragDepth=0 for buildings, 0.95 for sky) are present in
+        # the depth buffer when we depth-test against them — that's
+        # what makes spots visible in the sky and occluded by buildings.
+        # Still below city-particle foreground layers (signs 7.0,
+        # holograms 7.5, data_rain 8.0, etc.) which overdraw spots
+        # with their usual GL_ALWAYS rendering.
+        self.render_priority = 6.4
+
         # Global parameters (updated from outstate)
         self.spot_rate = 1.0
         self.spot_decay = 1.0
@@ -143,11 +153,18 @@ class PixelSpotsEffect(ShaderEffect):
         if count <= 0:
             return
         
-        # Generate random positions
+        # Generate random positions. Z range is intentionally restricted
+        # to 72..94 (depth 0.72..0.94 after vertex-shader z/100) so spots
+        # sit BEHIND the city silhouette (which cyber_city_skyline writes
+        # at depth 0.70) and IN FRONT of the sky depth (0.95). With the
+        # global GL_LESS depth test:
+        #   - over sky pixels (depth 0.95): spot 0.72..0.94 < 0.95 → pass (visible)
+        #   - over building pixels (depth 0.70): spot 0.72..0.94 > 0.70 → fail (hidden)
+        # See docs/shader_info.txt for the z=0..100 depth model.
         new_positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, count),   # x
             np.random.uniform(0, self.viewport.height, count),  # y
-            np.random.uniform(0, 100, count)                    # z (depth)
+            np.random.uniform(72, 94, count)                    # z (sky depth band)
         ]).astype(np.float32)
         
         # Calculate current hue based on time (rolling through 0-360 degrees)
@@ -296,22 +313,33 @@ class PixelSpotsEffect(ShaderEffect):
         if not self.enabled or not self.shader or len(self.positions) == 0:
             return
         
-        # Calculate fade factor based on lifetime (0 = dead, 1 = full brightness)
+        # Original fast linear fade — spots pop in and decay quickly,
+        # matching the snappy "spawn and die" feel the user wants.
         fade_factors = np.clip(self.lifetimes / self.max_lifetimes, 0.0, 1.0)
-        
-        # Fade colors by reducing brightness (V) in HSV space
+
+        # Brightness boost: multiply final RGB by 1.8 and clip at 1.0.
+        # Because the framebuffer clamps each channel at 1.0, a spot
+        # whose unboosted RGB is >= 1/1.8 = 0.56 reads as saturated
+        # white-bright. So during roughly the upper half of each spot's
+        # life it sits at full saturation, then falls to 0 quickly over
+        # the lower half. Net effect: brighter pop without slowing the
+        # fade's overall pace. Single-pixel spots can't go higher than
+        # this without enlarging them.
+        COLOR_BOOST = 1.8
+
+        # Fade colors by reducing brightness (V) in HSV space, then boost.
         faded_colors = np.zeros_like(self.colors)
         for i in range(len(self.colors)):
             # Convert RGB to HSV
             r, g, b = self.colors[i]
             h, s, v = colorsys.rgb_to_hsv(r, g, b)
-            
+
             # Reduce brightness based on fade factor
             v_faded = v * fade_factors[i]
-            
-            # Convert back to RGB
+
+            # Convert back to RGB and apply the saturating boost
             rgb_faded = colorsys.hsv_to_rgb(h, s, v_faded)
-            faded_colors[i] = rgb_faded
+            faded_colors[i] = np.minimum(np.array(rgb_faded) * COLOR_BOOST, 1.0)
         
         # Use full alpha (fade is handled by color brightness)
         alphas = np.ones(len(self.positions), dtype=np.float32)
@@ -370,14 +398,20 @@ class PixelSpotsEffect(ShaderEffect):
             combined_alphas[sort_indices, np.newaxis]  # alpha (float)
         ]).astype(np.float32)
         
+        # Pattern A — particles with per-vertex depth. Per
+        # docs/shader_info.txt: do NOT touch glDepthFunc / glDepthMask.
+        # The renderer's global GL_LESS + GL_TRUE state handles ordering
+        # against the city skyline (which writes building/sky depths)
+        # and against other Pattern A particles (rain, stars, etc.).
+
         # Upload vertex data
         glUseProgram(self.shader)
-        
+
         # Update resolution uniform
         loc = glGetUniformLocation(self.shader, "resolution")
         if loc != -1:
             glUniform2f(loc, float(self.viewport.width), float(self.viewport.height))
-        
+
         glBindVertexArray(self.VAO)
         
         glBindBuffer(GL_ARRAY_BUFFER, self.vertex_VBO)
@@ -401,6 +435,6 @@ class PixelSpotsEffect(ShaderEffect):
         # Draw all spots as points
         total_spots = len(combined_positions)
         glDrawArrays(GL_POINTS, 0, total_spots)
-        
+
         glBindVertexArray(0)
         glUseProgram(0)

@@ -36,7 +36,8 @@ def shader_cyber_drone_spotlight(state, outstate, intensity=0.6):
     if eff is None:
         return
 
-    eff.intensity = float(outstate.get('drone_activity', intensity))
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    eff.intensity = float(outstate.get('drone_activity', 0.0))
 
     if state['count'] == -1:
         if 'effect' in state:
@@ -111,47 +112,54 @@ void main() {
     float splash = smoothstep(0.08, 0.0, splash_dist) * 0.8;
     beam = max(beam, splash);
 
-    // --- Target drones: 3 quadcopters wandering in air space, invisible
-    //     until the searcher's cone passes over them, then briefly lit.
+    // --- Target drones: 3 quadcopters wandering through air space.
+    //     Always faintly visible as dim cool-white silhouettes (so you
+    //     can see them drifting) and pop BRIGHT when the searcher's
+    //     cone crosses them. Cool-white deliberately CONTRASTS against
+    //     the red-amber beam — same-color drones get lost in the beam
+    //     even when "lit".
     float drone_layer = 0.0;
     for (int i = 0; i < 3; i++) {
         float fi = float(i);
-        // Wandering air-space position (LFOs, period ~80-150s per axis).
-        // Kept in upper / middle bands (the air, not the ground).
-        float tx = 0.12 + 0.76 * (sin(u_time * (0.043 + fi * 0.013) + fi * 1.81) * 0.5 + 0.5);
-        float ty = 0.20 + 0.42 * (sin(u_time * (0.061 + fi * 0.019) + fi * 2.41) * 0.5 + 0.5);
+        // Wander period ~30-50s per axis so a drone crosses the sweeping
+        // cone several times per minute. Upper / middle band only.
+        float tx = 0.12 + 0.76 * (sin(u_time * (0.14 + fi * 0.031) + fi * 1.81) * 0.5 + 0.5);
+        float ty = 0.20 + 0.42 * (sin(u_time * (0.19 + fi * 0.041) + fi * 2.41) * 0.5 + 0.5);
 
-        // Is THIS drone's center inside the searcher's cone right now?
-        // (Compute once per drone — independent of the pixel's position.)
         vec2  t_off    = vec2(tx, ty) - vec2(drone_x, drone_y);
         float t_along  = dot(t_off, beam_dir);
         float t_in_cone = 0.0;
         if (t_along > 0.0) {
             float t_perp = length(t_off - beam_dir * t_along);
             float t_cone_width = 0.02 + t_along * 0.10;
-            // Slightly wider tolerance than the visible beam so drones at
-            // the cone edge still light up.
             t_in_cone = smoothstep(t_cone_width * 1.4, 0.0, t_perp);
         }
-        if (t_in_cone < 0.02) continue;     // not lit — skip drawing
 
-        // Quadcopter silhouette: small bright body + four short rotor arms.
+        // Quadcopter silhouette — bigger than before so they're easy to
+        // spot at fan-view scale.
         vec2  dp     = uv - vec2(tx, ty);
         float dd     = length(dp);
-        float body   = smoothstep(0.018, 0.0, dd);
-        float arm_h  = smoothstep(0.0035, 0.0, abs(dp.y)) * step(abs(dp.x), 0.036);
-        float arm_v  = smoothstep(0.0035, 0.0, abs(dp.x)) * step(abs(dp.y), 0.036);
-        float halo   = smoothstep(0.055, 0.0, dd) * 0.35;
-        float shape  = max(max(body, halo), max(arm_h * 0.85, arm_v * 0.85));
+        float body   = smoothstep(0.034, 0.0, dd);
+        float arm_h  = smoothstep(0.006, 0.0, abs(dp.y)) * step(abs(dp.x), 0.060);
+        float arm_v  = smoothstep(0.006, 0.0, abs(dp.x)) * step(abs(dp.y), 0.060);
+        float halo   = smoothstep(0.105, 0.0, dd) * 0.40;
+        float shape  = max(max(body, halo), max(arm_h * 0.90, arm_v * 0.90));
 
-        drone_layer = max(drone_layer, shape * t_in_cone * 1.30);
+        float baseline_dim = 0.30;          // was 0.18
+        float drone_brightness = baseline_dim + t_in_cone * 1.50;   // was 1.30
+        drone_layer = max(drone_layer, shape * drone_brightness);
     }
 
-    // Combine beam + drones (both use the same red-amber color)
+    // Beam is red-amber; drones are cool-white. Pick color per pixel
+    // based on which layer dominates so the drones stay visually
+    // distinct from the beam even when fully lit by it.
+    vec3 drone_color = vec3(0.92, 0.98, 1.00);   // pale cyan-white
+    bool drone_dominates = (drone_layer > beam);
+    vec3 col_out = drone_dominates ? drone_color : beam_color;
     float intensity = max(beam, drone_layer);
     float alpha = intensity * duty_fade * 0.95;
     if (alpha < 0.03) discard;
-    fragColor = vec4(beam_color, clamp(alpha, 0.0, 1.0));
+    fragColor = vec4(col_out, clamp(alpha, 0.0, 1.0));
 }
 """
 
@@ -159,7 +167,14 @@ void main() {
 class CyberDroneSpotlightEffect(ShaderEffect):
     def __init__(self, viewport, intensity: float = 0.6):
         super().__init__(viewport)
-        self.render_priority = 6.5    # In front of skyline (6.0), behind signs (7.0)
+        self.render_priority = 8.7    # Above all city-visual layers
+                                      # (skyline 6.0, signs 7.0, holograms 7.5,
+                                      # data_rain 8.0, rain 8.2, underway 8.4,
+                                      # transit_flow 8.6). Below the narrative
+                                      # overlays (dissolution 9.0+). Physical
+                                      # objects — drones and the beam itself —
+                                      # should NOT be hidden by city facades
+                                      # they're flying in front of.
         self.intensity = intensity
         self._time = 0.0
         self._sweep_phase = 0.0

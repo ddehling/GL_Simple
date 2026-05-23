@@ -100,14 +100,21 @@ class TwinklingStarsEffect(ShaderEffect):
     """
     
     def __init__(self, viewport, num_stars: int = 100, twinkle_speed: float = 1.0, 
-                 drift_x: float = 0.0, drift_y: float = 0.0, depth: float = 99.99, 
+                 drift_x: float = 0.0, drift_y: float = 0.0, depth: float = 90.0,
                  audio_sensitivity: float = 1.5):
         super().__init__(viewport)
         self.num_stars = num_stars
         self.twinkle_speed = twinkle_speed
         self.drift_x = drift_x  # Pixels per second
         self.drift_y = drift_y  # Pixels per second
-        self.depth = depth  # Z depth (default 99.99 = far back)
+        # Z depth (default 90 → depth 0.90). Was 99.99 (depth 0.9999),
+        # but the cyberpunk skyline writes a sky depth of 0.95 — at
+        # depth 0.9999 stars failed the GL_LESS test over sky and were
+        # invisible. 0.90 sits between buildings (0.70) and sky (0.95):
+        # stars show through sky, get occluded by buildings. Other sets
+        # don't write sky depth so stars still pass against the cleared
+        # 1.0 buffer there.
+        self.depth = depth
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
         self.min_brightness = 0.3  # Minimum brightness for stars (0.0 to 1.0)

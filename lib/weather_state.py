@@ -209,6 +209,7 @@ class WeatherStateController:
             "cyber_signage_density": self.weather_params.get("cyber_signage_density", 0.0),
             "cyber_underway_intensity": self.weather_params.get("cyber_underway_intensity", 0.0),
             "cyber_transit_intensity": self.weather_params.get("cyber_transit_intensity", 0.0),
+            "cyber_view_elevation": self.weather_params.get("cyber_view_elevation", 0.0),
             # Color arrays: per-state palette overrides for cyber shaders.
             # `cyber_rain_color` is consumed by cyber_rain to tint drops
             # acid green / electric blue / sodium amber per state.

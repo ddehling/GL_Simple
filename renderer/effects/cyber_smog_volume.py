@@ -41,8 +41,9 @@ def shader_cyber_smog_volume(state, outstate, density=0.5,
     if eff is None:
         return
 
-    # Use pollution_level (existing param) for smog density
-    eff.density = float(outstate.get('pollution_level', density))
+    # Use pollution_level (existing param) for smog density.
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    eff.density = float(outstate.get('pollution_level', 0.0))
     # Use fog_color (existing param) for smog tint
     c = outstate.get('fog_color', color)
     if c is not None and len(c) >= 3:

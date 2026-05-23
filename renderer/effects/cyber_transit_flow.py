@@ -37,7 +37,10 @@ def shader_cyber_transit_flow(state, outstate, intensity=0.7):
     if eff is None:
         return
 
-    eff.intensity = float(outstate.get('cyber_transit_intensity', intensity))
+    # Wrapper default is 0.0 per docs/shader_info.txt — states that
+    # want transit packets MUST set cyber_transit_intensity explicitly
+    # (only CYBER_TRANSIT_CORRIDOR does, at 1.0).
+    eff.intensity = float(outstate.get('cyber_transit_intensity', 0.0))
 
     if state['count'] == -1:
         if 'effect' in state:

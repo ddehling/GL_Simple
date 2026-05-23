@@ -124,12 +124,17 @@ class CyberRainEffect(ShaderEffect):
     def _initialize_raindrops(self):
         n = self.num_raindrops
 
+        # Rain travels from sky (small v_uv.y / fan origin) toward ground
+        # (large v_uv.y / outer arc where buildings are rooted). In pixel
+        # space that means spawning BELOW the viewport (large pixel y)
+        # and moving UPWARD (negative pixel-y velocity). See note at the
+        # bottom of this class for the coordinate convention.
         self.positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, n),
-            np.random.uniform(-self.viewport.height, 0, n),
+            np.random.uniform(self.viewport.height, 2 * self.viewport.height, n),
             np.random.uniform(0, 100, n),
         ])
-        self.velocities = np.random.uniform(150, 400, n)   # px/sec
+        self.velocities = -np.random.uniform(150, 400, n)   # px/sec, upward
         self.base_velocities = self.velocities.copy()
 
         depth_factors = 1.0 - (self.positions[:, 2] / 100.0)
@@ -176,9 +181,9 @@ class CyberRainEffect(ShaderEffect):
 
         if n_reset > 0:
             self.positions[mask, 0] = np.random.uniform(0, self.viewport.width, n_reset)
-            self.positions[mask, 1] = -10
+            self.positions[mask, 1] = self.viewport.height + 10    # respawn below viewport
             self.positions[mask, 2] = np.random.uniform(0, 100, n_reset)
-            self.velocities[mask] = np.random.uniform(150, 400, n_reset)
+            self.velocities[mask] = -np.random.uniform(150, 400, n_reset)   # upward
             self.base_velocities[mask] = self.velocities[mask]
             depth_factors = 1.0 - (self.positions[mask, 2] / 100.0)
             base_widths = np.random.uniform(1.0, 2.0, n_reset)
@@ -193,10 +198,11 @@ class CyberRainEffect(ShaderEffect):
             return
         new_positions = np.column_stack([
             np.random.uniform(0, self.viewport.width, n_new),
-            np.random.uniform(-self.viewport.height, -10, n_new),
+            np.random.uniform(self.viewport.height + 10,
+                              2 * self.viewport.height, n_new),
             np.random.uniform(0, 100, n_new),
         ])
-        new_velocities = np.random.uniform(150, 400, n_new)
+        new_velocities = -np.random.uniform(150, 400, n_new)   # upward
         depth_factors = 1.0 - (new_positions[:, 2] / 100.0)
         base_widths = np.random.uniform(1.0, 2.0, n_new)
         base_lengths = np.random.uniform(12, 22, n_new)
@@ -263,9 +269,15 @@ class CyberRainEffect(ShaderEffect):
         out vec4 outColor;
 
         void main() {
-            // vertPos.y: 0 at top of drop, 1 at bottom.
-            // We want HEAD bright (bottom = leading), TAIL faded (top).
-            float head_t = vertPos.y;                 // 1 at head, 0 at tail
+            // The Python rotation formula (`rotations = π − velocity_angle`)
+            // is set up so that vertPos.y = 0 ALWAYS lands on the drop's
+            // leading edge regardless of motion direction — the rotation
+            // angle changes when velocity sign flips, and so does which
+            // physical vertex ends up at the front of the streak.
+            // Inverting the mapping here means the bright head consistently
+            // sits at the leading edge for falling rain and for the cyber
+            // (upward-traveling, fan-correct) variant alike.
+            float head_t = 1.0 - vertPos.y;           // 1 at head (leading), 0 at tail
             float alpha = fragColor.a * head_t;
 
             if (alpha < 0.01) discard;
@@ -364,9 +376,10 @@ class CyberRainEffect(ShaderEffect):
         self.positions[left_mask, 0] += self.viewport.width
         self.positions[right_mask, 0] -= self.viewport.width
 
-        # Reset drops that went off bottom
-        bottom_mask = self.positions[:, 1] > self.viewport.height + 10
-        self._reset_raindrops(bottom_mask)
+        # Reset drops that went off the TOP of the viewport (rain travels
+        # upward in pixel space — toward the buildings at clip y=+1).
+        top_mask = self.positions[:, 1] < -10
+        self._reset_raindrops(top_mask)
 
         self.num_raindrops = len(self.positions)
 

@@ -7124,12 +7124,29 @@ class MainWindow(QMainWindow):
         self._freq_btn.toggled.connect(self._cmd_frequency_analysis)
         self._freq_counts: dict = {}   # cached simulation results
 
+        # Bulk-apply a trigger_state to every node currently highlighted
+        # by the search. Disabled when there are no matches or no
+        # associated weather set.
+        self._apply_trigger_btn = QPushButton("Trigger…")
+        self._apply_trigger_btn.setFixedHeight(24)
+        self._apply_trigger_btn.setToolTip(
+            "Set trigger_state on all nodes matched by the current search.\n"
+            "Disabled until the search bar has matches and the script has\n"
+            "an associated weather set.")
+        self._apply_trigger_btn.setStyleSheet(
+            "QPushButton { background: #2a2a3a; border: 1px solid #555; border-radius: 3px; font-size: 11px; padding: 0 8px; }"
+            "QPushButton:disabled { color: #666; border-color: #333; }"
+        )
+        self._apply_trigger_btn.clicked.connect(self._cmd_bulk_set_trigger_state)
+        self._apply_trigger_btn.setEnabled(False)
+
         search_row = QWidget()
         search_row.setMaximumHeight(30)
         search_row_layout = QHBoxLayout(search_row)
         search_row_layout.setContentsMargins(2, 2, 2, 2)
         search_row_layout.setSpacing(4)
         search_row_layout.addWidget(self._search_bar)
+        search_row_layout.addWidget(self._apply_trigger_btn)
         search_row_layout.addWidget(self._freq_btn)
 
         graph_container = QWidget()
@@ -9192,6 +9209,7 @@ class MainWindow(QMainWindow):
         self.props_panel.set_search_term(text)
         if not text.strip():
             self._clear_search_overlays()
+            self._update_apply_trigger_btn()
             return
         term = text.strip().lower()
         matched = set()
@@ -9207,6 +9225,93 @@ class MainWindow(QMainWindow):
                 matched.add(nid)
         self._apply_search_overlays(matched)
         self.status_bar.showMessage(f"Search: {len(matched)} matching node(s)")
+        self._update_apply_trigger_btn()
+
+    def _update_apply_trigger_btn(self):
+        """Sync the Trigger… button enabled-state with the current
+        search-overlay set and whether the script has any trigger-state
+        options."""
+        n_matched = len(self._search_overlays)
+        has_options = bool(self.script.trigger_state_options)
+        self._apply_trigger_btn.setEnabled(n_matched > 0 and has_options)
+        if n_matched > 0 and has_options:
+            self._apply_trigger_btn.setText(f"Trigger ({n_matched})…")
+        else:
+            self._apply_trigger_btn.setText("Trigger…")
+
+    def _cmd_bulk_set_trigger_state(self):
+        """Open a dialog letting the user assign trigger_state to all
+        nodes currently matching the search overlay. '(none)' clears
+        the field entirely on those nodes."""
+        matched = sorted(self._search_overlays.keys())
+        if not matched:
+            self.status_bar.showMessage("No search matches — nothing to do.")
+            return
+
+        options = self.script.trigger_state_options
+        if not options:
+            QMessageBox.information(
+                self, "No Weather Set",
+                "This script has no associated weather set, so there are no "
+                "trigger-state options to choose from. Set the weather set "
+                "first via the Story menu.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Bulk-set trigger_state")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            f"Apply a trigger_state to all <b>{len(matched)}</b> nodes "
+            f"matching the current search.<br>"
+            f"Pick <i>(none)</i> to clear the field on those nodes."))
+        combo = QComboBox()
+        combo.addItem("(none)", "")
+        for sv in options:
+            combo.addItem(sv, sv)
+        v.addWidget(combo)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("Apply")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        v.addLayout(btn_row)
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn.setDefault(True)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        val = combo.currentData() or ""
+        changed = 0
+        for nid in matched:
+            nd = self.script.nodes.get(nid)
+            if nd is None:
+                continue
+            if val:
+                if nd.get('trigger_state') != val:
+                    nd['trigger_state'] = val
+                    changed += 1
+            else:
+                if 'trigger_state' in nd:
+                    nd.pop('trigger_state', None)
+                    changed += 1
+
+        if changed:
+            self.script.dirty = True
+            self._update_title()
+            # Re-load the props panel if the currently selected node was
+            # one of the ones we just changed (so its dropdown updates).
+            if self._selected_node_id and self._selected_node_id in matched:
+                self.props_panel.load_node(self.script, self._selected_node_id)
+            label = val if val else "(none)"
+            self.status_bar.showMessage(
+                f"Set trigger_state '{label}' on {changed} node(s).")
+        else:
+            self.status_bar.showMessage(
+                "No changes — matched nodes already had that trigger_state.")
 
     def _get_upstream_path(self, node_id: str, depth: int = 4) -> list:
         """Return [(ancestor_id, text), ...] oldest-first, up to `depth` hops."""
@@ -9493,6 +9598,9 @@ class MainWindow(QMainWindow):
         # Re-sync the Node Length / Width submenus to the newly-loaded script
         self._refresh_node_length_checks()
         self._refresh_width_checks()
+        # The trigger-state options come from the script's weather set,
+        # so the bulk-apply button's enabled-state may change.
+        self._update_apply_trigger_btn()
 
     def _update_title(self):
         if self.script.path:

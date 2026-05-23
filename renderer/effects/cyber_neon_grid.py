@@ -37,7 +37,8 @@ def shader_cyber_neon_grid(state, outstate, intensity=0.8):
     if eff is None:
         return
 
-    eff.intensity = float(outstate.get('neon_intensity', intensity))
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    eff.intensity = float(outstate.get('neon_intensity', 0.0))
     # Audio energy (0..1 typical); some installations publish 'sound' as
     # a small float (the running mic envelope)
     sound = outstate.get('sound', 0.0)

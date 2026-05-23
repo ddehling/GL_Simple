@@ -41,8 +41,9 @@ def shader_cyber_scan_lines(state, outstate, intensity=0.6):
     if eff is None:
         return
 
-    # State-level intensity (set by weather state via outstate)
-    base = float(outstate.get('scan_line_intensity', intensity))
+    # State-level intensity (set by weather state via outstate).
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    base = float(outstate.get('scan_line_intensity', 0.0))
     # Low signal adds glitch: signal 1.0 = pure, signal 0.0 = max scan-line noise
     signal = float(outstate.get('story_signal', 1.0))
     glitch_boost = (1.0 - signal) * 0.4

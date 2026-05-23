@@ -42,9 +42,15 @@ def shader_cyber_city_skyline(state, outstate, density=0.7, light_pollution=0.5)
     if eff is None:
         return
 
-    eff.density = float(outstate.get('cyber_skyline_density', density))
-    eff.light_pollution = float(outstate.get('light_pollution', light_pollution))
+    # Wrapper defaults are 0.0 per docs/shader_info.txt — misconfigured
+    # states fail visibly to nothing rather than rendering a partial city.
+    eff.density = float(outstate.get('cyber_skyline_density', 0.0))
+    eff.light_pollution = float(outstate.get('light_pollution', 0.0))
     eff.season = float(outstate.get('season', 0.5))
+    # Vertical position in the Stack — 0.0 = street level (full towers),
+    # 1.0 = Crown (only rooftops visible). Default 0.0 keeps existing
+    # states looking the same until they explicitly set it.
+    eff.view_elevation = float(outstate.get('cyber_view_elevation', 0.0))
 
     if state['count'] == -1:
         if 'effect' in state:
@@ -69,6 +75,7 @@ uniform float u_time;
 uniform float u_density;
 uniform float u_light_pollution;
 uniform float u_season;              // [0,1) time-of-day cycle
+uniform float u_view_elevation;      // 0=street/full towers, 1=Crown/only rooftops
 uniform vec2 u_resolution;
 out vec4 fragColor;
 
@@ -87,7 +94,18 @@ float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.54
 // the column. Pixels with uv.y > top_y are INSIDE the building.
 float column_top_y(float col_idx, float col_frac) {
     float h_seed   = hash(col_idx * 1.7 + 3.0);
-    float base_top = 0.30 + h_seed * 0.50;        // building height fraction
+    // View-elevation scale: 0=street (full towers, 0.30..0.80 of canvas),
+    // 1=Crown (only rooftops poking up, 0.045..0.12). Same scaling
+    // applied wherever base_top is computed so the silhouette stays
+    // consistent across shape types and the window grid.
+    // Piecewise so that 0.0 stays at exactly 1.0× (default), negative
+    // values look UP from below (towers extend off the top of frame at
+    // -1.0 → 1.6×), positive values look DOWN from above (Crown
+    // rooftops at 1.0 → 0.15×).
+    float height_scale = (u_view_elevation < 0.0)
+        ? (1.0 - 0.6  * u_view_elevation)
+        : (1.0 - 0.85 * u_view_elevation);
+    float base_top = (0.30 + h_seed * 0.50) * height_scale;
     float base_y   = 1.0 - base_top;              // top edge in v_uv
 
     float type_seed = hash(col_idx * 5.3 + 11.0);
@@ -219,9 +237,18 @@ void main() {
     // Per-column top edge (varies based on shape type — flat / stepped /
     // pyramidal / antenna). For window-grid placement and sky-band
     // gradient we still use the BASE rectangle top (sky band sits above
-    // the tallest possible building edge for this column).
+    // the tallest possible building edge for this column). Same
+    // view-elevation height scale as column_top_y so window grid lines
+    // up with the silhouette.
     float h_seed = hash(col_idx * 1.7 + 3.0);
-    float bldg_top = 0.30 + h_seed * 0.50;
+    // Piecewise so that 0.0 stays at exactly 1.0× (default), negative
+    // values look UP from below (towers extend off the top of frame at
+    // -1.0 → 1.6×), positive values look DOWN from above (Crown
+    // rooftops at 1.0 → 0.15×).
+    float height_scale = (u_view_elevation < 0.0)
+        ? (1.0 - 0.6  * u_view_elevation)
+        : (1.0 - 0.85 * u_view_elevation);
+    float bldg_top = (0.30 + h_seed * 0.50) * height_scale;
     float bldg_bottom_y = 1.0 - bldg_top;     // base rectangle top edge
     float top_edge_y = column_top_y(col_idx, col_frac);  // shape-aware
 
@@ -259,6 +286,18 @@ void main() {
     if (in_building && in_edge_gap) {
         in_building = false;
     }
+
+    // Write fragment depth so depth-aware effects (rain, pixel_spots,
+    // anything Pattern A per docs/shader_info.txt) can occlude against
+    // the city silhouette. Using the doc's standard z=0..100 scale
+    // mapped through depth=z/100:
+    //   sky      → z=95 (very far)
+    //   building → z=70 (mid-far, like the skyline is 70m out)
+    // So foreground particles with z < 70 (depth < 0.7) still render
+    // IN FRONT of the buildings — rain in the foreground, drone
+    // spotlights, etc. — and only background particles with z > 70
+    // get occluded behind the city, which matches real-world depth.
+    gl_FragDepth = in_building ? 0.70 : 0.95;
 
     vec3 col = sky;
     float alpha = 0.85;   // sky always opaque enough to occlude what's behind
@@ -382,6 +421,7 @@ class CyberCitySkylineEffect(ShaderEffect):
         self.density = density
         self.light_pollution = light_pollution
         self.season = 0.5            # set by wrapper from outstate['season']
+        self.view_elevation = 0.0    # 0=street level, 1=Crown rooftops
         self._time = 0.0
 
     def compile_shader(self):
@@ -413,14 +453,20 @@ class CyberCitySkylineEffect(ShaderEffect):
     def render(self, state: Dict):
         if not self.enabled:
             return
+        # GL_ALWAYS so we still paint regardless of what was drawn below
+        # (the sky band must always overlay smog, underway glow, etc.).
+        # depth MASK on TRUE so the fragment shader's gl_FragDepth writes
+        # land in the depth buffer — that's what lets pixel_spots and
+        # other later effects depth-test against building silhouettes.
         glDepthFunc(GL_ALWAYS)
-        glDepthMask(GL_FALSE)
+        glDepthMask(GL_TRUE)
         glUseProgram(self.shader)
         glBindVertexArray(self.VAO)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"), self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_density"), self.density)
         glUniform1f(glGetUniformLocation(self.shader, "u_light_pollution"), self.light_pollution)
         glUniform1f(glGetUniformLocation(self.shader, "u_season"), self.season)
+        glUniform1f(glGetUniformLocation(self.shader, "u_view_elevation"), self.view_elevation)
         glUniform2f(glGetUniformLocation(self.shader, "u_resolution"),
                     float(self.viewport.width), float(self.viewport.height))
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)

@@ -37,7 +37,8 @@ def shader_cyber_hologram_billboards(state, outstate, density=0.5):
     if eff is None:
         return
 
-    eff.density = float(outstate.get('hologram_density', density))
+    # Wrapper default 0.0 per docs/shader_info.txt.
+    eff.density = float(outstate.get('hologram_density', 0.0))
     # Defiance drives glitch corruption rate
     eff.glitch_level = float(outstate.get('story_defiance', 0.0))
 

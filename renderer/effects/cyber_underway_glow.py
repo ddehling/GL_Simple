@@ -38,7 +38,10 @@ def shader_cyber_underway_glow(state, outstate, intensity=0.8):
     if eff is None:
         return
 
-    eff.intensity = float(outstate.get('cyber_underway_intensity', intensity))
+    # Wrapper default is 0.0 per docs/shader_info.txt — states that
+    # want the flooded-tunnel glow MUST set cyber_underway_intensity
+    # explicitly (only CYBER_UNDERSIDE_FLOOD does, at 1.0).
+    eff.intensity = float(outstate.get('cyber_underway_intensity', 0.0))
 
     if state['count'] == -1:
         if 'effect' in state:
