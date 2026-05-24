@@ -73,26 +73,28 @@ void main() {
     float alpha = 0.0;
 
     // --- RED CORNER VIGNETTE (always visible) ---
-    // Strong red wash radiating inward from the corners, leaving a
-    // dim window at center. Reads instantly as "horror-game / predator-
-    // vision". Pulses slowly with breath. NOT scanlines — the
-    // state-tied cyber_scan_lines shader already owns that look.
+    // Subtle red wash radiating inward from the corners. Was 0.70× —
+    // too prominent, painting half the screen red. Dialed back to 0.35
+    // so it reads as a faint corner darken rather than a strong border.
     float r = length(uv - vec2(0.5)) * 2.0;          // 0 center, ~1.4 corners
     float vignette = smoothstep(0.45, 1.30, r);      // 0 in center half, 1 at corners
     float v_breath = 0.85 + 0.15 * sin(u_time * 1.0);
-    float vign_a   = vignette * u_dread * v_breath * 0.70;
-    col   = max(col, vec3(1.00, 0.08, 0.04) * vign_a * 1.40);
+    float vign_a   = vignette * u_dread * v_breath * 0.35;
+    col   = max(col, vec3(1.00, 0.08, 0.04) * vign_a * 1.10);
     alpha = max(alpha, vign_a);
 
-    // --- Edge glow (deeper penetration, less breathing dropoff) ---
+    // --- Edge glow (thin red border) ---
+    // Was 0.30 penetration and ×1.40 brightness — the red border was
+    // overwhelming. Now 0.18 penetration (narrower band hugging the
+    // edge) and dimmer overall.
     float dx = min(uv.x, 1.0 - uv.x);
     float dy = min(uv.y, 1.0 - uv.y);
     float edge_dist = min(dx, dy);
-    float edge_band = 1.0 - smoothstep(0.0, 0.30, edge_dist);
-    float breath = 0.92 + 0.08 * sin(u_time * 1.3);   // small breath only
+    float edge_band = 1.0 - smoothstep(0.0, 0.18, edge_dist);
+    float breath = 0.92 + 0.08 * sin(u_time * 1.3);
     float edge_glow = edge_band * breath * u_dread;
-    col   = max(col, vec3(1.0, 0.10, 0.05) * edge_glow * 1.40);
-    alpha = max(alpha, edge_glow * 0.95);
+    col   = max(col, vec3(1.0, 0.10, 0.05) * edge_glow * 0.85);
+    alpha = max(alpha, edge_glow * 0.55);
 
     // --- Sweep beam (wider, brighter — no drones to compete with) ---
     float sweep_speed = 0.5 + u_dread * 0.5;

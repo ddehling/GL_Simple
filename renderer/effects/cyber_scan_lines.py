@@ -101,7 +101,7 @@ void main() {
     float row_idx = mod(floor(line_y), 6.0);
     float line_lit = step(row_idx, 0.0);     // 1.0 for every 6th row
     vec3 line_color = vec3(0.55, 0.95, 1.00);
-    float line_alpha = line_lit * 0.30;
+    float line_alpha = line_lit * 0.16;      // was 0.30 — was painting cyan over too much screen
 
     // --- Slow vertical roll ---
     // Narrow soft band drifting downward — classic vertical-sync hold
@@ -112,7 +112,7 @@ void main() {
     roll_dist = min(roll_dist, 1.0 - roll_dist);   // wrap-safe
     float roll = smoothstep(0.12, 0.02, roll_dist);
     vec3 roll_color = vec3(0.85, 0.95, 1.00);
-    float roll_alpha = roll * 0.35;
+    float roll_alpha = roll * 0.20;          // was 0.35
 
     // --- Rare chromatic tear ---
     // Single bright magenta line, brief flash inside a 2 s bucket. About
@@ -125,7 +125,7 @@ void main() {
     float tear_fire = step(0.75, tear_seed);
     float tear = smoothstep(0.010, 0.0, tear_dist) * tear_active * tear_fire;
     vec3 tear_color = vec3(1.0, 0.10, 0.55);
-    float tear_alpha = tear * 0.95;
+    float tear_alpha = tear * 0.55;          // was 0.95 — still bright but not blinding
 
     // --- Compose — pick brightest component per pixel ---
     vec3 color;

@@ -120,12 +120,18 @@ void main() {
     // Density curve: low density = mostly clear, high = thick band
     smog = smoothstep(1.0 - u_density, 1.0, smog + u_density * 0.3);
 
-    // Smog is heavier at the bottom (settles in the Midden)
-    float vertical = mix(0.6, 1.0, 1.0 - uv.y);
+    // Smog is heavier at the GROUND (settles in the Midden — high uv.y
+    // is the building-base / ground line, low uv.y is the sky).
+    float vertical = mix(0.45, 0.95, uv.y);    // 0.45 at sky, 0.95 at ground
+
     smog *= vertical;
 
-    // Alpha capped at 0.55 so silhouettes still read through
-    float alpha = smog * 0.55;
+    // Alpha cap scales with density: low-density states stay around
+    // 0.50 (light haze), SMOG_HAZE (density=1.0) caps at 0.65 —
+    // visible thick haze that obscures the city but doesn't blot it
+    // out. Was previously 0.90 at max, which was overwhelming.
+    float alpha_cap = 0.50 + u_density * 0.15;
+    float alpha = smog * alpha_cap;
     if (alpha < 0.01) discard;
 
     // Blend the state's fog_color with the season-of-day tint. State
@@ -141,7 +147,15 @@ class CyberSmogVolumeEffect(ShaderEffect):
     def __init__(self, viewport, density: float = 0.5,
                  color=(0.55, 0.35, 0.20)):
         super().__init__(viewport)
-        self.render_priority = 1.0     # Atmospheric base
+        # Smog needs to render AFTER cyber_city_skyline (6.0) so it
+        # actually obscures the city silhouette in heavy-pollution
+        # states. Previously this was at 1.0 ("atmospheric base"), but
+        # the skyline's sky-band alpha 0.85 then painted over the smog
+        # almost entirely — even SMOG_HAZE at max density was barely
+        # visible. Sits below signs (7.0) / holograms (7.5) / data_rain
+        # (8.0) / rain (8.2) so foreground particle effects remain
+        # readable through the haze.
+        self.render_priority = 6.5
         self.density = density
         self.color = color
         self.season = 0.5              # set by wrapper from outstate['season']

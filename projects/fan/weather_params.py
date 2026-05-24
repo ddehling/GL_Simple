@@ -531,6 +531,7 @@ WEATHER_PRESETS = {
         "ambient_sound": "Rain, Metallic Shelter.mp3",
         "celestial_visibility": 0,
         "cyber_rain_color": np.array([0.55, 1.00, 0.20]),   # acid green
+        "cyber_view_elevation": -0.20,   # corrosive rain on lower-Midden tier
         "fog": 0.6,
         "fog_color": np.array([0.5, 0.8, 0.2]),
         "light_pollution": 0.5,
@@ -549,6 +550,7 @@ WEATHER_PRESETS = {
         "celestial_visibility": 0.8,
         "cyber_signage_density": 0.0,        # no neon signage during a blackout
         "cyber_skyline_density": 0.0,        # only the shader's 5% emergency-lights baseline
+        "cyber_view_elevation": -0.30,       # Midden street outage
         "fog": 0.3,
         "fog_color": np.array([0.1, 0.1, 0.15]),
         "glitch_probability": 0.2,
@@ -565,6 +567,7 @@ WEATHER_PRESETS = {
         "ARI": 40,
         "ambient_sound": "Rain, Metallic Shelter.mp3",
         "celestial_visibility": 0,
+        "cyber_view_elevation": 0.35,    # corporate data centers, upper-Stack
         "data_flow_rate": 1,
         "electric_interference": 0.7,
         "fog": 0.3,
@@ -601,6 +604,7 @@ WEATHER_PRESETS = {
         "ambient_sound": "Rain Heavy 01 EDITED.wav",
         "celestial_visibility": 0,
         "cyber_rain_color": np.array([0.30, 0.55, 1.00]),   # electric blue
+        "cyber_view_elevation": 0.10,        # mid-Stack, storms above the inversion
         "electric_interference": 1,
         "fog": 0.4,
         "fog_color": np.array([0, 0.5, 1]),
@@ -619,6 +623,7 @@ WEATHER_PRESETS = {
         "ARI": 36,
         "ambient_sound": "Tinkle Atmosphere 01.wav",
         "celestial_visibility": 0,
+        "cyber_view_elevation": 0.20,    # mid-Stack — glitchy AR fog drifting between tiers
         "data_flow_rate": 0.4,
         "electric_interference": 0.6,
         "fog": 0.8,
@@ -636,6 +641,7 @@ WEATHER_PRESETS = {
         "ARI": 40,
         "ambient_sound": "Constant Walla of about 1000 People.mp3",
         "celestial_visibility": 0.2,
+        "cyber_view_elevation": -0.55,   # Midden night street, holograms above the crowd
         "drone_activity": 0.5,
         "fog": 0.1,
         "fog_color": np.array([0.3, 0.1, 0.5]),
@@ -693,6 +699,7 @@ WEATHER_PRESETS = {
         "ARI": 50,
         "ambient_sound": "Vent Air Industrial.mp3",
         "celestial_visibility": 0.1,
+        "cyber_view_elevation": -0.40,   # in the smog band — Midden tier
         "fog": 0.9,
         "fog_color": np.array([0.7, 0.5, 0.2]),
         "light_pollution": 0.6,
@@ -757,8 +764,8 @@ WEATHER_PRESETS = {
         "ambient_sound": "Constant Walla of about 1000 People.mp3",
         "celestial_visibility": 0.0,
         "cyber_signage_density": 1.0,       # absolute max — every storefront lit
-        "cyber_skyline_density": 0.85,      # dense building cluster
-        "cyber_view_elevation": -1.5,       # MIDDEN: looking straight up — towers tower way off-screen
+        "cyber_skyline_density": 1.0,       # MAX — packed lit windows everywhere
+        "cyber_view_elevation": -2.0,       # MIDDEN: extreme low view — penthouse cut off, only regular + street visible
         "data_flow_rate": 0.35,
         "drone_activity": 0.15,
         "fog": 0.40,
@@ -769,7 +776,7 @@ WEATHER_PRESETS = {
         "pollution_level": 0.55,            # crowded street smog
         "possible_transitions": ["cyber_neon_clear", "cyber_neon_drizzle", "cyber_broadcast_night", "cyber_smog_haze"],
         "scan_line_intensity": 0.4,
-        "season_preference": 0.7,
+        "season_preference": 0.85,           # late evening — when the market peaks
         "starryness": 0.0,
         "transition_weights": [1.2, 0.8, 0.6, 0.6],
     },

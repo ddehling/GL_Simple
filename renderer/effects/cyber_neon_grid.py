@@ -78,9 +78,13 @@ void main() {
     }
 
     // Perspective remap: closer rows (bottom of screen) have wider line
-    // spacing; far rows (near horizon) crowd toward the horizon
+    // spacing; far rows (near horizon) crowd toward the horizon.
+    // floor at 0.18 (was 0.05) — that floor was small enough that lines
+    // crowded to infinity at the horizon, merging into a single thick
+    // bright cyan band. 0.18 caps perspective_z at ~5.5 so lines stay
+    // resolvable all the way to the horizon.
     float t = (v_uv.y - horizon) / (1.0 - horizon);   // 0 at horizon, 1 at bottom
-    float perspective_z = 1.0 / max(0.05, t);          // larger = farther
+    float perspective_z = 1.0 / max(0.18, t);          // larger = farther
 
     // Horizontal lines (become concentric ARCS in fan view). THIN lines
     // for spatial intensity contrast: sparse bright pixels on a dark
@@ -110,6 +114,11 @@ void main() {
     float line = max(v_line_mask * 0.55, h_line_mask);
     // Falloff toward horizon — distant lines dimmer
     line *= mix(0.4, 1.0, t);
+    // Hard horizon fade: ramp lines up from 0 across the first 10%
+    // past the horizon line. Without this the very first row of
+    // visible pixels still has a bright line right at v_uv.y = 0.55,
+    // forming a stripe at the discard boundary.
+    line *= smoothstep(0.0, 0.10, t);
 
     float alpha = line * u_intensity * audio_boost * 0.85;
     if (alpha < 0.02) discard;

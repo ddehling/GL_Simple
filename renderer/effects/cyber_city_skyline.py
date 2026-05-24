@@ -94,19 +94,28 @@ float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.54
 // the column. Pixels with uv.y > top_y are INSIDE the building.
 float column_top_y(float col_idx, float col_frac) {
     float h_seed   = hash(col_idx * 1.7 + 3.0);
-    // View-elevation scale: 0=street (full towers, 0.30..0.80 of canvas),
-    // 1=Crown (only rooftops poking up, 0.045..0.12). Same scaling
-    // applied wherever base_top is computed so the silhouette stays
-    // consistent across shape types and the window grid.
-    // Piecewise so that 0.0 stays at exactly 1.0× (default), negative
-    // values look UP from below (towers extend off the top of frame at
-    // -1.0 → 1.6×), positive values look DOWN from above (Crown
-    // rooftops at 1.0 → 0.15×).
-    float height_scale = (u_view_elevation < 0.0)
-        ? (1.0 - 0.6  * u_view_elevation)
-        : (1.0 - 0.85 * u_view_elevation);
-    float base_top = (0.30 + h_seed * 0.50) * height_scale;
-    float base_y   = 1.0 - base_top;              // top edge in v_uv
+    // view_elevation does THREE things:
+    //   - NEGATIVE (Midden, looking up): scales building taller AND
+    //     keeps base AT the screen-bottom edge (v_shift=0), so the
+    //     lower floors stay fully visible. Combined with the
+    //     perspective_k curve in main() the lower floors crowd more
+    //     screen area than just stretching would give.
+    //   - POSITIVE (Crown, looking down): pushes the base DOWN off the
+    //     bottom of the screen (but not too far — we still want to see
+    //     a strip of upper floors). Slight scale-down for perspective.
+    //   - At view_elevation=0: identity (no shift, no scale, no curve).
+    float natural_h = 0.30 + h_seed * 0.50;
+    float v_scale, v_shift;
+    if (u_view_elevation < 0.0) {
+        v_scale =  1.0 - 0.60 * u_view_elevation;   // -1.5 → 1.9×
+        v_shift =  0.0;                              // base at screen bottom
+    } else {
+        v_scale =  1.0 - 0.17 * u_view_elevation;   // +1 → 0.83×
+        v_shift =  0.30 * u_view_elevation;          // +1 → 0.30 below
+    }
+    float bldg_height = natural_h * v_scale;
+    float bldg_base_y = 1.0 + v_shift;                  // ground line in v_uv
+    float base_y = bldg_base_y - bldg_height;           // top edge of base rectangle
 
     float type_seed = hash(col_idx * 5.3 + 11.0);
 
@@ -177,10 +186,57 @@ void season_sky(float s, out vec3 horizon, out vec3 zenith) {
 
 // Window-lit probability shifts across the cycle. More windows lit at
 // night, fewer at noon (people are at work, not at home). Used as a
-// multiplier on per-state density.
+// multiplier on per-state density. Kept for compatibility but the new
+// per-sector circadian_mult() below should be preferred — it replaces
+// both this function AND the static sector multiplier.
 float window_lit_mult(float s) {
-    // 1.4x at midnight, 0.5x at noon, 1.2x at dusk, 1.0x at dawn
     return 0.95 + 0.45 * cos(6.28318 * s);
+}
+
+// Per-sector + per-building-type circadian rhythm. Returns the lit-
+// probability multiplier for a given sector (defined by win_y_norm:
+// 0 = top, 1 = base) and building type (same buckets as window_color).
+// Each sector + type has its OWN peak time so the Stack's class strata
+// also have distinct daily rhythms:
+//
+//   PENTHOUSE (top 18%)        — peak ~8pm  (Crown elites home for the
+//                                evening); dim mid-day (at corporate).
+//   STREET / SHOP (bot 18%)    — peak ~9pm  (sustained commercial /
+//                                market hours); flatter overall.
+//   REGULAR (middle 64%) varies by building type:
+//     residential (< 0.45)     — peak midnight (people sleeping at home)
+//     corporate   (< 0.70)     — peak NOON    (offices full during day)
+//     neon-clad   (< 0.88)     — peak ~9pm    (mixed-use, evening lean)
+//     industrial  (>=0.88)     — flatter      (shift work, mild night)
+//
+// At any given screen frame, walking the eye up a single building you
+// should see a clear vertical rhythm — penthouse lights bright in the
+// evening, corporate mid-floors lit at noon, residential mid-floors
+// lit at midnight, street level lit all evening through midnight.
+float circadian_mult(float s, float win_y_norm, float bldg_type) {
+    // PENTHOUSE — Crown elites at home in the evening
+    if (win_y_norm < 0.18) {
+        return 1.05 + 0.55 * cos(6.28318 * (s - 0.83));
+    }
+    // STREET / SHOP — evening peak, commercial hours
+    if (win_y_norm > 0.82) {
+        return 1.40 + 0.60 * cos(6.28318 * (s - 0.85));
+    }
+    // REGULAR floors — daily rhythm depends on building type
+    if (bldg_type < 0.45) {
+        // Residential: peak midnight
+        return 0.95 + 0.45 * cos(6.28318 * s);
+    }
+    if (bldg_type < 0.70) {
+        // Corporate: peak NOON (offices full)
+        return 0.85 + 0.50 * cos(6.28318 * (s - 0.5));
+    }
+    if (bldg_type < 0.88) {
+        // Neon-clad mixed-use: evening peak
+        return 1.00 + 0.40 * cos(6.28318 * (s - 0.80));
+    }
+    // Industrial: 24-hour shift work, flatter response
+    return 0.85 + 0.20 * cos(6.28318 * (s - 0.5));
 }
 
 // Per-window color, weighted by the building's lighting "type". Cities
@@ -236,21 +292,32 @@ void main() {
 
     // Per-column top edge (varies based on shape type — flat / stepped /
     // pyramidal / antenna). For window-grid placement and sky-band
-    // gradient we still use the BASE rectangle top (sky band sits above
-    // the tallest possible building edge for this column). Same
-    // view-elevation height scale as column_top_y so window grid lines
-    // up with the silhouette.
+    // gradient we still use the BASE rectangle top. Same view-elevation
+    // transform as column_top_y so window grid lines up with silhouette.
     float h_seed = hash(col_idx * 1.7 + 3.0);
-    // Piecewise so that 0.0 stays at exactly 1.0× (default), negative
-    // values look UP from below (towers extend off the top of frame at
-    // -1.0 → 1.6×), positive values look DOWN from above (Crown
-    // rooftops at 1.0 → 0.15×).
-    float height_scale = (u_view_elevation < 0.0)
-        ? (1.0 - 0.6  * u_view_elevation)
-        : (1.0 - 0.85 * u_view_elevation);
-    float bldg_top = (0.30 + h_seed * 0.50) * height_scale;
-    float bldg_bottom_y = 1.0 - bldg_top;     // base rectangle top edge
-    float top_edge_y = column_top_y(col_idx, col_frac);  // shape-aware
+    float natural_h = 0.30 + h_seed * 0.50;
+    float v_scale, v_shift;
+    if (u_view_elevation < 0.0) {
+        v_scale =  1.0 - 0.60 * u_view_elevation;
+        v_shift =  0.0;
+    } else {
+        v_scale =  1.0 - 0.17 * u_view_elevation;
+        v_shift =  0.30 * u_view_elevation;
+    }
+    float bldg_height   = natural_h * v_scale;
+    float bldg_base_y   = 1.0 + v_shift;                // ground line (may be off-screen)
+    float bldg_bottom_y = bldg_base_y - bldg_height;    // base rectangle top edge
+    float top_edge_y    = column_top_y(col_idx, col_frac);  // shape-aware
+
+    // Perspective foreshortening for the window grid: at Midden looking
+    // up, lower floors should take MORE screen area than upper floors
+    // (they're closer to the viewer); at Crown looking down, upper
+    // floors expand. perspective_k < 1 stretches the bottom of the
+    // building visually; > 1 stretches the top.
+    //   elev = -1.5 → k = 0.55
+    //   elev =  0   → k = 1.00 (linear, default)
+    //   elev = +1.0 → k = 1.30
+    float perspective_k = 1.0 + 0.30 * u_view_elevation;
 
     // Sky band: gradient above all buildings, hue driven by the
     // time-of-day cycle. Light pollution scales overall brightness.
@@ -277,7 +344,7 @@ void main() {
     bool is_flat_shape   = (type_seed_again < 0.50);
     float setback_seed   = hash(col_idx * 4.7 + 23.0);
     bool has_setback     = is_flat_shape && (setback_seed < 0.30);
-    float setback_height = bldg_bottom_y + (1.0 - bldg_bottom_y) * 0.35;
+    float setback_height = bldg_bottom_y + bldg_height * 0.35;
     float edge = 0.06;
     if (has_setback && uv.y < setback_height) {
         edge = 0.16;   // upper portion narrower than base
@@ -318,7 +385,10 @@ void main() {
 
         // Window grid — 6 columns of windows per building, 18 rows down.
         float win_x = (col_frac - edge) / (1.0 - 2.0 * edge);   // 0..1 inside building
-        float win_y_norm = (uv.y - bldg_bottom_y) / (1.0 - bldg_bottom_y);
+        // Apply perspective foreshortening — at Midden the lower floors
+        // expand to take more screen area; at Crown the upper floors do.
+        float raw_y = clamp((uv.y - bldg_bottom_y) / bldg_height, 0.0, 1.0);
+        float win_y_norm = pow(raw_y, perspective_k);
 
         const float WINDOWS_X = 6.0;
         const float WINDOWS_Y = 18.0;
@@ -329,19 +399,44 @@ void main() {
         float wxf = fract(wx);
         float wyf = fract(wy);
 
-        // Window cell shape: small bright rectangle in each cell
-        float in_window_x = step(0.25, wxf) * (1.0 - step(0.75, wxf));
-        float in_window_y = step(0.20, wyf) * (1.0 - step(0.65, wyf));
+        // Window cell shape varies by SECTOR so each class strata has
+        // its own visual texture, not just color/density.
+        //   PENTHOUSE: tall WIDE windows  (floor-to-ceiling luxury)
+        //   REGULAR  : standard window grid
+        //   STREET   : narrow DENSE windows (cramped walkup / shop fronts)
+        float in_window_x, in_window_y;
+        if (win_y_norm < 0.18) {
+            // PENTHOUSE — almost full-cell windows with thin mullions
+            in_window_x = step(0.08, wxf) * (1.0 - step(0.92, wxf));
+            in_window_y = step(0.10, wyf) * (1.0 - step(0.85, wyf));
+        } else if (win_y_norm > 0.82) {
+            // STREET — split each cell into TWO stacked shop-front
+            // windows (a display window + a sign panel above) with a
+            // visible mullion between them. The split avoids the
+            // perspective-stretched bottom rows reading as tall bars,
+            // and the doubled count makes the street feel denser /
+            // more cluttered than the regular floors above.
+            float lower_win = step(0.16, wyf) * (1.0 - step(0.40, wyf));  // ~24% tall
+            float upper_win = step(0.56, wyf) * (1.0 - step(0.78, wyf));  // ~22% tall
+            in_window_y = max(lower_win, upper_win);
+            in_window_x = step(0.18, wxf) * (1.0 - step(0.82, wxf));      // 64% wide
+        } else {
+            // REGULAR — current default
+            in_window_x = step(0.25, wxf) * (1.0 - step(0.75, wxf));
+            in_window_y = step(0.20, wyf) * (1.0 - step(0.65, wyf));
+        }
         float in_window = in_window_x * in_window_y;
 
         // Per-window on/off pattern (deterministic per column+window).
-        // Season multiplier: more lit windows at night, fewer at noon.
-        // Baseline lowered from 0.20 to 0.05 so density=0 actually reads
-        // as a near-blackout (a handful of emergency lights only); scale
-        // bumped 0.45 → 0.60 so the max-lit case stays roughly where it
-        // was at u_density=1.0.
+        // Baseline 0.05 + density-scaled term, then multiplied by the
+        // per-sector + per-building-type circadian rhythm so each class
+        // stratum has its own daily light cycle (see circadian_mult).
+        // bldg_type is hashed here once so we can pass it to both the
+        // circadian function and the window_color call below.
+        float bldg_type = hash(col_idx * 3.1 + 17.0);
         float win_seed = hash2(vec2(col_idx * 11.0 + wxi, wyi * 7.0));
-        float on_prob = (0.05 + u_density * 0.60) * window_lit_mult(u_season);
+        float on_prob = (0.05 + u_density * 0.60)
+                      * circadian_mult(u_season, win_y_norm, bldg_type);
         float lit = step(1.0 - on_prob, win_seed);
 
         // Per-window flicker — rare, ~once per 4 sec
@@ -349,11 +444,60 @@ void main() {
         float flicker = step(0.92, fract(flicker_t));   // 8% of cycles
         lit *= (1.0 - flicker * 0.7);
 
+        // STREET sub-window independence: the cell renders TWO stacked
+        // shop windows. Give each one its own on/off so they don't
+        // blink in unison. The existing `lit` (with flicker) acts as
+        // the LOWER sub-window's state; the UPPER gets a fresh hash
+        // seed and its own on_prob test. Bake both into in_window and
+        // set lit=1 so the final col combine just shows the result.
+        if (win_y_norm > 0.82) {
+            float lower_win = step(0.16, wyf) * (1.0 - step(0.40, wyf));
+            float upper_win = step(0.56, wyf) * (1.0 - step(0.78, wyf));
+            float seed_upper = hash2(vec2(col_idx * 13.0 + wxi + 17.0,
+                                          wyi * 11.0 + 7.0));
+            float lit_upper = step(1.0 - on_prob, seed_upper);
+            in_window = (lower_win * lit + upper_win * lit_upper) * in_window_x;
+            lit = 1.0;
+        }
+
         // Per-building lighting "type" — each column gets one of four
         // dominant palettes so the city reads as distinct buildings with
         // character rather than uniformly speckled random colors.
-        float bldg_type = hash(col_idx * 3.1 + 17.0);
+        // (bldg_type was already hashed above for the circadian rhythm.)
         vec3 wcol = window_color(win_seed, bldg_type);
+
+        // Social-class banding within each building. Penthouse and
+        // street are BOTH bright (vs the medium "regular" middle),
+        // but in very different ways — penthouse is sparse big cool
+        // white panels (Crown floor-to-ceiling glass), street is dense
+        // small warm sodium dots (Midden shop signs and walkups).
+        // The regular floors are the dimmer middle ground.
+        //   1. COLOR TINT — penthouse cool, street warm
+        //   2. BRIGHTNESS — penthouse hot white, street hot amber,
+        //                   regular natural / medium
+        //   3. (See above) window cell SIZE & COUNT — wide sparse
+        //      penthouse, narrow dense street
+        //
+        // win_y_norm: 0 = building TOP (penthouse), 1 = base (street).
+        if (win_y_norm < 0.18) {
+            // PENTHOUSE — Crown elite, cool tint, lights BLAZING bright
+            vec3 penthouse_tint = vec3(0.88, 0.95, 1.00);
+            wcol = mix(wcol, penthouse_tint, 0.75);
+            wcol *= 2.00;                           // burn hot cool-white
+        } else if (win_y_norm > 0.82) {
+            // STREET — Midden shop fronts, hot sodium-amber neon
+            // (was dim 0.55× — too similar to regular floors. Now we
+            // make street BRIGHTER than regular, but in warm tones so
+            // it reads as commercial neon, not residential.)
+            vec3 street_tint = vec3(1.00, 0.62, 0.20);
+            wcol = mix(wcol, street_tint, 0.85);
+            wcol *= 1.60;                           // hot warm — shop signs
+        } else {
+            // REGULAR — slightly darkened so the bright penthouse and
+            // bright street sandwich a darker middle band; makes the
+            // class strata read clearly across the building.
+            wcol *= 0.72;
+        }
 
         // Service floor bands — every N floors, a row of lit windows
         // marks a mechanical / transfer floor. KEEPS per-window x gaps
