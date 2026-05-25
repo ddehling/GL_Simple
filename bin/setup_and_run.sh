@@ -7,20 +7,65 @@ echo "  GL_Simple Setup & Launcher (Ubuntu)"
 echo "====================================="
 
 # This script is prescriptive for Ubuntu/Debian systems. It assumes `apt-get` is available
-# Auto-init the active project's media submodule. Per-project media
-# lives in its own GitHub repo (GL_Simple_<id>_media) and is mounted at
-# projects/<id>/media/ — operators clone main + opt in to one project's
-# media. If the submodule directory is empty (fresh clone) this fills
-# it; if already populated, the call is a fast no-op. We grep the
-# config to find the active project rather than parse YAML so this
-# step doesn't require Python yet (Python install happens below).
-if [ -f config.yaml ] && [ -f .gitmodules ]; then
+#
+# Ensure git is available before anything else - the project auto-clone
+# step below needs it. (On Linux we can install it via apt; on Windows
+# the .ps1 script handles installation via winget.)
+if ! command -v git >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "[init] git not found - installing..."
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
+    else
+        echo "ERROR: git is required but not installed and apt-get isn't available." >&2
+        echo "       Install git manually and re-run." >&2
+        exit 1
+    fi
+fi
+
+# Ensure the active project's source tree is present. Per-project source
+# (code + shaders + media) lives in its own private GitHub repo
+# (GL_Simple_<id>) and is cloned into projects/<id>/ on first run.
+# projects/<id>/ is gitignored in the main repo - engine code stays
+# project-agnostic. The clone URL comes from deploy/catalog.yaml.
+#
+# Legacy: projects that still use a media-only submodule (declared in
+# .gitmodules) are handled by the second branch below until they're
+# migrated to the standalone-clone model.
+#
+# We grep config files rather than parse YAML so this step doesn't
+# require Python yet (Python install happens below).
+if [ -f config.yaml ]; then
     PROJECT_ID=$(grep -E '^project:' config.yaml | head -1 \
         | sed -E 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]+$//')
-    if [ -n "${PROJECT_ID:-}" ] && grep -q "projects/$PROJECT_ID/media" .gitmodules 2>/dev/null; then
+fi
+
+if [ -n "${PROJECT_ID:-}" ]; then
+    # New model: standalone clone from deploy/catalog.yaml.
+    if [ ! -f "projects/$PROJECT_ID/project.yaml" ] && [ -f deploy/catalog.yaml ]; then
+        # Pull the `repo:` line out of the catalog entry for this project.
+        # Looks for the indented "<id>:" block then the first "repo:" under it.
+        REPO_URL=$(awk -v pid="$PROJECT_ID" '
+            $0 ~ "^  "pid":" { found=1; next }
+            found && /^  [a-zA-Z_]/ { found=0 }
+            found && /repo:/ { sub(/.*repo:[[:space:]]*/, ""); print; exit }
+        ' deploy/catalog.yaml)
+        if [ -n "$REPO_URL" ]; then
+            echo "[init] Project '$PROJECT_ID' not deployed - cloning $REPO_URL ..."
+            git clone "$REPO_URL" "projects/$PROJECT_ID" \
+                || { echo "ERROR: clone failed. Set up GitHub auth (PAT or SSH key) and retry."; exit 1; }
+        else
+            echo "ERROR: Project '$PROJECT_ID' has no entry in deploy/catalog.yaml." >&2
+            echo "       Add it, or change 'project:' in config.yaml to a deployed project." >&2
+            exit 1
+        fi
+    fi
+    # Legacy model: media-only submodule (will be removed once all projects
+    # are migrated to standalone clones).
+    if [ -f .gitmodules ] && grep -q "projects/$PROJECT_ID/media" .gitmodules 2>/dev/null; then
         echo "[init] Ensuring projects/$PROJECT_ID/media submodule is populated..."
         git submodule update --init "projects/$PROJECT_ID/media" \
-            || echo "  (submodule init failed; you can retry manually with: git submodule update --init projects/$PROJECT_ID/media)"
+            || echo "  (submodule init failed; retry: git submodule update --init projects/$PROJECT_ID/media)"
     fi
 fi
 

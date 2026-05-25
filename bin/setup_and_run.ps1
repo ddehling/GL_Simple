@@ -13,22 +13,102 @@ Write-Host "  GL_Simple Setup & Launcher" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Auto-init the active project's media submodule. Per-project media
-# lives in its own GitHub repo (GL_Simple_<id>_media) mounted at
-# projects/<id>/media/. Operators clone main + opt in to one project's
-# media — this step picks the right one based on config.yaml's
-# ``project:`` field. Regex-parse rather than YAML so we don't need
-# Python installed yet (that happens further down).
-if ((Test-Path "config.yaml") -and (Test-Path ".gitmodules")) {
+# Ensure git is available before anything else - the project auto-clone
+# step below needs it. The .sh script does the same with apt-get.
+function Install-Git {
+    Write-Host "  Attempting to install Git automatically using winget..." -ForegroundColor Cyan
+    try {
+        & winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+            Write-Host "  Git installed successfully" -ForegroundColor Green
+            return $true
+        }
+    } catch {}
+    Write-Host "  Automatic Git install failed." -ForegroundColor Red
+    Write-Host "  Install Git manually from https://git-scm.com/download/win and re-run." -ForegroundColor Yellow
+    return $false
+}
+
+try { & git --version 2>&1 | Out-Null } catch { $LASTEXITCODE = 1 }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[init] Git not found." -ForegroundColor Yellow
+    try {
+        & winget --version 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $response = Read-Host "  Install Git automatically? (Y/n)"
+            if ($response -eq "" -or $response -match "^[Yy]") {
+                if (-not (Install-Git)) {
+                    Read-Host "Press Enter to exit"
+                    exit 1
+                }
+            } else {
+                Write-Host "  Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Yellow
+                Read-Host "Press Enter to exit"
+                exit 1
+            }
+        } else {
+            throw "winget not available"
+        }
+    } catch {
+        Write-Host "  winget not available - install Git manually from https://git-scm.com/download/win and re-run." -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+}
+
+# Ensure the active project's source tree is present. Per-project source
+# (code + shaders + media) lives in its own private GitHub repo
+# (GL_Simple_<id>) and is cloned into projects/<id>/ on first run.
+# projects/<id>/ is gitignored in the main repo. Clone URL comes from
+# deploy/catalog.yaml. See bin/setup_and_run.sh for the matching Linux
+# logic - these two paths must stay semantically identical.
+#
+# Legacy: projects still using a media-only submodule (declared in
+# .gitmodules) are handled by the second branch below until migrated.
+$projectId = $null
+if (Test-Path "config.yaml") {
     $configText = Get-Content "config.yaml" -Raw
     if ($configText -match '(?m)^project:\s*([^\s#]+)') {
         $projectId = $Matches[1] -replace '["'']', ''
+    }
+}
+
+if ($projectId) {
+    # New model: standalone clone from deploy/catalog.yaml.
+    if (-not (Test-Path "projects/$projectId/project.yaml") -and (Test-Path "deploy/catalog.yaml")) {
+        $catalogText = Get-Content "deploy/catalog.yaml" -Raw
+        # Match the indented "<id>:" block, then the first "repo:" line
+        # before the next sibling project entry. Regex mirrors the awk
+        # parse in setup_and_run.sh.
+        $pattern = "(?ms)^  " + [regex]::Escape($projectId) + ":\s*\r?\n(?:    .*\r?\n)*?    repo:\s*([^\s#\r\n]+)"
+        $repoUrl = $null
+        if ($catalogText -match $pattern) {
+            $repoUrl = $Matches[1]
+        }
+        if ($repoUrl) {
+            Write-Host "[init] Project '$projectId' not deployed - cloning $repoUrl ..." -ForegroundColor Yellow
+            & git clone $repoUrl "projects/$projectId"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: clone failed. Set up GitHub auth (PAT or SSH key) and retry." -ForegroundColor Red
+                Read-Host "Press Enter to exit"
+                exit 1
+            }
+        } else {
+            Write-Host "ERROR: Project '$projectId' has no entry in deploy/catalog.yaml." -ForegroundColor Red
+            Write-Host "       Add it, or change 'project:' in config.yaml to a deployed project." -ForegroundColor Red
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+    }
+    # Legacy model: media-only submodule.
+    if ((Test-Path ".gitmodules")) {
         $gitmodulesText = Get-Content ".gitmodules" -Raw
         if ($gitmodulesText -match [regex]::Escape("projects/$projectId/media")) {
             Write-Host "[init] Ensuring projects/$projectId/media submodule is populated..." -ForegroundColor Yellow
             & git submodule update --init "projects/$projectId/media"
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "  (submodule init failed; retry manually with: git submodule update --init projects/$projectId/media)" -ForegroundColor Yellow
+                Write-Host "  (submodule init failed; retry: git submodule update --init projects/$projectId/media)" -ForegroundColor Yellow
             }
         }
     }

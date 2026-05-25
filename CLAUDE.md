@@ -110,7 +110,9 @@ web/
   static/css/preview.css    # Preview page styles
 tools/                      # Standalone utilities: sound_editor, computer, midi_integration_example, gl_test, wleddetect
 config/                     # DMX universe and fixture definitions (Unit*.txt)
-media/                      # Audio files (sounds/) and images (images/)
+media/                      # Shared audio files (sounds/) and images usable by any project
+projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py. See docs/DEPLOYMENT.md.
+deploy/                     # catalog.yaml: id -> project repo URL, read by setup_and_run scripts
 docs/                       # Documentation (see below)
 bin/                        # Launch scripts (setup_and_run, quick_run)
 ```
@@ -166,7 +168,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/MIDI_README.md` — MIDI controller setup
 - `docs/EVENT_MAP_SYSTEM.md` — Event scheduling
 - `docs/PARAMETER_MANAGEMENT.md` — Parameter system
-- `docs/MEDIA_SUBMODULES.md` — Per-project media (submodule) workflow + new-project setup
+- `docs/DEPLOYMENT.md` — Per-project repo model, fresh-machine setup, GitHub auth, adding/switching projects
 - `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
 - `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)
 - `docs/shader_contrast_playbook.md` — How to design shaders that read well under Fan's fixed `brightness_limit: 0.1` (read when authoring or editing visuals — hue/spatial/saturation levers under an energy budget)

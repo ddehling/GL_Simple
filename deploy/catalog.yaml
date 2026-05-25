@@ -1,0 +1,27 @@
+# Project deployment catalog.
+#
+# Maps project id -> private GitHub repo holding that project's full source
+# (code, shaders, media). Operators choose which projects to deploy on a
+# given machine; the deploy tooling and bin/setup_and_run.* read this file
+# to know where to clone each project from.
+#
+# Each project repo contains the entire projects/<id>/ tree:
+#   project.yaml, event_map.py, weather_params.py, random_events.py,
+#   shaders/, media/
+#
+# The main GL_Simple repo (this one) holds only the engine and is
+# project-agnostic. projects/<id>/ directories are gitignored and
+# populated by cloning the per-project repos listed below.
+#
+# Auth: these are private repos. Set up either a GitHub PAT (Personal
+# Access Token) in your local git credential helper, or SSH keys with
+# clone access. See docs/DEPLOYMENT.md.
+#
+# Adding a project: create its private repo on GitHub following the
+# layout convention, push the project source there, then add an entry
+# here with the clone URL and display name.
+projects:
+  fan:
+    repo: https://github.com/ddehling/GL_Simple_fan.git
+    display_name: Fan
+    description: "Burning Man fan piece - 256x300 LED canvas, multi-weather narrative cycles"

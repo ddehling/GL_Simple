@@ -1,3 +1,8 @@
+# Per-project deployments (cloned from private project repos by bin/deploy.*)
+# Each project repo (e.g. GL_Simple_fan) lives at projects/<id>/ as a standalone
+# clone, not as a submodule. Engine code stays project-agnostic.
+projects/fan/
+
 # Python Virtual Environments
 venv/
 env/
