@@ -237,19 +237,17 @@ for i in "${CHOSEN_IDX[@]}"; do
 done
 
 # ---------------------------------------------------------------------
-# 7. Write config.yaml's project: field
+# 7. Write active_project.yaml (per-machine, gitignored)
 # ---------------------------------------------------------------------
-echo "[6/8] Setting active project to '$PRIMARY_ID' in config.yaml..."
-if [ ! -f config.yaml ]; then
-    echo "ERROR: config.yaml not found at repo root." >&2
-    exit 1
-fi
-if grep -qE '^project:' config.yaml; then
-    sed -i.bak -E "s|^project:.*$|project: $PRIMARY_ID|" config.yaml
-    rm -f config.yaml.bak
-else
-    echo "project: $PRIMARY_ID" >> config.yaml
-fi
+# Kept separate from config.yaml so 'switch active project on this
+# machine' doesn't dirty a tracked file - no merge churn between
+# operators with different active projects.
+echo "[6/8] Setting active project to '$PRIMARY_ID' in active_project.yaml..."
+cat > active_project.yaml <<EOF
+# Per-machine active project selection. Gitignored.
+# Override at launch with --project <id>.
+project: $PRIMARY_ID
+EOF
 
 # ---------------------------------------------------------------------
 # 8. System deps + Python venv + pip install

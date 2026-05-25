@@ -225,20 +225,17 @@ foreach ($i in $chosenIdx) {
 }
 
 # ---------------------------------------------------------------------
-# 7. Write config.yaml's project: field
+# 7. Write active_project.yaml (per-machine, gitignored)
 # ---------------------------------------------------------------------
-Write-Host "[6/8] Setting active project to '$primaryId' in config.yaml..." -ForegroundColor Yellow
-if (-not (Test-Path "config.yaml")) {
-    Write-Host "ERROR: config.yaml not found at repo root." -ForegroundColor Red
-    Read-Host "Press Enter to exit"; exit 1
-}
-$configLines = Get-Content "config.yaml"
-$replaced = $false
-$newLines = foreach ($line in $configLines) {
-    if ($line -match '^project:') { $replaced = $true; "project: $primaryId" } else { $line }
-}
-if (-not $replaced) { $newLines += "project: $primaryId" }
-Set-Content "config.yaml" -Value $newLines -Encoding ASCII
+# Kept separate from config.yaml so 'switch active project on this
+# machine' doesn't dirty a tracked file.
+Write-Host "[6/8] Setting active project to '$primaryId' in active_project.yaml..." -ForegroundColor Yellow
+$activeProjectContent = @"
+# Per-machine active project selection. Gitignored.
+# Override at launch with --project <id>.
+project: $primaryId
+"@
+Set-Content "active_project.yaml" -Value $activeProjectContent -Encoding ASCII
 
 # ---------------------------------------------------------------------
 # 8. Python + venv + pip install

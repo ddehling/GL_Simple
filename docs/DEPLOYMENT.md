@@ -109,15 +109,23 @@ or just want to refresh deps.
 
 ## Switching the active project on a machine
 
-Edit `config.yaml`:
+Per-machine project selection lives in `active_project.yaml` at the
+repo root (gitignored). Edit it:
 ```yaml
 project: <new-id>
 ```
 
-Re-run `bin/setup.*` (it'll auto-clone the new project if needed and
-launch). Or if the new project is already deployed, just launch
-directly with `venv/bin/python Stories_OGL.py` — `Stories_OGL.py`
-re-reads `config.yaml` on startup.
+Then launch directly:
+```bash
+venv/bin/python Stories_OGL.py
+```
+
+Or re-run `bin/setup.*` to use the picker again (also handles auto-
+cloning if the new project isn't deployed yet).
+
+**Don't edit `config.yaml`'s `project:` field for this** — that line
+is the tracked default fallback. Changing it would dirty a shared
+file and could ping-pong between operators with different machines.
 
 ## Updating a project that's already deployed
 

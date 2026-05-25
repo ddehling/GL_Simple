@@ -11,9 +11,12 @@
 #   projects/<id>/event_map.py                      — effect catalog for that project
 #   projects/<id>/weather_params.py                 — weather sets / states for that project
 #
-# Active art-piece project — pick which set of project files runs on this
-# machine. Override at launch with ``--project <id>``. Available IDs are
-# whatever subdirs exist under ``projects/`` containing a ``project.yaml``.
+# Default active project - the FALLBACK when no per-machine override exists.
+# Per-machine selection lives in ``active_project.yaml`` (gitignored, written
+# by bin/setup.*) which overrides this. Override at launch with ``--project
+# <id>``. Available IDs are whatever subdirs exist under ``projects/``
+# containing a ``project.yaml``. Don't change this for a one-off project
+# swap on your machine - edit active_project.yaml instead.
 project: fan
 
 display:

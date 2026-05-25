@@ -31,10 +31,16 @@ def load_config(project_override: str | None = None):
 
     Returns (cfg, project) where ``project`` is the resolved active
     Project (loaded from ``projects/<id>/project.yaml``). The active id
-    comes from ``project_override`` if given, else config.yaml's
-    top-level ``project:`` field, else ``"fan"``.
+    comes from (in order):
+      1. ``project_override`` (CLI --project flag) if given
+      2. ``active_project.yaml`` at repo root (per-machine, gitignored;
+         written by bin/setup.* so swapping the active project on a
+         machine doesn't cause merge churn in shared config.yaml)
+      3. config.yaml's top-level ``project:`` field (tracked default)
+      4. ``"fan"`` as the hard-coded fallback
     """
     config_path = Path(__file__).parent / "config.yaml"
+    active_project_path = Path(__file__).parent / "active_project.yaml"
     defaults = {
         "project": "fan",
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
@@ -70,6 +76,18 @@ def load_config(project_override: str | None = None):
         print(f"[Config] Loaded from {config_path}")
     else:
         print(f"[Config] {config_path} not found, using defaults")
+
+    # Per-machine override for the active project. Lives outside config.yaml
+    # so 'switch active project on this machine' doesn't dirty a shared file.
+    if active_project_path.exists():
+        try:
+            with open(active_project_path, "r", encoding="utf-8") as f:
+                ap = yaml.safe_load(f) or {}
+            if isinstance(ap, dict) and ap.get("project"):
+                defaults["project"] = ap["project"]
+                print(f"[Config] Active project from {active_project_path.name}: {defaults['project']}")
+        except Exception as e:
+            print(f"[Config] {active_project_path.name} parse failed ({e}); ignoring")
 
     project_id = project_override or defaults["project"]
     project = load_project(project_id)

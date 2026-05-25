@@ -1,10 +1,15 @@
-# Per-project deployments (cloned from private project repos by bin/deploy.*)
+# Per-project deployments (cloned from private project repos by bin/setup.*).
 # Each project repo (e.g. GL_Simple_fan, GL_Simple_wol) lives at
 # projects/<id>/ as a standalone clone, not as a submodule. Engine code
 # stays project-agnostic. Add a line here when a new project gets a
 # private repo + catalog entry.
 projects/fan/
 projects/weight_of_light/
+
+# Per-machine active project selection - written by bin/setup.*, read by
+# Stories_OGL.py. Kept out of git so different operators can run different
+# projects on their machines without ping-ponging config.yaml.
+active_project.yaml
 
 # Python Virtual Environments
 venv/
