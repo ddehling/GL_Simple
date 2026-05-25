@@ -23,6 +23,24 @@ cd "$(dirname "$0")/.."
 
 REPO_DIR="$(pwd)"
 USER_NAME="$(whoami)"
+
+# Refuse to run as root - we use 'sudo' explicitly for the few steps
+# that need it. Running the whole script as root would write the XDG
+# autostart entry to /root/.config/ and set AutomaticLogin=root,
+# neither of which is what you want. SUDO_USER is set when invoked
+# via sudo (it holds the original user's name); use that as the hint.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "ERROR: do not run this script with sudo / as root." >&2
+    if [ -n "${SUDO_USER:-}" ]; then
+        echo "       Re-run as $SUDO_USER (no sudo prefix):" >&2
+        echo "           ./bin/install_autostart.sh" >&2
+    else
+        echo "       Re-run as the regular user who will use this machine:" >&2
+        echo "           ./bin/install_autostart.sh" >&2
+    fi
+    echo "       The script calls sudo internally for the few steps that need it." >&2
+    exit 1
+fi
 GREETD_CONF=/etc/greetd/cosmic-greeter.toml
 GDM_CONF=/etc/gdm3/custom.conf
 GDM_CONF_ALT=/etc/gdm/custom.conf
