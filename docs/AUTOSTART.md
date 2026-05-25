@@ -4,6 +4,14 @@ Stories_OGL.py is configured to start automatically on boot by enabling **auto-l
 
 A legacy systemd user service also exists (disabled) — see [Alternative: systemd user service](#alternative-systemd-user-service) at the bottom.
 
+## One-script install
+
+```bash
+./bin/install_autostart.sh
+```
+
+Installs xterm, adds you to the `audio render video` groups, configures greetd auto-login to Cosmic, and writes `~/.config/autostart/gl-simple.desktop` pointing at `bin/run.sh`. Idempotent. Reboot after. The manual recipe below is what the script automates — read it if you need to deviate (different distro, different display manager).
+
 ## Files
 
 - `~/.config/autostart/gl-simple.desktop` — XDG autostart entry launched by the Cosmic session on login.
