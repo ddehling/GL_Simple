@@ -1,5 +1,18 @@
 import argparse
 import sys
+
+# Force stdout/stderr to UTF-8 so the many print statements scattered
+# through the engine + project shaders that use unicode glyphs (check
+# marks, arrows, etc.) don't crash on Windows where the default console
+# encoding is cp1252. 'replace' errors mode means an unencodable char
+# becomes '?' rather than raising. No-op on Linux/macOS where stdout is
+# already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, Exception):
+    pass
+
 import numpy as np
 import time
 from pathlib import Path

@@ -19,6 +19,8 @@ class ShaderEffect:
         self.VBOs = []
         self.EBO = None
         self.render_priority = 0  # Higher priority renders later (post-processing = 1000)
+        # Lazy cache for glGetUniformLocation results - see uniform() below.
+        self._uniform_cache = {}
         
     def init(self):
         """Initialize shader and buffers"""
@@ -61,3 +63,34 @@ class ShaderEffect:
                 glDeleteProgram(self.shader)
         except:
             pass  # Ignore cleanup errors
+
+    def uniform(self, program, name):
+        """Lazily-cached drop-in replacement for glGetUniformLocation.
+
+        glGetUniformLocation is a driver call that walks the shader's
+        string symbol table - cheap once, wasteful per-frame. This
+        method memoizes the result per (program, name), so repeated
+        calls from render() pay only a Python dict lookup.
+
+        Usage in any effect (drop-in for glGetUniformLocation):
+            loc = self.uniform(self.shader, "iTime")
+            glUniform1f(loc, time)
+
+        Inactive uniforms (declared but unused in the linked program)
+        come back as -1 from the driver and stay cached as -1;
+        glUniform* calls with -1 are silent no-ops, so it's safe to
+        speculatively ask for any name.
+
+        Note: the cache is keyed on the program *handle* (an integer).
+        If you delete a program and create a new one that happens to
+        reuse the same GLuint, cached locations could be stale. None
+        of the current effects do that; if you add one that recompiles
+        shaders at runtime, clear _uniform_cache after the recompile.
+        """
+        cache = self._uniform_cache
+        key = (program, name)
+        loc = cache.get(key)
+        if loc is None:
+            loc = glGetUniformLocation(program, name)
+            cache[key] = loc
+        return loc
