@@ -51,22 +51,37 @@ fi
 # ---------------------------------------------------------------------
 # 2. gh + auth
 # ---------------------------------------------------------------------
-if ! command -v gh >/dev/null 2>&1; then
-    echo "[2/8] Installing GitHub CLI (gh)..."
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh 2>/dev/null; then
-        # Fallback: GitHub's official apt source for older Ubuntu releases
-        echo "      gh not in apt cache, adding GitHub's apt source..."
-        sudo apt-get install -y --no-install-recommends curl ca-certificates
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-            | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-        sudo apt-get update -y
-        sudo apt-get install -y --no-install-recommends gh
+# Always install gh from GitHub's official apt source. Ubuntu's
+# universe carries very old gh (Jammy: 2.4 from 2021) that's missing
+# flags we use. The GitHub source guarantees a current version.
+install_gh_from_github() {
+    echo "      Adding GitHub's apt source for current gh..."
+    sudo apt-get install -y --no-install-recommends curl ca-certificates
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+    sudo apt-get update -y
+    sudo apt-get install -y --only-upgrade gh \
+        || sudo apt-get install -y gh
+}
+
+GH_OK=false
+if command -v gh >/dev/null 2>&1; then
+    # Require gh >= 2.20 (covers --git-protocol, modern device-flow UX).
+    GH_VER=$(gh --version 2>/dev/null | awk '/^gh version/ {print $3; exit}')
+    GH_MAJOR=$(echo "$GH_VER" | cut -d. -f1)
+    GH_MINOR=$(echo "$GH_VER" | cut -d. -f2)
+    if [ "${GH_MAJOR:-0}" -gt 2 ] || { [ "${GH_MAJOR:-0}" -eq 2 ] && [ "${GH_MINOR:-0}" -ge 20 ]; }; then
+        GH_OK=true
+        echo "[2/8] gh OK (version $GH_VER)"
+    else
+        echo "[2/8] gh present but too old (version $GH_VER); upgrading..."
     fi
-else
-    echo "[2/8] gh OK ($(gh --version | head -1))"
+fi
+if ! $GH_OK; then
+    install_gh_from_github
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
@@ -76,7 +91,7 @@ if ! gh auth status >/dev/null 2>&1; then
     echo "      on any device, enter the code, sign in, and grant access."
     echo "      The script will resume automatically."
     echo ""
-    gh auth login --git-protocol https --hostname github.com --web \
+    gh auth login --hostname github.com --web \
         || { echo "ERROR: gh auth login failed." >&2; exit 1; }
 fi
 GH_USER=$(gh api user -q .login 2>/dev/null || echo "?")

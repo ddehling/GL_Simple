@@ -29,7 +29,7 @@ Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host "  GL_Simple Setup (Windows)" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
 
-function Refresh-Path {
+function Update-PathFromMachineAndUser {
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
 
@@ -37,7 +37,7 @@ function Test-Command($name) {
     try { & $name --version 2>&1 | Out-Null; return ($LASTEXITCODE -eq 0) } catch { return $false }
 }
 
-function Require-Winget {
+function Assert-Winget {
     if (-not (Test-Command winget)) {
         Write-Host "ERROR: winget not available. Install App Installer from the Microsoft Store, then re-run." -ForegroundColor Red
         Read-Host "Press Enter to exit"; exit 1
@@ -48,14 +48,14 @@ function Require-Winget {
 # 1. git
 # ---------------------------------------------------------------------
 if (-not (Test-Command git)) {
-    Require-Winget
+    Assert-Winget
     Write-Host "[1/8] Installing git via winget..." -ForegroundColor Yellow
     & winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: git install failed. Install from https://git-scm.com/download/win and re-run." -ForegroundColor Red
         Read-Host "Press Enter to exit"; exit 1
     }
-    Refresh-Path
+    Update-PathFromMachineAndUser
 } else {
     Write-Host "[1/8] git OK ($(& git --version))" -ForegroundColor Green
 }
@@ -64,14 +64,14 @@ if (-not (Test-Command git)) {
 # 2. gh + auth
 # ---------------------------------------------------------------------
 if (-not (Test-Command gh)) {
-    Require-Winget
+    Assert-Winget
     Write-Host "[2/8] Installing GitHub CLI (gh) via winget..." -ForegroundColor Yellow
     & winget install --id GitHub.cli -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: gh install failed. Install from https://cli.github.com/ and re-run." -ForegroundColor Red
         Read-Host "Press Enter to exit"; exit 1
     }
-    Refresh-Path
+    Update-PathFromMachineAndUser
 } else {
     Write-Host "[2/8] gh OK ($(& gh --version | Select-Object -First 1))" -ForegroundColor Green
 }
@@ -84,7 +84,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "      on any device, enter the code, sign in, and grant access." -ForegroundColor Cyan
     Write-Host "      The script will resume automatically." -ForegroundColor Cyan
     Write-Host ""
-    & gh auth login --git-protocol https --hostname github.com --web
+    & gh auth login --hostname github.com --web
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: gh auth login failed." -ForegroundColor Red
         Read-Host "Press Enter to exit"; exit 1
@@ -110,7 +110,7 @@ foreach ($line in (Get-Content $catalogPath)) {
     if ($line -match '^  ([A-Za-z_][A-Za-z0-9_]*):\s*$') {
         if ($current) { $projects += $current }
         $current = @{ Id = $Matches[1]; Url = ""; Name = "" }
-    } elseif ($current -ne $null) {
+    } elseif ($null -ne $current) {
         if ($line -match '^    repo:\s*(.+?)\s*$') {
             $current.Url = $Matches[1]
         } elseif ($line -match '^    display_name:\s*(.+?)\s*$') {
@@ -159,10 +159,10 @@ Write-Host ""
 # ---------------------------------------------------------------------
 $chosenIdx = @()
 while ($chosenIdx.Count -eq 0) {
-    $input = Read-Host "Enter project numbers to install (space-separated, e.g. '1 2')"
+    $selection = Read-Host "Enter project numbers to install (space-separated, e.g. '1 2')"
     $chosenIdx = @()
     $valid = $true
-    foreach ($tok in ($input -split '\s+' | Where-Object { $_ -ne "" })) {
+    foreach ($tok in ($selection -split '\s+' | Where-Object { $_ -ne "" })) {
         if ($tok -notmatch '^\d+$') {
             Write-Host "  '$tok' is not a number." -ForegroundColor Red
             $valid = $false; break
@@ -263,10 +263,10 @@ if (-not $pythonCmd) {
     }
 }
 if (-not $pythonCmd) {
-    Require-Winget
+    Assert-Winget
     Write-Host "      Installing Python 3.12 via winget..." -ForegroundColor Yellow
     & winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-    Refresh-Path
+    Update-PathFromMachineAndUser
     Write-Host "      Python installed. Please close this terminal, reopen, and re-run setup.ps1." -ForegroundColor Yellow
     Read-Host "Press Enter to exit"; exit 0
 }
