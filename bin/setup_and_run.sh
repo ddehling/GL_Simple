@@ -29,9 +29,10 @@ fi
 # projects/<id>/ is gitignored in the main repo - engine code stays
 # project-agnostic. The clone URL comes from deploy/catalog.yaml.
 #
-# Legacy: projects that still use a media-only submodule (declared in
-# .gitmodules) are handled by the second branch below until they're
-# migrated to the standalone-clone model.
+# To pick which project(s) to deploy interactively, run bin/deploy.sh
+# instead. This script just auto-clones whatever project config.yaml
+# names, which is the right behaviour on a machine that's already been
+# set up once.
 #
 # We grep config files rather than parse YAML so this step doesn't
 # require Python yet (Python install happens below).
@@ -40,9 +41,8 @@ if [ -f config.yaml ]; then
         | sed -E 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]+$//')
 fi
 
-if [ -n "${PROJECT_ID:-}" ]; then
-    # New model: standalone clone from deploy/catalog.yaml.
-    if [ ! -f "projects/$PROJECT_ID/project.yaml" ] && [ -f deploy/catalog.yaml ]; then
+if [ -n "${PROJECT_ID:-}" ] && [ ! -f "projects/$PROJECT_ID/project.yaml" ]; then
+    if [ -f deploy/catalog.yaml ]; then
         # Pull the `repo:` line out of the catalog entry for this project.
         # Looks for the indented "<id>:" block then the first "repo:" under it.
         REPO_URL=$(awk -v pid="$PROJECT_ID" '
@@ -59,13 +59,6 @@ if [ -n "${PROJECT_ID:-}" ]; then
             echo "       Add it, or change 'project:' in config.yaml to a deployed project." >&2
             exit 1
         fi
-    fi
-    # Legacy model: media-only submodule (will be removed once all projects
-    # are migrated to standalone clones).
-    if [ -f .gitmodules ] && grep -q "projects/$PROJECT_ID/media" .gitmodules 2>/dev/null; then
-        echo "[init] Ensuring projects/$PROJECT_ID/media submodule is populated..."
-        git submodule update --init "projects/$PROJECT_ID/media" \
-            || echo "  (submodule init failed; retry: git submodule update --init projects/$PROJECT_ID/media)"
     fi
 fi
 

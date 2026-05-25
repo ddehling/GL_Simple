@@ -64,8 +64,9 @@ if ($LASTEXITCODE -ne 0) {
 # deploy/catalog.yaml. See bin/setup_and_run.sh for the matching Linux
 # logic - these two paths must stay semantically identical.
 #
-# Legacy: projects still using a media-only submodule (declared in
-# .gitmodules) are handled by the second branch below until migrated.
+# To pick which project(s) to deploy interactively, run bin/deploy.ps1
+# instead. This script just auto-clones whatever project config.yaml
+# names.
 $projectId = $null
 if (Test-Path "config.yaml") {
     $configText = Get-Content "config.yaml" -Raw
@@ -74,9 +75,8 @@ if (Test-Path "config.yaml") {
     }
 }
 
-if ($projectId) {
-    # New model: standalone clone from deploy/catalog.yaml.
-    if (-not (Test-Path "projects/$projectId/project.yaml") -and (Test-Path "deploy/catalog.yaml")) {
+if ($projectId -and -not (Test-Path "projects/$projectId/project.yaml")) {
+    if (Test-Path "deploy/catalog.yaml") {
         $catalogText = Get-Content "deploy/catalog.yaml" -Raw
         # Match the indented "<id>:" block, then the first "repo:" line
         # before the next sibling project entry. Regex mirrors the awk
@@ -99,17 +99,6 @@ if ($projectId) {
             Write-Host "       Add it, or change 'project:' in config.yaml to a deployed project." -ForegroundColor Red
             Read-Host "Press Enter to exit"
             exit 1
-        }
-    }
-    # Legacy model: media-only submodule.
-    if ((Test-Path ".gitmodules")) {
-        $gitmodulesText = Get-Content ".gitmodules" -Raw
-        if ($gitmodulesText -match [regex]::Escape("projects/$projectId/media")) {
-            Write-Host "[init] Ensuring projects/$projectId/media submodule is populated..." -ForegroundColor Yellow
-            & git submodule update --init "projects/$projectId/media"
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  (submodule init failed; retry: git submodule update --init projects/$projectId/media)" -ForegroundColor Yellow
-            }
         }
     }
 }

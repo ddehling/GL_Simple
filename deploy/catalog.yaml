@@ -25,3 +25,7 @@ projects:
     repo: https://github.com/ddehling/GL_Simple_fan.git
     display_name: Fan
     description: "Burning Man fan piece - 256x300 LED canvas, multi-weather narrative cycles"
+  weight_of_light:
+    repo: https://github.com/ddehling/GL_Simple_wol.git
+    display_name: Weight of Light
+    description: "Interactive sky-canopy installation - 8-station radial layout with button + sensor input"

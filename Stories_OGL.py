@@ -620,7 +620,7 @@ class EnvironmentalSystem:
         if host:
             resolved = mdns_resolve(host)
             if resolved is not None:
-                print(f"[mDNS] {host} → {resolved}")
+                print(f"[mDNS] {host} -> {resolved}")
                 return resolved
             # Fall through to ip if both are given.
             if ip:
