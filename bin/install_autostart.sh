@@ -24,8 +24,21 @@ cd "$(dirname "$0")/.."
 REPO_DIR="$(pwd)"
 USER_NAME="$(whoami)"
 GREETD_CONF=/etc/greetd/cosmic-greeter.toml
+GDM_CONF=/etc/gdm3/custom.conf
+GDM_CONF_ALT=/etc/gdm/custom.conf
 AUTOSTART_DIR="$HOME/.config/autostart"
 DESKTOP_FILE="$AUTOSTART_DIR/gl-simple.desktop"
+
+# Detect which display manager owns auto-login on this machine.
+DM=""
+if [ -f "$GREETD_CONF" ]; then
+    DM="greetd"
+elif [ -f "$GDM_CONF" ]; then
+    DM="gdm3"
+elif [ -f "$GDM_CONF_ALT" ]; then
+    DM="gdm"
+    GDM_CONF="$GDM_CONF_ALT"
+fi
 
 echo "====================================="
 echo "  GL_Simple Autostart Installer"
@@ -35,30 +48,29 @@ echo "  repo:    $REPO_DIR"
 echo ""
 
 # -----------------------------------------------------------------------
-# 1. Sanity check: Pop!_OS with greetd + Cosmic
+# 1. Display-manager detection
 # -----------------------------------------------------------------------
-if [ ! -f /etc/os-release ] || ! grep -q -i "pop" /etc/os-release; then
-    echo "WARNING: this machine doesn't look like Pop!_OS." >&2
-    echo "         /etc/os-release:" >&2
-    grep -E '^(NAME|VERSION|ID)=' /etc/os-release 2>/dev/null | sed 's/^/           /' >&2
-    echo ""
-    echo "         The autostart recipe in docs/AUTOSTART.md is specific to" >&2
-    echo "         Pop!_OS's greetd + Cosmic stack. Other distros need" >&2
-    echo "         different display-manager config (gdm3, lightdm, sddm)." >&2
-    echo "         Continuing anyway - you'll need to verify each step." >&2
-    echo ""
-fi
-
-if [ ! -f "$GREETD_CONF" ]; then
-    echo "ERROR: $GREETD_CONF not found. Expected greetd as the display" >&2
-    echo "       manager. Abort - see docs/AUTOSTART.md for alternatives." >&2
-    exit 1
-fi
-
-if ! command -v start-cosmic >/dev/null 2>&1; then
-    echo "WARNING: /usr/bin/start-cosmic not found. Auto-login will fail" >&2
-    echo "         unless Cosmic is installed. Continuing anyway." >&2
-fi
+case "$DM" in
+    greetd)
+        echo "  display-manager: greetd (Cosmic)"
+        if ! command -v start-cosmic >/dev/null 2>&1; then
+            echo "WARNING: /usr/bin/start-cosmic not found. Auto-login will fail" >&2
+            echo "         unless Cosmic is installed. Continuing anyway." >&2
+        fi
+        ;;
+    gdm3|gdm)
+        echo "  display-manager: $DM ($GDM_CONF)"
+        ;;
+    *)
+        echo "ERROR: no supported display manager detected." >&2
+        echo "       Looked for: $GREETD_CONF, $GDM_CONF, $GDM_CONF_ALT" >&2
+        echo "       Supported: greetd (Pop!_OS Cosmic), gdm3 (Pop!_OS LTS, Ubuntu)." >&2
+        echo "       For others (lightdm, sddm), see docs/AUTOSTART.md and configure" >&2
+        echo "       auto-login manually, then re-run this script with --skip-login." >&2
+        exit 1
+        ;;
+esac
+echo ""
 
 # -----------------------------------------------------------------------
 # 2. Install xterm
@@ -88,19 +100,54 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 4. Auto-login via greetd [initial_session]
+# 4. Auto-login (per display manager)
 # -----------------------------------------------------------------------
-if grep -q "^\[initial_session\]" "$GREETD_CONF"; then
-    echo "[3/5] greetd auto-login already configured in $GREETD_CONF"
-else
-    echo "[3/5] Enabling auto-login for $USER_NAME via greetd..."
-    sudo tee -a "$GREETD_CONF" > /dev/null <<EOF
+case "$DM" in
+    greetd)
+        if grep -q "^\[initial_session\]" "$GREETD_CONF"; then
+            echo "[3/5] greetd auto-login already configured in $GREETD_CONF"
+        else
+            echo "[3/5] Enabling auto-login for $USER_NAME via greetd..."
+            sudo tee -a "$GREETD_CONF" > /dev/null <<EOF
 
 [initial_session]
 command = "/usr/bin/start-cosmic"
 user = "$USER_NAME"
 EOF
-fi
+        fi
+        ;;
+    gdm3|gdm)
+        # GDM ini parser merges multiple [daemon] sections, but to be tidy
+        # we use a python helper to insert AutomaticLogin* keys into the
+        # existing [daemon] section if present, or create one if not.
+        if grep -qE "^AutomaticLogin\s*=\s*$USER_NAME\s*$" "$GDM_CONF" 2>/dev/null \
+           && grep -qE "^AutomaticLoginEnable\s*=\s*[tT]rue\s*$" "$GDM_CONF" 2>/dev/null; then
+            echo "[3/5] GDM auto-login already configured for $USER_NAME in $GDM_CONF"
+        else
+            echo "[3/5] Enabling GDM auto-login for $USER_NAME..."
+            sudo python3 - "$GDM_CONF" "$USER_NAME" <<'PY'
+import sys, re, pathlib
+path = pathlib.Path(sys.argv[1])
+user = sys.argv[2]
+text = path.read_text() if path.exists() else ""
+# Strip any existing AutomaticLogin* lines so we don't end up with duplicates.
+text = re.sub(r'(?m)^\s*AutomaticLogin(?:Enable)?\s*=.*\n?', '', text)
+# If [daemon] section exists, insert the two keys right after its header.
+if re.search(r'(?m)^\[daemon\]\s*$', text):
+    text = re.sub(
+        r'(?m)^(\[daemon\]\s*)$',
+        f'\\1\nAutomaticLoginEnable=true\nAutomaticLogin={user}',
+        text, count=1,
+    )
+else:
+    if text and not text.endswith('\n'):
+        text += '\n'
+    text += f'\n[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin={user}\n'
+path.write_text(text)
+PY
+        fi
+        ;;
+esac
 
 # -----------------------------------------------------------------------
 # 5. XDG autostart entry pointing at bin/run.sh
@@ -125,7 +172,7 @@ echo "[5/5] Done."
 echo ""
 echo "Next steps:"
 echo "  - Reboot.  ('sudo reboot')"
-echo "  - On boot: greetd auto-logs into Cosmic, the .desktop autostart"
+echo "  - On boot: $DM auto-logs in as $USER_NAME, the .desktop autostart"
 echo "    opens an xterm running bin/run.sh, which pulls latest project"
 echo "    code (offline-tolerant) and launches Stories_OGL.py."
 echo ""
@@ -133,7 +180,9 @@ echo "To skip the autostart for one boot (dev mode):"
 echo "  mv $DESKTOP_FILE $DESKTOP_FILE.disabled && sudo reboot"
 echo "  (rename back when you're done)"
 echo ""
-echo "To disable auto-login: remove the [initial_session] block from"
-echo "  $GREETD_CONF and reboot."
+case "$DM" in
+    greetd) echo "To disable auto-login: remove [initial_session] from $GREETD_CONF and reboot." ;;
+    gdm3|gdm) echo "To disable auto-login: set AutomaticLoginEnable=false in $GDM_CONF and reboot." ;;
+esac
 echo ""
 echo "Reference: docs/AUTOSTART.md"
