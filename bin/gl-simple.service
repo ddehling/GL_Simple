@@ -13,7 +13,11 @@ Environment=PYTHONUNBUFFERED=1
 # Wait for the PipeWire graph to assign a real (non-null) default sink.
 ExecStartPre=/home/led/Desktop/devel/GL_Simple/bin/wait_for_audio.sh
 ExecStartPre=/bin/sleep 2
-ExecStart=/home/led/Desktop/devel/GL_Simple/venv/bin/python Stories_OGL.py
+# bin/run.sh pulls latest engine + projects (offline-tolerant), then
+# execs the venv Python on Stories_OGL.py. Running it via /bin/bash
+# rather than calling it directly is more robust to filesystem-permission
+# quirks on /home/led/Desktop (FAT-style mounts strip the +x bit).
+ExecStart=/bin/bash /home/led/Desktop/devel/GL_Simple/bin/run.sh
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

@@ -29,6 +29,15 @@ bin\setup.bat                # Windows
 
 ### Launching after setup
 
+Pulls latest engine + every deployed project (offline-tolerant), then
+runs the app:
+
+```bash
+./bin/run.sh                          # Linux/macOS
+bin\run.bat                           # Windows
+```
+
+Skip the pulls (just launch):
 ```bash
 venv/bin/python Stories_OGL.py        # Linux/macOS
 venv\Scripts\python Stories_OGL.py    # Windows
@@ -116,7 +125,7 @@ media/                      # Shared audio files (sounds/) and images usable by 
 projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py. See docs/DEPLOYMENT.md.
 deploy/                     # catalog.yaml: id -> project repo URL, read by bin/setup.* scripts
 docs/                       # Documentation (see below)
-bin/                        # Setup script (setup.sh / setup.bat / setup.ps1), systemd unit, NixOS install
+bin/                        # Setup script (setup.{sh,bat,ps1}), everyday launcher (run.{sh,bat,ps1}), systemd unit, NixOS install
 ```
 
 ## Key Configuration

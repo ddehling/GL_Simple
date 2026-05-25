@@ -63,15 +63,25 @@ already-installed bits, skips already-cloned projects).
 
 ## Launching after setup
 
-After the first run, launch the app directly without re-running setup:
+The everyday launch — pulls latest engine + every deployed project,
+then runs the app. Offline-tolerant: pulls that can't reach their
+remote (no internet, auth failure, hung connection) are logged and
+skipped, and the app launches with whatever's on disk.
+
+```bash
+./bin/run.sh                          # Linux/macOS
+bin\run.bat                           # Windows
+```
+
+If you just want to launch without any network calls (skip pulls):
 
 ```bash
 venv/bin/python Stories_OGL.py        # Linux/macOS
 venv\Scripts\python Stories_OGL.py    # Windows
 ```
 
-Re-run `bin/setup.*` if you change the active project, add a project,
-or just want to refresh deps.
+Re-run `bin/setup.*` if you change the active project from the
+picker, add a project, or want to refresh deps.
 
 ## Adding a new project
 
@@ -129,17 +139,21 @@ file and could ping-pong between operators with different machines.
 
 ## Updating a project that's already deployed
 
+Easiest: just use `bin/run.*` — it pulls every deployed project
+before launching. Updates land on the next restart.
+
+Manually update one project without launching:
 ```bash
-cd projects/<id> && git pull
+git -C projects/<id> pull
 ```
 
-Or update everything deployed on the machine:
+Manually update everything (engine + projects) without launching:
 ```bash
 # Linux/macOS
-for d in projects/*/; do [ -d "$d/.git" ] && git -C "$d" pull; done
+git pull && for d in projects/*/; do [ -d "$d/.git" ] && git -C "$d" pull; done
 
 # Windows PowerShell
-Get-ChildItem projects -Directory | Where-Object { Test-Path "$($_.FullName)\.git" } | ForEach-Object { git -C $_.FullName pull }
+git pull; Get-ChildItem projects -Directory | Where-Object { Test-Path "$($_.FullName)\.git" } | ForEach-Object { git -C $_.FullName pull }
 ```
 
 ## Modifying a project locally and pushing back
