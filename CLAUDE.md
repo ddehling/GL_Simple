@@ -15,21 +15,23 @@ OpenGL-based DMX lighting control system with real-time GPU shader effects, audi
 
 ## Running the Application
 
-### Scripts (recommended)
+### First-time setup (all-in-one)
+
+Installs git + gh, signs you into GitHub, lets you pick which
+project(s) to install + which is primary, clones them, installs Python
+deps, launches the app. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+for the full flow.
 
 ```bash
-# First-time setup + launch (installs deps, creates venv, starts app)
-./bin/setup_and_run.sh       # Linux/macOS
-bin/setup_and_run.bat        # Windows (double-click or run in cmd)
-
-# Quick launch after setup is done
-./bin/quick_run.sh           # Linux/macOS
-bin/quick_run.bat            # Windows
+./bin/setup.sh               # Linux/macOS
+bin\setup.bat                # Windows
 ```
 
-On Linux, make the scripts executable first if needed:
+### Launching after setup
+
 ```bash
-chmod +x bin/setup_and_run.sh bin/quick_run.sh
+venv/bin/python Stories_OGL.py        # Linux/macOS
+venv\Scripts\python Stories_OGL.py    # Windows
 ```
 
 ### Manual
@@ -112,9 +114,9 @@ tools/                      # Standalone utilities: sound_editor, computer, midi
 config/                     # DMX universe and fixture definitions (Unit*.txt)
 media/                      # Shared audio files (sounds/) and images usable by any project
 projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py. See docs/DEPLOYMENT.md.
-deploy/                     # catalog.yaml: id -> project repo URL, read by setup_and_run scripts
+deploy/                     # catalog.yaml: id -> project repo URL, read by bin/setup.* scripts
 docs/                       # Documentation (see below)
-bin/                        # Launch scripts (setup_and_run, quick_run)
+bin/                        # Setup script (setup.sh / setup.bat / setup.ps1), systemd unit, NixOS install
 ```
 
 ## Key Configuration

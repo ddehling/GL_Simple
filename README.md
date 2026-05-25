@@ -19,21 +19,26 @@ OpenGL-based DMX lighting control system with real-time GPU shader effects, audi
 
 ## Quick Start
 
-### Using Scripts (Recommended)
+### One-script setup (Recommended)
 
 ```bash
-# First-time setup: creates venv, installs deps, launches app
-./bin/setup_and_run.sh        # Linux/macOS
-bin\setup_and_run.bat         # Windows (double-click or run in cmd)
-
-# Quick launch after first setup
-./bin/quick_run.sh            # Linux/macOS
-bin\quick_run.bat             # Windows
+git clone https://github.com/ddehling/GL_Simple.git
+cd GL_Simple
+./bin/setup.sh                # Linux/macOS
+# or
+bin\setup.bat                 # Windows
 ```
 
-On Linux, make scripts executable first:
+Installs git + the GitHub CLI, signs you into GitHub (browser device
+flow — no PAT pasting), lets you pick which project(s) to install
+and which is primary, clones them, installs Python deps, launches
+the app. Full details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+### Launching after setup
+
 ```bash
-chmod +x bin/setup_and_run.sh bin/quick_run.sh
+venv/bin/python Stories_OGL.py        # Linux/macOS
+venv\Scripts\python Stories_OGL.py    # Windows
 ```
 
 ### Manual Launch
@@ -550,7 +555,7 @@ self._schedule_event_from_map("fog_beings", start_time=0, duration=60, frame_id=
 Ensure Python is installed and on PATH. Verify with `python --version`. Restart terminal after installing.
 
 ### "Module not found"
-Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\setup_and_run.bat` / `./bin/setup_and_run.sh`.
+Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\setup.bat` / `./bin/setup.sh`.
 
 ### Audio device not found
 - Run `sound_editor.py` to list available devices

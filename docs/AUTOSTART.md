@@ -65,7 +65,7 @@ Notes on the Exec line:
 ## Day-to-day use
 
 - **Stop the app:** `Ctrl+C` in the xterm window (or close the window).
-- **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && ./bin/quick_run.sh`.
+- **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && venv/bin/python Stories_OGL.py`.
 - **Restart the running xterm instance:** kill the xterm, then re-launch with the same command the `.desktop` file uses. `setsid -f` detaches it so it survives the spawning shell:
   ```bash
   pkill -f 'xterm.*GL_Simple'
