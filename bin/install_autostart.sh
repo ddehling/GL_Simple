@@ -44,10 +44,14 @@ fi
 GREETD_CONF=/etc/greetd/cosmic-greeter.toml
 GDM_CONF=/etc/gdm3/custom.conf
 GDM_CONF_ALT=/etc/gdm/custom.conf
+LIGHTDM_CONF=/etc/lightdm/lightdm.conf
 AUTOSTART_DIR="$HOME/.config/autostart"
 DESKTOP_FILE="$AUTOSTART_DIR/gl-simple.desktop"
 
 # Detect which display manager owns auto-login on this machine.
+# Preference order: greetd (Pop!_OS Cosmic) -> gdm3/gdm (Pop!_OS LTS,
+# Ubuntu, Fedora workstation) -> lightdm (Raspberry Pi OS, Lubuntu,
+# Mint MATE/XFCE).
 DM=""
 if [ -f "$GREETD_CONF" ]; then
     DM="greetd"
@@ -56,6 +60,8 @@ elif [ -f "$GDM_CONF" ]; then
 elif [ -f "$GDM_CONF_ALT" ]; then
     DM="gdm"
     GDM_CONF="$GDM_CONF_ALT"
+elif [ -f "$LIGHTDM_CONF" ] || command -v lightdm >/dev/null 2>&1; then
+    DM="lightdm"
 fi
 
 echo "====================================="
@@ -79,12 +85,16 @@ case "$DM" in
     gdm3|gdm)
         echo "  display-manager: $DM ($GDM_CONF)"
         ;;
+    lightdm)
+        echo "  display-manager: lightdm ($LIGHTDM_CONF)"
+        ;;
     *)
         echo "ERROR: no supported display manager detected." >&2
-        echo "       Looked for: $GREETD_CONF, $GDM_CONF, $GDM_CONF_ALT" >&2
-        echo "       Supported: greetd (Pop!_OS Cosmic), gdm3 (Pop!_OS LTS, Ubuntu)." >&2
-        echo "       For others (lightdm, sddm), see docs/AUTOSTART.md and configure" >&2
-        echo "       auto-login manually, then re-run this script with --skip-login." >&2
+        echo "       Looked for: $GREETD_CONF, $GDM_CONF, $GDM_CONF_ALT, $LIGHTDM_CONF" >&2
+        echo "       Supported: greetd (Pop!_OS Cosmic), gdm3 (Pop!_OS LTS, Ubuntu)," >&2
+        echo "                  lightdm (Raspberry Pi OS, Lubuntu, Mint XFCE)." >&2
+        echo "       For sddm (KDE), see docs/AUTOSTART.md and configure auto-login" >&2
+        echo "       manually, then re-run this script with --skip-login." >&2
         exit 1
         ;;
 esac
@@ -165,6 +175,51 @@ path.write_text(text)
 PY
         fi
         ;;
+    lightdm)
+        # On Raspberry Pi OS the cleanest way is to call raspi-config
+        # if present (sets up autologin AND any related TTY config).
+        # On other lightdm distros (Lubuntu, Mint XFCE) we edit
+        # /etc/lightdm/lightdm.conf directly.
+        if command -v raspi-config >/dev/null 2>&1; then
+            # B4 = "Desktop Autologin" in raspi-config's nonint scheme.
+            # Idempotent: re-running is a no-op if already set.
+            echo "[3/5] Enabling LightDM auto-login via raspi-config..."
+            sudo raspi-config nonint do_boot_behaviour B4
+        elif grep -qE "^autologin-user\s*=\s*$USER_NAME\s*$" "$LIGHTDM_CONF" 2>/dev/null; then
+            echo "[3/5] LightDM auto-login already configured for $USER_NAME"
+        else
+            echo "[3/5] Enabling LightDM auto-login for $USER_NAME..."
+            sudo python3 - "$LIGHTDM_CONF" "$USER_NAME" <<'PY'
+import sys, re, pathlib
+path = pathlib.Path(sys.argv[1])
+user = sys.argv[2]
+text = path.read_text() if path.exists() else ""
+# Strip any existing autologin-user* lines (avoid duplicates).
+text = re.sub(r'(?m)^\s*autologin-user(?:-timeout)?\s*=.*\n?', '', text)
+# Insert the two keys inside the [Seat:*] section. Create the
+# section if it doesn't exist.
+if re.search(r'(?m)^\[Seat:\*\]\s*$', text):
+    text = re.sub(
+        r'(?m)^(\[Seat:\*\]\s*)$',
+        f'\\1\nautologin-user={user}\nautologin-user-timeout=0',
+        text, count=1,
+    )
+else:
+    if text and not text.endswith('\n'):
+        text += '\n'
+    text += f'\n[Seat:*]\nautologin-user={user}\nautologin-user-timeout=0\n'
+path.write_text(text)
+PY
+            # LightDM requires the user to be in the 'autologin' or
+            # 'nopasswdlogin' group on most distros, otherwise PAM
+            # blocks the no-password session. Create the group if
+            # missing and add the user.
+            if ! getent group autologin >/dev/null 2>&1; then
+                sudo groupadd -r autologin || true
+            fi
+            sudo usermod -aG autologin "$USER_NAME" || true
+        fi
+        ;;
 esac
 
 # -----------------------------------------------------------------------
@@ -199,8 +254,9 @@ echo "  mv $DESKTOP_FILE $DESKTOP_FILE.disabled && sudo reboot"
 echo "  (rename back when you're done)"
 echo ""
 case "$DM" in
-    greetd) echo "To disable auto-login: remove [initial_session] from $GREETD_CONF and reboot." ;;
+    greetd)   echo "To disable auto-login: remove [initial_session] from $GREETD_CONF and reboot." ;;
     gdm3|gdm) echo "To disable auto-login: set AutomaticLoginEnable=false in $GDM_CONF and reboot." ;;
+    lightdm)  echo "To disable auto-login: 'sudo raspi-config' -> System Options -> Boot/Auto Login -> 'Desktop' (no autologin), then reboot. Or remove the autologin-user lines from $LIGHTDM_CONF." ;;
 esac
 echo ""
 echo "Reference: docs/AUTOSTART.md"

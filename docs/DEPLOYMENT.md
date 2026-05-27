@@ -61,6 +61,46 @@ What `bin/setup.*` does, in order:
 Re-running `bin/setup.*` is fine — every step is idempotent (skips
 already-installed bits, skips already-cloned projects).
 
+## Raspberry Pi
+
+Pi works through the same `bin/setup.sh` flow as any other Linux box,
+but two Pi-specific things are worth doing first:
+
+```bash
+git clone https://github.com/ddehling/GL_Simple.git
+cd GL_Simple
+./bin/setup_pi_extras.sh   # GPU mem split + Full KMS GL driver
+sudo reboot
+./bin/setup.sh             # same as anyone else from here on
+./bin/install_autostart.sh # LightDM auto-login + xterm autostart
+```
+
+What `bin/setup_pi_extras.sh` does (idempotent — safe to re-run):
+
+- **Confirms it's on a Pi** via `/proc/device-tree/model` and bails
+  with a clear message if not.
+- **Bumps `gpu_mem` to 256 MB** in `/boot/firmware/config.txt` (was
+  default 76 MB which can't hold the shader stack + FBO + readback
+  buffers).
+- **Switches to Full KMS GL driver** via `raspi-config nonint
+  do_gldriver G3`. Pi OS Bookworm already defaults to this; older
+  releases (Bullseye) may still be on the legacy driver which lacks
+  GLES 3.1 support.
+- **Installs xterm, libcap2-bin, raspi-config** if missing (typical
+  on Pi OS Lite images).
+
+The reboot in between matters — boot config changes don't take effect
+until the next boot, and `setup.sh` will try to compile shaders.
+Running `setup.sh` before the reboot can fail mid-way on a Pi that's
+still on the legacy GL driver.
+
+`bin/install_autostart.sh` now handles **LightDM** (Pi's display
+manager) automatically — it calls `raspi-config nonint
+do_boot_behaviour B4` to enable desktop autologin, then writes the
+same XDG autostart `.desktop` file as on any other Linux box. After
+reboot, the Pi boots directly into a logged-in LXDE session that
+fires `bin/run.sh` in an xterm.
+
 ## Launching after setup
 
 The everyday launch — pulls latest engine + every deployed project,
