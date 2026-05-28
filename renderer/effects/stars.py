@@ -70,21 +70,21 @@ def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0
         state['stars_effect'].twinkle_speed = outstate.get('twinkle_speed', twinkle_speed)
         state['stars_effect'].drift_x = outstate.get('drift_x', drift_x)
         state['stars_effect'].drift_y = outstate.get('drift_y', drift_y)
-        # Stars visibility is the MAX of the state's starryness (lets
-        # storm/spooky states force bright stars) and a season-derived
-        # nightness so stars are visible at night regardless of which
-        # state happens to be active. Stars come up slightly earlier
-        # than the sky goes dark (smoothstep window 0.45-0.90 vs the
-        # sky's 0.55-0.95) so stars fade in during dusk before full
-        # darkness.
+        # Stars visibility is driven by the wall-clock cycle, not by
+        # the state's starryness. The state's starryness can DEEPEN
+        # (brighten) stars during dusk/dawn/night but can't make them
+        # visible during full day - a "spooky" or "storm" daytime state
+        # should add atmosphere via other effects, not by spawning stars
+        # into the noon sky. Window 0.45-0.90 of cycle_night so stars
+        # fade in during dusk slightly before the sky goes fully dark.
         _season = float(outstate.get('season', 0.5))
         _cycle_night = 0.5 + 0.5 * np.cos(_season * 2.0 * np.pi)
         _t = float(np.clip((_cycle_night - 0.45) / 0.45, 0.0, 1.0))
         _night_from_season = _t * _t * (3.0 - 2.0 * _t)
-        state['stars_effect'].starryness = max(
-            float(outstate.get('starryness', 1.0)),
-            _night_from_season,
-        )
+        _state_starryness = float(outstate.get('starryness', 1.0))
+        state['stars_effect'].starryness = float(
+            np.clip(_night_from_season * (1.0 + _state_starryness),
+                    0.0, 1.0))
         state['stars_effect'].audio_sensitivity = outstate.get('audio_sensitivity', audio_sensitivity)
         
         # Update audio bands for twinkling (if audio data available)
