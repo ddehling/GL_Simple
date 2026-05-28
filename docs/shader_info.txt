@@ -84,7 +84,36 @@ Note `canopy_godrays` is misnamed - it's the sky/sun glow behind the canopy,
 not the actual visible light shafts. The visible-shaft effect is the newer
 `forest_godrays` (adapted from ocean_godrays).
 
-Other realms (desert, cyberpunk, BART) still use the legacy Pattern B
+## Desert realm z-band table (canonical, May 2026)
+
+Migrated from Pattern B to depth-based ordering. Landscape ordering:
+sky/celestial at the back, mountains then dunes, foreground creatures
+and atmospherics in front.
+
+| z | Effect | Notes |
+|---|---|---|
+| 0.97 | desert_sky | sky/sun/moon backdrop (back-plane, writes depth) |
+| 0.91 | stars | engine effect |
+| 0.90 | desert_meteor_streaks | shooting stars, sky band |
+| 0.89 | desert_constellations | bright star patterns |
+| 0.82 | desert_harmattan_haze | drifting dust sheets dimming the sky |
+| 0.80 | desert_distant_lights | far city lights on the night horizon |
+| 0.76 | desert_mountains | distant ridgeline |
+| 0.68 | desert_clouds | engine clouds |
+| 0.58 | desert_heat_shimmer | mirage/heat distortion over the horizon |
+| 0.55 | desert_dunes | dune surface |
+| 0.52 | desert_sand_ripples | wind ripples on the dune surface |
+| 0.50 | desert_oasis_glow | water pool + reflection at floor band |
+| 0.45 | desert_vultures | circling silhouettes, mid-air |
+| 0.40 | desert_dust_devil | rotating sand column |
+| 0.35 | sandstorm | blowing sand particles |
+| 0.33 | desert_rain | rain (incl. virga) |
+| 0.25 | desert_creatures | birds / bats foreground passes |
+| 0.20 | desert_tumbleweed | rolling foreground |
+| 0.15 | desert_critter_eyes | low ground eye-glints |
+| 0.08 | desert_dry_lightning | near-front flash overlay |
+
+Other realms (cyberpunk, BART) still use the legacy Pattern B
 priority-based ordering documented below. They'll be migrated next.
 Do NOT introduce new effects that violate the hard rules — even in
 unmigrated realms, new effects should use the depth-based approach.
