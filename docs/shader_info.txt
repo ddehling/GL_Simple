@@ -78,7 +78,7 @@ Migrated from Pattern B to depth-based ordering alongside ocean.
 | 0.68 | dappled_shadows | flat |
 | 0.75 | forest_canopy (leaf canopy silhouettes) | flat |
 | 0.85 | stream_flow (floor water) | flat |
-| 0.92 | canopy_godrays (sky glow / sun backdrop) | flat |
+| 0.88 | canopy_godrays (sky glow / sun backdrop) | flat - in front of engine stars at z=0.90, still behind every other forest layer |
 
 Note `canopy_godrays` is misnamed - it's the sky/sun glow behind the canopy,
 not the actual visible light shafts. The visible-shaft effect is the newer
