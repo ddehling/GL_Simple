@@ -1,10 +1,84 @@
 # Shader Creation Guide: Depth + Alpha Blending System
 
-## TL;DR — read this section before writing any new shader
+## HARD RULES — non-negotiable, applies to every project shader
 
-There are TWO fundamentally different shader patterns in this codebase. Pick the
-right one for what you're building, or you WILL spend hours fighting depth and
-alpha bugs.
+These rules exist because every shader regression we've shipped has been a violation
+of one of them. Treat them as build-failures-in-spirit even if no CI enforces them.
+
+1. **`glDepthFunc` and `glDepthMask` MUST NOT appear in any project shader file.**
+   The engine sets them once in `renderer/shader_renderer.py` to `GL_LESS` +
+   `GL_TRUE` and they stay that way for the entire frame. If you find yourself
+   reaching for either function inside an effect's `render()`, your design is
+   wrong — go back and assign a proper `gl_Position.z` instead.
+
+2. **Every fragment carries its own `gl_Position.z`.** Even "atmospheric" or
+   "fullscreen" effects get a fixed-but-unique z value from the realm's z-band
+   table below. No two effects in the same realm share a z value (otherwise they
+   depth-fight under `GL_LESS`).
+
+3. **Straight alpha output only.** Fragment shaders write `vec4(rgb, alpha)`,
+   never `vec4(rgb * alpha, alpha)`. The global blend is
+   `GL_SRC_ALPHA / GL_ONE_MINUS_SRC_ALPHA`; pre-multiplied output gives doubly-
+   attenuated colors. See "Alpha Output Rules" further down.
+
+4. **`render_priority` is for batch ordering, not visual layering.** Two effects
+   at different priorities are still ordered visually by their z, not by their
+   priority. Priority is just a hint to the engine for "draw earlier" vs "draw
+   later" — useful for opaque-before-translucent batching, but it does not
+   substitute for a correct z.
+
+If you need additive blending (bioluminescent glow, fire embers, etc.), you must
+explicitly wrap the draw with `glBlendFunc(GL_SRC_ALPHA, GL_ONE)` + restore. That
+is the one sanctioned local GL state change.
+
+## Ocean realm z-band table (canonical, May 2026)
+
+The ocean realm has been converted from priority-based to depth-based ordering.
+Every ocean shader picks its z from this table. The pattern is "small z = near
+camera = drawn on top, large z = far from camera = drawn behind".
+
+| z (or range) | Effect | Per-fragment varies? |
+|---|---|---|
+| 0.10 | ocean_reflection (sky on water) | flat |
+| 0.18 – 0.32 | fish | per-fish (assigned at spawn) |
+| 0.38 – 0.48 | ocean_fish_wakes | per-particle (assigned at spawn) |
+| 0.45 – 0.60 | bubbles | per-particle (assigned at spawn) |
+| 0.50 – 0.70 | bioluminescence | per-particle (already varying) |
+| 0.65 | ocean_godrays (water column light) | flat |
+| 0.70 – 0.80 | kelp | per-blade (hashed from strandId) |
+| 0.82 | tube_worms | flat (procedural fullscreen quad) |
+| 0.85 | ocean_waves (deep ocean body, surface tint, foam) | per-vertex mappedDepth from `depth` uniform = 85 |
+| 0.87 | coral | flat |
+| 0.95 | ocean_background (deepest base layer, wave-equation sim) | flat |
+
+Adding a new ocean effect: pick a z slot that doesn't collide with anything above
+and document it here.
+
+Other realms (desert, forest, cyberpunk, BART) still use the legacy Pattern B
+priority-based ordering documented below. They'll be migrated realm-by-realm.
+Do NOT introduce new effects that violate the hard rules — even in non-ocean
+realms, new effects should use the depth-based approach.
+
+## Pre-merge checklist (treat each item as required)
+
+Before you commit a shader change, confirm:
+
+- [ ] No `glDepthFunc(` or `glDepthMask(` calls appear in this file.
+- [ ] Every `gl_Position = vec4(..., z, 1.0)` uses a z that is either:
+      (a) per-vertex/per-particle (varying); OR
+      (b) flat AND distinct from every other effect in the same realm per the
+      z-band table.
+- [ ] Fragment shader outputs `vec4(rgb, alpha)` — grep for `* alpha,` to find
+      premultiplied bugs.
+- [ ] If using additive blending: wrapped with explicit `glBlendFunc` save/restore.
+- [ ] `render_priority` is set to something reasonable but is NOT being used to
+      enforce visible layering.
+
+## TL;DR — old pattern names (legacy, kept for non-ocean realms)
+
+The two-pattern framing below predates the depth-band conversion. It's kept here
+because realms that haven't been migrated still use Pattern B. For ocean and any
+new realm, follow the HARD RULES above instead.
 
 ### Pattern A — 3D-style geometry (rain drops, snowflakes, leaves, particles)
 - Each fragment has its OWN depth (gl_Position.z varies per object)
@@ -13,15 +87,17 @@ alpha bugs.
 - Do NOT touch glDepthFunc / glDepthMask
 - Output `vec4(rgb, alpha)` with STRAIGHT alpha (NOT pre-multiplied)
 
-### Pattern B — Fullscreen-quad atmospheric layers (sky, glow, fog tint, shadows, particle fields)
+### Pattern B — Fullscreen-quad atmospheric layers (legacy, non-ocean realms)
 - Single fullscreen quad at a CONSTANT depth
-- Layers should compose via alpha blending in priority order, not depth occlusion
+- Layers compose via alpha blending in priority order, not depth occlusion
 - Render order is determined by `self.render_priority` only — lower renders first (back)
 - MUST disable depth in render(): `glDepthFunc(GL_ALWAYS) + glDepthMask(GL_FALSE)`,
   then restore `GL_LESS + GL_TRUE` on exit
 - Output `vec4(rgb, alpha)` with STRAIGHT alpha (NOT pre-multiplied)
 
-If your effect renders a single fullscreen quad, you almost certainly want Pattern B.
+If your effect renders a single fullscreen quad in a non-ocean realm, you may
+still use Pattern B until that realm is migrated. New ocean effects MUST use
+the depth-based approach (HARD RULES above).
 If you've ever written `vec4(color * alpha, alpha)` you have a pre-multiplied alpha
 bug — see the Alpha Output Rules below.
 
