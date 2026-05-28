@@ -111,7 +111,12 @@ class CloudEffectGPU(ShaderEffect):
         self.fog_level = 0.0
         self.fade_factor = 1.0  # Start visible (event system will control fading)
         self.cloudyness = 0.5
-        self.render_priority = 6  # Render AFTER BART map (5) so clouds blend over background
+        # Clouds at z_centroid 0.22 (per-cloud z range is 0.15-0.30,
+        # this is the band centroid). Depth-based ordering: clouds layer
+        # in front of canopy_godrays (0.95) and stars (0.90), behind
+        # forest_canopy (0.75) and other foreground.
+        self.z_centroid = 0.22
+        self.render_priority = 6  # legacy fallback for non-migrated renderers
         self._fan = FanCoords(viewport.width, viewport.height)
 
         # GPU buffers

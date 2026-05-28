@@ -183,7 +183,9 @@ void main() {
 class SnowfallEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 9.5  # Front snow
+        # Front snow particles at z=0.12 (very foreground).
+        self.z_centroid = 0.12
+        self.render_priority = 9.5  # legacy fallback
         self._time = 0.0
         self._rate_phase = 0.0   # integrated dt * (0.5 + rate * 1.5)
         self._wind_phase = 0.0   # integrated dt * wind

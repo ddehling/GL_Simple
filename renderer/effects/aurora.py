@@ -111,7 +111,9 @@ class Aurora(ShaderEffect):
     def __init__(self, viewport, height_ratio: float = 0.90, depth: float = 96.0,
                  intensity: float = 1.0, speed: float = 1.0):
         super().__init__(viewport)
-        self.render_priority = 5.5  # After BART map (5), before clouds (6)
+        # Sky-band event at z derived from depth uniform (default 96 -> 0.96).
+        self.z_centroid = depth / 100.0
+        self.render_priority = 5.5  # legacy fallback
         self.height_ratio = height_ratio
         self.height = int(viewport.height * height_ratio)
         self.depth = depth

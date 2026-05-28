@@ -208,7 +208,9 @@ class ShaderFog(ShaderEffect):
     def __init__(self, viewport, strength=0.0, color=(0.7, 0.7, 0.8),
                  fog_near=10.0, fog_far=100.0, spatial_fog=False):
         super().__init__(viewport)
-        self.render_priority = 1000  # Post-processing: render LAST
+        # Post-process: z_centroid=0 puts it at the very front, drawn LAST.
+        self.z_centroid = 0.0
+        self.render_priority = 1000  # legacy fallback
         self.base_strength = strength
         self.current_strength = strength
         self.fog_color = color

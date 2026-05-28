@@ -115,6 +115,10 @@ class TwinklingStarsEffect(ShaderEffect):
         # don't write sky depth so stars still pass against the cleared
         # 1.0 buffer there.
         self.depth = depth
+        # Depth-based draw order: declare z_centroid so the engine
+        # sorts stars correctly back-to-front against other effects.
+        # Derived from the depth uniform (defaults to 90 -> z=0.90).
+        self.z_centroid = depth / 100.0
         self.starryness = 1.0  # Global brightness scalar
         self.audio_sensitivity = audio_sensitivity  # Audio reactivity multiplier
         self.min_brightness = 0.3  # Minimum brightness for stars (0.0 to 1.0)

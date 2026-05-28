@@ -145,20 +145,52 @@ class GroupCanvas:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
+    @staticmethod
+    def _draw_order_key(e):
+        """Sort key for effect draw order. PURE DEPTH-BASED.
+
+        Back-to-front: effect with the LARGEST z draws first (back of
+        scene), smallest z draws last (front of scene). Standard
+        translucent rendering pipeline expects back-to-front order so
+        alpha compositing accumulates correctly.
+
+        Reads `e.z_centroid` if set (the representative z for the effect,
+        e.g. the center of a z-band for varying-z effects). Falls back
+        to legacy `e.render_priority` mapped to a z-like value
+        (priority 0 -> back, priority 10 -> front) ONLY for effects that
+        haven't been migrated to declare z_centroid yet.
+
+        No priority-based layering: once an effect declares z_centroid,
+        its visual stacking is determined entirely by that and the
+        per-fragment z values in its shaders.
+        """
+        z = getattr(e, 'z_centroid', None)
+        if z is not None:
+            return -float(z)  # larger z first (descending = back-to-front)
+        # Legacy fallback: priority 0 = back, higher = front. Map to a
+        # synthetic z in [0.99, 0.0] so legacy effects integrate with
+        # z-tagged effects without disrupting them.
+        pri = float(getattr(e, 'render_priority', 0))
+        synthetic_z = max(0.0, min(1.0, 1.0 - pri / 12.0))
+        return -synthetic_z
+
     def update(self, dt: float, state: Dict):
-        """Update all effects (sorted by priority)."""
-        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
-        for effect in sorted_effects:
+        """Update all effects in draw order."""
+        for effect in sorted(self.effects, key=self._draw_order_key):
             if effect.enabled:
                 effect.update(dt, state)
 
     def render(self, state: Dict):
-        """Render effects into the FBO at native LED resolution."""
-        sorted_effects = sorted(self.effects, key=lambda e: getattr(e, 'render_priority', 0))
+        """Render effects into the FBO at native LED resolution.
+
+        Effects render back-to-front by z_centroid (or legacy
+        render_priority for unmigrated effects). Visual stacking comes
+        from per-fragment z + alpha blending, not from priority.
+        """
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)
         glScissor(0, 0, self.width, self.height)
-        for effect in sorted_effects:
+        for effect in sorted(self.effects, key=self._draw_order_key):
             if effect.enabled:
                 effect.render(state)
 

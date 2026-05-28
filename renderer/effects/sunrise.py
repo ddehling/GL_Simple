@@ -123,7 +123,9 @@ class SunriseEffect(ShaderEffect):
                  color_intensity: float = 1.0, audio_sensitivity: float = 2.0,
                  squish_top_width: float = 1.0):
         super().__init__(viewport)
-        self.render_priority = 5.4  # After BART map (5), before aurora (5.5) and clouds (6)
+        # Sky-band event at z=0.97 (just behind canopy_godrays at 0.95).
+        self.z_centroid = 0.93
+        self.render_priority = 5.4  # legacy fallback
         self.tentacle_count = tentacle_count
         self.color_intensity = color_intensity
         self.audio_sensitivity = audio_sensitivity

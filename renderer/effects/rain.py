@@ -94,6 +94,8 @@ class RainEffect(ShaderEffect):
     
     def __init__(self, viewport, num_raindrops: int = 300, wind: float = 0.3):
         super().__init__(viewport)
+        # Rain falls through the mid-foreground band, z_centroid 0.30.
+        self.z_centroid = 0.30
         self.num_raindrops = num_raindrops
         self.base_num_raindrops = num_raindrops
         self.target_raindrops = num_raindrops

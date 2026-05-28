@@ -122,6 +122,9 @@ class FireflyEffect(ShaderEffect):
     
     def __init__(self, viewport, density: float = 1.0, max_fireflies: int = 150, squish_top_width: float = 1.0):
         super().__init__(viewport)
+        # Depth-based draw order: per-firefly z varies in [10, 100]/100
+        # but for sort purposes use band centroid 0.30 (mid foreground).
+        self.z_centroid = 0.30
         self.density = density
         self.max_fireflies = max_fireflies
         self.squish_top_width = squish_top_width
