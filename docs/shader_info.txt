@@ -62,10 +62,32 @@ camera = drawn on top, large z = far from camera = drawn behind".
 Adding a new ocean effect: pick a z slot that doesn't collide with anything above
 and document it here.
 
-Other realms (desert, forest, cyberpunk, BART) still use the legacy Pattern B
-priority-based ordering documented below. They'll be migrated realm-by-realm.
-Do NOT introduce new effects that violate the hard rules — even in non-ocean
-realms, new effects should use the depth-based approach.
+## Peaceful Forest realm z-band table (canonical, May 2026)
+
+Migrated from Pattern B to depth-based ordering alongside ocean.
+
+| z | Effect | Per-fragment varies? |
+|---|---|---|
+| 0.18 | forest_eyes | flat |
+| 0.25 | forest_bioluminescence | per-particle (or flat fragment; check file) |
+| 0.32 | rain_on_leaves | flat |
+| 0.38 | thread_bonds | flat |
+| 0.42 | forest_birds | flat |
+| 0.48 | spore_drift | flat |
+| 0.55 | forest_godrays (light shafts through canopy) | flat |
+| 0.68 | dappled_shadows | flat |
+| 0.75 | forest_canopy (leaf canopy silhouettes) | flat |
+| 0.85 | stream_flow (floor water) | flat |
+| 0.92 | canopy_godrays (sky glow / sun backdrop) | flat |
+
+Note `canopy_godrays` is misnamed - it's the sky/sun glow behind the canopy,
+not the actual visible light shafts. The visible-shaft effect is the newer
+`forest_godrays` (adapted from ocean_godrays).
+
+Other realms (desert, cyberpunk, BART) still use the legacy Pattern B
+priority-based ordering documented below. They'll be migrated next.
+Do NOT introduce new effects that violate the hard rules — even in
+unmigrated realms, new effects should use the depth-based approach.
 
 ## Pre-merge checklist (treat each item as required)
 
