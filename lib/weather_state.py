@@ -218,6 +218,16 @@ class WeatherStateController:
             # velocity_streaks so each arc can pick its motion axis
             # (e.g. (0, -1) for upward ascent in Subroutine 9).
             "velocity_direction": self.weather_params.get("velocity_direction"),
+            # ── Storm Watch realm params ────────────────────────────
+            "rain_speed": self.weather_params.get("rain_speed", 1.0),
+            "rain_angle": self.weather_params.get("rain_angle", 0.0),
+            "rain_vortex": self.weather_params.get("rain_vortex", 0.0),
+            "rain_color": self.weather_params.get("rain_color"),
+            "cloud_darkness": self.weather_params.get("cloud_darkness", 0.5),
+            "mist_density": self.weather_params.get("mist_density", 0.0),
+            "color_band": self.weather_params.get("color_band", 0.0),
+            "puddle_density": self.weather_params.get("puddle_density", 0.0),
+            "moonbow_intensity": self.weather_params.get("moonbow_intensity", 0.0),
         }
 
     def select_next_weather(

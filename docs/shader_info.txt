@@ -112,6 +112,25 @@ and atmospherics in front.
 | 0.15 | desert_critter_eyes | low ground eye-glints |
 | 0.08 | desert_dry_lightning | near-front flash overlay |
 
+## Storm Watch realm z-band table (canonical, May 2026)
+
+A chill rain-appreciation realm; the season cycle = one rain system's
+life in the night (hush -> gathering -> rain -> peak -> easing ->
+clearing). All depth-based, physical-feet-aware where they touch the
+horizon.
+
+| z | Effect | Notes |
+|---|---|---|
+| 0.95 | storm_sky | back-plane sky color-grade (writes depth) |
+| 0.90 | stars | engine, visible through cloud breaks |
+| 0.88 | storm_moonbow | faint lunar rainbow arc, clearing |
+| 0.80 | storm_clouds | scrolling layered cloud deck |
+| 0.62 | storm_color_band | drifting aurora-like colored squall |
+| 0.30 - 0.55 | storm_rain | per-drop depth; intensity/speed/angle/vortex/color params |
+| 0.25 | storm_mist | low petrichor ground mist |
+| 0.18 | storm_puddle_ripples | expanding ripple rings on the wet floor |
+| 0.10 | storm_lightning | near-front sheet-glow + distant forks |
+
 Other realms (cyberpunk, BART) still use the legacy Pattern B
 priority-based ordering documented below. They'll be migrated next.
 Do NOT introduce new effects that violate the hard rules — even in
