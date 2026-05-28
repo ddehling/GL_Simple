@@ -97,13 +97,12 @@ and atmospherics in front.
 | 0.90 | desert_meteor_streaks | shooting stars, sky band |
 | 0.89 | desert_constellations | bright star patterns |
 | 0.82 | desert_harmattan_haze | drifting dust sheets dimming the sky |
-| 0.80 | desert_distant_lights | far city lights on the night horizon |
 | 0.76 | desert_mountains | distant ridgeline |
+| 0.70 | desert_distant_lights | far city lights - behind the dunes, in front of the mountains |
 | 0.68 | desert_clouds | engine clouds |
 | 0.58 | desert_heat_shimmer | mirage/heat distortion over the horizon |
 | 0.55 | desert_dunes | dune surface |
 | 0.52 | desert_sand_ripples | wind ripples on the dune surface |
-| 0.50 | desert_oasis_glow | water pool + reflection at floor band |
 | 0.45 | desert_vultures | circling silhouettes, mid-air |
 | 0.40 | desert_dust_devil | rotating sand column |
 | 0.35 | sandstorm | blowing sand particles |
