@@ -70,7 +70,21 @@ def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0
         state['stars_effect'].twinkle_speed = outstate.get('twinkle_speed', twinkle_speed)
         state['stars_effect'].drift_x = outstate.get('drift_x', drift_x)
         state['stars_effect'].drift_y = outstate.get('drift_y', drift_y)
-        state['stars_effect'].starryness = outstate.get('starryness', 1.0)
+        # Stars visibility is the MAX of the state's starryness (lets
+        # storm/spooky states force bright stars) and a season-derived
+        # nightness so stars are visible at night regardless of which
+        # state happens to be active. Stars come up slightly earlier
+        # than the sky goes dark (smoothstep window 0.45-0.90 vs the
+        # sky's 0.55-0.95) so stars fade in during dusk before full
+        # darkness.
+        _season = float(outstate.get('season', 0.5))
+        _cycle_night = 0.5 + 0.5 * np.cos(_season * 2.0 * np.pi)
+        _t = float(np.clip((_cycle_night - 0.45) / 0.45, 0.0, 1.0))
+        _night_from_season = _t * _t * (3.0 - 2.0 * _t)
+        state['stars_effect'].starryness = max(
+            float(outstate.get('starryness', 1.0)),
+            _night_from_season,
+        )
         state['stars_effect'].audio_sensitivity = outstate.get('audio_sensitivity', audio_sensitivity)
         
         # Update audio bands for twinkling (if audio data available)
