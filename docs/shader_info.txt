@@ -5,31 +5,39 @@
 These rules exist because every shader regression we've shipped has been a violation
 of one of them. Treat them as build-failures-in-spirit even if no CI enforces them.
 
-1. **`glDepthFunc` and `glDepthMask` MUST NOT appear in any project shader file.**
-   The engine sets them once in `renderer/shader_renderer.py` to `GL_LESS` +
-   `GL_TRUE` and they stay that way for the entire frame. If you find yourself
-   reaching for either function inside an effect's `render()`, your design is
-   wrong — go back and assign a proper `gl_Position.z` instead.
+1. **`glDepthFunc(GL_ALWAYS)` MUST NOT appear in any project shader file.**
+   `GL_LESS` is the engine default; flipping to `ALWAYS` is the priority-based
+   hack we're trying to retire. If you need to put something on top of everything
+   else, give it a smaller `gl_Position.z`, not `GL_ALWAYS`.
 
-2. **Every fragment carries its own `gl_Position.z`.** Even "atmospheric" or
-   "fullscreen" effects get a fixed-but-unique z value from the realm's z-band
-   table below. No two effects in the same realm share a z value (otherwise they
-   depth-fight under `GL_LESS`).
+2. **`glDepthMask(GL_FALSE)` IS required for translucent draws** so that
+   multiple translucent layers stack visually (instead of the first-drawn
+   blocking everything else via depth-write). Wrap the draw with
+   `glDepthMask(GL_FALSE)` ... draw ... `glDepthMask(GL_TRUE)`. Depth-TEST
+   stays on; only depth-WRITE is suppressed. This is standard translucent
+   pipeline practice — do NOT confuse it with the priority-based hack in
+   rule 1.
 
-3. **Straight alpha output only.** Fragment shaders write `vec4(rgb, alpha)`,
+3. **Every fragment carries its own `gl_Position.z`.** Even fullscreen
+   atmospheric effects get a fixed-but-unique z value from the realm's z-band
+   table below. No two effects in the same realm share a z value (otherwise
+   they depth-fight when one of them happens to have depth-write on).
+
+4. **Straight alpha output only.** Fragment shaders write `vec4(rgb, alpha)`,
    never `vec4(rgb * alpha, alpha)`. The global blend is
    `GL_SRC_ALPHA / GL_ONE_MINUS_SRC_ALPHA`; pre-multiplied output gives doubly-
    attenuated colors. See "Alpha Output Rules" further down.
 
-4. **`render_priority` is for batch ordering, not visual layering.** Two effects
-   at different priorities are still ordered visually by their z, not by their
-   priority. Priority is just a hint to the engine for "draw earlier" vs "draw
-   later" — useful for opaque-before-translucent batching, but it does not
-   substitute for a correct z.
+5. **No `render_priority`-driven layering.** Visual stacking is determined by
+   each fragment's `gl_Position.z` (depth test) and the order effects happen
+   to draw within the frame. The legacy `render_priority` field is treated as
+   a batching hint only; do NOT rely on it to put one effect in front of
+   another. If two effects need a specific stacking, give them appropriate z
+   values from the z-band table.
 
-If you need additive blending (bioluminescent glow, fire embers, etc.), you must
-explicitly wrap the draw with `glBlendFunc(GL_SRC_ALPHA, GL_ONE)` + restore. That
-is the one sanctioned local GL state change.
+If you need additive blending (bioluminescent glow, fire embers, etc.), wrap
+the draw with `glBlendFunc(GL_SRC_ALPHA, GL_ONE)` + restore. Additive AND
+glDepthMask(GL_FALSE) together is the standard particle-glow pattern.
 
 ## Ocean realm z-band table (canonical, May 2026)
 
