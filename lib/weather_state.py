@@ -230,6 +230,10 @@ class WeatherStateController:
             "cloud_type": self.weather_params.get("cloud_type", 0.4),
             # Rain-on-the-glass rivulets (Steady "Seen Through Rain" signature).
             "window_streaks": self.weather_params.get("window_streaks", 0.0),
+            # Flash->delay->rumble (Rolling Thunder "Thunderhead" signature).
+            "thunder": self.weather_params.get("thunder", 0.0),
+            # Moonbeam through a cloud gap (Easing "The Break" signature).
+            "moonshaft": self.weather_params.get("moonshaft", 0.0),
             # Per-state mood color (vec3): the dominant palette lever for the
             # Storm Watch realm. Washes sky + clouds so each state reads as a
             # distinct mood rather than "same storm, louder".
