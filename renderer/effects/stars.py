@@ -190,6 +190,10 @@ class TwinklingStarsEffect(ShaderEffect):
         base = classes[idx, :3]                                  # (n, 3)
         jitter = np.random.uniform(-0.05, 0.05, (n, 3)).astype(np.float32)
         colors = np.clip(base + jitter, 0.0, 1.0)
+        # Bump saturation ~35% so the stellar-class hues read clearly
+        # (push each channel away from the per-star mean).
+        mean = colors.mean(axis=1, keepdims=True)
+        colors = np.clip(mean + (colors - mean) * 1.35, 0.0, 1.0)
         self.colors = colors
         
                 # Audio band assignment - each star assigned to one of 16 bands
