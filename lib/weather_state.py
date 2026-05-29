@@ -224,6 +224,10 @@ class WeatherStateController:
             "rain_vortex": self.weather_params.get("rain_vortex", 0.0),
             "rain_color": self.weather_params.get("rain_color"),
             "cloud_darkness": self.weather_params.get("cloud_darkness", 0.5),
+            # Per-state mood color (vec3): the dominant palette lever for the
+            # Storm Watch realm. Washes sky + clouds so each state reads as a
+            # distinct mood rather than "same storm, louder".
+            "storm_tint": self.weather_params.get("storm_tint"),
             "mist_density": self.weather_params.get("mist_density", 0.0),
             "color_band": self.weather_params.get("color_band", 0.0),
             "puddle_density": self.weather_params.get("puddle_density", 0.0),
