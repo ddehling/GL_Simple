@@ -1,0 +1,109 @@
+Auto-loaded 58 shader functions and 53 effect classes
+[Config] Loaded from C:\Users\ddehl\Desktop\Devel\GL_Simple\config.yaml
+[Project] Active: Fan (id=fan)
+[mDNS] 'wol-7f928c.local' not found; skipping receiver
+[Project] Loaded 4 receivers from project.yaml (128 strips)
+[ShaderLoader] Loaded 68 project-local symbols from projects.fan.shaders
+[RenderPipeline] Initializing headless GPU shader renderer...
+[ShaderRenderer] Configuring for OpenGL ES 3.1
+[ShaderRenderer] Auto-calculated magnification: 3x (monitor height: 1080px, available: 1080px)
+[ShaderRenderer] Window: 384x900 (3x magnification of 128x300)
+[ShaderRenderer] OpenGL Version: OpenGL ES 3.2 NVIDIA 581.95
+[ShaderRenderer] GLSL Version: OpenGL ES GLSL ES 3.20
+[ShaderRenderer] Window created: 384x900
+[ShaderRenderer] Keys: F=flat/fan, D=smooth/LED, ESC=quit, Scroll=zoom, Drag=pan, MClick=reset
+[ShaderRenderer] Creating viewport 0: 128x300 (headless)
+[GroupCanvas] Framebuffer created: 128x300 (group=main)
+[RenderPipeline] headless GPU shader renderer initialized
+[RenderPipeline] Brightness limiting: 1 displays, 38400 total pixels
+[DMXSender] Async sending enabled
+[RenderPipeline] sACN senders initialized with async mode enabled
+[Project] brightness_limit = 0.1
+[Project] target_fps = 40.0 (frame_time = 25.0 ms)
+
+No device found matching 'TONOR'. Using default.
+
+Using Device ID 1: Microphone (HD Pro Webcam C920)
+Sample Rate: 44100
+Using Simple Mean Average:
+  Short-term window: 20 frames (0.50s)
+  Long-term window: 100 frames (2.50s)
+--------------------------------------------------------------------------------
+
+
+Frequency Band Information:
+FFT bin resolution: 10.77 Hz per bin
+Usable frequency range: 10.8 Hz to 22050.0 Hz
+Band 0: 40.0-48.2 Hz (1 bins, actual: 43.1-43.1 Hz, center: 43.9 Hz)
+Band 1: 48.2-58.2 Hz (1 bins, actual: 53.8-53.8 Hz, center: 53.0 Hz)
+Band 2: 58.2-70.1 Hz (1 bins, actual: 64.6-64.6 Hz, center: 63.9 Hz)
+Band 3: 70.1-84.6 Hz (1 bins, actual: 75.4-75.4 Hz, center: 77.0 Hz)
+Band 4: 84.6-102.0 Hz (2 bins, actual: 86.1-96.9 Hz, center: 92.9 Hz)
+...
+Band 29: 9123.8-11002.5 Hz (174 bins, actual: 9130.1-10992.7 Hz, center: 10019.2 Hz)
+Band 30: 11002.5-13268.0 Hz (211 bins, actual: 11003.5-13264.5 Hz, center: 12082.3 Hz)
+Band 31: 13268.0-16000.0 Hz (254 bins, actual: 13275.2-15999.2 Hz, center: 14570.1 Hz)
+
+[WebController] Started at:
+[WebController]   http://localhost:80
+[WebController]   http://lucifera.local:80
+[OSC] listening on 0.0.0.0:9001
+[WEATHER] Initializing events for weather set: 'bartiki'
+[WEATHER]   Background event: bart_map
+ * Serving Flask app 'web.web_controller'
+[WEATHER]   Background event: stars
+ * Debug mode: off
+[WEATHER]   Background event: clouds
+[WEATHER]   Background event: fog
+[WEATHER]   Background event: rain
+[WEATHER]   Background event: city_lights
+[WEATHER]   Background event: bay_shimmer
+[WEATHER]   Background event: pride_flag
+[WEATHER]   Background event: narrative_player
+[WEATHER]   Background event: sound_pool
+[WEATHER] Background events initialized for 'bartiki'
+[WEATHER] Switching weather set immediately: 'bartiki' -> 'ocean'
+[WEATHER] Initializing events for weather set: 'ocean'
+[WEATHER]   Background event: Bioluminescence
+[WEATHER]   Background event: ocean_waves
+[WEATHER]   Background event: kelp
+[WEATHER]   Background event: bubbles
+[WEATHER]   Background event: fish
+[WEATHER]   Background event: fog
+[WEATHER]   Background event: smoker
+[WEATHER]   Background event: tube_worms
+[WEATHER] Background events initialized for 'ocean'
+[WEATHER]   Starting with: ocean_kelp_forest
+Initializing bioluminescence for frame 0
+    [OK] BioluminescenceEffect shader compiled successfully
+[GroupCanvas] Added effect: BioluminescenceEffect (group=main)
+Bioluminescence effect initialized successfully
+Initializing ocean_waves for frame 0
+    [OK] OceanWaves shader compiled successfully
+[GroupCanvas] Added effect: OceanWaves (group=main)
+[OK] Initialized shader ocean_waves for frame 0
+Initializing kelp for frame 0
+    [OK] KelpEffect shader compiled successfully
+[GroupCanvas] Added effect: KelpEffect (group=main)
+Kelp effect initialized successfully
+Initializing bubble effect for frame 0 (base: 200 bubbles)
+    [OK] BubbleEffect shader compiled successfully
+[GroupCanvas] Added effect: BubbleEffect (group=main)
+[OK] Initialized shader bubbles for frame 0
+Initializing fish effect for frame 0 (base: 30 fish)
+    [OK] FishEffect shader compiled successfully
+[GroupCanvas] Added effect: FishEffect (group=main)
+[OK] Initialized shader fish for frame 0
+Initializing fog effect for frame 0
+    ✓ Fog temp framebuffer created
+    [OK] ShaderFog shader compiled successfully
+[GroupCanvas] Added effect: ShaderFog (group=main)
+✓ Initialized shader fog for frame 0 (strength=0.0)
+    [OK] SmokerEffect shader compiled successfully
+[GroupCanvas] Added effect: SmokerEffect (group=main)
+  [OK] Initialized smoker for frame 0
+    [OK] TubeWormsEffect shader compiled successfully
+[GroupCanvas] Added effect: TubeWormsEffect (group=main)
+  [OK] Initialized tube_worms for frame 0
+[WebController] mDNS registered as 'lucifera.local' (192.168.56.1)
+[DMXSender] worker: sent=187 (+187 in 5s) errored=0 qsize=0

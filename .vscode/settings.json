@@ -1,0 +1,8 @@
+{
+    // Auto-detect git repos nested under projects/<id>/ so the Source Control
+    // panel shows the engine + every deployed project as separate sections
+    // in this same window (no need to open each project in its own window).
+    "git.autoRepositoryDetection": true,
+    "git.repositoryScanMaxDepth": 3,
+    "git.openRepositoryInParentFolders": "always"
+}
