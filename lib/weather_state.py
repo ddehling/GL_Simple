@@ -228,6 +228,8 @@ class WeatherStateController:
             # for the Storm Watch realm - changes the actual cloud FORM per
             # state, not just its color.
             "cloud_type": self.weather_params.get("cloud_type", 0.4),
+            # Rain-on-the-glass rivulets (Steady "Seen Through Rain" signature).
+            "window_streaks": self.weather_params.get("window_streaks", 0.0),
             # Per-state mood color (vec3): the dominant palette lever for the
             # Storm Watch realm. Washes sky + clouds so each state reads as a
             # distinct mood rather than "same storm, louder".
