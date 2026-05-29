@@ -116,6 +116,17 @@ class WeatherStateController:
                     self.weather_params[param] = (
                         target_value - start_value
                     ) * self.progress + start_value
+                elif (isinstance(target_value, (list, tuple))
+                        and isinstance(start_value, (list, tuple))
+                        and len(target_value) == len(start_value)):
+                    # Colour / vector params (storm_tint, rain_color,
+                    # fog_color, ...) are commonly stored as plain lists - the
+                    # web weather editor saves them that way. Interpolate them
+                    # elementwise too, otherwise they SNAP at the state change
+                    # instead of cross-fading.
+                    tv = np.asarray(target_value, dtype=float)
+                    sv = np.asarray(start_value, dtype=float)
+                    self.weather_params[param] = (tv - sv) * self.progress + sv
                 else:
                     self.weather_params[param] = target_value
 
