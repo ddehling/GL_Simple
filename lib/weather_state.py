@@ -224,6 +224,10 @@ class WeatherStateController:
             "rain_vortex": self.weather_params.get("rain_vortex", 0.0),
             "rain_color": self.weather_params.get("rain_color"),
             "cloud_darkness": self.weather_params.get("cloud_darkness", 0.5),
+            # Cloud structure lever (0 stratus .. 0.5 cumulus .. 1 thunderhead)
+            # for the Storm Watch realm - changes the actual cloud FORM per
+            # state, not just its color.
+            "cloud_type": self.weather_params.get("cloud_type", 0.4),
             # Per-state mood color (vec3): the dominant palette lever for the
             # Storm Watch realm. Washes sky + clouds so each state reads as a
             # distinct mood rather than "same storm, louder".
