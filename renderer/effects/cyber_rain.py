@@ -58,11 +58,17 @@ def shader_cyber_rain(state, outstate, intensity=1.0, wind=0.0,
     if eff is None:
         return
 
-    # Pick up wind + color from outstate every frame
+    # Pick up wind + color from outstate every frame. Guard the colour at the
+    # boundary: transitioning to a state that doesn't define cyber_rain_color
+    # makes the controller fall the param back to a scalar 0 (no len()), so
+    # only update when it's actually a 3-component sequence.
     eff.wind = float(outstate.get('wind', wind))
     c = outstate.get('cyber_rain_color', color)
-    if c is not None and len(c) >= 3:
-        eff.color = (float(c[0]), float(c[1]), float(c[2]))
+    try:
+        if len(c) >= 3:
+            eff.color = (float(c[0]), float(c[1]), float(c[2]))
+    except TypeError:
+        pass
 
     if state['count'] == -1:
         if 'effect' in state:

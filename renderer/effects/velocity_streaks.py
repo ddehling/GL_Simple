@@ -50,9 +50,14 @@ def shader_velocity_streaks(state, outstate):
     # Direction bias: a 2-tuple (dx, dy) in unit-vector space. Used by arcs
     # to set motion direction (e.g. Subroutine 9 = (0, -1) for upward,
     # Faraday Run = (1, 0) for rightward).
+    # Guard: a transition to a state without velocity_direction (and no
+    # default to fall back to) makes the controller produce scalar 0 here.
     direction = outstate.get('velocity_direction', (1.0, 0.0))
-    if direction is not None and len(direction) == 2:
-        eff.direction = (float(direction[0]), float(direction[1]))
+    try:
+        if len(direction) == 2:
+            eff.direction = (float(direction[0]), float(direction[1]))
+    except TypeError:
+        pass
 
     if state['count'] == -1:
         if 'effect' in state:

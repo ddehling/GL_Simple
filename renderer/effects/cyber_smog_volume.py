@@ -44,10 +44,15 @@ def shader_cyber_smog_volume(state, outstate, density=0.5,
     # Use pollution_level (existing param) for smog density.
     # Wrapper default 0.0 per docs/shader_info.txt.
     eff.density = float(outstate.get('pollution_level', 0.0))
-    # Use fog_color (existing param) for smog tint
+    # Use fog_color (existing param) for smog tint. Guard at the boundary:
+    # transitioning to a state without fog_color (or if the default was
+    # stripped) falls it back to scalar 0 - no len(), no subscript.
     c = outstate.get('fog_color', color)
-    if c is not None and len(c) >= 3:
-        eff.color = (float(c[0]), float(c[1]), float(c[2]))
+    try:
+        if len(c) >= 3:
+            eff.color = (float(c[0]), float(c[1]), float(c[2]))
+    except TypeError:
+        pass
     # Season-of-day for diurnal hue shift (0.0=midnight → 0.5=noon → 1.0=midnight)
     eff.season = float(outstate.get('season', 0.5))
 
