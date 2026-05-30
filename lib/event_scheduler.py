@@ -60,8 +60,18 @@ class EventScheduler:
         return self.schedule_event(delay, duration, action, *args, **kwargs)
 
     def cancel_all_events(self):
+        # Close every active event defensively: a single effect's teardown
+        # raising (e.g. a wrapper's count==-1 branch hitting a stale
+        # viewport.effects.remove) must NOT abort the loop and leave the
+        # remaining events stranded in active_events -- that strands their
+        # effects AND makes schedule_event() silently skip same-named new
+        # events as "duplicates" on the next set load. Always clear the lists.
         for event in self.active_events:
-            event.closeevent(self.state)
+            try:
+                event.closeevent(self.state)
+            except Exception as e:
+                print(f"[EventScheduler] error closing event "
+                      f"{getattr(event, 'name', '?')}: {e}")
         self.event_queue = []
         self.active_events = []
 

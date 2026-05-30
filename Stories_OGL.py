@@ -1293,6 +1293,37 @@ class EnvironmentalSystem:
         if engine:
             engine.stop_all(duration=2.0)
 
+        # Belt-and-suspenders: cancel_all_events relies on each event's
+        # count==-1 wrapper to remove ITS OWN effect from the canvas. If any
+        # wrapper deviates from that contract, or its viewport.effects.remove()
+        # throws, the effect is ORPHANED -- left in the canvas's render list
+        # and still drawing, now fed the NEW set's params. That renders as
+        # unrecognizable geometry/colors / the previous set "blending through",
+        # and it compounds the longer a session runs (orphans accumulate).
+        # Authoritatively clear every canvas so a set switch always starts
+        # from a clean slate. A non-zero count here means the leak was real.
+        renderer = getattr(self.scheduler, '_shader_renderer', None)
+        if renderer is not None:
+            orphans = 0
+            for vp in getattr(renderer, 'viewports', []):
+                effects = getattr(vp, 'effects', None)
+                if not effects:
+                    continue
+                orphans += len(effects)
+                try:
+                    vp.canvas._make_current()
+                except Exception:
+                    pass
+                for eff in list(effects):
+                    try:
+                        eff.cleanup()
+                    except Exception:
+                        pass
+                effects.clear()
+            if orphans:
+                print(f"[WEATHER] Leak guard: force-cleared {orphans} orphaned "
+                      f"effect(s) left on canvas after cancel_all_events")
+
         # Schedule the permanent background events based on set configuration
         sim_forever = 10E9  # 10 billion seconds (over 300 years)
 
