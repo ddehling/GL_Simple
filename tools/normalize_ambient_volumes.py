@@ -33,26 +33,56 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 
-def measure_rms_dbfs(path):
-    """Return (rms_dbfs, error_msg). Decodes via miniaudio (handles WAV /
-    FLAC / OGG / MP3) and computes the broadband RMS in dBFS. Mono mix at
-    22050 Hz is plenty for a loudness estimate."""
+_SR = 22050   # mono mix rate for the loudness estimate
+
+
+def decode_mono(path):
+    """Decode a sound file to a float64 mono array at _SR Hz. Cached by caller.
+    Returns (samples, error_msg)."""
     try:
         decoded = miniaudio.decode_file(
             str(path),
             output_format=miniaudio.SampleFormat.SIGNED16,
             nchannels=1,
-            sample_rate=22050,
+            sample_rate=_SR,
         )
     except Exception as e:
         return None, f"decode failed: {e}"
     samples = np.frombuffer(decoded.samples, dtype=np.int16).astype(np.float64) / 32768.0
     if samples.size == 0:
         return None, "no samples"
-    rms = float(np.sqrt(np.mean(samples * samples)))
+    return samples, None
+
+
+def window_rms_dbfs(samples, skip_sec, ari_sec):
+    """Return (rms_dbfs, played_seconds, error_msg) for the SLICE of `samples`
+    that actually plays under (skip_seconds, ARI):
+
+      window = samples[skip_sec : skip_sec + ari_sec]   if ari_sec > 0
+             = samples[skip_sec : end]                   if ari_sec == 0  (loop at EOF)
+
+    Mirrors AudioEngine.play_ambient semantics so a state's measurement
+    reflects only the audio it actually plays, not silent intros or peaks
+    outside the loop window.
+    """
+    total = samples.size
+    if total == 0:
+        return None, 0.0, "no samples"
+    start = int(max(0.0, skip_sec) * _SR)
+    if start >= total:
+        return None, 0.0, "skip past end of file"
+    if ari_sec > 0.0:
+        end = min(total, start + int(ari_sec * _SR))
+    else:
+        end = total
+    win = samples[start:end]
+    if win.size == 0:
+        return None, 0.0, "empty window"
+    rms = float(np.sqrt(np.mean(win * win)))
+    played = win.size / _SR
     if rms <= 1e-6:
-        return None, "silent"
-    return 20.0 * np.log10(rms), None
+        return None, played, "silent window"
+    return 20.0 * np.log10(rms), played, None
 
 
 def load_project(name):
@@ -91,49 +121,83 @@ def main():
     sounds_dir = proj / "media" / "sounds"
     presets = mod.WEATHER_PRESETS
 
-    # Collect file -> [(state, current_Sound_volume), ...]
-    file_uses = {}
+    # Per-state record: (state, file, skip, ari, current_vol)
+    state_records = []
     for state, params in presets.items():
         fname = params.get("ambient_sound")
         if not fname:
             continue
-        cur = float(params.get("Sound_volume", 1.0))
-        file_uses.setdefault(fname, []).append((state, cur))
+        state_records.append((
+            state,
+            fname,
+            float(params.get("skiptime", 0.0)),
+            float(params.get("ARI", 0.0)),
+            float(params.get("Sound_volume", 1.0)),
+        ))
 
-    if not file_uses:
+    if not state_records:
         print("(no states reference an ambient_sound)")
         return
 
-    print(f"Scanning {len(file_uses)} unique ambient files in {sounds_dir}")
+    unique_files = sorted({r[1] for r in state_records})
+    print(f"Scanning {len(state_records)} states ({len(unique_files)} unique files) "
+          f"in {sounds_dir}")
     print(f"Target RMS = {args.target:+.1f} dBFS  "
-          f"(clamp volume to {args.min_volume:.2f}..{args.max_volume:.2f})\n")
-    header = f"  {'file':45s}  {'dBFS':>7s}  {'gain dB':>7s}  {'vol':>5s}  used by"
+          f"(clamp volume to {args.min_volume:.2f}..{args.max_volume:.2f})")
+    print(f"Each state's RMS is measured over its ACTUAL play window "
+          f"([skiptime, skiptime+ARI]).\n")
+    header = (f"  {'state':28s}  {'skip':>5s}  {'ARI':>5s}  "
+              f"{'win':>5s}  {'dBFS':>6s}  {'gain':>6s}  {'cur':>4s}  "
+              f"{'new':>4s}  file")
     print(header)
     print("  " + "-" * (len(header) + 30))
 
-    file_volumes = {}
-    for fname in sorted(file_uses.keys()):
+    decoded_cache = {}    # fname -> samples or None (failed/missing)
+    state_new_vols = {}   # state_key -> new volume
+    rows = []             # for sorting
+
+    for state, fname, skip, ari, cur_vol in state_records:
         path = sounds_dir / fname
-        if not path.exists():
-            print(f"  [MISSING] {fname}")
+        if fname not in decoded_cache:
+            if not path.exists():
+                decoded_cache[fname] = None
+                rows.append((+999, _state_key(state), skip, ari, 0.0,
+                             None, None, cur_vol, None, f"[MISSING] {fname}"))
+                continue
+            samples, err = decode_mono(path)
+            if samples is None:
+                decoded_cache[fname] = None
+                rows.append((+999, _state_key(state), skip, ari, 0.0,
+                             None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
+                continue
+            decoded_cache[fname] = samples
+        samples = decoded_cache[fname]
+        if samples is None:
             continue
-        dbfs, err = measure_rms_dbfs(path)
+        dbfs, played, err = window_rms_dbfs(samples, skip, ari)
         if dbfs is None:
-            print(f"  [SKIP] {fname}: {err}")
+            rows.append((+999, _state_key(state), skip, ari, played,
+                         None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
             continue
         gain_db = args.target - dbfs
         vol = 10.0 ** (gain_db / 20.0)
         vol = max(args.min_volume, min(args.max_volume, vol))
         vol = round(vol, 2)
-        file_volumes[fname] = vol
+        state_new_vols[_state_key(state)] = vol
+        # Sort key: most over-target first (high effective dBFS = louder than target)
+        eff = dbfs + 20.0 * np.log10(max(cur_vol, 1e-3))
+        rows.append((-(eff - args.target), _state_key(state), skip, ari, played,
+                     dbfs, gain_db, cur_vol, vol, fname))
 
-        used = file_uses[fname]
-        states_str = ", ".join(_state_key(s) for s, _ in used[:3])
-        if len(used) > 3:
-            states_str += f"  (+{len(used) - 3} more)"
-        # short filename for display
-        short = fname if len(fname) <= 45 else (fname[:42] + "...")
-        print(f"  {short:45s}  {dbfs:7.1f}  {gain_db:+7.1f}  {vol:5.2f}  {states_str}")
+    rows.sort(key=lambda r: r[0])
+    for _, st, skip, ari, played, dbfs, gain_db, cur_vol, new_vol, info in rows:
+        if dbfs is None:
+            print(f"  {st:28s}  {skip:5.1f}  {ari:5.1f}  -----   -----  -----  "
+                  f"{cur_vol:4.2f}  ----  {info}")
+            continue
+        short = info if len(info) <= 40 else (info[:37] + "...")
+        print(f"  {st:28s}  {skip:5.1f}  {ari:5.1f}  {played:5.1f}  "
+              f"{dbfs:6.1f}  {gain_db:+6.1f}  {cur_vol:4.2f}  {new_vol:4.2f}  {short}")
 
     if not args.write:
         print(f"\n(dry run; pass --write to update "
@@ -147,14 +211,14 @@ def main():
     changes = []
     for state, params in presets.items():
         p = dict(params)
-        fname = p.get("ambient_sound")
-        if fname in file_volumes:
-            new_vol = file_volumes[fname]
+        key = _state_key(state)
+        if key in state_new_vols:
+            new_vol = state_new_vols[key]
             old_vol = float(p.get("Sound_volume", 1.0))
             if abs(old_vol - new_vol) > 1e-3:
-                changes.append((_state_key(state), old_vol, new_vol))
+                changes.append((key, old_vol, new_vol))
             p["Sound_volume"] = new_vol
-        new_presets[_state_key(state)] = p
+        new_presets[key] = p
 
     states_list = [_state_key(s) for s in mod.WeatherState]
     sets = {k: dict(v) for k, v in mod.WEATHER_SETS.items()}
