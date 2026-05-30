@@ -178,17 +178,26 @@ class SunriseEffect(ShaderEffect):
             raise
     
     def get_vertex_shader(self):
+        # gl_Position.z MUST match z_centroid so the painter's-order sort
+        # (engine, by z_centroid) and the GL depth test agree. Previously
+        # z_centroid was 0.93 but gl_Position.z was 0.97 — the sort
+        # treated this as a near layer while the depth buffer treated it
+        # as far, producing z-fighting with sky shaders that also wrote
+        # 0.97 and incorrect occlusion against mid-depth atmospheric
+        # layers (canopy_godrays at 0.95, etc.).
         return """
         #version 310 es
         precision highp float;
-        
+
         layout(location = 0) in vec2 position;
-        
+
         out vec2 fragCoord;
-        
+
         void main() {
             fragCoord = position;
-            gl_Position = vec4(position, 0.97, 1.0);  // depth = 0.97 (behind clouds, in front of background)
+            // 0.93: sky-band, just in front of canopy_godrays (0.95) and
+            // desert_sky (0.97). Matches z_centroid in __init__.
+            gl_Position = vec4(position, 0.93, 1.0);
         }
         """
     
@@ -427,10 +436,15 @@ class SunriseEffect(ShaderEffect):
                 
                 // Apply color intensity
                 color *= colorIntensity*0.5;
-                
-                // Apply mask
-                color *= totalMask;
-                
+
+                // NOTE: do NOT multiply color by totalMask here. The
+                // renderer uses straight (non-premultiplied) alpha
+                // blending — alpha is written separately below and the
+                // GPU multiplies srcA × srcRGB during the blend. Doing
+                // `color *= totalMask` here was pre-multiplying alpha
+                // into RGB, producing double-darkened edges (the
+                // gradient went dim where it should have been soft).
+
                 // Extra brightness for sun core (only when circular)
                 if (sunMask > 0.7 && isFlat < 0.5) {
                     color += sunColor * sunMask * 0.3;
@@ -499,7 +513,14 @@ class SunriseEffect(ShaderEffect):
         """Render sunrise effect"""
         if not self.enabled:
             return
-        
+
+        # Translucent fullscreen quad — must NOT write depth, otherwise
+        # the partially-transparent pixels stamp z=0.93 into the depth
+        # buffer and occlude anything farther drawn later in this frame
+        # (sky backdrop layers, far atmospheric effects). Doctrine in
+        # docs/shader_info.txt: Pattern B = no depth writes.
+        glDepthMask(GL_FALSE)
+
         glUseProgram(self.shader)
         glBindVertexArray(self.VAO)
         
@@ -539,6 +560,7 @@ class SunriseEffect(ShaderEffect):
         
         # Draw fullscreen quad
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
-        
+
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthMask(GL_TRUE)
