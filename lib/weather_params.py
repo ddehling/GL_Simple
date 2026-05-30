@@ -72,6 +72,7 @@ PARAMETER_DEFINITIONS = {
     'Wolfy': {'type': 'number', 'step': 0.1},
     'ambient_sound': {'type': 'text'},
     'bioluminescence': {'type': 'number', 'step': 0.05},
+    'bird_density': {'type': 'number', 'step': 0.5},
     'bubble_density': {'type': 'number', 'step': 0.05},
     'canopy_density': {'type': 'number', 'step': 0.05},
     'celestial_visibility': {'type': 'number', 'step': 0.1},
@@ -151,6 +152,10 @@ DEFAULT_WEATHER_PARAMS = {
     "season_preference": 0.375,
     "ambient_sound": None,
     "ARI": 0.0,
+    # forest_birds spawn-rate multiplier; 1.0 = baseline, forest_migration
+    # raises it to ~10 to saturate MAX_BIRDS. Needs a default + definition
+    # above or the web weather editor drops it on save.
+    "bird_density": 1.0,
 }
 
 # Empty defaults — projects own their content. Used only as fallbacks
