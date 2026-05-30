@@ -15,9 +15,10 @@ class LightningEffect(ShaderEffect):
     Multiple bolts can exist at different depths with varying intensities.
     """
     
-    def __init__(self, viewport, bolt_interval=2.0, bolt_duration=0.3, 
+    def __init__(self, viewport, bolt_interval=2.0, bolt_duration=0.3,
                  num_segments=15, jaggedness=30.0, max_bolts=5,
-                 branch_probability=0.4, max_branch_depth=2, branch_length_ratio=0.5):
+                 branch_probability=0.4, max_branch_depth=2, branch_length_ratio=0.5,
+                 fan_aware=False):
         """
         Args:
             viewport: The viewport to render to
@@ -29,6 +30,13 @@ class LightningEffect(ShaderEffect):
             branch_probability: Chance of branching at each segment (0.0-1.0)
             max_branch_depth: Maximum recursion depth for branches
             branch_length_ratio: How long branches are relative to parent (0.0-1.0)
+            fan_aware: If True, generate bolts in PHYSICAL FEET via FanCoords
+                so the bolt path is a true vertical strike on the polar fan
+                display (top of fan = sky, inner ring = horizon). When False
+                (default) the bolt is generated directly in buffer pixel
+                space — fine for rectangular viewports but on the fan a
+                "vertical" pixel path reads as a RADIAL spoke from the
+                inner ring outward. Pass True for any fan-realm caller.
         """
         super().__init__(viewport)
         self.bolt_interval = bolt_interval
@@ -40,6 +48,28 @@ class LightningEffect(ShaderEffect):
         self.max_branch_depth = max_branch_depth
         self.branch_length_ratio = branch_length_ratio
         self.wrap_margin = 100  # For horizontal wrapping
+        # Fan-aware mode: generate geometry in physical fan FEET and
+        # convert to pixel coords via FanCoords. Imported lazily so this
+        # generic shader still works on projects that don't have fan
+        # support in renderer/fan_coords.
+        self.fan_aware = bool(fan_aware)
+        self._fan = None
+        if self.fan_aware:
+            try:
+                from renderer.fan_coords import FanCoords
+                self._fan = FanCoords(viewport.width, viewport.height)
+            except Exception as e:
+                print(f"[Lightning] fan_aware requested but FanCoords unavailable: {e}")
+                self.fan_aware = False
+        # Physical-feet bounds for fan_aware bolt generation. The fan
+        # spans roughly x ∈ [-20.6, +20.6] ft, y ∈ [0, 20.6] ft with an
+        # inner ring at ~4 ft. Bolts strike from the cloud band (~19 ft)
+        # down to just above the horizon (~5 ft) so they don't drop into
+        # the inner-ring hole at the bottom of the fan.
+        self._fan_x_range_ft = 13.0   # ±13 ft anchor range
+        self._fan_top_ft     = 19.0
+        self._fan_bottom_ft  =  5.0
+        self._fan_jitter_ft  = 1.2    # ±1.2 ft per-segment horizontal jitter
         
         # VBO handles
         self.vbo_positions = None
@@ -204,7 +234,7 @@ void main() {
     def generate_bolt_path(self, start_x, start_y):
         """
         Generate a jagged lightning bolt path with branches
-        
+
         Returns:
             Dict with 'main' path and list of 'branches'
         """
@@ -212,17 +242,17 @@ void main() {
         main_points = []
         x = 0.0  # Relative to bolt position
         y = 0.0
-        
+
         segment_height = self.viewport.height / self.num_segments
-        
+
         for i in range(self.num_segments + 1):
             main_points.append([x, y])
-            
+
             if i < self.num_segments:
                 # Add random horizontal offset for zigzag
                 x += np.random.uniform(-self.jaggedness, self.jaggedness)
                 y += segment_height
-        
+
         # Generate branches from main bolt
         branches = []
         for i in range(1, len(main_points) - 1):  # Don't branch from endpoints
@@ -230,11 +260,11 @@ void main() {
             if np.random.random() < self.branch_probability:
                 branch_start = np.array(main_points[i])
                 direction = np.random.choice([-1, 1])  # Left or right
-                
+
                 # Calculate remaining length ratio
                 remaining_ratio = 1.0 - (i / len(main_points))
                 branch_length = remaining_ratio * self.branch_length_ratio
-                
+
                 # Generate branch
                 branch_points = self.generate_branch(
                     branch_start,
@@ -242,38 +272,138 @@ void main() {
                     branch_length,
                     depth=1
                 )
-                
+
                 if len(branch_points) > 1:
                     branches.append(np.array(branch_points, dtype=np.float32))
-        
+
         return {
             'main': np.array(main_points, dtype=np.float32),
             'branches': branches
+        }
+
+    # ------------------------------------------------------------------
+    # Fan-aware variants — generate bolt geometry in PHYSICAL FAN FEET
+    # then convert each point to absolute pixel coords via FanCoords.
+    # Returned arrays are ABSOLUTE pixel positions, so callers in fan
+    # mode set the bolt's `position` (offset attribute) to (0, 0, z)
+    # rather than the bolt anchor pixel — the absolute coords already
+    # carry the geometry.
+    # ------------------------------------------------------------------
+
+    def _generate_fan_branch(self, start_phys, direction, length_ratio, depth):
+        """Recursive branch in physical feet. Mirrors generate_branch but
+        works in feet so the branch follows real top-down geometry on
+        the polar fan rather than radial spokes.
+
+        start_phys: (phys_x_ft, phys_y_ft) — branch origin
+        direction:  +1 (right) or -1 (left)
+        length_ratio: fraction of the full sky band this branch covers
+        """
+        if depth > self.max_branch_depth:
+            return []
+
+        full_height_ft = self._fan_top_ft - self._fan_bottom_ft
+        num_segments = max(3, int(self.num_segments * length_ratio))
+        segment_height_ft = (full_height_ft * length_ratio) / num_segments
+        jit_ft = self._fan_jitter_ft * length_ratio
+
+        points = [tuple(start_phys)]
+        x_ft, y_ft = float(start_phys[0]), float(start_phys[1])
+        for _ in range(num_segments):
+            # Step DOWN in phys_y (toward the horizon) with a sideways drift.
+            x_ft += np.random.uniform(-jit_ft, jit_ft) + (direction * jit_ft * 0.5)
+            y_ft -= segment_height_ft
+            points.append((x_ft, y_ft))
+            # Recursive sub-branches with diminishing probability.
+            branch_chance = self.branch_probability * (0.5 ** depth)
+            if np.random.random() < branch_chance:
+                sub = self._generate_fan_branch(
+                    (x_ft, y_ft),
+                    int(np.random.choice([-1, 1])),
+                    length_ratio * self.branch_length_ratio,
+                    depth + 1,
+                )
+                points.extend(sub)
+        return points
+
+    def _generate_fan_bolt_path(self, anchor_phys_x_ft):
+        """Generate the main bolt path + branches in physical feet, then
+        convert every point to ABSOLUTE PIXEL coords for the renderer.
+        """
+        fan = self._fan
+        full_height_ft = self._fan_top_ft - self._fan_bottom_ft
+        segment_height_ft = full_height_ft / self.num_segments
+
+        # Main bolt: start at the cloud band, zigzag DOWN to the horizon.
+        main_phys = []
+        x_ft = float(anchor_phys_x_ft)
+        y_ft = self._fan_top_ft
+        for i in range(self.num_segments + 1):
+            main_phys.append((x_ft, y_ft))
+            if i < self.num_segments:
+                x_ft += np.random.uniform(-self._fan_jitter_ft, self._fan_jitter_ft)
+                y_ft -= segment_height_ft
+
+        # Branches: from each interior main-bolt vertex with branch_probability.
+        branches_phys = []
+        for i in range(1, len(main_phys) - 1):
+            if np.random.random() < self.branch_probability:
+                remaining_ratio = 1.0 - (i / float(len(main_phys)))
+                branch_length = remaining_ratio * self.branch_length_ratio
+                sub = self._generate_fan_branch(
+                    main_phys[i],
+                    int(np.random.choice([-1, 1])),
+                    branch_length,
+                    depth=1,
+                )
+                if len(sub) > 1:
+                    branches_phys.append(sub)
+
+        # Convert all (phys_x_ft, phys_y_ft) → absolute (pixel_x, pixel_y).
+        def phys_to_px_array(pts):
+            out = []
+            for px, py in pts:
+                ix, iy = fan.physical_to_px(float(px), float(py))
+                out.append([float(ix), float(iy)])
+            return np.array(out, dtype=np.float32)
+
+        return {
+            'main':     phys_to_px_array(main_phys),
+            'branches': [phys_to_px_array(b) for b in branches_phys],
         }
         
     def spawn_bolt(self):
         """Create a new lightning bolt with branches"""
         if len(self.bolts) >= self.max_bolts:
             return
-        
-        # Random horizontal position
-        x = np.random.uniform(0, self.viewport.width)
-        y = 0  # Start from top
-        
+
         # Random depth (some bolts in front, some behind)
         z = np.random.uniform(20, 80)  # Mid-range depths
-        
-        # Generate the bolt path with branches (relative coordinates)
-        path_data = self.generate_bolt_path(x, y)
-        
+
+        if self.fan_aware and self._fan is not None:
+            # Anchor in PHYSICAL FEET; path is generated and returned as
+            # ABSOLUTE pixel coords, so the per-vertex offset (the bolt
+            # position uniform/attribute) is zeroed — the geometry already
+            # carries the screen coords.
+            anchor_phys_x = float(np.random.uniform(
+                -self._fan_x_range_ft, self._fan_x_range_ft))
+            path_data = self._generate_fan_bolt_path(anchor_phys_x)
+            position = np.array([0.0, 0.0, z], dtype=np.float32)
+        else:
+            # Original buffer-pixel-space behaviour.
+            x = np.random.uniform(0, self.viewport.width)
+            y = 0  # Start from top
+            path_data = self.generate_bolt_path(x, y)
+            position = np.array([x, y, z], dtype=np.float32)
+
         bolt = {
             'main_path': path_data['main'],
             'branches': path_data['branches'],
-            'position': np.array([x, y, z], dtype=np.float32),
+            'position': position,
             'spawn_time': time.time(),
             'brightness': 1.0
         }
-        
+
         self.bolts.append(bolt)
     
     def update_bolts(self):
@@ -342,9 +472,13 @@ void main() {
                                         all_vertices, all_offsets, all_brightness,
                                         branch_brightness_multiplier=0.7)
             
-            # Handle wrapping - duplicate near edges
+            # Handle wrapping - duplicate near edges. Skipped in fan_aware
+            # mode because the fan has no left/right wrap; the path is
+            # already in absolute pixel coords and position is zeroed.
+            if self.fan_aware:
+                continue
             x = position[0]
-            
+
             # Near left edge - duplicate on right
             if x < self.wrap_margin:
                 wrapped_pos = position.copy()
@@ -544,7 +678,8 @@ void main() {
 # Event wrapper function for EventScheduler
 def shader_lightning(state, outstate, bolt_interval=2.0, bolt_duration=0.3,
                      num_segments=15, jaggedness=30.0, max_bolts=5,
-                     branch_probability=0.4, max_branch_depth=2, branch_length_ratio=0.5):
+                     branch_probability=0.4, max_branch_depth=2, branch_length_ratio=0.5,
+                     fan_aware=False):
     """
     Lightning bolts shader effect with branching - compatible with EventScheduler
     
@@ -604,7 +739,8 @@ def shader_lightning(state, outstate, bolt_interval=2.0, bolt_duration=0.3,
                 max_bolts=max_bolts,
                 branch_probability=branch_probability,
                 max_branch_depth=max_branch_depth,
-                branch_length_ratio=branch_length_ratio
+                branch_length_ratio=branch_length_ratio,
+                fan_aware=fan_aware,
             )
             state['effect'] = effect
             print(f"✓ Initialized shader lightning for frame {frame_id}")
