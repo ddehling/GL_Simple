@@ -59,6 +59,36 @@ def validate_weather_params(weather_states, weather_presets, weather_sets):
     }
 
 
+def _extract_assignments_text(file_path: Path, names) -> dict:
+    """Return {name: source_text} for top-level `name = ...` assignments in
+    the given file. Source text is the EXACT bytes of the assignment line(s),
+    preserving comments, whitespace, np.array(...) literals, and ordering -
+    so when the editor re-emits PARAMETER_DEFINITIONS / DEFAULT_WEATHER_PARAMS
+    it doesn't strip project-specific entries it doesn't know about.
+
+    Missing names or unreadable/unparseable files yield {}.
+    """
+    if not file_path.exists():
+        return {}
+    try:
+        src = file_path.read_text(encoding='utf-8')
+        tree = ast.parse(src)
+    except Exception:
+        return {}
+    lines = src.splitlines(keepends=True)
+    want = set(names)
+    found = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in want):
+            start = node.lineno - 1
+            end = node.end_lineno or node.lineno
+            found[node.targets[0].id] = ''.join(lines[start:end])
+    return found
+
+
 def save_weather_params(weather_states, weather_presets, weather_sets,
                         global_parameters=None, target_path=None):
     """
@@ -107,8 +137,13 @@ def save_weather_params(weather_states, weather_presets, weather_sets,
             import shutil
             shutil.copy2(weather_params_path, backup_path)
         
-        # Generate the Python file content
-        content = generate_weather_params_file(weather_states, weather_presets, weather_sets, global_parameters)
+        # Generate the Python file content. Pass the existing target path so
+        # the generator can preserve project-specific PARAMETER_DEFINITIONS
+        # and DEFAULT_WEATHER_PARAMS verbatim instead of stripping them.
+        content = generate_weather_params_file(
+            weather_states, weather_presets, weather_sets,
+            global_parameters, existing_path=weather_params_path,
+        )
         
         # Write to file
         with open(weather_params_path, 'w', encoding='utf-8') as f:
@@ -126,7 +161,8 @@ def save_weather_params(weather_states, weather_presets, weather_sets,
         }
 
 
-def generate_weather_params_file(weather_states, weather_presets, weather_sets, global_parameters=None):
+def generate_weather_params_file(weather_states, weather_presets, weather_sets,
+                                 global_parameters=None, existing_path=None):
     """
     Generate the complete weather_params.py file content.
     
@@ -176,59 +212,60 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets, 
     lines.append("]")
     lines.append("")
     
-    # PARAMETER_DEFINITIONS: read straight from the currently-loaded
-    # module, which is the single source of truth. The generator is not
-    # allowed to edit this -- if a param needs to be added or removed,
-    # that change happens in weather_params.py directly and is preserved
-    # verbatim here.
+    # PARAMETER_DEFINITIONS + DEFAULT_WEATHER_PARAMS: preserve the project
+    # file's blocks VERBATIM (including comments, ordering, np.array literals,
+    # and any project-specific params the editor doesn't know about). Without
+    # this the generator drops every param not in the lib defaults - which is
+    # how all the storm/cyber/etc. params kept getting stripped on save.
+    preserved = {}
+    if existing_path is not None:
+        preserved = _extract_assignments_text(
+            Path(existing_path),
+            ('PARAMETER_DEFINITIONS', 'DEFAULT_WEATHER_PARAMS'),
+        )
+
     lines.append("# Parameter definitions for the weather editor")
     lines.append("# Defines the type and input configuration for each parameter")
-    lines.append("PARAMETER_DEFINITIONS = {")
-    from lib.weather_params import PARAMETER_DEFINITIONS as _live_defs
-    for param_name, param_def in sorted(_live_defs.items()):
-        lines.append(f"    '{param_name}': {repr(dict(param_def))},")
-    lines.append("}")
+    if 'PARAMETER_DEFINITIONS' in preserved:
+        lines.append(preserved['PARAMETER_DEFINITIONS'].rstrip('\n'))
+    else:
+        # Fallback: emit the lib's view (only used when there's no existing
+        # project file to copy from, e.g. a fresh project bootstrapped by
+        # the editor).
+        lines.append("PARAMETER_DEFINITIONS = {")
+        from lib.weather_params import PARAMETER_DEFINITIONS as _live_defs
+        for param_name, param_def in sorted(_live_defs.items()):
+            lines.append(f"    '{param_name}': {repr(dict(param_def))},")
+        lines.append("}")
     lines.append("")
-    
-    # DEFAULT_WEATHER_PARAMS (keep static for now)
+
     lines.append("# Default weather parameters")
-    lines.append("DEFAULT_WEATHER_PARAMS = {")
-    default_params = {
-        "wind_speed": 0,
-        "rain_rate": 0,
-        "lightning_probability": 0,
-        "starryness": 1.0,
-        "spookyness": 0.0,
-        "fog": 0.0,
-        "fog_color": "np.array([0.7, 0.7, 0.7])",
-        "possible_transitions": ["light_rain", "foggy", "windy_night"],
-        "transition_weights": [1.0, 2.0, 0.5],
-        "transition_duration": 20.0,
-        "celestial_visibility": 1.0,
-        "firefly_density": 0.0,
-        "Aurora_probability": 0.0,
-        "Wolfy": 0.0,
-        "Switch_rate": 1.0,
-        "meteor_rate": 0.0,
-        "volcano_level": 0.0,
-        "sand_density": 0.0,
-        "skiptime": 0.0,
-        "tree_prob": 0.0,
-        "Weird": 0.0,
-        "Sound_volume": 1.0,
-        "season_preference": 0.375,
-        "ambient_sound": None,
-        "ARI": 0.0
-    }
-    
-    for key, value in default_params.items():
-        if isinstance(value, str):
-            lines.append(f'    "{key}": {value},')
-        elif isinstance(value, list):
-            lines.append(f'    "{key}": {repr(value)},')
-        else:
-            lines.append(f'    "{key}": {value},')
-    lines.append("}")
+    if 'DEFAULT_WEATHER_PARAMS' in preserved:
+        lines.append(preserved['DEFAULT_WEATHER_PARAMS'].rstrip('\n'))
+    else:
+        # Fallback: a minimal static set (same as the legacy hard-coded one).
+        default_params = {
+            "wind_speed": 0, "rain_rate": 0, "lightning_probability": 0,
+            "starryness": 1.0, "spookyness": 0.0, "fog": 0.0,
+            "fog_color": "np.array([0.7, 0.7, 0.7])",
+            "possible_transitions": ["light_rain", "foggy", "windy_night"],
+            "transition_weights": [1.0, 2.0, 0.5], "transition_duration": 20.0,
+            "celestial_visibility": 1.0, "firefly_density": 0.0,
+            "Aurora_probability": 0.0, "Wolfy": 0.0, "Switch_rate": 1.0,
+            "meteor_rate": 0.0, "volcano_level": 0.0, "sand_density": 0.0,
+            "skiptime": 0.0, "tree_prob": 0.0, "Weird": 0.0,
+            "Sound_volume": 1.0, "season_preference": 0.375,
+            "ambient_sound": None, "ARI": 0.0,
+        }
+        lines.append("DEFAULT_WEATHER_PARAMS = {")
+        for key, value in default_params.items():
+            if isinstance(value, str):
+                lines.append(f'    "{key}": {value},')
+            elif isinstance(value, list):
+                lines.append(f'    "{key}": {repr(value)},')
+            else:
+                lines.append(f'    "{key}": {value},')
+        lines.append("}")
     lines.append("")
     
     # WEATHER_PRESETS
