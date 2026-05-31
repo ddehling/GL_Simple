@@ -1,14 +1,14 @@
-"""Resolve a Weight_Of_Light mDNS hostname to an IPv4 address.
+"""Resolve a EtherNode mDNS hostname to an IPv4 address.
 
-Lets receivers be addressed by stable hostname (e.g. ``wol-7f928c``)
+Lets receivers be addressed by stable hostname (e.g. ``ethernode-7f928c``)
 rather than DHCP-fragile IPs. Resolution strategy, in order:
 
 1. **OS resolver** via ``socket.gethostbyname()``. Works on Linux with
    avahi-daemon, on macOS natively, and on Windows if Bonjour is
    installed (most operators have it because iTunes / Adobe / etc.
    bundle it). When this works it's the fastest path.
-2. **Zeroconf browse** of ``_wol._tcp.local.`` — same service the
-   firmware advertises and the WoL configurator's discovery uses.
+2. **Zeroconf browse** of ``_ethernode._tcp.local.`` — same service the
+   firmware advertises and the EtherNode configurator's discovery uses.
    Catches the case where the OS doesn't speak mDNS but Python's
    zeroconf library does.
 
@@ -67,7 +67,7 @@ def _try_zeroconf(name: str, timeout: float) -> Optional[str]:
         def add_service(self, zc, type_, svc_name):
             info = zc.get_service_info(type_, svc_name)
             if info and info.addresses:
-                # Service names look like "wol-7f928c._wol._tcp.local."
+                # Service names look like "ethernode-7f928c._ethernode._tcp.local."
                 # — first segment matches the firmware's hostname.
                 short = svc_name.split('.')[0]
                 found[short] = socket.inet_ntoa(info.addresses[0])
@@ -77,7 +77,7 @@ def _try_zeroconf(name: str, timeout: float) -> Optional[str]:
 
     zc = Zeroconf()
     try:
-        ServiceBrowser(zc, '_wol._tcp.local.', L())
+        ServiceBrowser(zc, '_ethernode._tcp.local.', L())
         deadline = time.monotonic() + timeout
         # Poll instead of sleeping the full timeout so a fast-arriving
         # match returns immediately. Browser updates the dict from a
@@ -92,7 +92,7 @@ def _try_zeroconf(name: str, timeout: float) -> Optional[str]:
 
 
 def resolve(name: str, timeout: float = 3.0) -> Optional[str]:
-    """Resolve `name` (e.g. "wol-7f928c" or "wol-7f928c.local") to an
+    """Resolve `name` (e.g. "ethernode-7f928c" or "ethernode-7f928c.local") to an
     IPv4 string, or return None on failure. See module docstring for
     the resolution order."""
     if not name:

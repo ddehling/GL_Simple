@@ -1682,7 +1682,7 @@ class BoxesModel(_BaseModel):
             object_id=next_id,
             name=f"obj{next_id}" if self._is_position_meaningful() else "",
             x=cx, y=cy,
-            host=f"wol-obj{next_id}.local",
+            host=f"ethernode-obj{next_id}.local",
         )
         self.beginInsertRows(QModelIndex(), len(self.doc.boxes), len(self.doc.boxes))
         self.doc.boxes.append(new)

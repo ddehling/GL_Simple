@@ -41,7 +41,7 @@ class OscListener:
 
         listener = OscListener(port=9001)
         listener.start()
-        listener.register_prefix("/wol/", on_wol_message)
+        listener.register_prefix("/en/", on_en_message)
         ...
         listener.stop()
 
@@ -56,7 +56,7 @@ class OscListener:
         self.bind_ip = bind_ip
         # Off by default — radar firmware broadcasts ~360 msgs/sec
         # across all boxes, and any project that doesn't register a
-        # ``/wol/`` route (e.g. Fan) sees every message fall through
+        # ``/en/`` route (e.g. Fan) sees every message fall through
         # to the catch-all log and floods the console. Flip to True
         # via ``osc.log_unrouted: true`` in config.yaml when
         # diagnosing message-shape problems.
@@ -144,8 +144,8 @@ class OscListener:
 
         # Unrouted message — silent by default, opt-in log via
         # ``log_unrouted=True`` for diagnosis. Default-on flooded
-        # the console under WoL traffic when the active project's
-        # hook hadn't claimed the ``/wol/`` prefix.
+        # the console under EtherNode traffic when the active project's
+        # hook hadn't claimed the ``/en/`` prefix.
         if not self.log_unrouted:
             return
         if not args:

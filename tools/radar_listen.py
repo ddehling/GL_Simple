@@ -1,4 +1,4 @@
-"""Standalone listener for WoL radar OSC traffic.
+"""Standalone listener for EtherNode radar OSC traffic.
 
 Use this to verify the firmware → network → host data path before
 wiring the engine up. Doesn't depend on Stories_OGL, the renderer, or
@@ -10,19 +10,19 @@ Usage:
     python tools/radar_listen.py -v             # also dump every raw message
 
 The firmware emits an OSC bundle every ~1/rateHz seconds (default
-5 Hz, configurable in the WoL GUI's LD2412 tab). Each bundle contains:
+5 Hz, configurable in the EtherNode GUI's LD2412 tab). Each bundle contains:
 
-    /wol/<host>/radar       <int state 0..3>
-    /wol/<host>/radar/m     <int moving distance cm>
-    /wol/<host>/radar/s     <int stationary distance cm>
-    /wol/<host>/radar/d     <int closest detected distance cm>
-    /wol/<host>/radar/me    <int moving energy 0..100>
-    /wol/<host>/radar/se    <int stationary energy 0..100>
-    /wol/<host>/radar/gm    <14 ints, gates 0..13 — moving>
-    /wol/<host>/radar/gs    <14 ints, gates 0..13 — stationary>
+    /en/<host>/radar       <int state 0..3>
+    /en/<host>/radar/m     <int moving distance cm>
+    /en/<host>/radar/s     <int stationary distance cm>
+    /en/<host>/radar/d     <int closest detected distance cm>
+    /en/<host>/radar/me    <int moving energy 0..100>
+    /en/<host>/radar/se    <int stationary energy 0..100>
+    /en/<host>/radar/gm    <14 ints, gates 0..13 — moving>
+    /en/<host>/radar/gs    <14 ints, gates 0..13 — stationary>
 
 Set each device's OSC remote host to this machine's IP and remote port
-to the value above (default 9001) in the WoL GUI's OSC tab.
+to the value above (default 9001) in the EtherNode GUI's OSC tab.
 
 Output: one block per host every second showing the latest values from
 that host, plus the message rate (sanity check: should be 8 × rateHz —
@@ -90,8 +90,8 @@ def _safe_int(v) -> int:
 
 def _on_osc(address: str, *args) -> None:
     parts = address.strip('/').split('/')
-    # Expect /wol/<host>/radar[/<sub>]
-    if len(parts) < 3 or parts[0] != 'wol' or parts[2] != 'radar':
+    # Expect /en/<host>/radar[/<sub>]
+    if len(parts) < 3 or parts[0] != 'en' or parts[2] != 'radar':
         return
 
     host = parts[1]
@@ -110,7 +110,7 @@ def _on_osc(address: str, *args) -> None:
         h.msg_count += 1
 
         if not sub:
-            # Bare /wol/<host>/radar = state int
+            # Bare /en/<host>/radar = state int
             if args:
                 h.state = _safe_int(args[0])
         elif sub == ['m']:
@@ -181,13 +181,13 @@ def main() -> int:
     global _verbose
 
     parser = argparse.ArgumentParser(
-        description="Listen for WoL LD2412 radar OSC traffic; "
+        description="Listen for EtherNode LD2412 radar OSC traffic; "
                     "print a per-host summary every second.")
     parser.add_argument('--host', default='0.0.0.0',
                         help='bind address (default 0.0.0.0 = all interfaces)')
     parser.add_argument('--port', type=int, default=9001,
                         help='UDP port to listen on (default 9001, matches '
-                             'the WoL firmware default OSC remote_port)')
+                             'the EtherNode firmware default OSC remote_port)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='also print every raw OSC message as it arrives '
                              '(loud at 5 Hz × 8 msgs/bundle × N hosts)')
@@ -196,9 +196,9 @@ def main() -> int:
     _verbose = args.verbose
 
     disp = dispatcher.Dispatcher()
-    # /wol/* matches everything under /wol/. Our handler then filters
+    # /en/* matches everything under /en/. Our handler then filters
     # for the radar subset; non-radar traffic is silently ignored.
-    disp.map('/wol/*', _on_osc)
+    disp.map('/en/*', _on_osc)
 
     try:
         server = osc_server.ThreadingOSCUDPServer((args.host, args.port), disp)
@@ -211,7 +211,7 @@ def main() -> int:
     print(f"Listening on {args.host}:{args.port}")
     print("Set each device's OSC remote host = this machine's IP, "
           f"remote port = {args.port}")
-    print("(WoL GUI → OSC tab → 'OSC target' fields, then Save + Reboot.)")
+    print("(EtherNode GUI → OSC tab → 'OSC target' fields, then Save + Reboot.)")
     print()
     print("Ctrl-C to quit.")
 

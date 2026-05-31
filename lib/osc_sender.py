@@ -9,7 +9,7 @@ control).
 Targets are addressed by:
   * ``int``  — an object id from the project's receiver list
   * ``str``  — either an object name ("center") or a literal hostname
-               ("wol-center.local"). Names are resolved against the
+               ("ethernode-center.local"). Names are resolved against the
                project's name → object_id map; hostnames go straight to
                the resolver.
   * ``tuple[str, int]`` — explicit ``(host_or_ip, port)``, used when
