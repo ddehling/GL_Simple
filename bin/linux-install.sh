@@ -108,7 +108,7 @@ github_device_signin() {
             --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code')" || continue
         access="$(printf '%s' "$tresp" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
         if [ -n "$access" ]; then
-            printf '%s' "$access" | gh auth login --hostname github.com --git-protocol https --with-token && return 0
+            printf '%s' "$access" | gh auth login --hostname github.com --with-token && return 0
             return 2
         fi
         err="$(printf '%s' "$tresp" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
@@ -164,7 +164,7 @@ if ! gh auth status >/dev/null 2>&1; then
             echo ""
             if [ -n "${_token:-}" ]; then
                 printf '%s' "$_token" \
-                    | gh auth login --hostname github.com --git-protocol https --with-token || true
+                    | gh auth login --hostname github.com --with-token || true
             fi
             unset _token
         fi
