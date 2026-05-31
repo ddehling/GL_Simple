@@ -66,8 +66,10 @@ install_gh_from_github() {
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
     sudo apt-get update -y
-    sudo apt-get install -y --only-upgrade gh \
-        || sudo apt-get install -y gh
+    # Plain install: adds gh when missing, upgrades to the GitHub-repo version
+    # when an older one is present. (--only-upgrade is a no-op that still exits
+    # 0 on a fresh box where gh isn't installed - it would leave gh absent.)
+    sudo apt-get install -y gh
 }
 
 # Run GitHub's OAuth device flow ourselves and PRINT the one-time code with
@@ -153,6 +155,11 @@ if command -v gh >/dev/null 2>&1; then
 fi
 if ! $GH_OK; then
     install_gh_from_github
+fi
+if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh is still not installed after setup - cannot continue." >&2
+    echo "       Try:  sudo apt-get install -y gh" >&2
+    exit 1
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
