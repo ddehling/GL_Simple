@@ -1,15 +1,15 @@
-"""Warm bloom effect for the beloved (love) weather set.
+"""Warm bloom effect for the beloved (Weather of the Heart) set.
 
-Soft, slow radial blooms that swell and fade across the display — the
-ambient warmth-of-presence layer. Each bloom drifts gently and pulses
-once over a few seconds.
+The CAPYBARA / presence layer. Soft, slow radial blooms that swell and fade -
+the ambient warmth-of-being-with. Reads the Capybara's two love variables:
 
-  passion    -> bloom rate (more frequent), color shift toward red-orange
-  tenderness -> bloom size, softness of falloff, brightness floor
-  longing    -> color shift toward cool blue, slower swell
-  devotion   -> bloom lifetime persistence (slower fade)
-  sadness    -> muted gray-blue tint, dimmer overall
-  heartbreak -> blooms cut short (sharp early decay)
+  capybara_light (Abiding)      -> warm, full, frequent blooms that drift gently;
+                                   the easy companionship that needs no occasion.
+  capybara_dark  (the Still Water) -> blooms go cool, flat, sparse, and motionless;
+                                   comfort curdled into numbness, presence that has
+                                   become absence.
+
+Published by NarrativePlayer as story_capybara_light / story_capybara_dark.
 """
 
 import numpy as np
@@ -41,12 +41,8 @@ def shader_warm_bloom(state, outstate):
 
     if 'effect' in state:
         eff = state['effect']
-        eff.passion    = float(outstate.get('story_passion',    0.2))
-        eff.tenderness = float(outstate.get('story_tenderness', 0.5))
-        eff.longing    = float(outstate.get('story_longing',    0.0))
-        eff.devotion   = float(outstate.get('story_devotion',   0.3))
-        eff.sadness    = float(outstate.get('story_sadness',    0.0))
-        eff.heartbreak = float(outstate.get('story_heartbreak', 0.0))
+        eff.capybara_light = float(outstate.get('story_capybara_light', 0.45))
+        eff.capybara_dark  = float(outstate.get('story_capybara_dark',  0.10))
 
     if state['count'] == -1:
         if 'effect' in state:
@@ -73,12 +69,9 @@ in vec2 v_uv;
 out vec4 fragColor;
 
 uniform float u_time;
-uniform float u_passion;
-uniform float u_tenderness;
-uniform float u_longing;
-uniform float u_devotion;
-uniform float u_sadness;
-uniform float u_heartbreak;
+uniform float u_cycle;           // accumulated bloom cycle (decoupled from period)
+uniform float u_capybara_light;  // abiding: warm, full, present blooms
+uniform float u_capybara_dark;   // still water: cool, flat, sparse, motionless
 
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -86,63 +79,53 @@ void main() {
     vec2 uv = v_uv;
     uv.y *= 1.6;
 
-    // Period between blooms shortens with passion; lifetime extends with devotion.
-    float period   = mix(8.0, 2.0, u_passion);
-    float lifetime = mix(2.5, 7.0, u_devotion);
+    // Abiding keeps the blooms present for more of each cycle; the still water
+    // shrinks them and damps their motion almost to nothing.
+    float live_frac = mix(0.45, 0.85, u_capybara_light);
+    float radius0   = mix(0.10, 0.30, u_capybara_light) * mix(1.0, 0.6, u_capybara_dark);
+    float drift_amp = mix(0.03, 0.005, u_capybara_dark);
 
-    vec3 col = vec3(0.0);
     float total = 0.0;
 
     for (int i = 0; i < 6; ++i) {
         float fi = float(i);
-        // Each bloom slot has its own drifting position.
-        float t   = u_time + fi * 31.4;
-        float idx = floor(t / period);
-        float ph  = fract(t / period) * period;       // 0..period
+        // Each slot reads the shared accumulated cycle, staggered. Using an
+        // accumulated cycle (not u_time / period) avoids phase jumps when the
+        // period changes as the variables ramp.
+        float s    = u_cycle - fi * 0.37;
+        float idx  = floor(s);
+        float ph01 = fract(s);                 // 0..1 within this slot's cycle
+        if (ph01 > live_frac) continue;
 
-        // New bloom every period: pick a fresh random center.
-        vec2 c = vec2(
-            hash(idx * 7.13 + fi * 1.7),
-            hash(idx * 11.7 + fi * 2.3) * 1.6
-        );
+        float age = ph01 / live_frac;          // 0..1 over the bloom's life
+        float env = sin(age * 3.1416);         // 0 -> 1 -> 0
+        env *= mix(1.0, 0.5, u_capybara_dark); // still water flattens the swell
 
-        // Slow drift
-        c.x += sin(u_time * 0.05 + fi) * 0.02;
-        c.y += cos(u_time * 0.04 + fi) * 0.02;
+        vec2 c = vec2(hash(idx * 7.13 + fi * 1.7),
+                      hash(idx * 11.7 + fi * 2.3) * 1.6);
+        c.x += sin(u_time * 0.05 + fi) * drift_amp;
+        c.y += cos(u_time * 0.04 + fi) * drift_amp;
 
-        // Bloom envelope: rises and falls smoothly.
-        // Heartbreak truncates the lifetime — blooms get cut short.
-        float effective_life = lifetime * mix(1.0, 0.35, u_heartbreak);
-        float age = ph / effective_life;
-        if (age > 1.0) continue;
-        float env = sin(age * 3.1416);                 // 0 -> 1 -> 0
+        float radius = radius0 * (0.6 + 0.8 * env);
+        float d      = distance(uv, c);
+        float fall   = exp(-(d * d) / (radius * radius * 0.5));
 
-        // Slower swell when longing or sadness is high.
-        env = pow(env, mix(1.0, 1.8, max(u_longing, u_sadness)));
-
-        float radius = mix(0.10, 0.32, u_tenderness) * (0.6 + 0.8 * env);
-        float d = distance(uv, c);
-        float falloff = exp(-(d * d) / (radius * radius * 0.5));
-
-        col   += vec3(falloff) * env;
-        total += falloff * env;
+        total += fall * env;
     }
 
-    // Color blend: passion = red-orange, tenderness = cream/pink, longing = cool blue
-    vec3 base   = vec3(1.0, 0.85, 0.72);  // cream
-    vec3 warm   = vec3(1.0, 0.45, 0.20);  // red-orange
-    vec3 pink   = vec3(1.0, 0.62, 0.78);
-    vec3 cool   = vec3(0.35, 0.55, 0.95);
-    vec3 muted  = vec3(0.40, 0.45, 0.55); // gray-blue (sadness)
-    vec3 tint = mix(base, pink, u_tenderness * 0.6);
-    tint      = mix(tint, warm, u_passion);
-    tint      = mix(tint, cool, u_longing);
-    tint      = mix(tint, muted, u_sadness * 0.75);
+    // Color: cool gray-blue (still water) -> warm amber-cream (abiding).
+    vec3 cool  = vec3(0.42, 0.50, 0.62);
+    vec3 warm  = vec3(1.0, 0.80, 0.58);
+    vec3 muted = vec3(0.40, 0.43, 0.50);
+    vec3 tint = mix(cool, warm, u_capybara_light);
+    tint      = mix(tint, muted, u_capybara_dark * 0.6);
 
-    float intensity = clamp(total, 0.0, 1.4);
-    intensity *= (0.5 + u_tenderness * 0.5);
-    intensity *= mix(1.0, 0.45, u_sadness);
-    fragColor = vec4(tint * intensity * 0.5, intensity * 0.6);
+    // Straight alpha (NOT pre-multiplied): rgb is the full tint, alpha carries
+    // the bloom intensity.
+    float alpha = clamp(total, 0.0, 1.0);
+    alpha *= (0.45 + u_capybara_light * 0.5);
+    alpha *= mix(1.0, 0.55, u_capybara_dark);
+    fragColor = vec4(tint, clamp(alpha, 0.0, 0.9));
 }
 """
 
@@ -152,12 +135,9 @@ class WarmBloomEffect(ShaderEffect):
         super().__init__(viewport)
         self.render_priority = 2.0
         self._time = 0.0
-        self.passion = 0.2
-        self.tenderness = 0.5
-        self.longing = 0.0
-        self.devotion = 0.3
-        self.sadness = 0.0
-        self.heartbreak = 0.0
+        self._cycle = 0.0          # accumulated bloom cycle
+        self.capybara_light = 0.45
+        self.capybara_dark = 0.10
 
     def compile_shader(self):
         return shaders.compileProgram(
@@ -180,20 +160,26 @@ class WarmBloomEffect(ShaderEffect):
 
     def update(self, dt: float, state: Dict):
         self._time += dt
+        # Abiding blooms come a little more often; the still water spaces them
+        # far apart. Accumulated as a cycle so changing period never jumps phase.
+        period = mix_py(7.0, 4.5, self.capybara_light) * mix_py(1.0, 1.8, self.capybara_dark)
+        self._cycle += dt / max(period, 0.5)
 
     def render(self, state: Dict):
         super().render(state)
         if not self.shader:
             return
         glUseProgram(self.shader)
-        glUniform1f(glGetUniformLocation(self.shader, "u_time"),       self._time)
-        glUniform1f(glGetUniformLocation(self.shader, "u_passion"),    self.passion)
-        glUniform1f(glGetUniformLocation(self.shader, "u_tenderness"), self.tenderness)
-        glUniform1f(glGetUniformLocation(self.shader, "u_longing"),    self.longing)
-        glUniform1f(glGetUniformLocation(self.shader, "u_devotion"),   self.devotion)
-        glUniform1f(glGetUniformLocation(self.shader, "u_sadness"),    self.sadness)
-        glUniform1f(glGetUniformLocation(self.shader, "u_heartbreak"), self.heartbreak)
+        glUniform1f(glGetUniformLocation(self.shader, "u_time"),           self._time)
+        glUniform1f(glGetUniformLocation(self.shader, "u_cycle"),          self._cycle)
+        glUniform1f(glGetUniformLocation(self.shader, "u_capybara_light"), self.capybara_light)
+        glUniform1f(glGetUniformLocation(self.shader, "u_capybara_dark"),  self.capybara_dark)
         glBindVertexArray(self.VAO)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+
+
+def mix_py(a: float, b: float, t: float) -> float:
+    """Linear interpolation matching GLSL mix(), for use in Python update()."""
+    return a + (b - a) * t
