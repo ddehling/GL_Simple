@@ -5,7 +5,7 @@
 # its remote (no DNS, no internet, auth failure, hung connection) is
 # logged and skipped, and the app launches with whatever's on disk.
 #
-# Use bin\setup.bat for the first install. Use bin\run.bat every
+# Use bin\windows-install.ps1 for the first install. Use bin\windows-run.ps1 every
 # subsequent launch.
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -53,7 +53,7 @@ Get-ChildItem projects -Directory -ErrorAction SilentlyContinue | ForEach-Object
 Write-Host ""
 Write-Host "[2/2] Launching application..." -ForegroundColor Cyan
 if (-not (Test-Path ".\venv")) {
-    Write-Host "ERROR: .\venv not found. Run bin\setup.bat first." -ForegroundColor Red
+    Write-Host "ERROR: .\venv not found. Run bin\windows-install.ps1 first." -ForegroundColor Red
     Read-Host "Press Enter to exit"; exit 1
 }
 & .\venv\Scripts\python.exe Stories_OGL.py

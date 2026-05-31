@@ -6,20 +6,20 @@
       "type": "shell",
       "group": { "kind": "build", "isDefault": true },
       "linux": {
-        "command": "./bin/quick_run.sh"
+        "command": "./bin/linux-run.sh"
       },
       "windows": {
-        "command": "bin\\quick_run.bat"
+        "command": "powershell -ExecutionPolicy Bypass -File bin\\windows-run.ps1"
       }
     },
     {
       "label": "Setup & Run",
       "type": "shell",
       "linux": {
-        "command": "./bin/setup_and_run.sh"
+        "command": "./bin/linux-install.sh"
       },
       "windows": {
-        "command": "bin\\setup_and_run.bat"
+        "command": "powershell -ExecutionPolicy Bypass -File bin\\windows-install.ps1"
       }
     }
   ]

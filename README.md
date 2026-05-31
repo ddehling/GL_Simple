@@ -24,9 +24,9 @@ OpenGL-based DMX lighting control system with real-time GPU shader effects, audi
 ```bash
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-./bin/setup.sh                # Linux/macOS
-# or
-bin\setup.bat                 # Windows
+./bin/linux-install.sh        # Linux / Raspberry Pi
+# or, on Windows:
+powershell -ExecutionPolicy Bypass -File bin\windows-install.ps1
 ```
 
 Installs git + the GitHub CLI, signs you into GitHub (browser device
@@ -555,7 +555,7 @@ self._schedule_event_from_map("fog_beings", start_time=0, duration=60, frame_id=
 Ensure Python is installed and on PATH. Verify with `python --version`. Restart terminal after installing.
 
 ### "Module not found"
-Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\setup.bat` / `./bin/setup.sh`.
+Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\windows-install.ps1` / `./bin/linux-install.sh`.
 
 ### Audio device not found
 - Run `sound_editor.py` to list available devices

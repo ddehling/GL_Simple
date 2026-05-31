@@ -6,8 +6,8 @@
 # its remote (no DNS, no internet, auth failure, hung connection) is
 # logged and skipped, and the app launches with whatever's on disk.
 #
-# Use bin/setup.sh for the first install (also handles dep
-# install + gh auth). Use bin/run.sh every subsequent launch.
+# Use bin/linux-install.sh for the first install (also handles dep
+# install + gh auth). Use bin/linux-run.sh every subsequent launch.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -51,7 +51,7 @@ done
 echo ""
 echo "[2/2] Launching application..."
 if [ ! -d venv ]; then
-    echo "ERROR: ./venv not found. Run bin/setup.sh first." >&2
+    echo "ERROR: ./venv not found. Run bin/linux-install.sh first." >&2
     exit 1
 fi
 exec venv/bin/python Stories_OGL.py

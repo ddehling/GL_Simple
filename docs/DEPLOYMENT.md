@@ -25,20 +25,20 @@ authentication, project selection, cloning, dep install, and launch.
 ```bash
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-./bin/setup.sh
+./bin/linux-install.sh
 ```
 
 **Windows:**
 ```
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-bin\setup.bat
+powershell -ExecutionPolicy Bypass -File bin\windows-install.ps1
 ```
 (Windows needs git pre-installed for the initial `git clone`; the
-script installs it via winget if you launch via `bin\setup.bat`
+script installs it via winget if you launch via `bin\windows-install.ps1`
 from a different location, but the curl-pipe path is easier.)
 
-What `bin/setup.*` does, in order:
+What `bin/linux-install.sh` / `bin/windows-install.ps1` does, in order:
 
 1. Installs `git` if missing (apt on Linux, winget on Windows).
 2. Installs the **GitHub CLI** (`gh`) if missing.
@@ -58,48 +58,50 @@ What `bin/setup.*` does, in order:
 9. Creates `./venv`, installs `requirements.txt`.
 10. Launches `Stories_OGL.py`.
 
-Re-running `bin/setup.*` is fine — every step is idempotent (skips
+Re-running the install script is fine — every step is idempotent (skips
 already-installed bits, skips already-cloned projects).
 
 ## Raspberry Pi
 
-Pi works through the same `bin/setup.sh` flow as any other Linux box,
-but two Pi-specific things are worth doing first:
+A Pi uses the exact same `./bin/linux-install.sh` as any other Linux
+box — the Pi-specific GPU tuning is built in. On the first run it
+detects the Pi, applies the required boot-config changes, and stops so
+you can reboot:
 
 ```bash
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-./bin/setup_pi_extras.sh   # GPU mem split + Full KMS GL driver
+./bin/linux-install.sh           # detects Pi, applies GPU tuning, asks you to reboot
 sudo reboot
-./bin/setup.sh             # same as anyone else from here on
-./bin/install_autostart.sh # LightDM auto-login + xterm autostart
+./bin/linux-install.sh           # re-run: skips tuning, installs deps + projects, launches
+./bin/linux-autostart.sh         # LightDM auto-login + xterm autostart ('disable' to undo)
 ```
 
-What `bin/setup_pi_extras.sh` does (idempotent — safe to re-run):
+The built-in Pi tuning step (only on a Pi; skipped on Pop!_OS / generic
+Linux):
 
-- **Confirms it's on a Pi** via `/proc/device-tree/model` and bails
-  with a clear message if not.
-- **Bumps `gpu_mem` to 256 MB** in `/boot/firmware/config.txt` (was
-  default 76 MB which can't hold the shader stack + FBO + readback
-  buffers).
-- **Switches to Full KMS GL driver** via `raspi-config nonint
+- **Confirms it's a Pi** via `/proc/device-tree/model`.
+- **Bumps `gpu_mem` to 256 MB** in `/boot/firmware/config.txt` (default
+  76 MB can't hold the shader stack + FBO + readback buffers).
+- **Switches to the Full KMS GL driver** via `raspi-config nonint
   do_gldriver G3`. Pi OS Bookworm already defaults to this; older
-  releases (Bullseye) may still be on the legacy driver which lacks
+  releases (Bullseye) may still be on the legacy driver, which lacks
   GLES 3.1 support.
-- **Installs xterm, libcap2-bin, raspi-config** if missing (typical
-  on Pi OS Lite images).
+- **Installs xterm, libcap2-bin, raspi-config** if missing (typical on
+  Pi OS Lite images).
 
-The reboot in between matters — boot config changes don't take effect
-until the next boot, and `setup.sh` will try to compile shaders.
-Running `setup.sh` before the reboot can fail mid-way on a Pi that's
-still on the legacy GL driver.
+These are `/boot` changes that only take effect after a reboot, and the
+install compiles shaders — so the first run stops after tuning and asks
+you to `sudo reboot` then re-run. The re-run is **self-verifying**: once
+`gpu_mem >= 256` it skips the tuning and proceeds. There's no separate
+script to remember.
 
-`bin/install_autostart.sh` now handles **LightDM** (Pi's display
+`bin/linux-autostart.sh` handles **LightDM** (Pi's display
 manager) automatically — it calls `raspi-config nonint
-do_boot_behaviour B4` to enable desktop autologin, then writes the
-same XDG autostart `.desktop` file as on any other Linux box. After
-reboot, the Pi boots directly into a logged-in LXDE session that
-fires `bin/run.sh` in an xterm.
+do_boot_behaviour B4` to enable desktop autologin, then writes the same
+XDG autostart `.desktop` file as on any other Linux box. After reboot,
+the Pi boots directly into a logged-in session that fires
+`bin/linux-run.sh` in an xterm.
 
 ## Launching after setup
 
@@ -109,8 +111,8 @@ remote (no internet, auth failure, hung connection) are logged and
 skipped, and the app launches with whatever's on disk.
 
 ```bash
-./bin/run.sh                          # Linux/macOS
-bin\run.bat                           # Windows
+./bin/linux-run.sh                                             # Linux / Raspberry Pi
+powershell -ExecutionPolicy Bypass -File bin\windows-run.ps1   # Windows
 ```
 
 If you just want to launch without any network calls (skip pulls):
@@ -230,7 +232,7 @@ delete the dir and re-run setup to re-clone.
 **Want to sign in as a different GitHub account.**
 ```bash
 gh auth logout
-./bin/setup.sh
+./bin/linux-install.sh
 ```
 
 **Want to roll back the fan or WoL migration.**

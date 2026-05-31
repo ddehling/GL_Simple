@@ -8,7 +8,7 @@
 #   - Target connected via ethernet
 #
 # Usage:
-#   ./bin/nixos-install.sh root@192.168.124.123
+#   ./bin/deploy/beelink-nixos-install.sh root@192.168.124.123
 
 set -euo pipefail
 

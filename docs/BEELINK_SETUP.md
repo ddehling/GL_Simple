@@ -155,7 +155,7 @@ The install uses a NixOS USB installer + nixos-anywhere. The USB installer avoid
 3. Connect the Beelink via ethernet to your network
 4. From your dev machine:
    ```bash
-   ./bin/nixos-install.sh root@<ip>
+   ./bin/deploy/beelink-nixos-install.sh root@<ip>
    ```
 
 The script:

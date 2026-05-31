@@ -20,7 +20,7 @@
 # Re-running is fine - idempotent (skips installed bits and existing
 # clones).
 #
-# Cross-platform: the Linux equivalent is bin/setup.sh - they share
+# Cross-platform: the Linux equivalent is bin/linux-install.sh - they share
 # behaviour and the same catalog.
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -264,7 +264,7 @@ if (-not $pythonCmd) {
     Write-Host "      Installing Python 3.12 via winget..." -ForegroundColor Yellow
     & winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
     Update-PathFromMachineAndUser
-    Write-Host "      Python installed. Please close this terminal, reopen, and re-run setup.ps1." -ForegroundColor Yellow
+    Write-Host "      Python installed. Please close this terminal, reopen, and re-run windows-install.ps1." -ForegroundColor Yellow
     Read-Host "Press Enter to exit"; exit 0
 }
 

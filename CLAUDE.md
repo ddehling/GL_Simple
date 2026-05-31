@@ -23,8 +23,8 @@ deps, launches the app. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 for the full flow.
 
 ```bash
-./bin/setup.sh               # Linux/macOS
-bin\setup.bat                # Windows
+./bin/linux-install.sh                                             # Linux / Raspberry Pi
+powershell -ExecutionPolicy Bypass -File bin\windows-install.ps1   # Windows
 ```
 
 ### Launching after setup
@@ -33,8 +33,8 @@ Pulls latest engine + every deployed project (offline-tolerant), then
 runs the app:
 
 ```bash
-./bin/run.sh                          # Linux/macOS
-bin\run.bat                           # Windows
+./bin/linux-run.sh                                             # Linux / Raspberry Pi
+powershell -ExecutionPolicy Bypass -File bin\windows-run.ps1   # Windows
 ```
 
 Skip the pulls (just launch):

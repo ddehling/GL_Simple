@@ -2,8 +2,9 @@
 #
 # Maps project id -> private GitHub repo holding that project's full source
 # (code, shaders, media). Operators choose which projects to deploy on a
-# given machine; the deploy tooling and bin/setup_and_run.* read this file
-# to know where to clone each project from.
+# given machine; the install scripts (bin/linux-install.sh,
+# bin/windows-install.ps1) read this file to know where to clone each
+# project from.
 #
 # Each project repo contains the entire projects/<id>/ tree:
 #   project.yaml, event_map.py, weather_params.py, random_events.py,
