@@ -63,35 +63,18 @@ already-installed bits, skips already-cloned projects).
 
 ## Raspberry Pi
 
-A Pi uses the exact same `./bin/linux-install.sh` as any other Linux
-box — the Pi-specific GPU tuning is built in and runs as the **final**
-step, so the venv + packages all install on the first run:
+A Pi runs the exact same `./bin/linux-install.sh` as any other Linux box —
+there are **no Pi-specific steps**. On modern Raspberry Pi OS the GLES 3.1 /
+V3D stack needs no GPU tuning: Full KMS is the default driver, and the GPU
+allocates memory from CMA rather than the legacy `gpu_mem` split. So setup is
+identical to Pop!_OS:
 
 ```bash
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-./bin/linux-install.sh    # installs everything; on a Pi, tunes the GPU last
-sudo reboot               # apply the GPU /boot changes
+./bin/linux-install.sh    # installs system deps + venv + projects
 ./bin/linux-autostart.sh  # choose 'enable' for LightDM auto-login + xterm autostart
 ```
-
-The built-in Pi tuning step (only on a Pi; skipped on Pop!_OS / generic
-Linux):
-
-- **Confirms it's a Pi** via `/proc/device-tree/model`.
-- **Bumps `gpu_mem` to 256 MB** in `/boot/firmware/config.txt` (default
-  76 MB can't hold the shader stack + FBO + readback buffers).
-- **Switches to the Full KMS GL driver** via `raspi-config nonint
-  do_gldriver G3`. Pi OS Bookworm already defaults to this; older
-  releases (Bullseye) may still be on the legacy driver, which lacks
-  GLES 3.1 support.
-- **Installs xterm, raspi-config** if missing (typical on Pi OS Lite
-  images).
-
-These are `/boot` changes that only take effect after a reboot — but the
-install no longer launches the app, so a single `sudo reboot` after setup
-is all you need (no re-run). Run the app with `./bin/linux-run.sh`, or
-enable boot-to-app with `./bin/linux-autostart.sh`.
 
 `bin/linux-autostart.sh` handles **LightDM** (Pi's display
 manager) automatically — it calls `raspi-config nonint

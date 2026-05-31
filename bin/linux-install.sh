@@ -17,13 +17,11 @@
 #   7. Installs system deps (python, PortAudio, libsndfile, ALSA dev).
 #   8. Creates ./venv and installs requirements.txt.
 #   9. Grants the venv Python permission to bind port 80.
-#  10. On a Raspberry Pi, applies the GPU tuning the shader stack needs
-#      (256 MB GPU split + Full KMS driver) as the final step.
 #
-# It does NOT launch the app at the end. Run it with ./bin/linux-run.sh,
-# or set it to start on boot with ./bin/linux-autostart.sh. On a Raspberry
-# Pi the GPU tuning (step 10) edits /boot, so reboot once after setup to
-# apply it; on Pop!_OS / generic Linux that step is skipped.
+# It does NOT launch the app at the end. Run it with ./bin/linux-run.sh, or
+# set it to start on boot with ./bin/linux-autostart.sh. Identical on Pop!_OS
+# and modern Raspberry Pi OS - no Pi-specific GPU tuning is needed (Full KMS
+# is the default driver and the V3D stack allocates GPU memory from CMA).
 #
 # Re-running this script is fine - it's idempotent (skips already-installed
 # bits and already-cloned repos).
@@ -46,11 +44,11 @@ if ! command -v git >/dev/null 2>&1; then
         echo "ERROR: git is required and apt-get isn't available. Install git manually." >&2
         exit 1
     fi
-    echo "[1/8] Installing git..."
+    echo "[1/7] Installing git..."
     sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
 else
-    echo "[1/8] git OK ($(git --version))"
+    echo "[1/7] git OK ($(git --version))"
 fi
 
 # ---------------------------------------------------------------------
@@ -80,9 +78,9 @@ if command -v gh >/dev/null 2>&1; then
     GH_MINOR=$(echo "$GH_VER" | cut -d. -f2)
     if [ "${GH_MAJOR:-0}" -gt 2 ] || { [ "${GH_MAJOR:-0}" -eq 2 ] && [ "${GH_MINOR:-0}" -ge 20 ]; }; then
         GH_OK=true
-        echo "[2/8] gh OK (version $GH_VER)"
+        echo "[2/7] gh OK (version $GH_VER)"
     else
-        echo "[2/8] gh present but too old (version $GH_VER); upgrading..."
+        echo "[2/7] gh present but too old (version $GH_VER); upgrading..."
     fi
 fi
 if ! $GH_OK; then
@@ -136,12 +134,12 @@ if [ ${#IDS[@]} -eq 0 ]; then
     echo "ERROR: no projects found in $CATALOG" >&2
     exit 1
 fi
-echo "[3/8] Loaded ${#IDS[@]} projects from $CATALOG"
+echo "[3/7] Loaded ${#IDS[@]} projects from $CATALOG"
 
 # ---------------------------------------------------------------------
 # 4. Probe access for each project
 # ---------------------------------------------------------------------
-echo "[4/8] Checking access to each project repo..."
+echo "[4/7] Checking access to each project repo..."
 ACCESS=()
 for i in "${!IDS[@]}"; do
     url="${URLS[$i]}"
@@ -227,7 +225,7 @@ echo "  Primary: $PRIMARY_ID"
 # 6. Clone selected
 # ---------------------------------------------------------------------
 echo ""
-echo "[5/8] Cloning selected projects..."
+echo "[5/7] Cloning selected projects..."
 for i in "${CHOSEN_IDX[@]}"; do
     id="${IDS[$i]}"
     url="${URLS[$i]}"
@@ -247,7 +245,7 @@ done
 # Kept separate from config.yaml so 'switch active project on this
 # machine' doesn't dirty a tracked file - no merge churn between
 # operators with different active projects.
-echo "[6/8] Setting active project to '$PRIMARY_ID' in active_project.yaml..."
+echo "[6/7] Setting active project to '$PRIMARY_ID' in active_project.yaml..."
 cat > active_project.yaml <<EOF
 # Per-machine active project selection. Gitignored.
 # Override at launch with --project <id>.
@@ -257,7 +255,7 @@ EOF
 # ---------------------------------------------------------------------
 # 8. System deps + Python venv + pip install
 # ---------------------------------------------------------------------
-echo "[7/8] Installing system + Python dependencies..."
+echo "[7/7] Installing system + Python dependencies..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     python3 python3-venv python3-pip build-essential \
@@ -288,58 +286,11 @@ if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then
 fi
 
 # ---------------------------------------------------------------------
-# 8. Raspberry Pi GPU/driver tuning (skipped on Pop!_OS / generic Linux)
-# ---------------------------------------------------------------------
-# Done last: the GLES 3.1 + FBO-readback stack needs a 256 MB GPU split
-# and the Full KMS driver (Pi OS defaults to 76 MB, too tight, and shaders
-# fail to compile). These are /boot changes that take effect only after a
-# reboot - but nothing in setup launches the app, so one reboot at the end
-# is enough; no re-run needed.
-NEED_REBOOT=false
-PI_MODEL=""
-if [ -r /proc/device-tree/model ]; then
-    PI_MODEL="$(tr -d '\0' < /proc/device-tree/model)"
-fi
-if echo "$PI_MODEL" | grep -qi "raspberry pi"; then
-    echo "[8/8] Raspberry Pi detected ($PI_MODEL) - checking GPU tuning..."
-    PI_PKGS=()
-    for pkg in xterm raspi-config; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || PI_PKGS+=("$pkg")
-    done
-    if [ ${#PI_PKGS[@]} -gt 0 ]; then
-        echo "      Installing Pi tools: ${PI_PKGS[*]}"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${PI_PKGS[@]}"
-    fi
-    # gpu_mem default on Pi OS is 76 MB; bump to 256. do_gldriver G3 = Full
-    # KMS (dropped from the menu on Bookworm, where KMS is already default,
-    # so a failure there is harmless).
-    CURRENT_GPU_MEM="$(sudo raspi-config nonint get_config_var gpu_mem /boot/firmware/config.txt 2>/dev/null \
-                      || sudo raspi-config nonint get_config_var gpu_mem /boot/config.txt 2>/dev/null \
-                      || echo 76)"
-    if [ "${CURRENT_GPU_MEM:-76}" -lt 256 ]; then
-        echo "      Bumping gpu_mem ${CURRENT_GPU_MEM} -> 256 MB + selecting Full KMS GL driver..."
-        sudo raspi-config nonint do_memory_split 256
-        sudo raspi-config nonint do_gldriver G3 2>/dev/null \
-            || echo "      (do_gldriver not available - assuming KMS is already default)"
-        NEED_REBOOT=true
-    else
-        echo "      gpu_mem already ${CURRENT_GPU_MEM} MB (>= 256) - OK."
-    fi
-else
-    echo "[8/8] Not a Raspberry Pi - skipping GPU tuning."
-fi
-
-# ---------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------
 echo ""
 echo "====================================="
 echo "  Setup complete."
 echo "====================================="
-if [ "$NEED_REBOOT" = true ]; then
-    echo "  IMPORTANT (Raspberry Pi): the GPU changes only take effect after a"
-    echo "  reboot. Reboot before running the app:   sudo reboot"
-    echo ""
-fi
 echo "  Run the app now:    ./bin/linux-run.sh"
 echo "  Start it on boot:   ./bin/linux-autostart.sh   (choose 'enable')"
