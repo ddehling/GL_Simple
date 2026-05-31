@@ -78,16 +78,26 @@ install_gh_from_github() {
 github_device_signin() {
     local client_id="178c6fc778ccc68e1d6a"   # GitHub CLI's public OAuth client id
     command -v curl >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends curl
-    local resp uc dc uri intvl
-    resp="$(curl -fsS -X POST https://github.com/login/device/code \
+    local resp cc uc dc uri intvl
+    # No -f: keep the body even on an HTTP error so we can show what GitHub said.
+    resp="$(curl -sS -X POST https://github.com/login/device/code \
         -H 'Accept: application/json' \
         --data-urlencode "client_id=${client_id}" \
-        --data-urlencode 'scope=repo read:org')" || return 2
+        --data-urlencode 'scope=repo read:org')"
+    cc=$?
+    if [ "$cc" -ne 0 ]; then
+        echo "      [debug] device-code request: curl failed (exit $cc)" >&2
+        return 2
+    fi
     uc="$(printf '%s' "$resp"  | grep -o '"user_code":"[^"]*"'        | cut -d'"' -f4)"
     dc="$(printf '%s' "$resp"  | grep -o '"device_code":"[^"]*"'      | cut -d'"' -f4)"
     uri="$(printf '%s' "$resp" | grep -o '"verification_uri":"[^"]*"' | cut -d'"' -f4)"
     intvl="$(printf '%s' "$resp" | grep -o '"interval":[0-9]*'        | cut -d: -f2)"
-    [ -n "$uc" ] && [ -n "$dc" ] || return 2
+    if [ -z "$uc" ] || [ -z "$dc" ]; then
+        echo "      [debug] unexpected device-code response from GitHub:" >&2
+        echo "      [debug] ${resp}" >&2
+        return 2
+    fi
     [ -n "$uri" ] || uri="https://github.com/login/device"
     [ -n "$intvl" ] || intvl=5
 
@@ -98,24 +108,32 @@ github_device_signin() {
     echo "      ================================================================"
     echo "      Waiting for you to authorize (Ctrl+C to cancel)..."
 
-    local tresp access err
+    local tresp access err out
     while true; do
         sleep "$intvl"
-        tresp="$(curl -fsS -X POST https://github.com/login/oauth/access_token \
+        tresp="$(curl -sS -X POST https://github.com/login/oauth/access_token \
             -H 'Accept: application/json' \
             --data-urlencode "client_id=${client_id}" \
             --data-urlencode "device_code=${dc}" \
             --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code')" || continue
         access="$(printf '%s' "$tresp" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
         if [ -n "$access" ]; then
-            printf '%s' "$access" | gh auth login --hostname github.com --with-token && return 0
+            echo "      Authorized. Storing the credential with gh..."
+            out="$(printf '%s' "$access" | gh auth login --hostname github.com --with-token 2>&1)"
+            if [ $? -eq 0 ]; then
+                return 0
+            fi
+            echo "      [debug] 'gh auth login --with-token' failed:" >&2
+            printf '      [debug] %s\n' "$out" >&2
             return 2
         fi
         err="$(printf '%s' "$tresp" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
         case "$err" in
             authorization_pending|"") : ;;                  # keep polling
             slow_down) intvl=$((intvl + 5)) ;;
-            *) echo "      GitHub: ${err:-unknown error}; restarting sign-in..." >&2; return 1 ;;
+            *) echo "      [debug] token-poll error: ${err}" >&2
+               echo "      [debug] ${tresp}" >&2
+               return 1 ;;
         esac
     done
 }
