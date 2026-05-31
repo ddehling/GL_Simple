@@ -109,12 +109,34 @@ if ! gh auth status >/dev/null 2>&1; then
     echo "      ----------------------------------------------------------------"
     while ! gh auth status >/dev/null 2>&1; do
         echo ""
-        gh auth login --hostname github.com --git-protocol https --web || true
+        echo "      gh prints a line like:  ! First copy your one-time code: XXXX-XXXX"
+        echo "      Copy that code, open  https://github.com/login/device  on any"
+        echo "      device, and enter it. This box will NOT open a browser itself."
+        echo ""
+        # GH_BROWSER=true hands gh a no-op 'browser' so it never launches one on
+        # the Pi desktop (a real browser window steals focus and hides the
+        # one-time code that gh prints here). The code + URL stay in this
+        # terminal for you to use on any device.
+        GH_BROWSER=true gh auth login --hostname github.com --git-protocol https --web || true
         gh auth status >/dev/null 2>&1 && break
         echo ""
-        echo "      Still not signed in to GitHub."
-        printf "      Press Enter to try the sign-in again (or Ctrl+C to abort): "
-        read -r _ || true
+        echo "      Still not signed in to GitHub. Options:"
+        echo "        [Enter]  try the browser/code flow again"
+        echo "        [t]      paste a GitHub token instead - create one at"
+        echo "                 https://github.com/settings/tokens (classic, 'repo' scope)"
+        echo "        [Ctrl+C] abort"
+        printf "      Choose [Enter/t]: "
+        read -r _ans || true
+        if [ "$_ans" = "t" ] || [ "$_ans" = "T" ]; then
+            printf "      Paste token, then press Enter (input hidden): "
+            read -rs _token || true
+            echo ""
+            if [ -n "${_token:-}" ]; then
+                printf '%s' "$_token" \
+                    | gh auth login --hostname github.com --git-protocol https --with-token || true
+            fi
+            unset _token
+        fi
     done
     echo ""
     echo "      GitHub sign-in confirmed."
