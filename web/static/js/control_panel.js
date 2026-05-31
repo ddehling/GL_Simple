@@ -76,7 +76,6 @@ const WEATHER_SET_NAMES = {
     "peaceful_forest": "Peaceful Forest",
     "storm_world": "Storm World",
     "desert_realm": "Desert Realm",
-    "ethereal_mist": "Ethereal Mist",
     "cosmic_night": "Cosmic Night",
     "full_spectrum": "Full Spectrum",
     "cyberpunk": "Cyberpunk",
