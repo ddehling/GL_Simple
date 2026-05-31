@@ -17,16 +17,16 @@
 #   7. Installs system deps (python, PortAudio, libsndfile, ALSA dev).
 #   8. Creates ./venv and installs requirements.txt.
 #   9. Grants the venv Python permission to bind port 80.
-#  10. Launches Stories_OGL.py.
+#  10. On a Raspberry Pi, applies the GPU tuning the shader stack needs
+#      (256 MB GPU split + Full KMS driver) as the final step.
 #
-# On a Raspberry Pi, this first auto-applies the GPU tuning the shader
-# stack needs (256 MB GPU split + Full KMS driver). Those are /boot
-# changes, so the first Pi run applies them and stops - reboot and
-# re-run to continue. On Pop!_OS / generic Linux that step is skipped.
+# It does NOT launch the app at the end. Run it with ./bin/linux-run.sh,
+# or set it to start on boot with ./bin/linux-autostart.sh. On a Raspberry
+# Pi the GPU tuning (step 10) edits /boot, so reboot once after setup to
+# apply it; on Pop!_OS / generic Linux that step is skipped.
 #
-# Subsequent app launches can use ./bin/linux-run.sh to skip the
-# deps-verification dance. Re-running this script is also fine - it's
-# idempotent (skips already-installed bits and already-cloned repos).
+# Re-running this script is fine - it's idempotent (skips already-installed
+# bits and already-cloned repos).
 #
 # Cross-platform note: the Windows equivalent is bin/windows-install.ps1 - both
 # do the same thing and use the same catalog.
@@ -37,54 +37,6 @@ cd "$(dirname "$0")/.."
 echo "====================================="
 echo "  GL_Simple Setup (Linux)"
 echo "====================================="
-
-# ---------------------------------------------------------------------
-# 0. Raspberry Pi GPU/driver tuning (skipped on Pop!_OS / generic Linux)
-# ---------------------------------------------------------------------
-# The GLES 3.1 + FBO-readback stack needs a 256 MB GPU split and the
-# Full KMS driver; Pi OS defaults (76 MB) are too tight and shaders fail
-# to compile. These are /boot changes that only take effect after a
-# reboot, so on the first Pi run we apply them and stop. Self-verifying:
-# once gpu_mem >= 256 (after the reboot) this block becomes a no-op.
-PI_MODEL=""
-if [ -r /proc/device-tree/model ]; then
-    PI_MODEL="$(tr -d '\0' < /proc/device-tree/model)"
-fi
-if echo "$PI_MODEL" | grep -qi "raspberry pi"; then
-    echo "[0/8] Raspberry Pi detected ($PI_MODEL) - checking GPU tuning..."
-    # Pi tools needed for tuning (and later: setcap, the xterm autostart).
-    PI_PKGS=()
-    for pkg in xterm libcap2-bin raspi-config; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || PI_PKGS+=("$pkg")
-    done
-    if [ ${#PI_PKGS[@]} -gt 0 ]; then
-        echo "      Installing Pi tools: ${PI_PKGS[*]}"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${PI_PKGS[@]}"
-    fi
-    # raspi-config's nonint get_config_var reads the boot config. Pi OS
-    # default is 76 MB; bump to 256. Comparing the live value makes this
-    # self-verifying: after the reboot gpu_mem >= 256 and we fall through.
-    CURRENT_GPU_MEM="$(sudo raspi-config nonint get_config_var gpu_mem /boot/firmware/config.txt 2>/dev/null \
-                      || sudo raspi-config nonint get_config_var gpu_mem /boot/config.txt 2>/dev/null \
-                      || echo 76)"
-    if [ "${CURRENT_GPU_MEM:-76}" -lt 256 ]; then
-        echo "      Bumping gpu_mem ${CURRENT_GPU_MEM} -> 256 MB + selecting Full KMS GL driver..."
-        sudo raspi-config nonint do_memory_split 256
-        # do_gldriver G3 = Full KMS. Dropped from the menu on Bookworm
-        # (KMS is the default there), so a failure is harmless.
-        sudo raspi-config nonint do_gldriver G3 2>/dev/null \
-            || echo "      (do_gldriver not available - assuming KMS is already default)"
-        echo ""
-        echo "      ============================================================"
-        echo "      Pi GPU settings changed - they take effect only after a reboot."
-        echo "      Run:        sudo reboot"
-        echo "      Then again: ./bin/linux-install.sh   (skips this step, continues)"
-        echo "      ============================================================"
-        exit 0
-    fi
-    echo "      gpu_mem already ${CURRENT_GPU_MEM} MB (>= 256) - GPU tuning OK."
-fi
 
 # ---------------------------------------------------------------------
 # 1. git
@@ -336,10 +288,58 @@ if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then
 fi
 
 # ---------------------------------------------------------------------
-# 9. Launch
+# 8. Raspberry Pi GPU/driver tuning (skipped on Pop!_OS / generic Linux)
 # ---------------------------------------------------------------------
-echo "[8/8] Launching application..."
-echo "      Web control panel: http://lucifera.local"
-echo "      Press Ctrl+C to stop."
+# Done last: the GLES 3.1 + FBO-readback stack needs a 256 MB GPU split
+# and the Full KMS driver (Pi OS defaults to 76 MB, too tight, and shaders
+# fail to compile). These are /boot changes that take effect only after a
+# reboot - but nothing in setup launches the app, so one reboot at the end
+# is enough; no re-run needed.
+NEED_REBOOT=false
+PI_MODEL=""
+if [ -r /proc/device-tree/model ]; then
+    PI_MODEL="$(tr -d '\0' < /proc/device-tree/model)"
+fi
+if echo "$PI_MODEL" | grep -qi "raspberry pi"; then
+    echo "[8/8] Raspberry Pi detected ($PI_MODEL) - checking GPU tuning..."
+    PI_PKGS=()
+    for pkg in xterm raspi-config; do
+        dpkg -s "$pkg" >/dev/null 2>&1 || PI_PKGS+=("$pkg")
+    done
+    if [ ${#PI_PKGS[@]} -gt 0 ]; then
+        echo "      Installing Pi tools: ${PI_PKGS[*]}"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${PI_PKGS[@]}"
+    fi
+    # gpu_mem default on Pi OS is 76 MB; bump to 256. do_gldriver G3 = Full
+    # KMS (dropped from the menu on Bookworm, where KMS is already default,
+    # so a failure there is harmless).
+    CURRENT_GPU_MEM="$(sudo raspi-config nonint get_config_var gpu_mem /boot/firmware/config.txt 2>/dev/null \
+                      || sudo raspi-config nonint get_config_var gpu_mem /boot/config.txt 2>/dev/null \
+                      || echo 76)"
+    if [ "${CURRENT_GPU_MEM:-76}" -lt 256 ]; then
+        echo "      Bumping gpu_mem ${CURRENT_GPU_MEM} -> 256 MB + selecting Full KMS GL driver..."
+        sudo raspi-config nonint do_memory_split 256
+        sudo raspi-config nonint do_gldriver G3 2>/dev/null \
+            || echo "      (do_gldriver not available - assuming KMS is already default)"
+        NEED_REBOOT=true
+    else
+        echo "      gpu_mem already ${CURRENT_GPU_MEM} MB (>= 256) - OK."
+    fi
+else
+    echo "[8/8] Not a Raspberry Pi - skipping GPU tuning."
+fi
+
+# ---------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------
 echo ""
-python Stories_OGL.py
+echo "====================================="
+echo "  Setup complete."
+echo "====================================="
+if [ "$NEED_REBOOT" = true ]; then
+    echo "  IMPORTANT (Raspberry Pi): the GPU changes only take effect after a"
+    echo "  reboot. Reboot before running the app:   sudo reboot"
+    echo ""
+fi
+echo "  Run the app now:    ./bin/linux-run.sh"
+echo "  Start it on boot:   ./bin/linux-autostart.sh   (choose 'enable')"

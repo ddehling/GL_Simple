@@ -64,17 +64,15 @@ already-installed bits, skips already-cloned projects).
 ## Raspberry Pi
 
 A Pi uses the exact same `./bin/linux-install.sh` as any other Linux
-box — the Pi-specific GPU tuning is built in. On the first run it
-detects the Pi, applies the required boot-config changes, and stops so
-you can reboot:
+box — the Pi-specific GPU tuning is built in and runs as the **final**
+step, so the venv + packages all install on the first run:
 
 ```bash
 git clone https://github.com/ddehling/GL_Simple.git
 cd GL_Simple
-./bin/linux-install.sh           # detects Pi, applies GPU tuning, asks you to reboot
-sudo reboot
-./bin/linux-install.sh           # re-run: skips tuning, installs deps + projects, launches
-./bin/linux-autostart.sh         # asks enable/disable; sets up LightDM auto-login + xterm autostart
+./bin/linux-install.sh    # installs everything; on a Pi, tunes the GPU last
+sudo reboot               # apply the GPU /boot changes
+./bin/linux-autostart.sh  # choose 'enable' for LightDM auto-login + xterm autostart
 ```
 
 The built-in Pi tuning step (only on a Pi; skipped on Pop!_OS / generic
@@ -87,14 +85,13 @@ Linux):
   do_gldriver G3`. Pi OS Bookworm already defaults to this; older
   releases (Bullseye) may still be on the legacy driver, which lacks
   GLES 3.1 support.
-- **Installs xterm, libcap2-bin, raspi-config** if missing (typical on
-  Pi OS Lite images).
+- **Installs xterm, raspi-config** if missing (typical on Pi OS Lite
+  images).
 
-These are `/boot` changes that only take effect after a reboot, and the
-install compiles shaders — so the first run stops after tuning and asks
-you to `sudo reboot` then re-run. The re-run is **self-verifying**: once
-`gpu_mem >= 256` it skips the tuning and proceeds. There's no separate
-script to remember.
+These are `/boot` changes that only take effect after a reboot — but the
+install no longer launches the app, so a single `sudo reboot` after setup
+is all you need (no re-run). Run the app with `./bin/linux-run.sh`, or
+enable boot-to-app with `./bin/linux-autostart.sh`.
 
 `bin/linux-autostart.sh` handles **LightDM** (Pi's display
 manager) automatically — it calls `raspi-config nonint
