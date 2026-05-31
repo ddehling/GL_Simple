@@ -78,17 +78,30 @@ if (-not (Test-Command gh)) {
 
 & gh auth status 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
+    # Private project repos can't clone without auth, so we LOOP the
+    # device-code sign-in until it succeeds instead of bailing. gh prints a
+    # one-time code + https://github.com/login/device; open that on any
+    # device with a browser, enter the code, and authorize - this machine
+    # needs no browser of its own.
     Write-Host ""
-    Write-Host "      Not signed in to GitHub yet." -ForegroundColor Yellow
-    Write-Host "      gh will print a URL and a one-time code. Open the URL" -ForegroundColor Cyan
-    Write-Host "      on any device, enter the code, sign in, and grant access." -ForegroundColor Cyan
-    Write-Host "      The script will resume automatically." -ForegroundColor Cyan
+    Write-Host "      ----------------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host "      GitHub sign-in required (to clone the private project repos)." -ForegroundColor Yellow
     Write-Host ""
-    & gh auth login --hostname github.com --web
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: gh auth login failed." -ForegroundColor Red
-        Read-Host "Press Enter to exit"; exit 1
+    Write-Host "      gh will show a one-time code and the URL:" -ForegroundColor Cyan
+    Write-Host "          https://github.com/login/device" -ForegroundColor Cyan
+    Write-Host "      Open it on any device with a browser, enter the code, and authorize." -ForegroundColor Cyan
+    Write-Host "      ----------------------------------------------------------------" -ForegroundColor Cyan
+    while ($true) {
+        Write-Host ""
+        & gh auth login --hostname github.com --git-protocol https --web
+        & gh auth status 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { break }
+        Write-Host ""
+        Write-Host "      Still not signed in to GitHub." -ForegroundColor Yellow
+        Read-Host "      Press Enter to try the sign-in again (or Ctrl+C to abort)" | Out-Null
     }
+    Write-Host ""
+    Write-Host "      GitHub sign-in confirmed." -ForegroundColor Green
 }
 $ghUser = (& gh api user -q .login 2>$null)
 if (-not $ghUser) { $ghUser = "?" }
