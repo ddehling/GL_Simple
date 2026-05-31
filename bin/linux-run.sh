@@ -12,6 +12,16 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Mirror everything up to the app launch into a logfile so a boot-time
+# failure (network race, auth, etc.) can be read after the fact instead of
+# only living in the autostart xterm. The app's own stdout still goes to the
+# terminal via exec at the end.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gl-simple"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="$LOG_DIR/last-boot.log"
+exec > >(tee "$LOG_FILE") 2>&1
+echo "=== launch $(date -Is 2>/dev/null || true) ==="
+
 # Short timeout per pull so a slow / unreachable remote doesn't make
 # the operator wait. `timeout` is GNU coreutils (default on Ubuntu);
 # fall back to no-timeout if it's missing.
@@ -40,7 +50,26 @@ pull_repo() {
     return 0
 }
 
+# At boot the graphical autostart can fire before NetworkManager/WiFi has
+# connectivity, so the very first pull fails to even resolve github.com
+# ("could not resolve host" - looks like "can't find github"). Wait, bounded,
+# for github.com to become reachable before pulling. Still offline-tolerant:
+# if it never comes up within the timeout we proceed and launch with local code.
+wait_for_github() {
+    local deadline=$(( SECONDS + 60 ))   # give the network up to ~60s at boot
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if getent hosts github.com >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "  waiting for network (github.com not resolvable yet)..."
+        sleep 3
+    done
+    echo "  network still down after 60s - proceeding with local code."
+    return 1
+}
+
 echo "[1/2] Pulling latest engine + deployed projects..."
+wait_for_github
 pull_repo "engine" "."
 for d in projects/*/; do
     [ -d "$d/.git" ] || continue

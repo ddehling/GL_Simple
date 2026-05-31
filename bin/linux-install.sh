@@ -202,6 +202,31 @@ GH_USER=$(gh api user -q .login 2>/dev/null || echo "?")
 echo "      Signed in to GitHub as: $GH_USER"
 gh auth setup-git >/dev/null 2>&1 || true
 
+# Boot-robust credential storage.
+# `gh auth setup-git` wires git to fetch the token from gh, which by
+# default keeps it in the GNOME keyring. On a kiosk that auto-logs in,
+# the keyring is never unlocked (no password is typed), so a git pull
+# from the boot autostart can't get the token and fails with a vague
+# "could not connect to github". To make the unattended boot pull work,
+# mirror the token into git's plaintext credential store (mode 600) and
+# put that helper FIRST for github.com, with the gh/keyring helper kept
+# as a fallback. The empty "" entry resets the inherited list so order
+# is deterministic. Security note: this writes the token to ~/.git-
+# credentials in clear text - acceptable for a single-purpose event box,
+# remove the file (and re-run `gh auth setup-git`) to revert.
+GH_TOKEN_VALUE="$(gh auth token 2>/dev/null || true)"
+if [ -n "$GH_TOKEN_VALUE" ]; then
+    umask 077
+    printf 'https://%s:%s@github.com\n' "$GH_USER" "$GH_TOKEN_VALUE" > "$HOME/.git-credentials"
+    chmod 600 "$HOME/.git-credentials"
+    git config --global --unset-all credential.https://github.com.helper 2>/dev/null || true
+    git config --global --add credential.https://github.com.helper ""
+    git config --global --add credential.https://github.com.helper "store"
+    git config --global --add credential.https://github.com.helper "!/usr/bin/gh auth git-credential"
+    echo "      Mirrored token to ~/.git-credentials so the boot pull works without the keyring."
+fi
+unset GH_TOKEN_VALUE
+
 # ---------------------------------------------------------------------
 # 3. Load catalog
 # ---------------------------------------------------------------------
