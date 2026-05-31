@@ -74,7 +74,7 @@ cd GL_Simple
 ./bin/linux-install.sh           # detects Pi, applies GPU tuning, asks you to reboot
 sudo reboot
 ./bin/linux-install.sh           # re-run: skips tuning, installs deps + projects, launches
-./bin/linux-autostart.sh         # LightDM auto-login + xterm autostart ('disable' to undo)
+./bin/linux-autostart.sh         # asks enable/disable; sets up LightDM auto-login + xterm autostart
 ```
 
 The built-in Pi tuning step (only on a Pi; skipped on Pop!_OS / generic

@@ -5,11 +5,10 @@ Stories_OGL.py is configured to start automatically on boot by enabling **auto-l
 ## One-script install
 
 ```bash
-./bin/linux-autostart.sh           # enable (default)
-./bin/linux-autostart.sh disable   # turn it back off
+./bin/linux-autostart.sh   # asks whether to enable or disable
 ```
 
-Installs xterm, adds you to the `audio render video` groups, configures greetd auto-login to Cosmic, and writes `~/.config/autostart/gl-simple.desktop` pointing at `bin/linux-run.sh`. Idempotent. Reboot after. Run `./bin/linux-autostart.sh disable` to remove the autostart entry again (auto-login is left as-is). The manual recipe below is what the script automates — read it if you need to deviate (different distro, different display manager).
+Installs xterm, adds you to the `audio render video` groups, configures greetd auto-login to Cosmic, and writes `~/.config/autostart/gl-simple.desktop` pointing at `bin/linux-run.sh`. Idempotent. Reboot after. Run it again and choose **disable** to remove the autostart entry (auto-login is left as-is). The manual recipe below is what the script automates — read it if you need to deviate (different distro, different display manager).
 
 ## Files
 
@@ -50,7 +49,7 @@ Write `~/.config/autostart/gl-simple.desktop`:
 Type=Application
 Name=GL_Simple
 Comment=OpenGL lighting controller — starts with the graphical session
-Exec=xterm -T GL_Simple -geometry 120x30+50+50 -hold -e /home/led/Desktop/devel/GL_Simple/venv/bin/python /home/led/Desktop/devel/GL_Simple/Stories_OGL.py
+Exec=xterm -T GL_Simple -geometry 120x30+50+50 -hold -e /bin/bash /home/led/Desktop/devel/GL_Simple/bin/linux-run.sh
 Path=/home/led/Desktop/devel/GL_Simple
 Terminal=false
 X-GNOME-Autostart-enabled=true
@@ -67,18 +66,17 @@ Notes on the Exec line:
 
 1. greetd sees `[initial_session]` → runs `/usr/bin/start-cosmic` as user `led`.
 2. Cosmic session starts (no login screen).
-3. The autostart entry fires → xterm opens with Stories_OGL.py running inside.
+3. The autostart entry fires → xterm opens running `bin/linux-run.sh`, which pulls the latest code (offline-tolerant) and then launches Stories_OGL.py.
 
 ## Day-to-day use
 
 - **Stop the app:** `Ctrl+C` in the xterm window (or close the window).
-- **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && venv/bin/python Stories_OGL.py`.
+- **Re-run it manually:** any terminal → `cd ~/Desktop/devel/GL_Simple && ./bin/linux-run.sh` (pulls latest, then launches; use `venv/bin/python Stories_OGL.py` to skip the pull).
 - **Restart the running xterm instance:** kill the xterm, then re-launch with the same command the `.desktop` file uses. `setsid -f` detaches it so it survives the spawning shell:
   ```bash
   pkill -f 'xterm.*GL_Simple'
   setsid -f xterm -T GL_Simple -geometry 120x30+50+50 -hold \
-    -e /home/led/Desktop/devel/GL_Simple/venv/bin/python \
-       /home/led/Desktop/devel/GL_Simple/Stories_OGL.py
+    -e /bin/bash /home/led/Desktop/devel/GL_Simple/bin/linux-run.sh
   ```
 - **Skip the autostart for one session:** before reboot, rename the file:
   ```bash

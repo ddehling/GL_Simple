@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Enable or disable GL_Simple launching automatically on power-on, on
-# both Pop!_OS and Raspberry Pi OS.
+# Manage GL_Simple's boot-time autostart on Pop!_OS and Raspberry Pi OS.
+# Run it with NO arguments - it asks whether to enable or disable.
 #
-# Usage:
-#   ./bin/linux-autostart.sh [enable|disable]
-#     enable   (default) - configure auto-login + boot-to-app autostart (below).
-#     disable            - remove the autostart entry so the app no longer
-#                          launches on boot (leaves desktop auto-login as-is).
+#   enable  - configure auto-login + write the XDG autostart entry so the
+#             app launches on boot.
+#   disable - remove that entry so it no longer launches (auto-login is
+#             left as-is).
 #
 # What `enable` does:
 #   1. Auto-detects the display manager (greetd/Cosmic on Pop!_OS,
@@ -33,20 +32,6 @@ USER_NAME="$(whoami)"
 AUTOSTART_DIR="$HOME/.config/autostart"
 DESKTOP_FILE="$AUTOSTART_DIR/gl-simple.desktop"
 
-# enable (default) sets up boot-to-app autostart; disable removes it.
-MODE="${1:-enable}"
-case "$MODE" in
-    enable|disable) ;;
-    -h|--help|help)
-        echo "Usage: $(basename "$0") [enable|disable]"
-        echo "  enable   (default) configure auto-login + boot-to-app autostart"
-        echo "  disable  remove the autostart entry (leaves auto-login unchanged)"
-        exit 0 ;;
-    *)
-        echo "ERROR: unknown argument '$MODE'. Usage: $(basename "$0") [enable|disable]" >&2
-        exit 1 ;;
-esac
-
 # Refuse to run as root - we use 'sudo' explicitly for the few steps
 # that need it. Running the whole script as root would write the XDG
 # autostart entry to /root/.config/ and set AutomaticLogin=root,
@@ -56,21 +41,37 @@ if [ "$(id -u)" -eq 0 ]; then
     echo "ERROR: do not run this script with sudo / as root." >&2
     if [ -n "${SUDO_USER:-}" ]; then
         echo "       Re-run as $SUDO_USER (no sudo prefix):" >&2
-        echo "           ./bin/linux-autostart.sh $MODE" >&2
+        echo "           ./bin/linux-autostart.sh" >&2
     else
         echo "       Re-run as the regular user who will use this machine:" >&2
-        echo "           ./bin/linux-autostart.sh $MODE" >&2
+        echo "           ./bin/linux-autostart.sh" >&2
     fi
     echo "       The script calls sudo internally for the few steps that need it." >&2
     exit 1
 fi
 
+# Ask what to do - no flags or arguments, just run the script and pick.
+echo "====================================="
+echo "  GL_Simple Autostart"
+echo "====================================="
+echo "  1) enable   - launch the app automatically on boot"
+echo "  2) disable  - stop launching it on boot (auto-login left as-is)"
+echo ""
+MODE=""
+while [ -z "$MODE" ]; do
+    read -rp "Choose 1 or 2: " choice
+    case "$choice" in
+        1|enable)  MODE="enable" ;;
+        2|disable) MODE="disable" ;;
+        *)         echo "  Please enter 1 or 2." ;;
+    esac
+done
+echo ""
+
 # disable: remove the user's XDG autostart entry (no sudo / display manager
 # needed). Auto-login is intentionally left untouched.
 if [ "$MODE" = "disable" ]; then
-    echo "====================================="
-    echo "  GL_Simple Autostart - disable"
-    echo "====================================="
+    echo "Disabling autostart..."
     removed=false
     for f in "$DESKTOP_FILE" "$DESKTOP_FILE.disabled"; do
         if [ -e "$f" ]; then
@@ -82,11 +83,11 @@ if [ "$MODE" = "disable" ]; then
     $removed || echo "  nothing to remove - no autostart entry at $DESKTOP_FILE"
     echo ""
     echo "The app will no longer launch on boot. Desktop auto-login is left"
-    echo "unchanged. Re-enable any time with:  ./bin/linux-autostart.sh enable"
+    echo "unchanged. Run this script again and choose 'enable' to turn it back on."
     exit 0
 fi
 
-# ----- enable mode below -----
+# ----- enable: configure auto-login + write the autostart entry -----
 GREETD_CONF=/etc/greetd/cosmic-greeter.toml
 GDM_CONF=/etc/gdm3/custom.conf
 GDM_CONF_ALT=/etc/gdm/custom.conf
@@ -108,9 +109,7 @@ elif [ -f "$LIGHTDM_CONF" ] || command -v lightdm >/dev/null 2>&1; then
     DM="lightdm"
 fi
 
-echo "====================================="
-echo "  GL_Simple Autostart Installer"
-echo "====================================="
+echo "Enabling autostart..."
 echo "  user:    $USER_NAME"
 echo "  repo:    $REPO_DIR"
 echo ""
@@ -137,8 +136,8 @@ case "$DM" in
         echo "       Looked for: $GREETD_CONF, $GDM_CONF, $GDM_CONF_ALT, $LIGHTDM_CONF" >&2
         echo "       Supported: greetd (Pop!_OS Cosmic), gdm3 (Pop!_OS LTS, Ubuntu)," >&2
         echo "                  lightdm (Raspberry Pi OS, Lubuntu, Mint XFCE)." >&2
-        echo "       For sddm (KDE), see docs/AUTOSTART.md and configure auto-login" >&2
-        echo "       manually, then re-run this script with --skip-login." >&2
+        echo "       For other display managers (e.g. sddm/KDE), configure" >&2
+        echo "       auto-login manually - see docs/AUTOSTART.md." >&2
         exit 1
         ;;
 esac
@@ -293,8 +292,7 @@ echo "  - On boot: $DM auto-logs in as $USER_NAME, the .desktop autostart"
 echo "    opens an xterm running bin/linux-run.sh, which pulls latest project"
 echo "    code (offline-tolerant) and launches Stories_OGL.py."
 echo ""
-echo "To turn the autostart back off:"
-echo "  ./bin/linux-autostart.sh disable"
+echo "To turn the autostart back off: run this script again and choose 'disable'."
 echo ""
 case "$DM" in
     greetd)   echo "To disable auto-login: remove [initial_session] from $GREETD_CONF and reboot." ;;
