@@ -70,6 +70,56 @@ install_gh_from_github() {
         || sudo apt-get install -y gh
 }
 
+# Run GitHub's OAuth device flow ourselves and PRINT the one-time code with
+# our own echo. gh's interactive prompt does not reliably show the code in
+# every terminal (xterm / SSH / when stdout is not a TTY) - that was the whole
+# problem. Returns: 0 = signed in, 1 = code expired/denied (caller retries),
+# 2 = could not start the flow (caller offers the token fallback).
+github_device_signin() {
+    local client_id="178c6fc778ccc68e1d6a"   # GitHub CLI's public OAuth client id
+    command -v curl >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends curl
+    local resp uc dc uri intvl
+    resp="$(curl -fsS -X POST https://github.com/login/device/code \
+        -H 'Accept: application/json' \
+        --data-urlencode "client_id=${client_id}" \
+        --data-urlencode 'scope=repo read:org')" || return 2
+    uc="$(printf '%s' "$resp"  | grep -o '"user_code":"[^"]*"'        | cut -d'"' -f4)"
+    dc="$(printf '%s' "$resp"  | grep -o '"device_code":"[^"]*"'      | cut -d'"' -f4)"
+    uri="$(printf '%s' "$resp" | grep -o '"verification_uri":"[^"]*"' | cut -d'"' -f4)"
+    intvl="$(printf '%s' "$resp" | grep -o '"interval":[0-9]*'        | cut -d: -f2)"
+    [ -n "$uc" ] && [ -n "$dc" ] || return 2
+    [ -n "$uri" ] || uri="https://github.com/login/device"
+    [ -n "$intvl" ] || intvl=5
+
+    echo ""
+    echo "      ================================================================"
+    echo "        1. On any device, open:   $uri"
+    echo "        2. Enter this code:        $uc"
+    echo "      ================================================================"
+    echo "      Waiting for you to authorize (Ctrl+C to cancel)..."
+
+    local tresp access err
+    while true; do
+        sleep "$intvl"
+        tresp="$(curl -fsS -X POST https://github.com/login/oauth/access_token \
+            -H 'Accept: application/json' \
+            --data-urlencode "client_id=${client_id}" \
+            --data-urlencode "device_code=${dc}" \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code')" || continue
+        access="$(printf '%s' "$tresp" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
+        if [ -n "$access" ]; then
+            printf '%s' "$access" | gh auth login --hostname github.com --git-protocol https --with-token && return 0
+            return 2
+        fi
+        err="$(printf '%s' "$tresp" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
+        case "$err" in
+            authorization_pending|"") : ;;                  # keep polling
+            slow_down) intvl=$((intvl + 5)) ;;
+            *) echo "      GitHub: ${err:-unknown error}; restarting sign-in..." >&2; return 1 ;;
+        esac
+    done
+}
+
 GH_OK=false
 if command -v gh >/dev/null 2>&1; then
     # Require gh >= 2.20 (covers --git-protocol, modern device-flow UX).
@@ -88,47 +138,28 @@ if ! $GH_OK; then
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
-    # Private project repos can't clone without auth, so we LOOP the
-    # device-code sign-in until it succeeds instead of bailing. gh prints a
-    # one-time code + https://github.com/login/device; open that on ANY
-    # device with a browser (phone, laptop), enter the code, and authorize -
-    # this machine needs no browser of its own.
     if [ ! -t 0 ]; then
         echo "ERROR: GitHub sign-in is required but this is not an interactive" >&2
         echo "       terminal. Re-run ./bin/linux-install.sh directly in a shell." >&2
         exit 1
     fi
     echo ""
-    echo "      ----------------------------------------------------------------"
     echo "      GitHub sign-in required (to clone the private project repos)."
-    echo ""
-    echo "      gh will show a one-time code and the URL:"
-    echo "          https://github.com/login/device"
-    echo "      Open it on any device with a browser, enter the code, and"
-    echo "      authorize. This machine needs no browser of its own."
-    echo "      ----------------------------------------------------------------"
+    echo "      This script prints the one-time code itself (below) - you do not"
+    echo "      need a browser on this machine."
+    # Loop until authenticated. The device flow prints the code via our own
+    # echo, so it is always visible; if it can't even start, fall back to a
+    # pasted token.
     while ! gh auth status >/dev/null 2>&1; do
-        echo ""
-        echo "      gh prints a line like:  ! First copy your one-time code: XXXX-XXXX"
-        echo "      Copy that code, open  https://github.com/login/device  on any"
-        echo "      device, and enter it. This box will NOT open a browser itself."
-        echo ""
-        # GH_BROWSER=true hands gh a no-op 'browser' so it never launches one on
-        # the Pi desktop (a real browser window steals focus and hides the
-        # one-time code that gh prints here). The code + URL stay in this
-        # terminal for you to use on any device.
-        GH_BROWSER=true gh auth login --hostname github.com --git-protocol https --web || true
+        rc=0
+        github_device_signin || rc=$?
         gh auth status >/dev/null 2>&1 && break
-        echo ""
-        echo "      Still not signed in to GitHub. Options:"
-        echo "        [Enter]  try the browser/code flow again"
-        echo "        [t]      paste a GitHub token instead - create one at"
-        echo "                 https://github.com/settings/tokens (classic, 'repo' scope)"
-        echo "        [Ctrl+C] abort"
-        printf "      Choose [Enter/t]: "
-        read -r _ans || true
-        if [ "$_ans" = "t" ] || [ "$_ans" = "T" ]; then
-            printf "      Paste token, then press Enter (input hidden): "
+        if [ "$rc" -eq 2 ]; then
+            echo ""
+            echo "      Could not run the code sign-in. Paste a GitHub token instead"
+            echo "      (create one at https://github.com/settings/tokens - classic,"
+            echo "      'repo' scope), or press Ctrl+C to abort."
+            printf "      Paste token, then Enter (input hidden): "
             read -rs _token || true
             echo ""
             if [ -n "${_token:-}" ]; then
@@ -137,6 +168,7 @@ if ! gh auth status >/dev/null 2>&1; then
             fi
             unset _token
         fi
+        # rc==1 (code expired/denied) just loops and requests a fresh code.
     done
     echo ""
     echo "      GitHub sign-in confirmed."
