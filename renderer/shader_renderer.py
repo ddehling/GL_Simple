@@ -88,13 +88,17 @@ class ShaderRenderer:
         # Get monitor dimensions for autoscaling
         base_width, base_height = frame_dimensions[0]
 
-        # Auto-calculate magnification if set to 0 or None
+        # Auto-calculate magnification if set to 0 or None. In headless mode
+        # the window is hidden and only exists to back an FBO blit, so any
+        # magnification just makes Mesa rasterize a larger swap-buffer each
+        # frame for nothing — pin to 1x regardless of GL backend (matches
+        # the EGL path).
         if magnification is None or magnification == 0:
-            if self._use_egl:
+            if self._use_egl or headless:
                 self.magnification = 1
             else:
                 monitor_height = self.get_monitor_height()
-                available_height = monitor_height - 100 if not headless else monitor_height
+                available_height = monitor_height - 100
                 calculated_mag = max(1, int(available_height / base_height))
                 self.magnification = calculated_mag
                 print(f"[ShaderRenderer] Auto-calculated magnification: {self.magnification}x "
