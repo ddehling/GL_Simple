@@ -7856,17 +7856,22 @@ class MainWindow(QMainWindow):
             row_widgets.append(entry)
 
             def remove(e=entry):
-                # Idempotent: a double-click (the slot can fire again before
-                # deleteLater tears the button down) or the AI-suggest "replace"
-                # path clearing rows out from under a lingering button would
-                # otherwise hit `list.remove(x): x not in list`.
+                # Idempotent guard for the genuine re-fire cases: a rapid
+                # double-click (slot can fire again before deleteLater tears the
+                # button down) or the AI-suggest "replace" path clearing rows
+                # out from under a lingering button.
                 if e not in row_widgets:
                     return
                 row_widgets.remove(e)
                 e[3].deleteLater()
                 add_btn.setEnabled(len(row_widgets) < 6)
 
-            rm_btn.clicked.connect(remove)
+            # Wrap in a lambda so QPushButton.clicked's `checked` bool is NOT
+            # passed as `e`. Connecting `remove` directly made PyQt call
+            # remove(False), clobbering the e=entry default, so the handler
+            # operated on `False` instead of the row — nothing was ever removed
+            # (and pre-guard it raised "list.remove(x): x not in list").
+            rm_btn.clicked.connect(lambda *_: remove())
             add_btn.setEnabled(len(row_widgets) < 6)
 
         # Add variable button
