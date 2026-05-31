@@ -88,14 +88,36 @@ if ! $GH_OK; then
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
+    # Private project repos can't clone without auth, so we LOOP the
+    # device-code sign-in until it succeeds instead of bailing. gh prints a
+    # one-time code + https://github.com/login/device; open that on ANY
+    # device with a browser (phone, laptop), enter the code, and authorize -
+    # this machine needs no browser of its own.
+    if [ ! -t 0 ]; then
+        echo "ERROR: GitHub sign-in is required but this is not an interactive" >&2
+        echo "       terminal. Re-run ./bin/linux-install.sh directly in a shell." >&2
+        exit 1
+    fi
     echo ""
-    echo "      Not signed in to GitHub yet."
-    echo "      gh will print a URL and a one-time code. Open the URL"
-    echo "      on any device, enter the code, sign in, and grant access."
-    echo "      The script will resume automatically."
+    echo "      ----------------------------------------------------------------"
+    echo "      GitHub sign-in required (to clone the private project repos)."
     echo ""
-    gh auth login --hostname github.com --web \
-        || { echo "ERROR: gh auth login failed." >&2; exit 1; }
+    echo "      gh will show a one-time code and the URL:"
+    echo "          https://github.com/login/device"
+    echo "      Open it on any device with a browser, enter the code, and"
+    echo "      authorize. This machine needs no browser of its own."
+    echo "      ----------------------------------------------------------------"
+    while ! gh auth status >/dev/null 2>&1; do
+        echo ""
+        gh auth login --hostname github.com --git-protocol https --web || true
+        gh auth status >/dev/null 2>&1 && break
+        echo ""
+        echo "      Still not signed in to GitHub."
+        printf "      Press Enter to try the sign-in again (or Ctrl+C to abort): "
+        read -r _ || true
+    done
+    echo ""
+    echo "      GitHub sign-in confirmed."
 fi
 GH_USER=$(gh api user -q .login 2>/dev/null || echo "?")
 echo "      Signed in to GitHub as: $GH_USER"
