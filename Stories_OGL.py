@@ -15,6 +15,7 @@ except (AttributeError, Exception):
 
 import numpy as np
 import time
+import threading
 from pathlib import Path
 import yaml
 from engine.render_pipeline import RenderPipeline
@@ -311,6 +312,22 @@ class EnvironmentalSystem:
         # receiver a particular strip lives on. Updated again in
         # _swap_project_unsafe whenever the project changes.
         self._publish_strip_metadata(receivers_list)
+
+        # Boot resilience: receivers whose mDNS hostname didn't resolve at
+        # startup (box powered on after the controller, or network not ready
+        # yet) are skipped by _build_receivers and would never get data until
+        # a restart. Track how many the project wants vs how many are live and
+        # spin a background watcher that re-resolves the missing ones and asks
+        # the render thread to rebuild the senders when one appears. Receivers
+        # configured with a literal static IP always resolve, so a static-only
+        # project never needs the watcher. See _start_receiver_watch.
+        self._receiver_lock = threading.Lock()
+        self._pending_receivers = None         # bg watcher -> render thread
+        self._receiver_resolve_interval = 15.0  # seconds between retries
+        self._live_receiver_count = len(receivers_list)
+        self._receiver_watch_thread = None
+        self._receiver_watch_stop = False
+        self._start_receiver_watch()
         self.weather_state = WeatherStateController(
             weather_state_enum=self._weather_state_enum,
             weather_presets=self._weather_presets,
@@ -672,9 +689,120 @@ class EnvironmentalSystem:
         print(f"[mDNS] receiver entry has neither 'host' nor 'ip'; skipping: {rx}")
         return None
 
+    # ------------------------------------------------------------------
+    # Receiver boot-resilience: re-resolve late-arriving boxes at runtime
+    # ------------------------------------------------------------------
+    def _receiver_source(self):
+        """(project_receivers, legacy_receivers, display_height) the active
+        project resolves receivers from — captured so the watcher can
+        re-resolve without re-deriving it."""
+        return (
+            self.project.raw.get('receivers'),
+            self._cfg['dmx']['receivers'],
+            self.project.groups[0].height if self.project.groups
+            else int(self._cfg['display']['height']),
+        )
+
+    def _desired_receiver_count(self) -> int:
+        """How many receiver entries the active project declares (resolved or
+        not). Once this many are live, every box is online."""
+        proj = self.project.raw.get('receivers')
+        if proj:
+            return sum(1 for rx in proj if isinstance(rx, dict))
+        legacy = self._cfg['dmx']['receivers'] or []
+        return sum(1 for rx in legacy if isinstance(rx, dict))
+
+    def _rebuild_senders(self, receivers_list) -> None:
+        """Replace the DMX senders with ones built for ``receivers_list``.
+        Render-thread only — mutates ``scheduler.state['screens']``. Mirrors
+        the sender rebuild in _swap_project_unsafe, minus the project teardown.
+        """
+        for sender in list(self.scheduler.state.get('screens', [])):
+            try:
+                sender.close()
+            except Exception as e:
+                print(f"[Receivers] sender close error (ignoring): {e}")
+        new_screens = []
+        if receivers_list:
+            sender = imdmx.SACNPixelSender(
+                receivers_list, skip_network=False,
+                use_raw_udp=True, per_receiver_universe=True,
+                bind_ip=self._cfg['dmx'].get('bind_ip', ''),
+            )
+            sender.enable_async_send()
+            new_screens.append(sender)
+        self.scheduler.state['screens'] = new_screens
+        self._publish_strip_metadata(receivers_list)
+        self._live_receiver_count = len(receivers_list)
+
+    def _start_receiver_watch(self) -> None:
+        """Spin a background thread to re-resolve receivers that weren't live
+        at startup, if any. Stops once all declared receivers are live, so a
+        fully-online rig does no ongoing mDNS chatter. Safe to call again on a
+        project swap — it cancels any prior watcher first.
+        """
+        # Cancel a prior watcher (e.g. from before a project swap).
+        self._receiver_watch_stop = True
+        prev = getattr(self, '_receiver_watch_thread', None)
+        if prev is not None and prev.is_alive():
+            prev.join(timeout=0.1)
+
+        desired = self._desired_receiver_count()
+        if self._live_receiver_count >= desired:
+            return  # all receivers already live — nothing to watch for
+
+        print(f"[Receivers] {self._live_receiver_count}/{desired} live at startup; "
+              f"watching for the rest (re-resolve every "
+              f"{self._receiver_resolve_interval:.0f}s)...")
+        self._receiver_watch_stop = False
+        proj_id = self.project.id
+        src = self._receiver_source()
+
+        def _loop():
+            applied = self._live_receiver_count   # local: avoids racing the render thread
+            while not self._receiver_watch_stop:
+                time.sleep(self._receiver_resolve_interval)
+                if self._receiver_watch_stop or self.project.id != proj_id:
+                    return
+                try:
+                    resolved = self._build_receivers(
+                        project_receivers=src[0],
+                        legacy_receivers=src[1],
+                        display_height=src[2],
+                    )
+                except Exception as e:
+                    print(f"[Receivers] re-resolve error (will retry): {e}")
+                    continue
+                if len(resolved) > applied:
+                    print(f"[Receivers] {len(resolved)}/{desired} now resolvable "
+                          f"(was {applied}); queuing sender rebuild")
+                    with self._receiver_lock:
+                        self._pending_receivers = resolved
+                    applied = len(resolved)
+                if applied >= desired:
+                    print("[Receivers] all declared receivers online; watcher done")
+                    return
+
+        t = threading.Thread(target=_loop, name="receiver-watch", daemon=True)
+        self._receiver_watch_thread = t
+        t.start()
+
     def update(self):
         """Update the environmental system - should be called each frame"""
         self.current_time = time.time()
+
+        # Render-thread: apply a receiver set the background watcher resolved
+        # (a previously-missing box came online). Done here, not in the watcher
+        # thread, so the sender rebuild happens on the render thread like a
+        # project swap does.
+        pending = None
+        with self._receiver_lock:
+            if self._pending_receivers is not None:
+                pending = self._pending_receivers
+                self._pending_receivers = None
+        if pending is not None:
+            print(f"[Receivers] Rebuilding senders for {len(pending)} receiver(s)")
+            self._rebuild_senders(pending)
 
         # Apply web control values
         self.apply_web_controls()
@@ -1251,6 +1379,16 @@ class EnvironmentalSystem:
         # matter.
         self._call_button_router_hook()
         self._initialize_weather_set_events()
+
+        # Receiver boot-resilience: drop any rebuild the watcher queued for the
+        # OLD project, then (re)start it for the new one so its late-arriving
+        # boxes recover too. Runs after self.project is the new project
+        # (set earlier in this method) — _start_receiver_watch reads its id.
+        with self._receiver_lock:
+            self._pending_receivers = None
+        self._live_receiver_count = len(new_receivers)
+        self._start_receiver_watch()
+
         dims_str = ", ".join(f"{gid}={w}x{h}" for gid, (w, h) in zip(new_group_ids, new_dims))
         print(f"[Project] Swap complete: now {new_project.display_name} [{dims_str}]")
         return True
