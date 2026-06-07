@@ -30,7 +30,6 @@ try:
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
-    print("[DMXSender] Warning: Numba not available, using slower numpy operations")
 def _normalize_receiver(rx: dict) -> dict:
     """Return a dict that has both ``addressing_array`` + ``pixel_count``
     populated, regardless of whether the input used the legacy or strip-based
@@ -92,7 +91,6 @@ class SACNPixelSender:
             # Bind to specific interface if configured
             if bind_ip:
                 self.udp_socket.bind((bind_ip, 0))
-                print(f"[DMXSender] Bound to {bind_ip}")
 
             # Pre-build sACN packet headers for each universe
             self._sacn_headers = []
@@ -264,7 +262,6 @@ class SACNPixelSender:
         self._stop_thread = False
         self._send_thread = threading.Thread(target=self._send_worker, daemon=True)
         self._send_thread.start()
-        print("[DMXSender] Async sending enabled")
     
     def disable_async_send(self):
         """Disable asynchronous sending and wait for thread to finish"""
@@ -275,7 +272,6 @@ class SACNPixelSender:
         self._stop_thread = True
         if self._send_thread:
             self._send_thread.join(timeout=1.0)
-        print("[DMXSender] Async sending disabled")
     
     def _send_worker(self):
         """Background worker that drains the send queue.
@@ -292,20 +288,8 @@ class SACNPixelSender:
         ``None`` poison pill.
         """
         last_error_log = 0.0
-        last_status_log = time.monotonic()
-        last_status_sent = 0
         while not self._stop_thread:
             now = time.monotonic()
-            # Periodic alive/throughput log so the operator can see whether
-            # the worker is processing frames at all. Fires regardless of
-            # queue state; first occurrence at +5s after start.
-            if now - last_status_log > 5.0:
-                delta = self._frames_sent - last_status_sent
-                last_status_log = now
-                last_status_sent = self._frames_sent
-                print(f"[DMXSender] worker: sent={self._frames_sent} "
-                      f"(+{delta} in 5s) errored={self._frames_errored} "
-                      f"qsize={self._send_queue.qsize()}")
             try:
                 frame_data = self._send_queue.get(timeout=0.1)
             except queue.Empty:
@@ -486,10 +470,6 @@ class SACNPixelSender:
             # Legacy single-source callers — wrap as a one-group dict.
             frames = {'main': frames}
 
-        if verify:
-            shapes = {gid: f.shape for gid, f in frames.items()}
-            print(f"[DMXSender] Sending frames {shapes}")
-
         # Process each receiver using optimized Numba (releases GIL)
         for rx_idx, (receiver, universes) in enumerate(zip(self.receivers, self.receiver_universes)):
             pixel_buffer = self._receiver_buffers[rx_idx]
@@ -628,7 +608,6 @@ class SACNPixelSender:
             #handle the last group
             groups.append(current_group)
             pixels_in_group.append(group_pixel_count)
-            print(f"[DMXSender] Groups: {groups} pixel_counts: {pixels_in_group} ip: {receiver['ip']}")
 
 # The rest of the code (generate_frame_data and main function) remains the same
 

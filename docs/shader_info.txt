@@ -55,8 +55,8 @@ camera = drawn on top, large z = far from camera = drawn behind".
 | 0.65 | ocean_godrays (water column light) | flat |
 | 0.70 – 0.80 | kelp | per-blade (hashed from strandId) |
 | 0.82 | tube_worms | flat (procedural fullscreen quad) |
+| 0.84 | coral | flat — MUST stay < ocean_waves (0.85): ocean_waves is the lone ocean layer that writes depth, so coral behind it (0.87) was depth-rejected and invisible |
 | 0.85 | ocean_waves (deep ocean body, surface tint, foam) | per-vertex mappedDepth from `depth` uniform = 85 |
-| 0.87 | coral | flat |
 | 0.95 | ocean_background (deepest base layer, wave-equation sim) | flat |
 
 Adding a new ocean effect: pick a z slot that doesn't collide with anything above
