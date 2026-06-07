@@ -56,7 +56,7 @@ pull_repo() {
 # for github.com to become reachable before pulling. Still offline-tolerant:
 # if it never comes up within the timeout we proceed and launch with local code.
 wait_for_github() {
-    local deadline=$(( SECONDS + 60 ))   # give the network up to ~60s at boot
+    local deadline=$(( SECONDS + 15 ))   # cap the offline wait at 15s
     while [ "$SECONDS" -lt "$deadline" ]; do
         if getent hosts github.com >/dev/null 2>&1; then
             return 0
@@ -64,7 +64,7 @@ wait_for_github() {
         echo "  waiting for network (github.com not resolvable yet)..."
         sleep 3
     done
-    echo "  network still down after 60s - proceeding with local code."
+    echo "  network still down after 15s - proceeding with local code."
     return 1
 }
 

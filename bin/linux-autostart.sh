@@ -270,12 +270,19 @@ esac
 # -----------------------------------------------------------------------
 echo "[4/5] Writing $DESKTOP_FILE ..."
 mkdir -p "$AUTOSTART_DIR"
+# Exec points at linux-autostart-launcher.sh (plain bash, no X dependency to
+# start) rather than xterm directly. On a Wayland desktop the autostart can
+# fire before XWayland is ready, and a direct xterm would fail to open a window
+# and exit silently — the app would never launch. The launcher retries the
+# xterm until the display is ready, then falls back to a headless launch so a
+# kiosk always comes up. See bin/linux-autostart-launcher.sh.
+chmod +x "$REPO_DIR/bin/linux-autostart-launcher.sh" 2>/dev/null || true
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application
 Name=GL_Simple
 Comment=OpenGL lighting controller - starts with the graphical session
-Exec=xterm -T GL_Simple -geometry 120x30+50+50 -hold -e /bin/bash $REPO_DIR/bin/linux-run.sh
+Exec=/bin/bash $REPO_DIR/bin/linux-autostart-launcher.sh
 Path=$REPO_DIR
 Terminal=false
 X-GNOME-Autostart-enabled=true
