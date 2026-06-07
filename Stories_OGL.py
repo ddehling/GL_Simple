@@ -1755,9 +1755,11 @@ class EnvironmentalSystem:
             # weather editor but never reaching playback.
             master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
             narrative_vol = self.web_controller.global_modifiers.get('narrative_volume', 1.0)
+            soundpool_vol = self.web_controller.global_modifiers.get('soundpool_volume', 1.0)
             ambient_vol = float(self.weather_state.weather_params.get('Sound_volume', 1.0))
             state["soundengine"].master_volume = master_vol
             state["soundengine"].narrative_volume = narrative_vol
+            state["soundengine"].soundpool_volume = soundpool_vol
             state["soundengine"].ambient_volume = ambient_vol
 
             # Cache the final output for the web UI snapshot (post-overrides)
@@ -1772,6 +1774,9 @@ class EnvironmentalSystem:
         state["narrative_script"] = self.weather_set.get_narrative_script()
         # Same deal for the random ambient-sound pool directory.
         state["sound_pool_dir"] = self.weather_set.get_sound_pool_dir()
+        # Opt-in crossfade window (seconds) for the sound pool: 0 = original
+        # gap playback, >0 = gapless crossfaded stream.
+        state["sound_pool_crossfade"] = self.weather_set.get_sound_pool_crossfade()
         if self.enable_web_control and self.web_controller is not None:
             state["_preview_active"] = (
                 self.web_controller.control_dict.get('_preview_subscribers', 0) > 0

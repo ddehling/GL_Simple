@@ -9,6 +9,7 @@ the audio thread. Callers communicate via a SimpleQueue of command tuples —
 no locks needed anywhere.
 """
 
+import itertools
 import queue
 import time
 import numpy as np
@@ -29,13 +30,16 @@ class _MemTrack:
     """
 
     def __init__(self, samples: np.ndarray, path: Path, *, volume: float = 1.0,
-                 duration: float = 0.0, is_narrative: bool = False):
+                 duration: float = 0.0, is_narrative: bool = False,
+                 fade_in: float = 0.0, is_soundpool: bool = False):
         self.is_ambient   = False
         self.is_narrative = is_narrative
+        self.is_soundpool = is_soundpool
         self.done         = False
         self._path        = path
         self.volume       = volume
         self._pos         = 0
+        self._fade_in_frames  = int(fade_in * SAMPLE_RATE)
         self._fading_out  = False
         self._fade_out_frames = 0
         self._fade_out_pos    = 0
@@ -55,9 +59,18 @@ class _MemTrack:
             self.done = True
             return None
 
+        start = self._pos
         end = min(self._pos + n_frames, len(self._samples))
-        chunk = self._samples[self._pos:end].copy()
+        chunk = self._samples[start:end].copy()
         self._pos = end
+
+        # Fade-in: linear ramp from 0->1 over the first _fade_in_frames samples.
+        if self._fade_in_frames > 0 and start < self._fade_in_frames:
+            fi_end = min(end, self._fade_in_frames)
+            ramp = np.linspace(start / self._fade_in_frames,
+                               fi_end / self._fade_in_frames,
+                               fi_end - start, dtype=np.float32)
+            chunk[:fi_end - start] *= ramp[:, np.newaxis]
 
         # Fade-out
         if self._fading_out:
@@ -86,6 +99,7 @@ class _Track:
                  is_ambient: bool = False, is_narrative: bool = False):
         self.is_ambient       = is_ambient
         self.is_narrative     = is_narrative
+        self.is_soundpool     = False   # soundpool clips are always _MemTracks
         self.done             = False
         self._path            = path
         self._loop            = loop
@@ -278,6 +292,15 @@ class AudioEngine:
         # frame; weather editor edits to Sound_volume therefore take
         # effect immediately without restart. 1.0 = no attenuation.
         self.ambient_volume = 1.0
+        # Scales is_soundpool tracks (random sound-pool clips) at mix time.
+        # Stories_OGL pushes the web UI's soundpool_volume global modifier
+        # here each frame, so the slider takes effect live and independently
+        # of master / narrative / ambient. 1.0 = no attenuation.
+        self.soundpool_volume = 1.0
+        # Monotonic counter feeding unique oneshot track keys. Generated on
+        # the caller's thread in schedule_event (before the async decode) so
+        # the caller can reference the track later via fade_out_event.
+        self._evt_seq = itertools.count()
 
     # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
@@ -318,14 +341,23 @@ class AudioEngine:
         self._cmds.put(("stop_all", duration))
 
     def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
-                       narrative: bool = False):
+                       narrative: bool = False, fade_in: float = 0.0,
+                       soundpool: bool = False) -> str:
         """Play a sound file once. duration>0 caps playback to that many seconds.
 
+        fade_in: seconds of linear 0->1 ramp at the start (0 = hard start).
+
         Decodes in a background thread to avoid blocking both the main thread
-        and the audio callback thread.
+        and the audio callback thread. Returns the track's key, which can be
+        passed to ``fade_out_event`` to fade this oneshot out later (e.g. to
+        crossfade into the next clip). The key is valid even though decoding
+        is still in flight — the matching track appears once decode finishes.
         """
         import threading
         p = Path(path)
+        # Generate the key now, on the caller's thread, so it can be returned
+        # before the async decode posts the track to the mixer.
+        key = f"os_{p.name}_{time.monotonic_ns()}_{next(self._evt_seq)}"
         def _decode_and_queue():
             try:
                 decoded = miniaudio.decode_file(
@@ -336,10 +368,21 @@ class AudioEngine:
                 raw_bytes = bytes(decoded.samples)
                 samples = np.frombuffer(raw_bytes,
                                         dtype=np.float32).reshape(-1, CHANNELS)
-                self._cmds.put(("oneshot_mem", samples, p, volume, duration, narrative))
+                self._cmds.put(("oneshot_mem", samples, p, volume, duration,
+                                narrative, fade_in, key, soundpool))
             except Exception as e:
                 print(f"[AudioEngine] Failed to decode {p.name}: {e}")
         threading.Thread(target=_decode_and_queue, daemon=True).start()
+        return key
+
+    def fade_out_event(self, key: str, duration: float = FADE_OUT):
+        """Fade out a previously scheduled oneshot, addressed by its key.
+
+        No-op if the key is unknown (e.g. the clip already finished or its
+        decode failed). Used by the sound pool to crossfade the outgoing clip
+        as the next one fades in.
+        """
+        self._cmds.put(("fade_out_event", key, duration))
 
 
     # ------------------------------------------------------------------
@@ -379,14 +422,22 @@ class AudioEngine:
                         for t in tracks.values():
                             t.fade_out(fo)
 
+                    elif kind == "fade_out_event":
+                        _, key, fo = cmd
+                        t = tracks.get(key)
+                        if t is not None:
+                            t.fade_out(fo)
+
                     elif kind == "oneshot_mem":
-                        _, samples, path, vol, dur, narr = cmd
-                        # Unique key — id(cmd) was unsafe because Python can
-                        # reuse the address of a freed tuple, silently
-                        # overwriting a still-playing track in the dict.
-                        tracks[f"os_{path.name}_{time.monotonic_ns()}"] = _MemTrack(
+                        _, samples, path, vol, dur, narr, fade_in, key, sp = cmd
+                        # Key is generated by schedule_event on the caller's
+                        # thread so the caller can reference this track (e.g.
+                        # to fade it out for a crossfade). id(cmd) was unsafe
+                        # because Python can reuse the address of a freed
+                        # tuple, silently overwriting a still-playing track.
+                        tracks[key] = _MemTrack(
                             samples, path, volume=vol, duration=dur,
-                            is_narrative=narr)
+                            is_narrative=narr, fade_in=fade_in, is_soundpool=sp)
                         if not narr:
                             track_dur = len(samples) / SAMPLE_RATE
                             finish_at = time.strftime(
@@ -406,6 +457,7 @@ class AudioEngine:
             dead = []
             narr_vol = self.narrative_volume
             amb_vol = self.ambient_volume
+            sp_vol = self.soundpool_volume
             for key, track in tracks.items():
                 try:
                     chunk = track.read(required_frames)
@@ -424,6 +476,11 @@ class AudioEngine:
                         # the weather editor takes effect at the next
                         # frame, no restart needed.
                         other_buf[:len(chunk)] += chunk * amb_vol
+                    elif track.is_soundpool:
+                        # Random sound-pool clips scale by the live
+                        # soundpool_volume slider (web global_modifiers),
+                        # independent of master / narrative / ambient.
+                        other_buf[:len(chunk)] += chunk * sp_vol
                     else:
                         other_buf[:len(chunk)] += chunk
             for key in dead:

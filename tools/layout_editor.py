@@ -870,8 +870,13 @@ WEATHER_SETS = {{
         #     ``projects/{id}/media/``) of clips for the random
         #     ambient sound pool. Pair with ``"sound_pool"`` in
         #     ``background_events``.
+        #   - ``sound_pool_crossfade``: seconds of overlap between
+        #     pool clips. 0 = clips play one at a time with a gap
+        #     (default); above 0 = gapless stream, each clip
+        #     crossfading into the next.
         "narrative_script": None,
         "sound_pool_dir": None,
+        "sound_pool_crossfade": 0.0,
         "background_events": [],
     }},
 }}

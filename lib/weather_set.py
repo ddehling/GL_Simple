@@ -139,6 +139,18 @@ class WeatherSetManager:
             return None
         return sdir
 
+    def get_sound_pool_crossfade(self) -> float:
+        """Return the current set's sound-pool crossfade window in seconds.
+
+        0 (the default for sets that omit the key) keeps the original gap
+        playback. A positive value makes the pool play clips gaplessly,
+        crossfading each into the next over that many seconds.
+        """
+        try:
+            return float(self.get_current_set_config().get("sound_pool_crossfade", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     # ------------------------------------------------------------------
     # Event map accessors
     # ------------------------------------------------------------------

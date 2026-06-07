@@ -24,6 +24,8 @@ DEFAULT_EVENT_MAP = {
         "restart_delay": 10.0,
     }),
     # Randomized ambient audio pool. The active set's ``sound_pool_dir``
-    # picks the directory; entries are sampled and crossfaded.
+    # picks the directory; clips are sampled at random. By default they play
+    # with a gap between them; a set can set ``sound_pool_crossfade`` > 0 to
+    # play them gaplessly, crossfading each clip into the next.
     "sound_pool": (fx.shader_sound_pool, {}),
 }

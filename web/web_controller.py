@@ -121,6 +121,7 @@ class WebController:
             "brightness_limit": 0.1,
             "master_volume": 1.0,
             "narrative_volume": 1.0,
+            "soundpool_volume": 1.0,
         }
 
         # Global modifier metadata for UI generation
@@ -164,6 +165,11 @@ class WebController:
                 "label": "Narrative Volume",
                 "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
                 "description": "Controls narrative player TTS volume"
+            },
+            "soundpool_volume": {
+                "label": "Soundpool Volume",
+                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
+                "description": "Controls random sound-pool clip volume (independent of master/narrative/ambient)"
             },
         }
 
