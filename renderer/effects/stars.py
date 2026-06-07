@@ -11,7 +11,7 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0, drift_y=0.0, audio_sensitivity=1.5):
+def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0, drift_y=0.0, audio_sensitivity=1.5, depth=90.0):
     """
     Shader-based twinkling stars effect compatible with EventScheduler
     
@@ -55,7 +55,8 @@ def shader_stars(state, outstate, num_stars=1000, twinkle_speed=1.0, drift_x=1.0
                 twinkle_speed=twinkle_speed,
                 drift_x=drift_x,
                 drift_y=drift_y,
-                audio_sensitivity=audio_sensitivity
+                audio_sensitivity=audio_sensitivity,
+                depth=depth
             )
             state['stars_effect'] = stars_effect
             print(f"✓ Initialized shader stars for frame {frame_id} (depth: 99.99, audio bands: 0-15)")

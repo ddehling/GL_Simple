@@ -35,6 +35,21 @@ of one of them. Treat them as build-failures-in-spirit even if no CI enforces th
    another. If two effects need a specific stacking, give them appropriate z
    values from the z-band table.
 
+6. **Never let a transparent layer punch through an opaque backdrop — never
+   work around the depth + transparency pipeline.** A translucent effect that
+   WRITES depth in front of an opaque backdrop carves that backdrop away
+   wherever it draws, *even where it is fully transparent* (alpha 0), because
+   depth-write is not gated by alpha. Real bug: daytime stars at z=0.90 stamped
+   depth over the bartiki BART map (z 0.96-0.98, drawn after them) and showed
+   as black spots in the map. The fix is to set the depth correctly, NOT to
+   band-aid it with a `discard` on transparent fragments. In order of
+   preference: (a) place the effect at a depth consistent with where it belongs
+   in the scene — behind the backdrops it should sit behind; use a per-set
+   depth when one z can't serve conflicting backdrops (bartiki stars sit at
+   z=0.99 behind its map, while cyberpunk stars stay at z=0.90 in front of its
+   0.95 sky); (b) translucent layers should set `glDepthMask(GL_FALSE)` (rule
+   2) so they never write depth at all. Pick the depth; don't hack the pipeline.
+
 If you need additive blending (bioluminescent glow, fire embers, etc.), wrap
 the draw with `glBlendFunc(GL_SRC_ALPHA, GL_ONE)` + restore. Additive AND
 glDepthMask(GL_FALSE) together is the standard particle-glow pattern.
@@ -47,15 +62,18 @@ camera = drawn on top, large z = far from camera = drawn behind".
 
 | z (or range) | Effect | Per-fragment varies? |
 |---|---|---|
+| 0.05 | ocean_red_tide (front bloom discoloration, state-gated overlay) | flat |
 | 0.10 | ocean_reflection (sky on water) | flat |
 | 0.18 – 0.32 | fish | per-fish (assigned at spawn) |
 | 0.38 – 0.48 | ocean_fish_wakes | per-particle (assigned at spawn) |
 | 0.45 – 0.60 | bubbles | per-particle (assigned at spawn) |
 | 0.50 – 0.70 | bioluminescence | per-particle (already varying) |
 | 0.65 | ocean_godrays (water column light) | flat |
+| 0.33 – 0.38 | ocean_megafauna small kinds (dolphin 0.33, manta 0.34, mola_mola 0.35, shark 0.36, giant_squid 0.37, sea_turtle 0.38) | in front of water/atmosphere via z_centroid (giant_squid varies its z per spawn) |
 | 0.70 – 0.80 | kelp | per-blade (hashed from strandId) |
 | 0.82 | tube_worms | flat (procedural fullscreen quad) |
 | 0.84 | coral | flat — MUST stay < ocean_waves (0.85): ocean_waves is the lone ocean layer that writes depth, so coral behind it (0.87) was depth-rejected and invisible |
+| 0.845 | ocean_megafauna WHALE (deep silhouette) | draws first + WRITES depth, so it sits behind everything except ocean_waves |
 | 0.85 | ocean_waves (deep ocean body, surface tint, foam) | per-vertex mappedDepth from `depth` uniform = 85 |
 | 0.95 | ocean_background (deepest base layer, wave-equation sim) | flat |
 
