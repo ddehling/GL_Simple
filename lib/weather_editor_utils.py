@@ -89,6 +89,49 @@ def _extract_assignments_text(file_path: Path, names) -> dict:
     return found
 
 
+def _extract_set_allowed_parameters(file_path: Path) -> dict:
+    """Return {set_id: [param, ...]} for each WEATHER_SETS entry's
+    ``allowed_parameters`` list in the given file, read straight from the
+    source via AST (no import, so project-specific modules don't need to be
+    importable). Only string-literal list entries are extracted; anything
+    unparseable yields {} so callers can treat a parse failure as "unknown,
+    don't guard".
+
+    Used by save_weather_params to detect a destructive save that would blank
+    a set's allowed_parameters — the signature of the "control panel shows
+    every set's sliders" corruption.
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return {}
+    try:
+        src = file_path.read_text(encoding='utf-8')
+        tree = ast.parse(src)
+    except Exception:
+        return {}
+    out = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "WEATHER_SETS"
+                and isinstance(node.value, ast.Dict)):
+            continue
+        for set_key, set_val in zip(node.value.keys, node.value.values):
+            if not (isinstance(set_key, ast.Constant)
+                    and isinstance(set_key.value, str)
+                    and isinstance(set_val, ast.Dict)):
+                continue
+            set_id = set_key.value
+            for k, v in zip(set_val.keys, set_val.values):
+                if (isinstance(k, ast.Constant) and k.value == "allowed_parameters"
+                        and isinstance(v, ast.List)):
+                    params = [e.value for e in v.elts
+                              if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                    out[set_id] = params
+    return out
+
+
 def save_weather_params(weather_states, weather_presets, weather_sets,
                         global_parameters=None, target_path=None):
     """
@@ -130,7 +173,39 @@ def save_weather_params(weather_states, weather_presets, weather_sets,
         else:
             current_dir = Path(__file__).parent.parent
             weather_params_path = current_dir / "lib" / "weather_params.py"
-        
+
+        # Guardrail against a destructive save that silently blanks
+        # allowed_parameters. The web control panel filters its sliders to the
+        # active set via each set's allowed_parameters; if a save wipes them,
+        # _get_allowed_output_params() returns None and the panel falls back to
+        # showing every set's parameters at once. A single set going empty can
+        # be an intentional "no restrictions" edit, but MULTIPLE sets losing a
+        # previously non-empty list in one save is the signature of corruption
+        # (a partial/empty client payload), so refuse the write and say why.
+        existing_allowed = _extract_set_allowed_parameters(weather_params_path)
+        if existing_allowed:
+            wiped = []
+            for set_id, prev in existing_allowed.items():
+                if not prev:
+                    continue  # was already empty — nothing to protect
+                incoming = weather_sets.get(set_id)
+                if isinstance(incoming, dict) and not incoming.get("allowed_parameters"):
+                    wiped.append(set_id)
+            if len(wiped) >= 2:
+                return {
+                    "success": False,
+                    "error": (
+                        "Refusing to save: this would clear allowed_parameters "
+                        f"for {len(wiped)} sets ({', '.join(sorted(wiped))}) that "
+                        "currently have them. That blanks the control panel's "
+                        "per-set slider filter (it would then show every set's "
+                        "parameters at once), and a multi-set wipe like this is "
+                        "almost always a bad/partial payload, not an intentional "
+                        "edit. No changes were written. If you really meant to "
+                        "clear them, edit weather_params.py directly."
+                    ),
+                }
+
         # Create backup
         backup_path = weather_params_path.with_suffix('.py.backup')
         if weather_params_path.exists():
