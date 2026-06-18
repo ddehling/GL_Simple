@@ -24,6 +24,7 @@ from lib.osc_listener import OscListener
 from lib.mdns_resolve import resolve as mdns_resolve
 
 from lib.audio_analyzer import MicrophoneAnalyzer
+from lib.beat_detector import BeatDetector
 # WeatherState is kept as a fallback type for projects that don't override
 # the enum; runtime code reads ``self._weather_state_enum`` instead so a
 # project can swap in its own enum.
@@ -58,7 +59,8 @@ def load_config(project_override: str | None = None):
     defaults = {
         "project": "fan",
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
-        "audio": {"enabled": True, "device_name": "TONOR"},
+        "audio": {"enabled": True, "source": "linein", "linein_device": "",
+                  "loopback_device": "", "device_name": "TONOR"},
         "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
         # OSC listener — observability only at this stage. Receives messages
         # from Weight_Of_Light boxes (button presses, analog samples,
@@ -225,6 +227,7 @@ class EnvironmentalSystem:
         web_cfg = cfg["web"]
         dmx_cfg = cfg["dmx"]
         osc_cfg = cfg.get("osc", {})
+        midi_cfg = cfg.get("midi", {})
 
         # One canvas per project group (Phase 6). Order is authoritative —
         # frame_id == index in self.project.groups.
@@ -335,14 +338,54 @@ class EnvironmentalSystem:
         )
         self.season = 0.0
         self.analyzer = None
+        self._audio_tap_wired = False
         if audio_cfg.get("enabled", True):
             try:
-                self.analyzer = MicrophoneAnalyzer(device_name=audio_cfg["device_name"])
+                self.analyzer = MicrophoneAnalyzer(
+                    source=audio_cfg.get("source", "linein"),
+                    device_name=audio_cfg.get("device_name"),
+                    linein_device=audio_cfg.get("linein_device") or None,
+                    loopback_device=audio_cfg.get("loopback_device") or None,
+                )
                 self.analyzer.start()
             except Exception as e:
-                print(f"[Audio] Failed to initialize microphone: {e}")
+                print(f"[Audio] Failed to initialize audio analyzer: {e}")
                 print("[Audio] Continuing without audio input")
                 self.analyzer = None
+
+        # Beat / tempo detector — a pure consumer of the analyzer output,
+        # published into outstate by send_variables() so any shader can sync
+        # to the beat. Harmless when there's no audio (returns zeros).
+        self._beat_detector = BeatDetector()
+        self._prev_beat_time = time.time()
+
+        # MIDI controller (Korg nanoKontrol2). Optional: drives the Club / DJ
+        # set's params, scene/set switching, master/audio controls and
+        # one-shot effects for live use. Absent hardware or a missing
+        # pygame.midi backend is non-fatal — the show runs without it.
+        self.midi = None
+        self.midi_param_overrides = {}   # param -> value, applied in send_variables
+        self._midi_prev = {}             # last-frame button states (edge detect)
+        self._midi_cont_prev = {}        # last-frame continuous values (takeover)
+        self._midi_touched = set()       # continuous controls moved since connect
+        self._solo_layer = None          # club mixer: soloed layer (mutes others)
+        self._blackout = False           # club mixer: blackout all layers
+        if midi_cfg.get("enabled", True):
+            try:
+                from lib.midi_controller import KorgNanoKontrol2
+                midi = KorgNanoKontrol2(
+                    device_name=midi_cfg.get("device_name", "nanoKONTROL2"),
+                    auto_connect=True,
+                )
+                if midi.input_device is None:
+                    print("[MIDI] No controller found - continuing without MIDI")
+                else:
+                    midi.start_reading()
+                    self.midi = midi
+                    print("[MIDI] nanoKontrol2 connected - DJ controls active")
+            except Exception as e:
+                print(f"[MIDI] init failed: {e}; continuing without MIDI")
+                self.midi = None
         self.scale = 0.2
 
         # Initialize web control system
@@ -814,9 +857,14 @@ class EnvironmentalSystem:
         for body in self.celestial_bodies:
             body.update(self.current_time)
             
+        # Apply MIDI controller input (Club / DJ set). Runs before
+        # send_variables so MIDI param overrides are in place when the
+        # frame's output is assembled.
+        self.apply_midi_controls()
+
         # Apply current parameters to scheduler state
         self.send_variables()
-        
+
         # Random events
         self.random_events()
         self.random_state_change()
@@ -1553,6 +1601,10 @@ class EnvironmentalSystem:
             new_set = self.web_controller.control_dict.pop('request_weather_set', None)
             new_state = self.web_controller.control_dict.pop('request_weather_state', None)
             trigger_event = self.web_controller.control_dict.pop('request_trigger_event', False)
+            audio_source_req = self.web_controller.control_dict.pop('request_audio_source', None)
+
+        if audio_source_req is not None:
+            self.set_audio_source(audio_source_req)
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
@@ -1597,6 +1649,7 @@ class EnvironmentalSystem:
                     "peak_band": int(np.argmax(current_bands)),
                     "total_power": float(np.sum(current_bands)),
                     "sensitivity": self.analyzer.sensitivity,
+                    "source": getattr(self.analyzer, "_active_source", None),
                 }
                 with self.web_controller._dict_lock:
                     self.web_controller.control_dict['audio_summary'] = audio_summary
@@ -1765,6 +1818,16 @@ class EnvironmentalSystem:
             # Cache the final output for the web UI snapshot (post-overrides)
             self._last_web_output = output
 
+        # MIDI param overrides (Club / DJ set). Applied after the web
+        # overrides so a live MIDI move wins over a stale web override, and
+        # outside the web-control guard so MIDI works even with web disabled.
+        # Like web overrides, only keys present in this frame's output are
+        # touched (so a resting slider can't zero a param in a non-club set).
+        if self.midi_param_overrides:
+            for param, value in self.midi_param_overrides.items():
+                if param in output:
+                    output[param] = value
+
         state.update(output)
         state["season"] = self.season
         state["current_weather_state"] = self.weather_state.current_weather.value
@@ -1784,7 +1847,27 @@ class EnvironmentalSystem:
         else:
             state["_preview_active"] = False
         state["scale"] = self.scale
+        # Wire the AudioEngine -> analyzer monitor tap once (drives the
+        # 'internal' audio source). feed() no-ops unless that source is active,
+        # so it's safe to keep wired regardless of the current source.
+        if self.analyzer is not None and not self._audio_tap_wired:
+            engine = state.get("soundengine")
+            if engine is not None:
+                engine.set_monitor_tap(self.analyzer.feed)
+                self._audio_tap_wired = True
+
         state["sound"] = self.analyzer.get_extended_analysis() if self.analyzer else None
+        # Beat / tempo detection over the analyzer output. Published so any
+        # shader can sync to the beat (Club set's lasers/strobe/eq_bars).
+        # Returns zeros when there's no audio, so this is always safe.
+        now = self.current_time
+        beat = self._beat_detector.update(state["sound"], now - self._prev_beat_time)
+        self._prev_beat_time = now
+        state["beat"] = beat["onset"]
+        state["beat_decay"] = beat["decay"]
+        state["bpm"] = beat["bpm"]
+        state["beat_phase"] = beat["phase"]
+        state["beat_intensity"] = beat["strength"]
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):
@@ -1832,6 +1915,172 @@ class EnvironmentalSystem:
                 hook.run(self)
             except Exception as e:
                 print(f"[Project] random_events hook error: {e}")
+
+    # ----------------------------------------------------------------
+    # MIDI control - Club / DJ LAYER MIXER
+    # ----------------------------------------------------------------
+    # The club set is a manual mixer: each channel strip on the nanoKontrol2
+    # drives one effect layer. Slider i = layer i opacity (op_<layer>), the
+    # knob above it = layer i colour (tint_<layer>). Both are written straight
+    # into scheduler.state (NOT weather params), so each layer is invisible
+    # until its fader is raised. S1..4 solo a layer; M1..6 fire one-shots.
+    _CLUB_LAYERS = ["eqbars", "lasers", "balls", "strobe"]   # channels 1-4
+    # M button index -> (event_map name, duration seconds)
+    _MIDI_ONESHOTS = {
+        1: ("strobe_burst", 4.0),
+        2: ("laser_sweep_oneshot", 8.0),
+        3: ("fireworks_burst", 6.0),
+        4: ("audio_curve", 30.0),
+        5: ("pixel_spots", 30.0),
+        6: ("game_of_life", 45.0),
+    }
+
+    def _midi_cont(self, name, cur):
+        """MIDI takeover: return cur once this control has been moved since
+        connect, else None. Stops a control resting at 0 (the value
+        pygame.midi reports until the user touches it) from stomping a value
+        the instant the controller connects.
+        """
+        prev = self._midi_cont_prev.get(name)
+        self._midi_cont_prev[name] = cur
+        if prev is not None and abs(cur - prev) > 1e-4:
+            self._midi_touched.add(name)
+        return cur if name in self._midi_touched else None
+
+    def _midi_rising(self, name, value):
+        """True on the frame a button goes from released to pressed."""
+        prev = self._midi_prev.get(name, False)
+        self._midi_prev[name] = value
+        return bool(value) and not prev
+
+    def apply_midi_controls(self):
+        """Map nanoKontrol2 input onto the club layer mixer + global controls.
+        All engine mutation happens here on the render thread; the MIDI
+        background thread only updates the controller's value dict, which we
+        read.
+        """
+        if self.midi is None:
+            return
+        m = self.midi
+        state = self.scheduler.state
+        club_active = (self.weather_set.current_set == "club")
+
+        if club_active:
+            # Sliders 1-4 -> layer opacity, knobs 1-4 -> layer colour/tint.
+            for i, layer in enumerate(self._CLUB_LAYERS, start=1):
+                op = self._midi_cont(f"slider_{i}", m.get_slider(i))
+                if op is not None:
+                    state[f"op_{layer}"] = op
+                tint = self._midi_cont(f"knob_{i}", m.get_knob(i))
+                if tint is not None:
+                    state[f"tint_{layer}"] = tint
+            # Slider 5 -> master energy; knob 5 -> global palette offset.
+            e = self._midi_cont("slider_5", m.get_slider(5))
+            if e is not None:
+                self.midi_param_overrides["club_energy"] = e
+            gp = self._midi_cont("knob_5", m.get_knob(5))
+            if gp is not None:
+                state["club_palette"] = gp
+
+            # Solo / blackout override the per-layer opacities (applied AFTER
+            # the fader writes so clearing them restores the fader values).
+            if self._blackout:
+                for layer in self._CLUB_LAYERS:
+                    state[f"op_{layer}"] = 0.0
+            elif self._solo_layer is not None:
+                for layer in self._CLUB_LAYERS:
+                    if layer == self._solo_layer:
+                        state[f"op_{layer}"] = max(state.get(f"op_{layer}", 0.0), 0.8)
+                    else:
+                        state[f"op_{layer}"] = 0.0
+        elif self.midi_param_overrides:
+            self.midi_param_overrides.clear()
+
+        # Global knobs (any set, only on takeover): 6 sensitivity, 7 brightness,
+        # 8 master volume.
+        sens = self._midi_cont("knob_6", m.get_knob(6))
+        if sens is not None and self.analyzer is not None:
+            self.analyzer.sensitivity = 0.1 + sens * 2.9   # 0.1..3.0
+        if self.enable_web_control and self.web_controller is not None:
+            br = self._midi_cont("knob_7", m.get_knob(7))
+            mv = self._midi_cont("knob_8", m.get_knob(8))
+            with self.web_controller._dict_lock:
+                gm = self.web_controller.global_modifiers
+                if sens is not None:
+                    gm["audio_sensitivity"] = 0.1 + sens * 2.9
+                if br is not None:
+                    gm["brightness"] = br
+                if mv is not None:
+                    gm["master_volume"] = mv
+
+        # S1-4 -> exclusive solo toggle (the "switch to just this layer"
+        # control). S8 -> jump into the club set.
+        if club_active:
+            for i, layer in enumerate(self._CLUB_LAYERS, start=1):
+                if self._midi_rising(f"s_button_{i}", m.get_button('s', i)):
+                    self._solo_layer = None if self._solo_layer == layer else layer
+                    self._blackout = False
+                    print(f"[MIDI] solo -> {self._solo_layer or 'off'}")
+        if self._midi_rising("s_button_8", m.get_button('s', 8)):
+            print("[MIDI] jump to club set")
+            self.change_weather_set("club", immediate=True)
+
+        # M buttons -> one-shot effects.
+        for i, (event_name, dur) in self._MIDI_ONESHOTS.items():
+            if self._midi_rising(f"m_button_{i}", m.get_button('m', i)):
+                print(f"[MIDI] one-shot: {event_name}")
+                self._schedule_event_from_map(event_name, 0, dur, frame_id=0)
+
+        # Transport -> mix controls / set cycling.
+        if self._midi_rising("stop", m.get_transport("stop")):
+            self._blackout = not self._blackout          # panic blackout
+            print(f"[MIDI] blackout -> {self._blackout}")
+        if self._midi_rising("play", m.get_transport("play")):
+            self._solo_layer = None                       # clear solo + blackout
+            self._blackout = False
+            print("[MIDI] mix restored (solo/blackout cleared)")
+        if self._midi_rising("track_next", m.get_transport("track_next")):
+            self._midi_cycle_set(+1)
+        if self._midi_rising("track_prev", m.get_transport("track_prev")):
+            self._midi_cycle_set(-1)
+
+        # R1 -> cycle the audio input source live (linein/loopback/internal/mic).
+        if self._midi_rising("r_button_1", m.get_button('r', 1)):
+            self._cycle_audio_source()
+
+    def _midi_cycle_set(self, direction):
+        sets = list(self._weather_sets.keys())
+        if not sets:
+            return
+        cur = self.weather_set.current_set
+        i = sets.index(cur) if cur in sets else 0
+        new_set = sets[(i + direction) % len(sets)]
+        print(f"[MIDI] weather set -> {new_set}")
+        self.change_weather_set(new_set, immediate=True)
+
+    # ----------------------------------------------------------------
+    # Audio input source switching (linein / loopback / internal / mic)
+    # ----------------------------------------------------------------
+    _AUDIO_SOURCES = ["linein", "loopback", "internal", "microphone"]
+
+    def set_audio_source(self, source):
+        """Switch the audio-reactive input source at runtime."""
+        if self.analyzer is None:
+            return
+        if source not in self._AUDIO_SOURCES:
+            print(f"[Audio] unknown source '{source}' (valid: {self._AUDIO_SOURCES})")
+            return
+        self.analyzer.set_source(source)
+        if self.enable_web_control and self.web_controller is not None:
+            self.web_controller.set("audio_source", source)
+
+    def _cycle_audio_source(self):
+        if self.analyzer is None:
+            return
+        order = self._AUDIO_SOURCES
+        cur = getattr(self.analyzer, "_active_source", None)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else order[0]
+        self.set_audio_source(nxt)
 
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
@@ -1887,6 +2136,8 @@ class EnvironmentalSystem:
             engine.stop_ambient()
         if self.analyzer:
             self.analyzer.stop()
+        if self.midi is not None:
+            self.midi.stop_reading()
         if self.osc_listener is not None:
             self.osc_listener.stop()
 

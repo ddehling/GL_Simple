@@ -301,6 +301,17 @@ class AudioEngine:
         # the caller's thread in schedule_event (before the async decode) so
         # the caller can reference the track later via fade_out_event.
         self._evt_seq = itertools.count()
+        # Optional monitor tap: a callable(buf) invoked with each mixed output
+        # block (shape (frames, CHANNELS) float32 @ SAMPLE_RATE) on the audio
+        # thread. Lets the audio analyzer react to the show's OWN output (the
+        # "internal" source) without a device. None = no tap (zero cost).
+        self._monitor_tap = None
+
+    def set_monitor_tap(self, fn):
+        """Register (or clear with None) a callable invoked with each mixed
+        output block. Must be cheap and non-blocking — it runs on the audio
+        callback thread."""
+        self._monitor_tap = fn
 
     # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
@@ -492,6 +503,16 @@ class AudioEngine:
                 other_buf /= (peak / 2.0)
 
             buf = (narr_buf + other_buf) * self.master_volume
+
+            # Feed the monitor tap (audio analyzer's "internal" source) the
+            # final mix the show is about to play. Guarded + best-effort so a
+            # slow/throwing consumer can never stall the audio callback.
+            tap = self._monitor_tap
+            if tap is not None:
+                try:
+                    tap(buf)
+                except Exception:
+                    pass
 
             required_frames = yield buf.tobytes()
 

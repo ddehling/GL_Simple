@@ -13,6 +13,7 @@ scipy
 scikit-image
 miniaudio
 sounddevice
+soundcard  # cross-platform output loopback (audio.source: loopback) - WASAPI on Windows, PulseAudio monitor on Linux
 soundfile
 av
 zeroconf

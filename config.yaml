@@ -26,8 +26,24 @@ display:
   headless: true     # true = no desktop window, web preview only
 
 audio:
-  enabled: true         # Set false to run without microphone (e.g. remote/headless)
-  device_name: "TONOR"  # Microphone device name (run tools/sound_editor.py to find yours)
+  enabled: true         # Set false to run without audio analysis (e.g. remote/headless)
+  # Active input source for the audio-reactive visuals. One at a time;
+  # switchable live (MIDI R1 cycles; web request_audio_source). Options:
+  #   linein     - wired line/aux input (DJ mixer/decks). Cleanest; DJ default.
+  #   loopback   - whatever the computer plays (WASAPI loopback on Windows,
+  #                monitor source on Linux, Stereo Mix fallback)
+  #   internal   - the show's own AudioEngine mix (clean digital tap, no mic)
+  #   microphone - open mic (picks up room noise; legacy)
+  source: "linein"
+  linein_device: ""     # name fragment of the wired input (empty = auto-pick a line/aux input)
+  loopback_device: ""   # force a specific loopback/monitor by name (empty = auto per-OS)
+  device_name: "TONOR"  # Microphone device name when source: microphone (tools/sound_editor.py)
+
+midi:
+  enabled: true             # Korg nanoKontrol2 live control for the Club / DJ set
+  device_name: "nanoKONTROL2"  # Partial, case-insensitive MIDI device name match
+  # Absent hardware (or no pygame.midi backend) is non-fatal - the show
+  # runs without MIDI. Set enabled: false to skip the MIDI probe entirely.
 
 web:
   enabled: true

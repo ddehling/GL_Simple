@@ -12,8 +12,19 @@ import sounddevice as sd
 import numpy as np
 import threading
 import time
+from math import gcd
 from queue import Queue
 from scipy import signal
+
+# Optional: the `soundcard` library provides true cross-platform output
+# loopback (WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux)
+# of ANY output device - something standard sounddevice/PortAudio cannot do.
+# When present it backs the "loopback" source; otherwise we fall back to a
+# Stereo Mix / monitor INPUT device discovered via sounddevice.
+try:
+    import soundcard as _soundcard
+except Exception:
+    _soundcard = None
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
@@ -172,75 +183,53 @@ def find_device_by_name(name_fragment):
 
 class MicrophoneAnalyzer:
     def __init__(self, device=None, device_name=None, use_loopback=False,
+                 source=None, linein_device=None, loopback_device=None,
                  avg_window_short=20, avg_window_long=100,
                  use_exponential=False, ema_alpha_short=0.05, ema_alpha_long=0.01):
         """
         Initialize the microphone analyzer
         
         Args:
-            device: Device ID to use (None for default)
-            device_name: Name fragment to search for device
-            use_loopback: Try to find loopback/stereo mix device
+            device: Explicit device ID override (None = resolve from source)
+            device_name: Name fragment for the microphone source
+            use_loopback: Legacy flag; equivalent to source="loopback"
+            source: Active input source - "microphone" | "linein" | "loopback"
+                | "internal" (default "microphone", or "loopback" if use_loopback)
+            linein_device: Name fragment for the wired line/aux input
+            loopback_device: Name fragment to force a specific loopback/monitor
             avg_window_short: Number of frames for short-term average (default 20 = 0.5s at 40fps)
             avg_window_long: Number of frames for long-term average (default 100 = 2.5s at 40fps)
             use_exponential: Use exponential moving average instead of simple mean
             ema_alpha_short: Alpha for short-term EMA (higher = faster response, 0-1)
             ema_alpha_long: Alpha for long-term EMA (lower = slower response, 0-1)
         """
-        # Print device information
-        devices = list_audio_devices()
-        
-        # Handle device selection
-        if use_loopback:
-            print("\nSearching for loopback device...")
-            device_id, device_info = find_loopback_device()
-            if device_id is not None:
-                device = device_id
-                print(f"Found loopback device: {device_info['name']}")
-            else:
-                print("No loopback device found.")
-                print("\nOn Windows, you may need to enable 'Stereo Mix':")
-                print("1. Right-click the sound icon in taskbar")
-                print("2. Select 'Sounds' > 'Recording' tab")
-                print("3. Right-click in empty space and check 'Show Disabled Devices'")
-                print("4. Right-click 'Stereo Mix' and select 'Enable'")
-                print("\nAlternatively, install VB-Audio Virtual Cable or similar software.")
-                print("\nFalling back to default input device...")
-                device = None
-        elif device_name is not None:
-            device_id, device_info = find_device_by_name(device_name)
-            if device_id is not None:
-                device = device_id
-                print(f"\nFound device matching '{device_name}'")
-            else:
-                print(f"\nNo device found matching '{device_name}'. Using default.")
-                device = None
-        
-        if device is None:
-            device = sd.default.device[0]
-            
-        print(f"\nUsing Device ID {device}: {devices[device]['name']}")
+        # Source selection. One active input source at a time, switchable at
+        # runtime via set_source(). The FFT/band pipeline runs at a FIXED
+        # target rate (self.RATE); every source downmixes to mono and resamples
+        # to it, so switching sources never invalidates the band masks.
+        #   microphone : input device matched by `device_name`
+        #   linein     : wired line/aux input matched by `linein_device`
+        #   loopback   : system output - WASAPI loopback (Windows) / monitor
+        #                source (Linux) / Stereo Mix fallback
+        #   internal   : the show's own AudioEngine mix, pushed in via feed()
+        # Legacy: use_loopback=True maps to source="loopback".
+        if source is None:
+            source = "loopback" if use_loopback else "microphone"
+        self.source = source
+        self._device_names = {
+            "microphone": device_name,
+            "linein": linein_device,
+            "loopback": loopback_device,
+        }
+        self.RATE = 44100              # fixed analysis target rate
+        self.device = device           # optional explicit device-id override
+        self._src_rate = self.RATE     # native rate of the open device stream
+        self._capture_channels = 1     # channels captured from the device
+        self._active_source = None     # set by _open_source()
+        self._sc_thread = None         # soundcard loopback capture thread
+        self._sc_stop = threading.Event()
+        print(f"[Audio] analyzer source='{source}' (target {self.RATE} Hz)")
 
-        
-        # Try to use the default sample rate, but fall back to a standard rate if needed
-        try:
-            self.RATE = int(devices[device]['default_samplerate'])
-            # Test if the rate is supported
-            sd.check_input_settings(device=device, samplerate=self.RATE)
-            print(f"Sample Rate: {self.RATE}")
-        except sd.PortAudioError:
-            # Try common sample rates
-            for test_rate in [44100, 48000, 22050, 16000, 8000]:
-                try:
-                    sd.check_input_settings(device=device, samplerate=test_rate)
-                    self.RATE = test_rate
-                    print(f"Default sample rate not supported. Using alternate rate: {self.RATE}")
-                    break
-                except sd.PortAudioError:
-                    continue
-            else:
-                raise Exception("Could not find a supported sample rate for this device")
-        
         # Averaging parameters
         self.avg_window_short = avg_window_short
         self.avg_window_long = avg_window_long
@@ -355,11 +344,40 @@ class MicrophoneAnalyzer:
         self.band_power_history = CircularBuffer((self.band_history_len, self.num_bands))
 
     def audio_callback(self, indata, frames, time_info, status):
-        # Lock-free write - just shift and append
-        # This is fast enough that we don't need a lock
-        self.audio_buffer = np.roll(self.audio_buffer, -frames)
-        self.audio_buffer[-frames:] = indata[:, 0]
+        # Device-capture callback (sounddevice). Downmix to mono + resample to
+        # the fixed analysis rate, then ingest.
+        self._ingest(self._to_target(indata, self._src_rate))
+
+    def _to_target(self, indata, src_rate):
+        """Downmix (mean across channels) to mono and resample to self.RATE."""
+        arr = np.asarray(indata, dtype=np.float64)
+        mono = arr.mean(axis=1) if arr.ndim == 2 else arr
+        if src_rate and int(src_rate) != self.RATE and len(mono):
+            g = gcd(self.RATE, int(src_rate))
+            mono = signal.resample_poly(mono, self.RATE // g, int(src_rate) // g)
+        return mono
+
+    def _ingest(self, mono):
+        """Lock-free write of the latest mono samples into audio_buffer.
+        Shared by the device callback and the internal-tap feed()."""
+        n = len(mono)
+        if n == 0:
+            return
+        if n >= self.CHUNK:
+            self.audio_buffer = mono[-self.CHUNK:].astype(np.float64, copy=True)
+        else:
+            self.audio_buffer = np.roll(self.audio_buffer, -n)
+            self.audio_buffer[-n:] = mono
         self.new_data_available = True
+
+    def feed(self, stereo_buf):
+        """Internal-source tap target. Called from the AudioEngine audio thread
+        with its mixed output (frames, CHANNELS) @ 44100. No-op unless the
+        'internal' source is active, so the engine can keep the tap wired
+        permanently and we simply ignore it when another source is selected."""
+        if self._active_source != "internal":
+            return
+        self._ingest(self._to_target(stereo_buf, 44100))
 
     def analyze_audio(self):
         while self.running:
@@ -560,24 +578,164 @@ class MicrophoneAnalyzer:
 
     def start(self):
         self.running = True
-        self.analysis_thread = threading.Thread(target=self.analyze_audio)
+        self.analysis_thread = threading.Thread(target=self.analyze_audio, daemon=True)
         self.analysis_thread.start()
-        self.stream = sd.InputStream(
-            channels=self.CHANNELS,
-            samplerate=self.RATE,
-            blocksize=self.CALLBACK_BLOCKSIZE,
-            callback=self.audio_callback,
-            device=self.device
-        )
-        self.stream.start()
+        self._open_source(self.source)
+
+    def set_source(self, source):
+        """Switch the active input source at runtime (microphone / linein /
+        loopback / internal). Safe to call live: the band masks are rate-fixed,
+        so only the input plumbing changes."""
+        if source == self._active_source:
+            return
+        self._open_source(source)
+
+    def _open_source(self, source):
+        """(Re)open the input plumbing for the requested source."""
+        self._close_stream()
+        self.source = source
+        self._active_source = source
+        # Start the new source from silence so a stale window doesn't linger.
+        self.audio_buffer = np.zeros(self.CHUNK)
+        if source == "internal":
+            # No device stream; AudioEngine.feed() drives _ingest.
+            print("[Audio] source=internal (AudioEngine mix tap)")
+            return
+
+        # Loopback prefers the `soundcard` library (true output loopback of any
+        # device, Windows + Linux). Fall back to a Stereo Mix / monitor INPUT
+        # device via sounddevice if soundcard is unavailable or fails.
+        if source == "loopback" and _soundcard is not None:
+            if self._start_soundcard_loopback(self._device_names.get("loopback")):
+                return
+            print("[Audio] soundcard loopback unavailable; trying a Stereo Mix / "
+                  "monitor input device")
+
+        try:
+            dev_id, native_rate, channels = self._resolve_device(source)
+        except Exception as e:
+            print(f"[Audio] could not resolve '{source}' source: {e}; using default input")
+            dev_id, native_rate, channels = (None, self.RATE, 1)
+        self._src_rate = int(native_rate or self.RATE)
+        self._capture_channels = max(1, min(2, int(channels or 1)))
+        try:
+            self.stream = sd.InputStream(
+                samplerate=self._src_rate,
+                blocksize=self.CALLBACK_BLOCKSIZE,
+                channels=self._capture_channels,
+                device=dev_id,
+                callback=self.audio_callback,
+            )
+            self.stream.start()
+            label = sd.query_devices(dev_id)["name"] if dev_id is not None else "default"
+            print(f"[Audio] source={source} via '{label}' @ {self._src_rate} Hz")
+        except Exception as e:
+            print(f"[Audio] failed to open '{source}' source: {e}; analyzer will be silent")
+            self.stream = None
+
+    def _start_soundcard_loopback(self, name_fragment=None):
+        """Start a background thread capturing system output loopback via the
+        `soundcard` library, feeding _ingest at the target rate. Returns True
+        on success."""
+        try:
+            mic = None
+            if name_fragment:
+                frag = name_fragment.lower()
+                for m in _soundcard.all_microphones(include_loopback=True):
+                    if getattr(m, "isloopback", False) and frag in m.name.lower():
+                        mic = m
+                        break
+            if mic is None:
+                mic = _soundcard.get_microphone(
+                    str(_soundcard.default_speaker().name), include_loopback=True)
+        except Exception as e:
+            print(f"[Audio] soundcard loopback resolve failed: {e}")
+            return False
+
+        self._src_rate = self.RATE                      # soundcard records at our rate
+        self._sc_stop.clear()
+
+        def _loop():
+            try:
+                with mic.recorder(samplerate=self.RATE, channels=2,
+                                  blocksize=self.CALLBACK_BLOCKSIZE) as rec:
+                    print(f"[Audio] source=loopback via soundcard '{mic.name}' @ {self.RATE} Hz")
+                    while not self._sc_stop.is_set():
+                        data = rec.record(numframes=self.CALLBACK_BLOCKSIZE)
+                        # Already at target rate; _to_target just downmixes.
+                        self._ingest(self._to_target(data, self.RATE))
+            except Exception as e:
+                print(f"[Audio] soundcard loopback capture stopped: {e}")
+
+        self._sc_thread = threading.Thread(target=_loop, daemon=True)
+        self._sc_thread.start()
+        return True
+
+    def _close_stream(self):
+        # Stop a soundcard loopback thread, if running.
+        if self._sc_thread is not None:
+            self._sc_stop.set()
+            self._sc_thread.join(timeout=1.0)
+            self._sc_thread = None
+        if self.stream is not None:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None
+
+    def _resolve_device(self, source):
+        """Return (device_id, native_rate, channels) for the requested source.
+        Cross-platform (Windows / Linux). Used for device INPUT capture; the
+        loopback soundcard path is handled separately in _open_source."""
+        if self.device is not None:
+            d = sd.query_devices(self.device)
+            return self.device, d["default_samplerate"], d["max_input_channels"]
+
+        if source == "linein":
+            frag = self._device_names.get("linein")
+            dev_id = (self._find_input_by_name(frag) if frag else
+                      self._find_input_by_keywords(["line in", "line-in", "aux", "line"]))
+        elif source == "loopback":
+            # Fallback path (no soundcard): a Stereo Mix / monitor INPUT device.
+            frag = self._device_names.get("loopback")
+            dev_id = (self._find_input_by_name(frag) if frag else
+                      self._find_input_by_keywords(
+                          ["monitor", "loopback", "stereo mix", "what u hear"]))
+        else:  # microphone (and any unknown source)
+            frag = self._device_names.get("microphone")
+            dev_id = self._find_input_by_name(frag) if frag else sd.default.device[0]
+
+        if dev_id is None:
+            dev_id = sd.default.device[0]
+        d = sd.query_devices(dev_id)
+        return dev_id, d["default_samplerate"], d["max_input_channels"]
+
+    @staticmethod
+    def _find_input_by_name(fragment):
+        if not fragment:
+            return None
+        frag = fragment.lower()
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] > 0 and frag in d["name"].lower():
+                return i
+        return None
+
+    @staticmethod
+    def _find_input_by_keywords(keywords):
+        devs = sd.query_devices()
+        for kw in keywords:
+            for i, d in enumerate(devs):
+                if d["max_input_channels"] > 0 and kw in d["name"].lower():
+                    return i
+        return None
 
     def stop(self):
         self.running = False
-        if self.stream is not None:
-            self.stream.stop()
-            self.stream.close()
+        self._close_stream()
         if self.analysis_thread is not None:
-            self.analysis_thread.join()
+            self.analysis_thread.join(timeout=1.0)
 
 class SpectrogramPlotter:
     def __init__(self, analyzer):

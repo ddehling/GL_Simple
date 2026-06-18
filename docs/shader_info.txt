@@ -149,6 +149,27 @@ horizon.
 | 0.18 | storm_puddle_ripples | expanding ripple rings on the wet floor |
 | 0.10 | storm_lightning | near-front sheet-glow + distant forks |
 
+## Beloved realm z-band table (canonical, June 2026)
+
+Weather of the Heart - love-themed climate, depth-based from birth.
+Two driver families: STATE shaders read the heart_* weather params
+(heart_tint / heart_warmth / ember_density / ember_lift / veil_density /
+stillness / turmoil / pulse_rate / tide_level); NARRATIVE shaders read
+the story_* variables published by NarrativePlayer.
+
+| z | Effect | Driver family |
+|---|---|---|
+| 0.97 | heart_sky (mood-tint back-plane, breathing horizon band) | state |
+| 0.95 | distant_lights (the goat's archive of window-lights) | narrative |
+| 0.90 | stars | engine (starryness) |
+| 0.82 | memory_veil (gauze of remembering) | state |
+| 0.70 | warm_bloom (the capybara's radial warmth) | narrative |
+| 0.60 | ember_drift (embers of affection, rise/sink/churn) | state |
+| 0.50 | heart_pulse (beating cardioids; tempo = state pulse_rate) | both |
+| 0.38 | thread_bonds (the toad's threads; shared slot with forest) | narrative |
+| 0.30 | two_lights (the pair: orbit, freeze, phantom afterimage, touch) | narrative |
+| 0.20 | heart_tide (still-water mirror, rim-lit waterline) | state |
+
 Other realms (cyberpunk, BART) still use the legacy Pattern B
 priority-based ordering documented below. They'll be migrated next.
 Do NOT introduce new effects that violate the hard rules — even in

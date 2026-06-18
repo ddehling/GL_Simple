@@ -1055,6 +1055,14 @@ class WebController:
                         self.control_dict['request_weather_set'] = new_set
                     self._values_cache = None
 
+        @self.socketio.on('change_audio_source')
+        def handle_change_audio_source(data):
+            src = data.get('source')
+            if src in ('linein', 'loopback', 'internal', 'microphone'):
+                with self._dict_lock:
+                    self.control_dict['request_audio_source'] = src
+                self._values_cache = None
+
         @self.socketio.on('change_weather_state')
         def handle_change_state(data):
             new_state = data.get('state_name')

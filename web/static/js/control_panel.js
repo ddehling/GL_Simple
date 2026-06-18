@@ -501,6 +501,14 @@ function drawAudio() {
         powerEl.textContent = `Power: ${audioSummary.total_power.toFixed(1)} | Sensitivity: ${(audioSummary.sensitivity || 1).toFixed(1)}x`;
     }
 
+    // Reflect the active input source (e.g. when changed via MIDI), but don't
+    // fight the user while the dropdown is focused.
+    const srcSel = document.getElementById('audio-source-selector');
+    if (srcSel && audioSummary.source && document.activeElement !== srcSel
+        && srcSel.value !== audioSummary.source) {
+        srcSel.value = audioSummary.source;
+    }
+
     requestAnimationFrame(drawAudio);
 }
 
@@ -759,6 +767,16 @@ document.addEventListener('DOMContentLoaded', () => {
             socket.emit('change_weather_set', { set_name: newSet });
         }
     });
+
+    const audioSourceSel = document.getElementById('audio-source-selector');
+    if (audioSourceSel) {
+        audioSourceSel.addEventListener('change', (e) => {
+            const src = e.target.value;
+            if (src && socket && socket.connected) {
+                socket.emit('change_audio_source', { source: src });
+            }
+        });
+    }
 
     document.getElementById('weather-state-selector').addEventListener('change', (e) => {
         const newState = e.target.value;

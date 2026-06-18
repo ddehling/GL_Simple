@@ -133,7 +133,9 @@ void main() {
 class WarmBloomEffect(ShaderEffect):
     def __init__(self, viewport):
         super().__init__(viewport)
-        self.render_priority = 2.0
+        # Beloved z-band: 0.70, matching gl_Position.z in the vertex
+        # shader so draw-order sort and depth test agree.
+        self.z_centroid = 0.70
         self._time = 0.0
         self._cycle = 0.0          # accumulated bloom cycle
         self.capybara_light = 0.45
@@ -169,6 +171,10 @@ class WarmBloomEffect(ShaderEffect):
         super().render(state)
         if not self.shader:
             return
+        # Translucent layer: depth-TEST at z=0.70, depth-WRITE suppressed
+        # (HARD RULE 2) so transparent fragments never stamp the depth
+        # buffer over layers composed afterwards.
+        glDepthMask(GL_FALSE)
         glUseProgram(self.shader)
         glUniform1f(glGetUniformLocation(self.shader, "u_time"),           self._time)
         glUniform1f(glGetUniformLocation(self.shader, "u_cycle"),          self._cycle)
@@ -178,6 +184,7 @@ class WarmBloomEffect(ShaderEffect):
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glBindVertexArray(0)
         glUseProgram(0)
+        glDepthMask(GL_TRUE)
 
 
 def mix_py(a: float, b: float, t: float) -> float:

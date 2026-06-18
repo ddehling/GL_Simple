@@ -150,6 +150,15 @@
                 <h3>Audio</h3>
                 <span id="audio-power" style="font-size: 0.85em; opacity: 0.7;">--</span>
             </div>
+            <div style="margin-top: 10px;">
+                <label class="control-label" style="margin-bottom: 6px;"><span>Input Source:</span></label>
+                <select id="audio-source-selector">
+                    <option value="linein">Line-in (wired)</option>
+                    <option value="loopback">System loopback</option>
+                    <option value="internal">Internal (show mix)</option>
+                    <option value="microphone">Microphone</option>
+                </select>
+            </div>
             <div class="info-row">
                 <span class="info-label">Ambient Sound:</span>
                 <span class="info-value" id="ambient-sound-display" style="opacity: 0.7;">--</span>

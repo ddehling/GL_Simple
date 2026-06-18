@@ -260,6 +260,33 @@ class WeatherStateController:
             "color_band": self.weather_params.get("color_band", 0.0),
             "puddle_density": self.weather_params.get("puddle_density", 0.0),
             "moonbow_intensity": self.weather_params.get("moonbow_intensity", 0.0),
+            # ── Beloved (Weather of the Heart) realm params ──────────
+            # The heart's own climate, consumed by the heart_* state
+            # shaders (heart_sky, ember_drift, memory_veil, heart_tide,
+            # heart_pulse). Distinct from the story_* narrative variables
+            # published by NarrativePlayer — these are state-driven.
+            # `heart_tint` is a vec3 colour like storm_tint.
+            "heart_tint": self.weather_params.get("heart_tint"),
+            "heart_warmth": self.weather_params.get("heart_warmth", 0.0),
+            "ember_density": self.weather_params.get("ember_density", 0.0),
+            "ember_lift": self.weather_params.get("ember_lift", 0.0),
+            "veil_density": self.weather_params.get("veil_density", 0.0),
+            "stillness": self.weather_params.get("stillness", 0.0),
+            "turmoil": self.weather_params.get("turmoil", 0.0),
+            "pulse_rate": self.weather_params.get("pulse_rate", 0.0),
+            # ── Club / DJ realm params ───────────────────────────────
+            # The music-reactive energy levers each club scene pulls,
+            # consumed by the club_eq_bars / club_strobe / club_lasers
+            # shaders. The beat_* keys those shaders also read are NOT
+            # weather params - they're published directly to state by
+            # BeatDetector in Stories_OGL.send_variables().
+            "beat_flash_amount": self.weather_params.get("beat_flash_amount", 0.0),
+            "strobe_rate": self.weather_params.get("strobe_rate", 0.0),
+            "laser_density": self.weather_params.get("laser_density", 0.0),
+            "eq_gain": self.weather_params.get("eq_gain", 0.0),
+            "eq_color_mode": self.weather_params.get("eq_color_mode", 0.0),
+            "club_energy": self.weather_params.get("club_energy", 0.0),
+            "club_palette": self.weather_params.get("club_palette", 0.0),
         }
 
     def select_next_weather(
