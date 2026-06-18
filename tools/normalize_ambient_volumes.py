@@ -55,34 +55,38 @@ def decode_mono(path):
 
 
 def window_rms_dbfs(samples, skip_sec, ari_sec):
-    """Return (rms_dbfs, played_seconds, error_msg) for the SLICE of `samples`
-    that actually plays under (skip_seconds, ARI):
+    """Return (rms_dbfs, peak_dbfs, played_seconds, error_msg) for the SLICE
+    of `samples` that actually plays under (skip_seconds, ARI):
 
       window = samples[skip_sec : skip_sec + ari_sec]   if ari_sec > 0
              = samples[skip_sec : end]                   if ari_sec == 0  (loop at EOF)
 
     Mirrors AudioEngine.play_ambient semantics so a state's measurement
     reflects only the audio it actually plays, not silent intros or peaks
-    outside the loop window.
+    outside the loop window. ``peak_dbfs`` is the window's true-peak proxy
+    (max |sample|), used to cap the volume so boosting a quiet track can't
+    push its peaks into clipping.
     """
     total = samples.size
     if total == 0:
-        return None, 0.0, "no samples"
+        return None, None, 0.0, "no samples"
     start = int(max(0.0, skip_sec) * _SR)
     if start >= total:
-        return None, 0.0, "skip past end of file"
+        return None, None, 0.0, "skip past end of file"
     if ari_sec > 0.0:
         end = min(total, start + int(ari_sec * _SR))
     else:
         end = total
     win = samples[start:end]
     if win.size == 0:
-        return None, 0.0, "empty window"
+        return None, None, 0.0, "empty window"
     rms = float(np.sqrt(np.mean(win * win)))
+    peak = float(np.max(np.abs(win)))
     played = win.size / _SR
     if rms <= 1e-6:
-        return None, played, "silent window"
-    return 20.0 * np.log10(rms), played, None
+        return None, None, played, "silent window"
+    peak_dbfs = 20.0 * np.log10(peak) if peak > 1e-9 else -120.0
+    return 20.0 * np.log10(rms), peak_dbfs, played, None
 
 
 def load_project(name):
@@ -113,6 +117,11 @@ def main():
                     help="Floor on Sound_volume multiplier (default: 0.20)")
     ap.add_argument("--max-volume", type=float, default=2.50,
                     help="Ceiling on Sound_volume multiplier (default: 2.50)")
+    ap.add_argument("--max-peak", type=float, default=-1.5,
+                    help="True-peak ceiling in dBFS; a track's volume is "
+                         "capped so its loudest sample stays at/below this "
+                         "after gain, preventing clipping when boosting a "
+                         "quiet track (default: -1.5)")
     ap.add_argument("--write", action="store_true",
                     help="Update Sound_volume in the project's weather_params.py")
     args = ap.parse_args()
@@ -147,7 +156,7 @@ def main():
     print(f"Each state's RMS is measured over its ACTUAL play window "
           f"([skiptime, skiptime+ARI]).\n")
     header = (f"  {'state':28s}  {'skip':>5s}  {'ARI':>5s}  "
-              f"{'win':>5s}  {'dBFS':>6s}  {'gain':>6s}  {'cur':>4s}  "
+              f"{'win':>5s}  {'dBFS':>6s}  {'peak':>6s}  {'gain':>6s}  {'cur':>4s}  "
               f"{'new':>4s}  file")
     print(header)
     print("  " + "-" * (len(header) + 30))
@@ -162,24 +171,27 @@ def main():
             if not path.exists():
                 decoded_cache[fname] = None
                 rows.append((+999, _state_key(state), skip, ari, 0.0,
-                             None, None, cur_vol, None, f"[MISSING] {fname}"))
+                             None, None, None, cur_vol, None, f"[MISSING] {fname}"))
                 continue
             samples, err = decode_mono(path)
             if samples is None:
                 decoded_cache[fname] = None
                 rows.append((+999, _state_key(state), skip, ari, 0.0,
-                             None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
+                             None, None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
                 continue
             decoded_cache[fname] = samples
         samples = decoded_cache[fname]
         if samples is None:
             continue
-        dbfs, played, err = window_rms_dbfs(samples, skip, ari)
+        dbfs, peak_dbfs, played, err = window_rms_dbfs(samples, skip, ari)
         if dbfs is None:
             rows.append((+999, _state_key(state), skip, ari, played,
-                         None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
+                         None, None, None, cur_vol, None, f"[SKIP] {fname}: {err}"))
             continue
-        gain_db = args.target - dbfs
+        # Gain to hit the RMS target, then cap so the post-gain true peak
+        # stays at/below --max-peak (prevents clipping when boosting a
+        # quiet, low-peak track). The capped value is what we report.
+        gain_db = min(args.target - dbfs, args.max_peak - peak_dbfs)
         vol = 10.0 ** (gain_db / 20.0)
         vol = max(args.min_volume, min(args.max_volume, vol))
         vol = round(vol, 2)
@@ -187,17 +199,17 @@ def main():
         # Sort key: most over-target first (high effective dBFS = louder than target)
         eff = dbfs + 20.0 * np.log10(max(cur_vol, 1e-3))
         rows.append((-(eff - args.target), _state_key(state), skip, ari, played,
-                     dbfs, gain_db, cur_vol, vol, fname))
+                     dbfs, peak_dbfs, gain_db, cur_vol, vol, fname))
 
     rows.sort(key=lambda r: r[0])
-    for _, st, skip, ari, played, dbfs, gain_db, cur_vol, new_vol, info in rows:
+    for _, st, skip, ari, played, dbfs, peak_dbfs, gain_db, cur_vol, new_vol, info in rows:
         if dbfs is None:
-            print(f"  {st:28s}  {skip:5.1f}  {ari:5.1f}  -----   -----  -----  "
+            print(f"  {st:28s}  {skip:5.1f}  {ari:5.1f}  -----   -----  ------  -----  "
                   f"{cur_vol:4.2f}  ----  {info}")
             continue
         short = info if len(info) <= 40 else (info[:37] + "...")
         print(f"  {st:28s}  {skip:5.1f}  {ari:5.1f}  {played:5.1f}  "
-              f"{dbfs:6.1f}  {gain_db:+6.1f}  {cur_vol:4.2f}  {new_vol:4.2f}  {short}")
+              f"{dbfs:6.1f}  {peak_dbfs:6.1f}  {gain_db:+6.1f}  {cur_vol:4.2f}  {new_vol:4.2f}  {short}")
 
     if not args.write:
         print(f"\n(dry run; pass --write to update "
