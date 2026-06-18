@@ -79,8 +79,11 @@ PARAMETER_DEFINITIONS = {
     'dapple_strength': {'type': 'number', 'step': 0.05},
     'data_flow_rate': {'type': 'number', 'step': 0.05},
     'drone_activity': {'type': 'number', 'step': 0.05},
+    'earth_intensity': {'type': 'number', 'step': 0.05},
+    'earth_mode': {'type': 'number', 'step': 0.05},
     'electric_interference': {'type': 'number', 'step': 0.05},
     'eye_density': {'type': 'number', 'step': 0.05},
+    'fire_intensity': {'type': 'number', 'step': 0.05},
     'firefly_density': {'type': 'number', 'step': 0.1},
     'fog': {'type': 'number', 'step': 0.05},
     'fog_color': {'type': 'array', 'length': 3},
@@ -91,6 +94,8 @@ PARAMETER_DEFINITIONS = {
     'kelp_density': {'type': 'number', 'step': 0.05},
     'light_pollution': {'type': 'number', 'step': 0.05},
     'lightning_probability': {'type': 'number', 'step': 0.05},
+    'lightning_min_s': {'type': 'number', 'step': 1},
+    'lightning_max_s': {'type': 'number', 'step': 1},
     'marine_life_activity': {'type': 'number', 'step': 0.05},
     'meteor_rate': {'type': 'number', 'step': 0.05},
     'neon_intensity': {'type': 'number', 'step': 0.05},
@@ -105,12 +110,16 @@ PARAMETER_DEFINITIONS = {
     'season_preference': {'type': 'number', 'step': 0.025},
     'skiptime': {'type': 'number', 'step': 0.5},
     'snow_rate': {'type': 'number', 'step': 0.05},
+    'space_intensity': {'type': 'number', 'step': 0.05},
     'spookyness': {'type': 'number', 'step': 0.1},
     'spore_color': {'type': 'number', 'step': 0.05},
     'spore_density': {'type': 'number', 'step': 0.05},
     'starryness': {'type': 'number', 'step': 0.1},
+    'state_duration': {'type': 'number', 'step': 5},
     'stream_flow_rate': {'type': 'number', 'step': 0.05},
     'tide_level': {'type': 'number', 'step': 0.05},
+    'water_intensity': {'type': 'number', 'step': 0.05},
+    'wind_intensity': {'type': 'number', 'step': 0.05},
     'train_density': {'type': 'number', 'step': 0.1},
     'train_speed': {'type': 'number', 'step': 0.5},
     'transition_duration': {'type': 'number', 'step': 1},
@@ -156,6 +165,31 @@ DEFAULT_WEATHER_PARAMS = {
     # raises it to ~10 to saturate MAX_BIRDS. Needs a default + definition
     # above or the web weather editor drops it on save.
     "bird_density": 1.0,
+    # Deterministic per-state hold time, in seconds. 0.0 (the default)
+    # leaves a state on the engine's probabilistic Switch_rate timing.
+    # When > 0, ``random_state_change`` ignores Switch_rate and holds the
+    # state for this many seconds (measured from when the transition into
+    # it completes) before advancing to its single ``possible_transitions``
+    # target. Used by Weight of Light's "Elements" set for ~5-min stages.
+    "state_duration": 0.0,
+    # Weight of Light "Elements" set — per-theme intensity gates. Each
+    # theme's background shader contributes ~0 alpha when its gate is 0,
+    # so cross-fading these between states dissolves one element into the
+    # next. earth_mode morphs EARTH calm (0) -> upbeat jungle (1).
+    "earth_intensity": 0.0,
+    "earth_mode": 0.0,
+    "wind_intensity": 0.0,
+    "fire_intensity": 0.0,
+    "water_intensity": 0.0,
+    "space_intensity": 0.0,
+    # Bounded-interval "default mode" lightning (WoL). When
+    # lightning_max_s > 0, random_events fires a lightning chain at a
+    # uniform-random interval in [min, max] seconds — but ONLY while no
+    # radar sees anyone (when people are present, button presses drive
+    # the bolts). 0/0 disables it (the legacy lightning_probability
+    # geometric path still applies independently).
+    "lightning_min_s": 0.0,
+    "lightning_max_s": 0.0,
 }
 
 # Empty defaults — projects own their content. Used only as fallbacks

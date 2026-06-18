@@ -39,11 +39,26 @@ class EventScheduler:
                 self.active_events.pop(i)
 
     def schedule_event(self, delay, duration, action, *args, **kwargs):
-        """Schedule an event; silently drops duplicates that are already active or queued."""
-        if any(event.action == action for event in self.active_events) or \
-           any(event.action == action for event in self.event_queue):
+        """Schedule an event; silently drops duplicates that are already active or queued.
+
+        Duplicate = the SAME action already scheduled on the SAME frame
+        (group). The frame_id is part of the key so a shared effect
+        function can legitimately run on more than one group canvas at
+        once — e.g. the WoL rain/theme shaders that paint both the Sky
+        strips and the Ground arcs. Without the frame_id in the key the
+        second group's copy was silently dropped.
+        """
+        frame_id = kwargs.get('frame_id', None)
+
+        def _is_dup(event) -> bool:
+            return (event.action == action
+                    and event.state.get('frame_id', None) == frame_id)
+
+        if any(_is_dup(e) for e in self.active_events) or \
+           any(_is_dup(e) for e in self.event_queue):
             action_name = action.__name__ if hasattr(action, '__name__') else str(action)
-            print(f"[EventScheduler] Skipping duplicate event: {action_name} (already running or queued)")
+            print(f"[EventScheduler] Skipping duplicate event: {action_name} "
+                  f"on frame {frame_id} (already running or queued)")
             return None
 
         event_time = time.perf_counter() + delay

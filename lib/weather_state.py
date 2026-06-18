@@ -287,6 +287,19 @@ class WeatherStateController:
             "eq_color_mode": self.weather_params.get("eq_color_mode", 0.0),
             "club_energy": self.weather_params.get("club_energy", 0.0),
             "club_palette": self.weather_params.get("club_palette", 0.0),
+            # ── Weight of Light "Elements" realm params ──────────────
+            # Per-theme intensity gates consumed by the elements_* / wol_*
+            # background shaders. Each theme layer renders ~0 alpha when
+            # its gate is 0, so cross-fading these between states (via
+            # WeatherStateController's param interpolation) dissolves one
+            # element into the next. ``earth_mode`` morphs EARTH from calm
+            # (0) to upbeat jungle (1) — the state-1->2 "pattern change".
+            "earth_intensity": self.weather_params.get("earth_intensity", 0.0),
+            "earth_mode": self.weather_params.get("earth_mode", 0.0),
+            "wind_intensity": self.weather_params.get("wind_intensity", 0.0),
+            "fire_intensity": self.weather_params.get("fire_intensity", 0.0),
+            "water_intensity": self.weather_params.get("water_intensity", 0.0),
+            "space_intensity": self.weather_params.get("space_intensity", 0.0),
         }
 
     def select_next_weather(

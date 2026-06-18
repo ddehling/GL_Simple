@@ -139,6 +139,21 @@ class WeatherSetManager:
             return None
         return sdir
 
+    def get_audio_source(self) -> Optional[str]:
+        """Return the current set's preferred audio-reactivity source, or None.
+
+        Sets that declare ``audio_source`` (one of "linein"/"loopback"/
+        "internal"/"microphone") switch the analyzer to it on activation —
+        e.g. WoL's "Elements" set uses "internal" so its own AudioEngine
+        music mix drives the audio-reactive visuals without the operator
+        touching config.yaml. Missing/empty -> None (leave the machine's
+        configured source untouched).
+        """
+        src = self.get_current_set_config().get("audio_source")
+        if not src:
+            return None
+        return src
+
     def get_sound_pool_crossfade(self) -> float:
         """Return the current set's sound-pool crossfade window in seconds.
 

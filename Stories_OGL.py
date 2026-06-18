@@ -465,6 +465,11 @@ class EnvironmentalSystem:
         # WoL doesn't try to load Fan media (and vice versa).
         self.scheduler.state["media_root"] = str(self.project.media_root)
         self.active_effects = {"world": None, "ambient_sound": None}
+        # Wall-clock time the current weather state finished transitioning
+        # in. None until the active state's transition completes. Drives the
+        # deterministic ``state_duration`` timer in random_state_change;
+        # reset to None on every transition_to_weather so it restarts.
+        self._state_hold_start = None
         # Event map — pulled from the active project module. Copied so any
         # in-place mutation here doesn't bleed back into the module-level
         # constant.
@@ -1517,6 +1522,14 @@ class EnvironmentalSystem:
             print(f"[WEATHER]   Background event: {event_name}")
             self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
 
+        # Per-set audio source. A set that declares ``audio_source`` (e.g.
+        # WoL's "Elements" set uses "internal" so its own music drives the
+        # audio-reactive visuals) switches the analyzer when activated. Sets
+        # that omit it leave the machine-configured source untouched.
+        src = self.weather_set.get_audio_source()
+        if src:
+            self.set_audio_source(src)
+
         print(f"[WEATHER] Background events initialized for '{self.weather_set.current_set}'")
     
     def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
@@ -1547,6 +1560,10 @@ class EnvironmentalSystem:
 
     def transition_to_weather(self, new_weather, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
+        # Restart the deterministic state-duration timer: it re-arms once
+        # this new state's transition completes (progress >= 1.0). See
+        # random_state_change.
+        self._state_hold_start = None
         target_params = self.weather_state.start_transition(new_weather, transition_duration, time.time())
         
         # Schedule events based on on_transition_events in weather preset
@@ -2082,52 +2099,81 @@ class EnvironmentalSystem:
         nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else order[0]
         self.set_audio_source(nxt)
 
+    def _perform_weather_transition(self):
+        """Execute one weather transition right now.
+
+        If a weather-set change is queued, commit it and start a random
+        state from the new set; otherwise pick the next state within the
+        current set (which, for a linear set whose presets list a single
+        ``possible_transitions`` target, is deterministic). Shared by the
+        probabilistic ``Switch_rate`` path and the deterministic
+        ``state_duration`` timer so both behave identically.
+        """
+        # Check if we need to change weather sets
+        if self.weather_set.has_pending_set_change():
+            old_set = self.weather_set.current_set
+            new_set_name = self.weather_set.consume_pending_set()
+            print(f"[WEATHER] Switching weather set: '{old_set}' -> '{new_set_name}'")
+            if self.enable_web_control:
+                self.web_controller.set("current_weather_set", self.weather_set.current_set)
+
+            # Cancel all existing events and start new background events for the set
+            self._initialize_weather_set_events()
+
+            # Pick a random weather from the new set
+            set_states = self.weather_set.get_set_states()
+            new_weather = np.random.choice(set_states)
+            print(f"[WEATHER]   Starting with: {new_weather.value}")
+
+            new_weather_params = self.weather_state.get_weather_params(new_weather)
+            t_duration = new_weather_params["transition_duration"]
+            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+                t_duration = 0.01
+            self.transition_to_weather(new_weather, transition_duration=t_duration)
+            return
+
+        # Normal transition within current set
+        new_weather = self.weather_state.select_next_weather(
+            self.weather_state.current_weather,
+            self.weather_set.get_set_states(),
+            self.season,
+            self.weather_set.get_season_extremity(),
+        )
+
+        # Find the transition duration
+        new_weather_params = self.weather_state.get_weather_params(new_weather)
+        t_duration = new_weather_params["transition_duration"]
+        if self.enable_web_control and self.web_controller.get('instant_transitions', False):
+            t_duration = 0.01
+        self.transition_to_weather(new_weather, transition_duration=t_duration)
+
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
+            return
+
+        # Deterministic per-state duration (Weight of Light "Elements" set):
+        # when the active state declares state_duration > 0, ignore the
+        # probabilistic Switch_rate roll entirely and advance on a fixed
+        # timer measured from when the transition INTO this state completed
+        # (progress >= 1.0). Gives the even ~5-min-per-stage pacing a linear
+        # designed sequence wants, instead of the geometric-variance roll.
+        state_duration = float(
+            self.weather_state.weather_params.get("state_duration", 0.0) or 0.0
+        )
+        if state_duration > 0.0:
+            if self.weather_state.progress >= 1.0:
+                now = time.time()
+                if self._state_hold_start is None:
+                    self._state_hold_start = now
+                elif now - self._state_hold_start >= state_duration:
+                    self._perform_weather_transition()
             return
 
         transition_speed_mult = self.weather_set.get_transition_speed()
 
         randcheck = np.random.random()
         if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 1.0):
-
-            # Check if we need to change weather sets
-            if self.weather_set.has_pending_set_change():
-                old_set = self.weather_set.current_set
-                new_set_name = self.weather_set.consume_pending_set()
-                print(f"[WEATHER] Switching weather set: '{old_set}' -> '{new_set_name}'")
-                if self.enable_web_control:
-                    self.web_controller.set("current_weather_set", self.weather_set.current_set)
-
-                # Cancel all existing events and start new background events for the set
-                self._initialize_weather_set_events()
-
-                # Pick a random weather from the new set
-                set_states = self.weather_set.get_set_states()
-                new_weather = np.random.choice(set_states)
-                print(f"[WEATHER]   Starting with: {new_weather.value}")
-
-                new_weather_params = self.weather_state.get_weather_params(new_weather)
-                t_duration = new_weather_params["transition_duration"]
-                if self.enable_web_control and self.web_controller.get('instant_transitions', False):
-                    t_duration = 0.01
-                self.transition_to_weather(new_weather, transition_duration=t_duration)
-                return
-
-            # Normal transition within current set
-            new_weather = self.weather_state.select_next_weather(
-                self.weather_state.current_weather,
-                self.weather_set.get_set_states(),
-                self.season,
-                self.weather_set.get_season_extremity(),
-            )
-
-            # Find the transition duration
-            new_weather_params = self.weather_state.get_weather_params(new_weather)
-            t_duration = new_weather_params["transition_duration"]
-            if self.enable_web_control and self.web_controller.get('instant_transitions', False):
-                t_duration = 0.01
-            self.transition_to_weather(new_weather, transition_duration=t_duration)
+            self._perform_weather_transition()
 
     def shutdown(self):
         """Stop all audio and background threads cleanly."""
