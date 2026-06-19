@@ -932,7 +932,11 @@ class EnvironmentalSystem:
             print(f"[WEATHER] Unknown weather set: {new_set_name}")
             return False
 
-        if new_set_name == self.weather_set.current_set:
+        # Already in this set: normally a no-op, BUT if a specific
+        # initial_weather was requested (e.g. a startup_weather_state whose
+        # set is also the default set), still fall through so we apply that
+        # state — otherwise the boot stays on the controller's CLEAR fallback.
+        if new_set_name == self.weather_set.current_set and initial_weather is None:
             print(f"[WEATHER] Already in set '{new_set_name}', skipping")
             return True
 
