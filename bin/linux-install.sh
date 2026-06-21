@@ -405,6 +405,31 @@ if ! python -c "import sounddevice" 2>/dev/null; then
     fi
 fi
 
+# ---------------------------------------------------------------------
+# Optional: Bluetooth audio sink ("lucifera") — lets a phone stream audio
+# in over Bluetooth A2DP as a live input source. Linux only; non-fatal if
+# any part fails (the app degrades to "Bluetooth unavailable" in the UI).
+# See docs/BLUETOOTH_AUDIO.md. These bindings are Linux-only, so they are
+# installed here rather than in requirements.txt (which Windows also uses).
+# ---------------------------------------------------------------------
+echo "      Setting up Bluetooth audio sink (optional)..."
+# Runtime: BlueZ daemon + PipeWire's Bluetooth SPA plugin (makes a connected
+# A2DP device appear as a capture source). On PulseAudio hosts, the equivalent
+# is pulseaudio-module-bluetooth (see docs). Build deps are for the pip
+# bindings below.
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    bluez libspa-0.2-bluetooth \
+    libdbus-1-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev \
+    gobject-introspection || echo "      [BT] apt deps incomplete; Bluetooth input may be unavailable"
+# D-Bus + GLib bindings INTO the venv (so 'import dbus' / gi works at runtime).
+python -m pip install dbus-python PyGObject \
+    || echo "      [BT] dbus-python/PyGObject install failed; Bluetooth input will show as unavailable (see docs/BLUETOOTH_AUDIO.md)"
+# Let the app talk to BlueZ over D-Bus without root (takes effect next login).
+if getent group bluetooth >/dev/null 2>&1; then
+    sudo usermod -aG bluetooth "$USER" || true
+    echo "      [BT] added $USER to 'bluetooth' group (re-login for it to take effect)"
+fi
+
 # Let Python bind port 80 without sudo.
 VENV_PYTHON="$(readlink -f venv/bin/python3)"
 if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then

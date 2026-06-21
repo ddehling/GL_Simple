@@ -220,6 +220,11 @@ class MicrophoneAnalyzer:
             "microphone": device_name,
             "linein": linein_device,
             "loopback": loopback_device,
+            # Set live by Stories_OGL from BluetoothAudioReceiver.source_hint()
+            # when a phone connects over A2DP (the underscored MAC, e.g.
+            # "AA_BB_CC_DD_EE_FF"); the BlueZ node name contains it. Empty
+            # until then; the resolver falls back to the generic "bluez" token.
+            "bluetooth": None,
         }
         self.RATE = 44100              # fixed analysis target rate
         self.device = device           # optional explicit device-id override
@@ -584,11 +589,22 @@ class MicrophoneAnalyzer:
 
     def set_source(self, source):
         """Switch the active input source at runtime (microphone / linein /
-        loopback / internal). Safe to call live: the band masks are rate-fixed,
-        so only the input plumbing changes."""
+        loopback / internal / bluetooth). Safe to call live: the band masks are
+        rate-fixed, so only the input plumbing changes."""
         if source == self._active_source:
             return
         self._open_source(source)
+
+    def set_bluetooth_hint(self, fragment):
+        """Update the device-name fragment used to resolve the 'bluetooth'
+        capture source (the underscored MAC of the connected phone, or None
+        when nothing is connected). If 'bluetooth' is the active source, reopen
+        it so the new node is picked up immediately."""
+        if self._device_names.get("bluetooth") == fragment:
+            return
+        self._device_names["bluetooth"] = fragment
+        if self._active_source == "bluetooth":
+            self._open_source("bluetooth")
 
     def _open_source(self, source):
         """(Re)open the input plumbing for the requested source."""
@@ -703,6 +719,14 @@ class MicrophoneAnalyzer:
             dev_id = (self._find_input_by_name(frag) if frag else
                       self._find_input_by_keywords(
                           ["monitor", "loopback", "stereo mix", "what u hear"]))
+        elif source == "bluetooth":
+            # A connected A2DP phone appears as a PipeWire/Pulse capture node
+            # named bluez_input.<MAC> / bluez_source.<MAC>. Prefer the specific
+            # connected MAC (set live via set_bluetooth_hint), else any "bluez".
+            frag = self._device_names.get("bluetooth")
+            dev_id = (self._find_input_by_name(frag) if frag else None)
+            if dev_id is None:
+                dev_id = self._find_input_by_keywords(["bluez", "bluetooth"])
         else:  # microphone (and any unknown source)
             frag = self._device_names.get("microphone")
             dev_id = self._find_input_by_name(frag) if frag else sd.default.device[0]

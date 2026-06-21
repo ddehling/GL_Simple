@@ -1058,10 +1058,55 @@ class WebController:
         @self.socketio.on('change_audio_source')
         def handle_change_audio_source(data):
             src = data.get('source')
-            if src in ('linein', 'loopback', 'internal', 'microphone'):
+            if src in ('linein', 'loopback', 'internal', 'microphone', 'bluetooth'):
                 with self._dict_lock:
                     self.control_dict['request_audio_source'] = src
                 self._values_cache = None
+
+        # --- Bluetooth audio sink (lucifera) ---------------------------------
+        # Requests are queued as (action, arg) tuples and drained by the main
+        # loop, which owns the BluetoothAudioReceiver. Admin-gated when an admin
+        # password is configured (matches the per-device-approval requirement);
+        # if admin is disabled, the open control panel may drive it.
+        def _bt_authorized():
+            if self.admin_password_hash is None:
+                return True
+            return bool(session.get('admin_authenticated', False))
+
+        def _queue_bt_action(action, arg=None):
+            with self._dict_lock:
+                self.control_dict.setdefault(
+                    'request_bluetooth_actions', []).append((action, arg))
+            self._values_cache = None
+
+        @self.socketio.on('toggle_bluetooth_audio')
+        def handle_toggle_bluetooth(data=None):
+            if not _bt_authorized():
+                emit('bluetooth_error', {'error': 'Admin authentication required'})
+                return
+            if not self.get('bt_available', False):
+                emit('bluetooth_error', {'error': 'Bluetooth sink not available on this host'})
+                return
+            enable = bool((data or {}).get('enabled'))
+            _queue_bt_action('enable' if enable else 'disable')
+
+        @self.socketio.on('approve_pairing')
+        def handle_approve_pairing(data):
+            if not _bt_authorized():
+                emit('bluetooth_error', {'error': 'Admin authentication required'})
+                return
+            mac = (data or {}).get('mac')
+            if mac:
+                _queue_bt_action('approve', mac)
+
+        @self.socketio.on('deny_pairing')
+        def handle_deny_pairing(data):
+            if not _bt_authorized():
+                emit('bluetooth_error', {'error': 'Admin authentication required'})
+                return
+            mac = (data or {}).get('mac')
+            if mac:
+                _queue_bt_action('deny', mac)
 
         @self.socketio.on('change_weather_state')
         def handle_change_state(data):
@@ -1123,6 +1168,13 @@ class WebController:
                                 "ambient_sound": self.control_dict.get('ambient_sound'),
                                 "allowed_output_params": self.control_dict.get('allowed_output_params'),
                                 "narrative_vars": list(self.control_dict.get('narrative_vars', [])),
+                                "bluetooth": {
+                                    "available": self.control_dict.get('bt_available', False),
+                                    "enabled": self.control_dict.get('bt_enabled', False),
+                                    "reason": self.control_dict.get('bt_unavailable_reason', ''),
+                                    "pending": list(self.control_dict.get('bt_pending', [])),
+                                    "connected": list(self.control_dict.get('bt_connected', [])),
+                                },
                             }
 
                         # Emit to all connected clients

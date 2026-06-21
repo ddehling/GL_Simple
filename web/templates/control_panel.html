@@ -157,8 +157,22 @@
                     <option value="loopback">System loopback</option>
                     <option value="internal">Internal (show mix)</option>
                     <option value="microphone">Microphone</option>
+                    <option value="bluetooth">Bluetooth (lucifera)</option>
                 </select>
             </div>
+
+            <!-- Bluetooth audio sink (Linux only; hidden when unavailable) -->
+            <div id="bluetooth-block" style="margin-top: 12px; display: none;">
+                <div class="control-label" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                    <span>Bluetooth Input (lucifera)</span>
+                    <button id="bluetooth-toggle" style="cursor:pointer; padding:3px 12px; border-radius:4px; border:1px solid #555; background:#333; color:#ccc;">Off</button>
+                </div>
+                <div id="bluetooth-status" style="font-size:0.8em; opacity:0.7;">Off — not discoverable</div>
+                <div id="bluetooth-pending" style="margin-top:6px;"></div>
+                <div id="bluetooth-connected" style="font-size:0.8em; opacity:0.7; margin-top:4px;"></div>
+            </div>
+            <div id="bluetooth-unavailable" style="display:none; font-size:0.78em; opacity:0.45; margin-top:8px;"></div>
+
             <div class="info-row">
                 <span class="info-label">Ambient Sound:</span>
                 <span class="info-value" id="ambient-sound-display" style="opacity: 0.7;">--</span>

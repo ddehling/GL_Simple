@@ -13,6 +13,7 @@ let narrativeVars = [];   // [{name, value, description}] for current set, if an
 let audioSummary = {};
 let transitionState = {};
 let socket = null;
+let _btEnabled = false;   // last-seen Bluetooth sink enabled state (for toggle)
 
 // Interaction cooldown: after user changes a value, ignore server updates
 // for that control briefly to prevent snapping back
@@ -113,6 +114,9 @@ function connectSocket() {
             allowedOutputParams = new Set(data.allowed_output_params);
         }
 
+        // Bluetooth audio sink state
+        if (data.bluetooth) updateBluetooth(data.bluetooth);
+
         // Sync global sliders (skip if user recently interacted)
         for (const [key, val] of Object.entries(globalModifiers)) {
             if (isOnCooldown(`global-${key}`)) continue;
@@ -177,6 +181,82 @@ function connectSocket() {
     socket.on('weather_changed', () => {
         loadWeatherSetInfo();
     });
+
+    // Bluetooth: server-side rejection (e.g. needs admin, or unavailable)
+    socket.on('bluetooth_error', (data) => {
+        const status = document.getElementById('bluetooth-status');
+        if (status) status.textContent = '⚠ ' + ((data && data.error) || 'Bluetooth error');
+    });
+}
+
+// ---- Bluetooth audio sink UI ----
+function updateBluetooth(bt) {
+    const block = document.getElementById('bluetooth-block');
+    const unavail = document.getElementById('bluetooth-unavailable');
+    if (!block || !unavail) return;
+
+    if (!bt.available) {
+        block.style.display = 'none';
+        unavail.style.display = 'block';
+        unavail.textContent = '🔇 Bluetooth input unavailable: ' +
+            (bt.reason || 'not supported on this host');
+        return;
+    }
+    unavail.style.display = 'none';
+    block.style.display = 'block';
+
+    _btEnabled = !!bt.enabled;
+    const btn = document.getElementById('bluetooth-toggle');
+    const status = document.getElementById('bluetooth-status');
+    if (btn) {
+        btn.textContent = _btEnabled ? 'On' : 'Off';
+        btn.style.background = _btEnabled ? '#2a6e3f' : '#333';
+        btn.style.color = _btEnabled ? '#fff' : '#ccc';
+    }
+    if (status) {
+        status.textContent = _btEnabled
+            ? 'Discoverable as "lucifera" — connect from your phone'
+            : 'Off — not discoverable';
+    }
+
+    // Pending pairing/connection requests awaiting approval.
+    const pendBox = document.getElementById('bluetooth-pending');
+    if (pendBox) {
+        const pending = bt.pending || [];
+        pendBox.innerHTML = '';
+        pending.forEach((p) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; ' +
+                'background:#2a2a2a; border:1px solid #444; border-radius:4px; padding:5px 8px; margin-top:5px;';
+            const label = document.createElement('span');
+            label.style.cssText = 'font-size:0.82em;';
+            const verb = p.kind === 'connect' ? 'wants to connect' : 'wants to pair';
+            label.textContent = `${p.name || 'Device'} (${p.mac}) ${verb}`;
+            const btns = document.createElement('span');
+            const ok = document.createElement('button');
+            ok.textContent = 'Approve';
+            ok.style.cssText = 'cursor:pointer; margin-left:6px; padding:2px 8px; border-radius:3px; border:none; background:#2a6e3f; color:#fff;';
+            ok.onclick = () => { if (socket && socket.connected) socket.emit('approve_pairing', { mac: p.mac }); };
+            const no = document.createElement('button');
+            no.textContent = 'Deny';
+            no.style.cssText = 'cursor:pointer; margin-left:6px; padding:2px 8px; border-radius:3px; border:none; background:#7a2a2a; color:#fff;';
+            no.onclick = () => { if (socket && socket.connected) socket.emit('deny_pairing', { mac: p.mac }); };
+            btns.appendChild(ok);
+            btns.appendChild(no);
+            row.appendChild(label);
+            row.appendChild(btns);
+            pendBox.appendChild(row);
+        });
+    }
+
+    // Currently connected devices.
+    const connBox = document.getElementById('bluetooth-connected');
+    if (connBox) {
+        const connected = bt.connected || [];
+        connBox.textContent = connected.length
+            ? '🎧 Connected: ' + connected.map((c) => `${c.name || c.mac}`).join(', ')
+            : '';
+    }
 }
 
 // ---- Initialization ----
@@ -774,6 +854,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const src = e.target.value;
             if (src && socket && socket.connected) {
                 socket.emit('change_audio_source', { source: src });
+            }
+        });
+    }
+
+    const btToggle = document.getElementById('bluetooth-toggle');
+    if (btToggle) {
+        btToggle.addEventListener('click', () => {
+            if (socket && socket.connected) {
+                // _btEnabled is the last-seen server state; toggle it.
+                socket.emit('toggle_bluetooth_audio', { enabled: !_btEnabled });
             }
         });
     }

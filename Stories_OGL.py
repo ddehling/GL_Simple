@@ -25,6 +25,7 @@ from lib.mdns_resolve import resolve as mdns_resolve
 
 from lib.audio_analyzer import MicrophoneAnalyzer
 from lib.beat_detector import BeatDetector
+from lib.bluetooth_audio import create_bluetooth_receiver
 # WeatherState is kept as a fallback type for projects that don't override
 # the enum; runtime code reads ``self._weather_state_enum`` instead so a
 # project can swap in its own enum.
@@ -352,6 +353,14 @@ class EnvironmentalSystem:
                 print(f"[Audio] Failed to initialize audio analyzer: {e}")
                 print("[Audio] Continuing without audio input")
                 self.analyzer = None
+
+        # Bluetooth audio sink (advertised as "lucifera"). Linux + BlueZ only;
+        # an inert stub elsewhere (e.g. Windows), so this never fails. Defaults
+        # OFF — only turned on from the web UI. State is mirrored into the web
+        # control_dict each web-check tick (see _apply_bluetooth_controls).
+        self.bt_receiver = create_bluetooth_receiver()
+        self._bt_prev_source = None            # source to restore on disconnect
+        self._bt_last_connected = 0            # connected-device count last tick
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
         # published into outstate by send_variables() so any shader can sync
@@ -1627,6 +1636,9 @@ class EnvironmentalSystem:
         if audio_source_req is not None:
             self.set_audio_source(audio_source_req)
 
+        # Bluetooth sink: drain queued web actions + mirror live state.
+        self._apply_bluetooth_controls()
+
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
 
@@ -2082,7 +2094,7 @@ class EnvironmentalSystem:
     # ----------------------------------------------------------------
     # Audio input source switching (linein / loopback / internal / mic)
     # ----------------------------------------------------------------
-    _AUDIO_SOURCES = ["linein", "loopback", "internal", "microphone"]
+    _AUDIO_SOURCES = ["linein", "loopback", "internal", "microphone", "bluetooth"]
 
     def set_audio_source(self, source):
         """Switch the audio-reactive input source at runtime."""
@@ -2095,10 +2107,66 @@ class EnvironmentalSystem:
         if self.enable_web_control and self.web_controller is not None:
             self.web_controller.set("audio_source", source)
 
+    def _apply_bluetooth_controls(self):
+        """Drain queued Bluetooth web actions and mirror receiver state.
+
+        Called from apply_web_controls (~5 Hz). Owns the BluetoothAudioReceiver
+        so all BlueZ interaction stays on the app's control path. On a non-Linux
+        host the receiver is an inert stub, so this just reports unavailable.
+        """
+        bt = getattr(self, "bt_receiver", None)
+        if bt is None or self.web_controller is None:
+            return
+
+        # 1. Drain queued actions (enable / disable / approve / deny).
+        with self.web_controller._dict_lock:
+            actions = self.web_controller.control_dict.pop(
+                'request_bluetooth_actions', [])
+        for action, arg in actions:
+            try:
+                if action == 'enable':
+                    bt.enable()
+                elif action == 'disable':
+                    bt.disable()
+                elif action == 'approve':
+                    bt.approve(arg)
+                elif action == 'deny':
+                    bt.deny(arg)
+            except Exception as e:
+                print(f"[BT] action '{action}' failed: {e}")
+
+        # 2. Auto-route the analyzer to/from the live BT stream as devices
+        #    connect and drop, and keep the capture-node hint current.
+        connected = bt.connected_devices()
+        n = len(connected)
+        if self.analyzer is not None:
+            self.analyzer.set_bluetooth_hint(bt.source_hint())
+            cur = getattr(self.analyzer, "_active_source", None)
+            if n > 0 and self._bt_last_connected == 0 and cur != "bluetooth":
+                # First device connected: switch to it, remember where to return.
+                self._bt_prev_source = cur
+                self.set_audio_source("bluetooth")
+            elif n == 0 and self._bt_last_connected > 0 and cur == "bluetooth":
+                # Last device dropped: fall back to the prior source.
+                self.set_audio_source(self._bt_prev_source or "linein")
+        self._bt_last_connected = n
+
+        # 3. Mirror state into the web control_dict for the UI snapshot.
+        self.web_controller.set('bt_available', bool(getattr(bt, 'available', False)))
+        self.web_controller.set('bt_enabled', bt.is_enabled())
+        self.web_controller.set('bt_pending', bt.pending_pairings())
+        self.web_controller.set('bt_connected', connected)
+        if not getattr(bt, 'available', False):
+            self.web_controller.set(
+                'bt_unavailable_reason', getattr(bt, 'unavailable_reason', ''))
+
     def _cycle_audio_source(self):
         if self.analyzer is None:
             return
-        order = self._AUDIO_SOURCES
+        # Bluetooth is auto-routed when a phone connects + explicitly
+        # selectable in the web UI, but excluded from the MIDI cycle so the
+        # DJ wheel never lands on a silent BT source with nothing connected.
+        order = [s for s in self._AUDIO_SOURCES if s != "bluetooth"]
         cur = getattr(self.analyzer, "_active_source", None)
         nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else order[0]
         self.set_audio_source(nxt)
@@ -2186,6 +2254,8 @@ class EnvironmentalSystem:
             engine.stop_ambient()
         if self.analyzer:
             self.analyzer.stop()
+        if getattr(self, "bt_receiver", None) is not None:
+            self.bt_receiver.shutdown()
         if self.midi is not None:
             self.midi.stop_reading()
         if self.osc_listener is not None:
