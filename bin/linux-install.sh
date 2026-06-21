@@ -419,10 +419,14 @@ echo "      Setting up Bluetooth audio sink (optional)..."
 # bindings below.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     bluez libspa-0.2-bluetooth \
-    libdbus-1-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev \
+    python3-dev libdbus-1-dev libglib2.0-dev libgirepository1.0-dev libcairo2-dev \
     gobject-introspection || echo "      [BT] apt deps incomplete; Bluetooth input may be unavailable"
 # D-Bus + GLib bindings INTO the venv (so 'import dbus' / gi works at runtime).
-python -m pip install dbus-python PyGObject \
+#  - python3-dev (above) provides Python.h / the python pkg-config dbus-python's
+#    meson build needs ("Python dependency not found" without it).
+#  - PyGObject is pinned <3.52 because 3.52+ requires girepository-2.0, while
+#    apt ships libgirepository1.0-dev (the 1.0 series) on Ubuntu/Pop 24.04.
+python -m pip install dbus-python "PyGObject<3.52" \
     || echo "      [BT] dbus-python/PyGObject install failed; Bluetooth input will show as unavailable (see docs/BLUETOOTH_AUDIO.md)"
 # Let the app talk to BlueZ over D-Bus without root (takes effect next login).
 if getent group bluetooth >/dev/null 2>&1; then
@@ -434,6 +438,21 @@ fi
 VENV_PYTHON="$(readlink -f venv/bin/python3)"
 if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then
     sudo setcap 'cap_net_bind_service=+ep' "$VENV_PYTHON"
+fi
+# A later apt upgrade of the python package replaces this binary and silently
+# strips the capability above, which breaks port-80 binding ("unable to
+# connect"). Install a narrow sudoers rule so bin/ensure_port_cap.sh can
+# re-apply it without a password on each launch (self-heal). The rule allows
+# ONLY this exact setcap command — nothing else.
+SETCAP_BIN="$(command -v setcap || echo /usr/sbin/setcap)"
+SUDOERS_LINE="$USER ALL=(root) NOPASSWD: $SETCAP_BIN cap_net_bind_service=+ep $VENV_PYTHON"
+if printf '%s\n' "$SUDOERS_LINE" | sudo tee /etc/sudoers.d/gl-simple-setcap >/dev/null \
+        && sudo chmod 0440 /etc/sudoers.d/gl-simple-setcap \
+        && sudo visudo -cf /etc/sudoers.d/gl-simple-setcap >/dev/null 2>&1; then
+    echo "      [cap] installed passwordless setcap self-heal rule (/etc/sudoers.d/gl-simple-setcap)"
+else
+    sudo rm -f /etc/sudoers.d/gl-simple-setcap 2>/dev/null || true
+    echo "      [cap] could not install setcap sudoers rule; port-80 self-heal will need a manual setcap after python upgrades"
 fi
 
 # ---------------------------------------------------------------------

@@ -456,6 +456,10 @@ class _BlueZReceiver:
         def _do():
             try:
                 if approve:
+                    # Mark the device trusted FIRST so BlueZ auto-authorizes the
+                    # follow-up service connections (A2DP/AVRCP) without firing
+                    # the agent again — operator approves once, not per profile.
+                    self._set_trusted(match["path"])
                     match["ok"]()
                     print(f"[BT] approved {match['name']} [{mac}]")
                 else:
@@ -465,6 +469,17 @@ class _BlueZReceiver:
                 print(f"[BT] resolve failed for {mac}: {e}")
 
         self._on_loop(_do)
+
+    def _set_trusted(self, path: str) -> None:
+        """Set org.bluez.Device1.Trusted=true so subsequent service
+        authorizations for this device are granted automatically by BlueZ."""
+        try:
+            import dbus
+            props = self._dbus.Interface(
+                self._bus.get_object(_BLUEZ_SERVICE, path), _PROPS_IFACE)
+            props.Set(_DEVICE_IFACE, "Trusted", dbus.Boolean(True))
+        except Exception as e:
+            print(f"[BT] could not set Trusted on {path}: {e}")
 
 
 # org.bluez.Error.Rejected — the DBusException BlueZ expects when an agent

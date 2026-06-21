@@ -43,7 +43,8 @@ phone ──A2DP──▶ BlueZ (bluetoothd) ──▶ PipeWire/PulseAudio captu
   disconnects).
 - **Web** — a Bluetooth block in the Audio section of the control panel: an
   On/Off toggle, an approval card per pending device, and the connected list.
-  Admin-gated when an admin password is configured.
+  Open to anyone with the control panel — per-device pairing approval is the
+  access control.
 
 ## Setup
 
@@ -55,11 +56,15 @@ fails — the feature just shows as unavailable). To do it by hand:
 sudo apt install bluez libspa-0.2-bluetooth        # PipeWire (Pop!_OS, current Pi OS)
 # sudo apt install bluez pulseaudio-module-bluetooth  # older PulseAudio hosts
 
-# Build deps for the D-Bus / GLib Python bindings, then install into the venv
-sudo apt install libdbus-1-dev libglib2.0-dev libgirepository1.0-dev \
+# Build deps for the D-Bus / GLib Python bindings, then install into the venv.
+# python3-dev is required — dbus-python's build fails with "Python dependency
+# not found" without it.
+sudo apt install python3-dev libdbus-1-dev libglib2.0-dev libgirepository1.0-dev \
                  libcairo2-dev gobject-introspection
 source venv/bin/activate
-pip install dbus-python PyGObject
+# PyGObject is pinned <3.52: 3.52+ needs girepository-2.0, but apt ships
+# libgirepository1.0-dev (the 1.0 series) on Ubuntu/Pop 24.04.
+pip install dbus-python "PyGObject<3.52"
 
 # Let the app talk to BlueZ without root (re-login afterward)
 sudo usermod -aG bluetooth "$USER"
@@ -118,6 +123,5 @@ This feature **cannot be tested on Windows** (the dev box) — verify it here.
 
 - Nothing connects without an operator **Approve** while the toggle is on; the
   toggle off-state stops all discoverability and pairing.
-- When an admin password is set, the toggle and approve/deny are admin-gated.
 - The adapter alias is set to `lucifera` system-wide while enabled; it is left
   as-is on disable (cosmetic).

@@ -83,4 +83,6 @@ if [ ! -d venv ]; then
     echo "ERROR: ./venv not found. Run bin/linux-install.sh first." >&2
     exit 1
 fi
+# Re-apply the port-80 capability if a python upgrade stripped it (non-fatal).
+bin/ensure_port_cap.sh || true
 exec venv/bin/python Stories_OGL.py
