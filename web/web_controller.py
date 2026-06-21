@@ -4,11 +4,9 @@ Provides a Flask web server with real-time WebSocket control interface.
 """
 import threading
 import socket
-import hashlib
-import secrets
 import time
 import copy
-from flask import Flask, render_template, jsonify, request, session
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from pathlib import Path
 import json
@@ -40,7 +38,7 @@ class WebController:
     Thread-safe dictionary updates with real-time web interface.
     """
     
-    def __init__(self, control_dict=None, port=5000, service_name="lucifera", admin_password=None, bind_ip="", geometry_provider=None):
+    def __init__(self, control_dict=None, port=5000, service_name="lucifera", bind_ip="", geometry_provider=None):
         """
         Initialize the web controller.
 
@@ -49,7 +47,6 @@ class WebController:
             port: Port number for the web server (default: 5000)
             service_name: mDNS service name (default: "lucifera")
                          Will be accessible at http://{service_name}.local:{port}
-            admin_password: Password for admin panel (default: None = no admin access)
             geometry_provider: Active GeometryProvider for /api/preview/geometry.
                 If None, a default FanGeometryProvider is built lazily so the
                 preview keeps working in standalone use.
@@ -73,9 +70,6 @@ class WebController:
                         static_folder=str(Path(__file__).parent / 'static'),
                         static_url_path='/static')
 
-        # Configure Flask session with a secret key
-        self.app.secret_key = secrets.token_hex(32)
-
         # Custom JSON provider so jsonify() handles numpy types everywhere.
         from flask.json.provider import DefaultJSONProvider
         class _NumpyJSONProvider(DefaultJSONProvider):
@@ -97,11 +91,7 @@ class WebController:
                                  cors_allowed_origins='*', logger=False,
                                  engineio_logger=False)
 
-        # Hash the admin password if provided
         self.available_events = []  # Will be set by EnvironmentalSystem
-        self.admin_password_hash = None
-        if admin_password:
-            self.admin_password_hash = hashlib.sha256(admin_password.encode()).hexdigest()
 
         self.server_thread = None
         self.zeroconf = None
@@ -325,70 +315,6 @@ class WebController:
             self._values_cache = None
             return jsonify({"success": True, "requested": new_id})
 
-        @self.app.route('/admin')
-        def admin_panel():
-            """Serve the admin panel page."""
-            if not self.admin_password_hash:
-                return jsonify({"error": "Admin panel not configured"}), 403
-            return render_template('admin_panel.html')
-        
-        @self.app.route('/api/admin/login', methods=['POST'])
-        def admin_login():
-            """Authenticate admin user."""
-            if not self.admin_password_hash:
-                return jsonify({"success": False, "error": "Admin panel not configured"}), 403
-            
-            data = request.json
-            password = data.get('password', '')
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
-            
-            if password_hash == self.admin_password_hash:
-                session['admin_authenticated'] = True
-                return jsonify({"success": True})
-            else:
-                return jsonify({"success": False, "error": "Invalid password"}), 401
-        
-        @self.app.route('/api/admin/logout', methods=['POST'])
-        def admin_logout():
-            """Logout admin user."""
-            session.pop('admin_authenticated', None)
-            return jsonify({"success": True})
-        
-        @self.app.route('/api/admin/check')
-        def admin_check():
-            """Check if admin is authenticated."""
-            is_authenticated = session.get('admin_authenticated', False)
-            has_admin = self.admin_password_hash is not None
-            return jsonify({
-                "authenticated": is_authenticated,
-                "admin_enabled": has_admin
-            })
-        
-        @self.app.route('/api/admin/system_info')
-        def system_info():
-            """Return system information (admin only)."""
-            if not session.get('admin_authenticated', False):
-                return jsonify({"error": "Unauthorized"}), 401
-            
-            import platform
-            
-            info = {
-                "platform": platform.platform(),
-                "python_version": platform.python_version(),
-                "hostname": socket.gethostname()
-            }
-            
-            # Try to get psutil info, but don't fail if not available
-            try:
-                import psutil
-                info["cpu_percent"] = psutil.cpu_percent(interval=0.1)
-                info["memory_percent"] = psutil.virtual_memory().percent
-            except ImportError:
-                info["cpu_percent"] = "N/A (install psutil)"
-                info["memory_percent"] = "N/A (install psutil)"
-            
-            return jsonify(info)
-        
         @self.app.route('/api/globals/schema')
         def get_globals_schema():
             """Return the global modifier schema for UI generation."""
@@ -1065,14 +991,8 @@ class WebController:
 
         # --- Bluetooth audio sink (lucifera) ---------------------------------
         # Requests are queued as (action, arg) tuples and drained by the main
-        # loop, which owns the BluetoothAudioReceiver. Admin-gated when an admin
-        # password is configured (matches the per-device-approval requirement);
-        # if admin is disabled, the open control panel may drive it.
-        def _bt_authorized():
-            if self.admin_password_hash is None:
-                return True
-            return bool(session.get('admin_authenticated', False))
-
+        # loop, which owns the BluetoothAudioReceiver. Open to the control panel
+        # (no admin gating) — per-device pairing approval is the access control.
         def _queue_bt_action(action, arg=None):
             with self._dict_lock:
                 self.control_dict.setdefault(
@@ -1081,9 +1001,6 @@ class WebController:
 
         @self.socketio.on('toggle_bluetooth_audio')
         def handle_toggle_bluetooth(data=None):
-            if not _bt_authorized():
-                emit('bluetooth_error', {'error': 'Admin authentication required'})
-                return
             if not self.get('bt_available', False):
                 emit('bluetooth_error', {'error': 'Bluetooth sink not available on this host'})
                 return
@@ -1092,18 +1009,12 @@ class WebController:
 
         @self.socketio.on('approve_pairing')
         def handle_approve_pairing(data):
-            if not _bt_authorized():
-                emit('bluetooth_error', {'error': 'Admin authentication required'})
-                return
             mac = (data or {}).get('mac')
             if mac:
                 _queue_bt_action('approve', mac)
 
         @self.socketio.on('deny_pairing')
         def handle_deny_pairing(data):
-            if not _bt_authorized():
-                emit('bluetooth_error', {'error': 'Admin authentication required'})
-                return
             mac = (data or {}).get('mac')
             if mac:
                 _queue_bt_action('deny', mac)

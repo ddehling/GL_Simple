@@ -62,7 +62,7 @@ def load_config(project_override: str | None = None):
         "display": {"width": 128, "height": 300, "magnification": 0, "headless": False},
         "audio": {"enabled": True, "source": "linein", "linein_device": "",
                   "loopback_device": "", "device_name": "TONOR"},
-        "web": {"enabled": True, "port": 5000, "admin_password": "admin123", "bind_ip": ""},
+        "web": {"enabled": True, "port": 5000, "bind_ip": ""},
         # OSC listener — observability only at this stage. Receives messages
         # from Weight_Of_Light boxes (button presses, analog samples,
         # 1-Wire temps) and prints them. Mapping into actual events is a
@@ -425,7 +425,6 @@ class EnvironmentalSystem:
                 self.web_controls,
                 port=web_cfg["port"],
                 service_name="lucifera",
-                admin_password=web_cfg["admin_password"],
                 bind_ip=web_cfg.get("bind_ip", ""),
                 geometry_provider=self.geometry_provider,
             )

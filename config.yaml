@@ -48,7 +48,6 @@ midi:
 web:
   enabled: true
   port: 80
-  admin_password: "admin123"
   bind_ip: ""  # Advertise mDNS (lucifera.local) on this interface only (empty = all interfaces)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
 

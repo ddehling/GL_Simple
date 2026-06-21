@@ -182,7 +182,7 @@ function connectSocket() {
         loadWeatherSetInfo();
     });
 
-    // Bluetooth: server-side rejection (e.g. needs admin, or unavailable)
+    // Bluetooth: server-side rejection (e.g. sink unavailable on this host)
     socket.on('bluetooth_error', (data) => {
         const status = document.getElementById('bluetooth-status');
         if (status) status.textContent = '⚠ ' + ((data && data.error) || 'Bluetooth error');
@@ -977,20 +977,4 @@ function triggerSelectedEvent() {
     }
 }
 
-// Check admin availability
-async function checkAdminAvailability() {
-    try {
-        const response = await fetch('/api/admin/check');
-        const data = await response.json();
-        if (!data.admin_enabled) {
-            const adminTab = document.getElementById('admin-tab');
-            if (adminTab) adminTab.style.display = 'none';
-        }
-    } catch (e) {
-        const adminTab = document.getElementById('admin-tab');
-        if (adminTab) adminTab.style.display = 'none';
-    }
-}
-
-checkAdminAvailability();
 init();
