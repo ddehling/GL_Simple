@@ -3,11 +3,30 @@ MIDI Controller Input Handler
 Tracks Korg nanoKontrol2 USB MIDI controller state in real-time
 """
 
+import os
+import sys
 import pygame
 import pygame.midi
 import time
 from typing import Dict, Optional, Callable
 import threading
+
+
+def _ensure_alsa_config_path():
+    """Work around pygame/PortMidi loading an ALSA library built with a
+    /usr/local prefix: it looks for alsa.conf under /usr/local/share/alsa,
+    which doesn't exist on Debian/Ubuntu/Pop (the file is /usr/share/alsa/
+    alsa.conf). Without this, ALSA seq init fails and pygame.midi sees ZERO
+    devices even when a controller is plugged in and visible to `aconnect`.
+    Set ALSA_CONFIG_PATH to the real file (Linux only, if unset and present)."""
+    if not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("ALSA_CONFIG_PATH"):
+        return
+    for candidate in ("/usr/share/alsa/alsa.conf",):
+        if os.path.exists(candidate):
+            os.environ["ALSA_CONFIG_PATH"] = candidate
+            break
 
 
 class KorgNanoKontrol2:
@@ -75,7 +94,9 @@ class KorgNanoKontrol2:
         self.running = False
         self.thread = None
         
-        # Initialize pygame.midi
+        # Initialize pygame.midi (fix ALSA config path first so the device
+        # is actually visible on Debian/Ubuntu/Pop — see _ensure_alsa_config_path).
+        _ensure_alsa_config_path()
         pygame.midi.init()
         
         # Initialize all controls to default values
