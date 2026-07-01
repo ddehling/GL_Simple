@@ -85,4 +85,8 @@ if [ ! -d venv ]; then
 fi
 # Re-apply the port-80 capability if a python upgrade stripped it (non-fatal).
 bin/ensure_port_cap.sh || true
+# On a Raspberry Pi only, make sure the GPIO libs are installed (no-op if they
+# already are, or on any non-Pi system). Lets a Pi that was updated rather than
+# reinstalled pick up the image-display button support. Non-fatal + offline-safe.
+bash bin/ensure_pi_gpio.sh || true
 exec venv/bin/python Stories_OGL.py

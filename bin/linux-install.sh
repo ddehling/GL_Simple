@@ -434,6 +434,22 @@ if getent group bluetooth >/dev/null 2>&1; then
     echo "      [BT] added $USER to 'bluetooth' group (re-login for it to take effect)"
 fi
 
+# ---------------------------------------------------------------------
+# Optional: Raspberry Pi GPIO buttons (Weight of Light image-display event,
+# projects/weight_of_light/shaders/image_display.py). The actual install is in
+# the shared bin/ensure_pi_gpio.sh (also called by bin/linux-run.sh so an
+# updated-but-not-reinstalled Pi picks it up). It installs gpiozero + lgpio
+# ONLY on a real Raspberry Pi, so this is a no-op on any non-Pi system. Then
+# add the user to 'gpio' for /dev/gpiochip access (install-time only, needs
+# sudo). Non-fatal throughout.
+# ---------------------------------------------------------------------
+bash bin/ensure_pi_gpio.sh || true
+if grep -qi "raspberry pi" /proc/device-tree/model 2>/dev/null \
+        && getent group gpio >/dev/null 2>&1; then
+    sudo usermod -aG gpio "$USER" || true
+    echo "      [GPIO] added $USER to 'gpio' group (re-login for it to take effect)"
+fi
+
 # Let Python bind port 80 without sudo.
 VENV_PYTHON="$(readlink -f venv/bin/python3)"
 if ! getcap "$VENV_PYTHON" 2>/dev/null | grep -q cap_net_bind_service; then
