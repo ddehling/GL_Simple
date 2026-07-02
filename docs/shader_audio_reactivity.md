@@ -22,7 +22,7 @@ def shader_myeffect(state, outstate, sensitivity=1.0):
 
     # Audio data contains:
     # - 'raw_bands': (1000 x 32) array - Raw power in each frequency band
-    # - 'norm_short': (1000 x 32) array - Normalized to short-term average (~0.25s)
+    # - 'norm_short': (1000 x 32) array - Normalized to short-term average (~0.5s)
     # - 'norm_long': (1000 x 32) array - Normalized to long-term average (~2.5s)
     # - 'norm_long_relu': (1000 x 32) array - ReLU(norm_long - 1), highlights above-average
     # - 'band_centers': (32,) array - Center frequency of each band (Hz)
@@ -79,7 +79,7 @@ full_history = audio_data['raw_bands']            # Shape: (1000, 32)
 #    Use for: Effects that need consistent scaling regardless of volume
 raw = audio_data['raw_bands'][0]
 
-# 2. SHORT-TERM NORMALIZED - Relative to recent average (~0.25s)
+# 2. SHORT-TERM NORMALIZED - Relative to recent average (~0.5s)
 #    Use for: Beat detection, transient response, rhythmic effects
 #    Value >1.0 means "louder than recent average"
 short_norm = audio_data['norm_short'][0]
@@ -259,6 +259,90 @@ class AudioCirclesEffect(ShaderEffect):
 
     # ... compile_shader, get_vertex_shader, get_fragment_shader, setup_buffers ...
 ```
+
+## Rhythm & Structure Keys (BeatDetector / AudioStructure)
+
+Beyond the raw band data in `outstate['sound']`, the engine publishes
+pre-computed rhythm and song-structure scalars every frame. Prefer these
+over rolling your own beat detection - they're PLL-tracked, silence-gated
+and shared by every effect. All are plain floats/bools with safe defaults;
+read them with `outstate.get(key, 0.0)`.
+
+**Beat / tempo (lib/beat_detector.py):**
+
+| key | type | semantics |
+|---|---|---|
+| `beat` | bool | True ONLY on the frame a beat fires |
+| `beat_decay` | float 1->0 | flash envelope after each beat (tau 0.12s) |
+| `bpm` | float | smoothed tempo; **0 until the tracker locks (~3s)** |
+| `beat_phase` | float 0..1 | metronome position, snaps to 0 on each beat |
+| `beat_intensity` | float >=0 | raw onset strength (not gated to beats) |
+| `beat_confidence` | float 0..1 | tempo+phase lock quality; decays in silence |
+| `beat_count` | int | monotonic beat index |
+| `bar_phase` | float 0..1 | position in a 4-beat bar |
+| `phrase_phase` | float 0..1 | position in a 16-beat phrase |
+
+**IMPORTANT - bar/phrase origin is arbitrary.** Beats are counted from
+detector start; there is no downbeat detection. Use `bar_phase` /
+`phrase_phase` for slow cyclic evolution (palette drift, look rotation),
+never for "flash on the One".
+
+**Canonical confidence gating** - beat-locked motion must degrade to a
+free-run instead of following a garbage phase. Blend on confidence and
+integrate the free phase on the CPU (see club_lasers.py / club_tunnel.py):
+
+```python
+# in the effect's update(dt):
+if self.conf >= 0.3:
+    self.sweep_phase = self.beat_phase
+    self._free_phase = self.beat_phase       # seed for seamless fallback
+else:
+    self._free_phase = (self._free_phase + dt * FREE_RATE) % 1.0
+    self.sweep_phase = self._free_phase
+```
+
+**Song structure (lib/audio_signals.py):**
+
+| key | type | semantics |
+|---|---|---|
+| `audio_bass` | float ~0..2 | smoothed bass (bands 0:8) vs 0.5s average; 0 in silence |
+| `audio_mid` | float ~0..2 | same for mids (8:20) |
+| `audio_high` | float ~0..2 | same for highs (20:32) |
+| `bass_punch` | float 0..1 | transient envelope: 0 between hits, ~1 on a hit, ~0.16s release |
+| `mid_punch` | float 0..1 | same for mids |
+| `high_punch` | float 0..1 | same for highs (hat/cymbal hits) |
+| `audio_punch` | float 0..1 | broadband max of the three |
+| `audio_energy` | float 0..1 | slow overall loudness; ~0.5 steady groove, 0 in silence |
+| `build_level` | float 0..1 | riser detector (energy climb x rising highs) |
+| `drop` | bool | True ONLY on the frame a drop fires (quiet bass then slam) |
+| `drop_decay` | float 1->0 | punch envelope after each drop (tau 0.35s) |
+
+Unlike the raw `norm_*` bands (which read ~1.0 in silence - tiny/tiny AGC),
+these scalars are gated against an absolute level tracker and genuinely go
+to 0 when the room is quiet.
+
+**DESIGNING FOR VISIBLE REACTIVITY (read before mapping audio -> visuals):**
+the AGC-normalized signals (`norm_*` bands, `audio_bass/mid/high`) HOVER
+AROUND 1.0 during steady music - that is what normalization means. Two
+mappings that therefore always fail:
+
+1. `brightness = 0.5 + 0.5 * audio_bass` -> a constant near-full wash with
+   a few percent of wiggle; the brightness limiter flattens it to nothing.
+2. `height = clamp(norm_band, 0, 1)` -> pinned at 1.0 with tiny dips.
+
+What works:
+- **Punch envelopes** for anything that should HIT: `x_punch` is 0 between
+  hits and ~1 on them - multiply, don't add ("`(0.2 + 0.8*punch)`" reads;
+  "`0.8 + 0.2*punch`" doesn't).
+- **Deviation expansion** for anything continuous: map
+  `clamp((norm - 0.55) / span, 0, 1)` so a resting band sits near ZERO and
+  only real energy lights it. Thresholds against norm values must sit
+  ABOVE 1.0 (e.g. audio_balls' lightning_threshold 1.3) or they are
+  permanently true.
+- Keep additive floors under ~0.2 of the output range; temporal contrast
+  (dark -> flash) survives the limiter, mid-level wiggle does not.
+
+Offline test for all of the above: `python tools/_club_signals_test.py`.
 
 ## Audio Reactivity Best Practices
 

@@ -26,9 +26,10 @@ MAX_BOLTS = 16
 # ============================================================================
 
 def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
-                       lightning_threshold=0.5, lightning_probability=0.3,
+                       lightning_threshold=1.35, lightning_probability=0.3,
                        num_balls=16, depth=0.55,
-                       mixer_op_key=None, mixer_tint_key=None):
+                       mixer_op_key=None, mixer_tint_key=None,
+                       beat_pulse=False):
     """Audio-reactive balls (real fan-space) with lightning arcs.
 
     Args:
@@ -36,12 +37,19 @@ def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
         base_size: Legacy size handle; mapped to a ~1 ft base ball radius
             (base_size/8 -> ~1.1 ft) so existing call sites keep working.
         lightning_threshold / lightning_probability: lightning behaviour.
+            The threshold is against AGC-NORMALIZED band energy, which rests
+            at ~1.0 during steady music - it must sit ABOVE 1.0 (a real
+            transient) or arcs fire nonstop with no relation to the sound.
         num_balls: number of balls (max 32, one per frequency band).
         mixer_op_key / mixer_tint_key: opt-in VJ-mixer keys. When set (the club
             set passes "op_balls"/"tint_balls"), opacity follows that outstate
             value (default 0 -> invisible until the fader is raised) and the
             ball hues shift by the tint. When None (every other set), the balls
             stay fully visible with their natural per-band colours.
+        beat_pulse: opt-in (the club set passes True): balls swell/brighten on
+            each beat (scaled by beat confidence) and a detected drop forces a
+            lightning burst. False (default) keeps the legacy band-only
+            behaviour for every other set.
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
@@ -84,6 +92,12 @@ def shader_audio_balls(state, outstate, sensitivity=2.0, base_size=8.0,
                          + float(outstate.get('club_palette', 0.0)))
         else:
             eff.set_tint(0.0)
+        # Beat coupling (opt-in): swell on the beat, arc storm on a drop.
+        if beat_pulse:
+            eff.beat_boost = (float(outstate.get('beat_decay', 0.0))
+                              * float(outstate.get('beat_confidence', 0.0)))
+            if outstate.get('drop', False):
+                eff.trigger_drop_burst()
 
     if 'effect' in state and audio_data is not None:
         bands = audio_data['norm_short'][0]   # (32,)
@@ -151,7 +165,10 @@ class AudioBallsEffect(ShaderEffect):
         self.sizes_ft = np.full(n, self.base_radius_ft, dtype=np.float32)
         self.energies = np.zeros(n, dtype=np.float32)
         self.smoothed_energies = np.zeros(n, dtype=np.float32)
-        self.energy_smoothing = 0.15
+        self.energy_tau = 0.16       # EMA time constant (s), applied in update()
+        # Beat coupling (club opt-in; stays 0/False for every other set).
+        self.beat_boost = 0.0        # beat_decay * beat_confidence, set by wrapper
+        self._drop_burst = False     # one-frame forced lightning storm
 
         # VJ-mixer master opacity + hue tint. Default opacity 1.0 so non-club
         # sets show the balls normally; the club layer sets it from the fader.
@@ -226,18 +243,31 @@ class AudioBallsEffect(ShaderEffect):
         band_indices = np.minimum(
             (np.arange(self.num_balls) * self.band_step).astype(np.int32), 31)
         self.energies[:] = bands[band_indices]
-        self.smoothed_energies[:] = (
-            self.smoothed_energies * (1.0 - self.energy_smoothing)
-            + self.energies * self.energy_smoothing)
-        smoothed = self.smoothed_energies
-        # Ball radius (feet) and brightness grow with band energy.
-        self.sizes_ft[:] = self.base_radius_ft * (1.0 + smoothed * self.sensitivity * 0.3)
-        self.alphas[:] = 0.3 + 0.5 * np.clip(smoothed, 0, 1)
+
+    def trigger_drop_burst(self):
+        """Force a lightning storm on the next update (club drop moment)."""
+        self._drop_burst = True
 
     def update(self, dt: float, state: Dict):
         if not self.enabled:
             return
         self.surface_time += dt
+        # Smooth band energies dt-correctly (was a fixed 0.15/frame EMA).
+        a = 1.0 - np.exp(-dt / self.energy_tau)
+        self.smoothed_energies += (self.energies - self.smoothed_energies) * a
+        smoothed = self.smoothed_energies
+        # EXPANSION: the normalized bands hover around 1.0 during steady
+        # music (AGC), so mapping them directly leaves every ball at a
+        # constant mid-brightness. Map the DEVIATION above the resting
+        # floor instead: a quiet band's ball nearly vanishes, a steady band
+        # glows moderately, and a hit swells it big and bright.
+        dev = np.clip(smoothed - 0.5, 0.0, 2.0)
+        pulse = 1.0 + 0.4 * self.beat_boost
+        self.sizes_ft[:] = (self.base_radius_ft
+                            * (1.0 + dev * self.sensitivity * 0.35) * pulse)
+        dev1 = np.clip(dev, 0.0, 1.0)
+        self.alphas[:] = np.clip((0.10 + 0.75 * dev1 * np.sqrt(dev1))
+                                 * (1.0 + 0.3 * self.beat_boost), 0.0, 1.0)
         # Drift in angle, wrap into [0, pi] (sweep across the fan arc).
         self.theta[:] = np.mod(self.theta + self.ang_speed * dt, np.pi)
         # Bob in radius; keep inside the fan annulus.
@@ -248,17 +278,24 @@ class AudioBallsEffect(ShaderEffect):
         self._update_lightning(dt)
 
     def _update_lightning(self, dt: float):
-        # Decay existing arcs.
+        # Decay existing arcs dt-correctly (was a fixed 0.8/frame).
         if self.active_lightning:
+            decay = float(np.exp(-dt / 0.11))
             kept = []
             for (i, j, inten, age) in self.active_lightning:
-                inten *= 0.8
+                inten *= decay
                 age += dt
                 if inten > 0.05 and age < 0.5:
                     kept.append((i, j, inten, age))
             self.active_lightning = kept
 
-        high = np.where(self.energies >= self.lightning_threshold)[0]
+        # A drop moment forces arcs between every energetic pair for one frame.
+        burst = self._drop_burst
+        self._drop_burst = False
+        threshold = 0.0 if burst else self.lightning_threshold
+        probability = 1.0 if burst else self.lightning_probability
+
+        high = np.where(self.energies >= threshold)[0]
         if len(high) < 2:
             return
         pos = self.positions_ft[high]                      # (m, 2) feet
@@ -270,7 +307,7 @@ class AudioBallsEffect(ShaderEffect):
         vi, vj = np.where(upper & nearby)
         if len(vi) == 0:
             return
-        sel = self._rng.random(len(vi)) < self.lightning_probability
+        sel = self._rng.random(len(vi)) < probability
         vi, vj = vi[sel], vj[sel]
         existing = {(min(a, b), max(a, b)) for a, b, _, _ in self.active_lightning}
         for a_idx, b_idx in zip(high[vi], high[vj]):
@@ -278,6 +315,8 @@ class AudioBallsEffect(ShaderEffect):
             if pair in existing or len(self.active_lightning) >= MAX_BOLTS:
                 continue
             inten = float(np.clip(self.energies[a_idx] * self.energies[b_idx], 0, 1))
+            if burst:
+                inten = max(inten, 0.8)   # a drop's storm must actually read
             self.active_lightning.append((pair[0], pair[1], inten, 0.0))
             existing.add(pair)
 

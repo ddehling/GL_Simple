@@ -282,11 +282,27 @@ class WeatherStateController:
             # BeatDetector in Stories_OGL.send_variables().
             "beat_flash_amount": self.weather_params.get("beat_flash_amount", 0.0),
             "strobe_rate": self.weather_params.get("strobe_rate", 0.0),
+            "strobe_brightness": self.weather_params.get("strobe_brightness", 0.0),
             "laser_density": self.weather_params.get("laser_density", 0.0),
             "eq_gain": self.weather_params.get("eq_gain", 0.0),
             "eq_color_mode": self.weather_params.get("eq_color_mode", 0.0),
             "club_energy": self.weather_params.get("club_energy", 0.0),
             "club_palette": self.weather_params.get("club_palette", 0.0),
+            # Club pattern levels (one per audio-reactive pattern; 0 = out).
+            "orb_level": self.weather_params.get("orb_level", 0.0),
+            "tunnel_level": self.weather_params.get("tunnel_level", 0.0),
+            "star_field_level": self.weather_params.get("star_field_level", 0.0),
+            "shockwave_level": self.weather_params.get("shockwave_level", 0.0),
+            "kick_flare_level": self.weather_params.get("kick_flare_level", 0.0),
+            "sparkle_level": self.weather_params.get("sparkle_level", 0.0),
+            "chaser_level": self.weather_params.get("chaser_level", 0.0),
+            "ribbon_level": self.weather_params.get("ribbon_level", 0.0),
+            "horizon_glow_level": self.weather_params.get("horizon_glow_level", 0.0),
+            "radar_sweep_level": self.weather_params.get("radar_sweep_level", 0.0),
+            "milk_echo_level": self.weather_params.get("milk_echo_level", 0.0),
+            "mandala_level": self.weather_params.get("mandala_level", 0.0),
+            "flow_field_level": self.weather_params.get("flow_field_level", 0.0),
+            "wave_dance_level": self.weather_params.get("wave_dance_level", 0.0),
             # ── Weight of Light "Elements" realm params ──────────────
             # Per-theme intensity gates consumed by the elements_* / wol_*
             # background shaders. Each theme layer renders ~0 alpha when

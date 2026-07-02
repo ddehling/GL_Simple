@@ -561,7 +561,29 @@ class MicrophoneAnalyzer:
             'sensitivity': self._sensitivity
         }
 
-    
+    def get_waveform(self, n=128, window=2048):
+        """Latest TIME-DOMAIN waveform, AGC-normalized to roughly [-1, 1].
+
+        Returns ``n`` samples downsampled from the most recent ``window``
+        mono samples (~46ms at 44.1k). Normalized against a slow-decaying
+        peak so quiet music still draws a full wave and silence draws a
+        flat line. Consumed by MilkDrop-style oscilloscope shaders
+        (published as outstate['waveform']).
+        """
+        buf = self.audio_buffer[-window:]
+        step = max(1, window // n)
+        usable = step * n
+        if buf.shape[0] < usable:
+            return np.zeros(n, dtype=np.float32)
+        w = buf[-usable:].reshape(n, step).mean(axis=1)
+        peak = float(np.max(np.abs(w))) if w.size else 0.0
+        self._wave_peak = max(getattr(self, '_wave_peak', 1e-6) * 0.995,
+                              peak, 1e-6)
+        # Silence gate: don't amplify noise up to full scale.
+        if self._wave_peak < 1e-4:
+            return np.zeros(n, dtype=np.float32)
+        return np.clip(w / self._wave_peak, -1.0, 1.0).astype(np.float32)
+
     def get_current_bands(self, normalize='none'):
         """
         Get just the current frame's band values
@@ -672,12 +694,23 @@ class MicrophoneAnalyzer:
         self._sc_stop.clear()
 
         def _loop():
+            # soundcard warns on every missed capture packet ("data
+            # discontinuity in recording"). Under a busy render loop the
+            # Python capture thread occasionally misses one; a dropped ~10ms
+            # block is invisible to the 40fps FFT analysis, so the warning
+            # is pure log spam - silence it.
+            import warnings
+            warnings.filterwarnings(
+                "ignore", message="data discontinuity in recording")
             try:
+                # Read 4 callback blocks (~46ms) per wakeup: fewer thread
+                # wakeups = far fewer missed packets in the first place.
+                chunk = self.CALLBACK_BLOCKSIZE * 4
                 with mic.recorder(samplerate=self.RATE, channels=2,
                                   blocksize=self.CALLBACK_BLOCKSIZE) as rec:
                     print(f"[Audio] source=loopback via soundcard '{mic.name}' @ {self.RATE} Hz")
                     while not self._sc_stop.is_set():
-                        data = rec.record(numframes=self.CALLBACK_BLOCKSIZE)
+                        data = rec.record(numframes=chunk)
                         # Already at target rate; _to_target just downmixes.
                         self._ingest(self._to_target(data, self.RATE))
             except Exception as e:

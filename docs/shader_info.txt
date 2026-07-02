@@ -170,6 +170,45 @@ the story_* variables published by NarrativePlayer.
 | 0.30 | two_lights (the pair: orbit, freeze, phantom afterimage, touch) | narrative |
 | 0.20 | heart_tide (still-water mirror, rim-lit waterline) | state |
 
+## Club / DJ realm z-band table (canonical, July 2026)
+
+Seventeen audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
+layers (eq_bars/balls/lasers/strobe) predate the depth-band conversion and
+still flip GL_ALWAYS internally (legacy); everything newer uses the
+depth-based approach — new club effects must too.
+
+| z | Effect | Level param | Notes |
+|---|---|---|---|
+| 0.92 | club_horizon_glow | horizon_glow_level | sub-bass rim breathing at the outer edge |
+| 0.85 | club_spectrum_stars | star_field_level | norm_long_relu band glints |
+| 0.78 | club_mandala | mandala_level | N-way kaleidoscope feedback (fold morphs per phrase), mid/high punches stamp mirrored shapes |
+| 0.75 | club_milk_echo | milk_echo_level | MilkDrop-style feedback warp: outward-streaming trails + spectrum waveform ring + beat-swelling video echo, kaleidoscope on drops |
+| 0.73 | club_flow_field | flow_field_level | motion-vector grid advection: punches drip colored ink into a churning pool |
+| 0.72 | club_ribbon | ribbon_level | mid-driven liquid ribbons |
+| 0.70 | club_tunnel | tunnel_level | dense-dim bed (alpha cap 0.35) |
+| 0.65 | club_sparkle | sparkle_level | hi-hat transient glints |
+| 0.63 | club_wave_dance | wave_dance_level | time-domain oscilloscope, 4 MilkDrop wave modes cycling per phrase (reads outstate['waveform']) |
+| 0.60 | club_eq_bars | eq_gain | 32-band bars + peak-hold caps |
+| 0.55 | club_balls (audio_balls) | orb_level | real-feet orbs + lightning |
+| 0.52 | club_radar_sweep | radar_sweep_level | one arm per 4-beat bar |
+| 0.50 | club_lasers | laser_density | crossing scissor beams from 2 corner emitters, complementary hues |
+| 0.48 | club_chaser | chaser_level | marquee chase dots, one step/beat |
+| 0.45 | club_kick_flare | kick_flare_level | star-burst rays on each kick |
+| 0.40 | club_shockwave | shockwave_level | bass rings in real feet |
+| 0.30 | fireworks_burst one-shot | (event) | audio_balls at a distinct depth |
+| 0.05 | club_strobe | beat_flash_amount / strobe_* | per-flash stencils (wedges/arcs/checker), full-bright cells only (never full-field, never dim washes) |
+
+Club conventions: every pattern self-gates on its LEVEL PARAM (a normal
+weather param, default 0 -> INVISIBLE) and hue-shifts from ``club_palette``
+— states mix scenes by dialing a few levels up, and patterns crossfade
+in/out through ordinary state-transition param interpolation, exactly like
+the seasonal sets. Adding a club pattern = new level param (remember
+``lib/weather_state.py get_state_output``!) + a self-gating shader + a slot
+in this table. Beat-locked motion must gate on ``beat_confidence`` and
+free-run below ~0.3 (see shader_audio_reactivity.md). The strobe stays
+reserved for beats/drops and is SECTORED — never light the full field
+(see feedback_no_fullfield_flashes).
+
 Other realms (cyberpunk, BART) still use the legacy Pattern B
 priority-based ordering documented below. They'll be migrated next.
 Do NOT introduce new effects that violate the hard rules — even in

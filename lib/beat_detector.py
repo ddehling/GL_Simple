@@ -33,6 +33,15 @@ Published keys (set in send_variables):
   bpm             float - smoothed tempo estimate (0 when no audio)
   beat_phase      float - 0..1 metronome, locked to the beat
   beat_intensity  float - raw onset strength, for scaling flash amount
+  beat_confidence float - 0..1 tempo+phase lock quality; gate beat-locked
+                          visuals on this so they degrade to free-run
+                          instead of misfiring on garbage phase
+  beat_count      int   - monotonic beat index (never resets while running)
+  bar_phase       float - 0..1 over a 4-beat bar. The bar ORIGIN IS
+  phrase_phase    float - 0..1 over a 16-beat phrase.  ARBITRARY - we count
+                          beats from detector start, we do not detect the
+                          musical downbeat. Use for slow cyclic evolution,
+                          not "flash on the One".
 """
 
 import math
@@ -73,20 +82,38 @@ class BeatDetector:
         self._decay_tau = 0.12     # flash-envelope time constant
         self._last_strength = 0.0
 
+        # --- Confidence + musical counting ---
+        self._count = 0            # monotonic beat index
+        self._q_tempo = 0.0        # how much the winning autocorr lag stands out
+        self._q_phase = 0.0        # PLL lock quality (from onset phase error)
+        self._phase_err_ema = 0.25 # EMA of |phase error| at strong onsets
+        self._confidence = 0.0     # smoothed q_tempo * q_phase
+        self._conf_tau = 1.0
+        self._q_phase_bleed_tau = 2.5   # q_phase -> 0 with no strong onsets
+
     # ------------------------------------------------------------------
     def update(self, sound, dt):
         """Advance one frame. ``sound`` is outstate['sound'] (or None)."""
         try:
             return self._update(sound, dt)
         except Exception:
-            return {"onset": False, "decay": self._decay, "bpm": 0.0,
-                    "phase": self._phase, "strength": 0.0}
+            return self._result(False, 0.0, bpm=0.0)
+
+    def _result(self, onset, strength, bpm):
+        phase = self._phase % 1.0
+        return {"onset": onset, "decay": self._decay, "bpm": bpm,
+                "phase": phase, "strength": strength,
+                "confidence": self._confidence,
+                "count": self._count,
+                "bar_phase": ((self._count % 4) + phase) / 4.0,
+                "phrase_phase": ((self._count % 16) + phase) / 16.0}
 
     def _idle(self, dt):
         """No usable audio: bleed the envelope, hold the phase, no tempo."""
         self._decay *= math.exp(-dt / self._decay_tau)
-        return {"onset": False, "decay": self._decay, "bpm": 0.0,
-                "phase": self._phase, "strength": 0.0}
+        self._q_phase *= math.exp(-dt / self._q_phase_bleed_tau)
+        self._confidence += (0.0 - self._confidence) * (1.0 - math.exp(-dt / self._conf_tau))
+        return self._result(False, 0.0, bpm=0.0)
 
     def _update(self, sound, dt):
         dt = float(dt) if dt and dt > 0.0 else (1.0 / FPS)
@@ -132,6 +159,17 @@ class BeatDetector:
         if strong and self._have_tempo:
             err = self._phase - round(self._phase)   # signed distance to a tick, [-0.5,0.5]
             self._phase -= self._pll_gain * err
+            # Lock quality: small |err| at onsets means the oscillator is
+            # sitting on the kicks. |err| is in [0, 0.5]; 1/6 cycle off -> 0.
+            self._phase_err_ema = 0.9 * self._phase_err_ema + 0.1 * abs(err)
+            self._q_phase = max(0.0, min(1.0, 1.0 - 3.0 * self._phase_err_ema))
+        else:
+            # No evidence this frame: let lock quality bleed away slowly so
+            # confidence falls off during silence / beatless passages.
+            self._q_phase *= math.exp(-dt / self._q_phase_bleed_tau)
+
+        target_conf = (self._q_tempo * self._q_phase) if self._have_tempo else 0.0
+        self._confidence += (target_conf - self._confidence) * (1.0 - math.exp(-dt / self._conf_tau))
 
         # Emit a beat when the oscillator crosses a cycle boundary.
         onset = False
@@ -140,12 +178,12 @@ class BeatDetector:
             if self._have_tempo:
                 onset = True
                 self._decay = 1.0
+                self._count += 1
         if not onset:
             self._decay *= math.exp(-dt / self._decay_tau)
 
-        return {"onset": onset, "decay": self._decay,
-                "bpm": (self._bpm if self._have_tempo else 0.0),
-                "phase": self._phase % 1.0, "strength": onset_strength}
+        return self._result(onset, onset_strength,
+                            bpm=(self._bpm if self._have_tempo else 0.0))
 
     # ------------------------------------------------------------------
     def _estimate_tempo(self):
@@ -165,6 +203,7 @@ class BeatDetector:
         max_lag = min(max_lag, len(ac) - 1)
 
         best_lag, best_score = 0, -1.0
+        score_sum, score_n = 0.0, 0
         for lag in range(min_lag, max_lag + 1):
             # Comb / harmonic sum: a true beat period also has peaks at 2x/3x
             # the lag, so summing them favours the fundamental over a random
@@ -177,11 +216,22 @@ class BeatDetector:
             bpm = 60.0 * FPS / lag
             if self._pref_lo <= bpm <= self._pref_hi:
                 score *= 1.15                      # gentle dance-range bias
+            score_sum += score
+            score_n += 1
             if score > best_score:
                 best_score, best_lag = score, lag
 
         if best_lag <= 0:
             return
+        # Tempo quality: how much the winning lag stands out above the comb-sum
+        # floor. Scores are sums of autocorrelation coefficients, so a real
+        # groove peaks around 0.5-1.5 while noise sits near 0; an absolute
+        # margin over the (non-negative) mean is robust where a ratio blows
+        # up on a near-zero denominator.
+        mean_score = score_sum / max(1, score_n)
+        q = (best_score - max(mean_score, 0.0)) / 0.5
+        q = max(0.0, min(1.0, q))
+        self._q_tempo = 0.8 * self._q_tempo + 0.2 * q
         new_bpm = 60.0 * FPS / best_lag
         if not self._have_tempo:
             self._bpm = new_bpm
