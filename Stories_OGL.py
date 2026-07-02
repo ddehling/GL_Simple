@@ -868,6 +868,19 @@ class EnvironmentalSystem:
         # publish, and this block is a no-op. The source node id is
         # published alongside the state name so every log line names
         # which node fired the trigger.
+        # Service an event request published by a director event this frame
+        # (e.g. the club director firing a one-shot on a detected drop).
+        # Value: (event_name, duration_seconds). Unknown names are logged
+        # and ignored by _schedule_event_from_map.
+        ev_req = self.scheduler.state.pop('_event_request', None)
+        if ev_req is not None:
+            try:
+                ev_name, ev_dur = ev_req
+                self._schedule_event_from_map(str(ev_name), 0, float(ev_dur),
+                                              frame_id=0)
+            except (TypeError, ValueError) as e:
+                print(f"[EVENT] bad _event_request {ev_req!r}: {e}")
+
         req      = self.scheduler.state.pop('_weather_transition_request', None)
         src_node = self.scheduler.state.pop('_weather_transition_node', None)
         if req is not None:
@@ -2067,6 +2080,13 @@ class EnvironmentalSystem:
 
     def random_state_change(self):
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
+            return
+
+        # A director event may HOLD transitions for a moment (e.g. the club
+        # director freezes scene changes while a build-up is running so the
+        # drop lands in the room that earned it). Wall-clock deadline in
+        # scheduler.state; expired or absent = no hold.
+        if self.scheduler.state.get('_transition_hold_until', 0.0) > time.time():
             return
 
         # Deterministic per-state duration (Weight of Light "Elements" set):
