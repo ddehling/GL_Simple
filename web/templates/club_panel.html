@@ -47,6 +47,53 @@
         .club-hold-btn.on { border-color: #aa3; background: #4a3a1a; color: #fd8; }
         .bias-labels { display: flex; justify-content: space-between; font-size: 0.78em; opacity: 0.7; }
         #club-active-wrap { display: none; }
+        #club-audio-canvas {
+            width: 100%; height: 110px; display: block;
+            background: #101014; border-radius: 6px;
+        }
+        .meter-grid { display: flex; gap: 10px; margin-top: 10px; align-items: flex-end; }
+        .meter { flex: 1; text-align: center; font-size: 0.7em; opacity: 0.85; }
+        .meter .meter-track {
+            height: 46px; background: #1c1c22; border-radius: 4px;
+            position: relative; overflow: hidden; margin-bottom: 3px;
+        }
+        .meter .meter-fill {
+            position: absolute; bottom: 0; left: 0; right: 0; height: 0%;
+            border-radius: 4px;
+        }
+        .beat-dot {
+            width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 3px auto;
+            background: #222; transition: none;
+        }
+        .mix-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .mix-chip {
+            font-size: 0.75em; padding: 3px 9px; border-radius: 11px;
+            background: #26262e; border: 1px solid #444;
+        }
+        .mix-chip .lvl { opacity: 0.55; margin-left: 4px; }
+        .theme-row { display: flex; gap: 6px; flex-wrap: wrap; }
+        .theme-btn {
+            flex: 1; min-width: 70px; padding: 8px 4px; font-size: 0.82em;
+            border-radius: 6px; border: 1px solid #555; background: #26262e;
+            color: #ccc; cursor: pointer;
+        }
+        .theme-btn.on { border-color: #4bd; background: #123a44; color: #9ef; }
+        .hue-slider {
+            -webkit-appearance: none; appearance: none; width: 100%; height: 14px;
+            border-radius: 7px; outline: none;
+            background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+        }
+        .palette-row { display: flex; align-items: center; gap: 10px; }
+        .palette-swatch {
+            width: 30px; height: 30px; border-radius: 6px; border: 2px solid #555;
+            flex-shrink: 0;
+        }
+        .palette-lock-btn {
+            padding: 7px 12px; border-radius: 6px; border: 1px solid #555;
+            background: #26262e; color: #ccc; cursor: pointer; font-size: 0.82em;
+            flex-shrink: 0;
+        }
+        .palette-lock-btn.on { border-color: #da5; background: #443512; color: #fd9; }
     </style>
 </head>
 <body>
@@ -113,6 +160,32 @@
                 </div>
             </div>
 
+            <!-- Sound input -->
+            <div class="section-panel">
+                <div class="section-header"><h3>Sound</h3>
+                    <span id="club-audio-src" style="font-size:0.78em; opacity:0.6"></span></div>
+                <canvas id="club-audio-canvas"></canvas>
+                <div class="meter-grid">
+                    <div class="meter"><div class="beat-dot" id="beat-dot"></div>BEAT</div>
+                    <div class="meter"><div class="meter-track">
+                        <div class="meter-fill" id="m-bass" style="background:#e55"></div></div>BASS</div>
+                    <div class="meter"><div class="meter-track">
+                        <div class="meter-fill" id="m-mid" style="background:#5c5"></div></div>MID</div>
+                    <div class="meter"><div class="meter-track">
+                        <div class="meter-fill" id="m-high" style="background:#59e"></div></div>HIGH</div>
+                    <div class="meter"><div class="meter-track">
+                        <div class="meter-fill" id="m-energy" style="background:#caa14a"></div></div>ENERGY</div>
+                    <div class="meter"><div class="meter-track">
+                        <div class="meter-fill" id="m-build" style="background:#8bf"></div></div>BUILD</div>
+                </div>
+            </div>
+
+            <!-- What's rendering right now -->
+            <div class="section-panel">
+                <div class="section-header"><h3>In the Mix</h3></div>
+                <div class="mix-chips" id="club-mix">--</div>
+            </div>
+
             <!-- Operator controls -->
             <div class="section-panel">
                 <div class="section-header"><h3>Steer</h3></div>
@@ -122,6 +195,42 @@
                 <div class="bias-labels"><span>&larr; calmer</span>
                     <a href="#" id="bias-reset" style="opacity:0.7">reset</a>
                     <span>hotter &rarr;</span></div>
+
+                <div style="margin-top:16px">
+                    <label class="control-label"><span>Theme</span></label>
+                    <div class="theme-row">
+                        <button class="theme-btn on" data-theme="">Auto</button>
+                        <button class="theme-btn" data-theme="organic">Organic</button>
+                        <button class="theme-btn" data-theme="geometric">Geometric</button>
+                        <button class="theme-btn" data-theme="cosmic">Cosmic</button>
+                        <button class="theme-btn" data-theme="heavy">Heavy</button>
+                    </div>
+                    <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
+                        Leans room picks toward a visual family. The music still leads.
+                    </div>
+                </div>
+
+                <div style="margin-top:16px">
+                    <label class="control-label"><span>Color</span></label>
+                    <div class="palette-row">
+                        <div class="palette-swatch" id="palette-swatch"></div>
+                        <input type="range" class="hue-slider" id="club-hue"
+                               min="0" max="1" step="0.005" value="0">
+                        <button class="palette-lock-btn" id="palette-lock">AUTO</button>
+                    </div>
+                    <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
+                        AUTO follows each scene's palette; LOCK pins every pattern to the chosen hue.
+                    </div>
+                </div>
+
+                <div style="margin-top:16px">
+                    <label class="control-label"><span>Density</span>
+                        <span id="density-value">1.00</span></label>
+                    <input type="range" id="club-density" min="0.4" max="1.4" step="0.02" value="1">
+                    <div class="bias-labels"><span>&larr; sparse</span>
+                        <a href="#" id="density-reset" style="opacity:0.7">reset</a>
+                        <span>dense &rarr;</span></div>
+                </div>
 
                 <div style="margin-top:16px">
                     <button class="club-hold-btn" id="club-hold">HOLD THIS ROOM</button>
@@ -160,6 +269,56 @@
 
         let holdOn = false;
         let biasDragging = false;
+        let densityDragging = false;
+        let paletteLocked = false;
+        let hueDragging = false;
+
+        // ---- Sound panel: spectrum + rhythm meters (30 Hz audio_update) ----
+        const audioCanvas = document.getElementById('club-audio-canvas');
+        const actx = audioCanvas.getContext('2d');
+        let lastAudio = null;
+
+        socket.on('audio_update', (a) => { lastAudio = a; });
+
+        function drawAudio() {
+            requestAnimationFrame(drawAudio);
+            const a = lastAudio;
+            if (!a || !a.bands) return;
+            const rect = audioCanvas.getBoundingClientRect();
+            if (audioCanvas.width !== rect.width * devicePixelRatio) {
+                audioCanvas.width = rect.width * devicePixelRatio;
+                audioCanvas.height = rect.height * devicePixelRatio;
+            }
+            const w = audioCanvas.width, h = audioCanvas.height;
+            actx.clearRect(0, 0, w, h);
+            const n = a.bands.length;
+            const barW = w / n - 2;
+            for (let i = 0; i < n; i++) {
+                const val = Math.min(a.bands[i] / 3.0, 1.0);
+                const hue = 180 + (i / n) * 140;
+                const bright = i === a.peak_band ? 75 : 58;
+                actx.fillStyle = `hsla(${hue}, 85%, ${bright}%, 0.9)`;
+                actx.fillRect(i * (barW + 2), h - val * h, barW, val * h);
+            }
+            // Drop flash: wash the whole strip white as drop_decay rings out.
+            if (a.drop_decay > 0.03) {
+                actx.fillStyle = `rgba(255,255,255,${a.drop_decay * 0.35})`;
+                actx.fillRect(0, 0, w, h);
+            }
+
+            const p = a.punch || [0, 0, 0];
+            document.getElementById('m-bass').style.height = Math.min(p[0], 1) * 100 + '%';
+            document.getElementById('m-mid').style.height = Math.min(p[1], 1) * 100 + '%';
+            document.getElementById('m-high').style.height = Math.min(p[2], 1) * 100 + '%';
+            document.getElementById('m-energy').style.height = Math.min(a.energy || 0, 1) * 100 + '%';
+            document.getElementById('m-build').style.height = Math.min(a.build || 0, 1) * 100 + '%';
+            const bd = a.beat_decay || 0;
+            document.getElementById('beat-dot').style.background =
+                `rgba(${80 + 175 * bd}, ${80 + 175 * bd}, ${90 + 165 * bd}, 1)`;
+            const src = document.getElementById('club-audio-src');
+            src.textContent = `${a.source || '?'} · power ${(a.total_power || 0).toFixed(0)}`;
+        }
+        requestAnimationFrame(drawAudio);
 
         socket.on('state_update', (s) => {
             const active = s.current_weather_set === 'club' && s.club;
@@ -193,11 +352,36 @@
                 `<span class="club-badge">bias ${c.heat_bias > 0 ? '+' : ''}${c.heat_bias.toFixed(2)}</span>`);
             document.getElementById('club-badges').innerHTML = badges.join('');
 
+            // In the mix: live pattern levels (post-density, from the director).
+            const levels = c.levels || {};
+            const chips = Object.entries(levels)
+                .sort((x, y) => y[1] - x[1])
+                .map(([k, v]) => `<span class="mix-chip">${k.replace(/_/g, ' ')}` +
+                                 `<span class="lvl">${v.toFixed(2)}</span></span>`);
+            document.getElementById('club-mix').innerHTML =
+                chips.length ? chips.join('') : '<span style="opacity:0.5">nothing yet</span>';
+
             // Reflect server-side control state (unless mid-drag).
             const ctl = s.club_controls || {};
             if (!biasDragging) {
                 document.getElementById('club-bias').value = ctl.heat_bias || 0;
                 document.getElementById('bias-value').textContent = (ctl.heat_bias || 0).toFixed(2);
+            }
+            if (!densityDragging) {
+                document.getElementById('club-density').value = ctl.density || 1;
+                document.getElementById('density-value').textContent = (ctl.density || 1).toFixed(2);
+            }
+            document.querySelectorAll('.theme-btn').forEach(b =>
+                b.classList.toggle('on', b.dataset.theme === (ctl.theme || '')));
+            paletteLocked = ctl.palette_override != null;
+            const lockBtn = document.getElementById('palette-lock');
+            lockBtn.classList.toggle('on', paletteLocked);
+            lockBtn.textContent = paletteLocked ? 'LOCKED' : 'AUTO';
+            // Swatch always shows what the patterns are actually using.
+            document.getElementById('palette-swatch').style.background =
+                `hsl(${(c.palette || 0) * 360}, 85%, 55%)`;
+            if (!hueDragging && !paletteLocked) {
+                document.getElementById('club-hue').value = c.palette || 0;
             }
             holdOn = !!ctl.hold_room;
             const hbtn = document.getElementById('club-hold');
@@ -218,6 +402,49 @@
             bias.value = 0;
             document.getElementById('bias-value').textContent = '0.00';
             socket.emit('set_club_heat_bias', { value: 0 });
+        });
+
+        document.querySelectorAll('.theme-btn').forEach(b => {
+            b.addEventListener('click', () => {
+                socket.emit('set_club_theme', { theme: b.dataset.theme });
+                document.querySelectorAll('.theme-btn').forEach(x =>
+                    x.classList.toggle('on', x === b));
+            });
+        });
+
+        const hue = document.getElementById('club-hue');
+        hue.addEventListener('pointerdown', () => hueDragging = true);
+        hue.addEventListener('pointerup', () => hueDragging = false);
+        hue.addEventListener('input', () => {
+            // Moving the hue slider implies you want the lock.
+            paletteLocked = true;
+            socket.emit('set_club_palette', { value: parseFloat(hue.value) });
+            const lockBtn = document.getElementById('palette-lock');
+            lockBtn.classList.add('on');
+            lockBtn.textContent = 'LOCKED';
+        });
+        document.getElementById('palette-lock').addEventListener('click', () => {
+            paletteLocked = !paletteLocked;
+            socket.emit('set_club_palette',
+                { value: paletteLocked ? parseFloat(hue.value) : null });
+            const lockBtn = document.getElementById('palette-lock');
+            lockBtn.classList.toggle('on', paletteLocked);
+            lockBtn.textContent = paletteLocked ? 'LOCKED' : 'AUTO';
+        });
+
+        const density = document.getElementById('club-density');
+        density.addEventListener('pointerdown', () => densityDragging = true);
+        density.addEventListener('pointerup', () => densityDragging = false);
+        density.addEventListener('input', () => {
+            const v = parseFloat(density.value);
+            document.getElementById('density-value').textContent = v.toFixed(2);
+            socket.emit('set_club_density', { value: v });
+        });
+        document.getElementById('density-reset').addEventListener('click', (e) => {
+            e.preventDefault();
+            density.value = 1;
+            document.getElementById('density-value').textContent = '1.00';
+            socket.emit('set_club_density', { value: 1.0 });
         });
 
         document.getElementById('club-hold').addEventListener('click', () => {

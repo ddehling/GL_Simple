@@ -1675,12 +1675,20 @@ class EnvironmentalSystem:
         try:
             current_bands = self.analyzer.get_current_bands(normalize='long') if self.analyzer else None
             if current_bands is not None:
+                st = self.scheduler.state
                 audio_summary = {
                     "bands": current_bands.tolist(),
                     "peak_band": int(np.argmax(current_bands)),
                     "total_power": float(np.sum(current_bands)),
                     "sensitivity": self.analyzer.sensitivity,
                     "source": getattr(self.analyzer, "_active_source", None),
+                    # Rhythm/structure signals for the club page's meters.
+                    "beat_decay": float(st.get("beat_decay", 0.0) or 0.0),
+                    "punch": [float(st.get(k, 0.0) or 0.0)
+                              for k in ("bass_punch", "mid_punch", "high_punch")],
+                    "energy": float(st.get("audio_energy", 0.0) or 0.0),
+                    "build": float(st.get("build_level", 0.0) or 0.0),
+                    "drop_decay": float(st.get("drop_decay", 0.0) or 0.0),
                 }
                 with self.web_controller._dict_lock:
                     self.web_controller.control_dict['audio_summary'] = audio_summary
@@ -1794,6 +1802,9 @@ class EnvironmentalSystem:
         club_heat_bias = 0.0
         club_hold = False
         club_force = False
+        club_palette_override = None
+        club_density = 1.0
+        club_theme = ''
         if self.enable_web_control and self.web_controller is not None:
             with self.web_controller._dict_lock:
                 season_locked = bool(self.web_controller.control_dict.get('season_locked', False))
@@ -1801,6 +1812,9 @@ class EnvironmentalSystem:
                 # Club-page operator controls (consumed by club_director).
                 club_heat_bias = float(self.web_controller.control_dict.get('club_heat_bias', 0.0) or 0.0)
                 club_hold = bool(self.web_controller.control_dict.get('club_hold_room', False))
+                club_palette_override = self.web_controller.control_dict.get('club_palette_override')
+                club_density = float(self.web_controller.control_dict.get('club_density', 1.0) or 1.0)
+                club_theme = self.web_controller.control_dict.get('club_theme', '') or ''
                 if self.web_controller.control_dict.get('club_force_drop'):
                     club_force = True          # one-shot: consume the flag
                     self.web_controller.control_dict['club_force_drop'] = False
@@ -1814,6 +1828,9 @@ class EnvironmentalSystem:
         state['club_heat_bias'] = club_heat_bias
         state['club_hold_room'] = club_hold
         state['club_force_drop'] = club_force
+        state['club_palette_override'] = club_palette_override
+        state['club_density'] = club_density
+        state['club_theme'] = club_theme
         output = self.weather_state.get_state_output(self.season, self.current_time)
 
         # Apply global modifiers and overrides to the output (not to weather_params)

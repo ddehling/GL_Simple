@@ -878,6 +878,9 @@ class WebController:
                     "club_controls": {
                         "heat_bias": self.control_dict.get('club_heat_bias', 0.0),
                         "hold_room": self.control_dict.get('club_hold_room', False),
+                        "palette_override": self.control_dict.get('club_palette_override'),
+                        "density": self.control_dict.get('club_density', 1.0),
+                        "theme": self.control_dict.get('club_theme', ''),
                     },
                 }
             emit('state_update', _sanitize_for_json(snapshot))
@@ -973,6 +976,41 @@ class WebController:
             """Fire a drop moment now (one-shot; engine consumes the flag)."""
             with self._dict_lock:
                 self.control_dict['club_force_drop'] = True
+
+        @self.socketio.on('set_club_palette')
+        def handle_set_club_palette(data):
+            """Lock the club palette to a hue (value=None returns to auto)."""
+            value = (data or {}).get('value')
+            if value is not None:
+                try:
+                    value = float(value) % 1.0
+                except (TypeError, ValueError):
+                    return
+            with self._dict_lock:
+                self.control_dict['club_palette_override'] = value
+            self._values_cache = None
+
+        @self.socketio.on('set_club_density')
+        def handle_set_club_density(data):
+            """Scale every club pattern level (0.4 sparse .. 1.4 dense)."""
+            try:
+                value = float((data or {}).get('value', 1.0))
+            except (TypeError, ValueError):
+                return
+            with self._dict_lock:
+                self.control_dict['club_density'] = max(0.4, min(1.4, value))
+            self._values_cache = None
+
+        CLUB_THEMES = {'', 'organic', 'geometric', 'cosmic', 'heavy'}
+
+        @self.socketio.on('set_club_theme')
+        def handle_set_club_theme(data):
+            """Lean the director's room picks toward a visual family."""
+            theme = (data or {}).get('theme', '')
+            if theme in CLUB_THEMES:
+                with self._dict_lock:
+                    self.control_dict['club_theme'] = theme
+                self._values_cache = None
 
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
@@ -1118,6 +1156,9 @@ class WebController:
                                 "club_controls": {
                                     "heat_bias": self.control_dict.get('club_heat_bias', 0.0),
                                     "hold_room": self.control_dict.get('club_hold_room', False),
+                                    "palette_override": self.control_dict.get('club_palette_override'),
+                                    "density": self.control_dict.get('club_density', 1.0),
+                                    "theme": self.control_dict.get('club_theme', ''),
                                 },
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
