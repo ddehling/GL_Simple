@@ -212,6 +212,42 @@ def stress_suites(check):
     check("cold start: lock recovers", r["conf"] > 0.4 and abs(r["bpm"] - BPM) / BPM < 0.05,
           f"18s after music starts: bpm={r['bpm']:.1f} conf={r['conf']:.2f}")
 
+    # --- Track change: the DJ mixes 128 -> 100 BPM ---------------------------
+    def groove_at(bpm, seconds):
+        n2 = int(seconds * RATE)
+        x2 = np.zeros(n2)
+        rng2 = np.random.RandomState(7)
+        beat2 = 60.0 / bpm
+        tg = 0.0
+        while tg < seconds:
+            i0 = int(tg * RATE); dur = int(0.10 * RATE)
+            if i0 + dur <= n2:
+                tl = np.arange(dur) / RATE
+                x2[i0:i0+dur] += 0.9 * np.sin(2*np.pi*55.0*tl) * np.exp(-tl/0.04)
+            tg += beat2
+        tg = 0.0
+        while tg < seconds:
+            i0 = int(tg * RATE); dur = int(0.03 * RATE)
+            if i0 + dur <= n2:
+                burst = rng2.randn(dur) * np.exp(-np.arange(dur)/(0.008*RATE))
+                x2[i0:i0+dur] += 0.10 * np.diff(np.concatenate([[0.0], burst]))
+            tg += beat2 / 2
+        tt2 = np.arange(n2) / RATE
+        return x2 + 0.03*np.sin(2*np.pi*440*tt2)
+    mix = np.concatenate([groove_at(128.0, 40.0),
+                          np.zeros(int(1.5 * RATE)),
+                          groove_at(100.0, 45.0)])
+    log, _ = run(mix)
+    r0 = at(log, 38.0)
+    check("track change: first tempo locked", abs(r0["bpm"] - 128.0) / 128.0 < 0.05,
+          f"bpm={r0['bpm']:.1f} before the change")
+    r1 = at(log, 55.0)
+    check("track change: re-locks new tempo", abs(r1["bpm"] - 100.0) / 100.0 < 0.05,
+          f"bpm={r1['bpm']:.1f} 13.5s after the change (want ~100)")
+    r2 = at(log, 62.0)
+    check("track change: confidence recovers", r2["conf"] > 0.4,
+          f"conf={r2['conf']:.2f} 20s after the change")
+
     # --- DC offset: a miswired line input ----------------------------------
     log, drops = run(synth_track() + 0.3)
     r = at(log, 25.0)

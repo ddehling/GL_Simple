@@ -100,6 +100,14 @@ class BeatDetector:
         self._q_phase_coast_tau = 15.0  # music present, kick resting
         self._q_phase_bleed_tau = 1.2   # true silence: die fast
         self._level_peak = 1e-9         # slow AGC peak for presence detection
+        # Escape hatches: the coast + syncopation gate + continuity bonus
+        # are individually right but collectively SELF-CONFIRMING - after a
+        # track change the new kicks land off the old grid and get rejected
+        # as "syncopation" while confidence coasts on nothing. So rejected
+        # onsets count against the grid, and sustained tempo disagreement
+        # forces a hard re-lock.
+        self._rejects = 0               # consecutive off-grid strong onsets
+        self._tempo_disagree = 0        # consecutive raw-winner disagreements
 
     # ------------------------------------------------------------------
     def update(self, sound, dt):
@@ -194,11 +202,24 @@ class BeatDetector:
             # lock statistic is what made confidence flap on real tracks.
             if abs(err) <= 0.25 or self._q_phase <= 0.25:
                 no_evidence = False
+                self._rejects = 0
                 self._phase -= self._pll_gain * err
                 # Lock quality: small |err| at onsets means the oscillator is
                 # sitting on the kicks. |err| is in [0, 0.5]; 1/6 cycle off -> 0.
                 self._phase_err_ema = 0.9 * self._phase_err_ema + 0.1 * abs(err)
                 self._q_phase = max(0.0, min(1.0, 1.0 - 3.0 * self._phase_err_ema))
+            else:
+                # An off-grid strong onset was rejected as syncopation. A
+                # few of those are normal; a steady stream means the GRID
+                # is wrong (track change) - surrender the lock so the next
+                # onset re-seats the phase.
+                self._rejects += 1
+                if self._rejects >= 20:
+                    # ~5s of nothing-but-off-grid hits: surrender softly
+                    # (just below the gate, so the next onset re-seats us).
+                    self._rejects = 0
+                    self._q_phase = min(self._q_phase, 0.24)
+                    self._phase_err_ema = 0.25
         if no_evidence:
             # Nothing said about the grid this frame. While music is still
             # playing this is a breakdown / syncopation - COAST (the tempo
@@ -241,6 +262,7 @@ class BeatDetector:
         max_lag = min(max_lag, len(ac) - 1)
 
         best_lag, best_score = 0, -1.0
+        raw_lag, raw_score = 0, -1.0    # winner WITHOUT the continuity bonus
         score_sum, score_n = 0.0, 0
         for lag in range(min_lag, max_lag + 1):
             # Comb / harmonic sum: a true beat period also has peaks at 2x/3x
@@ -257,6 +279,8 @@ class BeatDetector:
                 # (softened when chill support landed: tempo continuity now
                 # provides the stability this prior used to; at 1.15 it was
                 # dragging ~100 BPM downtempo up to a 126 BPM half-truth)
+            if score > raw_score:
+                raw_score, raw_lag = score, lag
             # Tempo continuity: once locked, the incumbent tempo (and its
             # neighbourhood) gets a bonus so soft material with several
             # plausible related lags doesn't flap between them.
@@ -266,6 +290,26 @@ class BeatDetector:
             score_n += 1
             if score > best_score:
                 best_score, best_lag = score, lag
+
+        # Hard re-lock: when the continuity-free winner keeps disagreeing
+        # with the incumbent AND keeps agreeing with ITSELF (a real tempo
+        # change is self-consistent; soft-material noise wanders), snap to
+        # it instead of letting the bonus pin us to a dead track.
+        raw_bpm = 60.0 * FPS / raw_lag if raw_lag > 0 else 0.0
+        if (self._have_tempo and raw_bpm > 0.0
+                and abs(raw_bpm - self._bpm) / self._bpm > 0.10
+                and abs(raw_bpm - getattr(self, '_last_raw_bpm', 0.0))
+                    / max(raw_bpm, 1.0) < 0.06):
+            self._tempo_disagree += 1
+            if self._tempo_disagree >= 15:     # ~3s of a CONSISTENT new tempo
+                self._bpm = raw_bpm
+                best_lag = raw_lag
+                self._tempo_disagree = 0
+                self._q_phase = min(self._q_phase, 0.2)   # re-seat the phase
+                self._phase_err_ema = 0.25
+        else:
+            self._tempo_disagree = 0
+        self._last_raw_bpm = raw_bpm
 
         if best_lag <= 0:
             return
