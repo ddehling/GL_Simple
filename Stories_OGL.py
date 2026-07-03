@@ -1735,6 +1735,11 @@ class EnvironmentalSystem:
                 d['fps'] = getattr(self, '_current_fps', 0)
                 d['fps_target'] = getattr(self, '_target_fps', 0)
                 d['fps_uncapped'] = getattr(self, '_uncapped_fps', 0)
+                # Club-page telemetry: only meaningful while the club set is
+                # active (the page and its nav tab hide otherwise).
+                d['club_director_info'] = (
+                    self.scheduler.state.get('club_director_info')
+                    if self.weather_set.current_set == 'club' else None)
                 d['active_effects'] = active_effects
                 d['ambient_sound'] = self.active_effects.get("ambient_sound")
                 d['allowed_output_params'] = self._get_allowed_output_params()
@@ -1786,10 +1791,19 @@ class EnvironmentalSystem:
         # Season can be manually locked to a user-chosen value via the web UI.
         season_locked = False
         season_override = None
+        club_heat_bias = 0.0
+        club_hold = False
+        club_force = False
         if self.enable_web_control and self.web_controller is not None:
             with self.web_controller._dict_lock:
                 season_locked = bool(self.web_controller.control_dict.get('season_locked', False))
                 season_override = self.web_controller.control_dict.get('season_override')
+                # Club-page operator controls (consumed by club_director).
+                club_heat_bias = float(self.web_controller.control_dict.get('club_heat_bias', 0.0) or 0.0)
+                club_hold = bool(self.web_controller.control_dict.get('club_hold_room', False))
+                if self.web_controller.control_dict.get('club_force_drop'):
+                    club_force = True          # one-shot: consume the flag
+                    self.web_controller.control_dict['club_force_drop'] = False
 
         if season_locked and season_override is not None:
             self.season = float(season_override) % 1.0
@@ -1797,6 +1811,9 @@ class EnvironmentalSystem:
             self.season = ((time.time() / 1800) * season_speed) % 1
 
         state = self.scheduler.state
+        state['club_heat_bias'] = club_heat_bias
+        state['club_hold_room'] = club_hold
+        state['club_force_drop'] = club_force
         output = self.weather_state.get_state_output(self.season, self.current_time)
 
         # Apply global modifiers and overrides to the output (not to weather_params)

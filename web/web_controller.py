@@ -252,6 +252,17 @@ class WebController:
             """Serve the weather set editor page."""
             return render_template('weather_editor.html')
         
+        @self.app.route('/club')
+        def club_panel():
+            return render_template('club_panel.html')
+
+        @self.app.route('/api/club/active')
+        def club_active():
+            """Whether the club set is live (gates the Club nav tab)."""
+            with self._dict_lock:
+                cur = self.control_dict.get('current_weather_set')
+            return jsonify({"active": cur == 'club'})
+
         @self.app.route('/preview')
         def preview():
             """Serve the live preview page."""
@@ -863,6 +874,11 @@ class WebController:
                     "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                     "active_effects": self.control_dict.get('active_effects', []),
                     "narrative_vars": list(self.control_dict.get('narrative_vars', [])),
+                    "club": self.control_dict.get('club_director_info'),
+                    "club_controls": {
+                        "heat_bias": self.control_dict.get('club_heat_bias', 0.0),
+                        "hold_room": self.control_dict.get('club_hold_room', False),
+                    },
                 }
             emit('state_update', _sanitize_for_json(snapshot))
 
@@ -933,6 +949,30 @@ class WebController:
                 if locked is not None:
                     self.control_dict['season_locked'] = bool(locked)
             self._values_cache = None
+
+        @self.socketio.on('set_club_heat_bias')
+        def handle_set_club_heat_bias(data):
+            """Operator calmer/hotter bias for the club music director."""
+            try:
+                value = float((data or {}).get('value', 0.0))
+            except (TypeError, ValueError):
+                return
+            with self._dict_lock:
+                self.control_dict['club_heat_bias'] = max(-0.35, min(0.35, value))
+            self._values_cache = None
+
+        @self.socketio.on('set_club_hold')
+        def handle_set_club_hold(data):
+            """Hold the current club room (director keeps choreographing)."""
+            with self._dict_lock:
+                self.control_dict['club_hold_room'] = bool((data or {}).get('hold', False))
+            self._values_cache = None
+
+        @self.socketio.on('force_club_drop')
+        def handle_force_club_drop(data=None):
+            """Fire a drop moment now (one-shot; engine consumes the flag)."""
+            with self._dict_lock:
+                self.control_dict['club_force_drop'] = True
 
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
@@ -1074,6 +1114,11 @@ class WebController:
                                 "current_weather": self.control_dict.get('current_weather', 'unknown'),
                                 "season": self.control_dict.get('season', 0.0),
                                 "season_locked": self.control_dict.get('season_locked', False),
+                                "club": self.control_dict.get('club_director_info'),
+                                "club_controls": {
+                                    "heat_bias": self.control_dict.get('club_heat_bias', 0.0),
+                                    "hold_room": self.control_dict.get('club_hold_room', False),
+                                },
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
                                 "ambient_sound": self.control_dict.get('ambient_sound'),

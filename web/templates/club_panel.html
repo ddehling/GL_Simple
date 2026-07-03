@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lucifera Club</title>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <link rel="stylesheet" href="/static/css/control_panel.css">
+    <style>
+        .club-inactive {
+            text-align: center; padding: 40px 20px; opacity: 0.6;
+            font-size: 1.05em; display: none;
+        }
+        .club-badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; min-height: 24px; }
+        .club-badge {
+            font-size: 0.75em; padding: 3px 10px; border-radius: 12px;
+            background: #333; border: 1px solid #555; letter-spacing: 0.05em;
+        }
+        .club-badge.hot { background: #4a1a1a; border-color: #a33; color: #f88; }
+        .club-badge.hold { background: #4a3a1a; border-color: #aa3; color: #fd8; }
+        .club-badge.build { background: #1a2a4a; border-color: #36a; color: #8bf; }
+        .heat-bar {
+            position: relative; height: 18px; border-radius: 9px;
+            background: linear-gradient(90deg, #234, #526, #a24, #f42);
+            margin: 6px 0 2px 0;
+        }
+        .heat-marker {
+            position: absolute; top: -4px; width: 4px; height: 26px;
+            border-radius: 2px; transform: translateX(-2px);
+        }
+        .heat-marker.room { background: #fff; box-shadow: 0 0 6px #fff; }
+        .heat-marker.target { background: #0ff; box-shadow: 0 0 6px #0ff; }
+        .heat-legend { display: flex; justify-content: space-between; font-size: 0.72em; opacity: 0.6; }
+        .char-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 0.8em; }
+        .char-row .bar-track { flex: 1; height: 8px; background: #222; border-radius: 4px; overflow: hidden; }
+        .char-row .bar-fill { height: 100%; border-radius: 4px; transition: width 0.2s; }
+        .club-drop-btn {
+            width: 100%; padding: 16px; font-size: 1.2em; font-weight: bold;
+            letter-spacing: 0.15em; border-radius: 8px; border: 2px solid #a33;
+            background: #401515; color: #f88; cursor: pointer;
+        }
+        .club-drop-btn:active { background: #a22; color: #fff; }
+        .club-hold-btn {
+            width: 100%; padding: 12px; font-size: 1.0em; border-radius: 8px;
+            border: 2px solid #555; background: #2a2a2a; color: #ccc; cursor: pointer;
+        }
+        .club-hold-btn.on { border-color: #aa3; background: #4a3a1a; color: #fd8; }
+        .bias-labels { display: flex; justify-content: space-between; font-size: 0.78em; opacity: 0.7; }
+        #club-active-wrap { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Lucifera Club</h1>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <a href="/" class="tab">Controls</a>
+            <a href="/preview" class="tab">Preview</a>
+            <a href="/weather_editor" class="tab">Editor</a>
+            <a href="/club" class="tab active" id="club-tab">Club</a>
+        </div>
+
+        <div class="club-inactive" id="club-inactive">
+            The club set isn't running right now.<br>
+            This page comes alive when the Club / DJ weather set is active.
+        </div>
+
+        <div id="club-active-wrap">
+            <!-- Director status -->
+            <div class="section-panel">
+                <div class="section-header"><h3>The Night</h3></div>
+                <div class="info-row">
+                    <span class="info-label">Room:</span>
+                    <span class="info-value" id="club-room">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Night phase:</span>
+                    <span class="info-value" id="club-phase">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Beat:</span>
+                    <span class="info-value" id="club-beat">--</span>
+                </div>
+                <div class="club-badges" id="club-badges"></div>
+
+                <div class="heat-bar">
+                    <div class="heat-marker room" id="marker-room" style="left:0%"></div>
+                    <div class="heat-marker target" id="marker-target" style="left:0%"></div>
+                </div>
+                <div class="heat-legend">
+                    <span>comedown</span>
+                    <span><span style="color:#fff">&#9646;</span> room &nbsp; <span style="color:#0ff">&#9646;</span> director's target</span>
+                    <span>peak</span>
+                </div>
+
+                <div style="margin-top:12px">
+                    <div class="char-row"><span style="width:38px">bass</span>
+                        <div class="bar-track"><div class="bar-fill" id="char-bass" style="background:#e55; width:0%"></div></div></div>
+                    <div class="char-row"><span style="width:38px">mids</span>
+                        <div class="bar-track"><div class="bar-fill" id="char-mid" style="background:#5c5; width:0%"></div></div></div>
+                    <div class="char-row"><span style="width:38px">highs</span>
+                        <div class="bar-track"><div class="bar-fill" id="char-high" style="background:#59e; width:0%"></div></div></div>
+                </div>
+                <div class="info-row" style="margin-top:8px">
+                    <span class="info-label" style="font-size:0.78em; opacity:0.6">Calibrated energy range:</span>
+                    <span class="info-value" id="club-cal" style="font-size:0.78em; opacity:0.6">--</span>
+                </div>
+            </div>
+
+            <!-- Operator controls -->
+            <div class="section-panel">
+                <div class="section-header"><h3>Steer</h3></div>
+                <label class="control-label"><span>Mood bias</span>
+                    <span id="bias-value">0.00</span></label>
+                <input type="range" id="club-bias" min="-0.35" max="0.35" step="0.01" value="0">
+                <div class="bias-labels"><span>&larr; calmer</span>
+                    <a href="#" id="bias-reset" style="opacity:0.7">reset</a>
+                    <span>hotter &rarr;</span></div>
+
+                <div style="margin-top:16px">
+                    <button class="club-hold-btn" id="club-hold">HOLD THIS ROOM</button>
+                    <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
+                        The director keeps choreographing but stops changing scenes.
+                    </div>
+                </div>
+
+                <div style="margin-top:16px">
+                    <button class="club-drop-btn" id="club-drop">DROP MOMENT</button>
+                    <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
+                        Slam everything now: energy surge, snap-cut to a hot room, one-shot.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/socket-client.js"></script>
+    <script>
+        const socket = createSocket();
+        const PHASES = [[0.0, 'Doors'], [0.25, 'Warm-up'], [0.5, 'Peak Hours'], [0.75, 'Afterhours']];
+
+        function phaseLabel(season) {
+            let label = PHASES[PHASES.length - 1][1];
+            for (const [pos, name] of PHASES) {
+                if (season >= pos) label = name;
+            }
+            return label;
+        }
+
+        function prettyRoom(name) {
+            return (name || '--').replace(/^club_/, '').replace(/_/g, ' ');
+        }
+
+        let holdOn = false;
+        let biasDragging = false;
+
+        socket.on('state_update', (s) => {
+            const active = s.current_weather_set === 'club' && s.club;
+            document.getElementById('club-inactive').style.display = active ? 'none' : 'block';
+            document.getElementById('club-active-wrap').style.display = active ? 'block' : 'none';
+            if (!active) return;
+            const c = s.club;
+
+            document.getElementById('club-room').textContent =
+                `${prettyRoom(c.room)}  (heat ${c.room_heat != null ? c.room_heat.toFixed(2) : '?'})`;
+            document.getElementById('club-phase').textContent =
+                `${phaseLabel(s.season || 0)}  (${((s.season || 0) * 100).toFixed(0)}% of the night cycle)`;
+            document.getElementById('club-beat').textContent =
+                c.bpm > 1 ? `${c.bpm.toFixed(0)} BPM  (confidence ${(c.conf * 100).toFixed(0)}%)` : 'no beat lock';
+            document.getElementById('club-cal').textContent = `${c.cal[0]} .. ${c.cal[1]}`;
+
+            if (c.room_heat != null)
+                document.getElementById('marker-room').style.left = (c.room_heat * 100) + '%';
+            document.getElementById('marker-target').style.left = (c.target_heat * 100) + '%';
+
+            document.getElementById('char-bass').style.width = (c.char[0] * 100) + '%';
+            document.getElementById('char-mid').style.width = (c.char[1] * 100) + '%';
+            document.getElementById('char-high').style.width = (c.char[2] * 100) + '%';
+
+            const badges = [];
+            if (c.hold_room) badges.push('<span class="club-badge hold">ROOM HELD</span>');
+            if (c.holding_build) badges.push('<span class="club-badge build">BUILD - holding for the drop</span>');
+            if (c.drop_dest) badges.push(`<span class="club-badge hot">drop armed &rarr; ${prettyRoom(c.drop_dest)}</span>`);
+            if (c.pending) badges.push(`<span class="club-badge">cut queued &rarr; ${prettyRoom(c.pending)}</span>`);
+            if (Math.abs(c.heat_bias) > 0.005) badges.push(
+                `<span class="club-badge">bias ${c.heat_bias > 0 ? '+' : ''}${c.heat_bias.toFixed(2)}</span>`);
+            document.getElementById('club-badges').innerHTML = badges.join('');
+
+            // Reflect server-side control state (unless mid-drag).
+            const ctl = s.club_controls || {};
+            if (!biasDragging) {
+                document.getElementById('club-bias').value = ctl.heat_bias || 0;
+                document.getElementById('bias-value').textContent = (ctl.heat_bias || 0).toFixed(2);
+            }
+            holdOn = !!ctl.hold_room;
+            const hbtn = document.getElementById('club-hold');
+            hbtn.classList.toggle('on', holdOn);
+            hbtn.textContent = holdOn ? 'RELEASE THE ROOM' : 'HOLD THIS ROOM';
+        });
+
+        const bias = document.getElementById('club-bias');
+        bias.addEventListener('pointerdown', () => biasDragging = true);
+        bias.addEventListener('pointerup', () => biasDragging = false);
+        bias.addEventListener('input', () => {
+            const v = parseFloat(bias.value);
+            document.getElementById('bias-value').textContent = v.toFixed(2);
+            socket.emit('set_club_heat_bias', { value: v });
+        });
+        document.getElementById('bias-reset').addEventListener('click', (e) => {
+            e.preventDefault();
+            bias.value = 0;
+            document.getElementById('bias-value').textContent = '0.00';
+            socket.emit('set_club_heat_bias', { value: 0 });
+        });
+
+        document.getElementById('club-hold').addEventListener('click', () => {
+            holdOn = !holdOn;
+            socket.emit('set_club_hold', { hold: holdOn });
+            const hbtn = document.getElementById('club-hold');
+            hbtn.classList.toggle('on', holdOn);
+            hbtn.textContent = holdOn ? 'RELEASE THE ROOM' : 'HOLD THIS ROOM';
+        });
+
+        document.getElementById('club-drop').addEventListener('click', () => {
+            socket.emit('force_club_drop', {});
+        });
+    </script>
+</body>
+</html>
