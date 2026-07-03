@@ -883,6 +883,10 @@ class EnvironmentalSystem:
 
         req      = self.scheduler.state.pop('_weather_transition_request', None)
         src_node = self.scheduler.state.pop('_weather_transition_node', None)
+        # Optional duration override for the request (seconds). Lets a
+        # director snap into a room (e.g. sub-second cut ON a drop) instead
+        # of taking the target preset's usual crossfade time.
+        req_dur  = self.scheduler.state.pop('_weather_transition_duration', None)
         if req is not None:
             node_tag = f"node '{src_node}'" if src_node else "node (unknown)"
             try:
@@ -906,6 +910,11 @@ class EnvironmentalSystem:
                 else:
                     target_params = self.weather_state.get_weather_params(target)
                     duration = float(target_params.get('transition_duration', 10.0))
+                    if req_dur is not None:
+                        try:
+                            duration = max(0.05, float(req_dur))
+                        except (TypeError, ValueError):
+                            pass
                     print(f"[NARRATIVE] {node_tag} triggered transition "
                           f"to '{req}' ({duration:.1f}s)")
                     self.transition_to_weather(target, duration)
