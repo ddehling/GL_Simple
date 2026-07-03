@@ -60,6 +60,7 @@ from projects.fan.shaders.club_tesla import shader_club_tesla
 from projects.fan.shaders.club_fountain import shader_club_fountain
 from projects.fan.shaders.club_interference import shader_club_interference
 from projects.fan.shaders.club_spiral import shader_club_spiral
+from projects.fan.shaders.club_starfall import shader_club_starfall
 from projects.fan.shaders.club_membrane import shader_club_membrane
 from projects.fan.shaders.club_turntable import shader_club_turntable
 from projects.fan.shaders.club_spectrum_stars import shader_club_spectrum_stars
@@ -89,6 +90,7 @@ WRAPPERS = [
     ("fountain", shader_club_fountain, {}),
     ("interference", shader_club_interference, {}),
     ("spiral", shader_club_spiral, {}),
+    ("starfall", shader_club_starfall, {}),
     ("membrane", shader_club_membrane, {}),
     ("turntable", shader_club_turntable, {}),
     ("stars", shader_club_spectrum_stars, {}),
@@ -204,7 +206,8 @@ def scene_outstate(preset, renderer):
             "interference_level",
             "spiral_level",
             "membrane_level",
-            "turntable_level"]
+            "turntable_level",
+            "starfall_level"]
     for k in keys:
         o[k] = preset.get(k, wp.DEFAULT_WEATHER_PARAMS.get(k, 0.0))
     return o
@@ -328,11 +331,22 @@ def render_scene(scene_name, preset, timeline, out_dir, canvas_fbo=0):
     sel = [frames_out[i][1] for i in idxs]
 
     on_beat = frames_out[min(b0 + 1, len(frames_out) - 1)][1].astype(np.float64)
-    off_beat = frames_out[min(b0 + period // 2, len(frames_out) - 1)][1].astype(np.float64)
     lum_on = on_beat.mean() / 255.0
-    lum_off = off_beat.mean() / 255.0
     cov = float((on_beat.max(axis=2) > 10).mean())
-    beat_ratio = lum_on / max(lum_off, 1e-6)
+    # Beat contrast averaged over EVERY captured beat (a single on/off pair
+    # is sampling noise for sparse stochastic patterns like meteor showers):
+    # mean luminance of the 2 frames after each beat vs the 2 mid-beat frames.
+    lums = np.array([f[1].astype(np.float64).mean() / 255.0 for f in frames_out])
+    on_idx, off_idx = [], []
+    for b in beat_frames:
+        for k in (1, 2):
+            if b + k < len(lums):
+                on_idx.append(b + k)
+        for k in (period // 2, period // 2 + 1):
+            if b + k < len(lums):
+                off_idx.append(b + k)
+    beat_ratio = (float(lums[on_idx].mean()) / max(float(lums[off_idx].mean()), 1e-6)
+                  if on_idx and off_idx else 1.0)
     diffs = [np.abs(sel[k].astype(np.float64) - sel[k - 1].astype(np.float64)).mean()
              for k in range(1, len(sel))]
     motion = float(np.mean(diffs)) / 255.0

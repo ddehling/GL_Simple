@@ -172,7 +172,7 @@ the story_* variables published by NarrativePlayer.
 
 ## Club / DJ realm z-band table (canonical, July 2026)
 
-Twenty-seven audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
+Twenty-eight audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
 layers (eq_bars/balls/lasers/strobe) predate the depth-band conversion and
 still flip GL_ALWAYS internally (legacy); everything newer uses the
 depth-based approach — new club effects must too.
@@ -192,6 +192,7 @@ depth-based approach — new club effects must too.
 | 0.70 | club_tunnel | tunnel_level | dense-dim bed (alpha cap 0.35) |
 | 0.65 | club_sparkle | sparkle_level | hi-hat transient glints |
 | 0.68 | club_spiral | spiral_level | Geiss 'Spiral Artifact' port: BPM-locked log-spiral, kicks coil it tighter |
+| 0.61 | club_starfall | starfall_level | meteors falling with the hits; kicks throw bolides, drops storm |
 | 0.63 | club_wave_dance | wave_dance_level | time-domain oscilloscope, 4 MilkDrop wave modes cycling per phrase (reads outstate['waveform']) |
 | 0.60 | club_eq_bars | eq_gain | 32-band bars + peak-hold caps |
 | 0.58 | club_pyramids | pyramid_level | Rovastar 'Hallucinogenic Pyramids' port: wireframes teleport on every beat |
