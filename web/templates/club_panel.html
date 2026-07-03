@@ -165,10 +165,13 @@
                 <div class="mix-chips" id="club-mix">--</div>
             </div>
 
-            <!-- Why the director did what it did -->
+            <!-- What the director is thinking, and why it did what it did -->
             <div class="section-panel">
                 <div class="section-header"><h3>Director's Log</h3></div>
-                <div id="club-journal" style="font-size:0.8em; line-height:1.7; opacity:0.85">--</div>
+                <div id="club-now" style="font-size:0.88em; color:#9ef; line-height:1.5;
+                     padding-bottom:8px; border-bottom:1px solid #333; margin-bottom:8px">--</div>
+                <div id="club-journal" style="font-size:0.8em; line-height:1.7; opacity:0.85;
+                     max-height:280px; overflow-y:auto">--</div>
             </div>
 
             <!-- Operator controls -->
@@ -339,7 +342,9 @@
                     `${c.coverage[0]}/${c.coverage[1]} rooms visited tonight`;
             }
 
-            // Director's log: newest first, with relative timestamps.
+            // What the director is thinking right now, then the log
+            // (newest first, relative timestamps).
+            document.getElementById('club-now').textContent = c.now || '--';
             const j = (c.journal || []).slice().reverse();
             document.getElementById('club-journal').innerHTML = j.length
                 ? j.map(e => `<div><span style="opacity:0.45">${ago(e.t)} ago</span> &nbsp;${e.msg}</div>`).join('')
