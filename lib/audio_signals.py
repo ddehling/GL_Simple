@@ -125,6 +125,13 @@ MOOD_PEAK_DROP_S = 20.0       # a drop counts as peak music for this long
 MOOD_DWELL_S = 4.0            # candidate must persist this long
 MOOD_SILENT_DWELL_S = 1.5
 
+# --- Rhythm density ----------------------------------------------------------
+# Punch hits per BEAT (not per second): ~0.5 = sparse half-time, ~1-1.5 =
+# driving 4/4, 2+ = busy breaks. Lets the director prefer slow-motion rooms
+# for sparse grooves and busy rooms for dense ones at the same energy.
+DENSITY_TAU = 5.0
+DENSITY_MAX = 3.0
+
 FPS = 40.0                    # analysis frame rate assumed for buffer sizing
 
 
@@ -162,6 +169,7 @@ class AudioStructure:
         self._mood = "silent"
         self._mood_cand = "silent"
         self._mood_cand_t = 0.0
+        self._density = 0.0           # punch hits per beat (rhythm busyness)
 
     # ------------------------------------------------------------------
     def update(self, sound, beat, dt):
@@ -173,6 +181,7 @@ class AudioStructure:
             self._classify(beat or {}, dt)
             result["mood"] = self._mood
             result["perc"] = round(min(self._hits / 6.0, 1.0), 3)
+            result["density"] = round(self._density, 2)
             return result
         except Exception:
             return self._result(False)
@@ -187,6 +196,15 @@ class AudioStructure:
 
         bpm = float(beat.get("bpm", 0.0) or 0.0)
         conf = float(beat.get("confidence", 0.0) or 0.0)
+
+        # Rhythm density: hit rate normalized by tempo (hits per beat).
+        da = 1.0 - math.exp(-dt / DENSITY_TAU)
+        if bpm > 1.0 and self._hits > 0.3:
+            inst = (self._hits / PERC_TAU) / (bpm / 60.0)
+            self._density += (min(inst, DENSITY_MAX) - self._density) * da
+        else:
+            self._density += (0.0 - self._density) * da * 0.5
+
         if self._gate < 0.15:
             cand = "silent"
         elif self._hits < MOOD_AMBIENT_HITS:
@@ -215,7 +233,8 @@ class AudioStructure:
                 "energy": self._energy, "build": self._build,
                 "drop": drop, "drop_decay": self._drop_decay,
                 "mood": self._mood,
-                "perc": round(min(self._hits / 6.0, 1.0), 3)}
+                "perc": round(min(self._hits / 6.0, 1.0), 3),
+                "density": round(self._density, 2)}
 
     def _update(self, sound, dt):
         dt = float(dt) if dt and dt > 0.0 else (1.0 / FPS)
@@ -332,3 +351,76 @@ class AudioStructure:
         self._build = 0.0
         self._gate = 0.0
         return self._result(False)
+
+
+class HarmonicTracker:
+    """Key-center tracking from the analyzer's 12-bin chroma, for palette
+    steering. Pitch classes map through the CIRCLE OF FIFTHS onto a hue
+    circle, so musically adjacent keys land on adjacent hues; the tracked
+    center is the circular mean of the smoothed chroma on that circle.
+
+    update(chroma, dt) -> {"center": 0..1 hue-like key position,
+                           "strength": 0..1 how tonal the music is,
+                           "changed": True once when the key visibly moves}
+    Same contract as the other trackers: exception-wrapped, safe zeros.
+    """
+
+    # pitch class -> position on the circle of fifths (C G D A E B F# ...)
+    _CIRCLE = np.exp(2j * np.pi * np.array([(pc * 7) % 12 for pc in range(12)]) / 12.0)
+
+    def __init__(self):
+        self._slow = 0j            # ~10s harmonic center (what we publish)
+        self._fast = 0j            # ~2.5s center (detects key changes)
+        self._diff_since = None
+        self._t = 0.0
+        self._last_change_t = -1e9
+
+    def update(self, chroma, dt):
+        try:
+            return self._update(chroma, dt)
+        except Exception:
+            return {"center": 0.0, "strength": 0.0, "changed": False}
+
+    def _update(self, chroma, dt):
+        dt = float(dt) if dt and dt > 0.0 else 0.025
+        self._t += dt
+        if chroma is None or len(chroma) < 12 or float(np.sum(chroma)) < 0.05:
+            # Atonal / silent: strength bleeds away, center holds.
+            self._slow *= math.exp(-dt / 6.0)
+            self._fast *= math.exp(-dt / 2.0)
+            return self._pack(False)
+
+        v = complex(np.sum(np.asarray(chroma[:12], dtype=np.float64) * self._CIRCLE))
+        self._fast += (v - self._fast) * (1.0 - math.exp(-dt / 2.5))
+
+        # Key change: the published center only pursues the fast one while
+        # they roughly agree. When the fast center pulls a real distance
+        # away (a single-fifth modulation moves 1/12 = 30deg of the circle)
+        # the published center FREEZES, and if the gap persists it snaps
+        # over and reports the change once. The published pursuit must be
+        # STATELY (tau 20s) - a faster chase closes a single-fifth gap to
+        # ~12deg before any usable threshold can catch it.
+        changed = False
+        d = 0.0
+        if abs(self._slow) > 0.15 and abs(self._fast) > 0.15:
+            d = abs(math.remainder(
+                (np.angle(self._fast) - np.angle(self._slow)) / (2 * math.pi), 1.0))
+        if d > 1.0 / 24.0:
+            if self._diff_since is None:
+                self._diff_since = self._t
+            elif (self._t - self._diff_since > 2.5
+                    and self._t - self._last_change_t > 25.0):
+                self._slow = self._fast
+                self._last_change_t = self._t
+                self._diff_since = None
+                changed = True
+        else:
+            self._diff_since = None
+            self._slow += (self._fast - self._slow) * (1.0 - math.exp(-dt / 20.0))
+        return self._pack(changed)
+
+    def _pack(self, changed):
+        strength = min(abs(self._slow), 1.0)
+        center = float((np.angle(self._slow) / (2 * math.pi)) % 1.0)
+        return {"center": center, "strength": round(strength, 3),
+                "changed": changed}

@@ -25,7 +25,7 @@ from lib.mdns_resolve import resolve as mdns_resolve
 
 from lib.audio_analyzer import MicrophoneAnalyzer
 from lib.beat_detector import BeatDetector
-from lib.audio_signals import AudioStructure
+from lib.audio_signals import AudioStructure, HarmonicTracker
 from lib.bluetooth_audio import create_bluetooth_receiver
 # WeatherState is kept as a fallback type for projects that don't override
 # the enum; runtime code reads ``self._weather_state_enum`` instead so a
@@ -370,6 +370,7 @@ class EnvironmentalSystem:
         # Song-structure signals (bass/mid/high scalars, energy, build, drop)
         # — same consumer contract as the beat detector, published alongside.
         self._audio_structure = AudioStructure()
+        self._harmonic_tracker = HarmonicTracker()
 
         # MIDI is intentionally NOT wired into the show. The club set (and
         # everything else) is a fully autonomous audio-visual experience -
@@ -1987,6 +1988,11 @@ class EnvironmentalSystem:
         state["drop_decay"] = sig["drop_decay"]
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
+        state["rhythm_density"] = sig["density"]
+        key = self._harmonic_tracker.update(state.get("chroma"), audio_dt)
+        state["key_center"] = key["center"]
+        state["key_strength"] = key["strength"]
+        state["key_changed"] = key["changed"]
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):

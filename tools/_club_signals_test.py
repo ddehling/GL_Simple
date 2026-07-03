@@ -148,7 +148,7 @@ def run(samples=None):
                         bass=sig["bass"], energy=sig["energy"],
                         build=sig["build"], bass_punch=sig["bass_punch"],
                         high_punch=sig["high_punch"],
-                        mood=sig["mood"]))
+                        mood=sig["mood"], density=sig["density"]))
         t += dt
         pos += HOP
 
@@ -345,6 +345,32 @@ def main():
     r_a = at(log_a, 30.0)
     check("pads read as ambient", r_a["mood"] == "ambient",
           f"mood={r_a['mood']} at t=30s of beatless pads")
+    check("groove rhythm density sane", 0.4 <= at(log, 25.0)["density"] <= 3.0,
+          f"density={at(log, 25.0)['density']} hits/beat at t=25s (kick+hats 4/4)")
+    check("pads have no rhythm density", r_a["density"] < 0.3,
+          f"density={r_a['density']} on beatless pads")
+
+    # Harmonic tracker: key center stabilizes, then a key change fires once.
+    from lib.audio_signals import HarmonicTracker
+    ht = HarmonicTracker()
+    a_maj = np.zeros(12); a_maj[[9, 1, 4]] = [0.5, 0.25, 0.25]   # A C# E
+    d_maj = np.zeros(12); d_maj[[2, 6, 9]] = [0.5, 0.25, 0.25]   # D F# A
+    for _ in range(int(30 * 40)):
+        r1 = ht.update(a_maj, 1 / 40.0)
+    c1 = r1["center"]
+    changed = []
+    for k in range(int(20 * 40)):
+        r2 = ht.update(d_maj, 1 / 40.0)
+        if r2["changed"]:
+            changed.append(k / 40.0)
+    check("key center is tonal", r1["strength"] > 0.4,
+          f"strength={r1['strength']} after 30s of A major")
+    check("key change fires once", len(changed) == 1,
+          f"changed at {changed} (expect exactly one)")
+    d_center = abs((r2["center"] - c1 + 0.5) % 1.0 - 0.5)
+    check("key center moved", d_center > 0.05,
+          f"center {c1:.2f} -> {r2['center']:.2f}")
+
 
     print("\nAdversarial input suites (clip / dropout / cold start / DC):\n")
     stress_suites(check)

@@ -333,7 +333,8 @@
                 `${phaseLabel(s.season || 0)}  (${((s.season || 0) * 100).toFixed(0)}% of the night cycle)`;
             document.getElementById('club-beat').textContent =
                 c.bpm > 1 ? `${c.bpm.toFixed(0)} BPM  (confidence ${(c.conf * 100).toFixed(0)}%)` : 'no beat lock';
-            document.getElementById('club-mood').textContent = c.mood || '--';
+            document.getElementById('club-mood').textContent = (c.mood || '--')
+                + (c.rhythm_density > 0.05 ? `  (${c.rhythm_density.toFixed(1)} hits/beat)` : '');
             document.getElementById('club-cal').textContent = `${c.cal[0]} .. ${c.cal[1]}`;
 
             if (c.room_heat != null)

@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from projects.fan import weather_params as wp
 from projects.fan.shaders.club_director import (shader_club_director,
-                                                SCENE_HEAT, SCENE_PROFILE)
+                                                SCENE_HEAT, SCENE_PROFILE,
+                                                SCENE_BUSY)
 
 failures = []
 def check(name, cond, detail=""):
@@ -77,6 +78,8 @@ states = set(wp.WEATHER_SETS['club']['states'])
 check("heat table coverage", set(SCENE_HEAT) == states,
       f"missing={states - set(SCENE_HEAT)} extra={set(SCENE_HEAT) - states}")
 check("profile table coverage", set(SCENE_PROFILE) == states)
+check("busy table coverage", set(SCENE_BUSY) == states,
+      f"missing={states - set(SCENE_BUSY)}")
 
 # 1. High energy in a cold room -> corrective jump hotter (no beat grid ->
 # immediate).
