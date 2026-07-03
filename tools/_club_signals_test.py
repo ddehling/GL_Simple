@@ -334,6 +334,8 @@ def main():
           f"mood={at(log, 25.0)['mood']} at t=25s (steady groove)")
     check("silence reads as silent", at(log, 57.0)["mood"] == "silent",
           f"mood={at(log, 57.0)['mood']} at t=57s (7s into silence)")
+    check("drop forces peak", at(log, 45.0)["mood"] == "peak",
+          f"mood={at(log, 45.0)['mood']} at t=45s (9s after the drop)")
     # Pad-only synthetic: sustained tones, zero percussion -> ambient.
     n_pad = int(40.0 * RATE)
     tt = np.arange(n_pad) / RATE

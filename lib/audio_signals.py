@@ -118,6 +118,10 @@ MOOD_AMBIENT_HITS = 0.8       # fewer than ~1 hit per 4s = no percussion
 MOOD_CHILL_BPM = 106.0        # slower than this (or soft) = chill
 MOOD_CHILL_ENERGY = 0.30
 MOOD_PEAK_ENERGY = 0.58
+MOOD_PEAK_DROP_S = 20.0       # a drop counts as peak music for this long
+                              # (drop_decay alone dies in ~0.4s - far shorter
+                              # than the 4s mood dwell, so it never flipped
+                              # the mood by itself)
 MOOD_DWELL_S = 4.0            # candidate must persist this long
 MOOD_SILENT_DWELL_S = 1.5
 
@@ -187,7 +191,8 @@ class AudioStructure:
             cand = "silent"
         elif self._hits < MOOD_AMBIENT_HITS:
             cand = "ambient"        # music present, but nothing percussive
-        elif self._energy > MOOD_PEAK_ENERGY or self._drop_decay > 0.3:
+        elif (self._energy > MOOD_PEAK_ENERGY
+                or self._since_drop < MOOD_PEAK_DROP_S):
             cand = "peak"
         elif ((0.0 < bpm < MOOD_CHILL_BPM and conf > 0.25)
                 or self._energy < MOOD_CHILL_ENERGY):
