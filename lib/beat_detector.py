@@ -89,7 +89,14 @@ class BeatDetector:
         self._phase_err_ema = 0.25 # EMA of |phase error| at strong onsets
         self._confidence = 0.0     # smoothed q_tempo * q_phase
         self._conf_tau = 1.0
-        self._q_phase_bleed_tau = 2.5   # q_phase -> 0 with no strong onsets
+        # Lock quality COASTS while music is playing (a kick resting for 8
+        # bars is a breakdown, not a lost beat - the oscillator is still on
+        # grid) and only dies fast in true silence. Real-track measurement:
+        # the old flat 2.5s bleed lost lock on 6/6 club tracks and spent up
+        # to 31% of a steady track below the consumers' conf gate.
+        self._q_phase_coast_tau = 15.0  # music present, kick resting
+        self._q_phase_bleed_tau = 1.2   # true silence: die fast
+        self._level_peak = 1e-9         # slow AGC peak for presence detection
 
     # ------------------------------------------------------------------
     def update(self, sound, dt):
@@ -129,6 +136,18 @@ class BeatDetector:
         row = np.asarray(bands[0], dtype=np.float32)
         n = row.shape[0]
 
+        # Musical presence: raw band power vs a slow rolling peak. Separates
+        # "the kick is resting" (coast the lock) from "the music stopped"
+        # (let the lock die). Missing raw_bands -> assume present.
+        raw = sound.get("raw_bands")
+        if raw is not None and len(raw) > 0:
+            lvl = float(np.mean(np.asarray(raw[0], dtype=np.float32)))
+            self._level_peak = max(self._level_peak * math.exp(-dt / 60.0),
+                                   lvl, 1e-9)
+            present = lvl > 0.03 * self._level_peak
+        else:
+            present = True
+
         # Onset from SUB/LOW BASS only (the kick lives ~40-150 Hz, bands 0..5).
         # Restricting to bass keeps off-beat hats / claps from firing the PLL.
         bass = float(np.mean(row[0:min(6, n)]))
@@ -156,17 +175,26 @@ class BeatDetector:
         self._phase += dt * (self._bpm / 60.0)
 
         # PLL: a strong onset nudges the phase toward the nearest beat (0/1).
+        no_evidence = True
         if strong and self._have_tempo:
             err = self._phase - round(self._phase)   # signed distance to a tick, [-0.5,0.5]
-            self._phase -= self._pll_gain * err
-            # Lock quality: small |err| at onsets means the oscillator is
-            # sitting on the kicks. |err| is in [0, 0.5]; 1/6 cycle off -> 0.
-            self._phase_err_ema = 0.9 * self._phase_err_ema + 0.1 * abs(err)
-            self._q_phase = max(0.0, min(1.0, 1.0 - 3.0 * self._phase_err_ema))
-        else:
-            # No evidence this frame: let lock quality bleed away slowly so
-            # confidence falls off during silence / beatless passages.
-            self._q_phase *= math.exp(-dt / self._q_phase_bleed_tau)
+            # Once locked, an onset far from the grid is almost always
+            # syncopation (a bassline hit between kicks), not evidence that
+            # the grid is wrong - letting it pull the phase and poison the
+            # lock statistic is what made confidence flap on real tracks.
+            if abs(err) <= 0.25 or self._q_phase <= 0.25:
+                no_evidence = False
+                self._phase -= self._pll_gain * err
+                # Lock quality: small |err| at onsets means the oscillator is
+                # sitting on the kicks. |err| is in [0, 0.5]; 1/6 cycle off -> 0.
+                self._phase_err_ema = 0.9 * self._phase_err_ema + 0.1 * abs(err)
+                self._q_phase = max(0.0, min(1.0, 1.0 - 3.0 * self._phase_err_ema))
+        if no_evidence:
+            # Nothing said about the grid this frame. While music is still
+            # playing this is a breakdown / syncopation - COAST (the tempo
+            # grid is almost certainly still valid). In true silence, die fast.
+            tau = self._q_phase_coast_tau if present else self._q_phase_bleed_tau
+            self._q_phase *= math.exp(-dt / tau)
 
         target_conf = (self._q_tempo * self._q_phase) if self._have_tempo else 0.0
         self._confidence += (target_conf - self._confidence) * (1.0 - math.exp(-dt / self._conf_tau))
@@ -231,7 +259,11 @@ class BeatDetector:
         mean_score = score_sum / max(1, score_n)
         q = (best_score - max(mean_score, 0.0)) / 0.5
         q = max(0.0, min(1.0, q))
-        self._q_tempo = 0.8 * self._q_tempo + 0.2 * q
+        # Asymmetric smoothing: tempo trust builds quickly on good evidence
+        # but decays slowly - a breakdown weakens the autocorrelation for a
+        # few seconds without meaning the tempo actually changed.
+        alpha = 0.2 if q > self._q_tempo else 0.03
+        self._q_tempo = (1.0 - alpha) * self._q_tempo + alpha * q
         new_bpm = 60.0 * FPS / best_lag
         if not self._have_tempo:
             self._bpm = new_bpm
