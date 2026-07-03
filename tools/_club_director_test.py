@@ -143,6 +143,32 @@ check("calibration adapts",
       state['_cal_lo'] > 0.2 and state['_cal_hi'] > 0.55,
       f"cal=[{state['_cal_lo']:.2f}, {state['_cal_hi']:.2f}]")
 
+# 8. Theme lean is BINDING: setting a theme moves the night into the family,
+#    every subsequent pick stays inside it, the RNG drift is frozen, and the
+#    director rotates the family's rooms on its own.
+from projects.fan.shaders.club_director import SCENE_THEME
+state, out = fresh("club_deep_space")          # cosmic room, molten lean
+out['club_theme'] = 'molten'
+t, reqs, _, _ = run(20.0, state, out, energy=0.5)
+check("theme move fires", len(reqs) >= 1 and reqs[0][1] in SCENE_THEME['molten'],
+      f"first request={reqs[0] if reqs else None}")
+check("drift frozen while leaned",
+      out.get('_transition_hold_until', 0.0) > time.time() - 1.0,
+      f"hold_until={out.get('_transition_hold_until', 0.0):.0f}")
+t, reqs2, _, _ = run(300.0, state, out, energy=0.5, t0=t)
+all_moves = [r for _, r in reqs2]
+check("every leaned pick stays molten",
+      all_moves and all(r in SCENE_THEME['molten'] for r in all_moves),
+      f"moves={[m.replace('club_', '') for m in all_moves]}")
+check("leaned wander rotates rooms", len(set(all_moves)) >= 2,
+      f"{len(set(all_moves))} distinct rooms in 5min")
+# Release: the freeze stops being refreshed.
+out['club_theme'] = ''
+t, _, _, _ = run(5.0, state, out, energy=0.5, t0=t)
+check("release unfreezes drift",
+      out.get('_transition_hold_until', 0.0) < time.time() + 3.5,
+      "hold_until no longer refreshed after release")
+
 print()
 if failures:
     print("FAILED:", failures); sys.exit(1)
