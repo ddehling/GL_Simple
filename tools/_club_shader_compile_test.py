@@ -67,6 +67,9 @@ def main():
     from projects.fan.shaders.club_interference import ClubInterferenceEffect
     from projects.fan.shaders.club_spiral import ClubSpiralEffect
     from projects.fan.shaders.club_starfall import ClubStarfallEffect
+    from projects.fan.shaders.club_fractal_dive import ClubFractalDiveEffect
+    from projects.fan.shaders.club_rorschach import ClubRorschachEffect
+    from projects.fan.shaders.club_spirograph import ClubSpirographEffect
     from projects.fan.shaders.club_membrane import ClubMembraneEffect
     from projects.fan.shaders.club_turntable import ClubTurntableEffect
     from projects.fan.shaders.club_kick_flare import ClubKickFlareEffect
@@ -97,6 +100,9 @@ def main():
         ("club_interference", ClubInterferenceEffect),
         ("club_spiral", ClubSpiralEffect),
         ("club_starfall", ClubStarfallEffect),
+        ("club_fractal_dive", ClubFractalDiveEffect),
+        ("club_rorschach", ClubRorschachEffect),
+        ("club_spirograph", ClubSpirographEffect),
         ("club_membrane", ClubMembraneEffect),
         ("club_turntable", ClubTurntableEffect),
         ("club_kick_flare", ClubKickFlareEffect),

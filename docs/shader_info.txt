@@ -172,7 +172,7 @@ the story_* variables published by NarrativePlayer.
 
 ## Club / DJ realm z-band table (canonical, July 2026)
 
-Twenty-eight audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
+Thirty-one audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
 layers (eq_bars/balls/lasers/strobe) predate the depth-band conversion and
 still flip GL_ALWAYS internally (legacy); everything newer uses the
 depth-based approach — new club effects must too.
@@ -181,6 +181,7 @@ depth-based approach — new club effects must too.
 |---|---|---|---|
 | 0.92 | club_horizon_glow | horizon_glow_level | sub-bass rim breathing at the outer edge |
 | 0.95 | club_turntable | turntable_level | the fan as a BPM-locked spinning record; drops scratch it |
+| 0.90 | club_fractal_dive | fractal_level | MilkDrop Nested family port: endless log-periodic dive, beats lurch a level deeper |
 | 0.88 | club_interference | interference_level | moire fringes from two orbiting wave sources; drops phase-invert |
 | 0.82 | club_membrane | membrane_level | one springy living cell; bands ripple its boundary, drops make it gulp |
 | 0.80 | club_soul | soul_level | Zylot 'In Death There Is Life' port: pitch-colored soul-orb, waveform halo, beat rays |
@@ -191,6 +192,7 @@ depth-based approach — new club effects must too.
 | 0.72 | club_ribbon | ribbon_level | mid-driven liquid ribbons |
 | 0.70 | club_tunnel | tunnel_level | dense-dim bed (alpha cap 0.35) |
 | 0.65 | club_sparkle | sparkle_level | hi-hat transient glints |
+| 0.73 | club_rorschach | rorschach_level | MilkDrop Rorschach port: bilateral inkblot, kicks spread the ink, drops invert |
 | 0.68 | club_spiral | spiral_level | Geiss 'Spiral Artifact' port: BPM-locked log-spiral, kicks coil it tighter |
 | 0.61 | club_starfall | starfall_level | meteors falling with the hits; kicks throw bolides, drops storm |
 | 0.63 | club_wave_dance | wave_dance_level | time-domain oscilloscope, 4 MilkDrop wave modes cycling per phrase (reads outstate['waveform']) |
@@ -201,6 +203,7 @@ depth-based approach — new club effects must too.
 | 0.50 | club_lasers | laser_density | crossing scissor beams from 2 corner emitters, complementary hues |
 | 0.48 | club_chaser | chaser_level | marquee chase dots, one step/beat |
 | 0.45 | club_kick_flare | kick_flare_level | star-burst rays on each kick |
+| 0.47 | club_spirograph | spirograph_level | MilkDrop Wire Spirograph port: counter-rotating roses, petal count snaps per bar |
 | 0.43 | club_airhandler | airhandler_level | Aderrasi 'Airhandler' port: comet arcs swinging one full swing per 2 beats |
 | 0.40 | club_shockwave | shockwave_level | bass rings in real feet |
 | 0.38 | club_fountain | fountain_level | ballistic particles erupting on kicks, gravity pulls them home |

@@ -314,6 +314,9 @@ class WeatherStateController:
             "membrane_level": self.weather_params.get("membrane_level", 0.0),
             "turntable_level": self.weather_params.get("turntable_level", 0.0),
             "starfall_level": self.weather_params.get("starfall_level", 0.0),
+            "fractal_level": self.weather_params.get("fractal_level", 0.0),
+            "rorschach_level": self.weather_params.get("rorschach_level", 0.0),
+            "spirograph_level": self.weather_params.get("spirograph_level", 0.0),
             # ── Weight of Light "Elements" realm params ──────────────
             # Per-theme intensity gates consumed by the elements_* / wol_*
             # background shaders. Each theme layer renders ~0 alpha when

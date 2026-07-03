@@ -61,6 +61,9 @@ from projects.fan.shaders.club_fountain import shader_club_fountain
 from projects.fan.shaders.club_interference import shader_club_interference
 from projects.fan.shaders.club_spiral import shader_club_spiral
 from projects.fan.shaders.club_starfall import shader_club_starfall
+from projects.fan.shaders.club_fractal_dive import shader_club_fractal_dive
+from projects.fan.shaders.club_rorschach import shader_club_rorschach
+from projects.fan.shaders.club_spirograph import shader_club_spirograph
 from projects.fan.shaders.club_membrane import shader_club_membrane
 from projects.fan.shaders.club_turntable import shader_club_turntable
 from projects.fan.shaders.club_spectrum_stars import shader_club_spectrum_stars
@@ -91,6 +94,9 @@ WRAPPERS = [
     ("interference", shader_club_interference, {}),
     ("spiral", shader_club_spiral, {}),
     ("starfall", shader_club_starfall, {}),
+    ("fractal_dive", shader_club_fractal_dive, {}),
+    ("rorschach", shader_club_rorschach, {}),
+    ("spirograph", shader_club_spirograph, {}),
     ("membrane", shader_club_membrane, {}),
     ("turntable", shader_club_turntable, {}),
     ("stars", shader_club_spectrum_stars, {}),
@@ -207,7 +213,10 @@ def scene_outstate(preset, renderer):
             "spiral_level",
             "membrane_level",
             "turntable_level",
-            "starfall_level"]
+            "starfall_level",
+            "fractal_level",
+            "rorschach_level",
+            "spirograph_level"]
     for k in keys:
         o[k] = preset.get(k, wp.DEFAULT_WEATHER_PARAMS.get(k, 0.0))
     return o
