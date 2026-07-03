@@ -1002,7 +1002,8 @@ class WebController:
                 self.control_dict['club_density'] = max(0.4, min(1.4, value))
             self._values_cache = None
 
-        CLUB_THEMES = {'', 'organic', 'geometric', 'cosmic', 'heavy'}
+        CLUB_THEMES = {'', 'organic', 'geometric', 'cosmic', 'heavy',
+                       'molten', 'flow', 'psychedelic'}
 
         @self.socketio.on('set_club_theme')
         def handle_set_club_theme(data):

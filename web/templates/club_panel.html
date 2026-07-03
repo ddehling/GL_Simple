@@ -177,6 +177,21 @@
             <!-- Operator controls -->
             <div class="section-panel">
                 <div class="section-header"><h3>Steer</h3></div>
+                <label class="control-label"><span>Night phase</span></label>
+                <div class="theme-row">
+                    <button class="theme-btn" id="phase-auto">Auto</button>
+                    <button class="theme-btn phase-btn" data-season="0.05">Doors</button>
+                    <button class="theme-btn phase-btn" data-season="0.32">Warm-up</button>
+                    <button class="theme-btn phase-btn" data-season="0.55">Peak Hours</button>
+                    <button class="theme-btn phase-btn" data-season="0.80">Afterhours</button>
+                </div>
+                <div style="font-size:0.75em; opacity:0.55; margin:4px 0 16px 0">
+                    Where we are in the night's arc - biases how hot the director
+                    runs (calm at doors, hottest at peak, winding down after).
+                    Auto advances on its own (~8h full cycle); picking a phase
+                    pins it there.
+                </div>
+
                 <label class="control-label"><span>Mood bias</span>
                     <span id="bias-value">0.00</span></label>
                 <input type="range" id="club-bias" min="-0.35" max="0.35" step="0.01" value="0">
@@ -192,6 +207,9 @@
                         <button class="theme-btn" data-theme="geometric">Geometric</button>
                         <button class="theme-btn" data-theme="cosmic">Cosmic</button>
                         <button class="theme-btn" data-theme="heavy">Heavy</button>
+                        <button class="theme-btn" data-theme="molten">Molten</button>
+                        <button class="theme-btn" data-theme="flow">Flow</button>
+                        <button class="theme-btn" data-theme="psychedelic">Psychedelic</button>
                     </div>
                     <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
                         Leans room picks toward a visual family. The music still
@@ -361,13 +379,25 @@
                 document.getElementById('density-value').textContent = (ctl.density || 1).toFixed(2);
             }
             const ttls = ctl.ttls || {};
-            document.querySelectorAll('.theme-btn').forEach(b => {
+            document.querySelectorAll('.theme-btn[data-theme]').forEach(b => {
                 const on = b.dataset.theme === (ctl.theme || '');
                 b.classList.toggle('on', on);
                 const base = b.dataset.label || (b.dataset.label = b.textContent);
                 b.textContent = (on && b.dataset.theme && ttls.theme)
                     ? `${base} ${Math.ceil(ttls.theme / 60)}m` : base;
             });
+
+            // Night phase buttons: Auto lit while the cycle advances freely;
+            // when pinned, light the phase nearest the pinned position.
+            const locked = !!s.season_locked;
+            document.getElementById('phase-auto').classList.toggle('on', !locked);
+            let nearest = null, bestD = 1e9;
+            document.querySelectorAll('.phase-btn').forEach(b => {
+                const d = Math.abs(parseFloat(b.dataset.season) - (s.season || 0));
+                if (d < bestD) { bestD = d; nearest = b; }
+            });
+            document.querySelectorAll('.phase-btn').forEach(b =>
+                b.classList.toggle('on', locked && b === nearest));
             paletteLocked = ctl.palette_override != null;
             const lockBtn = document.getElementById('palette-lock');
             lockBtn.classList.toggle('on', paletteLocked);
@@ -401,12 +431,23 @@
             socket.emit('set_club_heat_bias', { value: 0 });
         });
 
-        document.querySelectorAll('.theme-btn').forEach(b => {
+        document.querySelectorAll('.theme-btn[data-theme]').forEach(b => {
             b.addEventListener('click', () => {
                 socket.emit('set_club_theme', { theme: b.dataset.theme });
-                document.querySelectorAll('.theme-btn').forEach(x =>
+                document.querySelectorAll('.theme-btn[data-theme]').forEach(x =>
                     x.classList.toggle('on', x === b));
             });
+        });
+
+        // Night phase: pins the season cycle (locked) or lets it advance.
+        document.querySelectorAll('.phase-btn').forEach(b => {
+            b.addEventListener('click', () => {
+                socket.emit('set_season',
+                    { value: parseFloat(b.dataset.season), locked: true });
+            });
+        });
+        document.getElementById('phase-auto').addEventListener('click', () => {
+            socket.emit('set_season', { locked: false });
         });
 
         const hue = document.getElementById('club-hue');
