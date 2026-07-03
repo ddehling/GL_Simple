@@ -104,6 +104,23 @@ DROP_SLAM_LEVEL = 1.25        # while norm bass is above this -> drop.
                               # no clean edge at the actual return.)
 DROP_REFRACTORY_S = 8.0       # min time between drops
 
+# --- Mood classifier ---------------------------------------------------------
+# Coarse music character for the director: what KIND of music is playing,
+# not just how loud. Judged from percussive activity (time-average of the
+# punch envelopes - a steady groove keeps them busy, ambient pads leave
+# them at zero), overall energy, beat confidence, and the silence gate.
+# Hysteresis: a candidate mood must persist before we switch, so a quiet
+# bar can't flicker the classification.
+PERC_TAU = 3.0                # leaky window for the hit counter
+PERC_HIT_LEVEL = 0.55         # a punch rising past this counts as one hit
+MOOD_AMBIENT_HITS = 0.8       # fewer than ~1 hit per 4s = no percussion
+                              # (a steady 2 Hz kick holds the counter ~6)
+MOOD_CHILL_BPM = 106.0        # slower than this (or soft) = chill
+MOOD_CHILL_ENERGY = 0.30
+MOOD_PEAK_ENERGY = 0.58
+MOOD_DWELL_S = 4.0            # candidate must persist this long
+MOOD_SILENT_DWELL_S = 1.5
+
 FPS = 40.0                    # analysis frame rate assumed for buffer sizing
 
 
@@ -133,16 +150,57 @@ class AudioStructure:
         self._since_drop = 1e9
         self._prev_slam_ok = False    # last frame's absolute-slam condition
         self._drop_decay = 0.0
+        # Mood classifier.
+        self._hits = 0.0              # leaky count of punch TRANSIENTS -
+                                      # pads park a punch at a low constant,
+                                      # percussion crosses it repeatedly
+        self._prev_punch = 0.0
+        self._mood = "silent"
+        self._mood_cand = "silent"
+        self._mood_cand_t = 0.0
 
     # ------------------------------------------------------------------
     def update(self, sound, beat, dt):
         """Advance one frame. ``sound`` is outstate['sound'] (or None);
-        ``beat`` is the BeatDetector result dict (currently unused but kept
-        in the contract for future beat-aligned structure work)."""
+        ``beat`` is the BeatDetector result dict (used by the mood
+        classifier for tempo/confidence)."""
         try:
-            return self._update(sound, dt)
+            result = self._update(sound, dt)
+            self._classify(beat or {}, dt)
+            result["mood"] = self._mood
+            result["perc"] = round(min(self._hits / 6.0, 1.0), 3)
+            return result
         except Exception:
             return self._result(False)
+
+    def _classify(self, beat, dt):
+        """Coarse music character: silent / ambient / chill / groove / peak."""
+        punch = max(self._bass_punch, self._mid_punch, self._high_punch)
+        self._hits *= math.exp(-dt / PERC_TAU)
+        if punch >= PERC_HIT_LEVEL and self._prev_punch < PERC_HIT_LEVEL:
+            self._hits += 1.0
+        self._prev_punch = punch
+
+        bpm = float(beat.get("bpm", 0.0) or 0.0)
+        conf = float(beat.get("confidence", 0.0) or 0.0)
+        if self._gate < 0.15:
+            cand = "silent"
+        elif self._hits < MOOD_AMBIENT_HITS:
+            cand = "ambient"        # music present, but nothing percussive
+        elif self._energy > MOOD_PEAK_ENERGY or self._drop_decay > 0.3:
+            cand = "peak"
+        elif ((0.0 < bpm < MOOD_CHILL_BPM and conf > 0.25)
+                or self._energy < MOOD_CHILL_ENERGY):
+            cand = "chill"
+        else:
+            cand = "groove"
+
+        if cand != self._mood_cand:
+            self._mood_cand = cand
+            self._mood_cand_t = self._t
+        dwell = MOOD_SILENT_DWELL_S if cand == "silent" else MOOD_DWELL_S
+        if cand != self._mood and self._t - self._mood_cand_t >= dwell:
+            self._mood = cand
 
     def _result(self, drop):
         return {"bass": self._bass, "mid": self._mid, "high": self._high,
@@ -150,7 +208,9 @@ class AudioStructure:
                 "high_punch": self._high_punch,
                 "punch": max(self._bass_punch, self._mid_punch, self._high_punch),
                 "energy": self._energy, "build": self._build,
-                "drop": drop, "drop_decay": self._drop_decay}
+                "drop": drop, "drop_decay": self._drop_decay,
+                "mood": self._mood,
+                "perc": round(min(self._hits / 6.0, 1.0), 3)}
 
     def _update(self, sound, dt):
         dt = float(dt) if dt and dt > 0.0 else (1.0 / FPS)
@@ -184,10 +244,22 @@ class AudioStructure:
         gate = self._gate
 
         # --- Scalar band energies (fast EMA of the 0.5s-normalized bands) ---
+        # Each range is additionally gated by whether it holds REAL power:
+        # AGC norms of near-empty bands are tiny/tiny noise ratios that fire
+        # phantom punches (a pure pad "hitting" in the cymbal bands through
+        # spectral leakage). A range must carry at least ~0.3% of the
+        # dominant range's raw level to count at all.
+        lv_b = float(np.sum(rrow[BASS_SLICE]))
+        lv_m = float(np.sum(rrow[MID_SLICE]))
+        lv_h = float(np.sum(rrow[HIGH_SLICE]))
+        dom = max(lv_b, lv_m, lv_h, 1e-12)
+        sig_b = min(1.0, lv_b / (0.003 * dom))
+        sig_m = min(1.0, lv_m / (0.003 * dom))
+        sig_h = min(1.0, lv_h / (0.003 * dom))
         a = 1.0 - math.exp(-dt / BAND_TAU)
-        bass = gate * float(np.clip(np.mean(srow[BASS_SLICE]), 0.0, 4.0))
-        mid = gate * float(np.clip(np.mean(srow[MID_SLICE]), 0.0, 4.0))
-        high = gate * float(np.clip(np.mean(srow[HIGH_SLICE]), 0.0, 4.0))
+        bass = gate * sig_b * float(np.clip(np.mean(srow[BASS_SLICE]), 0.0, 4.0))
+        mid = gate * sig_m * float(np.clip(np.mean(srow[MID_SLICE]), 0.0, 4.0))
+        high = gate * sig_h * float(np.clip(np.mean(srow[HIGH_SLICE]), 0.0, 4.0))
         self._bass += (bass - self._bass) * a
         self._mid += (mid - self._mid) * a
         self._high += (high - self._high) * a

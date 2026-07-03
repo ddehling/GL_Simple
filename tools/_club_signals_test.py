@@ -147,7 +147,8 @@ def run(samples=None):
                         phrase=beat["phrase_phase"], onset=beat["onset"],
                         bass=sig["bass"], energy=sig["energy"],
                         build=sig["build"], bass_punch=sig["bass_punch"],
-                        high_punch=sig["high_punch"]))
+                        high_punch=sig["high_punch"],
+                        mood=sig["mood"]))
         t += dt
         pos += HOP
 
@@ -327,6 +328,21 @@ def main():
         r = at(log, float(tt))
         print(f"  {r['t']:4.0f} {r['bpm']:6.1f}  {r['conf']:.2f}   {r['energy']:.2f}  "
               f"{r['bass']:.2f}   {r['build']:.2f}")
+
+    print("\nMood classifier:\n")
+    check("groove reads as music", at(log, 25.0)["mood"] in ("groove", "peak", "chill"),
+          f"mood={at(log, 25.0)['mood']} at t=25s (steady groove)")
+    check("silence reads as silent", at(log, 57.0)["mood"] == "silent",
+          f"mood={at(log, 57.0)['mood']} at t=57s (7s into silence)")
+    # Pad-only synthetic: sustained tones, zero percussion -> ambient.
+    n_pad = int(40.0 * RATE)
+    tt = np.arange(n_pad) / RATE
+    pad = (0.20 * np.sin(2 * np.pi * 220.0 * tt) * (0.8 + 0.2 * np.sin(2 * np.pi * 0.1 * tt))
+           + 0.12 * np.sin(2 * np.pi * 331.0 * tt))
+    log_a, _ = run(pad)
+    r_a = at(log_a, 30.0)
+    check("pads read as ambient", r_a["mood"] == "ambient",
+          f"mood={r_a['mood']} at t=30s of beatless pads")
 
     print("\nAdversarial input suites (clip / dropout / cold start / DC):\n")
     stress_suites(check)

@@ -1985,6 +1985,8 @@ class EnvironmentalSystem:
         state["build_level"] = sig["build"]
         state["drop"] = sig["drop"]
         state["drop_decay"] = sig["drop_decay"]
+        state["music_mood"] = sig["mood"]
+        state["music_perc"] = sig["perc"]
         state["celestial_bodies"] = self.celestial_bodies
 
     def random_events(self):

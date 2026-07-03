@@ -116,6 +116,10 @@
                     <span class="info-label">Beat:</span>
                     <span class="info-value" id="club-beat">--</span>
                 </div>
+                <div class="info-row">
+                    <span class="info-label">Music reads as:</span>
+                    <span class="info-value" id="club-mood">--</span>
+                </div>
                 <div class="club-badges" id="club-badges"></div>
 
                 <div class="heat-bar">
@@ -329,6 +333,7 @@
                 `${phaseLabel(s.season || 0)}  (${((s.season || 0) * 100).toFixed(0)}% of the night cycle)`;
             document.getElementById('club-beat').textContent =
                 c.bpm > 1 ? `${c.bpm.toFixed(0)} BPM  (confidence ${(c.conf * 100).toFixed(0)}%)` : 'no beat lock';
+            document.getElementById('club-mood').textContent = c.mood || '--';
             document.getElementById('club-cal').textContent = `${c.cal[0]} .. ${c.cal[1]}`;
 
             if (c.room_heat != null)

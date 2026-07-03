@@ -56,8 +56,11 @@ class BeatDetector:
     """Onset + tempo (autocorrelation) + phase-locked beat oscillator."""
 
     def __init__(self):
-        # --- Onset (bass-weighted spectral flux) ---
+        # --- Onset (bass-weighted spectral flux + a percussive mid channel) ---
         self._bass_ema = 0.0       # fast baseline for sub/low bass
+        self._perc_ema = 0.0       # fast baseline for low-mids (soft kicks,
+                                   # snares - carries the pulse in chill music
+                                   # where sustained bass drones bury the kick)
         self._ema_alpha = 0.25     # ~0.25s baseline at 40fps
         self._flux_hist = deque(maxlen=40)   # ~1s of onset strengths
 
@@ -67,7 +70,7 @@ class BeatDetector:
         # --- Tempo (BPM) ---
         self._bpm = 120.0
         self._bpm_alpha = 0.12
-        self._min_bpm = 80.0
+        self._min_bpm = 65.0       # downtempo/chill lives at 65-100
         self._max_bpm = 170.0
         self._pref_lo = 110.0      # dance-range bias (deep/melodic house)
         self._pref_hi = 132.0
@@ -148,12 +151,19 @@ class BeatDetector:
         else:
             present = True
 
-        # Onset from SUB/LOW BASS only (the kick lives ~40-150 Hz, bands 0..5).
-        # Restricting to bass keeps off-beat hats / claps from firing the PLL.
+        # Onset: bass flux first (the kick, bands 0..5), plus a downweighted
+        # low-mid percussive channel (bands 6..15: soft kicks, snares, toms).
+        # Chill/downtempo tracks often ride a sustained bass drone that
+        # raises the bass baseline and buries a soft kick's flux - the
+        # percussive channel still sees the pulse. Hats (bands 20+) stay
+        # excluded so off-beat cymbals don't fire the PLL.
         bass = float(np.mean(row[0:min(6, n)]))
+        perc = float(np.mean(row[6:min(16, n)])) if n > 6 else bass
         a = self._ema_alpha
         self._bass_ema = (1.0 - a) * self._bass_ema + a * bass
-        onset_strength = max(0.0, bass - self._bass_ema)
+        self._perc_ema = (1.0 - a) * self._perc_ema + a * perc
+        onset_strength = max(max(0.0, bass - self._bass_ema),
+                             0.55 * max(0.0, perc - self._perc_ema))
 
         self._flux_hist.append(onset_strength)
         self._env.append(onset_strength)
@@ -243,7 +253,15 @@ class BeatDetector:
                 score += 0.33 * ac[3 * lag]
             bpm = 60.0 * FPS / lag
             if self._pref_lo <= bpm <= self._pref_hi:
-                score *= 1.15                      # gentle dance-range bias
+                score *= 1.08                      # gentle dance-range bias
+                # (softened when chill support landed: tempo continuity now
+                # provides the stability this prior used to; at 1.15 it was
+                # dragging ~100 BPM downtempo up to a 126 BPM half-truth)
+            # Tempo continuity: once locked, the incumbent tempo (and its
+            # neighbourhood) gets a bonus so soft material with several
+            # plausible related lags doesn't flap between them.
+            if self._have_tempo and abs(bpm - self._bpm) / self._bpm < 0.08:
+                score *= 1.25
             score_sum += score
             score_n += 1
             if score > best_score:
@@ -257,8 +275,15 @@ class BeatDetector:
         # margin over the (non-negative) mean is robust where a ratio blows
         # up on a near-zero denominator.
         mean_score = score_sum / max(1, score_n)
-        q = (best_score - max(mean_score, 0.0)) / 0.5
-        q = max(0.0, min(1.0, q))
+        # Tempo quality: RELATIVE prominence of the winning lag (how much it
+        # stands out of the comb-sum floor as a fraction of itself), scaled
+        # by an absolute-evidence factor so near-silent noise can't fake a
+        # prominent peak. The old absolute margin (/0.5) was tuned for hard
+        # dance music and starved soft grooves whose autocorrelation runs
+        # at half the amplitude.
+        prominence = (best_score - max(mean_score, 0.0)) / max(best_score, 1e-6)
+        evidence = max(0.0, min(1.0, best_score / 0.25))
+        q = max(0.0, min(1.0, prominence * 1.8)) * evidence
         # Asymmetric smoothing: tempo trust builds quickly on good evidence
         # but decays slowly - a breakdown weakens the autocorrelation for a
         # few seconds without meaning the tempo actually changed.
