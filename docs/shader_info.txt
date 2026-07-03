@@ -172,7 +172,7 @@ the story_* variables published by NarrativePlayer.
 
 ## Club / DJ realm z-band table (canonical, July 2026)
 
-Seventeen audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
+Twenty-seven audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
 layers (eq_bars/balls/lasers/strobe) predate the depth-band conversion and
 still flip GL_ALWAYS internally (legacy); everything newer uses the
 depth-based approach — new club effects must too.
@@ -180,6 +180,10 @@ depth-based approach — new club effects must too.
 | z | Effect | Level param | Notes |
 |---|---|---|---|
 | 0.92 | club_horizon_glow | horizon_glow_level | sub-bass rim breathing at the outer edge |
+| 0.95 | club_turntable | turntable_level | the fan as a BPM-locked spinning record; drops scratch it |
+| 0.88 | club_interference | interference_level | moire fringes from two orbiting wave sources; drops phase-invert |
+| 0.82 | club_membrane | membrane_level | one springy living cell; bands ripple its boundary, drops make it gulp |
+| 0.80 | club_chroma_bloom | chroma_level | 12 pitch-class petals - chords bloom (reads outstate['chroma']) |
 | 0.85 | club_spectrum_stars | star_field_level | norm_long_relu band glints |
 | 0.78 | club_mandala | mandala_level | N-way kaleidoscope feedback (fold morphs per phrase), mid/high punches stamp mirrored shapes |
 | 0.75 | club_milk_echo | milk_echo_level | MilkDrop-style feedback warp: outward-streaming trails + spectrum waveform ring + beat-swelling video echo, kaleidoscope on drops |
@@ -187,15 +191,21 @@ depth-based approach — new club effects must too.
 | 0.72 | club_ribbon | ribbon_level | mid-driven liquid ribbons |
 | 0.70 | club_tunnel | tunnel_level | dense-dim bed (alpha cap 0.35) |
 | 0.65 | club_sparkle | sparkle_level | hi-hat transient glints |
+| 0.68 | club_constellation | constellation_level | hits progressively connect stars into figures; new figure per phrase |
 | 0.63 | club_wave_dance | wave_dance_level | time-domain oscilloscope, 4 MilkDrop wave modes cycling per phrase (reads outstate['waveform']) |
 | 0.60 | club_eq_bars | eq_gain | 32-band bars + peak-hold caps |
+| 0.58 | club_seq_grid | seq_grid_level | circular 16-step sequencer learning the track's rhythm per bar |
 | 0.55 | club_balls (audio_balls) | orb_level | real-feet orbs + lightning |
 | 0.52 | club_radar_sweep | radar_sweep_level | one arm per 4-beat bar |
 | 0.50 | club_lasers | laser_density | crossing scissor beams from 2 corner emitters, complementary hues |
 | 0.48 | club_chaser | chaser_level | marquee chase dots, one step/beat |
 | 0.45 | club_kick_flare | kick_flare_level | star-burst rays on each kick |
+| 0.43 | club_pendulum | pendulum_level | 24-pendulum wave re-aligning on every 16-beat phrase |
 | 0.40 | club_shockwave | shockwave_level | bass rings in real feet |
+| 0.38 | club_fountain | fountain_level | ballistic particles erupting on kicks, gravity pulls them home |
+| 0.35 | club_tesla | tesla_level | branching hub-to-rim lightning on hard kicks + treble corona |
 | 0.30 | fireworks_burst one-shot | (event) | audio_balls at a distinct depth |
+| 0.28 | club_swarm | swarm_level | 70 boids clumping on the beat, detonating on drops |
 | 0.05 | club_strobe | beat_flash_amount / strobe_* | per-flash stencils (wedges/arcs/checker), full-bright cells only (never full-field, never dim washes) |
 
 Club conventions: every pattern self-gates on its LEVEL PARAM (a normal

@@ -1881,6 +1881,8 @@ class EnvironmentalSystem:
         # Raw time-domain waveform (128 samples, AGC-normalized) for the
         # MilkDrop-style oscilloscope shaders. None when no analyzer.
         state["waveform"] = self.analyzer.get_waveform() if self.analyzer else None
+        # 12-bin pitch-class distribution for harmony-aware shaders.
+        state["chroma"] = self.analyzer.get_chroma() if self.analyzer else None
         # Beat / tempo detection over the analyzer output. Published so any
         # shader can sync to the beat (Club set's lasers/strobe/eq_bars).
         # Returns zeros when there's no audio, so this is always safe.

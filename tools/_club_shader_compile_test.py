@@ -58,6 +58,16 @@ def main():
     from projects.fan.shaders.club_mandala import ClubMandalaEffect
     from projects.fan.shaders.club_flow_field import ClubFlowFieldEffect
     from projects.fan.shaders.club_wave_dance import ClubWaveDanceEffect
+    from projects.fan.shaders.club_seq_grid import ClubSeqGridEffect
+    from projects.fan.shaders.club_swarm import ClubSwarmEffect
+    from projects.fan.shaders.club_pendulum import ClubPendulumEffect
+    from projects.fan.shaders.club_chroma_bloom import ClubChromaBloomEffect
+    from projects.fan.shaders.club_tesla import ClubTeslaEffect
+    from projects.fan.shaders.club_fountain import ClubFountainEffect
+    from projects.fan.shaders.club_interference import ClubInterferenceEffect
+    from projects.fan.shaders.club_constellation import ClubConstellationEffect
+    from projects.fan.shaders.club_membrane import ClubMembraneEffect
+    from projects.fan.shaders.club_turntable import ClubTurntableEffect
     from projects.fan.shaders.club_kick_flare import ClubKickFlareEffect
     from projects.fan.shaders.club_sparkle import ClubSparkleEffect
     from projects.fan.shaders.club_chaser import ClubChaserEffect
@@ -77,6 +87,16 @@ def main():
         ("club_mandala", ClubMandalaEffect),
         ("club_flow_field", ClubFlowFieldEffect),
         ("club_wave_dance", ClubWaveDanceEffect),
+        ("club_seq_grid", ClubSeqGridEffect),
+        ("club_swarm", ClubSwarmEffect),
+        ("club_pendulum", ClubPendulumEffect),
+        ("club_chroma_bloom", ClubChromaBloomEffect),
+        ("club_tesla", ClubTeslaEffect),
+        ("club_fountain", ClubFountainEffect),
+        ("club_interference", ClubInterferenceEffect),
+        ("club_constellation", ClubConstellationEffect),
+        ("club_membrane", ClubMembraneEffect),
+        ("club_turntable", ClubTurntableEffect),
         ("club_kick_flare", ClubKickFlareEffect),
         ("club_sparkle", ClubSparkleEffect),
         ("club_chaser", ClubChaserEffect),

@@ -32,7 +32,7 @@ from lib.beat_detector import BeatDetector
 from lib.audio_signals import AudioStructure
 from tools._club_signals_test import (synth_track, band_powers_for_window,
                                       RATE, FPS, CHUNK, HOP, WIN_SHORT,
-                                      WIN_LONG, BEAT_S)
+                                      WIN_LONG, BEAT_S, hann)
 
 W, H = 128, 300
 DT = 1.0 / FPS
@@ -52,6 +52,16 @@ from projects.fan.shaders.club_milk_echo import shader_club_milk_echo
 from projects.fan.shaders.club_mandala import shader_club_mandala
 from projects.fan.shaders.club_flow_field import shader_club_flow_field
 from projects.fan.shaders.club_wave_dance import shader_club_wave_dance
+from projects.fan.shaders.club_seq_grid import shader_club_seq_grid
+from projects.fan.shaders.club_swarm import shader_club_swarm
+from projects.fan.shaders.club_pendulum import shader_club_pendulum
+from projects.fan.shaders.club_chroma_bloom import shader_club_chroma_bloom
+from projects.fan.shaders.club_tesla import shader_club_tesla
+from projects.fan.shaders.club_fountain import shader_club_fountain
+from projects.fan.shaders.club_interference import shader_club_interference
+from projects.fan.shaders.club_constellation import shader_club_constellation
+from projects.fan.shaders.club_membrane import shader_club_membrane
+from projects.fan.shaders.club_turntable import shader_club_turntable
 from projects.fan.shaders.club_spectrum_stars import shader_club_spectrum_stars
 from projects.fan.shaders.club_ribbon import shader_club_ribbon
 from projects.fan.shaders.club_tunnel import shader_club_tunnel
@@ -71,6 +81,16 @@ WRAPPERS = [
     ("mandala", shader_club_mandala, {}),
     ("flow_field", shader_club_flow_field, {}),
     ("wave_dance", shader_club_wave_dance, {}),
+    ("seq_grid", shader_club_seq_grid, {}),
+    ("swarm", shader_club_swarm, {}),
+    ("pendulum", shader_club_pendulum, {}),
+    ("chroma_bloom", shader_club_chroma_bloom, {}),
+    ("tesla", shader_club_tesla, {}),
+    ("fountain", shader_club_fountain, {}),
+    ("interference", shader_club_interference, {}),
+    ("constellation", shader_club_constellation, {}),
+    ("membrane", shader_club_membrane, {}),
+    ("turntable", shader_club_turntable, {}),
     ("stars", shader_club_spectrum_stars, {}),
     ("ribbon", shader_club_ribbon, {}),
     ("tunnel", shader_club_tunnel, {}),
@@ -119,6 +139,9 @@ def build_signal_timeline():
     recent = []
     frames = []
     wave_peak = 1e-6
+    chroma_freqs = np.fft.rfftfreq(CHUNK, 1.0 / RATE)
+    chroma_mask = (chroma_freqs >= 80.0) & (chroma_freqs <= 5000.0)
+    chroma_pcs = (np.round(12.0 * np.log2(chroma_freqs[chroma_mask] / 440.0)) % 12).astype(np.int64)
     pos = 0
     while pos + CHUNK <= len(samples):
         win = samples[pos:pos + CHUNK]
@@ -141,6 +164,12 @@ def build_signal_timeline():
             "norm_long": np.array([bp / mean_long]),
             "norm_long_relu": np.array([np.maximum(0.0, bp / mean_long - 1.0)]),
         }
+        # 12-bin chroma fold of this window (mirrors analyzer.get_chroma).
+        mags = np.abs(np.fft.rfft(win * hann))
+        cw_power = mags[chroma_mask] ** 2
+        chro = np.bincount(chroma_pcs, weights=cw_power, minlength=12)
+        ctot = float(chro.sum())
+        chro = (chro / ctot).astype(np.float32) if ctot > 1e-9 else np.zeros(12, np.float32)
         beat = bd.update(sound, DT)
         sig = st.update(sound, beat, DT)
         # AGC-normalized time-domain waveform slice (mirrors
@@ -151,7 +180,7 @@ def build_signal_timeline():
         wave_peak = max(wave_peak * 0.995, peak)
         wf = np.clip(wv / wave_peak, -1.0, 1.0).astype(np.float32) \
             if wave_peak > 1e-4 else np.zeros(128, dtype=np.float32)
-        frames.append((sound, beat, sig, wf))
+        frames.append((sound, beat, sig, wf, chro))
         pos += HOP
     return frames
 
@@ -165,15 +194,26 @@ def scene_outstate(preset, renderer):
             "star_field_level", "shockwave_level", "kick_flare_level",
             "sparkle_level", "chaser_level", "ribbon_level",
             "horizon_glow_level", "radar_sweep_level", "milk_echo_level",
-            "mandala_level", "flow_field_level", "wave_dance_level"]
+            "mandala_level", "flow_field_level", "wave_dance_level",
+            "seq_grid_level",
+            "swarm_level",
+            "pendulum_level",
+            "chroma_level",
+            "tesla_level",
+            "fountain_level",
+            "interference_level",
+            "constellation_level",
+            "membrane_level",
+            "turntable_level"]
     for k in keys:
         o[k] = preset.get(k, wp.DEFAULT_WEATHER_PARAMS.get(k, 0.0))
     return o
 
 
-def apply_signals(o, sound, beat, sig, wf):
+def apply_signals(o, sound, beat, sig, wf, chro):
     o["sound"] = sound
     o["waveform"] = wf
+    o["chroma"] = chro
     o["beat"] = beat["onset"]
     o["beat_decay"] = beat["decay"]
     o["bpm"] = beat["bpm"]
@@ -245,8 +285,8 @@ def render_scene(scene_name, preset, timeline, out_dir, canvas_fbo=0):
     n_frames = min(len(timeline), int((WARMUP_S + CAPTURE_BEATS * BEAT_S + 1.0) / DT))
     t = 0.0
     for i in range(n_frames):
-        sound, beat, sig, wf = timeline[i]
-        apply_signals(out, sound, beat, sig, wf)
+        sound, beat, sig, wf, chro = timeline[i]
+        apply_signals(out, sound, beat, sig, wf, chro)
         # Wrapper pass (mirrors EventScheduler): sets fields, spawns things.
         for w, (name, fn, kw) in enumerate(WRAPPERS):
             st = states[w]

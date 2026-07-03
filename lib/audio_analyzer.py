@@ -561,6 +561,32 @@ class MicrophoneAnalyzer:
             'sensitivity': self._sensitivity
         }
 
+    def get_chroma(self):
+        """12-bin PITCH-CLASS energy fold (C, C#, ... B order relative to A).
+
+        Computes an on-demand FFT of the current audio buffer and folds bins
+        between 80 Hz and 5 kHz onto the 12 pitch classes. Returns a
+        normalized distribution (sums to ~1) so a chord reads as 3-4 hot
+        bins; silence (gated against a slow peak) returns zeros. Consumed by
+        harmony-aware shaders via outstate['chroma'].
+        """
+        if not hasattr(self, '_chroma_map'):
+            freqs = np.fft.rfftfreq(self.CHUNK, 1.0 / self.RATE)
+            mask = (freqs >= 80.0) & (freqs <= 5000.0)
+            pcs = (np.round(12.0 * np.log2(freqs[mask] / 440.0)) % 12).astype(np.int64)
+            self._chroma_map = (mask, pcs)
+            self._chroma_window = np.hanning(self.CHUNK)
+            self._chroma_peak = 1e-9
+        mask, pcs = self._chroma_map
+        mags = np.abs(np.fft.rfft(self.audio_buffer * self._chroma_window))
+        power = mags[mask] ** 2
+        chroma = np.bincount(pcs, weights=power, minlength=12)
+        total = float(chroma.sum())
+        self._chroma_peak = max(self._chroma_peak * 0.999, total, 1e-9)
+        if total < self._chroma_peak * 0.02:
+            return np.zeros(12, dtype=np.float32)
+        return (chroma / total).astype(np.float32)
+
     def get_waveform(self, n=128, window=2048):
         """Latest TIME-DOMAIN waveform, AGC-normalized to roughly [-1, 1].
 
