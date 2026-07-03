@@ -148,7 +148,8 @@ def run(samples=None):
                         bass=sig["bass"], energy=sig["energy"],
                         build=sig["build"], bass_punch=sig["bass_punch"],
                         high_punch=sig["high_punch"],
-                        mood=sig["mood"], density=sig["density"]))
+                        mood=sig["mood"], density=sig["density"],
+                        decay_amp=beat["decay"] if beat["onset"] else 0.0))
         t += dt
         pos += HOP
 
@@ -351,6 +352,18 @@ def main():
           and max(r["high_punch"] for r in sil) < 0.05,
           f"max punches in silence: bass={max(r['bass_punch'] for r in sil):.2f} "
           f"high={max(r['high_punch'] for r in sil):.2f}")
+
+    # Beats must be GROUNDED in audio: none in silence (the oscillator is a
+    # prediction, not a metronome), gentler flashes through the kickless
+    # breakdown than in the full groove.
+    c52 = at(log, 52.0)["count"]
+    c57 = at(log, 57.5)["count"]
+    check("no beats in silence", c57 - c52 <= 2,
+          f"{c57 - c52} beats emitted 2-7.5s into silence (want ~0)")
+    groove_flash = max(r["decay_amp"] for r in log if 20.0 <= r["t"] <= 25.0)
+    break_flash = max(r["decay_amp"] for r in log if 32.0 <= r["t"] <= 35.5)
+    check("breakdown beats are gentler", break_flash < groove_flash * 0.75,
+          f"flash amplitude: groove {groove_flash:.2f} vs breakdown {break_flash:.2f}")
 
     r57 = at(log, 57.5)
     check("confidence dies in silence", r57["conf"] < 0.15,

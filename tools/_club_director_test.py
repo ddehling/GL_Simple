@@ -172,6 +172,33 @@ check("release unfreezes drift",
       out.get('_transition_hold_until', 0.0) < time.time() + 3.5,
       "hold_until no longer refreshed after release")
 
+# 9. Silence hush: the music stopping dims every pattern level toward
+#    embers over a few seconds; sound returning wakes the room fast.
+#    (Levels are reset each frame, mirroring send_variables.)
+state, out = fresh("club_orbitarium")
+t = 0.0
+def hush_run(seconds, mood, t):
+    lvl = 0.9
+    for _ in range(int(seconds / DT)):
+        t += DT
+        state['elapsed_time'] = t
+        out['orb_level'] = 0.9
+        out['music_mood'] = mood
+        out['audio_energy'] = 0.0 if mood == 'silent' else 0.5
+        out['club_energy'] = 0.8
+        shader_club_director(state, out)
+        state['count'] += 1
+        out.pop('_weather_transition_request', None)
+        out.pop('_weather_transition_duration', None)
+        lvl = out['orb_level']
+    return lvl, t
+lvl, t = hush_run(12.0, 'silent', t)
+check("silence hushes the levels", lvl < 0.9 * 0.16,
+      f"orb_level={lvl:.3f} after 12s of silence (from 0.9)")
+lvl, t = hush_run(3.0, 'groove', t)
+check("sound wakes the room", lvl > 0.9 * 0.9,
+      f"orb_level={lvl:.3f} 3s after sound returns")
+
 print()
 if failures:
     print("FAILED:", failures); sys.exit(1)

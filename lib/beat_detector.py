@@ -84,6 +84,10 @@ class BeatDetector:
         self._decay = 0.0
         self._decay_tau = 0.12     # flash-envelope time constant
         self._last_strength = 0.0
+        # Recent REAL onset energy (~1s memory). The oscillator's tick is a
+        # prediction; this is what the music actually did - beat flashes are
+        # scaled by it so visuals react to the sound, not just the grid.
+        self._onset_env = 0.0
 
         # --- Confidence + musical counting ---
         self._count = 0            # monotonic beat index
@@ -176,6 +180,8 @@ class BeatDetector:
         self._flux_hist.append(onset_strength)
         self._env.append(onset_strength)
         self._last_strength = onset_strength
+        self._onset_env = max(self._onset_env * math.exp(-dt / 1.2),
+                              onset_strength)
 
         # Re-estimate tempo periodically from the onset envelope.
         self._frame += 1
@@ -230,13 +236,18 @@ class BeatDetector:
         target_conf = (self._q_tempo * self._q_phase) if self._have_tempo else 0.0
         self._confidence += (target_conf - self._confidence) * (1.0 - math.exp(-dt / self._conf_tau))
 
-        # Emit a beat when the oscillator crosses a cycle boundary.
+        # Emit a beat when the oscillator crosses a cycle boundary - but only
+        # while music is actually PRESENT (the oscillator is a prediction; in
+        # silence it must not keep flashing an assumed beat), and with an
+        # amplitude scaled by what the music actually delivered lately: full
+        # flash on real kicks, a gentle pulse when coasting through a
+        # kickless passage, nothing when the sound is gone.
         onset = False
         if self._phase >= 1.0:
             self._phase -= math.floor(self._phase)
-            if self._have_tempo:
+            if self._have_tempo and present:
                 onset = True
-                self._decay = 1.0
+                self._decay = min(1.0, 0.25 + 1.5 * self._onset_env)
                 self._count += 1
         if not onset:
             self._decay *= math.exp(-dt / self._decay_tau)
