@@ -1689,6 +1689,7 @@ class EnvironmentalSystem:
                     "energy": float(st.get("audio_energy", 0.0) or 0.0),
                     "build": float(st.get("build_level", 0.0) or 0.0),
                     "drop_decay": float(st.get("drop_decay", 0.0) or 0.0),
+                    "health": self.analyzer.get_input_health(),
                 }
                 with self.web_controller._dict_lock:
                     self.web_controller.control_dict['audio_summary'] = audio_summary
@@ -1765,6 +1766,11 @@ class EnvironmentalSystem:
                 self.web_controller._dict_lock.release()
             self._last_status_update = self.current_time
     
+    # Club-page steering settings auto-release so a forgotten setting can't
+    # shape the whole night (anti-rut). Re-tapping restarts the clock.
+    CLUB_THEME_TTL_S = 20 * 60.0
+    CLUB_HOLD_TTL_S = 12 * 60.0
+
     # Output keys from get_state_output() that weather_intensity should scale
     WEATHER_INTENSITY_KEYS = {"rain", "wind", "sand_density", "volcano_level"}
 
@@ -1818,6 +1824,38 @@ class EnvironmentalSystem:
                 if self.web_controller.control_dict.get('club_force_drop'):
                     club_force = True          # one-shot: consume the flag
                     self.web_controller.control_dict['club_force_drop'] = False
+
+                # Anti-rut: theme and hold auto-release so a setting made at
+                # 11pm and forgotten can't shape the whole night. Re-tapping
+                # on the club page restarts the clock.
+                cd = self.web_controller.control_dict
+                now_t = time.time()
+                ttls = {}
+                if club_theme:
+                    if cd.get('_club_theme_val') != club_theme:
+                        cd['_club_theme_val'] = club_theme
+                        cd['_club_theme_since'] = now_t
+                    remain = self.CLUB_THEME_TTL_S - (now_t - cd.get('_club_theme_since', now_t))
+                    if remain <= 0:
+                        cd['club_theme'] = ''
+                        club_theme = ''
+                    else:
+                        ttls['theme'] = int(remain)
+                else:
+                    cd['_club_theme_val'] = ''
+                if club_hold:
+                    if not cd.get('_club_hold_since'):
+                        cd['_club_hold_since'] = now_t
+                    remain = self.CLUB_HOLD_TTL_S - (now_t - cd['_club_hold_since'])
+                    if remain <= 0:
+                        cd['club_hold_room'] = False
+                        club_hold = False
+                        cd['_club_hold_since'] = 0
+                    else:
+                        ttls['hold'] = int(remain)
+                else:
+                    cd['_club_hold_since'] = 0
+                cd['club_ttls'] = ttls
 
         if season_locked and season_override is not None:
             self.season = float(season_override) % 1.0

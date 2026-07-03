@@ -374,6 +374,44 @@ class MicrophoneAnalyzer:
             self.audio_buffer = np.roll(self.audio_buffer, -n)
             self.audio_buffer[-n:] = mono
         self.new_data_available = True
+        self._last_ingest_t = time.time()
+
+    def get_input_health(self):
+        """Diagnose the raw input so a dead cable / muted desk / clipping
+        preamp reads as a status instead of 'the visuals feel off'.
+
+        Returns {status, rms, peak, clip_pct, dc, stale_s, silent_s}.
+        status: no-signal (device stopped delivering), silent (alive but
+        flat), clipping, dc-offset, or ok.
+        """
+        now = time.time()
+        buf = self.audio_buffer
+        rms = float(np.sqrt(np.mean(buf * buf)))
+        peak = float(np.max(np.abs(buf))) if len(buf) else 0.0
+        clip_pct = float(np.mean(np.abs(buf) > 0.985)) * 100.0
+        dc = float(np.mean(buf))
+        stale_s = now - getattr(self, '_last_ingest_t', 0.0)
+
+        if rms < 1e-4:
+            if getattr(self, '_silent_since', None) is None:
+                self._silent_since = now
+        else:
+            self._silent_since = None
+        silent_s = (now - self._silent_since) if getattr(self, '_silent_since', None) else 0.0
+
+        if stale_s > 2.0:
+            status = "no-signal"
+        elif silent_s > 5.0:
+            status = "silent"
+        elif clip_pct > 2.0:
+            status = "clipping"
+        elif abs(dc) > 0.10:
+            status = "dc-offset"
+        else:
+            status = "ok"
+        return {"status": status, "rms": round(rms, 5), "peak": round(peak, 3),
+                "clip_pct": round(clip_pct, 2), "dc": round(dc, 3),
+                "stale_s": round(stale_s, 1), "silent_s": round(silent_s, 1)}
 
     def feed(self, stereo_buf):
         """Internal-source tap target. Called from the AudioEngine audio thread

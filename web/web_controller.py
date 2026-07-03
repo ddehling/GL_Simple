@@ -881,6 +881,7 @@ class WebController:
                         "palette_override": self.control_dict.get('club_palette_override'),
                         "density": self.control_dict.get('club_density', 1.0),
                         "theme": self.control_dict.get('club_theme', ''),
+                        "ttls": self.control_dict.get('club_ttls', {}),
                     },
                 }
             emit('state_update', _sanitize_for_json(snapshot))
@@ -1159,6 +1160,7 @@ class WebController:
                                     "palette_override": self.control_dict.get('club_palette_override'),
                                     "density": self.control_dict.get('club_density', 1.0),
                                     "theme": self.control_dict.get('club_theme', ''),
+                                    "ttls": self.control_dict.get('club_ttls', {}),
                                 },
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),

@@ -102,8 +102,9 @@ def band_powers_for_window(win):
     return bp
 
 
-def run():
-    samples = synth_track()
+def run(samples=None):
+    if samples is None:
+        samples = synth_track()
     bd = BeatDetector()
     st = AudioStructure()
     dt = 1.0 / FPS
@@ -155,6 +156,107 @@ def run():
 
 def at(log, t_target):
     return min(log, key=lambda r: abs(r["t"] - t_target))
+
+
+def finite(log):
+    return all(np.isfinite([r["bpm"], r["conf"], r["energy"], r["bass"],
+                            r["build"], r["bass_punch"], r["high_punch"]]).all()
+               for r in log)
+
+
+def stress_suites(check):
+    """Adversarial input suites: the pipeline must stay sane (finite, no
+    drop storms, beat lock survives) under real-world input damage."""
+
+    # --- Clipping: a preamp slammed into the rails -------------------------
+    clipped = np.clip(synth_track() * 6.0, -1.0, 1.0)
+    log, drops = run(clipped)
+    r = at(log, 25.0)
+    check("clip: signals finite", finite(log), "no NaN/inf anywhere")
+    check("clip: bpm survives", abs(r["bpm"] - BPM) / BPM < 0.05,
+          f"bpm={r['bpm']:.1f} on hard-clipped input (want {BPM:.0f} +/- 5%)")
+    seg = [x for x in log if 20.0 <= x["t"] <= 25.0]
+    check("clip: punches still pulse", max(x["bass_punch"] for x in seg) > 0.5,
+          f"max bass_punch={max(x['bass_punch'] for x in seg):.2f}")
+    check("clip: no drop storm", len(drops) <= 2, f"{len(drops)} drops (allow <= 2)")
+
+    # --- Dropouts: 40ms of zeros every 2s (flaky USB / bluetooth) ----------
+    holey = synth_track()
+    hole = int(0.040 * RATE)
+    for t0 in np.arange(2.0, GROOVE2_END, 2.0):
+        i = int(t0 * RATE)
+        holey[i:i + hole] = 0.0
+    log, drops = run(holey)
+    r = at(log, 25.0)
+    check("dropout: signals finite", finite(log), "no NaN/inf anywhere")
+    check("dropout: bpm survives", abs(r["bpm"] - BPM) / BPM < 0.05,
+          f"bpm={r['bpm']:.1f} with 40ms holes every 2s")
+    steady = [d for d in drops if 5.0 <= d <= 28.0]
+    check("dropout: holes aren't drops", len(steady) == 0,
+          f"drops during steady groove: {steady}")
+
+    # --- Cold start: long silence, then music (AGC wind-up) ----------------
+    groove = synth_track()[:int(20.0 * RATE)]
+    cold = np.concatenate([np.zeros(int(20.0 * RATE)), groove])
+    log, drops = run(cold)
+    check("cold start: signals finite", finite(log), "no NaN/inf anywhere")
+    seg = [x for x in log if 20.0 <= x["t"] <= 23.0]
+    check("cold start: punches bounded", max(x["bass_punch"] for x in seg) <= 1.05,
+          f"max bass_punch={max(x['bass_punch'] for x in seg):.2f} in first 3s "
+          f"of music (AGC wind-up must not explode)")
+    early = [d for d in drops if d < 22.0]
+    check("cold start: at most one wake-up drop", len(early) <= 1,
+          f"drops near music start: {early}")
+    r = at(log, 38.0)
+    check("cold start: lock recovers", r["conf"] > 0.4 and abs(r["bpm"] - BPM) / BPM < 0.05,
+          f"18s after music starts: bpm={r['bpm']:.1f} conf={r['conf']:.2f}")
+
+    # --- DC offset: a miswired line input ----------------------------------
+    log, drops = run(synth_track() + 0.3)
+    r = at(log, 25.0)
+    check("dc offset: signals finite", finite(log), "no NaN/inf anywhere")
+    check("dc offset: bpm survives", abs(r["bpm"] - BPM) / BPM < 0.05,
+          f"bpm={r['bpm']:.1f} with +0.3 DC (want {BPM:.0f} +/- 5%)")
+
+
+def wav_report(path):
+    """Real-track mode: run the full pipeline over a WAV file and print the
+    signal timeline - no assertions, just evidence for human judgment.
+
+    Usage: python tools/_club_signals_test.py track.wav
+    """
+    from scipy.io import wavfile
+    sr, data = wavfile.read(path)
+    data = np.asarray(data, dtype=np.float64)
+    if data.ndim == 2:
+        data = data.mean(axis=1)
+    peak = np.max(np.abs(data))
+    if peak > 0:
+        data /= peak
+    if sr != RATE:
+        from math import gcd
+        from scipy import signal as sps
+        g = gcd(RATE, int(sr))
+        data = sps.resample_poly(data, RATE // g, int(sr) // g)
+    dur = len(data) / RATE
+    print(f"Real-track report: {os.path.basename(path)} ({dur:.0f}s @ {sr} Hz)\n")
+
+    log, drops = run(data)
+    print(f"  drops fired at: {['%.1f' % d for d in drops] or 'none'}")
+    confs = [r["conf"] for r in log if r["t"] > 15.0]
+    bpms = [r["bpm"] for r in log if r["t"] > 15.0 and r["conf"] > 0.4]
+    print(f"  confidence after 15s: mean {np.mean(confs):.2f}, "
+          f"below 0.3 for {np.mean(np.array(confs) < 0.3) * 100:.0f}% of the track")
+    if bpms:
+        print(f"  bpm while confident: median {np.median(bpms):.1f} "
+              f"(p10 {np.percentile(bpms, 10):.1f} / p90 {np.percentile(bpms, 90):.1f})")
+    print(f"  signals finite: {finite(log)}")
+    print("\n  t     bpm   conf  energy  bass  build  bass_punch")
+    step = max(5, int(dur // 20 / 5) * 5)
+    for tt in range(5, int(dur), step):
+        r = at(log, float(tt))
+        print(f"  {r['t']:4.0f} {r['bpm']:6.1f}  {r['conf']:.2f}   {r['energy']:.2f}  "
+              f"{r['bass']:.2f}   {r['build']:.2f}   {r['bass_punch']:.2f}")
 
 
 def main():
@@ -226,6 +328,9 @@ def main():
         print(f"  {r['t']:4.0f} {r['bpm']:6.1f}  {r['conf']:.2f}   {r['energy']:.2f}  "
               f"{r['bass']:.2f}   {r['build']:.2f}")
 
+    print("\nAdversarial input suites (clip / dropout / cold start / DC):\n")
+    stress_suites(check)
+
     print()
     if failures:
         print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")
@@ -234,4 +339,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        wav_report(sys.argv[1])
+    else:
+        main()

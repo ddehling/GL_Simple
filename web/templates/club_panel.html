@@ -47,24 +47,6 @@
         .club-hold-btn.on { border-color: #aa3; background: #4a3a1a; color: #fd8; }
         .bias-labels { display: flex; justify-content: space-between; font-size: 0.78em; opacity: 0.7; }
         #club-active-wrap { display: none; }
-        #club-audio-canvas {
-            width: 100%; height: 110px; display: block;
-            background: #101014; border-radius: 6px;
-        }
-        .meter-grid { display: flex; gap: 10px; margin-top: 10px; align-items: flex-end; }
-        .meter { flex: 1; text-align: center; font-size: 0.7em; opacity: 0.85; }
-        .meter .meter-track {
-            height: 46px; background: #1c1c22; border-radius: 4px;
-            position: relative; overflow: hidden; margin-bottom: 3px;
-        }
-        .meter .meter-fill {
-            position: absolute; bottom: 0; left: 0; right: 0; height: 0%;
-            border-radius: 4px;
-        }
-        .beat-dot {
-            width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 3px auto;
-            background: #222; transition: none;
-        }
         .mix-chips { display: flex; flex-wrap: wrap; gap: 6px; }
         .mix-chip {
             font-size: 0.75em; padding: 3px 9px; border-radius: 11px;
@@ -163,27 +145,30 @@
             <!-- Sound input -->
             <div class="section-panel">
                 <div class="section-header"><h3>Sound</h3>
-                    <span id="club-audio-src" style="font-size:0.78em; opacity:0.6"></span></div>
-                <canvas id="club-audio-canvas"></canvas>
-                <div class="meter-grid">
-                    <div class="meter"><div class="beat-dot" id="beat-dot"></div>BEAT</div>
-                    <div class="meter"><div class="meter-track">
-                        <div class="meter-fill" id="m-bass" style="background:#e55"></div></div>BASS</div>
-                    <div class="meter"><div class="meter-track">
-                        <div class="meter-fill" id="m-mid" style="background:#5c5"></div></div>MID</div>
-                    <div class="meter"><div class="meter-track">
-                        <div class="meter-fill" id="m-high" style="background:#59e"></div></div>HIGH</div>
-                    <div class="meter"><div class="meter-track">
-                        <div class="meter-fill" id="m-energy" style="background:#caa14a"></div></div>ENERGY</div>
-                    <div class="meter"><div class="meter-track">
-                        <div class="meter-fill" id="m-build" style="background:#8bf"></div></div>BUILD</div>
+                    <span class="club-badge" id="club-audio-health" style="display:none"></span></div>
+                <div style="display:flex; align-items:center; gap:8px">
+                    <label style="font-size:0.8em; opacity:0.7">Input:</label>
+                    <select id="club-audio-source" style="flex:1">
+                        <option value="linein">Line-in (wired)</option>
+                        <option value="loopback">System loopback</option>
+                        <option value="internal">Internal (show mix)</option>
+                        <option value="microphone">Microphone</option>
+                        <option value="bluetooth">Bluetooth (lucifera)</option>
+                    </select>
                 </div>
             </div>
 
             <!-- What's rendering right now -->
             <div class="section-panel">
-                <div class="section-header"><h3>In the Mix</h3></div>
+                <div class="section-header"><h3>In the Mix</h3>
+                    <span id="club-coverage" style="font-size:0.78em; opacity:0.6"></span></div>
                 <div class="mix-chips" id="club-mix">--</div>
+            </div>
+
+            <!-- Why the director did what it did -->
+            <div class="section-panel">
+                <div class="section-header"><h3>Director's Log</h3></div>
+                <div id="club-journal" style="font-size:0.8em; line-height:1.7; opacity:0.85">--</div>
             </div>
 
             <!-- Operator controls -->
@@ -206,7 +191,8 @@
                         <button class="theme-btn" data-theme="heavy">Heavy</button>
                     </div>
                     <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
-                        Leans room picks toward a visual family. The music still leads.
+                        Leans room picks toward a visual family. The music still
+                        leads, and the lean auto-releases after 20 minutes.
                     </div>
                 </div>
 
@@ -235,7 +221,8 @@
                 <div style="margin-top:16px">
                     <button class="club-hold-btn" id="club-hold">HOLD THIS ROOM</button>
                     <div style="font-size:0.75em; opacity:0.55; margin-top:4px">
-                        The director keeps choreographing but stops changing scenes.
+                        The director keeps choreographing but stops changing
+                        scenes. Auto-releases after 12 minutes.
                     </div>
                 </div>
 
@@ -273,52 +260,39 @@
         let paletteLocked = false;
         let hueDragging = false;
 
-        // ---- Sound panel: spectrum + rhythm meters (30 Hz audio_update) ----
-        const audioCanvas = document.getElementById('club-audio-canvas');
-        const actx = audioCanvas.getContext('2d');
-        let lastAudio = null;
-
-        socket.on('audio_update', (a) => { lastAudio = a; });
-
-        function drawAudio() {
-            requestAnimationFrame(drawAudio);
-            const a = lastAudio;
-            if (!a || !a.bands) return;
-            const rect = audioCanvas.getBoundingClientRect();
-            if (audioCanvas.width !== rect.width * devicePixelRatio) {
-                audioCanvas.width = rect.width * devicePixelRatio;
-                audioCanvas.height = rect.height * devicePixelRatio;
+        // ---- Sound panel: input selector + health chip only ----------------
+        socket.on('audio_update', (a) => {
+            // Input health chip: hidden while ok, loud when something's wrong.
+            const h = a.health || {};
+            const chip = document.getElementById('club-audio-health');
+            if (h.status && h.status !== 'ok') {
+                chip.style.display = '';
+                chip.classList.add('hot');
+                chip.textContent = {
+                    'no-signal': 'NO SIGNAL - device stopped',
+                    'silent': `SILENT ${h.silent_s}s - check source`,
+                    'clipping': `CLIPPING ${h.clip_pct}%`,
+                    'dc-offset': `DC OFFSET ${h.dc}`,
+                }[h.status] || h.status;
+            } else {
+                chip.style.display = 'none';
             }
-            const w = audioCanvas.width, h = audioCanvas.height;
-            actx.clearRect(0, 0, w, h);
-            const n = a.bands.length;
-            const barW = w / n - 2;
-            for (let i = 0; i < n; i++) {
-                const val = Math.min(a.bands[i] / 3.0, 1.0);
-                const hue = 180 + (i / n) * 140;
-                const bright = i === a.peak_band ? 75 : 58;
-                actx.fillStyle = `hsla(${hue}, 85%, ${bright}%, 0.9)`;
-                actx.fillRect(i * (barW + 2), h - val * h, barW, val * h);
+            // Reflect the active source unless the dropdown is focused.
+            const sel = document.getElementById('club-audio-source');
+            if (a.source && document.activeElement !== sel && sel.value !== a.source) {
+                sel.value = a.source;
             }
-            // Drop flash: wash the whole strip white as drop_decay rings out.
-            if (a.drop_decay > 0.03) {
-                actx.fillStyle = `rgba(255,255,255,${a.drop_decay * 0.35})`;
-                actx.fillRect(0, 0, w, h);
-            }
+        });
 
-            const p = a.punch || [0, 0, 0];
-            document.getElementById('m-bass').style.height = Math.min(p[0], 1) * 100 + '%';
-            document.getElementById('m-mid').style.height = Math.min(p[1], 1) * 100 + '%';
-            document.getElementById('m-high').style.height = Math.min(p[2], 1) * 100 + '%';
-            document.getElementById('m-energy').style.height = Math.min(a.energy || 0, 1) * 100 + '%';
-            document.getElementById('m-build').style.height = Math.min(a.build || 0, 1) * 100 + '%';
-            const bd = a.beat_decay || 0;
-            document.getElementById('beat-dot').style.background =
-                `rgba(${80 + 175 * bd}, ${80 + 175 * bd}, ${90 + 165 * bd}, 1)`;
-            const src = document.getElementById('club-audio-src');
-            src.textContent = `${a.source || '?'} · power ${(a.total_power || 0).toFixed(0)}`;
+        document.getElementById('club-audio-source').addEventListener('change', (e) => {
+            if (e.target.value) socket.emit('change_audio_source', { source: e.target.value });
+        });
+
+        function ago(t) {
+            const s = Math.max(0, Date.now() / 1000 - t);
+            if (s < 60) return `${s.toFixed(0)}s`;
+            return `${Math.floor(s / 60)}m${Math.floor(s % 60).toString().padStart(2, '0')}s`;
         }
-        requestAnimationFrame(drawAudio);
 
         socket.on('state_update', (s) => {
             const active = s.current_weather_set === 'club' && s.club;
@@ -360,6 +334,16 @@
                                  `<span class="lvl">${v.toFixed(2)}</span></span>`);
             document.getElementById('club-mix').innerHTML =
                 chips.length ? chips.join('') : '<span style="opacity:0.5">nothing yet</span>';
+            if (c.coverage) {
+                document.getElementById('club-coverage').textContent =
+                    `${c.coverage[0]}/${c.coverage[1]} rooms visited tonight`;
+            }
+
+            // Director's log: newest first, with relative timestamps.
+            const j = (c.journal || []).slice().reverse();
+            document.getElementById('club-journal').innerHTML = j.length
+                ? j.map(e => `<div><span style="opacity:0.45">${ago(e.t)} ago</span> &nbsp;${e.msg}</div>`).join('')
+                : '<span style="opacity:0.5">--</span>';
 
             // Reflect server-side control state (unless mid-drag).
             const ctl = s.club_controls || {};
@@ -371,8 +355,14 @@
                 document.getElementById('club-density').value = ctl.density || 1;
                 document.getElementById('density-value').textContent = (ctl.density || 1).toFixed(2);
             }
-            document.querySelectorAll('.theme-btn').forEach(b =>
-                b.classList.toggle('on', b.dataset.theme === (ctl.theme || '')));
+            const ttls = ctl.ttls || {};
+            document.querySelectorAll('.theme-btn').forEach(b => {
+                const on = b.dataset.theme === (ctl.theme || '');
+                b.classList.toggle('on', on);
+                const base = b.dataset.label || (b.dataset.label = b.textContent);
+                b.textContent = (on && b.dataset.theme && ttls.theme)
+                    ? `${base} ${Math.ceil(ttls.theme / 60)}m` : base;
+            });
             paletteLocked = ctl.palette_override != null;
             const lockBtn = document.getElementById('palette-lock');
             lockBtn.classList.toggle('on', paletteLocked);
@@ -386,7 +376,9 @@
             holdOn = !!ctl.hold_room;
             const hbtn = document.getElementById('club-hold');
             hbtn.classList.toggle('on', holdOn);
-            hbtn.textContent = holdOn ? 'RELEASE THE ROOM' : 'HOLD THIS ROOM';
+            hbtn.textContent = holdOn
+                ? `RELEASE THE ROOM${ttls.hold ? ` (auto in ${Math.ceil(ttls.hold / 60)}m)` : ''}`
+                : 'HOLD THIS ROOM';
         });
 
         const bias = document.getElementById('club-bias');

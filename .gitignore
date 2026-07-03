@@ -123,3 +123,4 @@ site/
 glsign/*
 # Claude Code per-machine settings (permissions allowlist etc.)
 .claude/settings.local.json
+logs/
