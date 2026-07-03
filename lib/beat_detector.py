@@ -151,15 +151,20 @@ class BeatDetector:
         row = np.asarray(bands[0], dtype=np.float32)
         n = row.shape[0]
 
-        # Musical presence: raw band power vs a slow rolling peak. Separates
-        # "the kick is resting" (coast the lock) from "the music stopped"
-        # (let the lock die). Missing raw_bands -> assume present.
+        # Musical presence: SMOOTHED raw band power vs a slow rolling peak.
+        # Separates "the kick is resting" (coast the lock) from "the music
+        # stopped" (let the lock die). The kick dominates band power, so the
+        # threshold must sit LOW (1.5%) and on a smoothed level - at 3% on
+        # the instantaneous level, every kickless breakdown read as absence
+        # and froze all beat-driven visuals right before the drop.
         raw = sound.get("raw_bands")
         if raw is not None and len(raw) > 0:
             lvl = float(np.mean(np.asarray(raw[0], dtype=np.float32)))
+            self._level_sm = getattr(self, '_level_sm', lvl)
+            self._level_sm += (lvl - self._level_sm) * (1.0 - math.exp(-dt / 0.3))
             self._level_peak = max(self._level_peak * math.exp(-dt / 60.0),
-                                   lvl, 1e-9)
-            present = lvl > 0.03 * self._level_peak
+                                   self._level_sm, 1e-9)
+            present = self._level_sm > 0.015 * self._level_peak
         else:
             present = True
 
@@ -245,7 +250,11 @@ class BeatDetector:
         onset = False
         if self._phase >= 1.0:
             self._phase -= math.floor(self._phase)
-            if self._have_tempo and present:
+            # Emit while the music is present OR while a healthy lock is
+            # coasting (a breakdown deserves gentle pulses, not a freeze) -
+            # in true silence, presence and confidence both die within a
+            # couple of seconds and the beats stop.
+            if self._have_tempo and (present or self._confidence > 0.25):
                 onset = True
                 self._decay = min(1.0, 0.25 + 1.5 * self._onset_env)
                 self._count += 1
