@@ -238,6 +238,54 @@ def main():
             traceback.print_exc()
             check("planner v2 builds headless", False,
                   f"{type(e).__name__}: {e}")
+
+        # -- PlanPreview: the preview must EXECUTE the compiled plan ----------
+        try:
+            import threading as _th
+            import time as _time
+            from tools.djplanner.player import PlanPreview
+            from lib.dj.themes import get_theme as _gt
+            from lib.dj.brain import Brain as _B
+            compiled = SL.compile_plan(lib, sl["entries"], theme)
+            pv = PlanPreview(db)
+            pv.set_plan(compiled, _B(lib, _gt("groove")))
+            actions, anchors = pv._build_script(0, 30.0)
+            loads = [a for a in actions if a[1] == "load"]
+            posts = [a for a in actions if a[1] == "post"]
+            check("preview script covers the plan",
+                  len(loads) == 3 and len(posts) == 2
+                  and len(anchors) == 2
+                  and all(a[0] >= 0 for a in actions),
+                  f"{len(loads)} loads, {len(posts)} event batches, "
+                  f"{len(anchors)} seam anchors")
+            # Device-free producer: render through the scripted submix and
+            # confirm audio + a seam handover actually happen.
+            pv.compiled = compiled
+            pv._stop.clear()
+            pv.playing = True
+            pv._anchors = [(0, 0.0)] + anchors
+            th = _th.Thread(target=pv._produce, args=(actions,), daemon=True)
+            th.start()
+            peak, seam_seen = 0.0, False
+            t0 = _time.time()
+            while _time.time() - t0 < 25:
+                blk = pv._fetch(2205)
+                peak = max(peak, float(np.abs(blk).max()))
+                ph = pv.playhead()
+                if ph is not None and anchors \
+                        and ph > compiled["slots"][1]["start_offset_s"]:
+                    seam_seen = True
+                    break               # crossed the first drawn seam
+                _time.sleep(0.001)      # drain far faster than realtime
+            pv._stop.set()
+            th.join(timeout=3)
+            check("preview plays the drawn plan", peak > 0.1 and seam_seen,
+                  f"peak={peak:.2f}, crossed first drawn seam={seam_seen}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            check("preview plays the drawn plan", False,
+                  f"{type(e).__name__}: {e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

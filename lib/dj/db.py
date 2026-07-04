@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     key_pc INTEGER, key_mode TEXT, camelot TEXT, key_conf REAL, key_name TEXT,
     loudness_gain_db REAL,
     energy_curve TEXT,                  -- JSON, 2 Hz, 0..1.2
+    band_curve TEXT,                    -- JSON v3 {low/mid/high: [2Hz]}
     mood_hist TEXT,                     -- JSON {mood: fraction}
     rhythm_density REAL,
     spectral TEXT,                      -- JSON {bass/mid/high_share}
@@ -108,8 +109,8 @@ CREATE TABLE IF NOT EXISTS setlist_entries (
 CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, position);
 """
 
-_JSON_COLS = ("beat_grid", "energy_curve", "mood_hist", "spectral",
-              "live_check", "axes", "auto_tags")
+_JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
+              "spectral", "live_check", "axes", "auto_tags")
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -138,13 +139,12 @@ class LibraryDB:
         ver = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if ver < SCHEMA_VERSION:
             self.conn.executescript(_SCHEMA)     # tables are IF NOT EXISTS
-            if ver == 1:                         # v1 -> v2: new track columns
-                have = {r[1] for r in
-                        self.conn.execute("PRAGMA table_info(tracks)")}
-                for col in ("axes", "auto_tags"):
-                    if col not in have:
-                        self.conn.execute(
-                            f"ALTER TABLE tracks ADD COLUMN {col} TEXT")
+            have = {r[1] for r in
+                    self.conn.execute("PRAGMA table_info(tracks)")}
+            for col in ("axes", "auto_tags", "band_curve"):   # v2/v3 columns
+                if col not in have:
+                    self.conn.execute(
+                        f"ALTER TABLE tracks ADD COLUMN {col} TEXT")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 

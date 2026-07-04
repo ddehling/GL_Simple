@@ -27,7 +27,7 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -832,6 +832,25 @@ def energy_curve_2hz(bands):
     return [round(float(v), 3) for v in np.clip(curve / p95, 0.0, 1.2)]
 
 
+def band_curves_2hz(bands):
+    """v3: low/mid/high level curves at 2 Hz, each normalized to its own
+    track p95 - the planner's mix view uses these to SHOW how two songs'
+    frequency content interlocks across a seam."""
+    mean = np.maximum(bands.mean(axis=0), 1e-10)
+    nb = bands / mean
+    blk = FPS // 2
+    n = len(nb) // blk
+    if n == 0:
+        return {}
+    out = {}
+    for key, sl in (("low", slice(0, 6)), ("mid", slice(6, 20)),
+                    ("high", slice(20, 32))):
+        c = nb[:n * blk, sl].mean(axis=1).reshape(n, blk).mean(axis=1)
+        p95 = max(np.percentile(c, 95), 1e-9)
+        out[key] = [round(float(v), 3) for v in np.clip(c / p95, 0.0, 1.2)]
+    return out
+
+
 def _spectral_shares(bands):
     m = bands.mean(axis=0)
     bass, mid, high = m[0:6].sum(), m[6:20].sum(), m[20:32].sum()
@@ -924,6 +943,7 @@ def analyze_samples(samples, deep=True):
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",
         "loudness_gain_db": round(estimate_loudness_gain(samples), 2),
         "energy_curve": energy_curve_2hz(bands),
+        "band_curve": band_curves_2hz(bands),
         "sections": sections, "loops": loops, "mix_points": mix_points,
         "spectral": _spectral_shares(bands),
         "mood_hist": {}, "rhythm_density": 0.0,

@@ -1,12 +1,10 @@
 """Audio playback for the planner.
 
 TrackPlayer   - one decoded track, instant seek/scrub (Analysis tab).
-SetPreview    - plays a COMPILED SET live: a producer thread runs the real
-                DJSystem + engine mixer (the exact code path of a show),
-                rendering ~2s ahead into a ring buffer that a miniaudio
-                device drains. Jumping to a slot rebuilds the system with
-                the remaining setlist; 'next seam' asks the brain for a
-                musical exit right now (request_skip).
+PlanPreview   - plays the COMPILED plan exactly as drawn (Mix tab): the
+                Set tab's plan is compiled into a deterministic event
+                script driven straight through the submix, with a
+                background decode cache for instant click-around.
 """
 import queue
 import threading
@@ -99,58 +97,187 @@ class TrackPlayer:
             self._dev = None
 
 
-class SetPreview:
-    """Live playback of a planned set through the REAL DJ system."""
+class PlanPreview:
+    """Plays the COMPILED plan, exactly as drawn.
 
-    def __init__(self, music_dir, entries, theme_name="groove", log_dir=None):
-        self.music_dir = music_dir
-        self.entries = list(entries)
-        self.theme_name = theme_name
-        self.log_dir = log_dir
-        # ~8s of 2205-frame blocks: must outlast the synchronous next-track
-        # decode inside dj.step() (1-3s) or transitions would underrun.
-        self._buf = queue.Queue(maxsize=160)
+    Unlike a live show (where the DJ system re-plans on the fly), the
+    preview compiles the Set tab's plan into a deterministic event script
+    and drives the submix directly - what you hear IS the timeline you see:
+    same exit points, same styles, same EQ automation.
+
+    Instant click-around: every track in the set is pre-decoded into an
+    int16 cache in the background, so seeking anywhere (playing or stopped)
+    rebuilds the script and is audible in ~0.1-0.2s. The playhead maps the
+    submix sample clock back to DRAWN timeline seconds through per-seam
+    anchors, so the marker and the audio can't drift apart.
+    """
+
+    CACHE_TRACKS = 8               # int16 stereo, ~53 MB per 5-min track
+    LEAD_S = 20.0                  # load the incoming deck this early
+
+    def __init__(self, db):
+        self.db = db
+        self.compiled = None
+        self.brain = None
+        self._cache = {}           # track_id -> int16 (n,2)
+        self._order = []
+        self._cache_lock = threading.Lock()
+        self._predecoder = None
+        self._buf = queue.Queue(maxsize=160)      # ~8s
         self._leftover = np.zeros((0, 2), dtype=np.float32)
         self._dev = None
         self._producer = None
         self._stop = threading.Event()
         self._pause = threading.Event()
-        self.dj = None
-        self.slot_index = 0                     # which entry is playing
-        self._pending_cue = None
+        self._sub = None
+        self._anchors = [(0, 0.0)]  # (submix clock, drawn seconds)
+        self.playing = False
         self.error = ""
+        self.decoding = ""
 
-    # -- lifecycle ------------------------------------------------------------
-    def start(self, from_slot=0, cue_s=None):
-        """Begin playback at slot `from_slot`; optional cue_s jumps to that
-        track-time once the deck is rolling (timeline click-to-seek)."""
-        self.stop()
+    # -- plan + cache -------------------------------------------------------
+    def set_plan(self, compiled, brain):
+        self.compiled = compiled
+        self.brain = brain
+        # Pre-decode the whole set in the background for instant seeks.
+        if compiled and compiled["slots"]:
+            tracks = [s["track"] for s in compiled["slots"]]
+            self._predecoder = threading.Thread(
+                target=self._predecode, args=(tracks,), daemon=True)
+            self._predecoder.start()
+
+    def _predecode(self, tracks):
+        for t in tracks:
+            with self._cache_lock:
+                if t.id in self._cache:
+                    continue
+            try:
+                self.decoding = t.title
+                self._decode(t)
+            except Exception:
+                pass
+        self.decoding = ""
+
+    def _decode(self, track):
+        from lib.dj.features import decode_file_stereo
+        s = decode_file_stereo(self.db.abs(track.path))
+        s16 = (np.clip(s, -1.0, 1.0) * 32767).astype(np.int16)
+        with self._cache_lock:
+            self._cache[track.id] = s16
+            if track.id in self._order:
+                self._order.remove(track.id)
+            self._order.append(track.id)
+            while len(self._order) > self.CACHE_TRACKS:
+                self._cache.pop(self._order.pop(0), None)
+        return s16
+
+    def _samples(self, track):
+        with self._cache_lock:
+            s16 = self._cache.get(track.id)
+            if s16 is not None and track.id in self._order:
+                self._order.remove(track.id)
+                self._order.append(track.id)
+        if s16 is None:
+            s16 = self._decode(track)
+        return s16.astype(np.float32) / 32767.0
+
+    # -- script compilation -----------------------------------------------------
+    def _build_script(self, slot0, cue0):
+        """Compile the plan from (slot0, cue0) into producer actions
+        [(clock, 'load'|'post', payload)] on absolute submix clocks.
+        Returns (actions, anchors)."""
+        slots = self.compiled["slots"]
+        actions = []
+        anchors = []
+        active, incoming = "a", "b"
+        first = slots[slot0]["track"]
+        actions.append((0, "load", {"deck": active, "track": first,
+                                    "cue": cue0, "start": True}))
+        c_ref, s_ref = 0, cue0     # active deck: source s_ref at clock c_ref
+        for k in range(slot0, len(slots) - 1):
+            plan = slots[k]["transition"]
+            if plan is None:
+                break
+            cur, nxt = slots[k]["track"], slots[k + 1]["track"]
+            blend_clock = c_ref + int((plan["out_s"] - s_ref) * RATE)
+            snapshot = {"clock": blend_clock,
+                        "decks": {active: {"time_s": plan["out_s"],
+                                           "rate": 1.0}}}
+            ev, swap_at, blend_at = self.brain.build_events(
+                plan, snapshot, active, incoming, cur, nxt)
+            # Preview keeps a simple constant-rate timing model: snap the
+            # incoming deck home shortly after the swap instead of the long
+            # 0.15%/s glide (a <=8% step over 1.5s), keeping every later
+            # seam sample-accurate against the drawing.
+            for e in ev:
+                if e["cmd"] == "rate" and e.get("ramp_s", 0) > 5.0:
+                    e["ramp_s"] = 1.5
+            rate_b = plan["rate"]
+            if plan["style"] == "cut_at_drop":
+                start_cue = max(0.0, plan["in_s"] - 16 * nxt.period_s)
+            else:
+                start_cue = plan["in_s"]
+            load_clock = max(0, blend_at - int(self.LEAD_S * RATE))
+            actions.append((load_clock, "load",
+                            {"deck": incoming, "track": nxt,
+                             "cue": start_cue, "start": False}))
+            actions.append((load_clock + 1, "post", ev))
+            anchors.append((blend_at, slots[k + 1]["start_offset_s"]))
+            # New dominant deck's reference after the swap (rate snapped).
+            if plan["style"] == "long_fade":
+                s_swap = start_cue + (swap_at - blend_at) / RATE
+            else:
+                s_swap = start_cue + rate_b * (swap_at - blend_at) / RATE
+            c_ref, s_ref = swap_at, s_swap
+            active, incoming = incoming, active
+        return actions, anchors
+
+    # -- transport -----------------------------------------------------------
+    def play_at(self, drawn_t):
+        """Start (or jump) playback at a drawn-timeline time. Works while
+        playing or stopped - standard DJ-software click-around."""
+        if not self.compiled or not self.compiled["slots"]:
+            return
+        slots = self.compiled["slots"]
+        slot = 0
+        for i, s in enumerate(slots):
+            if drawn_t >= s["start_offset_s"]:
+                slot = i
+        s = slots[slot]
+        track = s["track"]
+        in_s = track.mix_ins[0]["time_s"] if track.mix_ins else 0.0
+        cue = in_s + max(drawn_t - s["start_offset_s"], 0.0)
+        # Keep clear of the seam so the scripted blend still runs whole.
+        if s["transition"] is not None:
+            cue = min(cue, s["transition"]["out_s"] - 2.0)
+        cue = track.nearest_downbeat(max(cue, 0.0))
+        self._restart(slot, cue, s["start_offset_s"] + (cue - in_s))
+
+    def _restart(self, slot, cue, drawn_start):
+        self._halt_producer()
+        try:
+            actions, anchors = self._build_script(slot, cue)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error = f"{type(e).__name__}: {e}"
+            return
+        self._anchors = [(0, drawn_start)] + anchors
         self._stop.clear()
         self._pause.clear()
-        self.slot_index = from_slot
-        self._pending_cue = cue_s
-        self._producer = threading.Thread(target=self._produce,
-                                          args=(from_slot,), daemon=True)
+        self.playing = True
+        self._producer = threading.Thread(
+            target=self._produce, args=(actions,), daemon=True)
         self._producer.start()
         if self._dev is None:
             self._dev = _Device(self._fetch)
 
+    def pause(self, on):
+        (self._pause.set if on else self._pause.clear)()
+
     def stop(self):
-        self._stop.set()
-        if self._producer is not None:
-            self._producer.join(timeout=2.0)
-            self._producer = None
-        try:
-            while True:
-                self._buf.get_nowait()
-        except queue.Empty:
-            pass
-        if self.dj is not None:
-            try:
-                self.dj._running = False
-            except Exception:
-                pass
-            self.dj = None
+        self._halt_producer()
+        self.playing = False
 
     def close(self):
         self.stop()
@@ -158,33 +285,67 @@ class SetPreview:
             self._dev.close()
             self._dev = None
 
-    def pause(self, on):
-        (self._pause.set if on else self._pause.clear)()
+    def _halt_producer(self):
+        self._stop.set()
+        if self._producer is not None:
+            self._producer.join(timeout=2.0)
+            self._producer = None
+        self._sub = None
+        try:
+            while True:
+                self._buf.get_nowait()
+        except queue.Empty:
+            pass
+        self._leftover = np.zeros((0, 2), dtype=np.float32)
 
-    def next_seam(self):
-        if self.dj is not None:
-            self.dj.request_skip()
+    # -- navigation ---------------------------------------------------------
+    def playhead(self):
+        """Current position in DRAWN timeline seconds (or None)."""
+        sub = self._sub
+        if sub is None or not self.playing:
+            return None
+        clock = sub.clock
+        a = self._anchors
+        for i in range(len(a) - 1):
+            if a[i][0] <= clock < a[i + 1][0]:
+                f = (clock - a[i][0]) / max(a[i + 1][0] - a[i][0], 1)
+                return a[i][1] + f * (a[i + 1][1] - a[i][1])
+        return a[-1][1] + (clock - a[-1][0]) / RATE
 
-    def jump_to_slot(self, i):
-        self.start(from_slot=max(0, min(i, len(self.entries) - 1)))
+    def slot_at_playhead(self):
+        t = self.playhead()
+        if t is None or not self.compiled:
+            return 0
+        slot = 0
+        for i, s in enumerate(self.compiled["slots"]):
+            if t >= s["start_offset_s"]:
+                slot = i
+        return slot
 
-    def seek(self, slot, track_time_s):
-        """Jump playback to a specific moment. Seeking inside the CURRENT
-        track is instant (just re-cues the live deck); another slot means a
-        clean restart of the system from that entry."""
-        dj = self.dj
-        if (dj is not None and slot == self.slot_index
-                and dj.state in ("playing", "armed") and dj.current):
-            deck = dj.active_deck
-            dj.submix.post({"cmd": "cue", "deck": deck,
-                            "time_s": float(track_time_s)})
+    def jump_slot(self, delta):
+        if not self.compiled:
             return
-        self.start(from_slot=max(0, min(slot, len(self.entries) - 1)),
-                   cue_s=track_time_s)
+        slots = self.compiled["slots"]
+        i = max(0, min(self.slot_at_playhead() + delta, len(slots) - 1))
+        self.play_at(slots[i]["start_offset_s"] + 0.01)
 
-    # -- internals --------------------------------------------------------------
+    def next_seam(self, pre_roll=8.0):
+        """Deterministic: jump to just before the next drawn seam."""
+        t = self.playhead()
+        if t is None or not self.compiled:
+            return
+        for s in self.compiled["slots"][1:]:
+            if s["start_offset_s"] > t + pre_roll:
+                self.play_at(max(s["start_offset_s"] - pre_roll, 0.0))
+                return
+
+    def telemetry(self):
+        sub = self._sub
+        return sub.telemetry if sub is not None else {}
+
+    # -- producer -------------------------------------------------------------
     def _fetch(self, n):
-        if self._pause.is_set():
+        if self._pause.is_set() or not self.playing:
             return np.zeros((n, 2), dtype=np.float32)
         out = np.zeros((n, 2), dtype=np.float32)
         got = 0
@@ -197,52 +358,44 @@ class SetPreview:
             try:
                 blk = self._buf.get_nowait()
             except queue.Empty:
-                break                            # underrun -> brief silence
+                break
             take = min(n - got, len(blk))
             out[got:got + take] = blk[:take]
             self._leftover = blk[take:]
             got += take
         return out
 
-    def _produce(self, from_slot):
+    def _produce(self, actions):
         try:
-            from lib.audio_engine import AudioEngine
-            from lib.dj.system import DJSystem
-            engine = AudioEngine()
-            dj = DJSystem(self.music_dir, engine=engine,
-                          theme=self.theme_name, threaded=False,
-                          log_dir=self.log_dir, seed=1234)
-            if not dj.start():
-                self.error = dj.last_error
-                return
-            dj._setlist_name = "(preview)"
-            dj._setlist_queue = [dict(e) for e in self.entries[from_slot:]]
-            self.dj = dj
-            gen = engine._mixer()
-            next(gen)
+            from lib.dj.submix import DJSubmix
+            sub = DJSubmix()
+            self._sub = sub
+            actions = sorted(actions, key=lambda a: a[0])
             block = 2205
-            prev_id = None
             while not self._stop.is_set():
                 if self._pause.is_set():
                     time.sleep(0.05)
                     continue
-                buf = gen.send(block)
-                dj.step()
-                cur = (dj.status()["current"] or {}).get("id")
-                if cur is not None and cur != prev_id:
-                    if prev_id is not None:
-                        self.slot_index += 1
-                    prev_id = cur
-                    # Deferred click-seek: cue once the first track rolls.
-                    cue = getattr(self, "_pending_cue", None)
-                    if cue is not None:
-                        self._pending_cue = None
-                        dj.submix.post({"cmd": "cue", "deck": dj.active_deck,
-                                        "time_s": float(cue)})
-                arr = np.frombuffer(buf, dtype=np.float32).reshape(-1, 2)
+                while actions and actions[0][0] <= sub.clock:
+                    _, kind, payload = actions.pop(0)
+                    if kind == "load":
+                        t = payload["track"]
+                        samples = self._samples(t)
+                        sub.post({"cmd": "load", "deck": payload["deck"],
+                                  "samples": samples, "track_id": t.id,
+                                  "grid": t.grid, "gain_db": t.gain_db,
+                                  "cue_s": payload["cue"]})
+                        if payload.get("start"):
+                            sub.post({"cmd": "gain", "deck": payload["deck"],
+                                      "value": 1.0, "ramp_s": 0.05})
+                            sub.post({"cmd": "start",
+                                      "deck": payload["deck"]})
+                    elif kind == "post":
+                        sub.post_many(payload)
+                blk = np.clip(sub.read(block), -1.0, 1.0)
                 while not self._stop.is_set():
                     try:
-                        self._buf.put(arr, timeout=0.2)
+                        self._buf.put(blk, timeout=0.2)
                         break
                     except queue.Full:
                         continue
@@ -250,11 +403,3 @@ class SetPreview:
             import traceback
             traceback.print_exc()
             self.error = f"{type(e).__name__}: {e}"
-
-    def status(self):
-        if self.dj is None:
-            return {"active": False, "error": self.error}
-        s = self.dj.status()
-        s["active"] = True
-        s["slot_index"] = self.slot_index
-        return s

@@ -43,7 +43,7 @@ from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
 from tools.djplanner.waveform import WaveformView
 from tools.djplanner.mixview import MixTimeline
-from tools.djplanner.player import TrackPlayer, SetPreview
+from tools.djplanner.player import TrackPlayer, PlanPreview
 
 RATE = 44100
 SECTION_COLORS = {
@@ -844,7 +844,7 @@ class MixTab(QWidget):
     def __init__(self, planner):
         super().__init__()
         self.planner = planner
-        self.preview = None
+        self.preview = PlanPreview(planner.db)
         v = QVBoxLayout(self)
         self.timeline = MixTimeline()
         self.timeline.seamSelected.connect(self._seam_picked)
@@ -859,8 +859,8 @@ class MixTab(QWidget):
             + chip("#2d4b69", "track block (lane A)")
             + chip("#325f4b", "track block (lane B)")
             + chip("#e6e6f0", "energy curve / GAIN envelope")
-            + chip("#eb695a", "EQ low") + chip("#78d278", "EQ mid")
-            + chip("#6eaaf0", "EQ high")
+            + chip("#eb695a", "low band strip + EQ env")
+            + chip("#78d278", "mid") + chip("#6eaaf0", "high")
             + "<span style='color:#8a8a95'>| ticks = beats (bright = "
               "downbeat, appear when zoomed) | ↳ style (blend length) at "
               "each seam | wheel = zoom, drag = pan, click = seek when "
@@ -902,106 +902,83 @@ class MixTab(QWidget):
         brain = Brain(self.planner.library,
                       self.planner.set_tab.theme())
         self.timeline.set_plan(compiled, brain)
+        # A changed plan invalidates the running script - stop, re-arm the
+        # preview (kicks the background pre-decode for instant seeks).
+        self.preview.stop()
+        self.timeline.set_playhead(None)
+        self.preview.set_plan(compiled, brain)
 
-    def play_set(self, from_slot=0):
-        st = self.planner.set_tab
-        if not st.entries:
+    def play_set(self):
+        if not self.planner.set_tab.compiled:
             self.status.setText("build a set first")
             return
-        self.stop()
-        self.preview = SetPreview(self.planner.music_dir, st.entries,
-                                  theme_name=st.theme_combo.currentText())
-        self.preview.start(from_slot=from_slot)
         self.pause_btn.setChecked(False)
-        self.status.setText("playing set...")
+        self.preview.play_at(0.0)
 
     def stop(self):
-        if self.preview is not None:
-            self.preview.close()
-            self.preview = None
+        self.preview.stop()
         self.timeline.set_playhead(None)
         self.status.setText("stopped")
 
     def _pause(self, on):
-        if self.preview is not None:
-            self.preview.pause(on)
+        self.preview.pause(on)
 
     def _jump(self, d):
-        if self.preview is not None:
-            self.preview.jump_to_slot(self.preview.slot_index + d)
+        self.preview.jump_slot(d)
 
     def _next_seam(self):
-        if self.preview is not None:
-            self.preview.next_seam()
-            self.status.setText("asking for a musical exit...")
+        self.preview.next_seam()
 
     def _seam_picked(self, index):
         self.planner.set_tab.select_seam(index)
 
     def _time_clicked(self, t):
-        """Click-to-seek while the set preview is live: map the clicked
-        output time to (slot, track time) and jump playback there."""
-        if self.preview is None:
+        """Standard DJ-software click-around: playing or stopped, a click
+        on the timeline plays from there (instant via the decode cache)."""
+        if not self.planner.set_tab.compiled:
             return
-        compiled = self.planner.set_tab.compiled
-        if not compiled or not compiled["slots"]:
-            return
-        slots = compiled["slots"]
-        slot = 0
-        for i, s in enumerate(slots):
-            if t >= s["start_offset_s"]:
-                slot = i
-        s = slots[slot]
-        track = s["track"]
-        in_s = track.mix_ins[0]["time_s"] if track.mix_ins else 0.0
-        track_t = in_s + max(t - s["start_offset_s"], 0.0)
-        track_t = track.nearest_downbeat(       # land on the grid
-            min(track_t, track.duration_s - 20.0))
-        self.preview.seek(slot, max(track_t, 0.0))
+        self.pause_btn.setChecked(False)
+        self.preview.play_at(t)
         self.timeline.set_playhead(t)
-        self.status.setText(
-            f"seek → {track.title[:32]} @ {int(track_t // 60)}:"
-            f"{int(track_t % 60):02d}")
 
     def _tick(self):
-        if self.preview is None:
+        pv = self.preview
+        if pv.error:
+            self.status.setText("preview error: " + pv.error)
+            pv.error = ""
             return
-        s = self.preview.status()
-        if not s.get("active"):
-            if s.get("error"):
-                self.status.setText("preview error: " + s["error"])
+        if not pv.playing:
+            if pv.decoding:
+                self.status.setText(f"pre-decoding: {pv.decoding[:40]}...")
             return
-        cur = s.get("current") or {}
+        t = pv.playhead()
+        if t is not None:
+            self.timeline.set_playhead(t)
         compiled = self.planner.set_tab.compiled
-        slot = min(s.get("slot_index", 0),
-                   len(compiled["slots"]) - 1) if compiled else 0
-        if compiled and cur.get("pos_s") is not None:
-            sl = compiled["slots"][slot]
-            in_s = (sl["track"].mix_ins[0]["time_s"]
-                    if sl["track"].mix_ins else 0.0)
-            self.timeline.set_playhead(
-                sl["start_offset_s"] + max(cur["pos_s"] - in_s, 0.0))
-        # Live tracked tempo: dominant deck's track bpm x its actual rate
-        # (includes the PLL trim and the post-swap glide home).
         live_bpm = None
-        try:
-            dj = self.preview.dj
-            tel = s.get("deck_telemetry") or {}
-            d = (tel.get("decks") or {}).get(dj.active_deck)
-            if d and dj.current and dj.current.bpm:
-                live_bpm = dj.current.bpm * d["rate"]
-        except Exception:
-            pass
+        title = "-"
+        if compiled and compiled["slots"]:
+            slot = compiled["slots"][pv.slot_at_playhead()]
+            title = slot["track"].title
+            # Live tracked tempo: the loudest playing deck's track bpm x its
+            # actual rate (incl. PLL trim during a blend).
+            tel = pv.telemetry() or {}
+            by_id = {s["track"].id: s["track"].bpm
+                     for s in compiled["slots"]}
+            best_gain = -1.0
+            for d in (tel.get("decks") or {}).values():
+                if d.get("playing") and d.get("gain", 0) > best_gain \
+                        and d.get("track_id") in by_id:
+                    best_gain = d["gain"]
+                    live_bpm = by_id[d["track_id"]] * d["rate"]
         self.timeline.live_bpm = live_bpm
-        nxt = s.get("next") or {}
         self.status.setText(
-            f"[{s.get('state', '?')}] "
-            + (f"{live_bpm:.1f} bpm | " if live_bpm else "")
-            + f"{cur.get('title', '-')}"
-            + (f" → {nxt['title']}" if nxt else ""))
+            (f"{live_bpm:.1f} bpm | " if live_bpm else "")
+            + f"{title}"
+            + (f"  (decoding {pv.decoding[:24]}...)" if pv.decoding else ""))
 
     def close(self):
-        self.stop()
+        self.preview.close()
 
 
 # ==========================================================================
