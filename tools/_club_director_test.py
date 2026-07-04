@@ -199,6 +199,19 @@ lvl, t = hush_run(3.0, 'groove', t)
 check("sound wakes the room", lvl > 0.9 * 0.9,
       f"orb_level={lvl:.3f} 3s after sound returns")
 
+# 10. Earned night progression: the phase advances by danced heat -
+#     a hot floor moves the night several times faster than a dead one.
+state, out = fresh("club_orbitarium")
+out['season'] = 0.10
+t, _, _, _ = run(120.0, state, out, energy=0.7)
+hot_adv = out['_season_autopilot'] - 0.10
+state, out = fresh("club_orbitarium")
+out['season'] = 0.10
+t, _, _, _ = run(120.0, state, out, energy=0.0)
+dead_adv = out['_season_autopilot'] - 0.10
+check("night phase is earned", hot_adv > dead_adv * 2.5 and hot_adv > 0,
+      f"2min advance: hot={hot_adv*100:.3f}% vs dead={dead_adv*100:.3f}% of the cycle")
+
 print()
 if failures:
     print("FAILED:", failures); sys.exit(1)

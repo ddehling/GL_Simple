@@ -1858,8 +1858,18 @@ class EnvironmentalSystem:
                     cd['_club_hold_since'] = 0
                 cd['club_ttls'] = ttls
 
+        # Season resolution order: manual lock > set-driven autopilot >
+        # wall-clock ramp. The autopilot hook lets a set's own logic drive
+        # its season (the club director advances the night phase by how
+        # hard the floor is actually going); the freshness stamp makes a
+        # stale value from a departed set fall back to the clock.
+        sstate = self.scheduler.state
+        _auto = sstate.get('_season_autopilot')
+        _auto_fresh = (time.time() - sstate.get('_season_autopilot_t', 0.0)) < 2.0
         if season_locked and season_override is not None:
             self.season = float(season_override) % 1.0
+        elif _auto is not None and _auto_fresh:
+            self.season = float(_auto) % 1.0
         else:
             self.season = ((time.time() / 1800) * season_speed) % 1
 
