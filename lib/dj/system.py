@@ -65,6 +65,10 @@ class DJSystem:
         self._setlist_queue = []     # upcoming entry dicts (plan-following)
         self.setlist_names = []      # for the web picker, refreshed by step()
         self._setlists_checked = 0.0
+        self._decoded = {}           # track_id -> stereo samples (RAM cache)
+        self._decoded_order = []
+        self._decoding = set()
+        self._decode_lock = threading.Lock()
         self._pending = []           # queued control requests
         self._lock = threading.Lock()
         self._thread = None
@@ -327,13 +331,32 @@ class DJSystem:
             return
         played = (self.submix.clock - self._started_clock) / RATE
         deadline = self.current.duration_s - 25.0
+        out_bpm = self.current.bpm       # dominant deck glides home to 1.0
+
+        # EARLY: choose the next track and kick off its background decode as
+        # soon as we're settled into the current one, so the decode (a ~0.5s
+        # CPU burst that can starve the audio callback) finishes MINUTES
+        # before the switch, never near it. The pick is locked in early -
+        # exactly what a real DJ does.
+        if self.next_track is None and (self.autopilot or self._setlist_queue) \
+                and played > 20.0:
+            if self._setlist_queue:
+                self.next_track, self._next_meta = \
+                    self._pop_setlist_next(out_bpm)
+            if self.next_track is None:
+                cand, meta = self.brain.choose_next(
+                    self.current, self.arc_target(), out_bpm)
+                if cand is not None:
+                    self.next_track, self._next_meta = cand, meta
+            if self.next_track is not None:
+                self._predecode(self.next_track)
+
         # _exit_played was drawn from [min_play, max_play] when this track
-        # took over; plan once we're a lead-time away from it (or from the
+        # took over; ARM once we're a lead-time away from it (or from the
         # track simply running dry).
         if played < self._exit_played - PLAN_LEAD_S \
                 and pos < deadline - PLAN_LEAD_S:
             return
-        out_bpm = self.current.bpm       # dominant deck glides home to 1.0
         if self.next_track is None and self._setlist_queue:
             self.next_track, self._next_meta = self._pop_setlist_next(out_bpm)
         if self.next_track is None:
@@ -350,8 +373,13 @@ class DJSystem:
             if self._next_meta is None:
                 self._next_meta = {"rate": 1.0, "eff_bpm": self.next_track.bpm,
                                    "pair": None}
-        samples = self._decode(self.next_track)
+        # Use the RAM-cached samples; if the background decode isn't done
+        # yet, wait (we still have PLAN_LEAD_S of runway) rather than decode
+        # inline and risk starving the audio callback.
+        samples = self._decoded_samples(self.next_track)
         if samples is None:
+            if self.next_track.id in self._decoding:
+                return                       # decoding - retry next step()
             self.brain.library.remove(self.next_track)
             self.next_track = None
             return
@@ -463,6 +491,68 @@ class DJSystem:
         theme = self.brain.theme
         span = max(theme.max_play_s - theme.min_play_s, 1.0)
         self._exit_played = theme.min_play_s + self.brain.rng.random() * span
+
+    def _predecode(self, track):
+        """Start decoding `track` on a background daemon thread so the whole
+        file is in RAM before we need it - the synchronous decode used to
+        run on the planner thread at plan time and starve the audio callback
+        (a 1-3s CPU burst on a 5-min mp3 = an underrun/GAP at the switch)."""
+        if track is None:
+            return
+        with self._decode_lock:
+            if track.id in self._decoded or track.id in self._decoding:
+                return
+            self._decoding.add(track.id)
+
+        def work():
+            try:
+                s = self._decode_gil_friendly(self.db.abs(track.path))
+            except Exception as e:
+                s = None
+                self.last_error = f"decode failed: {track.path}: {e}"
+                print(f"[DJ] {self.last_error}")
+            with self._decode_lock:
+                self._decoding.discard(track.id)
+                if s is not None:
+                    self._decoded[track.id] = s
+                    # Keep only a couple of tracks cached (~106MB each).
+                    while len(self._decoded_order) >= 3:
+                        old = self._decoded_order.pop(0)
+                        if old != track.id:
+                            self._decoded.pop(old, None)
+                    self._decoded_order.append(track.id)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _decode_gil_friendly(self, path):
+        """Decode to stereo float32, converting in chunks that RELEASE the
+        GIL between them (time.sleep(0)) so the miniaudio audio callback
+        never blocks on one big ~260MB memcpy while a track is playing.
+        Falls back to the plain decoder if miniaudio can't read the file."""
+        try:
+            import miniaudio
+            dec = miniaudio.decode_file(
+                path, output_format=miniaudio.SampleFormat.FLOAT32,
+                nchannels=2, sample_rate=RATE)  # C decode releases the GIL
+            src = memoryview(dec.samples)
+            n = len(dec.samples)
+            out = np.empty(n, dtype=np.float32)
+            step = 1 << 20                       # ~1M samples (~12ms) per copy
+            for i in range(0, n, step):
+                out[i:i + step] = np.frombuffer(
+                    src[i:i + step], dtype=np.float32)
+                time.sleep(0)                    # yield to the audio callback
+            return out.reshape(-1, 2)
+        except Exception:
+            from lib.dj.features import decode_file_stereo
+            return decode_file_stereo(path)
+
+    def _decoded_samples(self, track):
+        """Cached samples if ready, else None (kick off a decode)."""
+        with self._decode_lock:
+            s = self._decoded.get(track.id)
+        if s is None:
+            self._predecode(track)
+        return s
 
     def _decode(self, track):
         try:
