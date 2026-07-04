@@ -1028,7 +1028,7 @@ class WebController:
                 self._values_cache = None
 
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
-                      'nudge', 'next_id'}
+                      'nudge', 'next_id', 'setlist'}
 
         @self.socketio.on('dj_action')
         def handle_dj_action(data):
@@ -1053,8 +1053,8 @@ class WebController:
                     arg = int(arg)
                 except (TypeError, ValueError):
                     return
-            elif action == 'theme':
-                if not isinstance(arg, str) or len(arg) > 40:
+            elif action in ('theme', 'setlist'):
+                if not isinstance(arg, str) or len(arg) > 80:
                     return
             elif action == 'autopilot':
                 arg = bool(arg)

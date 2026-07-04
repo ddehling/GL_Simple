@@ -105,7 +105,11 @@ class LibraryDB:
         self.music_root = os.path.abspath(music_root)
         self.db_path = db_path or os.path.join(self.music_root, DB_FILENAME)
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False: DJSystem builds the library cache on the
+        # caller's thread, then hands the connection to its planner thread
+        # (accesses are sequential, never concurrent). Scanner/planner tools
+        # each open their own instance.
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")

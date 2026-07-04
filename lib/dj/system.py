@@ -61,6 +61,10 @@ class DJSystem:
         self._energy_nudge = 0.0
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
+        self._setlist_name = None
+        self._setlist_queue = []     # upcoming entry dicts (plan-following)
+        self.setlist_names = []      # for the web picker, refreshed by step()
+        self._setlists_checked = 0.0
         self._pending = []           # queued control requests
         self._lock = threading.Lock()
         self._thread = None
@@ -80,6 +84,7 @@ class DJSystem:
             return False
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
+        self._refresh_setlist_names()
         if self.engine is not None:
             self.engine.attach_track("dj_submix", self.submix)
         self._running = True
@@ -135,6 +140,11 @@ class DJSystem:
     def set_energy_nudge(self, x):
         self._energy_nudge = float(max(-0.4, min(0.4, x)))
 
+    def load_setlist(self, name):
+        """Follow a preplanned set: anchors are hard, suggestions soft."""
+        with self._lock:
+            self._pending.append(("setlist", name))
+
     # -- arc / outstate -----------------------------------------------------------
     def arc_progress(self):
         elapsed = (self.submix.clock - self._set_start_clock) / RATE
@@ -175,6 +185,9 @@ class DJSystem:
             "next": self._track_brief(nxt),
             "style": self.plan["style"] if self.plan else None,
             "blend_in_s": round(countdown, 1) if countdown is not None else None,
+            "setlist": self._setlist_name,
+            "setlist_remaining": len(self._setlist_queue),
+            "setlists": list(self.setlist_names),
             "deck_telemetry": tel, "error": self.last_error,
         }
 
@@ -214,6 +227,23 @@ class DJSystem:
                     self.next_track = t
                     self.plan = None
                     self._log({"event": "pick_next", "track": t.title})
+            elif kind == "setlist":
+                from lib.dj.setlist import get_setlist
+                sl = get_setlist(self.db, name=val) if val else None
+                if val and sl is None:
+                    self.last_error = f"setlist '{val}' not found"
+                else:
+                    self._setlist_name = val or None
+                    self._setlist_queue = list(sl["entries"]) if sl else []
+                    self._log({"event": "setlist",
+                               "name": self._setlist_name,
+                               "tracks": len(self._setlist_queue)})
+                    if self.state == "playing":
+                        self.next_track = None      # replan from the list
+                        self.plan = None
+
+        if time.time() - self._setlists_checked > 10.0:
+            self._refresh_setlist_names()
 
         if self.state == "idle":
             self._start_first()
@@ -224,7 +254,13 @@ class DJSystem:
                 self._finish_swap()
 
     def _start_first(self):
-        first = self.brain.choose_first(self.arc_target())
+        first = None
+        while self._setlist_queue and first is None:
+            entry = self._setlist_queue.pop(0)
+            first = next((x for x in self.brain.library
+                          if x.id == entry["track_id"]), None)
+        if first is None:
+            first = self.brain.choose_first(self.arc_target())
         if first is None:
             self.last_error = "no track fits the theme"
             return
@@ -272,6 +308,8 @@ class DJSystem:
                 and pos < deadline - PLAN_LEAD_S:
             return
         out_bpm = self.current.bpm       # dominant deck glides home to 1.0
+        if self.next_track is None and self._setlist_queue:
+            self.next_track, self._next_meta = self._pop_setlist_next(out_bpm)
         if self.next_track is None:
             cand, meta = self.brain.choose_next(
                 self.current, self.arc_target(), out_bpm)
@@ -357,7 +395,44 @@ class DJSystem:
         self._exit_played = (self.submix.clock - self._started_clock) / RATE
         self._maybe_plan()
 
+    def _pop_setlist_next(self, out_bpm):
+        """Next track from the loaded setlist. Anchors are HARD (played even
+        if the seam needs a long_fade); a tempo-impossible SUGGESTION is
+        dropped and the live brain substitutes."""
+        while self._setlist_queue:
+            entry = self._setlist_queue.pop(0)
+            t = next((x for x in self.brain.library
+                      if x.id == entry["track_id"]), None)
+            if t is None:
+                continue
+            if self.current is not None and t.id == self.current.id:
+                continue
+            _, meta = self.brain.score(self.current, t,
+                                       self.arc_target(), out_bpm)
+            if meta is None:
+                rate, eff = self.brain.rate_for(out_bpm, t)
+                meta = {"rate": rate or 1.0, "eff_bpm": eff or t.bpm,
+                        "pair": None}
+                if rate is None and entry.get("pin_type") != "anchor":
+                    self._log({"event": "setlist_swap", "dropped": t.title,
+                               "why": "tempo clash - brain substitutes"})
+                    return None, None       # brain picks instead
+            self._log({"event": "setlist_next", "track": t.title,
+                       "pin": entry.get("pin_type", "suggestion"),
+                       "remaining": len(self._setlist_queue)})
+            return t, meta
+        self._setlist_name = None
+        return None, None
+
     # -- helpers ---------------------------------------------------------------
+    def _refresh_setlist_names(self):
+        self._setlists_checked = time.time()
+        try:
+            from lib.dj.setlist import list_setlists
+            self.setlist_names = [s["name"] for s in list_setlists(self.db)]
+        except Exception:
+            pass
+
     def _draw_exit(self):
         theme = self.brain.theme
         span = max(theme.max_play_s - theme.min_play_s, 1.0)

@@ -2176,6 +2176,8 @@ class EnvironmentalSystem:
                         self._dj.set_energy_nudge(float(arg))
                     elif action == 'next_id':
                         self._dj.request_next(int(arg))
+                    elif action == 'setlist':
+                        self._dj.load_setlist(str(arg or ''))
             except Exception as e:
                 print(f"[DJ] action '{action}' failed: {e}")
 

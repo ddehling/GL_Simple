@@ -77,6 +77,10 @@ def cmd_autonomous(args):
                   threaded=live)
     if not dj.start():
         return 1
+    if args.setlist:
+        dj.load_setlist(args.setlist)
+        if not live:
+            dj.step()                    # consume the request now
     minutes = args.minutes or (30.0 if live else 10.0)
     if live:
         engine.start()
@@ -242,6 +246,7 @@ def main():
     ap.add_argument("--wav", default="", help="render to this WAV instead")
     ap.add_argument("--minutes", type=float, default=0.0)
     ap.add_argument("--night-hours", type=float, default=6.0)
+    ap.add_argument("--setlist", default="", help="follow a saved setlist")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--audition", nargs=2, metavar=("A", "B"),
                     help="render one planned transition between two tracks")

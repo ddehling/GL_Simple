@@ -149,6 +149,15 @@
                     <input type="range" id="dj-nudge" min="-0.4" max="0.4"
                            step="0.05" value="0" style="width:100%">
                 </div>
+                <div style="margin-top:12px; display:flex; gap:8px">
+                    <select id="dj-setlist" style="flex:1; padding:8px;
+                            background:#26262e; color:#ccc;
+                            border:1px solid #555; border-radius:6px">
+                        <option value="">(no setlist - free play)</option>
+                    </select>
+                    <button class="auto-btn" id="dj-setlist-load"
+                            style="width:auto; padding:8px 14px">LOAD</button>
+                </div>
                 <button class="auto-btn on" id="dj-auto"
                         style="margin-top:12px">AUTOPILOT: ON</button>
                 <button class="dj-skip-btn" id="dj-skip"
@@ -189,6 +198,9 @@
         };
         $("dj-skip").onclick = () =>
             socket.emit("dj_action", {action: "skip"});
+        $("dj-setlist-load").onclick = () =>
+            socket.emit("dj_action",
+                        {action: "setlist", value: $("dj-setlist").value});
         $("dj-auto").onclick = () => {
             const on = !$("dj-auto").classList.contains("on");
             socket.emit("dj_action", {action: "autopilot", value: on});
@@ -237,7 +249,20 @@
                     (dj.blend_in_s != null ? ` in ${Math.round(dj.blend_in_s)}s` : "")
                     + `</span>`);
             badges.push(`<span class="dj-badge">${dj.theme}</span>`);
+            if (dj.setlist)
+                badges.push(`<span class="dj-badge">list: ${dj.setlist}` +
+                            ` (${dj.setlist_remaining} left)</span>`);
             $("dj-badges").innerHTML = badges.join("");
+
+            const sel = $("dj-setlist");
+            const names = dj.setlists || [];
+            if (sel.dataset.have !== names.join("|")) {
+                sel.dataset.have = names.join("|");
+                const keep = sel.value;
+                sel.innerHTML = '<option value="">(no setlist - free play)</option>'
+                    + names.map((n) => `<option>${n}</option>`).join("");
+                sel.value = keep;
+            }
 
             if (dj.next) {
                 $("dj-next-box").style.display = "";
