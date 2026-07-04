@@ -193,15 +193,14 @@ class MixTimeline(QWidget):
             p.drawRect(r)
 
             # Spectral content mapped from track-time [in_s, out_s+blend]:
-            # three stacked band strips (low bottom / mid / high top) whose
-            # brightness follows each band's level - across a seam you can
-            # SEE the incoming track's bass stay dark until the swap while
-            # its highs are already lit, and how the two songs interlock.
+            # three stacked band area-plots (low bottom / mid / high top),
+            # each drawn as a FILLED HEIGHT (not a shade) so intensity is
+            # actually readable - across a seam you SEE the incoming track's
+            # bass stay low until the swap while its highs are already high.
             in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
             seg_dur = E - S
             bc = t.row.get("band_curve") or {}
-            n_cols = min(max(int(x1 - x0) // 3, 8), 320)
-            col_w = (x1 - x0) / n_cols
+            n_cols = max(int(x1 - x0), 8)          # per-pixel temporal detail
             if all(k in bc and bc[k] for k in ("low", "mid", "high")):
                 band_h = lane_h / 3.0
                 for ri, (key, col) in enumerate(
@@ -209,26 +208,25 @@ class MixTimeline(QWidget):
                          ("mid", EQ_COLORS["mid"]),
                          ("low", EQ_COLORS["low"]))):
                     curve = bc[key]
-                    sub_y = y0 + ri * band_h
-                    for k in range(n_cols):
+                    base_y = y0 + (ri + 1) * band_h
+                    p.fillRect(QRectF(x0, y0 + ri * band_h, x1 - x0,
+                                      band_h), QColor(24, 24, 30))
+                    poly = [QPointF(x0, base_y)]
+                    for k in range(n_cols + 1):
                         ts = in_s + seg_dur * k / n_cols
                         ci = min(int(ts * 2), len(curve) - 1)
-                        v = min(float(curve[ci]), 1.0)
-                        c = QColor(col)
-                        c.setAlpha(int(28 + 200 * v))
-                        p.fillRect(QRectF(x0 + k * col_w, sub_y + 1,
-                                          col_w + 0.5, band_h - 1), c)
-            curve = t.row.get("energy_curve") or []
-            if curve:
-                pts = []
-                for k in range(n_cols + 1):
-                    ts = in_s + seg_dur * k / n_cols
-                    ci = min(int(ts * 2), len(curve) - 1)
-                    v = min(float(curve[ci]), 1.0)
-                    pts.append(QPointF(x0 + (x1 - x0) * k / n_cols,
-                                       y0 + lane_h * (1.0 - 0.85 * v)))
-                p.setPen(QPen(QColor(230, 230, 240, 150), 1))
-                p.drawPolyline(QPolygonF(pts))
+                        v = min(float(curve[ci]) / 1.1, 1.0)
+                        poly.append(QPointF(x0 + (x1 - x0) * k / n_cols,
+                                            base_y - (band_h - 1) * v))
+                    poly.append(QPointF(x1, base_y))
+                    fill = QColor(col)
+                    fill.setAlpha(150)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(fill)
+                    p.drawPolygon(QPolygonF(poly))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.setPen(QPen(col, 1))
+                    p.drawPolyline(QPolygonF(poly[1:-1]))
 
             # Beat ticks at high zoom.
             if t.grid and span > 0:

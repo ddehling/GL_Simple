@@ -133,7 +133,7 @@ class PlanPreview:
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._sub = None
-        self._anchors = [(0, 0.0)]  # (submix clock, drawn seconds)
+        self._deck_slot = {}        # deck name -> slot index it is playing
         self.playing = False
         self.error = ""
         self.decoding = ""
@@ -195,7 +195,8 @@ class PlanPreview:
         active, incoming = "a", "b"
         first = slots[slot0]["track"]
         actions.append((0, "load", {"deck": active, "track": first,
-                                    "cue": cue0, "start": True}))
+                                    "cue": cue0, "start": True,
+                                    "slot": slot0}))
         c_ref, s_ref = 0, cue0     # active deck: source s_ref at clock c_ref
         for k in range(slot0, len(slots) - 1):
             plan = slots[k]["transition"]
@@ -223,7 +224,8 @@ class PlanPreview:
             load_clock = max(0, blend_at - int(self.LEAD_S * RATE))
             actions.append((load_clock, "load",
                             {"deck": incoming, "track": nxt,
-                             "cue": start_cue, "start": False}))
+                             "cue": start_cue, "start": False,
+                             "slot": k + 1}))
             actions.append((load_clock + 1, "post", ev))
             anchors.append((blend_at, slots[k + 1]["start_offset_s"]))
             # New dominant deck's reference after the swap (rate snapped).
@@ -265,7 +267,7 @@ class PlanPreview:
             traceback.print_exc()
             self.error = f"{type(e).__name__}: {e}"
             return
-        self._anchors = [(0, drawn_start)] + anchors
+        self._deck_slot = {}
         self._stop.clear()
         self._pause.clear()
         self.playing = True
@@ -302,28 +304,40 @@ class PlanPreview:
         self._leftover = np.zeros((0, 2), dtype=np.float32)
 
     # -- navigation ---------------------------------------------------------
-    def playhead(self):
-        """Current position in DRAWN timeline seconds (or None)."""
+    def _active_deck_slot(self):
+        """(deck_dict, slot_index) for the LOUDEST playing deck, or (None,None).
+        Derived from real telemetry - the ground truth of what's audible."""
         sub = self._sub
         if sub is None or not self.playing:
+            return None, None
+        decks = (sub.telemetry or {}).get("decks") or {}
+        cands = [(d.get("gain", 0.0), self._deck_slot[name], d)
+                 for name, d in decks.items()
+                 if d.get("playing") and name in self._deck_slot]
+        if not cands:
+            return None, None
+        # Loudest deck wins; when two are within 0.2 gain (crossfade
+        # midpoint) prefer the LATER slot so position advances into the
+        # incoming track instead of flickering back to the outgoing one.
+        top = max(c[0] for c in cands)
+        near = [c for c in cands if top - c[0] <= 0.2]
+        gain, slot, d = max(near, key=lambda c: c[1])
+        return d, slot
+
+    def playhead(self):
+        """Position in DRAWN timeline seconds from the loudest deck's real
+        source position - monotonic within a track, steps at handover, never
+        interpolation-jumps."""
+        d, slot = self._active_deck_slot()
+        if d is None or not self.compiled:
             return None
-        clock = sub.clock
-        a = self._anchors
-        for i in range(len(a) - 1):
-            if a[i][0] <= clock < a[i + 1][0]:
-                f = (clock - a[i][0]) / max(a[i + 1][0] - a[i][0], 1)
-                return a[i][1] + f * (a[i + 1][1] - a[i][1])
-        return a[-1][1] + (clock - a[-1][0]) / RATE
+        s = self.compiled["slots"][slot]
+        in_s = s["track"].mix_ins[0]["time_s"] if s["track"].mix_ins else 0.0
+        return s["start_offset_s"] + max(d.get("time_s", 0.0) - in_s, 0.0)
 
     def slot_at_playhead(self):
-        t = self.playhead()
-        if t is None or not self.compiled:
-            return 0
-        slot = 0
-        for i, s in enumerate(self.compiled["slots"]):
-            if t >= s["start_offset_s"]:
-                slot = i
-        return slot
+        _, slot = self._active_deck_slot()
+        return slot if slot is not None else 0
 
     def jump_slot(self, delta):
         if not self.compiled:
@@ -393,6 +407,7 @@ class PlanPreview:
                     if kind == "load":
                         t = payload["track"]
                         samples = self._samples(t)
+                        self._deck_slot[payload["deck"]] = payload["slot"]
                         sub.post({"cmd": "load", "deck": payload["deck"],
                                   "samples": samples, "track_id": t.id,
                                   "grid": t.grid, "gain_db": t.gain_db,
