@@ -50,6 +50,7 @@ def envelopes_from_events(events, blend_at, deck, init_gain, init_eq):
 
 class MixTimeline(QWidget):
     seamSelected = pyqtSignal(int)
+    timeClicked = pyqtSignal(float)          # output-time seconds
 
     def __init__(self):
         super().__init__()
@@ -254,6 +255,7 @@ class MixTimeline(QWidget):
     def mouseReleaseEvent(self, ev):
         if self._drag is not None and not self._moved:
             t = self._x2t(ev.position().x())
+            self.timeClicked.emit(t)         # live preview seeks here
             best, best_d = None, 1e9
             for si, sm in enumerate(self.seams):
                 mid = sm["start_s"] + sm["blend_s"] / 2

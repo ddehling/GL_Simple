@@ -117,14 +117,18 @@ class SetPreview:
         self._pause = threading.Event()
         self.dj = None
         self.slot_index = 0                     # which entry is playing
+        self._pending_cue = None
         self.error = ""
 
     # -- lifecycle ------------------------------------------------------------
-    def start(self, from_slot=0):
+    def start(self, from_slot=0, cue_s=None):
+        """Begin playback at slot `from_slot`; optional cue_s jumps to that
+        track-time once the deck is rolling (timeline click-to-seek)."""
         self.stop()
         self._stop.clear()
         self._pause.clear()
         self.slot_index = from_slot
+        self._pending_cue = cue_s
         self._producer = threading.Thread(target=self._produce,
                                           args=(from_slot,), daemon=True)
         self._producer.start()
@@ -163,6 +167,20 @@ class SetPreview:
 
     def jump_to_slot(self, i):
         self.start(from_slot=max(0, min(i, len(self.entries) - 1)))
+
+    def seek(self, slot, track_time_s):
+        """Jump playback to a specific moment. Seeking inside the CURRENT
+        track is instant (just re-cues the live deck); another slot means a
+        clean restart of the system from that entry."""
+        dj = self.dj
+        if (dj is not None and slot == self.slot_index
+                and dj.state in ("playing", "armed") and dj.current):
+            deck = dj.active_deck
+            dj.submix.post({"cmd": "cue", "deck": deck,
+                            "time_s": float(track_time_s)})
+            return
+        self.start(from_slot=max(0, min(slot, len(self.entries) - 1)),
+                   cue_s=track_time_s)
 
     # -- internals --------------------------------------------------------------
     def _fetch(self, n):
@@ -215,6 +233,12 @@ class SetPreview:
                     if prev_id is not None:
                         self.slot_index += 1
                     prev_id = cur
+                    # Deferred click-seek: cue once the first track rolls.
+                    cue = getattr(self, "_pending_cue", None)
+                    if cue is not None:
+                        self._pending_cue = None
+                        dj.submix.post({"cmd": "cue", "deck": dj.active_deck,
+                                        "time_s": float(cue)})
                 arr = np.frombuffer(buf, dtype=np.float32).reshape(-1, 2)
                 while not self._stop.is_set():
                     try:

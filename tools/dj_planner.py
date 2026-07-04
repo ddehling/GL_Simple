@@ -848,6 +848,7 @@ class MixTab(QWidget):
         v = QVBoxLayout(self)
         self.timeline = MixTimeline()
         self.timeline.seamSelected.connect(self._seam_picked)
+        self.timeline.timeClicked.connect(self._time_clicked)
         v.addWidget(self.timeline, 1)
 
         row = QHBoxLayout()
@@ -919,6 +920,31 @@ class MixTab(QWidget):
 
     def _seam_picked(self, index):
         self.planner.set_tab.select_seam(index)
+
+    def _time_clicked(self, t):
+        """Click-to-seek while the set preview is live: map the clicked
+        output time to (slot, track time) and jump playback there."""
+        if self.preview is None:
+            return
+        compiled = self.planner.set_tab.compiled
+        if not compiled or not compiled["slots"]:
+            return
+        slots = compiled["slots"]
+        slot = 0
+        for i, s in enumerate(slots):
+            if t >= s["start_offset_s"]:
+                slot = i
+        s = slots[slot]
+        track = s["track"]
+        in_s = track.mix_ins[0]["time_s"] if track.mix_ins else 0.0
+        track_t = in_s + max(t - s["start_offset_s"], 0.0)
+        track_t = track.nearest_downbeat(       # land on the grid
+            min(track_t, track.duration_s - 20.0))
+        self.preview.seek(slot, max(track_t, 0.0))
+        self.timeline.set_playhead(t)
+        self.status.setText(
+            f"seek → {track.title[:32]} @ {int(track_t // 60)}:"
+            f"{int(track_t % 60):02d}")
 
     def _tick(self):
         if self.preview is None:
