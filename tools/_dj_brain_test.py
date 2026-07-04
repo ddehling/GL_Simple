@@ -109,17 +109,19 @@ def unit_tests():
     check("recency penalty bites", s_played < s_fresh * 0.5,
           f"just-played 8A scores {s_played:.4f} vs fresh key-clash {s_fresh:.4f}")
 
-    # Busy x busy veto: every exit of cur is a wall of sound, and so is the
-    # candidate's every entry -> no legal pair; a quiet candidate pairs fine.
+    # Busy x busy penalty: mixing two walls of sound is heavily penalized
+    # (not hard-rejected - a pair is always returned so planning never falls
+    # back to a blind exit), so a quiet candidate must out-score it a lot.
     busy_cur = fake_track(7, 122.0, "8A", busy=0.9, vocal=0.3,
                           busy_everywhere=True)
     busy_cand = fake_track(8, 124.0, "8A", busy=0.9, vocal=0.8,
                            busy_everywhere=True)
     pair_bad = Brain(lib, theme, seed=1).best_pair(busy_cur, busy_cand)
     pair_ok = Brain(lib, theme, seed=1).best_pair(busy_cur, lib[1])
-    check("busy x busy veto", pair_bad is None and pair_ok is not None,
-          f"busy-busy pair={pair_bad}, busy-quiet pair "
-          f"score={pair_ok['score'] if pair_ok else None}")
+    check("busy x busy penalized", pair_bad is not None and pair_ok is not None
+          and pair_ok["score"] > pair_bad["score"] * 3,
+          f"busy-busy score={pair_bad['score'] if pair_bad else None}, "
+          f"busy-quiet score={pair_ok['score'] if pair_ok else None}")
 
     check("camelot table sane",
           camelot_compat("8A", "8A") == 1.0

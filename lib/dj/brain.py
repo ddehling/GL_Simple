@@ -253,11 +253,27 @@ class Brain:
                 if after_s is None or o["time_s"] >= after_s]
         if not outs:
             return None
+        # How good a section is to mix OUT of / IN to. The golden rule of
+        # melodic-house mixing: bring the new track's INTRO (drums, no lead)
+        # in over the old track's OUTRO/breakdown, so two lead melodies never
+        # play at once. Kind drives this; busyness/vocalness refine it.
+        def out_fit(sec):
+            k = sec.get("kind", "steady")
+            base = {"outro": 1.0, "breakdown": 0.85, "steady": 0.6,
+                    "build": 0.3, "intro": 0.4, "drop": 0.15}.get(k, 0.5)
+            return base * (1.0 - 0.5 * (sec.get("vocalness") or 0.0))
+
+        def in_fit(sec):
+            k = sec.get("kind", "steady")
+            base = {"intro": 1.0, "breakdown": 0.8, "steady": 0.55,
+                    "build": 0.6, "outro": 0.2, "drop": 0.3}.get(k, 0.5)
+            return base * (1.0 - 0.6 * (sec.get("vocalness") or 0.0))
+
         best = None
-        for o in outs[:6]:
+        for o in outs[:8]:
             sec_a = cur.section_at(min(o["time_s"] + 1.0,
                                        cur.duration_s - 1.0))
-            for i in cand.mix_ins[:6]:
+            for i in cand.mix_ins[:8]:
                 sec_b = cand.section_at(min(i["time_s"] + 1.0,
                                             cand.duration_s - 1.0))
                 if sec_a is None or sec_b is None:
@@ -266,19 +282,25 @@ class Brain:
                 busy_b = sec_b.get("busyness") or 0.0
                 voc_a = sec_a.get("vocalness") or 0.0
                 voc_b = sec_b.get("vocalness") or 0.0
-                if busy_a > 0.65 and busy_b > 0.65:
-                    continue                     # two walls of sound: never
-                if voc_a > 0.55 and voc_b > 0.55:
-                    continue                     # two vocal lines: never
+                fit = out_fit(sec_a) * in_fit(sec_b)     # intro-over-outro
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
-                clash = 1.0 - 0.4 * min(voc_a + voc_b, 1.4) / 1.4
-                score = (max(o["score"], 0.05) * max(i["score"], 0.05)
-                         * quiet * clash)
+                # Two lead-carrying sections over each other = clash: heavy
+                # penalty (not a hard reject, so there's always a best pair).
+                clash = 1.0
+                if busy_a > 0.6 and busy_b > 0.6:
+                    clash *= 0.3
+                if voc_a > 0.5 and voc_b > 0.5:
+                    clash *= 0.25
+                mp = 0.5 + 0.5 * max(o["score"], 0.0) * max(i["score"], 0.0)
+                # Weighted-sum form so a mediocre pair stays ~0.05-1, never
+                # collapsing to ~0 (which would zero the whole selection).
+                score = (0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet) * clash * mp
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),
                             "in_hint": i.get("style_hint", "blend"),
-                            "score": round(score, 4),
+                            "score": round(score, 5),
+                            "kinds": (sec_a.get("kind"), sec_b.get("kind")),
                             "busy": (round(busy_a, 2), round(busy_b, 2))}
         return best
 

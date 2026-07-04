@@ -97,19 +97,54 @@ class DJSubmix:
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
         elif cmd == "sync":
             self._sync = {"slave": e["slave"], "master": e["master"]}
-            # DJ sync SNAP: instantly align the incoming deck's beat phase
-            # to the master (it's at gain ~0 here, so inaudible), then the
-            # PLL holds. Without this the PLL must slew the launch offset at
-            # <=0.6%/beat, which never catches up inside a 16-32 beat blend.
+            # DJ sync SNAP. Align the incoming deck to the master (inaudible
+            # at gain ~0), then the PLL holds. Grid-phase alignment leaves
+            # ~30ms of kick flam because each track's grid sits differently
+            # vs its real kicks; so we ALSO cross-correlate the two decks'
+            # actual low-band (kick) audio and slide the slave onto the
+            # master's transients - the audio is the ground truth.
             master = self.decks.get(e["master"])
             slave = self.decks.get(e["slave"])
             if master and slave and master.playing and slave.playing \
                     and master.grid and slave.grid:
-                slave.phase_snap(master.beat_phase())
+                slave.phase_snap(master.beat_phase())     # coarse: grid
+                self._onset_align(master, slave)          # fine: real kicks
         elif cmd == "end_sync":
             self._sync = None
             for d in self.decks.values():
                 d.rate_trim = 0.0
+
+    def _onset_align(self, master, slave):
+        """Slide the slave within +/- half a beat so its actual kicks sit on
+        the master's, via low-band envelope cross-correlation."""
+        period = master.beat_period_s() or 0.5
+        env_fps = 200
+        try:
+            em = master.kick_env(2.0, env_fps)
+            es = slave.kick_env(2.0, env_fps)
+        except Exception:
+            return
+        if len(em) < 8 or len(es) < 8 or em.max() <= 0 or es.max() <= 0:
+            return
+        em = em - em.mean()
+        es = es - es.mean()
+        xc = np.correlate(em, es, mode="full")
+        # Only search +/- half a beat so we align beat phase, not skip beats.
+        half = int(0.5 * period * env_fps)
+        mid = len(es) - 1
+        lo, hi = mid - half, mid + half + 1
+        seg = xc[max(lo, 0):min(hi, len(xc))]
+        if not len(seg):
+            return
+        lag = (max(lo, 0) + int(np.argmax(seg))) - mid   # env frames
+        dt = lag / env_fps                               # seconds: slave += dt
+        # Only FINE-TUNE: the grid snap already got us within a beat; a small
+        # correction removes flam, but a large nudge here risks aligning to
+        # the wrong kick on tracks with different patterns, so cap it tight.
+        peak = float(seg.max())
+        rms = float(np.sqrt(np.mean(seg ** 2))) + 1e-9
+        if abs(dt) <= 0.05 and peak > 2.5 * rms:
+            slave.nudge_seconds(dt)
 
     def _run_pll(self):
         """Trim the slave deck's rate toward the master's beat phase."""

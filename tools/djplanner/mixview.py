@@ -177,11 +177,11 @@ class MixTimeline(QWidget):
         for i, s in enumerate(self.slots):
             t = s["track"]
             S = s["start_offset_s"]
-            blend = 0.0
-            if i < len(self.slots) - 1 and s["transition"]:
-                blend = next((sm["blend_s"] for sm in self.seams
-                              if sm["index"] == i), 0.0)
-            E = S + s["play_s"] + blend
+            # Draw each block over its EXCLUSIVE drawn extent [S, S+play_s]
+            # so blocks tile without overlap - clicking a block always maps
+            # to that track (overlapping blocks caused seek-to-wrong-track).
+            # The blend overlap is shown by the seam envelopes below.
+            E = S + s["play_s"]
             x0, x1 = self._t2x(S), self._t2x(E)
             if x1 < 0 or x0 > W:
                 continue

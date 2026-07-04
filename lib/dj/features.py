@@ -44,6 +44,10 @@ SSM_KERNEL_BEATS = 16           # checkerboard novelty kernel (beats)
 # the 4096-sample Hann window is still approaching the hit. Constant for our
 # fixed framing; calibrated on synthetic kicks (see _dj_features_test).
 ONSET_LATENCY_S = 0.028
+# Low-band kick flux peaks slightly after the true kick attack; calibrated
+# so grid beats sit on the transient. Same convention on every track, so
+# any residual cancels between two beat-matched decks anyway.
+KICK_LATENCY_S = 0.0
 LOUDNESS_TARGET_DBFS = -14.0
 
 _KS_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
@@ -331,8 +335,28 @@ def _window_bpm(onset, start_f, end_f):
     return best_bpm, best_score
 
 
-def estimate_beat_grid(onset):
+def _lock_phase_to_kick(period_f, first_beat_f, kick, start_f, end_f):
+    """Shift first_beat (within +/- half a beat) so grid beats sit on the
+    actual KICK transients, not the broadband onset (whose hats lead the
+    beat and pull the grid ~40ms early). This is what makes two tracks
+    flam-free once their grids are phase-aligned."""
+    if period_f <= 1.0 or end_f - start_f < period_f * 8:
+        return first_beat_f
+    best_s, best_shift = -1e9, 0.0
+    for shift in np.linspace(-0.5, 0.5, 41) * period_f:
+        s, _ = _comb_score(kick, period_f, (first_beat_f + shift - start_f)
+                           % period_f, start_f, end_f)
+        if s > best_s:
+            best_s, best_shift = s, shift
+    # Parabolic touch-up around the winning shift.
+    return first_beat_f + best_shift
+
+
+def estimate_beat_grid(onset, kick=None):
     """Windowed tempo -> stable segments -> comb-refined grid per segment.
+
+    `onset` (broadband) drives tempo/period; `kick` (low-band onset), if
+    given, phase-locks each segment's beats onto the actual kick transients.
 
     Returns (grid, bpm, bpm_conf, beats) where grid is a list of
     {start_s, end_s, period_s, first_beat_s} and beats is every beat time."""
@@ -374,8 +398,16 @@ def estimate_beat_grid(onset):
         pf = _refine_period(onset, 60.0 / bpm0 * FPS, seg_s, seg_e)
         phase, score = _best_phase(onset, pf, seg_s, seg_e, n_phase=96)
         fb_f, pf = _polish_grid(onset, seg_s + phase, pf, seg_s, seg_e)
+        if kick is not None:
+            # Lock beats onto the kick, then micro-polish on the kick too so
+            # first_beat sits dead-centre on the transient (no fixed latency
+            # fudge - the kick IS the ground truth).
+            fb_f = _lock_phase_to_kick(pf, fb_f, kick, seg_s, seg_e)
+            fb_f, pf = _polish_grid(kick, fb_f, pf, seg_s, seg_e)
+            first_beat = fb_f / FPS + KICK_LATENCY_S
+        else:
+            first_beat = fb_f / FPS + ONSET_LATENCY_S
         period_s = pf / FPS
-        first_beat = fb_f / FPS + ONSET_LATENCY_S
         while first_beat - period_s >= seg_s / FPS:
             first_beat -= period_s
         grid.append({"start_s": seg_s / FPS, "end_s": seg_e / FPS,

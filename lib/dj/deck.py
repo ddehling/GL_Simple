@@ -35,6 +35,7 @@ class Deck:
         self.eq = ThreeBandEQ()
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
+        self._lowband = None     # cached kick-band envelope (onset sync)
         self.stretch = WSOLAStretcher(self._fetch)
         self._lock = threading.Lock()
 
@@ -47,6 +48,7 @@ class Deck:
         self.grid = grid or []
         self.loudness_gain = float(10.0 ** (gain_db / 20.0))
         self.finished = False
+        self._lowband = None                    # recomputed lazily per track
         self.ready = True
 
     def load_file_async(self, path, track_id=None, grid=None, gain_db=0.0):
@@ -146,6 +148,29 @@ class Deck:
             return 0.0
         return ((self.source_time_s() - g["first_beat_s"])
                 / g["period_s"]) % 1.0
+
+    def kick_env(self, dur_s=2.0, env_fps=200):
+        """Low-band (kick) amplitude envelope of the next dur_s of SOURCE
+        audio from the current play position, at env_fps - for aligning the
+        actual transients of two decks (onset-anchored sync)."""
+        if self.samples is None:
+            return np.zeros(int(dur_s * env_fps))
+        if self._lowband is None:
+            from scipy.signal import butter, sosfilt
+            sos = butter(4, 110, "low", fs=RATE, output="sos")
+            mono = self.samples.mean(axis=1)
+            self._lowband = np.abs(sosfilt(sos, mono)).astype(np.float32)
+        pos = int(self._map_source(int(self.stretch.source_pos)))
+        seg = self._lowband[pos:pos + int(dur_s * RATE)]
+        if len(seg) < int(dur_s * RATE):
+            seg = np.pad(seg, (0, int(dur_s * RATE) - len(seg)))
+        w = RATE // env_fps
+        return seg[:len(seg) // w * w].reshape(-1, w).max(axis=1)
+
+    def nudge_seconds(self, dt_s):
+        """Shift the play cursor by dt_s (source-domain seconds); used by
+        onset-anchored sync to slide the deck onto the master's kicks."""
+        self.stretch.seek(int(round(self.stretch.source_pos + dt_s * RATE)))
 
     def phase_snap(self, target_phase):
         """Instantly shift the play cursor so beat_phase == target_phase -
