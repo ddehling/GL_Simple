@@ -18,7 +18,7 @@ import time
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
-          "long_fade")
+          "bassline_layer", "long_fade")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 GLIDE_PER_S = 0.0015             # post-transition rate->1.0 glide speed
 
@@ -282,6 +282,25 @@ class Brain:
                             "busy": (round(busy_a, 2), round(busy_b, 2))}
         return best
 
+    def _bass_loop(self, track, before_s):
+        """Best loop in `track` to isolate as a repeating groove bed: a
+        bass-heavy, low-vocal, repetitive loop before the exit. Returns the
+        loop dict (+ resolved section) or None."""
+        best = None
+        for l in track.loops:
+            if l["start_s"] >= before_s:
+                continue
+            sec = track.section_at(l["start_s"] + 1.0)
+            if sec is None:
+                continue
+            if sec.get("vocalness", 1.0) > 0.5:
+                continue
+            score = (l.get("score", 0.0) * (0.4 + sec.get("bass_share", 0.3))
+                     * (0.5 + 0.5 * sec.get("repetitiveness", 0.0)))
+            if best is None or score > best[0]:
+                best = (score, l)
+        return best[1] if best else None
+
     # -- transition planning -----------------------------------------------------
     def plan_transition(self, cur, cand, meta, after_s=None):
         """Resolve style + timing. Returns a plan dict (see build_events)."""
@@ -309,6 +328,10 @@ class Brain:
             loop_ok = any(l["start_s"] < pair["out_s"] for l in cur.loops)
             if not loop_ok:
                 weights["loop_roll_exit"] = 0.0
+            # bassline_layer needs a bass-heavy, low-vocal loop in A to
+            # isolate as the repeating groove.
+            if self._bass_loop(cur, pair["out_s"]) is None:
+                weights["bassline_layer"] = 0.0
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
@@ -317,7 +340,8 @@ class Brain:
             style = self.rng.choices(styles, weights=ws, k=1)[0]
 
         beats = {"long_blend": 32, "bass_swap": 16, "cut_at_drop": 16,
-                 "loop_roll_exit": 32, "long_fade": 0}[style]
+                 "loop_roll_exit": 32, "bassline_layer": 16,
+                 "long_fade": 0}[style]
         out_s = cur.nearest_downbeat(pair["out_s"])
         in_s = cand.nearest_downbeat(pair["in_s"])
         plan = {"style": style, "rate": rate,
@@ -329,6 +353,12 @@ class Brain:
             # all land exactly on the grid (elapsed beats stay multiples of
             # the shrinking span).
             plan["loop_start_s"] = max(0.0, out_s - 16 * cur.period_s)
+        if style == "bassline_layer":
+            loop = self._bass_loop(cur, pair["out_s"])
+            beats_len = loop["beats"] if loop["beats"] in (8, 16) else 8
+            plan["loop_start_s"] = cur.nearest_downbeat(loop["start_s"])
+            plan["loop_beats"] = beats_len
+            plan["layer_beats"] = 16          # bars both tracks play together
         return plan
 
     # -- automation compilation ------------------------------------------------
@@ -401,6 +431,50 @@ class Brain:
             swap_at = S_cut + int(0.5 * RATE)
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
+
+        if style == "bassline_layer":
+            # Isolate A's groove as a looping bed and play B OVER it for an
+            # extended stretch - two tracks genuinely playing together, not
+            # a crossfade. A loops with mids/highs pulled out (its bassline +
+            # kick repeat); B enters beat-locked with its bass cut, riding on
+            # top with its melody/vocal/hats; after layer_beats the low end
+            # hands over (A's loop releases, B's bass returns).
+            ls = plan["loop_start_s"]
+            loop_beats = plan["loop_beats"]
+            layer = plan["layer_beats"]
+            S0 = clock_at(ls)                 # engage the loop at its start
+            bar = 4 * beat_out
+            enter = S0 + int(loop_beats * beat_out * RATE)  # B in after 1 pass
+            hand = enter + int(layer * beat_out * RATE)     # hand off the low
+            out = hand + int(8 * beat_out * RATE)
+            ev += [
+                {"at": S0, "cmd": "loop", "deck": active, "start_s": ls,
+                 "end_s": ls + loop_beats * cur.period_s},
+                {"at": S0, "cmd": "eq", "deck": active, "high": 0.0,
+                 "mid": 0.2, "low": 1.0, "ramp_s": bar},
+                {"at": enter, "cmd": "cue", "deck": incoming,
+                 "time_s": plan["in_s"]},
+                {"at": enter, "cmd": "rate", "deck": incoming, "value": rate_b},
+                {"at": enter, "cmd": "eq", "deck": incoming, "low": 0.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 0.05},
+                {"at": enter, "cmd": "gain", "deck": incoming, "value": 0.0,
+                 "ramp_s": 0.05},
+                {"at": enter, "cmd": "start", "deck": incoming},
+                {"at": enter, "cmd": "sync", "slave": incoming,
+                 "master": active},
+                {"at": enter, "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": 8 * beat_out},
+                # Hand the low end over: B's bass returns as A's loop leaves.
+                {"at": hand, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "ramp_s": bar},
+                {"at": hand, "cmd": "gain", "deck": active, "value": 0.0,
+                 "ramp_s": 4 * beat_out},
+                {"at": out, "cmd": "stop", "deck": active},
+                {"at": out, "cmd": "clear_loop", "deck": active},
+                {"at": out, "cmd": "end_sync"},
+            ]
+            self._glide_home(ev, incoming, rate_b, out)
+            return ev, out, S0
 
         # Beat-matched blends: long_blend / bass_swap / loop_roll_exit.
         # v2 staged band pull-in, like riding a mixer's EQ knobs: the new

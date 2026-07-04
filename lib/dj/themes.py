@@ -21,7 +21,7 @@ class Theme:
     spectral_lean: str = ""           # "" | "bass" | "high"
     style_weights: dict = field(default_factory=lambda: {
         "long_blend": 1.0, "bass_swap": 1.0, "cut_at_drop": 0.6,
-        "loop_roll_exit": 0.6, "long_fade": 0.3})
+        "loop_roll_exit": 0.6, "bassline_layer": 0.9, "long_fade": 0.3})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
 
@@ -57,7 +57,7 @@ BUILTIN_THEMES = {t.name: t for t in [
           mood_weights={"chill": 1.0, "ambient": 0.6, "groove": 0.4},
           style_weights={"long_blend": 1.2, "bass_swap": 0.6,
                          "cut_at_drop": 0.1, "loop_roll_exit": 0.3,
-                         "long_fade": 0.8},
+                         "bassline_layer": 0.4, "long_fade": 0.8},
           min_play_s=210.0, max_play_s=480.0),
     Theme("groove", bpm_range=(105.0, 128.0),
           energy_base=0.55, energy_span=0.25, arc="peak_wave",
@@ -68,7 +68,7 @@ BUILTIN_THEMES = {t.name: t for t in [
           spectral_lean="bass",
           style_weights={"long_blend": 0.7, "bass_swap": 1.2,
                          "cut_at_drop": 1.2, "loop_roll_exit": 1.0,
-                         "long_fade": 0.1},
+                         "bassline_layer": 1.2, "long_fade": 0.1},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",
