@@ -123,7 +123,10 @@ class PlanPreview:
         self._order = []
         self._cache_lock = threading.Lock()
         self._predecoder = None
-        self._buf = queue.Queue(maxsize=160)      # ~8s
+        # ~1.5s ahead-buffer: the decode cache means the producer never
+        # stalls long, and a short buffer keeps LIVE monitor displays
+        # honest (audible lag is exposed via audible_lag_s()).
+        self._buf = queue.Queue(maxsize=30)
         self._leftover = np.zeros((0, 2), dtype=np.float32)
         self._dev = None
         self._producer = None
@@ -342,6 +345,15 @@ class PlanPreview:
     def telemetry(self):
         sub = self._sub
         return sub.telemetry if sub is not None else {}
+
+    def audible_lag_s(self):
+        """Seconds the producer is ahead of the speakers (ring fill)."""
+        return (self._buf.qsize() * 2205 + len(self._leftover)) / RATE
+
+    def cached_samples(self, track_id):
+        """int16 stereo array for a set track, or None (live monitor)."""
+        with self._cache_lock:
+            return self._cache.get(track_id)
 
     # -- producer -------------------------------------------------------------
     def _fetch(self, n):

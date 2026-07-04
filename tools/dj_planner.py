@@ -43,6 +43,7 @@ from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
 from tools.djplanner.waveform import WaveformView
 from tools.djplanner.mixview import MixTimeline
+from tools.djplanner.deckmon import DeckMonitor
 from tools.djplanner.player import TrackPlayer, PlanPreview
 
 RATE = 44100
@@ -849,7 +850,12 @@ class MixTab(QWidget):
         self.timeline = MixTimeline()
         self.timeline.seamSelected.connect(self._seam_picked)
         self.timeline.timeClicked.connect(self._time_clicked)
-        v.addWidget(self.timeline, 1)
+        v.addWidget(self.timeline, 2)
+
+        # LIVE deck monitor: scrolling beat waveforms + band meters + beat
+        # offset, from real playback telemetry (lag-compensated).
+        self.deckmon = DeckMonitor()
+        v.addWidget(self.deckmon, 1)
 
         def chip(c, label):
             return (f"<span style='color:{c}'>&#9632;</span>"
@@ -897,6 +903,13 @@ class MixTab(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(200)
+        self._fast = QTimer(self)
+        self._fast.timeout.connect(self._fast_tick)
+        self._fast.start(40)                    # 25 fps live monitor
+
+    def _fast_tick(self):
+        if self.preview.playing:
+            self.deckmon.update()
 
     def set_plan(self, compiled):
         brain = Brain(self.planner.library,
@@ -907,6 +920,7 @@ class MixTab(QWidget):
         self.preview.stop()
         self.timeline.set_playhead(None)
         self.preview.set_plan(compiled, brain)
+        self.deckmon.attach(self.preview, compiled)
 
     def play_set(self):
         if not self.planner.set_tab.compiled:
@@ -918,6 +932,7 @@ class MixTab(QWidget):
     def stop(self):
         self.preview.stop()
         self.timeline.set_playhead(None)
+        self.deckmon.update()
         self.status.setText("stopped")
 
     def _pause(self, on):
