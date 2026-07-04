@@ -27,7 +27,7 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4            # v4: multi-cue downbeat detection
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -407,19 +407,72 @@ def _sample_curve(curve, times_s):
     return curve[i] * (1 - fr) + curve[np.minimum(i + 1, len(curve) - 1)] * fr
 
 
-def estimate_downbeat(beats, onset_bass, novelty):
-    """Which of the 4 beat-phase classes carries the bar: bass onsets land on
-    the 1, and section novelty concentrates at bar boundaries."""
-    if len(beats) < 16:
+def _beat_sync(curve_or_mat, beats, agg="mean"):
+    """Average a per-frame curve or [T,K] matrix over each beat interval."""
+    idx = np.clip((np.asarray(beats) * FPS).astype(np.int64), 0,
+                  (len(curve_or_mat)) - 1)
+    edges = np.append(idx, len(curve_or_mat))
+    out = []
+    for k in range(len(edges) - 1):
+        a, b = edges[k], max(edges[k] + 1, edges[k + 1])
+        seg = curve_or_mat[a:b]
+        out.append(seg.mean(axis=0))
+    return np.array(out)
+
+
+def estimate_downbeat(beats, bands, chroma, onset_bass, onset_broad):
+    """Which of the 4 beat-phase classes is the bar's '1'.
+
+    House/techno put a kick on EVERY beat, so bass onset alone can't find
+    the downbeat. This uses the cues that actually mark a bar start:
+      - HARMONIC CHANGE: the bass note / chord changes on the 1 (chroma
+        flux between consecutive beats), the single strongest cue in
+        melodic electronic music;
+      - low-frequency ENERGY STEP: the sub/bass note (not the kick
+        transient) re-articulates on the 1;
+      - broadband onset accent;
+      - 4-beat PERIODICITY: whichever offset makes bars most self-similar.
+    Each candidate offset is scored by how much beat-position-0 stands out
+    within the averaged bar profile, weighted by bar consistency."""
+    nb = len(beats)
+    if nb < 16:
         return 0, 0.0
-    b = _sample_curve(onset_bass, beats)
-    nv = _sample_curve(novelty, beats)
+    # Per-beat features.
+    ch = _beat_sync(chroma, beats)                 # [nb, 12]
+    ch = ch / (np.linalg.norm(ch, axis=1, keepdims=True) + 1e-9)
+    harm = np.zeros(nb)                             # harmonic change
+    harm[1:] = 1.0 - np.sum(ch[1:] * ch[:-1], axis=1)
+    # How much genuine harmonic movement exists: on tracks with real chord
+    # changes harm spikes at bars; on a static loop it's just noise, so its
+    # vote must scale with activity or it drowns the reliable rhythmic cues.
+    harm_activity = float(np.clip((np.percentile(harm, 90) - 0.03) / 0.15,
+                                  0.0, 1.0))
+    low = _beat_sync(bands[:, 0:5], beats).mean(axis=1)     # bass note energy
+    low_step = np.zeros(nb)
+    low_step[1:] = np.maximum(0.0, low[1:] - low[:-1])
+    ob = _beat_sync(onset_broad, beats)
+    for v in (harm, low_step, ob):                 # normalize each cue
+        s = v.std() + 1e-9
+        v[:] = (v - v.mean()) / s
+
+    feat = harm_activity * harm + 0.9 * low_step + 0.8 * ob
+    if (nb - 3) // 4 < 3:
+        return 0, 0.0
     scores = np.zeros(4)
+    consist = np.zeros(4)
     for o in range(4):
-        scores[o] = b[o::4].mean() + 0.6 * nv[o::4].mean()
-    order = np.argsort(scores)[::-1]
-    best, second = scores[order[0]], scores[order[1]]
-    conf = float(np.clip((best - second) / max(best, 1e-9), 0.0, 1.0))
+        nbar = (nb - o) // 4
+        m = feat[o:o + nbar * 4].reshape(nbar, 4)
+        prof = m.mean(axis=0)                       # mean bar profile
+        # Downbeat emphasis: how much beat 0 leads the other 3.
+        scores[o] = prof[0] - prof[1:].mean()
+        # Consistency: bars agree on this phase (low variance at beat 0).
+        consist[o] = 1.0 / (1.0 + m[:, 0].std())
+    combined = scores * (0.5 + 0.5 * consist)
+    order = np.argsort(combined)[::-1]
+    best, second = combined[order[0]], combined[order[1]]
+    conf = float(np.clip((best - second) / (abs(best) + abs(second) + 1e-6)
+                         + max(scores[order[0]], 0.0) * 0.3, 0.0, 1.0))
     return int(order[0]), conf
 
 
@@ -920,7 +973,8 @@ def analyze_samples(samples, deep=True):
     onset_mix = onset_broad + 0.5 * onset_perc
 
     grid, bpm, bpm_conf, beats = estimate_beat_grid(onset_mix)
-    downbeat, db_conf = estimate_downbeat(beats, onset_bass, novelty)
+    downbeat, db_conf = estimate_downbeat(beats, bands, chroma,
+                                          onset_bass, onset_broad)
 
     frame_energy = (bands / np.maximum(bands.mean(axis=0), 1e-10)).mean(axis=1)
     key_pc, key_mode, camelot, key_conf = estimate_key(chroma, frame_energy)
