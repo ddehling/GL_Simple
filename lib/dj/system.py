@@ -496,8 +496,11 @@ class DJSystem:
         """Start decoding `track` on a background daemon thread so the whole
         file is in RAM before we need it - the synchronous decode used to
         run on the planner thread at plan time and starve the audio callback
-        (a 1-3s CPU burst on a 5-min mp3 = an underrun/GAP at the switch)."""
-        if track is None:
+        (a 1-3s CPU burst on a 5-min mp3 = an underrun/GAP at the switch).
+
+        Only meaningful live (threaded): offline/tests decode inline in
+        _decoded_samples for determinism (no audio callback to protect)."""
+        if track is None or not self.threaded:
             return
         with self._decode_lock:
             if track.id in self._decoded or track.id in self._decoding:
@@ -547,12 +550,21 @@ class DJSystem:
             return decode_file_stereo(path)
 
     def _decoded_samples(self, track):
-        """Cached samples if ready, else None (kick off a decode)."""
+        """Cached samples if ready, else None (kick off a decode). Offline
+        (not threaded) decodes inline so tests are deterministic."""
         with self._decode_lock:
             s = self._decoded.get(track.id)
-        if s is None:
-            self._predecode(track)
-        return s
+        if s is not None:
+            return s
+        if not self.threaded:
+            s = self._decode(track)
+            if s is not None:
+                with self._decode_lock:
+                    self._decoded[track.id] = s
+                    self._decoded_order.append(track.id)
+            return s
+        self._predecode(track)
+        return None
 
     def _decode(self, track):
         try:
