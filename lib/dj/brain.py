@@ -637,41 +637,37 @@ class Brain:
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
-        # Beat-matched blends: long_blend / bass_swap / loop_roll_exit.
-        # v2 staged band pull-in, like riding a mixer's EQ knobs: the new
-        # track's HIGHS ride in first (hats/sparkle announce it), MIDS open
-        # a quarter in, the BASS swaps decisively at the midpoint downbeat,
-        # and the outgoing track loses its top end as it leaves so the two
-        # never fight for the same bands.
+        # Clean bass-swap EQ blend (long_blend / bass_swap / loop_roll_exit).
+        # The golden rule: ONLY ONE BASSLINE AT A TIME. The incoming track
+        # comes in with its low end fully cut and rides on top (we mix into
+        # its intro/breakdown, so that's drums + atmosphere, not a clashing
+        # lead); at the midpoint downbeat the bass swaps decisively in one
+        # move; the outgoing track then leaves with its bass already gone.
+        # No two-bass mud, no dueling low mids - the reliable pro default.
         S0 = clock_at(plan["out_s"])
-        q1 = S0 + int(nb / 4 * beat_out * RATE)
         mid = S0 + int(nb / 2 * beat_out * RATE)
-        q3 = S0 + int(3 * nb / 4 * beat_out * RATE)
         end = S0 + int(nb * beat_out * RATE)
-        qlen = nb / 4 * beat_out
+        half = nb / 2 * beat_out
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
+            # Incoming: bass fully cut, mids/highs open, fade up over 1st half.
             {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-             "mid": 0.25, "high": 1.0, "ramp_s": 0.01},
+             "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
             {"at": S0, "cmd": "start", "deck": incoming},
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
-             "ramp_s": nb * beat_out},
-            {"at": q1, "cmd": "eq", "deck": incoming, "mid": 1.0,
-             "ramp_s": qlen},
-            {"at": q1, "cmd": "eq", "deck": active, "high": 0.55,
-             "ramp_s": qlen},
+             "ramp_s": half},
+            # Midpoint downbeat: swap the bass in one clean move.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "ramp_s": 0.4},
+             "ramp_s": 0.25},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "ramp_s": 0.4},
+             "ramp_s": 0.25},
+            # Outgoing leaves over the 2nd half (bass already gone -> clean).
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
-             "ramp_s": nb / 2 * beat_out},
-            {"at": q3, "cmd": "eq", "deck": active, "high": 0.25,
-             "mid": 0.5, "ramp_s": qlen},
+             "ramp_s": half},
         ]
         if style == "loop_roll_exit":
             ls = plan["loop_start_s"]

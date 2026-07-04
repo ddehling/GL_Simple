@@ -220,13 +220,10 @@ class PlanPreview:
                 ev, swap_at, blend_at = self.brain.build_events(
                     simple, snapshot, active, incoming, cur, nxt)
                 plan = simple
-            # Preview keeps a simple constant-rate timing model: snap the
-            # incoming deck home shortly after the swap instead of the long
-            # 0.15%/s glide (a <=8% step over 1.5s), keeping every later
-            # seam sample-accurate against the drawing.
-            for e in ev:
-                if e["cmd"] == "rate" and e.get("ramp_s", 0) > 5.0:
-                    e["ramp_s"] = 1.5
+            # Keep the full slow glide-home (~20s for a 3% match) so the new
+            # track eases back to its natural tempo imperceptibly - the old
+            # 1.5s snap lurched audibly after every mix. The tiny seam-timing
+            # drift is self-corrected by the telemetry playhead.
             rate_b = plan["rate"]
             if plan["style"] == "cut_at_drop":
                 start_cue = max(0.0, plan["in_s"] - 16 * nxt.period_s)

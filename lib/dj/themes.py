@@ -19,10 +19,13 @@ class Theme:
     arc: str = "flat"                 # flat | rise | peak_wave | wind_down | all_night
     mood_weights: dict = field(default_factory=dict)   # mood -> weight
     spectral_lean: str = ""           # "" | "bass" | "high"
+    # Clean, reliable transitions dominate; the elaborate techniques are
+    # occasional accents (they sound bad if even slightly off, so they must
+    # be the exception, not the rule).
     style_weights: dict = field(default_factory=lambda: {
-        "long_blend": 1.0, "bass_swap": 1.0, "cut_at_drop": 0.6,
-        "loop_roll_exit": 0.6, "bassline_layer": 0.9, "double_drop": 0.5,
-        "loop_build": 0.6, "long_fade": 0.3})
+        "long_blend": 1.2, "bass_swap": 1.4, "cut_at_drop": 0.15,
+        "loop_roll_exit": 0.2, "bassline_layer": 0.2, "double_drop": 0.15,
+        "loop_build": 0.2, "long_fade": 0.3})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
 
@@ -56,9 +59,9 @@ BUILTIN_THEMES = {t.name: t for t in [
     Theme("chill_evening", bpm_range=(85.0, 115.0),
           energy_base=0.35, energy_span=0.2, arc="flat",
           mood_weights={"chill": 1.0, "ambient": 0.6, "groove": 0.4},
-          style_weights={"long_blend": 1.2, "bass_swap": 0.6,
-                         "cut_at_drop": 0.1, "loop_roll_exit": 0.3,
-                         "bassline_layer": 0.4, "long_fade": 0.8},
+          style_weights={"long_blend": 1.5, "bass_swap": 0.8,
+                         "cut_at_drop": 0.0, "loop_roll_exit": 0.15,
+                         "bassline_layer": 0.15, "long_fade": 0.8},
           min_play_s=210.0, max_play_s=480.0),
     Theme("groove", bpm_range=(105.0, 128.0),
           energy_base=0.55, energy_span=0.25, arc="peak_wave",
@@ -67,10 +70,10 @@ BUILTIN_THEMES = {t.name: t for t in [
           energy_base=0.75, energy_span=0.25, arc="peak_wave",
           mood_weights={"peak": 1.0, "groove": 0.6},
           spectral_lean="bass",
-          style_weights={"long_blend": 0.7, "bass_swap": 1.2,
-                         "cut_at_drop": 1.2, "loop_roll_exit": 1.0,
-                         "bassline_layer": 1.2, "double_drop": 1.0,
-                         "loop_build": 1.0, "long_fade": 0.1},
+          style_weights={"long_blend": 1.0, "bass_swap": 1.4,
+                         "cut_at_drop": 0.4, "loop_roll_exit": 0.3,
+                         "bassline_layer": 0.4, "double_drop": 0.4,
+                         "loop_build": 0.4, "long_fade": 0.1},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",

@@ -99,10 +99,15 @@ def compile_plan(library, entries, theme, seed=0):
         tracks.append((t, e))
 
     offset = 0.0
+    entry_in_s = tracks[0][0].mix_ins[0]["time_s"] \
+        if tracks and tracks[0][0].mix_ins else 0.0
+    # Aim each track to play a sensible stretch before mixing out, so the
+    # set doesn't lurch through 30-second snippets.
+    target_play = min(max(theme.min_play_s, 150.0), 300.0)
     for i, (t, e) in enumerate(tracks):
         slot = {"track": t, "entry": e, "start_offset_s": offset,
                 "transition": None, "warnings": []}
-        in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
+        in_s = entry_in_s                        # where THIS track entered
         if i + 1 < len(tracks):
             nxt, ne = tracks[i + 1]
             _, meta = brain.score(t, nxt, arc_target=0.6, out_bpm=t.bpm)
@@ -115,7 +120,10 @@ def compile_plan(library, entries, theme, seed=0):
                     meta = {"rate": 1.0, "eff_bpm": nxt.bpm, "pair": None}
                 else:
                     meta = {"rate": rate, "eff_bpm": eff, "pair": None}
-            plan = brain.plan_transition(t, nxt, meta)
+            # Force the exit at least target_play after entry (but leave room
+            # before the track ends), so it plays a real stretch first.
+            after = min(in_s + target_play, max(t.duration_s - 50.0, in_s + 40))
+            plan = brain.plan_transition(t, nxt, meta, after_s=after)
             if ne.get("style_override"):
                 plan["style"] = ne["style_override"]
             key_fit = camelot_compat(t.camelot, nxt.camelot)
@@ -128,9 +136,10 @@ def compile_plan(library, entries, theme, seed=0):
             if plan.get("pair_score", 0) < 0.05:
                 slot["warnings"].append("weak seam (busy x busy?)")
             slot["transition"] = plan
-            play = max(plan["out_s"] - in_s, 30.0)
+            play = max(plan["out_s"] - in_s, 40.0)
+            entry_in_s = plan["in_s"]            # next track enters here
         else:
-            play = max(t.duration_s - in_s, 30.0)
+            play = max(t.duration_s - in_s, 40.0)
         slot["play_s"] = play
         slots.append(slot)
         offset += play
