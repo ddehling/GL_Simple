@@ -18,7 +18,7 @@ import time
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
-          "bassline_layer", "double_drop", "long_fade")
+          "bassline_layer", "double_drop", "loop_build", "long_fade")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 GLIDE_PER_S = 0.0015             # post-transition rate->1.0 glide speed
 
@@ -351,6 +351,10 @@ class Brain:
             b_drop = self._drop_after(cand, cand.duration_s * 0.15)
             if a_drop is None or b_drop is None:
                 weights["double_drop"] = 0.0
+            # loop_build stutters A into its own drop as a tension build,
+            # then B cuts in on the drop. Needs a drop in A to build toward.
+            if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
+                weights["loop_build"] = 0.0
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
@@ -360,7 +364,15 @@ class Brain:
 
         beats = {"long_blend": 32, "bass_swap": 16, "cut_at_drop": 16,
                  "loop_roll_exit": 32, "bassline_layer": 16,
-                 "double_drop": 16, "long_fade": 0}[style]
+                 "double_drop": 16, "loop_build": 16, "long_fade": 0}[style]
+        if style == "loop_build":
+            # Exit ON A's drop; the stutter build fills the bars before it.
+            a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
+            out_s = cur.nearest_downbeat(a_drop)
+            in_s = cand.nearest_downbeat(pair["in_s"])
+            return {"style": style, "rate": rate, "out_s": out_s,
+                    "in_s": in_s, "beats": beats,
+                    "pair_score": pair["score"], "cand_id": cand.id}
         if style == "double_drop":
             # A exits on ITS drop; B is cued so its drop lands on the same
             # beat. out_s/in_s become the two drop onsets.
@@ -461,6 +473,61 @@ class Brain:
             swap_at = S_cut + int(0.5 * RATE)
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
+
+        if style == "loop_build":
+            # Tension build: A stutters a loop that shrinks 8->4->2->1 beats
+            # (all ending on its drop) accelerating into it, releases ON the
+            # drop, and B cuts in - the loop-build-into-drop move. A's loop
+            # end is pinned to the drop so release lands exactly on it.
+            drop_s = plan["out_s"]
+            per = cur.period_s
+            # (beats_len, output beats to hold that stage)
+            stages = [(8, 8), (4, 4), (2, 2), (1, 2)]
+            S0 = clock_at(drop_s - stages[0][0] * per)   # loop engages here
+            t = S0
+            for length, hold in stages:
+                ls = drop_s - length * per
+                ev.append({"at": t, "cmd": "loop", "deck": active,
+                           "start_s": ls, "end_s": drop_s})
+                # Filter up as it builds (rising tension), trim lows late.
+                ev.append({"at": t, "cmd": "eq", "deck": active,
+                           "high": 1.0, "mid": 1.0,
+                           "low": 1.0 if length > 2 else 0.6, "ramp_s": 0.1})
+                t += int(hold * beat_out * RATE)
+            S_drop = t                                   # release = the drop
+            cue_b = max(0.0, plan["in_s"] - 8 * cand.period_s)
+            out = S_drop + int(8 * beat_out * RATE)
+            ev += [
+                # Pre-run B under the tail of the build, bass-cut + synced.
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "cue",
+                 "deck": incoming, "time_s": cue_b},
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "rate",
+                 "deck": incoming, "value": rate_b},
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "eq",
+                 "deck": incoming, "low": 0.0, "mid": 0.5, "high": 0.6,
+                 "ramp_s": 0.05},
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "gain",
+                 "deck": incoming, "value": 0.0, "ramp_s": 0.05},
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "start",
+                 "deck": incoming},
+                {"at": S_drop - int(8 * beat_out * RATE), "cmd": "sync",
+                 "slave": incoming, "master": active},
+                # THE DROP: release A's loop into it, B slams in full, A ducks.
+                {"at": S_drop, "cmd": "release_loop", "deck": active},
+                {"at": S_drop, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 0.06},
+                {"at": S_drop, "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": 0.06},
+                {"at": S_drop, "cmd": "eq", "deck": active, "low": 0.0,
+                 "ramp_s": 0.06},
+                {"at": S_drop, "cmd": "gain", "deck": active, "value": 0.0,
+                 "ramp_s": 4 * beat_out},
+                {"at": out, "cmd": "stop", "deck": active},
+                {"at": out, "cmd": "clear_loop", "deck": active},
+                {"at": out, "cmd": "end_sync"},
+            ]
+            self._glide_home(ev, incoming, rate_b, out)
+            return ev, out, S0
 
         if style == "double_drop":
             # Align B's drop onset to A's drop onset: B runs in for 16 beats

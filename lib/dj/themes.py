@@ -22,7 +22,7 @@ class Theme:
     style_weights: dict = field(default_factory=lambda: {
         "long_blend": 1.0, "bass_swap": 1.0, "cut_at_drop": 0.6,
         "loop_roll_exit": 0.6, "bassline_layer": 0.9, "double_drop": 0.5,
-        "long_fade": 0.3})
+        "loop_build": 0.6, "long_fade": 0.3})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
 
@@ -70,7 +70,7 @@ BUILTIN_THEMES = {t.name: t for t in [
           style_weights={"long_blend": 0.7, "bass_swap": 1.2,
                          "cut_at_drop": 1.2, "loop_roll_exit": 1.0,
                          "bassline_layer": 1.2, "double_drop": 1.0,
-                         "long_fade": 0.1},
+                         "loop_build": 1.0, "long_fade": 0.1},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",

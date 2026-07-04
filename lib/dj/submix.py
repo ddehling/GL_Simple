@@ -86,6 +86,8 @@ class DJSubmix:
             deck.set_loop(e["start_s"], e["end_s"])
         elif cmd == "clear_loop":
             deck.clear_loop()
+        elif cmd == "release_loop":
+            deck.release_loop()
         elif cmd == "gain":
             deck.set_gain(e["value"], e.get("ramp_s", 0.05))
         elif cmd == "eq":

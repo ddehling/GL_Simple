@@ -91,6 +91,15 @@ class Deck:
     def clear_loop(self):
         self.loop = None
 
+    def release_loop(self):
+        """Exit an active loop AT its end so playback continues PAST it
+        (into the drop), instead of jumping to the run-away virtual cursor
+        a bare clear would leave. No-op if not looping."""
+        if self.loop is not None:
+            _, le = self.loop
+            self.stretch.seek(le)
+            self.loop = None
+
     def set_gain(self, target, ramp_s=0.05):
         ramp_s = max(ramp_s, 1e-3)
         self._gain_ramp = (float(target),
