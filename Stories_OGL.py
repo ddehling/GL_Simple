@@ -373,6 +373,8 @@ class EnvironmentalSystem:
         self.dj_cfg = cfg.get("dj", {"enabled": False})
         self._dj = None
         self._dj_prev_source = None            # analyzer source to restore
+        self._dj_pending_setlist = None        # armed while idle, load on start
+        self._dj_last_error = ""
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
         # published into outstate by send_variables() so any shader can sync
@@ -2165,35 +2167,68 @@ class EnvironmentalSystem:
                     self._dj_start()
                 elif action == 'stop':
                     self._dj_stop()
+                elif action == 'theme':
+                    # Works idle (arms the start theme) or live (retheme).
+                    self.dj_cfg['theme'] = str(arg)
+                    if self._dj is not None and self._dj.active:
+                        self._dj.set_theme(str(arg))
+                elif action == 'setlist':
+                    # Idle: arm the setlist to load on start. Live: load now.
+                    self._dj_pending_setlist = str(arg or '') or None
+                    if self._dj is not None and self._dj.active:
+                        self._dj.load_setlist(str(arg or ''))
                 elif self._dj is not None and self._dj.active:
                     if action == 'skip':
                         self._dj.request_skip()
-                    elif action == 'theme':
-                        self._dj.set_theme(str(arg))
                     elif action == 'autopilot':
                         self._dj.set_autopilot(bool(arg))
                     elif action == 'nudge':
                         self._dj.set_energy_nudge(float(arg))
                     elif action == 'next_id':
                         self._dj.request_next(int(arg))
-                    elif action == 'setlist':
-                        self._dj.load_setlist(str(arg or ''))
             except Exception as e:
                 print(f"[DJ] action '{action}' failed: {e}")
 
         # Mirror into the web snapshot + scheduler outstate.
-        info = None
         if self._dj is not None:
             info = self._dj.status()
+            info.pop("deck_telemetry", None)   # heavy; web uses compact 'decks'
             info["available"] = True
             info["active"] = self._dj.active
             for k, v in self._dj.outstate_keys().items():
                 self.scheduler.state[k] = v
         else:
-            info = {"available": True, "active": False,
-                    "theme": self.dj_cfg.get("theme", "groove")}
+            info = {"available": True, "active": False, "state": "idle",
+                    "theme": self.dj_cfg.get("theme", "groove"),
+                    "autopilot": True, "energy_nudge": 0.0,
+                    "arc_phase": 0.0, "arc_heat": 0.5,
+                    "setlist": self._dj_pending_setlist,
+                    "setlists": self._dj_list_setlists(),
+                    "music_dir": self._dj_music_dir_display(),
+                    "error": self._dj_last_error}
             self.scheduler.state['dj_active'] = False
         self.web_controller.set('dj_info', info)
+
+    def _dj_list_setlists(self):
+        """Setlist names available in the library DB, without a running DJ."""
+        try:
+            from lib.dj import resolve_music_dir
+            from lib.dj.db import LibraryDB
+            from lib.dj.setlist import list_setlists
+            import os
+            root = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
+            if not os.path.isfile(os.path.join(root, "dj_library.sqlite3")):
+                return []
+            db = LibraryDB(root)
+            names = [s["name"] for s in list_setlists(db)]
+            db.close()
+            return names
+        except Exception:
+            return []
+
+    def _dj_music_dir_display(self):
+        from lib.dj import resolve_music_dir
+        return resolve_music_dir(self.dj_cfg.get("music_dir", ""))
 
     def _dj_start(self):
         if self._dj is not None and self._dj.active:
@@ -2208,12 +2243,13 @@ class EnvironmentalSystem:
             night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
             stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)))
         if not self._dj.start():
-            err = self._dj.last_error
+            self._dj_last_error = self._dj.last_error or "DJ failed to start"
             self._dj = None
-            self.web_controller.set('dj_info',
-                                    {"available": True, "active": False,
-                                     "error": err})
+            print(f"[DJ] start failed: {self._dj_last_error}")
             return
+        self._dj_last_error = ""
+        if self._dj_pending_setlist:
+            self._dj.load_setlist(self._dj_pending_setlist)
         # The DJ takes the soundtrack: silence state ambient, point the
         # analyzer at the engine's own output.
         try:

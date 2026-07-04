@@ -7,73 +7,68 @@
     <link rel="stylesheet" href="/static/css/common.css">
     <link rel="stylesheet" href="/static/css/control_panel.css">
     <style>
-        /* Live show control ONLY - set planning / library browsing lives in
-           the desktop planner app (tools/dj_planner.py). */
-        .dj-off { text-align: center; padding: 30px 20px; }
-        .dj-start-btn {
-            width: 100%; padding: 18px; font-size: 1.2em; font-weight: bold;
-            letter-spacing: 0.12em; border-radius: 8px; border: 2px solid #3a6;
-            background: #123a22; color: #8f8; cursor: pointer; margin-top: 12px;
+        /* Live show control ONLY - deep set building lives in the desktop
+           planner (tools/dj_planner.py); this drives the running show. */
+        .dj-banner {
+            padding: 10px 14px; border-radius: 8px; margin-bottom: 10px;
+            font-size: 0.9em; border: 1px solid #444; background: #23232a;
         }
-        .dj-start-btn:active { background: #1a5a33; }
-        .dj-stop-btn {
-            width: 100%; padding: 12px; font-size: 1.0em; border-radius: 8px;
-            border: 2px solid #a33; background: #401515; color: #f88;
-            cursor: pointer;
+        .dj-banner.on { border-color: #3a6; background: #123020; color: #9f9; }
+        .dj-banner.err { border-color: #a33; background: #301515; color: #f99; }
+        .btn {
+            border-radius: 8px; border: 2px solid #555; background: #2a2a2e;
+            color: #ddd; cursor: pointer; padding: 12px; font-size: 1.0em;
         }
-        .dj-skip-btn {
-            width: 100%; padding: 14px; font-size: 1.05em; font-weight: bold;
-            border-radius: 8px; border: 2px solid #46a; background: #14203a;
-            color: #8bf; cursor: pointer;
+        .btn:active { filter: brightness(1.3); }
+        .btn.go { border-color: #3a6; background: #123a22; color: #9f9;
+                  font-weight: bold; }
+        .btn.stop { border-color: #a33; background: #401515; color: #f99; }
+        .btn.skip { border-color: #46a; background: #14203a; color: #9bf; }
+        .btn.wide { width: 100%; }
+        .btn.on { border-color: #3a6; background: #123a22; color: #9f9; }
+        .transport { display: flex; gap: 8px; margin-bottom: 10px; }
+        .transport .btn { flex: 1; }
+        .now-title { font-size: 1.25em; font-weight: bold; }
+        .now-sub { font-size: 0.85em; opacity: 0.7; }
+        .kv { display: flex; justify-content: space-between; font-size: 0.85em;
+              padding: 2px 0; }
+        .kv .k { opacity: 0.6; }
+        .track-progress { height: 12px; background: #222; border-radius: 6px;
+            overflow: hidden; margin: 8px 0 3px 0; }
+        .track-progress .fill { height: 100%; border-radius: 6px;
+            background: linear-gradient(90deg, #2a6, #4bd); transition: width .3s; }
+        .deckrow { display: flex; gap: 8px; margin-top: 8px; }
+        .deck {
+            flex: 1; border: 1px solid #3a3a44; border-radius: 6px;
+            padding: 6px 8px; font-size: 0.8em; background: #1e1e26;
         }
-        .dj-skip-btn:active { background: #24406a; }
-        .now-title { font-size: 1.15em; font-weight: bold; margin: 2px 0; }
-        .now-sub { font-size: 0.82em; opacity: 0.65; }
-        .track-progress {
-            height: 10px; background: #222; border-radius: 5px;
-            overflow: hidden; margin: 8px 0 2px 0;
-        }
-        .track-progress .fill {
-            height: 100%; background: linear-gradient(90deg, #2a6, #4bd);
-            border-radius: 5px; transition: width 0.3s;
-        }
-        .next-box {
-            border: 1px dashed #444; border-radius: 8px; padding: 10px;
-            margin-top: 10px; font-size: 0.9em;
-        }
-        .arc-bar {
-            position: relative; height: 16px; border-radius: 8px;
-            background: linear-gradient(90deg, #223, #235, #526, #a24, #722);
-            margin: 6px 0 2px 0;
-        }
-        .arc-marker {
-            position: absolute; top: -4px; width: 4px; height: 24px;
-            border-radius: 2px; transform: translateX(-2px);
-            background: #fff; box-shadow: 0 0 6px #fff;
-        }
-        .theme-row { display: flex; gap: 6px; flex-wrap: wrap; }
-        .theme-btn {
-            flex: 1; min-width: 88px; padding: 8px 4px; font-size: 0.8em;
-            border-radius: 6px; border: 1px solid #555; background: #26262e;
-            color: #ccc; cursor: pointer;
-        }
-        .theme-btn.on { border-color: #4bd; background: #123a44; color: #9ef; }
-        .auto-btn {
-            width: 100%; padding: 10px; border-radius: 6px; font-size: 0.9em;
-            border: 2px solid #555; background: #2a2a2a; color: #ccc;
-            cursor: pointer;
-        }
-        .auto-btn.on { border-color: #3a6; background: #123a22; color: #8f8; }
+        .deck .name { font-weight: bold; color: #8cf; }
+        .eqbars { display: flex; gap: 3px; height: 22px; align-items: flex-end;
+                  margin-top: 4px; }
+        .eqbars .b { flex: 1; border-radius: 2px 2px 0 0; }
+        .next-box { border: 1px dashed #445; border-radius: 8px; padding: 10px;
+            margin-top: 10px; }
+        .arc-bar { position: relative; height: 18px; border-radius: 9px;
+            background: linear-gradient(90deg,#223,#235,#526,#a24,#722);
+            margin: 6px 0 2px 0; }
+        .arc-marker { position: absolute; top: -4px; width: 4px; height: 26px;
+            border-radius: 2px; transform: translateX(-2px); background: #fff;
+            box-shadow: 0 0 6px #fff; }
         .bias-labels { display: flex; justify-content: space-between;
-                       font-size: 0.78em; opacity: 0.7; }
-        .dj-badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-        .dj-badge {
-            font-size: 0.75em; padding: 3px 10px; border-radius: 12px;
-            background: #333; border: 1px solid #555; letter-spacing: 0.05em;
-        }
-        .dj-badge.blend { background: #1a2a4a; border-color: #36a; color: #8bf; }
-        .dj-err { color: #f88; font-size: 0.85em; margin-top: 8px; }
-        #dj-on-wrap { display: none; }
+            font-size: 0.75em; opacity: 0.65; }
+        .theme-row { display: flex; gap: 6px; flex-wrap: wrap; }
+        .theme-btn { flex: 1; min-width: 84px; padding: 9px 4px;
+            font-size: 0.82em; border-radius: 6px; border: 1px solid #555;
+            background: #26262e; color: #ccc; cursor: pointer; }
+        .theme-btn.on { border-color: #4bd; background: #123a44; color: #9ef; }
+        .setrow { display: flex; gap: 8px; margin-top: 8px; }
+        .setrow select { flex: 1; padding: 9px; background: #26262e; color: #ccc;
+            border: 1px solid #555; border-radius: 6px; }
+        .badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+        .badge { font-size: 0.75em; padding: 3px 10px; border-radius: 12px;
+            background: #333; border: 1px solid #555; }
+        .badge.tech { background: #1a2a4a; border-color: #36a; color: #8bf; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
@@ -94,202 +89,242 @@
             <a href="/dj" class="tab active" id="dj-tab">DJ</a>
         </div>
 
-        <!-- Stopped: start surface -->
-        <div class="section-panel dj-off" id="dj-off-wrap">
-            <div>The autonomous DJ is idle.</div>
-            <div class="now-sub" style="margin-top:6px">
-                Library: <code>&lt;repo&gt;/../music</code> &mdash; scan with
-                <code>tools/dj_scan.py</code>, plan sets with the desktop
-                planner. Starting hands the soundtrack to the DJ (state
-                ambient pauses, visuals follow the mix).
-            </div>
-            <button class="dj-start-btn" id="dj-start">START THE DJ</button>
-            <div class="dj-err" id="dj-err-off"></div>
+        <div class="dj-banner" id="dj-banner">Connecting to the show…</div>
+
+        <!-- Transport is available whenever the DJ subsystem is available. -->
+        <div class="transport" id="dj-transport" hidden>
+            <button class="btn go" id="dj-start">▶ START DJ</button>
+            <button class="btn stop hidden" id="dj-stop">■ STOP</button>
+            <button class="btn skip hidden" id="dj-skip">⏭ SKIP</button>
+            <button class="btn hidden" id="dj-auto">AUTOPILOT</button>
         </div>
 
-        <div id="dj-on-wrap">
-            <!-- Now playing -->
-            <div class="section-panel">
-                <div class="section-header"><h3>Now Playing</h3></div>
-                <div class="now-title" id="dj-title">--</div>
-                <div class="now-sub" id="dj-sub">--</div>
-                <div class="track-progress"><div class="fill" id="dj-prog"
-                     style="width:0%"></div></div>
-                <div class="bias-labels">
-                    <span id="dj-pos">0:00</span><span id="dj-dur">0:00</span>
-                </div>
-                <div class="dj-badges" id="dj-badges"></div>
-                <div class="next-box" id="dj-next-box" style="display:none">
-                    <b>Next:</b> <span id="dj-next">--</span><br>
-                    <span class="now-sub" id="dj-next-sub"></span>
-                </div>
+        <!-- Now playing (active) -->
+        <div class="section-panel hidden" id="dj-now">
+            <div class="section-header"><h3>Now Playing</h3></div>
+            <div class="now-title" id="dj-title">--</div>
+            <div class="now-sub" id="dj-sub"></div>
+            <div class="track-progress"><div class="fill" id="dj-prog"
+                 style="width:0%"></div></div>
+            <div class="bias-labels"><span id="dj-pos">0:00</span>
+                <span id="dj-dur">0:00</span></div>
+            <div class="badges" id="dj-badges"></div>
+            <div class="deckrow" id="dj-decks"></div>
+            <div class="next-box hidden" id="dj-next-box">
+                <div class="now-sub">UP NEXT</div>
+                <div id="dj-next" style="font-weight:bold"></div>
+                <div class="now-sub" id="dj-next-sub"></div>
             </div>
+        </div>
 
-            <!-- The night arc -->
-            <div class="section-panel">
-                <div class="section-header"><h3>The Night</h3></div>
-                <div class="arc-bar"><div class="arc-marker" id="dj-arc-mk"
-                     style="left:0%"></div></div>
-                <div class="bias-labels">
-                    <span>warm-up</span><span>peak</span><span>landing</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Energy target:</span>
-                    <span class="info-value" id="dj-heat">--</span>
-                </div>
-            </div>
+        <!-- The night (active) -->
+        <div class="section-panel hidden" id="dj-nightcard">
+            <div class="section-header"><h3>The Night</h3></div>
+            <div class="arc-bar"><div class="arc-marker" id="dj-arc-mk"
+                 style="left:0%"></div></div>
+            <div class="bias-labels"><span>warm-up</span><span>peak</span>
+                <span>landing</span></div>
+            <div class="kv"><span class="k">Energy target</span>
+                <span id="dj-heat">--</span></div>
+            <div class="kv"><span class="k">Set position</span>
+                <span id="dj-arcpct">--</span></div>
+        </div>
 
-            <!-- Steering -->
-            <div class="section-panel">
-                <div class="section-header"><h3>Steer</h3></div>
-                <div class="theme-row" id="dj-themes"></div>
-                <div style="margin-top:12px">
-                    <div class="bias-labels"><span>mellower</span>
-                        <span>energy nudge</span><span>hotter</span></div>
-                    <input type="range" id="dj-nudge" min="-0.4" max="0.4"
-                           step="0.05" value="0" style="width:100%">
-                </div>
-                <div style="margin-top:12px; display:flex; gap:8px">
-                    <select id="dj-setlist" style="flex:1; padding:8px;
-                            background:#26262e; color:#ccc;
-                            border:1px solid #555; border-radius:6px">
-                        <option value="">(no setlist - free play)</option>
-                    </select>
-                    <button class="auto-btn" id="dj-setlist-load"
-                            style="width:auto; padding:8px 14px">LOAD</button>
-                </div>
-                <button class="auto-btn on" id="dj-auto"
-                        style="margin-top:12px">AUTOPILOT: ON</button>
-                <button class="dj-skip-btn" id="dj-skip"
-                        style="margin-top:12px">SKIP &mdash; NEXT TRACK</button>
-                <button class="dj-stop-btn" id="dj-stop"
-                        style="margin-top:12px">STOP THE DJ</button>
-                <div class="dj-err" id="dj-err-on"></div>
+        <!-- Prep / steer (always when available) -->
+        <div class="section-panel hidden" id="dj-steer">
+            <div class="section-header"><h3 id="dj-steer-h">Prepare</h3></div>
+            <div class="now-sub">Theme</div>
+            <div class="theme-row" id="dj-themes"></div>
+            <div class="now-sub" style="margin-top:12px">Setlist</div>
+            <div class="setrow">
+                <select id="dj-setlist">
+                    <option value="">(free play — autonomous)</option>
+                </select>
+                <button class="btn" id="dj-setlist-load"
+                        style="width:auto">LOAD</button>
             </div>
+            <div id="dj-nudge-wrap" style="margin-top:14px">
+                <div class="bias-labels"><span>mellower</span>
+                    <span>energy nudge</span><span>hotter</span></div>
+                <input type="range" id="dj-nudge" min="-0.4" max="0.4"
+                       step="0.05" value="0" style="width:100%">
+            </div>
+            <div class="now-sub" id="dj-libinfo" style="margin-top:10px"></div>
         </div>
     </div>
 
     <script src="/static/js/socket.io.min.js"></script>
     <script src="/static/js/socket-client.js"></script>
     <script src="/static/js/club_tab.js"></script>
+    <script src="/static/js/dj_tab.js"></script>
     <script>
         const socket = createSocket();
+        const $ = (id) => document.getElementById(id);
         const THEMES = ["chill_evening", "groove", "peak_heavy",
                         "wind_down", "all_night"];
-        const $ = (id) => document.getElementById(id);
+        const EQC = ["#eb695a", "#78d278", "#6eaaf0"];  // low/mid/high
 
-        // Theme buttons
-        const themeRow = $("dj-themes");
+        // Build theme buttons once.
         THEMES.forEach((t) => {
             const b = document.createElement("button");
-            b.className = "theme-btn";
-            b.dataset.theme = t;
-            b.textContent = t.replace("_", " ");
-            b.onclick = () => socket.emit("dj_action",
-                                          {action: "theme", value: t});
-            themeRow.appendChild(b);
+            b.className = "theme-btn"; b.dataset.theme = t;
+            b.textContent = t.replace(/_/g, " ");
+            b.onclick = () => emit("theme", t);
+            $("dj-themes").appendChild(b);
         });
 
-        $("dj-start").onclick = () =>
-            socket.emit("dj_action", {action: "start"});
+        function emit(action, value) {
+            socket.emit("dj_action", {action, value});
+        }
+        $("dj-start").onclick = () => emit("start");
         $("dj-stop").onclick = () => {
-            if (confirm("Stop the DJ and hand back to state ambient?"))
-                socket.emit("dj_action", {action: "stop"});
+            if (confirm("Stop the DJ and hand the soundtrack back?"))
+                emit("stop");
         };
-        $("dj-skip").onclick = () =>
-            socket.emit("dj_action", {action: "skip"});
+        $("dj-skip").onclick = () => emit("skip");
+        $("dj-auto").onclick = () =>
+            emit("autopilot", !$("dj-auto").classList.contains("on"));
         $("dj-setlist-load").onclick = () =>
-            socket.emit("dj_action",
-                        {action: "setlist", value: $("dj-setlist").value});
-        $("dj-auto").onclick = () => {
-            const on = !$("dj-auto").classList.contains("on");
-            socket.emit("dj_action", {action: "autopilot", value: on});
-        };
-        // Drag-guard: don't let 5 Hz snapshots yank the slider mid-drag.
+            emit("setlist", $("dj-setlist").value);
+
         let nudgeDragging = false;
         const nudge = $("dj-nudge");
         nudge.addEventListener("pointerdown", () => nudgeDragging = true);
         nudge.addEventListener("change", () => {
             nudgeDragging = false;
-            socket.emit("dj_action",
-                        {action: "nudge", value: parseFloat(nudge.value)});
+            emit("nudge", parseFloat(nudge.value));
         });
 
-        function fmt(sec) {
-            if (sec == null) return "-:--";
-            sec = Math.max(0, Math.round(sec));
-            return Math.floor(sec / 60) + ":" +
-                   String(sec % 60).padStart(2, "0");
+        const fmt = (s) => s == null ? "-:--" :
+            Math.floor(Math.max(0, s) / 60) + ":" +
+            String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0");
+        const show = (el, on) => el.classList.toggle("hidden", !on);
+
+        function renderDecks(decks) {
+            if (!decks || !decks.length) { $("dj-decks").innerHTML = ""; return; }
+            $("dj-decks").innerHTML = decks.map((d) => {
+                const eq = (d.eq || [1, 1, 1]).map((v, i) =>
+                    `<div class="b" style="height:${Math.round(6 + 16 * Math.min(v, 1))}px;background:${EQC[i]}"></div>`
+                ).join("");
+                return `<div class="deck"><span class="name">${d.deck}</span>
+                    <span style="opacity:.55"> gain ${d.gain}</span><br>
+                    <span>${(d.title || "?").slice(0, 22)}</span>
+                    <div class="eqbars">${eq}</div></div>`;
+            }).join("");
+        }
+
+        function fillSetlists(names, current) {
+            const sel = $("dj-setlist");
+            const key = (names || []).join("|");
+            if (sel.dataset.have !== key) {
+                sel.dataset.have = key;
+                const keep = sel.value;
+                sel.innerHTML = '<option value="">(free play — autonomous)</option>'
+                    + (names || []).map((n) =>
+                        `<option value="${n}">${n}</option>`).join("");
+                sel.value = current || keep || "";
+            }
         }
 
         socket.on("state_update", (s) => {
             $("status-text").textContent = "Connected";
             const dj = s.dj;
-            if (!dj) return;
-            const on = !!dj.active;
-            $("dj-off-wrap").style.display = on ? "none" : "";
-            $("dj-on-wrap").style.display = on ? "" : "none";
-            $("dj-err-off").textContent = dj.error || "";
-            if (!on) return;
-            $("dj-err-on").textContent = dj.error || "";
+            const banner = $("dj-banner");
 
+            if (!dj) {
+                banner.className = "dj-banner err";
+                banner.textContent =
+                    "DJ subsystem not reported by the show. Is the app running "
+                    + "with dj.enabled and a scanned library?";
+                $("dj-transport").hidden = true;
+                ["dj-now", "dj-nightcard", "dj-steer"].forEach(
+                    (id) => show($(id), false));
+                return;
+            }
+            const on = !!dj.active;
+            $("dj-transport").hidden = false;
+            show($("dj-steer"), true);
+            show($("dj-now"), on);
+            show($("dj-nightcard"), on);
+
+            // Transport buttons.
+            show($("dj-start"), !on);
+            show($("dj-stop"), on);
+            show($("dj-skip"), on);
+            show($("dj-auto"), on);
+            $("dj-auto").classList.toggle("on", !!dj.autopilot);
+            $("dj-auto").textContent = "AUTOPILOT: " + (dj.autopilot ? "ON" : "OFF");
+            $("dj-steer-h").textContent = on ? "Steer" : "Prepare";
+            show($("dj-nudge-wrap"), on);
+
+            // Banner.
+            if (dj.error) {
+                banner.className = "dj-banner err";
+                banner.textContent = "⚠ " + dj.error;
+            } else if (on) {
+                banner.className = "dj-banner on";
+                banner.textContent = "DJ live — driving the soundtrack"
+                    + (dj.setlist ? ` · setlist “${dj.setlist}” (${dj.setlist_remaining} left)` : " · free play");
+            } else {
+                banner.className = "dj-banner";
+                banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
+                    + "Starting pauses state ambient and points the visuals at the mix.";
+            }
+            $("dj-libinfo").textContent = dj.music_dir
+                ? "library: " + dj.music_dir : "";
+
+            // Theme highlight + setlist options (work idle and live).
+            document.querySelectorAll(".theme-btn").forEach((b) =>
+                b.classList.toggle("on", b.dataset.theme === dj.theme));
+            fillSetlists(dj.setlists, dj.setlist);
+            if (!nudgeDragging && dj.energy_nudge != null)
+                nudge.value = dj.energy_nudge;
+
+            if (!on) return;
+
+            // Now playing.
             const cur = dj.current || {};
-            $("dj-title").textContent = cur.title || "(choosing...)";
-            $("dj-sub").textContent = cur.artist
-                ? `${cur.artist} - ${Math.round(cur.bpm || 0)} bpm - ${cur.camelot || "?"}`
-                : (cur.bpm ? `${Math.round(cur.bpm)} bpm - ${cur.camelot || "?"}` : "");
-            const pos = cur.pos_s, dur = cur.duration_s;
-            $("dj-pos").textContent = fmt(pos);
-            $("dj-dur").textContent = fmt(dur);
-            $("dj-prog").style.width = (dur ? Math.min(100, 100 * (pos || 0) / dur) : 0) + "%";
+            $("dj-title").textContent = cur.title || "(choosing next track…)";
+            $("dj-sub").textContent = [cur.artist,
+                cur.bpm ? Math.round(cur.bpm) + " bpm" : null,
+                cur.camelot].filter(Boolean).join("  ·  ");
+            $("dj-pos").textContent = fmt(cur.pos_s);
+            $("dj-dur").textContent = fmt(cur.duration_s);
+            $("dj-prog").style.width =
+                (cur.duration_s ? Math.min(100, 100 * (cur.pos_s || 0) / cur.duration_s) : 0) + "%";
 
             const badges = [];
             if (dj.state === "armed" && dj.style)
-                badges.push(`<span class="dj-badge blend">${dj.style}` +
-                    (dj.blend_in_s != null ? ` in ${Math.round(dj.blend_in_s)}s` : "")
+                badges.push(`<span class="badge tech">${dj.style.replace(/_/g," ")}`
+                    + (dj.blend_in_s != null ? ` in ${Math.round(dj.blend_in_s)}s` : "")
                     + `</span>`);
-            badges.push(`<span class="dj-badge">${dj.theme}</span>`);
-            if (dj.setlist)
-                badges.push(`<span class="dj-badge">list: ${dj.setlist}` +
-                            ` (${dj.setlist_remaining} left)</span>`);
+            badges.push(`<span class="badge">theme: ${dj.theme}</span>`);
+            badges.push(`<span class="badge">${dj.state}</span>`);
             $("dj-badges").innerHTML = badges.join("");
-
-            const sel = $("dj-setlist");
-            const names = dj.setlists || [];
-            if (sel.dataset.have !== names.join("|")) {
-                sel.dataset.have = names.join("|");
-                const keep = sel.value;
-                sel.innerHTML = '<option value="">(no setlist - free play)</option>'
-                    + names.map((n) => `<option>${n}</option>`).join("");
-                sel.value = keep;
-            }
+            renderDecks(dj.decks);
 
             if (dj.next) {
-                $("dj-next-box").style.display = "";
+                show($("dj-next-box"), true);
                 $("dj-next").textContent = dj.next.title;
                 $("dj-next-sub").textContent =
-                    `${Math.round(dj.next.bpm || 0)} bpm - ${dj.next.camelot || "?"}` +
-                    (dj.style ? ` - via ${dj.style}` : "");
-            } else {
-                $("dj-next-box").style.display = "none";
-            }
+                    [dj.next.artist, dj.next.bpm ? Math.round(dj.next.bpm)+" bpm":null,
+                     dj.next.camelot, dj.style ? "via "+dj.style.replace(/_/g," "):null]
+                    .filter(Boolean).join("  ·  ");
+            } else show($("dj-next-box"), false);
 
+            // The night.
             $("dj-arc-mk").style.left = (100 * (dj.arc_phase || 0)) + "%";
-            $("dj-heat").textContent = (dj.arc_heat != null)
-                ? dj.arc_heat.toFixed(2) + (dj.energy_nudge
-                    ? ` (nudge ${dj.energy_nudge > 0 ? "+" : ""}${dj.energy_nudge})` : "")
-                : "--";
-
-            document.querySelectorAll(".theme-btn").forEach((b) =>
-                b.classList.toggle("on", b.dataset.theme === dj.theme));
-            const auto = $("dj-auto");
-            auto.classList.toggle("on", !!dj.autopilot);
-            auto.textContent = "AUTOPILOT: " + (dj.autopilot ? "ON" : "OFF");
-            if (!nudgeDragging && dj.energy_nudge != null)
-                nudge.value = dj.energy_nudge;
+            $("dj-heat").textContent = (dj.arc_heat != null ? dj.arc_heat.toFixed(2) : "--")
+                + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
+            $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
+                + (dj.night_hours ? ` of a ${dj.night_hours}h night` : "");
         });
-        socket.on("disconnect", () =>
-            $("status-text").textContent = "Disconnected");
+
+        socket.on("disconnect", () => {
+            $("status-text").textContent = "Disconnected";
+            $("dj-banner").className = "dj-banner err";
+            $("dj-banner").textContent = "Disconnected from the show.";
+        });
     </script>
 </body>
 </html>

@@ -188,8 +188,34 @@ class DJSystem:
             "setlist": self._setlist_name,
             "setlist_remaining": len(self._setlist_queue),
             "setlists": list(self.setlist_names),
-            "deck_telemetry": tel, "error": self.last_error,
+            "night_hours": self.night_hours,
+            "decks": self._deck_brief(tel),
+            "deck_telemetry": tel,
+            "error": self.last_error,
         }
+
+    def _deck_brief(self, tel):
+        """Compact per-deck view for the web page (what each deck plays)."""
+        cur_id = self.current.id if self.current else None
+        nxt_id = self.next_track.id if self.next_track else None
+        names = {}
+        if self.current:
+            names[cur_id] = self.current.title
+        if self.next_track:
+            names[nxt_id] = self.next_track.title
+        out = []
+        for name, d in (tel.get("decks") or {}).items():
+            if not d.get("playing"):
+                continue
+            out.append({
+                "deck": name.upper(),
+                "title": names.get(d.get("track_id"), "?"),
+                "gain": round(d.get("gain", 0.0), 2),
+                "bpm": None,
+                "eq": d.get("eq"),
+                "beat_phase": d.get("beat_phase"),
+            })
+        return out
 
     def _track_brief(self, t):
         if t is None:
