@@ -50,8 +50,20 @@ dj:
   theme's arc, recency — AND section-pair mixability: transitions land on
   detected structure boundaries, and two busy/vocal sections never blend
   over each other.
-- Styles (`long_blend`, `bass_swap`, `cut_at_drop`, `loop_roll_exit`,
-  fallback `long_fade`) are gated by per-track analysis confidence.
+- Transition/technique repertoire (all beat-matched via a sync SNAP at
+  launch — the incoming deck's phase is instantly aligned to the playing
+  track, then a PLL holds it, ±1.2% authority):
+  - `long_blend` / `bass_swap` — staged-EQ blends (highs→mids→bass swap)
+  - `cut_at_drop` — hard cut on the incoming track's drop
+  - `loop_roll_exit` — shrinking loop-roll outro
+  - `bassline_layer` — isolate A's groove as a looping bed, ride B's
+    melody/vocals over it beat-locked for ~16 bars, then hand the low over
+  - `double_drop` — align both tracks' drop onsets for a peak hit (A ducks
+    so it doesn't clip)
+  - `loop_build` — stutter a shrinking loop into A's drop to build tension,
+    release exactly on the drop as B slams in
+  - `long_fade` — fallback for low-confidence grids
+  Styles are gated by per-track analysis confidence and theme weights.
 - Incoming deck launches bar-aligned from the DB grid, stretched to the
   running tempo, then a PLL trims ±0.3% on measured beat-phase error;
   after the handover the new track glides back to its natural tempo.
