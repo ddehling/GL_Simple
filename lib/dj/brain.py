@@ -18,7 +18,7 @@ import time
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
-          "bassline_layer", "long_fade")
+          "bassline_layer", "double_drop", "long_fade")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 GLIDE_PER_S = 0.0015             # post-transition rate->1.0 glide speed
 
@@ -282,6 +282,17 @@ class Brain:
                             "busy": (round(busy_a, 2), round(busy_b, 2))}
         return best
 
+    def _drop_after(self, track, after_s):
+        """Start time of the first strong drop section at/after after_s
+        (else the strongest drop anywhere), or None."""
+        drops = [s for s in track.sections if s["kind"] == "drop"]
+        if not drops:
+            return None
+        ahead = [s for s in drops if s["start_s"] >= after_s]
+        pick = min(ahead, key=lambda s: s["start_s"]) if ahead else \
+            max(drops, key=lambda s: s.get("energy", 0.0))
+        return pick["start_s"]
+
     def _bass_loop(self, track, before_s):
         """Best loop in `track` to isolate as a repeating groove bed: a
         bass-heavy, low-vocal, repetitive loop before the exit. Returns the
@@ -332,6 +343,14 @@ class Brain:
             # isolate as the repeating groove.
             if self._bass_loop(cur, pair["out_s"]) is None:
                 weights["bassline_layer"] = 0.0
+            # double_drop aligns A's drop onset with B's drop onset (the
+            # drop boundary IS a downbeat, so this works even where the
+            # global downbeat_offset is uncertain); the sync snap handles
+            # beat phase. Needs a drop in each track.
+            a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
+            b_drop = self._drop_after(cand, cand.duration_s * 0.15)
+            if a_drop is None or b_drop is None:
+                weights["double_drop"] = 0.0
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
@@ -341,7 +360,18 @@ class Brain:
 
         beats = {"long_blend": 32, "bass_swap": 16, "cut_at_drop": 16,
                  "loop_roll_exit": 32, "bassline_layer": 16,
-                 "long_fade": 0}[style]
+                 "double_drop": 16, "long_fade": 0}[style]
+        if style == "double_drop":
+            # A exits on ITS drop; B is cued so its drop lands on the same
+            # beat. out_s/in_s become the two drop onsets.
+            a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
+            b_drop = self._drop_after(cand, cand.duration_s * 0.15)
+            out_s = cur.nearest_downbeat(a_drop)
+            in_s = cand.nearest_downbeat(b_drop)
+            plan = {"style": style, "rate": rate, "out_s": out_s,
+                    "in_s": in_s, "beats": beats,
+                    "pair_score": pair["score"], "cand_id": cand.id}
+            return plan
         out_s = cur.nearest_downbeat(pair["out_s"])
         in_s = cand.nearest_downbeat(pair["in_s"])
         plan = {"style": style, "rate": rate,
@@ -431,6 +461,48 @@ class Brain:
             swap_at = S_cut + int(0.5 * RATE)
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
+
+        if style == "double_drop":
+            # Align B's drop onset to A's drop onset: B runs in for 16 beats
+            # bass-cut (build tension under A), both drops HIT together for 4
+            # bars of full-range double-drop, then A exits and B rides on.
+            run_in = 16
+            S_drop = clock_at(plan["out_s"])            # A's drop moment
+            b_period = cand.period_s
+            S0 = S_drop - int(run_in * b_period / rate_b * RATE)
+            cue_b = max(0.0, plan["in_s"] - run_in * b_period)
+            both = S_drop + int(16 * beat_out * RATE)   # 4 bars of both
+            out = both + int(4 * beat_out * RATE)
+            ev += [
+                {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
+                {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
+                {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
+                 "mid": 0.7, "high": 0.8, "ramp_s": 0.05},
+                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
+                 "ramp_s": 0.05},
+                {"at": S0, "cmd": "start", "deck": incoming},
+                {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
+                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.85,
+                 "ramp_s": run_in * beat_out},
+                # THE DROP: both full-range for 4 bars.
+                {"at": S_drop, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 0.06},
+                {"at": S_drop, "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": 0.06},
+                # A ducks and drops its low so two kicks don't muddy or clip
+                # (B is the star of the double drop); keeps some body.
+                {"at": S_drop, "cmd": "eq", "deck": active, "low": 0.0,
+                 "mid": 0.6, "ramp_s": 0.06},
+                {"at": S_drop, "cmd": "gain", "deck": active, "value": 0.5,
+                 "ramp_s": 0.06},
+                # Hand over: A leaves, B's already full.
+                {"at": both, "cmd": "gain", "deck": active, "value": 0.0,
+                 "ramp_s": 4 * beat_out},
+                {"at": out, "cmd": "stop", "deck": active},
+                {"at": out, "cmd": "end_sync"},
+            ]
+            self._glide_home(ev, incoming, rate_b, out)
+            return ev, out, S0
 
         if style == "bassline_layer":
             # Isolate A's groove as a looping bed and play B OVER it for an

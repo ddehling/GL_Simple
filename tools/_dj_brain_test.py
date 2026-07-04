@@ -245,7 +245,8 @@ def e2e_test(keep_wav):
               f"{total_s/60:.0f} min: {' -> '.join(p[:14] for p in plays)}")
         check("styles are beat-matched",
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
-                        "cut_at_drop") for s in armed_styles),
+                        "cut_at_drop", "bassline_layer", "double_drop")
+                  for s in armed_styles),
               f"styles: {armed_styles}")
         check("deck rates always clamped", rate_violations == 0,
               f"{rate_violations} telemetry samples outside 0.90..1.10")
