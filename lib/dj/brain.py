@@ -283,6 +283,11 @@ class Brain:
                 voc_a = sec_a.get("vocalness") or 0.0
                 voc_b = sec_b.get("vocalness") or 0.0
                 fit = out_fit(sec_a) * in_fit(sec_b)     # intro-over-outro
+                # Prefer mixing the incoming in EARLIER (nearer its groove
+                # start) over a deep point, but only a gentle lean - the
+                # mix-in must still land where the track has energy, or the
+                # blend goes quiet as the outgoing leaves.
+                early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
                 # Two lead-carrying sections over each other = clash: heavy
                 # penalty (not a hard reject, so there's always a best pair).
@@ -294,7 +299,8 @@ class Brain:
                 mp = 0.5 + 0.5 * max(o["score"], 0.0) * max(i["score"], 0.0)
                 # Weighted-sum form so a mediocre pair stays ~0.05-1, never
                 # collapsing to ~0 (which would zero the whole selection).
-                score = (0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet) * clash * mp
+                score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
+                         * (0.4 + 0.6 * early_b) * clash * mp)
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),

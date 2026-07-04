@@ -183,7 +183,7 @@ def main():
         gen = engine._mixer()
         next(gen)
         played, prev = [], None
-        for i in range(int(260.0 * RATE) // 4410):
+        for i in range(int(360.0 * RATE) // 4410):
             gen.send(4410)
             dj.step()
             cur = (dj.status()["current"] or {}).get("id")

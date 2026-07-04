@@ -31,6 +31,15 @@ MIN_LEAD_S = 8.0                 # never arm closer than this to the seam
 SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
 
 
+def _intro_start(track):
+    """Where a track should START playing from: the first beat of its intro
+    (or just its first downbeat), never a deep mix-in point."""
+    for s in track.sections:
+        if s["kind"] == "intro":
+            return max(s["start_s"], 0.0)
+    return track.grid[0]["first_beat_s"] if track.grid else 0.0
+
+
 class DJSystem:
     def __init__(self, music_root, engine=None, theme="groove",
                  night_hours=6.0, autopilot=True, seed=None,
@@ -298,8 +307,10 @@ class DJSystem:
         if samples is None:
             self.brain.library.remove(first)
             return
-        cue = first.mix_ins[0]["time_s"] if first.mix_ins else 0.0
-        cue = first.nearest_downbeat(cue)
+        # Start the FIRST track from its beginning (first downbeat), not a
+        # deep mix-in point - otherwise the set opens mid-track, skipping a
+        # minute of music.
+        cue = first.nearest_downbeat(_intro_start(first))
         self.submix.post_many([
             {"cmd": "load", "deck": self.active_deck, "samples": samples,
              "track_id": first.id, "grid": first.grid,
