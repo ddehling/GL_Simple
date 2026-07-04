@@ -209,6 +209,17 @@ class PlanPreview:
                                            "rate": 1.0}}}
             ev, swap_at, blend_at = self.brain.build_events(
                 plan, snapshot, active, incoming, cur, nxt)
+            # If we seeked PAST a technique's setup (loop-build, bassline
+            # layer, etc. begin well before the exit), its events land at
+            # negative clocks and would fire immediately - a mistimed mess.
+            # Fall back to a clean bass_swap that starts at the exit point.
+            if ev and min(e["at"] for e in ev) < c_ref:
+                simple = dict(plan)
+                simple["style"] = "bass_swap"
+                simple["beats"] = 16
+                ev, swap_at, blend_at = self.brain.build_events(
+                    simple, snapshot, active, incoming, cur, nxt)
+                plan = simple
             # Preview keeps a simple constant-rate timing model: snap the
             # incoming deck home shortly after the swap instead of the long
             # 0.15%/s glide (a <=8% step over 1.5s), keeping every later
