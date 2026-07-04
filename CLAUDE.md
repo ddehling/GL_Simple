@@ -180,6 +180,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/EVENT_MAP_SYSTEM.md` — Event scheduling
 - `docs/PARAMETER_MANAGEMENT.md` — Parameter system
 - `docs/DEPLOYMENT.md` — Per-project repo model, fresh-machine setup, GitHub auth, adding/switching projects
+- `docs/DJ_README.md` — Autonomous DJ subsystem (library scanner, mixing engine, PyQt6 set planner, /dj live tab)
 - `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
 - `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)
 - `docs/shader_contrast_playbook.md` — How to design shaders that read well under Fan's fixed `brightness_limit: 0.1` (read when authoring or editing visuals — hue/spatial/saturation levers under an energy budget)
