@@ -101,12 +101,76 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None):
             write_progress({**summary, "total": len(todo), "done": done,
                             "current": name, "finished": False})
 
+    _recalibrate_tags(db)
     summary["elapsed_s"] = round(time.time() - summary["started_at"], 1)
     summary["db_counts"] = db.counts()
     write_progress({**summary, "total": len(todo), "done": len(todo),
                     "current": "", "finished": True})
     db.close()
     return summary
+
+
+def _recalibrate_tags(db):
+    """Library-relative auto tags. The per-track axes are built from
+    per-track-normalized features, so absolute thresholds saturate (every
+    club track reads 'hard' against a silence baseline). After a scan we
+    re-derive comparative tags from PERCENTILES across the collection -
+    'hard' means hard FOR THIS LIBRARY."""
+    import json as _json
+    import numpy as _np
+    rows = db.conn.execute(
+        "SELECT id, bpm, axes, mood_hist, spectral, rhythm_density"
+        " FROM tracks WHERE error IS NULL AND axes IS NOT NULL").fetchall()
+    if len(rows) < 8:
+        return                       # tiny library: keep per-track tags
+    axes = {r["id"]: _json.loads(r["axes"]) for r in rows}
+    # The stored hardness axis clips at 1.0 and saturates on club music -
+    # rebuild an UNCLIPPED score from stored ingredients so percentiles
+    # actually discriminate.
+    hard_raw = {}
+    for r in rows:
+        spec = _json.loads(r["spectral"] or "{}")
+        mood = _json.loads(r["mood_hist"] or "{}")
+        hard_raw[r["id"]] = (2.5 * spec.get("bass_share", 0.33)
+                             + 0.8 * mood.get("peak", 0.0)
+                             + 0.25 * min((r["rhythm_density"] or 0) / 3.0,
+                                          1.5)
+                             + 0.4 * axes[r["id"]].get("speed", 0.5))
+    def pct(vals, q):
+        return float(_np.percentile(list(vals), q))
+    hi_hard = pct(hard_raw.values(), 72)
+    lo_hard = pct(hard_raw.values(), 28)
+    hi_en = pct((a.get("energy", 0.5) for a in axes.values()), 72)
+    lo_en = pct((a.get("energy", 0.5) for a in axes.values()), 28)
+    hi_hyp = pct((a.get("hypnotic", 0.5) for a in axes.values()), 80)
+    for r in rows:
+        a = axes[r["id"]]
+        mood = _json.loads(r["mood_hist"] or "{}")
+        tags = []
+        if a.get("vocal", 0) > 0.30:
+            tags.append("vocal-heavy")
+        elif a.get("vocal", 0) < 0.08:
+            tags.append("instrumental")
+        bpm = r["bpm"] or 0
+        if bpm and bpm < 105:
+            tags.append("slow")
+        elif bpm and bpm > 123:
+            tags.append("fast")
+        if hard_raw[r["id"]] > hi_hard:
+            tags.append("hard")
+        elif hard_raw[r["id"]] < lo_hard:
+            tags.append("gentle")
+        if a.get("energy", 0.5) >= hi_en:
+            tags.append("driving")
+        elif a.get("energy", 0.5) <= lo_en:
+            tags.append("mellow")
+        if a.get("hypnotic", 0.5) >= hi_hyp:
+            tags.append("hypnotic")
+        if mood.get("peak", 0.0) > 0.25:
+            tags.append("peaky")
+        db.conn.execute("UPDATE tracks SET auto_tags = ? WHERE id = ?",
+                        (_json.dumps(tags), r["id"]))
+    db.conn.commit()
 
 
 def _run_pool(todo, workers):
