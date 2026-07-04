@@ -212,6 +212,34 @@ dead_adv = out['_season_autopilot'] - 0.10
 check("night phase is earned", hot_adv > dead_adv * 2.5 and hot_adv > 0,
       f"2min advance: hot={hot_adv*100:.3f}% vs dead={dead_adv*100:.3f}% of the cycle")
 
+# 11. Autonomous-DJ coupling: the DJ's published arc pulls the night phase
+#     (director stays the only _season_autopilot writer), and the DJ's
+#     next-seam ETA pre-arms the room exactly like a heard build.
+state, out = fresh("club_orbitarium")
+out['season'] = 0.10
+out['dj_active'] = True
+out['dj_arc_phase'] = 0.50
+out['dj_arc_heat'] = 0.9
+t, _, _, _ = run(120.0, state, out, energy=0.3)
+pulled = out['_season_autopilot']
+state2, out2 = fresh("club_orbitarium")
+out2['season'] = 0.10
+t, _, _, _ = run(120.0, state2, out2, energy=0.3)
+alone = out2['_season_autopilot']
+d_pull = abs((pulled - 0.50 + 0.5) % 1.0 - 0.5)
+d_alone = abs((alone - 0.50 + 0.5) % 1.0 - 0.5)
+check("dj arc pulls the night phase", d_pull < d_alone * 0.5,
+      f"2min: with DJ {pulled:.3f} vs alone {alone:.3f} (target 0.50)")
+
+state, out = fresh("club_runway")
+out['dj_active'] = True
+out['dj_next_drop_eta'] = 6.0
+t, _, _, _ = run(3.0, state, out, energy=0.4)
+check("dj drop-eta pre-arms the room",
+      out.get('_transition_hold_until', 0) > time.time() - 1
+      and state.get('_drop_dest') in SCENE_HEAT,
+      f"dest={state.get('_drop_dest')}")
+
 print()
 if failures:
     print("FAILED:", failures); sys.exit(1)

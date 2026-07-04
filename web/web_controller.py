@@ -263,6 +263,18 @@ class WebController:
                 cur = self.control_dict.get('current_weather_set')
             return jsonify({"active": cur == 'club'})
 
+        @self.app.route('/dj')
+        def dj_panel():
+            return render_template('dj_panel.html')
+
+        @self.app.route('/api/dj/active')
+        def dj_active():
+            """DJ availability/liveness (gates the DJ nav tab)."""
+            with self._dict_lock:
+                info = self.control_dict.get('dj_info') or {}
+            return jsonify({"available": bool(info.get("available")),
+                            "active": bool(info.get("active"))})
+
         @self.app.route('/preview')
         def preview():
             """Serve the live preview page."""
@@ -883,6 +895,7 @@ class WebController:
                         "theme": self.control_dict.get('club_theme', ''),
                         "ttls": self.control_dict.get('club_ttls', {}),
                     },
+                    "dj": self.control_dict.get('dj_info'),
                 }
             emit('state_update', _sanitize_for_json(snapshot))
 
@@ -1013,6 +1026,41 @@ class WebController:
                 with self._dict_lock:
                     self.control_dict['club_theme'] = theme
                 self._values_cache = None
+
+        DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
+                      'nudge', 'next_id'}
+
+        @self.socketio.on('dj_action')
+        def handle_dj_action(data):
+            """Queue one DJ control action for the app's 5 Hz bridge.
+
+            All DJ controls funnel through ONE queued-action channel
+            (validate -> clamp -> append); Stories_OGL._apply_dj_controls
+            drains it on the render thread where DJSystem lives.
+            """
+            data = data or {}
+            action = data.get('action')
+            if action not in DJ_ACTIONS:
+                return
+            arg = data.get('value')
+            if action == 'nudge':
+                try:
+                    arg = max(-0.4, min(0.4, float(arg)))
+                except (TypeError, ValueError):
+                    return
+            elif action == 'next_id':
+                try:
+                    arg = int(arg)
+                except (TypeError, ValueError):
+                    return
+            elif action == 'theme':
+                if not isinstance(arg, str) or len(arg) > 40:
+                    return
+            elif action == 'autopilot':
+                arg = bool(arg)
+            with self._dict_lock:
+                q = self.control_dict.setdefault('request_dj_actions', [])
+                q.append((action, arg))
 
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
@@ -1163,6 +1211,7 @@ class WebController:
                                     "theme": self.control_dict.get('club_theme', ''),
                                     "ttls": self.control_dict.get('club_ttls', {}),
                                 },
+                                "dj": self.control_dict.get('dj_info'),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
                                 "ambient_sound": self.control_dict.get('ambient_sound'),

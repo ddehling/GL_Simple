@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lucifera DJ</title>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <link rel="stylesheet" href="/static/css/control_panel.css">
+    <style>
+        /* Live show control ONLY - set planning / library browsing lives in
+           the desktop planner app (tools/dj_planner.py). */
+        .dj-off { text-align: center; padding: 30px 20px; }
+        .dj-start-btn {
+            width: 100%; padding: 18px; font-size: 1.2em; font-weight: bold;
+            letter-spacing: 0.12em; border-radius: 8px; border: 2px solid #3a6;
+            background: #123a22; color: #8f8; cursor: pointer; margin-top: 12px;
+        }
+        .dj-start-btn:active { background: #1a5a33; }
+        .dj-stop-btn {
+            width: 100%; padding: 12px; font-size: 1.0em; border-radius: 8px;
+            border: 2px solid #a33; background: #401515; color: #f88;
+            cursor: pointer;
+        }
+        .dj-skip-btn {
+            width: 100%; padding: 14px; font-size: 1.05em; font-weight: bold;
+            border-radius: 8px; border: 2px solid #46a; background: #14203a;
+            color: #8bf; cursor: pointer;
+        }
+        .dj-skip-btn:active { background: #24406a; }
+        .now-title { font-size: 1.15em; font-weight: bold; margin: 2px 0; }
+        .now-sub { font-size: 0.82em; opacity: 0.65; }
+        .track-progress {
+            height: 10px; background: #222; border-radius: 5px;
+            overflow: hidden; margin: 8px 0 2px 0;
+        }
+        .track-progress .fill {
+            height: 100%; background: linear-gradient(90deg, #2a6, #4bd);
+            border-radius: 5px; transition: width 0.3s;
+        }
+        .next-box {
+            border: 1px dashed #444; border-radius: 8px; padding: 10px;
+            margin-top: 10px; font-size: 0.9em;
+        }
+        .arc-bar {
+            position: relative; height: 16px; border-radius: 8px;
+            background: linear-gradient(90deg, #223, #235, #526, #a24, #722);
+            margin: 6px 0 2px 0;
+        }
+        .arc-marker {
+            position: absolute; top: -4px; width: 4px; height: 24px;
+            border-radius: 2px; transform: translateX(-2px);
+            background: #fff; box-shadow: 0 0 6px #fff;
+        }
+        .theme-row { display: flex; gap: 6px; flex-wrap: wrap; }
+        .theme-btn {
+            flex: 1; min-width: 88px; padding: 8px 4px; font-size: 0.8em;
+            border-radius: 6px; border: 1px solid #555; background: #26262e;
+            color: #ccc; cursor: pointer;
+        }
+        .theme-btn.on { border-color: #4bd; background: #123a44; color: #9ef; }
+        .auto-btn {
+            width: 100%; padding: 10px; border-radius: 6px; font-size: 0.9em;
+            border: 2px solid #555; background: #2a2a2a; color: #ccc;
+            cursor: pointer;
+        }
+        .auto-btn.on { border-color: #3a6; background: #123a22; color: #8f8; }
+        .bias-labels { display: flex; justify-content: space-between;
+                       font-size: 0.78em; opacity: 0.7; }
+        .dj-badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+        .dj-badge {
+            font-size: 0.75em; padding: 3px 10px; border-radius: 12px;
+            background: #333; border: 1px solid #555; letter-spacing: 0.05em;
+        }
+        .dj-badge.blend { background: #1a2a4a; border-color: #36a; color: #8bf; }
+        .dj-err { color: #f88; font-size: 0.85em; margin-top: 8px; }
+        #dj-on-wrap { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Lucifera DJ</h1>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <a href="/" class="tab">Controls</a>
+            <a href="/preview" class="tab">Preview</a>
+            <a href="/weather_editor" class="tab">Editor</a>
+            <a href="/club" class="tab" id="club-tab" style="display:none">Club</a>
+            <a href="/dj" class="tab active" id="dj-tab">DJ</a>
+        </div>
+
+        <!-- Stopped: start surface -->
+        <div class="section-panel dj-off" id="dj-off-wrap">
+            <div>The autonomous DJ is idle.</div>
+            <div class="now-sub" style="margin-top:6px">
+                Library: <code>&lt;repo&gt;/../music</code> &mdash; scan with
+                <code>tools/dj_scan.py</code>, plan sets with the desktop
+                planner. Starting hands the soundtrack to the DJ (state
+                ambient pauses, visuals follow the mix).
+            </div>
+            <button class="dj-start-btn" id="dj-start">START THE DJ</button>
+            <div class="dj-err" id="dj-err-off"></div>
+        </div>
+
+        <div id="dj-on-wrap">
+            <!-- Now playing -->
+            <div class="section-panel">
+                <div class="section-header"><h3>Now Playing</h3></div>
+                <div class="now-title" id="dj-title">--</div>
+                <div class="now-sub" id="dj-sub">--</div>
+                <div class="track-progress"><div class="fill" id="dj-prog"
+                     style="width:0%"></div></div>
+                <div class="bias-labels">
+                    <span id="dj-pos">0:00</span><span id="dj-dur">0:00</span>
+                </div>
+                <div class="dj-badges" id="dj-badges"></div>
+                <div class="next-box" id="dj-next-box" style="display:none">
+                    <b>Next:</b> <span id="dj-next">--</span><br>
+                    <span class="now-sub" id="dj-next-sub"></span>
+                </div>
+            </div>
+
+            <!-- The night arc -->
+            <div class="section-panel">
+                <div class="section-header"><h3>The Night</h3></div>
+                <div class="arc-bar"><div class="arc-marker" id="dj-arc-mk"
+                     style="left:0%"></div></div>
+                <div class="bias-labels">
+                    <span>warm-up</span><span>peak</span><span>landing</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Energy target:</span>
+                    <span class="info-value" id="dj-heat">--</span>
+                </div>
+            </div>
+
+            <!-- Steering -->
+            <div class="section-panel">
+                <div class="section-header"><h3>Steer</h3></div>
+                <div class="theme-row" id="dj-themes"></div>
+                <div style="margin-top:12px">
+                    <div class="bias-labels"><span>mellower</span>
+                        <span>energy nudge</span><span>hotter</span></div>
+                    <input type="range" id="dj-nudge" min="-0.4" max="0.4"
+                           step="0.05" value="0" style="width:100%">
+                </div>
+                <button class="auto-btn on" id="dj-auto"
+                        style="margin-top:12px">AUTOPILOT: ON</button>
+                <button class="dj-skip-btn" id="dj-skip"
+                        style="margin-top:12px">SKIP &mdash; NEXT TRACK</button>
+                <button class="dj-stop-btn" id="dj-stop"
+                        style="margin-top:12px">STOP THE DJ</button>
+                <div class="dj-err" id="dj-err-on"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/socket-client.js"></script>
+    <script src="/static/js/club_tab.js"></script>
+    <script>
+        const socket = createSocket();
+        const THEMES = ["chill_evening", "groove", "peak_heavy",
+                        "wind_down", "all_night"];
+        const $ = (id) => document.getElementById(id);
+
+        // Theme buttons
+        const themeRow = $("dj-themes");
+        THEMES.forEach((t) => {
+            const b = document.createElement("button");
+            b.className = "theme-btn";
+            b.dataset.theme = t;
+            b.textContent = t.replace("_", " ");
+            b.onclick = () => socket.emit("dj_action",
+                                          {action: "theme", value: t});
+            themeRow.appendChild(b);
+        });
+
+        $("dj-start").onclick = () =>
+            socket.emit("dj_action", {action: "start"});
+        $("dj-stop").onclick = () => {
+            if (confirm("Stop the DJ and hand back to state ambient?"))
+                socket.emit("dj_action", {action: "stop"});
+        };
+        $("dj-skip").onclick = () =>
+            socket.emit("dj_action", {action: "skip"});
+        $("dj-auto").onclick = () => {
+            const on = !$("dj-auto").classList.contains("on");
+            socket.emit("dj_action", {action: "autopilot", value: on});
+        };
+        // Drag-guard: don't let 5 Hz snapshots yank the slider mid-drag.
+        let nudgeDragging = false;
+        const nudge = $("dj-nudge");
+        nudge.addEventListener("pointerdown", () => nudgeDragging = true);
+        nudge.addEventListener("change", () => {
+            nudgeDragging = false;
+            socket.emit("dj_action",
+                        {action: "nudge", value: parseFloat(nudge.value)});
+        });
+
+        function fmt(sec) {
+            if (sec == null) return "-:--";
+            sec = Math.max(0, Math.round(sec));
+            return Math.floor(sec / 60) + ":" +
+                   String(sec % 60).padStart(2, "0");
+        }
+
+        socket.on("state_update", (s) => {
+            $("status-text").textContent = "Connected";
+            const dj = s.dj;
+            if (!dj) return;
+            const on = !!dj.active;
+            $("dj-off-wrap").style.display = on ? "none" : "";
+            $("dj-on-wrap").style.display = on ? "" : "none";
+            $("dj-err-off").textContent = dj.error || "";
+            if (!on) return;
+            $("dj-err-on").textContent = dj.error || "";
+
+            const cur = dj.current || {};
+            $("dj-title").textContent = cur.title || "(choosing...)";
+            $("dj-sub").textContent = cur.artist
+                ? `${cur.artist} - ${Math.round(cur.bpm || 0)} bpm - ${cur.camelot || "?"}`
+                : (cur.bpm ? `${Math.round(cur.bpm)} bpm - ${cur.camelot || "?"}` : "");
+            const pos = cur.pos_s, dur = cur.duration_s;
+            $("dj-pos").textContent = fmt(pos);
+            $("dj-dur").textContent = fmt(dur);
+            $("dj-prog").style.width = (dur ? Math.min(100, 100 * (pos || 0) / dur) : 0) + "%";
+
+            const badges = [];
+            if (dj.state === "armed" && dj.style)
+                badges.push(`<span class="dj-badge blend">${dj.style}` +
+                    (dj.blend_in_s != null ? ` in ${Math.round(dj.blend_in_s)}s` : "")
+                    + `</span>`);
+            badges.push(`<span class="dj-badge">${dj.theme}</span>`);
+            $("dj-badges").innerHTML = badges.join("");
+
+            if (dj.next) {
+                $("dj-next-box").style.display = "";
+                $("dj-next").textContent = dj.next.title;
+                $("dj-next-sub").textContent =
+                    `${Math.round(dj.next.bpm || 0)} bpm - ${dj.next.camelot || "?"}` +
+                    (dj.style ? ` - via ${dj.style}` : "");
+            } else {
+                $("dj-next-box").style.display = "none";
+            }
+
+            $("dj-arc-mk").style.left = (100 * (dj.arc_phase || 0)) + "%";
+            $("dj-heat").textContent = (dj.arc_heat != null)
+                ? dj.arc_heat.toFixed(2) + (dj.energy_nudge
+                    ? ` (nudge ${dj.energy_nudge > 0 ? "+" : ""}${dj.energy_nudge})` : "")
+                : "--";
+
+            document.querySelectorAll(".theme-btn").forEach((b) =>
+                b.classList.toggle("on", b.dataset.theme === dj.theme));
+            const auto = $("dj-auto");
+            auto.classList.toggle("on", !!dj.autopilot);
+            auto.textContent = "AUTOPILOT: " + (dj.autopilot ? "ON" : "OFF");
+            if (!nudgeDragging && dj.energy_nudge != null)
+                nudge.value = dj.energy_nudge;
+        });
+        socket.on("disconnect", () =>
+            $("status-text").textContent = "Disconnected");
+    </script>
+</body>
+</html>

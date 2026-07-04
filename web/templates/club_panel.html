@@ -93,6 +93,7 @@
             <a href="/preview" class="tab">Preview</a>
             <a href="/weather_editor" class="tab">Editor</a>
             <a href="/club" class="tab active" id="club-tab">Club</a>
+            <a href="/dj" class="tab" id="dj-tab" style="display:none">DJ</a>
         </div>
 
         <div class="club-inactive" id="club-inactive">
@@ -265,6 +266,7 @@
 
     <script src="/static/js/socket.io.min.js"></script>
     <script src="/static/js/socket-client.js"></script>
+    <script src="/static/js/dj_tab.js"></script>
     <script>
         const socket = createSocket();
         const PHASES = [[0.0, 'Doors'], [0.25, 'Warm-up'], [0.5, 'Peak Hours'], [0.75, 'Afterhours']];

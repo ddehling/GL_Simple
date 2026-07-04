@@ -69,6 +69,11 @@ def load_config(project_override: str | None = None):
         # 1-Wire temps) and prints them. Mapping into actual events is a
         # later step.
         "osc": {"enabled": True, "port": 9001, "bind_ip": "0.0.0.0"},
+        # Autonomous DJ. enabled=True makes the DJ AVAILABLE (web tab +
+        # start button); it never auto-plays on boot. music_dir empty =
+        # <repo_parent>/music (the library travels parallel to the repo).
+        "dj": {"enabled": True, "music_dir": "", "theme": "groove",
+               "night_hours": 6.0, "stretch_max": 1.08},
         "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
             {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
@@ -361,6 +366,13 @@ class EnvironmentalSystem:
         self.bt_receiver = create_bluetooth_receiver()
         self._bt_prev_source = None            # source to restore on disconnect
         self._bt_last_connected = 0            # connected-device count last tick
+
+        # Autonomous DJ (lib/dj). Constructed lazily on the first web
+        # "start" action so boot cost is zero when unused; config only
+        # gates AVAILABILITY. See _apply_dj_controls for the 5 Hz bridge.
+        self.dj_cfg = cfg.get("dj", {"enabled": False})
+        self._dj = None
+        self._dj_prev_source = None            # analyzer source to restore
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
         # published into outstate by send_variables() so any shader can sync
@@ -1593,13 +1605,20 @@ class EnvironmentalSystem:
         skip_time = target_params.get("skiptime", 0.0)
         ari = target_params.get("ARI", 0.0)
         engine = self.scheduler.state["soundengine"]
-        if ambient_sound:
+        dj = getattr(self, "_dj", None)
+        if dj is not None and dj.active:
+            # The DJ owns the soundtrack: weather changes track the visuals
+            # but must not start ambient beds under the mix. The new state's
+            # ambient is remembered and restored by _dj_stop.
+            self.active_effects["ambient_sound"] = ambient_sound
+        elif ambient_sound:
             media_root = Path(self.scheduler.state.get("media_root", "media"))
             sound_path = media_root / "sounds" / ambient_sound
             engine.play_ambient(sound_path, skip_seconds=skip_time, ari=ari)
+            self.active_effects["ambient_sound"] = ambient_sound
         else:
             engine.stop_ambient()
-        self.active_effects["ambient_sound"] = ambient_sound
+            self.active_effects["ambient_sound"] = ambient_sound
 
     def apply_web_controls(self):
         """Apply web control values to system parameters."""
@@ -1637,6 +1656,9 @@ class EnvironmentalSystem:
 
         # Bluetooth sink: drain queued web actions + mirror live state.
         self._apply_bluetooth_controls()
+
+        # Autonomous DJ: drain queued web actions + mirror status.
+        self._apply_dj_controls()
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
@@ -2119,6 +2141,114 @@ class EnvironmentalSystem:
         if not getattr(bt, 'available', False):
             self.web_controller.set(
                 'bt_unavailable_reason', getattr(bt, 'unavailable_reason', ''))
+
+    # ----------------------------------------------------------------
+    # Autonomous DJ bridge (web -> lib/dj/system.py), ~5 Hz
+    # ----------------------------------------------------------------
+
+    def _apply_dj_controls(self):
+        """Drain queued DJ web actions, mirror status, publish outstate keys.
+
+        The DJ owns the soundtrack while active: state ambient is silenced
+        (see the guard in _trigger_state_ambient) and the analyzer follows
+        the mix via the 'internal' monitor tap, so every audio-reactive
+        shader dances to what the DJ is actually playing.
+        """
+        if self.web_controller is None or not self.dj_cfg.get("enabled", False):
+            return
+        with self.web_controller._dict_lock:
+            actions = self.web_controller.control_dict.pop(
+                'request_dj_actions', [])
+        for action, arg in actions:
+            try:
+                if action == 'start':
+                    self._dj_start()
+                elif action == 'stop':
+                    self._dj_stop()
+                elif self._dj is not None and self._dj.active:
+                    if action == 'skip':
+                        self._dj.request_skip()
+                    elif action == 'theme':
+                        self._dj.set_theme(str(arg))
+                    elif action == 'autopilot':
+                        self._dj.set_autopilot(bool(arg))
+                    elif action == 'nudge':
+                        self._dj.set_energy_nudge(float(arg))
+                    elif action == 'next_id':
+                        self._dj.request_next(int(arg))
+            except Exception as e:
+                print(f"[DJ] action '{action}' failed: {e}")
+
+        # Mirror into the web snapshot + scheduler outstate.
+        info = None
+        if self._dj is not None:
+            info = self._dj.status()
+            info["available"] = True
+            info["active"] = self._dj.active
+            for k, v in self._dj.outstate_keys().items():
+                self.scheduler.state[k] = v
+        else:
+            info = {"available": True, "active": False,
+                    "theme": self.dj_cfg.get("theme", "groove")}
+            self.scheduler.state['dj_active'] = False
+        self.web_controller.set('dj_info', info)
+
+    def _dj_start(self):
+        if self._dj is not None and self._dj.active:
+            return
+        from lib.dj import resolve_music_dir
+        from lib.dj.system import DJSystem
+        engine = self.scheduler.state.get("soundengine")
+        self._dj = DJSystem(
+            resolve_music_dir(self.dj_cfg.get("music_dir", "")),
+            engine=engine,
+            theme=self.dj_cfg.get("theme", "groove"),
+            night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
+            stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)))
+        if not self._dj.start():
+            err = self._dj.last_error
+            self._dj = None
+            self.web_controller.set('dj_info',
+                                    {"available": True, "active": False,
+                                     "error": err})
+            return
+        # The DJ takes the soundtrack: silence state ambient, point the
+        # analyzer at the engine's own output.
+        try:
+            engine.stop_ambient()
+        except Exception:
+            pass
+        if self.analyzer is not None:
+            self._dj_prev_source = getattr(self.analyzer, "_active_source",
+                                           None)
+            self.set_audio_source("internal")
+        print("[DJ] live - ambient handed off, analyzer on internal mix")
+
+    def _dj_stop(self):
+        if self._dj is None:
+            return
+        self._dj.stop()
+        self._dj = None
+        if self.analyzer is not None and self._dj_prev_source:
+            self.set_audio_source(self._dj_prev_source)
+            self._dj_prev_source = None
+        self.scheduler.state['dj_active'] = False
+        # Hand the soundtrack back: re-trigger the current state's ambient
+        # (remembered by _trigger-time bookkeeping even while the DJ played).
+        try:
+            ambient = self.active_effects.get("ambient_sound")
+            if ambient:
+                engine = self.scheduler.state["soundengine"]
+                media_root = Path(self.scheduler.state.get("media_root",
+                                                           "media"))
+                params = self.weather_state.get_weather_params(
+                    self.weather_state.current_weather)
+                engine.play_ambient(media_root / "sounds" / ambient,
+                                    skip_seconds=0.0,
+                                    ari=params.get("ARI", 0.0))
+        except Exception as e:
+            print(f"[DJ] ambient restore failed: {e}")
+        print("[DJ] stopped - state ambient restored")
 
     def _cycle_audio_source(self):
         if self.analyzer is None:
