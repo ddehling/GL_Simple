@@ -62,6 +62,8 @@ class MixTimeline(QWidget):
         self.view_t1 = 1.0
         self.playhead = None
         self.selected_seam = None
+        self.live_bpm = None         # what the system is tracking right now
+        self.bpm_curve = []          # [(t, bpm)] planned output tempo
         self._drag = None
 
     def set_plan(self, compiled, brain):
@@ -91,6 +93,29 @@ class MixTimeline(QWidget):
                 "env_a": env_a, "env_b": env_b,
             })
         self.total_s = max(compiled["total_s"] if compiled else 1.0, 1.0)
+        # Planned output tempo: during a blend the incoming track is
+        # stretched to the outgoing tempo, then glides home to its own bpm
+        # (0.15%/s) - the strip shows exactly what the room will feel.
+        self.bpm_curve = []
+        GLIDE = 0.0015
+        for i, s in enumerate(self.slots):
+            t = s["track"]
+            S = s["start_offset_s"]
+            if i == 0:
+                self.bpm_curve.append((S, t.bpm))
+            else:
+                prev = self.slots[i - 1]["track"]
+                plan = self.slots[i - 1]["transition"]
+                blend = next((sm["blend_s"] for sm in self.seams
+                              if sm["index"] == i - 1), 10.0)
+                swap_t = S + blend
+                self.bpm_curve.append((swap_t, prev.bpm))
+                rate = plan["rate"] if plan else 1.0
+                glide_s = abs(rate - 1.0) / GLIDE
+                self.bpm_curve.append((swap_t + glide_s, t.bpm))
+        if self.slots:
+            self.bpm_curve.append((self.total_s,
+                                   self.slots[-1]["track"].bpm))
         self.view_t0, self.view_t1 = 0.0, self.total_s
         self.update()
 
@@ -117,8 +142,37 @@ class MixTimeline(QWidget):
                        "compile a set (Set tab) to see the mix")
             return
         W, H = self.width(), self.height()
-        lane_h = (H - 40) // 2
+        strip_h = 26                 # planned-tempo strip on top
+        lane_top = strip_h + 4
+        lane_h = (H - lane_top - 22) // 2
         span = self.view_t1 - self.view_t0
+
+        # -- BPM strip: the tempo the system tracks across the set ----------
+        if self.bpm_curve:
+            bpms = [b for _, b in self.bpm_curve]
+            lo = min(bpms) - 3
+            hi = max(bpms) + 3
+            p.fillRect(QRectF(0, 0, W, strip_h), QColor(26, 26, 32))
+            xs = np.array([b[0] for b in self.bpm_curve])
+            vs = np.array([b[1] for b in self.bpm_curve])
+            n_pts = max(W // 3, 16)
+            ts = np.linspace(self.view_t0, self.view_t1, n_pts)
+            ys = np.interp(ts, xs, vs)
+            pts = [QPointF(self._t2x(t), 2 + (strip_h - 6)
+                           * (1.0 - (v - lo) / max(hi - lo, 1e-6)))
+                   for t, v in zip(ts, ys)]
+            p.setPen(QPen(QColor(250, 200, 90), 2))
+            p.drawPolyline(QPolygonF(pts))
+            p.setPen(QColor(170, 170, 180))
+            p.drawText(3, 11, f"tempo  {hi - 3:.0f}")
+            p.drawText(3, strip_h - 3, f"{lo + 3:.0f} bpm")
+            if self.playhead is not None:
+                v = float(np.interp(self.playhead, xs, vs))
+                label = (f"{self.live_bpm:.1f} bpm (live)"
+                         if self.live_bpm else f"{v:.1f} bpm")
+                x = self._t2x(self.playhead)
+                p.setPen(QColor(255, 240, 200))
+                p.drawText(int(min(max(x + 6, 60), W - 130)), 11, label)
 
         for i, s in enumerate(self.slots):
             t = s["track"]
@@ -132,7 +186,7 @@ class MixTimeline(QWidget):
             if x1 < 0 or x0 > W:
                 continue
             lane = i % 2
-            y0 = 18 + lane * (lane_h + 4)
+            y0 = lane_top + lane * (lane_h + 4)
             r = QRectF(x0, y0, x1 - x0, lane_h)
             p.fillRect(r, LANE_COLORS[lane])
             p.setPen(QPen(QColor(0, 0, 0, 120), 1))
@@ -178,7 +232,7 @@ class MixTimeline(QWidget):
                 p.setPen(QColor(240, 240, 240))
                 p.drawText(QRectF(x0 + 4, y0 + 2, x1 - x0 - 8, 16),
                            Qt.AlignmentFlag.AlignLeft,
-                           f"{t.title[:36]}  ({t.bpm:.0f})")
+                           f"{t.title[:36]}  ({t.bpm:.0f} bpm {t.camelot})")
 
         # Seam envelopes + selection.
         for si, sm in enumerate(self.seams):
@@ -189,12 +243,14 @@ class MixTimeline(QWidget):
             if si == self.selected_seam:
                 p.fillRect(QRectF(x0, 0, x1 - x0, H),
                            QColor(255, 255, 255, 18))
-            p.setPen(QColor(200, 200, 210))
-            p.drawText(int(self._t2x(S)) + 2, 12, sm["style"])
+            p.setPen(QColor(230, 230, 240))
+            p.drawText(int(self._t2x(S)) + 2, lane_top + 12,
+                       f"↳ {sm['style']}  ({sm['blend_s']:.0f}s)")
             for env, lane in ((sm["env_a"], 0), (sm["env_b"], 1)):
                 if env is None:
                     continue
-                y0 = 18 + (lane if self.slots and lane < 2 else 0) * (lane_h + 4)
+                y0 = lane_top + (lane if self.slots and lane < 2 else 0) \
+                    * (lane_h + 4)
                 # Envelope time 0 == blend start == seam start_s in out-time.
                 for key, colw in (("gain", QColor(255, 255, 255)),
                                   ("low", EQ_COLORS["low"]),

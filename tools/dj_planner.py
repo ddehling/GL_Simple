@@ -851,6 +851,23 @@ class MixTab(QWidget):
         self.timeline.timeClicked.connect(self._time_clicked)
         v.addWidget(self.timeline, 1)
 
+        def chip(c, label):
+            return (f"<span style='color:{c}'>&#9632;</span>"
+                    f"<span style='color:#c8c8d0'> {label}&nbsp;&nbsp;</span>")
+        legend = QLabel(
+            chip("#fac85a", "tempo strip (planned bpm; live bpm at playhead)")
+            + chip("#2d4b69", "track block (lane A)")
+            + chip("#325f4b", "track block (lane B)")
+            + chip("#e6e6f0", "energy curve / GAIN envelope")
+            + chip("#eb695a", "EQ low") + chip("#78d278", "EQ mid")
+            + chip("#6eaaf0", "EQ high")
+            + "<span style='color:#8a8a95'>| ticks = beats (bright = "
+              "downbeat, appear when zoomed) | ↳ style (blend length) at "
+              "each seam | wheel = zoom, drag = pan, click = seek when "
+              "playing / select seam</span>")
+        legend.setWordWrap(True)
+        v.addWidget(legend)
+
         row = QHBoxLayout()
         self.play_btn = QPushButton("▶ Play set")
         self.play_btn.clicked.connect(self.play_set)
@@ -964,9 +981,23 @@ class MixTab(QWidget):
                     if sl["track"].mix_ins else 0.0)
             self.timeline.set_playhead(
                 sl["start_offset_s"] + max(cur["pos_s"] - in_s, 0.0))
+        # Live tracked tempo: dominant deck's track bpm x its actual rate
+        # (includes the PLL trim and the post-swap glide home).
+        live_bpm = None
+        try:
+            dj = self.preview.dj
+            tel = s.get("deck_telemetry") or {}
+            d = (tel.get("decks") or {}).get(dj.active_deck)
+            if d and dj.current and dj.current.bpm:
+                live_bpm = dj.current.bpm * d["rate"]
+        except Exception:
+            pass
+        self.timeline.live_bpm = live_bpm
         nxt = s.get("next") or {}
         self.status.setText(
-            f"[{s.get('state', '?')}] {cur.get('title', '-')}"
+            f"[{s.get('state', '?')}] "
+            + (f"{live_bpm:.1f} bpm | " if live_bpm else "")
+            + f"{cur.get('title', '-')}"
             + (f" → {nxt['title']}" if nxt else ""))
 
     def close(self):
