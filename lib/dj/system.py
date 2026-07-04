@@ -1,0 +1,385 @@
+"""DJSystem: the autonomous DJ's conductor.
+
+Owns the library DB, the Brain, and the DJSubmix; runs the play state
+machine on its own planner thread (live) or via explicit step() calls
+(offline rendering / tests). All musical scheduling is keyed to the
+submix's SAMPLE CLOCK, never wall time, which is exactly why offline
+rendering through the hand-pumped engine behaves identically to a live
+show.
+
+State machine:
+    IDLE -> PLAYING -> (next chosen + decoded) ARMED -> swap -> PLAYING ...
+
+Public control surface (thread-safe, called from UI/main threads):
+    set_theme(name)     request_skip()      set_autopilot(bool)
+    set_energy_nudge(x) request_next(id)    status() -> dict
+    outstate_keys() -> dj_arc_phase / dj_arc_heat / dj_next_drop_eta ...
+"""
+import json
+import os
+import threading
+import time
+
+from lib.dj.brain import Brain, load_library, TrackInfo
+from lib.dj.db import LibraryDB
+from lib.dj.submix import DJSubmix
+from lib.dj.themes import get_theme
+
+RATE = 44100
+PLAN_LEAD_S = 45.0               # start choosing next this early
+MIN_LEAD_S = 8.0                 # never arm closer than this to the seam
+SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
+
+
+class DJSystem:
+    def __init__(self, music_root, engine=None, theme="groove",
+                 night_hours=6.0, autopilot=True, seed=None,
+                 stretch_max=1.08, log_dir=None, threaded=True):
+        self.music_root = music_root
+        self.engine = engine
+        self.night_hours = night_hours
+        self.autopilot = autopilot
+        self.threaded = threaded
+        self._theme_name = theme
+        self._seed = seed
+        self._stretch_max = stretch_max
+        repo = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
+        self.log_dir = log_dir or os.path.join(repo, "logs")
+
+        self.submix = DJSubmix()
+        self.state = "idle"
+        self.active_deck = "a"
+        self.current = None          # TrackInfo
+        self.next_track = None
+        self.plan = None
+        self.swap_at = None          # submix clock
+        self.blend_at = None
+        self._started_clock = 0
+        self._set_start_clock = 0
+        self._history_id = None
+        self._energy_nudge = 0.0
+        self._exit_played = 300.0    # drawn per track from theme min/max play
+        self._next_meta = None
+        self._pending = []           # queued control requests
+        self._lock = threading.Lock()
+        self._thread = None
+        self._running = False
+        self.db = None
+        self.brain = None
+        self.last_error = ""
+
+    # -- lifecycle -------------------------------------------------------------
+    def start(self):
+        """Open the library, attach the submix, begin conducting."""
+        self.db = LibraryDB(self.music_root)     # planner-thread connection
+        lib = load_library(self.db)
+        if not lib:
+            self.last_error = "library is empty - run tools/dj_scan.py"
+            print(f"[DJ] {self.last_error}")
+            return False
+        self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
+                           stretch_max=self._stretch_max)
+        if self.engine is not None:
+            self.engine.attach_track("dj_submix", self.submix)
+        self._running = True
+        self._set_start_clock = self.submix.clock
+        if self.threaded:
+            self._thread = threading.Thread(target=self._run, daemon=True,
+                                            name="dj-brain")
+            self._thread.start()
+        print(f"[DJ] started: {len(lib)} playable tracks, "
+              f"theme={self._theme_name}")
+        return True
+
+    def stop(self, fade_s=2.0):
+        self._running = False
+        self.submix.fade_out(fade_s)
+        if self._history_id and self.db:
+            try:
+                self.db.log_play_end(self._history_id)
+            except Exception:
+                pass
+        self._log({"event": "stop"})
+
+    @property
+    def active(self):
+        return self._running
+
+    def _run(self):
+        while self._running:
+            try:
+                self.step()
+            except Exception as e:
+                self.last_error = f"{type(e).__name__}: {e}"
+                import traceback
+                traceback.print_exc()
+            time.sleep(0.4)
+
+    # -- control surface ---------------------------------------------------------
+    def set_theme(self, name):
+        with self._lock:
+            self._pending.append(("theme", name))
+
+    def request_skip(self):
+        with self._lock:
+            self._pending.append(("skip", None))
+
+    def request_next(self, track_id):
+        with self._lock:
+            self._pending.append(("next_id", track_id))
+
+    def set_autopilot(self, on):
+        self.autopilot = bool(on)
+
+    def set_energy_nudge(self, x):
+        self._energy_nudge = float(max(-0.4, min(0.4, x)))
+
+    # -- arc / outstate -----------------------------------------------------------
+    def arc_progress(self):
+        elapsed = (self.submix.clock - self._set_start_clock) / RATE
+        theme = self.brain.theme if self.brain else get_theme(self._theme_name)
+        if theme.arc == "all_night":
+            return min(1.0, elapsed / max(self.night_hours * 3600.0, 60.0))
+        return (elapsed % SET_CYCLE_S) / SET_CYCLE_S
+
+    def arc_target(self):
+        theme = self.brain.theme if self.brain else get_theme(self._theme_name)
+        return max(0.0, min(1.0, theme.arc_target(self.arc_progress())
+                            + self._energy_nudge))
+
+    def outstate_keys(self):
+        """Published into outstate each tick - the visuals' coupling."""
+        eta = None
+        if self.blend_at is not None and self.submix.clock < self.blend_at:
+            eta = (self.blend_at - self.submix.clock) / RATE
+        return {"dj_active": self._running,
+                "dj_arc_phase": self.arc_progress(),
+                "dj_arc_heat": self.arc_target(),
+                "dj_next_drop_eta": eta}
+
+    def status(self):
+        tel = self.submix.telemetry or {}
+        cur = self.current
+        nxt = self.next_track
+        countdown = None
+        if self.blend_at is not None:
+            countdown = max(0.0, (self.blend_at - self.submix.clock) / RATE)
+        return {
+            "state": self.state, "theme": self._theme_name,
+            "autopilot": self.autopilot,
+            "arc_phase": round(self.arc_progress(), 4),
+            "arc_heat": round(self.arc_target(), 3),
+            "energy_nudge": self._energy_nudge,
+            "current": self._track_brief(cur),
+            "next": self._track_brief(nxt),
+            "style": self.plan["style"] if self.plan else None,
+            "blend_in_s": round(countdown, 1) if countdown is not None else None,
+            "deck_telemetry": tel, "error": self.last_error,
+        }
+
+    def _track_brief(self, t):
+        if t is None:
+            return None
+        pos = None
+        tel = self.submix.telemetry or {}
+        if self.current is t and tel:
+            d = tel.get("decks", {}).get(self.active_deck)
+            if d:
+                pos = d["time_s"]
+        return {"id": t.id, "title": t.title, "artist": t.artist,
+                "bpm": t.bpm, "camelot": t.camelot,
+                "duration_s": t.duration_s, "pos_s": pos}
+
+    # -- state machine --------------------------------------------------------------
+    def step(self):
+        if not self._running or self.brain is None:
+            return
+        requests = None
+        with self._lock:
+            requests, self._pending = self._pending, []
+        for kind, val in requests:
+            if kind == "theme":
+                self.brain.theme = get_theme(val)
+                self._theme_name = val
+                self._log({"event": "theme", "theme": val})
+                if self.state == "playing":
+                    self.next_track = None       # soft replan
+                    self.plan = None
+            elif kind == "skip" and self.state in ("playing", "armed"):
+                self._do_skip()
+            elif kind == "next_id":
+                t = next((x for x in self.brain.library if x.id == val), None)
+                if t is not None and self.state == "playing":
+                    self.next_track = t
+                    self.plan = None
+                    self._log({"event": "pick_next", "track": t.title})
+
+        if self.state == "idle":
+            self._start_first()
+        elif self.state == "playing":
+            self._maybe_plan()
+        elif self.state == "armed":
+            if self.swap_at is not None and self.submix.clock >= self.swap_at:
+                self._finish_swap()
+
+    def _start_first(self):
+        first = self.brain.choose_first(self.arc_target())
+        if first is None:
+            self.last_error = "no track fits the theme"
+            return
+        samples = self._decode(first)
+        if samples is None:
+            self.brain.library.remove(first)
+            return
+        cue = first.mix_ins[0]["time_s"] if first.mix_ins else 0.0
+        cue = first.nearest_downbeat(cue)
+        self.submix.post_many([
+            {"cmd": "load", "deck": self.active_deck, "samples": samples,
+             "track_id": first.id, "grid": first.grid,
+             "gain_db": first.gain_db, "cue_s": cue},
+            {"cmd": "gain", "deck": self.active_deck, "value": 1.0,
+             "ramp_s": 1.5},
+            {"cmd": "start", "deck": self.active_deck},
+        ])
+        self.current = first
+        self.state = "playing"
+        self._started_clock = self.submix.clock
+        self._draw_exit()
+        self.brain.note_played(first)
+        self._history_id = self.db.log_play_start(first.id, theme=self._theme_name)
+        self._log({"event": "play", "track": first.title,
+                   "artist": first.artist, "bpm": first.bpm,
+                   "camelot": first.camelot})
+
+    def _pos_s(self):
+        tel = self.submix.telemetry or {}
+        d = tel.get("decks", {}).get(self.active_deck)
+        return d["time_s"] if d and d["ready"] else None
+
+    def _maybe_plan(self):
+        if not self.autopilot and self.next_track is None:
+            return
+        pos = self._pos_s()
+        if pos is None or self.current is None:
+            return
+        played = (self.submix.clock - self._started_clock) / RATE
+        deadline = self.current.duration_s - 25.0
+        # _exit_played was drawn from [min_play, max_play] when this track
+        # took over; plan once we're a lead-time away from it (or from the
+        # track simply running dry).
+        if played < self._exit_played - PLAN_LEAD_S \
+                and pos < deadline - PLAN_LEAD_S:
+            return
+        out_bpm = self.current.bpm       # dominant deck glides home to 1.0
+        if self.next_track is None:
+            cand, meta = self.brain.choose_next(
+                self.current, self.arc_target(), out_bpm)
+            if cand is None:
+                self.last_error = "no compatible next track"
+                return
+            self.next_track = cand
+            self._next_meta = meta
+        else:
+            _, self._next_meta = self.brain.score(
+                self.current, self.next_track, self.arc_target(), out_bpm)
+            if self._next_meta is None:
+                self._next_meta = {"rate": 1.0, "eff_bpm": self.next_track.bpm,
+                                   "pair": None}
+        samples = self._decode(self.next_track)
+        if samples is None:
+            self.brain.library.remove(self.next_track)
+            self.next_track = None
+            return
+        after = pos + max(self._exit_played - played, MIN_LEAD_S)
+        plan = self.brain.plan_transition(self.current, self.next_track,
+                                          self._next_meta,
+                                          after_s=min(after, deadline))
+        if plan["out_s"] <= pos + MIN_LEAD_S:
+            plan["out_s"] = self.current.nearest_downbeat(pos + MIN_LEAD_S
+                                                          + 2 * self.current.period_s)
+        incoming = "b" if self.active_deck == "a" else "a"
+        self.submix.post({"cmd": "load", "deck": incoming, "samples": samples,
+                          "track_id": self.next_track.id,
+                          "grid": self.next_track.grid,
+                          "gain_db": self.next_track.gain_db,
+                          "cue_s": plan["in_s"]})
+        events, swap_at, blend_at = self.brain.build_events(
+            plan, self.submix.telemetry, self.active_deck, incoming,
+            self.current, self.next_track)
+        self.submix.post_many(events)
+        self.plan = plan
+        self.swap_at = swap_at
+        self.blend_at = blend_at
+        self.state = "armed"
+        self._log({"event": "armed", "style": plan["style"],
+                   "next": self.next_track.title,
+                   "rate": round(plan["rate"], 4),
+                   "out_s": round(plan["out_s"], 2),
+                   "in_s": round(plan["in_s"], 2),
+                   "pair_score": plan["pair_score"],
+                   "blend_in_s": round((blend_at - self.submix.clock) / RATE, 1)})
+
+    def _finish_swap(self):
+        if self._history_id:
+            self.db.log_play_end(self._history_id)
+        old = self.current
+        self.current = self.next_track
+        self.next_track = None
+        self.active_deck = "b" if self.active_deck == "a" else "a"
+        self._started_clock = self.submix.clock
+        self._draw_exit()
+        self.brain.note_played(self.current)
+        self._history_id = self.db.log_play_start(
+            self.current.id, transition_style=self.plan["style"],
+            theme=self._theme_name)
+        self._log({"event": "play", "track": self.current.title,
+                   "artist": self.current.artist, "bpm": self.current.bpm,
+                   "camelot": self.current.camelot,
+                   "via": self.plan["style"], "after": old.title if old else None})
+        self.plan = None
+        self.swap_at = None
+        self.blend_at = None
+        self.state = "playing"
+
+    def _do_skip(self):
+        """Exit at the earliest musical opportunity."""
+        if self.state == "armed":
+            return                        # transition already rolling
+        if self._history_id:
+            self.db.log_play_end(self._history_id, skipped=True)
+            self._history_id = None
+        self._log({"event": "skip", "track":
+                   self.current.title if self.current else None})
+        # Force planning NOW with an exit a few bars out.
+        self.next_track = None
+        self.plan = None
+        self._exit_played = (self.submix.clock - self._started_clock) / RATE
+        self._maybe_plan()
+
+    # -- helpers ---------------------------------------------------------------
+    def _draw_exit(self):
+        theme = self.brain.theme
+        span = max(theme.max_play_s - theme.min_play_s, 1.0)
+        self._exit_played = theme.min_play_s + self.brain.rng.random() * span
+
+    def _decode(self, track):
+        try:
+            from lib.dj.features import decode_file_stereo
+            return decode_file_stereo(self.db.abs(track.path))
+        except Exception as e:
+            self.last_error = f"decode failed: {track.path}: {e}"
+            print(f"[DJ] {self.last_error}")
+            return None
+
+    def _log(self, payload):
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            payload = {"t": round(time.time(), 2),
+                       "clock_s": round(self.submix.clock / RATE, 2), **payload}
+            p = os.path.join(self.log_dir,
+                             f"dj_{time.strftime('%Y%m%d')}.jsonl")
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except OSError:
+            pass
