@@ -395,6 +395,18 @@ class AudioEngine:
         """
         self._cmds.put(("fade_out_event", key, duration))
 
+    def attach_track(self, key: str, track_obj):
+        """Attach an externally-managed track object to the mixer.
+
+        The object must implement the track protocol the mixer already
+        consumes: ``read(n) -> (n, 2) float32 | None``, ``done``,
+        ``fade_out(duration)`` and the ``is_narrative / is_ambient /
+        is_soundpool`` flags. Used by the DJ submix (lib/dj/submix.py) to
+        mount its whole two-deck mix as ONE track that rides the existing
+        limiter, master volume and monitor tap.
+        """
+        self._cmds.put(("attach", key, track_obj))
+
 
     # ------------------------------------------------------------------
     # Mixer — runs entirely on miniaudio's audio callback thread.
@@ -455,6 +467,11 @@ class AudioEngine:
                                 "%H:%M:%S", time.localtime(time.time() + track_dur))
                             print(f"[AudioEngine] Oneshot ▶ {path.name}  "
                                   f"dur={track_dur:.2f}s  finishes ~{finish_at}")
+
+                    elif kind == "attach":
+                        _, key, obj = cmd
+                        tracks[key] = obj
+                        print(f"[AudioEngine] Attached track '{key}'")
 
 
             except queue.Empty:
