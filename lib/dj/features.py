@@ -27,7 +27,8 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
+MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
 FPS = 40
@@ -505,11 +506,11 @@ def _novelty_curve(feats, kernel_beats=SSM_KERNEL_BEATS):
     return nov
 
 
-def _pick_boundaries(nov, min_gap_beats=8):
-    """Peaks above mean+0.5*std with a minimum spacing."""
+def _pick_boundaries(nov, min_gap_beats=MIN_SECTION_BEATS):
+    """Peaks above mean+0.7*std with a minimum spacing."""
     if len(nov) < 4:
         return []
-    thr = nov.mean() + 0.5 * nov.std()
+    thr = nov.mean() + 0.7 * nov.std()
     cand = [i for i in range(1, len(nov) - 1)
             if nov[i] >= thr and nov[i] >= nov[i - 1] and nov[i] >= nov[i + 1]]
     cand.sort(key=lambda i: -nov[i])
@@ -535,15 +536,20 @@ def build_sections(bands, chroma, beats, downbeat_offset,
         return int(np.clip(d if (i - d) <= 2 else d + 4, 0, nb - 1))
     bounds = sorted({0, nb} | {snap(i) for i in bounds_b})
     bounds = [b for b in bounds if b == 0 or b == nb or 4 <= b <= nb - 4]
-    # Merge runts (<8 beats).
-    clean = [bounds[0]]
-    for b in bounds[1:]:
-        if b - clean[-1] < 8 and b != nb:
-            continue
-        clean.append(b)
-    if clean[-1] != nb:
-        clean.append(nb)
-    bounds = clean
+    # v2 anti-confetti: while any section is shorter than MIN_SECTION_BEATS,
+    # dissolve it by dropping its WEAKER boundary (never the track edges).
+    # Songs get a handful of real sections instead of a pile of chops.
+    while len(bounds) > 2:
+        lens = [(bounds[i + 1] - bounds[i], i) for i in range(len(bounds) - 1)]
+        shortest, i = min(lens)
+        if shortest >= MIN_SECTION_BEATS:
+            break
+        inner = [b for b in (bounds[i], bounds[i + 1])
+                 if b != bounds[0] and b != bounds[-1]]
+        if not inner:
+            break
+        weakest = min(inner, key=lambda b: nov[b] if b < len(nov) else 0.0)
+        bounds.remove(weakest)
 
     mean = np.maximum(bands.mean(axis=0), 1e-10)
     total_pow = (bands / mean).mean(axis=1)
@@ -598,8 +604,36 @@ def build_sections(bands, chroma, beats, downbeat_offset,
     for s in sections:
         s["energy"] = round(float(s["energy"] / emax), 3)
 
+    sections = _merge_similar(sections)
     _classify_sections(sections)
     return sections, nov
+
+
+def _merge_similar(sections):
+    """v2: fuse adjacent sections whose fingerprints barely differ across a
+    weak boundary - the SSM kernel loves flagging fills/one-bar sweeps that
+    aren't real structure."""
+    if not sections:
+        return sections
+    out = [sections[0]]
+    for s in sections[1:]:
+        p = out[-1]
+        dist = (abs(p["energy"] - s["energy"])
+                + abs(p["busyness"] - s["busyness"])
+                + abs(p["vocalness"] - s["vocalness"])
+                + 2.0 * abs(p["bass_share"] - s["bass_share"]))
+        if dist < 0.25 and s["boundary_strength"] < 0.35:
+            w1 = max(p["end_s"] - p["start_s"], 0.1)
+            w2 = max(s["end_s"] - s["start_s"], 0.1)
+            for k in ("energy", "bass_share", "mid_share", "high_share",
+                      "rhythm_density", "repetitiveness", "busyness",
+                      "vocalness"):
+                p[k] = round((p[k] * w1 + s[k] * w2) / (w1 + w2), 3)
+            p["end_s"] = s["end_s"]
+            p["end_beat"] = s["end_beat"]
+        else:
+            out.append(s)
+    return out
 
 
 def _classify_sections(sections):
@@ -693,6 +727,78 @@ def find_mix_points(sections, duration_s):
                     "score": 0.2, "style_hint": "outro"})
     pts.sort(key=lambda p: (p["kind"], -p["score"]))
     return pts
+
+
+def classify_axes(sections, bpm, spectral, mood_hist):
+    """Cross-track character axes in 0..1 + human-readable auto tags.
+
+    A song can obviously be several things at once - the axes are
+    independent, and every threshold crossing contributes a tag."""
+    if sections:
+        w = np.array([max(s["end_s"] - s["start_s"], 0.1) for s in sections])
+        tot = float(w.sum())
+        def wavg(key):
+            return float(sum(s[key] * wi for s, wi in zip(sections, w)) / tot)
+        vocal = float(sum(wi for s, wi in zip(sections, w)
+                          if s["vocalness"] > 0.55) / tot)
+        busy = wavg("busyness")
+        energy = wavg("energy")
+        hypnotic = wavg("repetitiveness")
+    else:
+        vocal = busy = energy = hypnotic = 0.5
+    speed = float(np.clip((bpm - 80.0) / 70.0, 0.0, 1.0))
+    hardness = float(np.clip(
+        0.55 * busy + 1.1 * spectral.get("bass_share", 0.33)
+        + 0.5 * (mood_hist or {}).get("peak", 0.0), 0.0, 1.0))
+    axes = {"vocal": round(vocal, 3), "speed": round(speed, 3),
+            "hardness": round(hardness, 3), "energy": round(energy, 3),
+            "hypnotic": round(hypnotic, 3)}
+    tags = []
+    if vocal > 0.30:
+        tags.append("vocal-heavy")
+    elif vocal < 0.08:
+        tags.append("instrumental")
+    if bpm and bpm < 105:
+        tags.append("slow")
+    elif bpm and bpm > 123:
+        tags.append("fast")
+    if hardness > 0.62:
+        tags.append("hard")
+    elif hardness < 0.32:
+        tags.append("gentle")
+    if energy > 0.68:
+        tags.append("driving")
+    elif energy < 0.38:
+        tags.append("mellow")
+    if hypnotic > 0.82:
+        tags.append("hypnotic")
+    if (mood_hist or {}).get("peak", 0.0) > 0.25:
+        tags.append("peaky")
+    return axes, tags
+
+
+def find_interesting(sections):
+    """Auto 'interesting part' cues: the hook-like moments a DJ would ride -
+    high-energy, repetitive, low-vocal stretches (loopable, layerable) plus
+    every drop's landing. Users add/override their own in the planner."""
+    cues = []
+    if not sections:
+        return cues
+    e75 = np.percentile([s["energy"] for s in sections], 70)
+    for s in sections:
+        if s["kind"] == "drop":
+            cues.append({"kind": "interest", "time_s": s["start_s"],
+                         "source": "auto", "label": "drop"})
+        elif (s["energy"] >= e75 and s["repetitiveness"] > 0.6
+              and s["vocalness"] < 0.5 and s["kind"] != "outro"):
+            cues.append({"kind": "interest", "time_s": s["start_s"],
+                         "source": "auto", "label": "hook"})
+    # Dedup near-identical times, keep at most 5.
+    out = []
+    for c in sorted(cues, key=lambda c: c["time_s"]):
+        if not out or c["time_s"] - out[-1]["time_s"] > 15.0:
+            out.append(c)
+    return out[:5]
 
 
 # --------------------------------------------------------------------------
@@ -829,6 +935,11 @@ def analyze_samples(samples, deep=True):
         result["rhythm_density"] = live["rhythm_density"]
         if not live["agrees"] and live["live_bpm"] > 0:
             result["bpm_conf"] = round(result["bpm_conf"] * 0.5, 3)
+    axes, auto_tags = classify_axes(sections, bpm, result["spectral"],
+                                    result["mood_hist"])
+    result["axes"] = axes
+    result["auto_tags"] = auto_tags
+    result["cues"] = find_interesting(sections)
     return result
 
 

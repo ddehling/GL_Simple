@@ -107,6 +107,53 @@ def main():
                                         for w in clash["warnings"]),
               f"warnings={clash['warnings']}")
 
+        # -- v2 analysis payloads: axes / auto tags / auto cues / user cues ----
+        t0 = lib[0]
+        check("axes computed", isinstance(t0.axes, dict)
+              and set(t0.axes) >= {"vocal", "speed", "hardness", "energy"},
+              f"axes={t0.axes}")
+        check("auto tags derived", isinstance(t0.auto_tags, list),
+              f"auto_tags={t0.auto_tags}")
+        check("no confetti sections",
+              all((s["end_beat"] - s["start_beat"]) >= 16
+                  for t in lib for s in t.sections
+                  if s["end_beat"] and s["start_beat"] is not None),
+              "every section >= 16 beats (v2 anti-chop)")
+        db.add_tag(t0.id, "Opener")
+        db.add_tag(t0.id, "opener")            # dedup via lowercase
+        check("user tags stored", db.tags_for(t0.id) == ["opener"],
+              f"tags={db.tags_for(t0.id)}")
+        # A user OUT cue must override the analyzer's mix-outs in planning.
+        cue_t = t0.nearest_downbeat(70.0)
+        db.add_cue(t0.id, "out", cue_t, label="my exit")
+        from lib.dj.brain import load_library as _ll
+        lib2 = _ll(db)
+        t0b = next(t for t in lib2 if t.id == t0.id)
+        check("user out-cue overrides mix points",
+              len(t0b.mix_outs) == 1
+              and abs(t0b.mix_outs[0]["time_s"] - cue_t) < 0.01
+              and t0b.mix_outs[0]["score"] == 1.0,
+              f"mix_outs={t0b.mix_outs}")
+        db.remove_cue(db.cues_for(t0.id, kind="out")[0]["id"])
+
+        # -- Plan mode: suggest_set + optimize_order ---------------------------
+        from lib.dj.themes import Theme as _T
+        sugg = SL.suggest_set(lib, theme, minutes=6.0, seed=3)
+        check("suggest_set builds a set", len(sugg) >= 3
+              and len({e["track_id"] for e in sugg}) >= 3,
+              f"{len(sugg)} entries: {[e['track_id'] for e in sugg]}")
+        mixed = [
+            {"track_id": ids[3], "pin_type": "suggestion"},
+            {"track_id": ids[0], "pin_type": "anchor",
+             "target_offset_min": None},
+            {"track_id": ids[1], "pin_type": "suggestion"},
+        ]
+        opt = SL.optimize_order(lib, mixed, theme, seed=1)
+        check("optimize keeps anchors placed",
+              len(opt) == 3 and opt[1]["track_id"] == ids[0]
+              and opt[1]["pin_type"] == "anchor",
+              f"order={[e['track_id'] for e in opt]}")
+
         # -- Autofill ------------------------------------------------------------
         anchors = [
             {"track_id": ids[0], "pin_type": "anchor",
@@ -147,29 +194,49 @@ def main():
         check("setlist order honored", played[:3] == [ids[2], ids[0], ids[1]],
               f"played={played} want={[ids[2], ids[0], ids[1]]}")
 
-        # -- Planner UI headless smoke ---------------------------------------------
+        # -- Planner UI headless smoke (tabbed v2) ------------------------------
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         try:
             from PyQt6.QtWidgets import QApplication
-            sys.path.insert(0, os.path.join(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))), "tools"))
             from tools.dj_planner import Planner
+            from lib.dj.themes import get_theme
+            from lib.dj.brain import Brain
             app = QApplication.instance() or QApplication([])
             w = Planner(tmp)
-            w.entries = [{"track_id": ids[0], "pin_type": "suggestion",
-                          "target_offset_min": None, "style_override": None},
-                         {"track_id": ids[1], "pin_type": "anchor",
-                          "target_offset_min": 5.0, "style_override": None}]
-            w._rebuild_set_list()
-            from lib.dj.themes import get_theme
-            w._compiled(SL.compile_plan(w.library, w.entries,
-                                        get_theme("groove")))
-            n_rows = w.plan_list.count()
+            st = w.set_tab
+            st.entries = [{"track_id": ids[0], "pin_type": "suggestion",
+                           "target_offset_min": None, "style_override": None},
+                          {"track_id": ids[1], "pin_type": "anchor",
+                           "target_offset_min": 5.0, "style_override": None}]
+            st._rebuild()
+            compiled = SL.compile_plan(w.library, st.entries,
+                                       get_theme("groove"))
+            st._compiled(compiled)
+            n_rows = st.plan_list.count()
+            # Mix timeline builds seams + envelopes from the same plan.
+            w.mix_tab.timeline.set_plan(compiled,
+                                        Brain(w.library, get_theme("groove")))
+            n_seams = len(w.mix_tab.timeline.seams)
+            env_ok = all(sm["env_a"] and sm["env_b"]
+                         for sm in w.mix_tab.timeline.seams)
+            # Analysis waveform accepts a decoded track headlessly.
+            from lib.dj.features import decode_file_stereo
+            t = w.library[0]
+            mono = decode_file_stereo(db.abs(t.path)).mean(axis=1)
+            w.analysis_tab.wave.set_track(t, mono, db.cues_for(t.id))
+            wave_ok = len(w.analysis_tab.wave._pyramid) >= 2
             w.close()
-            check("planner builds headless", n_rows >= 3,
-                  f"{len(w.library)} tracks loaded, {n_rows} plan rows")
+            check("planner v2 builds headless",
+                  n_rows >= 3 and w.tabs.count() == 4,
+                  f"{len(w.library)} tracks, {n_rows} plan rows, 4 tabs")
+            check("mix timeline seams + envelopes",
+                  n_seams == 1 and env_ok, f"{n_seams} seams, env={env_ok}")
+            check("waveform pyramid built", wave_ok,
+                  f"levels={len(w.analysis_tab.wave._pyramid)}")
         except Exception as e:
-            check("planner builds headless", False,
+            import traceback
+            traceback.print_exc()
+            check("planner v2 builds headless", False,
                   f"{type(e).__name__}: {e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

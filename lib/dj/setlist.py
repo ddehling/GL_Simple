@@ -149,6 +149,82 @@ def compile_plan(library, entries, theme, seed=0):
     return {"slots": slots, "total_s": offset, "warnings": warnings}
 
 
+def suggest_set(library, theme, minutes, seed=0, start_track_id=None):
+    """PLAN MODE: generate a whole set from scratch. Inputs are the how-the-
+    night-should-go controls: theme (bpm window, energy ARC, moods) and
+    target length; the brain chains tracks so each seam is mixable and the
+    energy tracks the arc. Returns entry dicts (all suggestions - pin what
+    you care about afterwards)."""
+    brain = Brain(library, theme, seed=seed)
+    total_s = minutes * 60.0
+    cur = None
+    if start_track_id is not None:
+        cur = next((t for t in library if t.id == start_track_id), None)
+    if cur is None:
+        cur = brain.choose_first(theme.arc_target(0.0))
+    if cur is None:
+        return []
+    entries = [{"track_id": cur.id, "pin_type": "suggestion",
+                "target_offset_min": None, "style_override": None}]
+    brain.note_played(cur)
+    elapsed = 0.0
+    while elapsed < total_s and len(entries) < 200:
+        arc = theme.arc_target(min(elapsed / max(total_s, 60.0), 1.0))
+        cand, meta = brain.choose_next(cur, arc, cur.bpm)
+        if cand is None:
+            break
+        plan = brain.plan_transition(cur, cand, meta)
+        in_s = cur.mix_ins[0]["time_s"] if cur.mix_ins else 0.0
+        elapsed += max(plan["out_s"] - in_s, 60.0)
+        entries.append({"track_id": cand.id, "pin_type": "suggestion",
+                        "target_offset_min": None, "style_override": None})
+        brain.note_played(cand)
+        cur = cand
+    return entries
+
+
+def optimize_order(library, entries, theme, seed=0):
+    """Reorder the set's SUGGESTIONS for better seams and arc fit; anchors
+    stay exactly where they are. Greedy: at each position pick the pooled
+    suggestion that scores best against the previous track at that moment's
+    arc target."""
+    by_id = {t.id: t for t in library}
+    brain = Brain(library, theme, seed=seed)
+    n = len(entries)
+    if n <= 2:
+        return list(entries)
+    pool = [e for e in entries if e.get("pin_type") != "anchor"
+            and e["track_id"] in by_id]
+    est_total = sum(min(max(by_id[e["track_id"]].duration_s * 0.6, 90.0),
+                        360.0) for e in entries if e["track_id"] in by_id)
+    out, elapsed, prev = [], 0.0, None
+    for i, slot in enumerate(entries):
+        if slot.get("pin_type") == "anchor":
+            pick = slot
+        else:
+            if not pool:
+                continue
+            arc = theme.arc_target(min(elapsed / max(est_total, 60.0), 1.0))
+            best, best_s = None, -1.0
+            for e in pool:
+                t = by_id[e["track_id"]]
+                if prev is None:
+                    s = 1.0 - abs(t.energy_proxy() - arc)
+                else:
+                    s, _ = brain.score(prev, t, arc, prev.bpm)
+                if s > best_s:
+                    best, best_s = e, s
+            pick = best
+            pool.remove(best)
+        out.append(pick)
+        t = by_id.get(pick["track_id"])
+        if t is not None:
+            brain.note_played(t)
+            elapsed += min(max(t.duration_s * 0.6, 90.0), 360.0)
+            prev = t
+    return out
+
+
 def autofill(library, entries, theme, seed=0):
     """Insert brain-chosen suggestions between anchors so each timed anchor
     lands near its target offset. Returns a NEW entry list (anchors kept

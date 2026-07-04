@@ -29,7 +29,7 @@ python tools/dj_planner.py
 | `tools/dj_scan.py` | Incremental scanner → `music/dj_library.sqlite3` (BPM + ms-accurate beat grid, downbeats, Camelot key, structure sections with busyness/vocalness, loops, mix points, loudness, live-pipeline cross-check) |
 | `lib/dj/` | `features` analysis · `db` library · `stretch` WSOLA · `eq` LR4 3-band · `deck`/`submix` playback (ONE engine track, sample-accurate automation, sync PLL) · `brain` selection + transition planning · `themes` arcs · `setlist` compiler · `system` conductor |
 | `tools/dj_player.py` | Standalone: `--live`, `--wav out.wav --minutes N`, `--audition A B` (render one seam), `--file X --rate r`, `--setlist NAME` |
-| `tools/dj_planner.py` | PyQt6 set planner: structure strips, anchors + autofill, compiled plan with warnings, in-app seam audition |
+| `tools/dj_planner.py` | PyQt6 planner, four tabs — **Library** (scan button w/ live populate, search, user tags, auto-classification tags, multi-select add), **Analysis** (zoomable waveform to beat level w/ sections + vocal regions, play/scrub, user IN/OUT/INTEREST cues that override the analyzer), **Set** (plan mode: theme+length → suggested set; optimize order; anchors + autofill; seam audition), **Mix** (DJ-style timeline w/ overlap, beat ticks, real gain/EQ envelopes; play the whole set, jump tracks/seams) |
 | Web `/dj` tab | LIVE control only: start/stop, now/next + blend countdown, theme, energy nudge, autopilot, skip, setlist picker |
 
 ## Config (`config.yaml`)

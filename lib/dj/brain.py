@@ -30,7 +30,8 @@ GLIDE_PER_S = 0.0015             # post-transition rate->1.0 glide speed
 class TrackInfo:
     """One library track hydrated with sections/loops/mix points."""
 
-    def __init__(self, row, sections, loops, mix_points):
+    def __init__(self, row, sections, loops, mix_points, cues=None,
+                 user_tags=None):
         self.row = row
         self.id = row["id"]
         self.path = row["path"]
@@ -49,8 +50,31 @@ class TrackInfo:
         self.spectral = row.get("spectral") or {}
         self.sections = sections
         self.loops = loops
+        self.axes = row.get("axes") or {}
+        self.auto_tags = row.get("auto_tags") or []
+        self.user_tags = list(user_tags or [])
+        self.cues = list(cues or [])
         self.mix_ins = [p for p in mix_points if p["kind"] == "in"]
         self.mix_outs = [p for p in mix_points if p["kind"] == "out"]
+        # USER-authored in/out cues override the analyzer's guesses: if any
+        # exist for a direction, they become the only candidates (score 1.0,
+        # so pair selection favors what the human marked).
+        user_ins = [c for c in self.cues
+                    if c["kind"] == "in" and c["source"] == "user"]
+        user_outs = [c for c in self.cues
+                     if c["kind"] == "out" and c["source"] == "user"]
+        if user_ins:
+            self.mix_ins = [{"kind": "in", "time_s": c["time_s"],
+                             "score": 1.0, "style_hint": c.get("label")
+                             or "blend"} for c in user_ins]
+        if user_outs:
+            self.mix_outs = [{"kind": "out", "time_s": c["time_s"],
+                              "score": 1.0, "style_hint": c.get("label")
+                              or "blend"} for c in user_outs]
+
+    @property
+    def all_tags(self):
+        return sorted(set(self.auto_tags) | set(self.user_tags))
 
     @property
     def period_s(self):
@@ -98,7 +122,9 @@ def load_library(db):
             continue
         out.append(TrackInfo(row, db.sections_for(row["id"]),
                              db.loops_for(row["id"]),
-                             db.mix_points_for(row["id"])))
+                             db.mix_points_for(row["id"]),
+                             cues=db.cues_for(row["id"]),
+                             user_tags=db.tags_for(row["id"])))
     return out
 
 
@@ -377,26 +403,40 @@ class Brain:
             return ev, swap_at, S0
 
         # Beat-matched blends: long_blend / bass_swap / loop_roll_exit.
+        # v2 staged band pull-in, like riding a mixer's EQ knobs: the new
+        # track's HIGHS ride in first (hats/sparkle announce it), MIDS open
+        # a quarter in, the BASS swaps decisively at the midpoint downbeat,
+        # and the outgoing track loses its top end as it leaves so the two
+        # never fight for the same bands.
         S0 = clock_at(plan["out_s"])
+        q1 = S0 + int(nb / 4 * beat_out * RATE)
         mid = S0 + int(nb / 2 * beat_out * RATE)
+        q3 = S0 + int(3 * nb / 4 * beat_out * RATE)
         end = S0 + int(nb * beat_out * RATE)
+        qlen = nb / 4 * beat_out
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
             {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-             "ramp_s": 0.01},
+             "mid": 0.25, "high": 1.0, "ramp_s": 0.01},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
             {"at": S0, "cmd": "start", "deck": incoming},
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
              "ramp_s": nb * beat_out},
+            {"at": q1, "cmd": "eq", "deck": incoming, "mid": 1.0,
+             "ramp_s": qlen},
+            {"at": q1, "cmd": "eq", "deck": active, "high": 0.55,
+             "ramp_s": qlen},
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
              "ramp_s": 0.4},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
              "ramp_s": 0.4},
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
              "ramp_s": nb / 2 * beat_out},
+            {"at": q3, "cmd": "eq", "deck": active, "high": 0.25,
+             "mid": 0.5, "ramp_s": qlen},
         ]
         if style == "loop_roll_exit":
             ls = plan["loop_start_s"]
@@ -416,6 +456,17 @@ class Brain:
                {"at": stop_at, "cmd": "clear_loop", "deck": active}]
         self._glide_home(ev, incoming, rate_b, stop_at)
         return ev, stop_at, S0
+
+    def preview_events(self, plan, cur, cand):
+        """The EXACT automation a transition will run, timed from a zeroed
+        clock with deck A cued at the blend start - for the planner's mix
+        view and offline auditions. Returns (events, swap_at, blend_at) with
+        'at' in samples where blend_at corresponds to plan['out_s']."""
+        pre = 16 * cur.period_s          # drawing/audition run-up
+        snapshot = {"clock": 0,
+                    "decks": {"a": {"time_s": plan["out_s"] - pre,
+                                    "rate": 1.0}}}
+        return self.build_events(plan, snapshot, "a", "b", cur, cand)
 
     @staticmethod
     def _glide_home(ev, deck, rate, at):

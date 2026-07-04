@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     rhythm_density REAL,
     spectral TEXT,                      -- JSON {bass/mid/high_share}
     live_check TEXT,                    -- JSON live-pipeline cross-check
+    axes TEXT,                          -- JSON v2 character axes (0..1)
+    auto_tags TEXT,                     -- JSON v2 derived tag list
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -64,6 +66,22 @@ CREATE TABLE IF NOT EXISTS mix_points (
     time_s REAL NOT NULL, score REAL, style_hint TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mix_points_track ON mix_points(track_id);
+CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    UNIQUE(track_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_track ON tags(track_id);
+CREATE TABLE IF NOT EXISTS cues (
+    id INTEGER PRIMARY KEY,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,                 -- 'in' | 'out' | 'interest'
+    time_s REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'auto'
+    label TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cues_track ON cues(track_id);
 CREATE TABLE IF NOT EXISTS play_history (
     id INTEGER PRIMARY KEY,
     track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -90,7 +108,8 @@ CREATE TABLE IF NOT EXISTS setlist_entries (
 CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, position);
 """
 
-_JSON_COLS = ("beat_grid", "energy_curve", "mood_hist", "spectral", "live_check")
+_JSON_COLS = ("beat_grid", "energy_curve", "mood_hist", "spectral",
+              "live_check", "axes", "auto_tags")
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -118,7 +137,14 @@ class LibraryDB:
     def _migrate(self):
         ver = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if ver < SCHEMA_VERSION:
-            self.conn.executescript(_SCHEMA)
+            self.conn.executescript(_SCHEMA)     # tables are IF NOT EXISTS
+            if ver == 1:                         # v1 -> v2: new track columns
+                have = {r[1] for r in
+                        self.conn.execute("PRAGMA table_info(tracks)")}
+                for col in ("axes", "auto_tags"):
+                    if col not in have:
+                        self.conn.execute(
+                            f"ALTER TABLE tracks ADD COLUMN {col} TEXT")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -184,6 +210,15 @@ class LibraryDB:
         for table in ("sections", "loops", "mix_points"):
             self.conn.execute(f"DELETE FROM {table} WHERE track_id = ?",
                               (track_id,))
+        # Rescans refresh AUTO cues but never touch user-authored ones.
+        self.conn.execute(
+            "DELETE FROM cues WHERE track_id = ? AND source = 'auto'",
+            (track_id,))
+        for c in a.get("cues") or []:
+            self.conn.execute(
+                "INSERT INTO cues (track_id, kind, time_s, source, label)"
+                " VALUES (?, ?, ?, 'auto', ?)",
+                (track_id, c["kind"], c["time_s"], c.get("label")))
         for s in a.get("sections") or []:
             self.conn.execute(
                 f"INSERT INTO sections (track_id, {', '.join(_SECTION_COLS)})"
@@ -267,6 +302,50 @@ class LibraryDB:
             " SUM(missing) AS missing FROM tracks").fetchone()
         return {"total": row["total"], "errors": row["errors"] or 0,
                 "missing": row["missing"] or 0}
+
+    # -- user tags + cues --------------------------------------------------------
+    def tags_for(self, track_id):
+        return [r["tag"] for r in self.conn.execute(
+            "SELECT tag FROM tags WHERE track_id = ? ORDER BY tag",
+            (track_id,)).fetchall()]
+
+    def add_tag(self, track_id, tag):
+        tag = tag.strip().lower()
+        if tag:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO tags (track_id, tag) VALUES (?, ?)",
+                (track_id, tag))
+            self.conn.commit()
+
+    def remove_tag(self, track_id, tag):
+        self.conn.execute("DELETE FROM tags WHERE track_id = ? AND tag = ?",
+                          (track_id, tag))
+        self.conn.commit()
+
+    def all_tags(self):
+        return [r["tag"] for r in self.conn.execute(
+            "SELECT DISTINCT tag FROM tags ORDER BY tag").fetchall()]
+
+    def cues_for(self, track_id, kind=None):
+        q = "SELECT * FROM cues WHERE track_id = ?"
+        args = [track_id]
+        if kind:
+            q += " AND kind = ?"
+            args.append(kind)
+        return [dict(r) for r in self.conn.execute(
+            q + " ORDER BY time_s", args).fetchall()]
+
+    def add_cue(self, track_id, kind, time_s, label=None, source="user"):
+        cur = self.conn.execute(
+            "INSERT INTO cues (track_id, kind, time_s, source, label)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (track_id, kind, float(time_s), source, label))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def remove_cue(self, cue_id):
+        self.conn.execute("DELETE FROM cues WHERE id = ?", (cue_id,))
+        self.conn.commit()
 
     # -- play history ----------------------------------------------------------
     def log_play_start(self, track_id, transition_style=None, theme=None):
