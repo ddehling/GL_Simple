@@ -874,6 +874,14 @@ class MixTab(QWidget):
         legend.setWordWrap(True)
         v.addWidget(legend)
 
+        # Now-playing / up-next readout (mirrors the live web DJ tab).
+        self.nowbar = QLabel("Build a set (Set tab), then Play.")
+        self.nowbar.setWordWrap(True)
+        self.nowbar.setStyleSheet(
+            "background:#1c1c24;border:1px solid #33333d;border-radius:6px;"
+            "padding:8px;font-size:13px;")
+        v.addWidget(self.nowbar)
+
         row = QHBoxLayout()
         self.play_btn = QPushButton("▶ Play set")
         self.play_btn.clicked.connect(self.play_set)
@@ -958,6 +966,7 @@ class MixTab(QWidget):
 
     def _tick(self):
         pv = self.preview
+        compiled = self.planner.set_tab.compiled
         if pv.error:
             self.status.setText("preview error: " + pv.error)
             pv.error = ""
@@ -965,18 +974,23 @@ class MixTab(QWidget):
         if not pv.playing:
             if pv.decoding:
                 self.status.setText(f"pre-decoding: {pv.decoding[:40]}...")
+                self.nowbar.setText(f"pre-decoding {pv.decoding[:40]}… "
+                                    "(instant seeks once warm)")
+            elif compiled:
+                self.nowbar.setText(
+                    f"Ready · {len(compiled['slots'])} tracks · "
+                    f"~{compiled['total_s']/3600:.1f} h.  Play, or click the "
+                    "timeline to start anywhere.")
             return
         t = pv.playhead()
         if t is not None:
             self.timeline.set_playhead(t)
-        compiled = self.planner.set_tab.compiled
         live_bpm = None
-        title = "-"
         if compiled and compiled["slots"]:
-            slot = compiled["slots"][pv.slot_at_playhead()]
-            title = slot["track"].title
-            # Live tracked tempo: the loudest playing deck's track bpm x its
-            # actual rate (incl. PLL trim during a blend).
+            slot_i = pv.slot_at_playhead()
+            slot = compiled["slots"][slot_i]
+            tr = slot["track"]
+            # Live tracked tempo: the loudest playing deck's track bpm x rate.
             tel = pv.telemetry() or {}
             by_id = {s["track"].id: s["track"].bpm
                      for s in compiled["slots"]}
@@ -986,11 +1000,25 @@ class MixTab(QWidget):
                         and d.get("track_id") in by_id:
                     best_gain = d["gain"]
                     live_bpm = by_id[d["track_id"]] * d["rate"]
-        self.timeline.live_bpm = live_bpm
-        self.status.setText(
-            (f"{live_bpm:.1f} bpm | " if live_bpm else "")
-            + f"{title}"
-            + (f"  (decoding {pv.decoding[:24]}...)" if pv.decoding else ""))
+            self.timeline.live_bpm = live_bpm
+            pos_in = t - slot["start_offset_s"] if t is not None else 0.0
+            nxt = (compiled["slots"][slot_i + 1]
+                   if slot_i + 1 < len(compiled["slots"]) else None)
+            tech = slot["transition"]["style"].replace("_", " ") \
+                if slot["transition"] else "—"
+            parts = [f"<b>NOW</b> {tr.title[:40]}",
+                     f"{tr.bpm:.0f} bpm {tr.camelot}"]
+            if live_bpm:
+                parts.append(f"playing @ <b>{live_bpm:.1f} bpm</b>")
+            parts.append(f"{int(pos_in//60)}:{int(pos_in%60):02d} in")
+            line = "  ·  ".join(parts)
+            if nxt:
+                line += (f"<br><b>NEXT</b> {nxt['track'].title[:40]}  ·  "
+                         f"{nxt['track'].bpm:.0f} bpm {nxt['track'].camelot}"
+                         f"  ·  via <b>{tech}</b>")
+            self.nowbar.setText(line)
+            self.status.setText(
+                (f"{live_bpm:.1f} bpm | " if live_bpm else "") + tr.title[:30])
 
     def close(self):
         self.preview.close()
