@@ -123,19 +123,33 @@ class Deck:
                 return g["period_s"]
         return self.grid[0]["period_s"] if self.grid else 0.0
 
-    def beat_phase(self):
-        """Playback-domain beat phase in [0,1), from the DB grid."""
+    def _current_seg(self):
         t = self.source_time_s()
-        g = None
         for seg in self.grid:
             if seg["start_s"] <= t <= seg["end_s"]:
-                g = seg
-                break
-        if g is None and self.grid:
-            g = self.grid[0]
+                return seg
+        return self.grid[0] if self.grid else None
+
+    def beat_phase(self):
+        """Playback-domain beat phase in [0,1), from the DB grid."""
+        g = self._current_seg()
         if g is None or g["period_s"] <= 0:
             return 0.0
-        return ((t - g["first_beat_s"]) / g["period_s"]) % 1.0
+        return ((self.source_time_s() - g["first_beat_s"])
+                / g["period_s"]) % 1.0
+
+    def phase_snap(self, target_phase):
+        """Instantly shift the play cursor so beat_phase == target_phase -
+        the DJ 'sync' snap. Moves by the SHORTEST direction (<=half a beat)
+        and only safe while inaudible (gain ~0); the stretcher reseeks, so
+        callers must gate on low gain. Returns beats shifted."""
+        g = self._current_seg()
+        if g is None or g["period_s"] <= 0:
+            return 0.0
+        err = (self.beat_phase() - target_phase + 0.5) % 1.0 - 0.5
+        shift_frames = -err * g["period_s"] * RATE      # move back if ahead
+        self.stretch.seek(int(round(self.stretch.source_pos + shift_frames)))
+        return err
 
     def effective_rate(self):
         return self.rate * (1.0 + self.rate_trim)

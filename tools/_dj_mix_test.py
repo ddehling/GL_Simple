@@ -173,8 +173,10 @@ def main():
           and float(np.max(phase_errs)) < 0.08,
           f"|phase err| median {np.median(phase_errs):.4f} "
           f"max {np.max(phase_errs):.4f} beats over {len(phase_errs)} samples")
-    check("pll trim bounded", len(trims) > 0 and max(trims) < 0.0035,
-          f"max |rate trim| {max(trims) * 100:.2f}% (cap 0.3%)")
+    # Tight synthetic grids need almost no trim even though the cap is 1.2%;
+    # a big trim here would mean the launch snap failed.
+    check("pll trim bounded", len(trims) > 0 and max(trims) < 0.004,
+          f"max |rate trim| {max(trims) * 100:.2f}% on tight grids")
 
     # The live pipeline judges the mix - what the visuals see at showtime.
     from tools import _club_signals_test as CS

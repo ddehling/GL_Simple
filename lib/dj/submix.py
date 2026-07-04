@@ -24,9 +24,11 @@ from lib.dj.deck import Deck
 
 RATE = 44100
 SUB_BLOCK = 256
-PLL_GAIN = 0.5                   # rate trim per beat of phase error
-PLL_MAX_TRIM = 0.003             # +/- 0.3%
+PLL_GAIN = 1.2                   # rate trim per beat of phase error
+PLL_MAX_TRIM = 0.012             # +/- 1.2% - real house grids drift this much
 PLL_DEADBAND = 0.004             # beats
+RESNAP_ERR = 0.08                # re-snap if this far off while still fading in
+RESNAP_GAIN = 0.50               # ...below half gain (glitch masked by A)
 
 
 class DJSubmix:
@@ -93,6 +95,15 @@ class DJSubmix:
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
         elif cmd == "sync":
             self._sync = {"slave": e["slave"], "master": e["master"]}
+            # DJ sync SNAP: instantly align the incoming deck's beat phase
+            # to the master (it's at gain ~0 here, so inaudible), then the
+            # PLL holds. Without this the PLL must slew the launch offset at
+            # <=0.6%/beat, which never catches up inside a 16-32 beat blend.
+            master = self.decks.get(e["master"])
+            slave = self.decks.get(e["slave"])
+            if master and slave and master.playing and slave.playing \
+                    and master.grid and slave.grid:
+                slave.phase_snap(master.beat_phase())
         elif cmd == "end_sync":
             self._sync = None
             for d in self.decks.values():
@@ -110,6 +121,12 @@ class DJSubmix:
             return
         err = slave.beat_phase() - master.beat_phase()
         err = (err + 0.5) % 1.0 - 0.5            # wrap to [-0.5, 0.5)
+        # If drift outruns the PLL while the slave is still fading in, snap
+        # again (inaudible at low gain) rather than let it trainwreck.
+        if abs(err) > RESNAP_ERR and slave.gain < RESNAP_GAIN:
+            slave.phase_snap(master.beat_phase())
+            slave.rate_trim = 0.0
+            return
         if abs(err) < PLL_DEADBAND:
             slave.rate_trim *= 0.9               # relax toward 0
             return
