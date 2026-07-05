@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from PyQt6.QtCore import (Qt, QAbstractTableModel, QModelIndex, QRect,
+from PyQt6.QtCore import (QAbstractItemModel, Qt, QAbstractTableModel, QModelIndex, QRect,
                           QSortFilterProxyModel, QThread, QTimer, QProcess,
                           pyqtSignal)
 from PyQt6.QtGui import QColor, QPalette, QAction
@@ -52,8 +52,8 @@ SECTION_COLORS = {
     "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
     "breakdown": QColor(90, 70, 130),
 }
-COLS = ["title", "artist", "folder", "bpm", "key", "dur", "tags",
-        "structure"]
+COLS = ["title", "artist", "bpm", "key", "dur", "tags", "structure"]
+FOLDER_ROLE = Qt.ItemDataRole.UserRole + 1     # folder row -> [TrackInfo]
 
 
 def track_folder(t):
@@ -67,18 +67,48 @@ def track_folder(t):
 # Library tab
 # ==========================================================================
 
-class LibraryModel(QAbstractTableModel):
+class LibraryTreeModel(QAbstractItemModel):
+    """Two-level tree: folders (collapsible to one line) -> tracks."""
+
     def __init__(self):
         super().__init__()
-        self.tracks = []
+        self.folders = []            # [{"name": str, "tracks": [TrackInfo]}]
 
     def set_tracks(self, tracks):
         self.beginResetModel()
-        self.tracks = tracks
+        by = {}
+        for t in tracks:
+            by.setdefault(track_folder(t), []).append(t)
+        self.folders = [{"name": k, "tracks": v}
+                        for k, v in sorted(by.items())]
         self.endResetModel()
 
+    # -- structure ---------------------------------------------------------
+    def index(self, row, col, parent=QModelIndex()):
+        if not parent.isValid():
+            if 0 <= row < len(self.folders):
+                return self.createIndex(row, col)          # folder row
+            return QModelIndex()
+        f = self.folders[parent.row()]
+        if 0 <= row < len(f["tracks"]):
+            return self.createIndex(row, col, f)           # track row
+        return QModelIndex()
+
+    def parent(self, index):
+        f = index.internalPointer()
+        if f is None:
+            return QModelIndex()
+        try:
+            return self.createIndex(self.folders.index(f), 0)
+        except ValueError:
+            return QModelIndex()
+
     def rowCount(self, parent=QModelIndex()):
-        return len(self.tracks)
+        if not parent.isValid():
+            return len(self.folders)
+        if parent.internalPointer() is None:               # a folder
+            return len(self.folders[parent.row()]["tracks"])
+        return 0
 
     def columnCount(self, parent=QModelIndex()):
         return len(COLS)
@@ -89,27 +119,79 @@ class LibraryModel(QAbstractTableModel):
             return COLS[i]
         return None
 
+    def folder_name(self, row):
+        return self.folders[row]["name"] if 0 <= row < len(self.folders) \
+            else ""
+
     def data(self, index, role):
-        t = self.tracks[index.row()]
+        f = index.internalPointer()
         c = index.column()
+        if f is None:                                      # folder line
+            fd = self.folders[index.row()]
+            if role == Qt.ItemDataRole.DisplayRole and c == 0:
+                return f"{fd['name']}   ({len(fd['tracks'])} tracks)"
+            if role == FOLDER_ROLE:
+                return fd["tracks"]
+            return None
+        t = f["tracks"][index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
             if c == 0:
                 return t.title
             if c == 1:
                 return t.artist
             if c == 2:
-                return track_folder(t)
-            if c == 3:
                 return f"{t.bpm:.1f}"
-            if c == 4:
+            if c == 3:
                 return t.camelot
-            if c == 5:
+            if c == 4:
                 return f"{int(t.duration_s // 60)}:{int(t.duration_s % 60):02d}"
-            if c == 6:
+            if c == 5:
                 return " ".join(t.all_tags)
         if role == Qt.ItemDataRole.UserRole:
             return t
         return None
+
+
+class LibraryProxy(QSortFilterProxyModel):
+    """Text search over tracks AND folder names, plus a one-folder filter.
+    A folder stays visible while any of its tracks match."""
+
+    def __init__(self):
+        super().__init__()
+        self.text = ""
+        self.folder = None           # None = all folders
+
+    def set_text(self, text):
+        self.text = (text or "").lower()
+        self.invalidateFilter()
+
+    def set_folder(self, name):
+        self.folder = name
+        self.invalidateFilter()
+
+    def _track_matches(self, m, f_row, t_row):
+        fd = m.folders[f_row]
+        t = fd["tracks"][t_row]
+        hay = f"{t.title} {t.artist} {' '.join(t.all_tags)}".lower()
+        return self.text in hay
+
+    def filterAcceptsRow(self, row, parent):
+        m = self.sourceModel()
+        if not parent.isValid():                           # folder row
+            name = m.folder_name(row)
+            if self.folder is not None and name != self.folder:
+                return False
+            if not self.text or self.text in name.lower():
+                return True
+            return any(self._track_matches(m, row, r)
+                       for r in range(len(m.folders[row]["tracks"])))
+        f_row = parent.row()
+        if self.folder is not None \
+                and m.folder_name(f_row) != self.folder:
+            return False
+        if not self.text or self.text in m.folder_name(f_row).lower():
+            return True
+        return self._track_matches(m, f_row, row)
 
 
 class StripDelegate(QStyledItemDelegate):
@@ -162,7 +244,7 @@ class LibraryTab(QWidget):
         self.search = QLineEdit(
             placeholderText="search title / artist / folder / tag...")
         self.search.textChanged.connect(
-            lambda s: self.proxy.setFilterFixedString(s))
+            lambda s: self.proxy.set_text(s))
         top.addWidget(self.search, 2)
         # One-tap folder filter: every subdirectory in the library.
         from PyQt6.QtWidgets import QComboBox
@@ -172,20 +254,21 @@ class LibraryTab(QWidget):
         top.addWidget(self.folder_box, 1)
         v.addLayout(top)
 
-        self.model = LibraryModel()
-        self.proxy = QSortFilterProxyModel()
+        self.model = LibraryTreeModel()
+        self.proxy = LibraryProxy()
         self.proxy.setSourceModel(self.model)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.proxy.setFilterKeyColumn(-1)
-        self.table = QTableView()
+        from PyQt6.QtWidgets import QTreeView
+        self.table = QTreeView()
         self.table.setModel(self.proxy)
+        self.table.setUniformRowHeights(True)
+        self.table.setExpandsOnDoubleClick(False)   # dbl-click = analysis
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setItemDelegateForColumn(7, StripDelegate())
-        for i, w in enumerate((230, 120, 110, 52, 44, 50, 150, 260)):
+        self.table.setItemDelegateForColumn(6, StripDelegate())
+        for i, w in enumerate((250, 120, 52, 44, 50, 150, 260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
@@ -218,10 +301,19 @@ class LibraryTab(QWidget):
         self._last_done = -1
 
     def selected_tracks(self):
-        rows = {i.row() for i in self.table.selectionModel().selectedRows()}
-        return [self.proxy.data(self.proxy.index(r, 0),
-                                Qt.ItemDataRole.UserRole)
-                for r in sorted(rows)]
+        """Selected track rows; selecting a FOLDER line means the whole
+        folder (in visible/filtered order)."""
+        out, seen = [], set()
+        for idx in self.table.selectionModel().selectedRows():
+            t = self.proxy.data(idx, Qt.ItemDataRole.UserRole)
+            if t is not None:
+                if t.id not in seen:
+                    seen.add(t.id); out.append(t)
+                continue
+            for tr in (self.proxy.data(idx, FOLDER_ROLE) or []):
+                if tr.id not in seen:
+                    seen.add(tr.id); out.append(tr)
+        return out
 
     def _add_selected(self):
         ts = self.selected_tracks()
@@ -244,16 +336,24 @@ class LibraryTab(QWidget):
         self.planner.reload_library()
 
     def _folder_filter(self, name):
-        if name == "all folders":
-            self.proxy.setFilterFixedString(self.search.text())
-            self.proxy.setFilterKeyColumn(-1)
-        else:
-            self.proxy.setFilterKeyColumn(2)
-            self.proxy.setFilterFixedString(name)
+        self.proxy.set_folder(None if name == "all folders" else name)
 
     def refresh(self):
+        # Preserve which folders are open across rescans/tag edits.
+        open_names = set()
+        for r in range(self.proxy.rowCount()):
+            idx = self.proxy.index(r, 0)
+            if self.table.isExpanded(idx):
+                src = self.proxy.mapToSource(idx)
+                open_names.add(self.model.folder_name(src.row()))
+        first = not self.model.folders
         self.model.set_tracks(self.planner.library)
         self.count_lbl.setText(f"{len(self.planner.library)} tracks")
+        for r in range(self.proxy.rowCount()):
+            idx = self.proxy.index(r, 0)
+            src = self.proxy.mapToSource(idx)
+            name = self.model.folder_name(src.row())
+            self.table.setExpanded(idx, first or name in open_names)
         folders = sorted({track_folder(t) for t in self.planner.library})
         have = [self.folder_box.itemText(i)
                 for i in range(self.folder_box.count())]
