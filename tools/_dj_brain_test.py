@@ -47,7 +47,7 @@ def fake_track(tid, bpm, camelot, busy=0.3, vocal=0.2, artist="x",
     sections = [
         {"kind": "intro", "start_s": 0.0, "end_s": 30.0, "energy": 0.3,
          "busyness": busy, "vocalness": vocal, "boundary_strength": 0.5},
-        {"kind": "steady", "start_s": 30.0, "end_s": dur - 40.0,
+        {"kind": "groove", "start_s": 30.0, "end_s": dur - 40.0,
          "energy": 0.7, "busyness": busy, "vocalness": vocal,
          "boundary_strength": 0.6},
         {"kind": "outro", "start_s": dur - 40.0, "end_s": dur, "energy": 0.3,

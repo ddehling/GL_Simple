@@ -27,7 +27,7 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 4            # v4: multi-cue downbeat detection
+ANALYSIS_VERSION = 5            # v5: sensible section taxonomy (drop=moment)
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -722,32 +722,46 @@ def _merge_similar(sections):
 
 
 def _classify_sections(sections):
+    """Label sections by their STRUCTURAL FUNCTION, not an energy bucket:
+
+        intro     - the low-energy opening run (drums/atmosphere building)
+        groove    - the main danceable body (the bulk of a house/techno
+                    track; a long high-energy stretch is groove, NOT a
+                    'drop' - a drop is a MOMENT, marked as a cue)
+        breakdown - a mid-track energy dip (the melodic/atmospheric break)
+        build     - energy climbing out of a breakdown toward a peak
+        outro     - the low-energy closing run
+
+    Boundaries where energy slams UP (breakdown/build -> groove) are the
+    'drop' moments; those live in cues (find_interesting), not here."""
     if not sections:
         return
-    energies = np.array([s["energy"] for s in sections])
-    hi = np.percentile(energies, 70)
-    lo = np.percentile(energies, 30)
-    for i, s in enumerate(sections):
-        kind = "steady"
-        e = s["energy"]
-        if i == 0 and e <= np.median(energies):
-            kind = "intro"
-        elif i == len(sections) - 1 and e <= np.median(energies):
-            kind = "outro"
-        elif e >= hi:
-            kind = "drop"
-        elif e <= lo:
-            kind = "breakdown"
-        elif i + 1 < len(sections) and sections[i + 1]["energy"] >= hi \
-                and e < sections[i + 1]["energy"]:
-            kind = "build"
-        s["kind"] = kind
-    # A build is only a build if it precedes a drop; re-check breakdown->drop.
-    for i, s in enumerate(sections):
-        if s["kind"] == "steady" and i + 1 < len(sections) \
-                and sections[i + 1]["kind"] == "drop" \
-                and s["energy"] < sections[i + 1]["energy"] - 0.1:
-            s["kind"] = "build"
+    n = len(sections)
+    e = np.array([s["energy"] for s in sections])
+    emax = max(e.max(), 1e-6)
+    for s in sections:
+        s["kind"] = "groove"
+    # Leading low-energy run = intro (stop at the first section that grooves).
+    for i in range(n):
+        if e[i] < 0.6 * emax:
+            sections[i]["kind"] = "intro"
+        else:
+            break
+    # Trailing low-energy run = outro.
+    for i in range(n - 1, -1, -1):
+        if e[i] < 0.55 * emax and sections[i]["kind"] != "intro":
+            sections[i]["kind"] = "outro"
+        else:
+            break
+    # Middle sections: a dip below its neighbours = breakdown; a rising
+    # section leading into a much louder one = build.
+    for i in range(1, n - 1):
+        if sections[i]["kind"] != "groove":
+            continue
+        if e[i] < 0.6 * emax and e[i] < e[i - 1] - 0.08:
+            sections[i]["kind"] = "breakdown"
+        elif e[i + 1] - e[i] > 0.12 and e[i + 1] > 0.7 * emax:
+            sections[i]["kind"] = "build"
 
 
 def find_loops(sections, feats_beats, beats):
@@ -786,13 +800,14 @@ def find_loops(sections, feats_beats, beats):
 def find_mix_points(sections, duration_s):
     """Entry/exit points anchored to section boundaries, scored by boundary
     strength x low busyness x usefulness of position."""
+    drops = set(drop_moments(sections))
     pts = []
     for i, s in enumerate(sections):
         t = s["start_s"]
         strength = max(s["boundary_strength"], 0.05)
         quiet = 1.0 - 0.7 * s["busyness"]
         if i > 0 and t < duration_s * 0.45:
-            hint = "pre_drop" if s["kind"] == "drop" else "blend"
+            hint = "pre_drop" if s["start_s"] in drops else "blend"
             pts.append({"kind": "in", "time_s": round(t, 3),
                         "score": round(strength * quiet, 3),
                         "style_hint": hint})
@@ -862,20 +877,31 @@ def classify_axes(sections, bpm, spectral, mood_hist):
     return axes, tags
 
 
+def drop_moments(sections):
+    """Times where energy SLAMS up across a boundary (breakdown/build ->
+    groove) - the actual 'drops'. A moment, not a section."""
+    out = []
+    for i in range(1, len(sections)):
+        s, prev = sections[i], sections[i - 1]
+        if s["energy"] - prev["energy"] > 0.22 and s["energy"] > 0.6:
+            out.append(s["start_s"])
+    return out
+
+
 def find_interesting(sections):
-    """Auto 'interesting part' cues: the hook-like moments a DJ would ride -
-    high-energy, repetitive, low-vocal stretches (loopable, layerable) plus
-    every drop's landing. Users add/override their own in the planner."""
+    """Auto 'interesting part' cues: the DROP moments (energy slams up) and
+    the hook-like grooves a DJ would ride (repetitive, low-vocal, loopable).
+    Users add/override their own in the planner."""
     cues = []
     if not sections:
         return cues
     e75 = np.percentile([s["energy"] for s in sections], 70)
+    for t in drop_moments(sections):
+        cues.append({"kind": "interest", "time_s": t,
+                     "source": "auto", "label": "drop"})
     for s in sections:
-        if s["kind"] == "drop":
-            cues.append({"kind": "interest", "time_s": s["start_s"],
-                         "source": "auto", "label": "drop"})
-        elif (s["energy"] >= e75 and s["repetitiveness"] > 0.6
-              and s["vocalness"] < 0.5 and s["kind"] != "outro"):
+        if (s["kind"] == "groove" and s["energy"] >= e75
+                and s["repetitiveness"] > 0.6 and s["vocalness"] < 0.5):
             cues.append({"kind": "interest", "time_s": s["start_s"],
                          "source": "auto", "label": "hook"})
     # Dedup near-identical times, keep at most 5.

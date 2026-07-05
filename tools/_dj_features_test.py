@@ -202,11 +202,18 @@ def test_analysis():
     check("sections found", 4 <= len(secs) <= 12,
           f"{len(secs)} sections: " +
           " ".join(f"{s['kind']}@{s['start_s']:.0f}" for s in secs))
-    drop_secs = [s for s in secs if s["kind"] == "drop"
-                 and s["start_s"] < DROP_E and s["end_s"] > BUILD_E]
-    check("drop located", len(drop_secs) >= 1,
-          f"drop sections overlapping true drop [{BUILD_E:.0f},{DROP_E:.0f}]s: "
-          f"{[(s['start_s'], s['end_s']) for s in drop_secs]}")
+    # The drop is a MOMENT (energy slams up into the loud section), marked as
+    # a cue - not a multi-minute section label. It should land in the loud
+    # region [GROOVE_E, DROP_E], where energy jumps up.
+    drops = [c["time_s"] for c in r["cues"] if c.get("label") == "drop"]
+    check("drop moment located",
+          any(GROOVE_E - 5 <= d <= DROP_E for d in drops),
+          f"drop cues at {[round(d) for d in drops]} "
+          f"(loud region {GROOVE_E:.0f}-{DROP_E:.0f}s)")
+    check("high-energy section is groove not 'drop'",
+          any(s["kind"] == "groove" for s in secs)
+          and not any(s["kind"] == "drop" for s in secs),
+          f"kinds: {sorted(set(s['kind'] for s in secs))}")
     check("intro low energy", secs[0]["energy"] < 0.6,
           f"first section kind={secs[0]['kind']} energy={secs[0]['energy']}")
     # Boundary near the build->drop moment (the most audible edge).

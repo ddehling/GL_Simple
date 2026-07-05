@@ -49,8 +49,8 @@ from tools.djplanner.player import TrackPlayer, PlanPreview
 RATE = 44100
 SECTION_COLORS = {
     "intro": QColor(70, 90, 120), "outro": QColor(70, 90, 120),
-    "steady": QColor(60, 120, 90), "drop": QColor(190, 80, 60),
-    "build": QColor(190, 150, 60), "breakdown": QColor(90, 70, 130),
+    "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
+    "breakdown": QColor(90, 70, 130),
 }
 COLS = ["title", "artist", "bpm", "key", "dur", "tags", "structure"]
 

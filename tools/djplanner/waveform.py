@@ -19,8 +19,8 @@ RATE = 44100
 
 SECTION_COLORS = {
     "intro": QColor(70, 90, 130), "outro": QColor(70, 90, 130),
-    "steady": QColor(55, 115, 85), "drop": QColor(185, 80, 55),
-    "build": QColor(185, 150, 55), "breakdown": QColor(95, 70, 135),
+    "groove": QColor(55, 115, 85), "build": QColor(185, 150, 55),
+    "breakdown": QColor(95, 70, 135),
 }
 CUE_COLORS = {"in": QColor(90, 220, 120), "out": QColor(240, 100, 90),
               "interest": QColor(240, 210, 90)}

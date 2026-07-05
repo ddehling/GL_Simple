@@ -258,15 +258,15 @@ class Brain:
         # in over the old track's OUTRO/breakdown, so two lead melodies never
         # play at once. Kind drives this; busyness/vocalness refine it.
         def out_fit(sec):
-            k = sec.get("kind", "steady")
-            base = {"outro": 1.0, "breakdown": 0.85, "steady": 0.6,
-                    "build": 0.3, "intro": 0.4, "drop": 0.15}.get(k, 0.5)
+            k = sec.get("kind", "groove")
+            base = {"outro": 1.0, "breakdown": 0.85, "groove": 0.6,
+                    "build": 0.3, "intro": 0.4}.get(k, 0.5)
             return base * (1.0 - 0.5 * (sec.get("vocalness") or 0.0))
 
         def in_fit(sec):
-            k = sec.get("kind", "steady")
-            base = {"intro": 1.0, "breakdown": 0.8, "steady": 0.55,
-                    "build": 0.6, "outro": 0.2, "drop": 0.3}.get(k, 0.5)
+            k = sec.get("kind", "groove")
+            base = {"intro": 1.0, "breakdown": 0.8, "groove": 0.55,
+                    "build": 0.6, "outro": 0.2}.get(k, 0.5)
             return base * (1.0 - 0.6 * (sec.get("vocalness") or 0.0))
 
         best = None
@@ -311,15 +311,14 @@ class Brain:
         return best
 
     def _drop_after(self, track, after_s):
-        """Start time of the first strong drop section at/after after_s
-        (else the strongest drop anywhere), or None."""
-        drops = [s for s in track.sections if s["kind"] == "drop"]
+        """First DROP MOMENT (energy slams up at a boundary) at/after
+        after_s, else the earliest one, or None."""
+        from lib.dj.features import drop_moments
+        drops = drop_moments(track.sections)
         if not drops:
             return None
-        ahead = [s for s in drops if s["start_s"] >= after_s]
-        pick = min(ahead, key=lambda s: s["start_s"]) if ahead else \
-            max(drops, key=lambda s: s.get("energy", 0.0))
-        return pick["start_s"]
+        ahead = [t for t in drops if t >= after_s]
+        return min(ahead) if ahead else min(drops)
 
     def _bass_loop(self, track, before_s):
         """Best loop in `track` to isolate as a repeating groove bed: a
