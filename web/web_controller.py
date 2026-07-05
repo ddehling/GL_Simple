@@ -1028,7 +1028,8 @@ class WebController:
                 self._values_cache = None
 
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
-                      'nudge', 'next_id', 'setlist'}
+                      'nudge', 'next_id', 'setlist', 'seek', 'seek_rel',
+                      'to_exit', 'mix_now'}
 
         @self.socketio.on('dj_action')
         def handle_dj_action(data):
@@ -1058,6 +1059,11 @@ class WebController:
                     return
             elif action == 'autopilot':
                 arg = bool(arg)
+            elif action in ('seek', 'seek_rel'):
+                try:
+                    arg = float(arg)
+                except (TypeError, ValueError):
+                    return
             with self._dict_lock:
                 q = self.control_dict.setdefault('request_dj_actions', [])
                 q.append((action, arg))

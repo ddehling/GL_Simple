@@ -108,6 +108,16 @@
                  style="width:0%"></div></div>
             <div class="bias-labels"><span id="dj-pos">0:00</span>
                 <span id="dj-dur">0:00</span></div>
+            <!-- Scrub within the current track (drag to seek). -->
+            <input type="range" id="dj-scrub" min="0" max="1000" value="0"
+                   style="width:100%; margin-top:4px">
+            <div class="transport" style="margin-top:6px">
+                <button class="btn" id="dj-restart">⟲ Start</button>
+                <button class="btn" id="dj-back">−30s</button>
+                <button class="btn" id="dj-fwd">+30s</button>
+                <button class="btn" id="dj-toexit">⤓ To exit</button>
+                <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
+            </div>
             <div class="badges" id="dj-badges"></div>
             <div class="deckrow" id="dj-decks"></div>
             <div class="next-box hidden" id="dj-next-box">
@@ -193,6 +203,24 @@
         nudge.addEventListener("change", () => {
             nudgeDragging = false;
             emit("nudge", parseFloat(nudge.value));
+        });
+
+        // Jump controls (testing).
+        $("dj-restart").onclick = () => emit("seek", 0);
+        $("dj-back").onclick = () => emit("seek_rel", -30);
+        $("dj-fwd").onclick = () => emit("seek_rel", 30);
+        $("dj-toexit").onclick = () => emit("to_exit");
+        $("dj-mixnow").onclick = () => emit("mix_now");
+
+        // Scrubber: drag to seek within the current track. Drag-guard so the
+        // 5Hz snapshot doesn't yank the thumb while you're dragging.
+        let scrubbing = false, curDur = 0;
+        const scrub = $("dj-scrub");
+        scrub.addEventListener("pointerdown", () => scrubbing = true);
+        scrub.addEventListener("change", () => {
+            scrubbing = false;
+            if (curDur > 0)
+                emit("seek", (parseFloat(scrub.value) / 1000) * curDur);
         });
 
         const fmt = (s) => s == null ? "-:--" :
@@ -290,8 +318,11 @@
                 cur.camelot].filter(Boolean).join("  ·  ");
             $("dj-pos").textContent = fmt(cur.pos_s);
             $("dj-dur").textContent = fmt(cur.duration_s);
-            $("dj-prog").style.width =
-                (cur.duration_s ? Math.min(100, 100 * (cur.pos_s || 0) / cur.duration_s) : 0) + "%";
+            const frac = cur.duration_s
+                ? Math.min(1, (cur.pos_s || 0) / cur.duration_s) : 0;
+            $("dj-prog").style.width = (100 * frac) + "%";
+            curDur = cur.duration_s || 0;
+            if (!scrubbing) scrub.value = Math.round(frac * 1000);
 
             const badges = [];
             if (dj.state === "armed" && dj.style)

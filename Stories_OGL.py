@@ -2186,6 +2186,14 @@ class EnvironmentalSystem:
                         self._dj.set_energy_nudge(float(arg))
                     elif action == 'next_id':
                         self._dj.request_next(int(arg))
+                    elif action == 'seek':
+                        self._dj.seek(float(arg))
+                    elif action == 'seek_rel':
+                        self._dj.seek_relative(float(arg))
+                    elif action == 'to_exit':
+                        self._dj.to_exit()
+                    elif action == 'mix_now':
+                        self._dj.mix_now()
             except Exception as e:
                 print(f"[DJ] action '{action}' failed: {e}")
 

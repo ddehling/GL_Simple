@@ -158,6 +158,26 @@ class DJSystem:
         with self._lock:
             self._pending.append(("setlist", name))
 
+    def seek(self, pos_s):
+        """Jump the current track to an absolute position (testing)."""
+        with self._lock:
+            self._pending.append(("seek", float(pos_s)))
+
+    def seek_relative(self, delta_s):
+        with self._lock:
+            self._pending.append(("seek", ("rel", float(delta_s))))
+
+    def to_exit(self):
+        """Jump to ~20s before this track's exit so the next transition
+        happens right away - the fast way to audition a mix."""
+        with self._lock:
+            self._pending.append(("seek", ("exit", None)))
+
+    def mix_now(self):
+        """Arm and run the planned transition immediately (test the mix)."""
+        with self._lock:
+            self._pending.append(("mix_now", None))
+
     # -- arc / outstate -----------------------------------------------------------
     def arc_progress(self):
         elapsed = (self.submix.clock - self._set_start_clock) / RATE
@@ -280,6 +300,11 @@ class DJSystem:
                     if self.state == "playing":
                         self.next_track = None      # replan from the list
                         self.plan = None
+            elif kind == "seek":
+                self._do_seek(val)
+            elif kind == "mix_now":
+                if self.state == "playing":
+                    self._do_skip()                 # force the transition now
 
         if time.time() - self._setlists_checked > 10.0:
             self._refresh_setlist_names()
@@ -444,6 +469,34 @@ class DJSystem:
         self.swap_at = None
         self.blend_at = None
         self.state = "playing"
+
+    def _do_seek(self, val):
+        """Jump the current track (playing state only). val is an absolute
+        position, ('rel', delta), or ('exit', None)."""
+        if self.state != "playing" or self.current is None:
+            return
+        pos = self._pos_s() or 0.0
+        dur = self.current.duration_s
+        if isinstance(val, tuple):
+            if val[0] == "rel":
+                target = pos + val[1]
+            elif val[0] == "exit":
+                # ~20s before where this track would exit, so the transition
+                # fires right away - fast mix audition.
+                target = min(self._exit_played, dur - 45.0) - 20.0
+                target = max(target, pos + 4.0)
+            else:
+                return
+        else:
+            target = float(val)
+        target = max(0.0, min(target, dur - 10.0))
+        target = self.current.nearest_downbeat(target)
+        self.submix.post({"cmd": "cue", "deck": self.active_deck,
+                          "time_s": target})
+        # Keep played-time bookkeeping consistent with the new position so
+        # exit planning still makes sense after a jump.
+        self._started_clock = self.submix.clock - int(target * RATE)
+        self._log({"event": "seek", "to_s": round(target, 1)})
 
     def _do_skip(self):
         """Exit at the earliest musical opportunity."""
