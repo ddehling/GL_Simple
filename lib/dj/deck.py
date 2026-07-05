@@ -12,6 +12,7 @@ import threading
 import numpy as np
 
 from lib.dj.eq import ThreeBandEQ
+from lib.dj.fx import EchoDelay, SweepFilter
 from lib.dj.stretch import WSOLAStretcher
 
 RATE = 44100
@@ -37,6 +38,17 @@ class Deck:
         self.kick_offset_s = 0.0 # per-track groove offset (analysis v6)
         self._gain_ramp = None   # (target, per_second)
         self.eq = ThreeBandEQ()
+        self.filter = SweepFilter()      # resonant sweep (post-EQ)
+        self.echo = EchoDelay()          # echo-out tail (post-gain)
+        self._brake = None       # (speed, decel_per_s, src_pos) - vinyl stop
+        self._fade_in = 0        # frames of fade-in after a jump cut
+        # KEY SHIFT: pitch factor f = 2^(st/12). The stretcher runs at
+        # rate/f and a streaming resampler scales the block by f - net
+        # tempo unchanged, pitch shifted, and the deck's TIMELINE (grid,
+        # cues, beat phase) stays in original track time throughout.
+        self._pitch_f = 1.0
+        self._rs_buf = np.zeros((0, 2), dtype=np.float32)
+        self._rs_pos = 0.0
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
         self.stretch = WSOLAStretcher(self._fetch)
@@ -50,8 +62,13 @@ class Deck:
         self._env_rem = np.zeros(0, dtype=np.float64)
 
     # -- loading -------------------------------------------------------------
+    def set_pitch(self, semitones):
+        self._pitch_f = float(2.0 ** (semitones / 12.0))
+        self._rs_buf = self._rs_buf[:0]
+        self._rs_pos = 0.0
+
     def load(self, samples, track_id=None, grid=None, gain_db=0.0,
-             kick_offset_s=0.0):
+             kick_offset_s=0.0, pitch_st=0.0):
         self.samples = np.asarray(samples, dtype=np.float32)
         if self.samples.ndim == 1:
             self.samples = np.repeat(self.samples[:, None], 2, axis=1)
@@ -59,7 +76,9 @@ class Deck:
         self.grid = grid or []
         self.loudness_gain = float(10.0 ** (gain_db / 20.0))
         self.kick_offset_s = float(kick_offset_s or 0.0)
+        self.set_pitch(pitch_st or 0.0)
         self.finished = False
+        self.reset_fx()                          # no stale FX across tracks
         self.ready = True
 
     def load_file_async(self, path, track_id=None, grid=None, gain_db=0.0):
@@ -82,6 +101,13 @@ class Deck:
         self.track_id = None
         self.loop = None
         self.finished = False
+        self.reset_fx()
+
+    def reset_fx(self):
+        self.filter.set(mode="off")
+        self.echo.set(active=False)
+        self._brake = None
+        self._fade_in = 0
 
     # -- transport -----------------------------------------------------------
     def cue(self, time_s):
@@ -89,6 +115,8 @@ class Deck:
         frame = int(time_s * RATE)
         self._virt = frame
         self.stretch.seek(frame)
+        self._rs_buf = self._rs_buf[:0]
+        self._rs_pos = 0.0
         self.out_env[:] = 0.0                    # stale rhythm history
         self._env_rem = self._env_rem[:0]
 
@@ -114,6 +142,21 @@ class Deck:
             _, le = self.loop
             self.stretch.seek(le)
             self.loop = None
+
+    def brake(self, duration_s=1.5):
+        """Vinyl brake: playback decelerates to a stop WITH the pitch
+        falling (variable-speed resample, not WSOLA - a brake IS a pitch
+        drop). The deck stops itself when the platter reaches zero."""
+        if self.playing:
+            self._brake = [1.0, 1.0 / max(duration_s, 0.1),
+                           float(self.stretch.source_pos)]
+
+    def jump_cut(self, time_s):
+        """Phrase-jump edit: hard relocate at a downbeat with a short
+        fade-in so the discontinuity never clicks. Used by the live
+        micro-arrangement (skip a dull phrase, extend a breakdown)."""
+        self.stretch.seek(int(time_s * RATE))
+        self._fade_in = 192
 
     def set_gain(self, target, ramp_s=0.05):
         ramp_s = max(ramp_s, 1e-3)
@@ -231,9 +274,56 @@ class Deck:
                 self.out_env[-nbin:] = vals
         self._env_rem = buf[nbin * _ENV_GROUP:]
 
+    def _read_brake(self, n):
+        """Variable-speed interpolated read during a vinyl brake."""
+        speed, decel, pos = self._brake
+        dt = 1.0 / RATE
+        idx = np.empty(n)
+        for i in range(n):                       # 44k simple ops/s max: fine
+            idx[i] = pos
+            pos += speed
+            speed -= decel * dt
+            if speed <= 0.0:
+                idx[i + 1:] = pos
+                self._brake = None
+                self.playing = False
+                break
+        else:
+            self._brake = [speed, decel, pos]
+        src = self.samples
+        i0 = np.clip(idx.astype(np.int64), 0, len(src) - 2)
+        fr = (idx - i0)[:, None]
+        block = src[i0] * (1 - fr) + src[i0 + 1] * fr
+        if self._brake is None:                  # fade the final grains out
+            block *= np.linspace(1.0, 0.0, n)[:, None] ** 0.5
+        return block.astype(np.float64)
+
+    def _read_pitched(self, n):
+        """Streaming linear-interp resample of the stretcher output by
+        _pitch_f - the second half of the key shift (see __init__)."""
+        f = self._pitch_f
+        need = int(np.ceil(self._rs_pos + n * f)) + 2 - len(self._rs_buf)
+        if need > 0:
+            self._rs_buf = np.concatenate(
+                [self._rs_buf, self.stretch.read(need)])
+        idx = self._rs_pos + np.arange(n) * f
+        i0 = idx.astype(np.int64)
+        fr = (idx - i0)[:, None]
+        out = (self._rs_buf[i0] * (1 - fr)
+               + self._rs_buf[i0 + 1] * fr).astype(np.float32)
+        nxt = idx[-1] + f
+        k = int(nxt)
+        self._rs_buf = self._rs_buf[k:]
+        self._rs_pos = nxt - k
+        return out
+
     def read(self, n):
         """n output frames through the whole chain. Zeros when idle."""
         if not (self.playing and self.ready and self.samples is not None):
+            if self.echo.ringing:                # echo tail outlives the deck
+                tail = self.echo.process(np.zeros((n, 2), dtype=np.float32))
+                return (tail * getattr(self, "loudness_gain", 1.0)
+                        ).astype(np.float32)
             return np.zeros((n, 2), dtype=np.float32)
         dt = n / RATE
         if self._rate_ramp is not None:
@@ -244,13 +334,26 @@ class Deck:
                 self._rate_ramp = None
             else:
                 self.rate += step if target > self.rate else -step
-        self.stretch.rate = self.effective_rate()
+        self.stretch.rate = self.effective_rate() / self._pitch_f
         with self._lock:
-            block = self.stretch.read(n).copy()
+            if self._brake is not None:
+                block = self._read_brake(n)
+            elif self._pitch_f != 1.0:
+                block = self._read_pitched(n)
+            else:
+                block = self.stretch.read(n).copy()
         if self.loop is None and self.stretch.source_pos >= len(self.samples):
             self.finished = True
+        if self._fade_in > 0:                    # de-click after a jump cut
+            total = 192.0
+            k = min(self._fade_in, n)
+            f0 = 1.0 - self._fade_in / total
+            f1 = 1.0 - (self._fade_in - k) / total
+            block[:k] *= np.linspace(f0, f1, k)[:, None]
+            self._fade_in -= k
         self._feed_env(block)                    # pre-EQ/gain rhythm tap
         block = self.eq.process(block)
+        block = self.filter.process(block)
         g0 = self.gain
         if self._gain_ramp is not None:
             target, speed = self._gain_ramp
@@ -265,4 +368,8 @@ class Deck:
                 block = block * self.gain
         else:
             block = block * np.linspace(g0, self.gain, n)[:, None]
+        # Echo sits AFTER the gain stage: cut the deck and the captured
+        # tail keeps ringing over the incoming track (the echo-out exit).
+        if self.echo.active:
+            block = self.echo.process(block)
         return (block * getattr(self, "loudness_gain", 1.0)).astype(np.float32)

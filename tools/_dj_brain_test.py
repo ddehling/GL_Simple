@@ -248,7 +248,8 @@ def e2e_test(keep_wav):
         check("styles are beat-matched",
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
                         "cut_at_drop", "bassline_layer", "double_drop",
-                        "loop_build") for s in armed_styles),
+                        "loop_build", "filter_sweep", "echo_out")
+                  for s in armed_styles),
               f"styles: {armed_styles}")
         check("deck rates always clamped", rate_violations == 0,
               f"{rate_violations} telemetry samples outside 0.90..1.10")

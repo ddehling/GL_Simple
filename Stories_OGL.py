@@ -73,7 +73,7 @@ def load_config(project_override: str | None = None):
         # start button); it never auto-plays on boot. music_dir empty =
         # <repo_parent>/music (the library travels parallel to the repo).
         "dj": {"enabled": True, "music_dir": "", "theme": "groove",
-               "night_hours": 6.0, "stretch_max": 1.08},
+               "night_hours": 6.0, "stretch_max": 1.08, "record": False},
         "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
             {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
@@ -2249,7 +2249,8 @@ class EnvironmentalSystem:
             engine=engine,
             theme=self.dj_cfg.get("theme", "groove"),
             night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
-            stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)))
+            stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)),
+            record=bool(self.dj_cfg.get("record", False)))
         if not self._dj.start():
             self._dj_last_error = self._dj.last_error or "DJ failed to start"
             self._dj = None

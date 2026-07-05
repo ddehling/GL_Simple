@@ -43,7 +43,8 @@ def _intro_start(track):
 class DJSystem:
     def __init__(self, music_root, engine=None, theme="groove",
                  night_hours=6.0, autopilot=True, seed=None,
-                 stretch_max=1.08, log_dir=None, threaded=True):
+                 stretch_max=1.08, log_dir=None, threaded=True,
+                 record=False):
         self.music_root = music_root
         self.engine = engine
         self.night_hours = night_hours
@@ -86,6 +87,9 @@ class DJSystem:
         self.db = None
         self.brain = None
         self.last_error = ""
+        self._record = bool(record)
+        self._rec_thread = None
+        self.record_path = None
 
     # -- lifecycle -------------------------------------------------------------
     def start(self):
@@ -103,6 +107,8 @@ class DJSystem:
             self.engine.attach_track("dj_submix", self.submix)
         self._running = True
         self._set_start_clock = self.submix.clock
+        if self._record:
+            self._start_recording()
         if self.threaded:
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="dj-brain")
@@ -111,8 +117,42 @@ class DJSystem:
               f"theme={self._theme_name}")
         return True
 
+    def _start_recording(self):
+        """Tap the submix into a timestamped WAV - every night becomes
+        review material (pair with tools/_dj_quality_test metrics)."""
+        import queue
+        import wave
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.record_path = os.path.join(
+            self.log_dir,
+            time.strftime("dj_night_%Y%m%d_%H%M.wav"))
+        q = queue.Queue(maxsize=400)
+        self.submix.record_q = q
+
+        def _writer():
+            import numpy as _np
+            w = wave.open(self.record_path, "wb")
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(RATE)
+            try:
+                while self._running or not q.empty():
+                    try:
+                        blk = q.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    w.writeframes((_np.clip(blk, -1, 1)
+                                   * 32767).astype(_np.int16).tobytes())
+            finally:
+                w.close()
+        self._rec_thread = threading.Thread(target=_writer, daemon=True,
+                                            name="dj-recorder")
+        self._rec_thread.start()
+        print(f"[DJ] recording night to {self.record_path}")
+
     def stop(self, fade_s=2.0):
         self._running = False
+        self.submix.record_q = None
         self.submix.fade_out(fade_s)
         if self._history_id and self.db:
             try:
@@ -178,6 +218,14 @@ class DJSystem:
         """Arm and run the planned transition immediately (test the mix)."""
         with self._lock:
             self._pending.append(("mix_now", None))
+
+    def bpm_target(self):
+        """The night's PLANNED BPM journey: the tempo rides the same shape
+        as the energy arc across the theme's range - sets FEEL like they go
+        somewhere instead of hovering."""
+        theme = self.brain.theme if self.brain else get_theme(self._theme_name)
+        lo, hi = theme.bpm_range
+        return lo + (hi - lo) * theme.arc_target(self.arc_progress())
 
     def _note_energy(self, track):
         e = track.energy_proxy()
@@ -324,10 +372,47 @@ class DJSystem:
         if self.state == "idle":
             self._start_first()
         elif self.state == "playing":
+            self._maybe_arrange()
             self._maybe_plan()
         elif self.state == "armed":
             if self.swap_at is not None and self.submix.clock >= self.swap_at:
                 self._finish_swap()
+
+    def _maybe_arrange(self):
+        """LIVE MICRO-ARRANGEMENT: when the current track sits in a long,
+        highly repetitive groove with plenty of runway left, jump forward
+        exactly one phrase (a 32-beat cut preserves beat/bar/phrase phase,
+        so it's rhythmically seamless) - the radio-edit move a DJ does with
+        hot cues. At most once per track, never while a transition is
+        armed, never near the planned exit."""
+        cur = self.current
+        if cur is None or self.next_track is not None:
+            return
+        if getattr(self, "_arranged_track", None) == cur.id:
+            return
+        if cur.phrase_beats <= 0 or cur.phrase_conf < 0.1:
+            return
+        tel = self.submix.telemetry
+        deck = (tel or {}).get("decks", {}).get(self.active_deck)
+        if not deck or not deck.get("playing"):
+            return
+        pos = deck["time_s"]
+        played = (self.submix.clock - self._started_clock) / RATE
+        span = cur.phrase_beats * cur.period_s
+        # Runway: the jump must not swallow the planned exit region.
+        if played < 75.0 or pos + 2 * span > cur.duration_s - 60.0:
+            return
+        sec = cur.section_at(pos)
+        if (sec and sec.get("kind") == "groove"
+                and sec.get("repetitiveness", 0.0) > 0.8
+                and sec["end_s"] - sec["start_s"] > 75.0
+                and pos - sec["start_s"] > 30.0
+                and sec["end_s"] - pos > span + 15.0):
+            self.submix.post({"cmd": "jump", "deck": self.active_deck,
+                              "time_s": pos + span})
+            self._arranged_track = cur.id
+            self._log({"event": "phrase_jump", "track": cur.title,
+                       "from_s": round(pos, 1), "beats": cur.phrase_beats})
 
     def _start_first(self):
         first = None
@@ -411,7 +496,8 @@ class DJSystem:
             self.next_track, self._next_meta = self._pop_setlist_next(out_bpm)
         if self.next_track is None:
             cand, meta = self.brain.choose_next(
-                self.current, self.arc_target(), out_bpm)
+                self.current, self.arc_target(), out_bpm,
+                bpm_target=self.bpm_target())
             if cand is None:
                 self.last_error = "no compatible next track"
                 return
@@ -446,6 +532,7 @@ class DJSystem:
                           "grid": self.next_track.grid,
                           "gain_db": self.next_track.gain_db,
                           "kick_offset_s": self.next_track.kick_offset_s,
+                          "pitch_st": plan.get("pitch_st", 0),
                           "cue_s": plan["in_s"]})
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,

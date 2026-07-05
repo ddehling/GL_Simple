@@ -172,6 +172,15 @@ def camelot_compat(c1, c2):
     return 0.3
 
 
+def _shift_camelot(cam, semitones):
+    """Camelot code after a pitch shift (+1 semitone = +7 on the wheel)."""
+    try:
+        num, letter = int(cam[:-1]), cam[-1]
+    except (ValueError, IndexError):
+        return cam
+    return f"{((num - 1 + 7 * semitones) % 12) + 1}{letter}"
+
+
 # --------------------------------------------------------------------------
 # Brain
 # --------------------------------------------------------------------------
@@ -224,7 +233,8 @@ class Brain:
         return best if best else (None, 0.0)
 
     # -- selection -----------------------------------------------------------
-    def score(self, current, cand, arc_target, out_bpm, now=None):
+    def score(self, current, cand, arc_target, out_bpm, now=None,
+              bpm_target=None):
         if cand.id == getattr(current, "id", None):
             return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
@@ -235,6 +245,19 @@ class Brain:
             return 0.0, None
         s_rate = math.exp(-((abs(math.log(rate))) / 0.045) ** 2)
         s_key = camelot_compat(getattr(current, "camelot", ""), cand.camelot)
+        # KEY-SHIFT RESCUE: a clashing pair may become compatible with the
+        # candidate pitched +/-1 semitone (deck does it tempo-neutrally).
+        # Only when the shift direction keeps the COMBINED stretch sane.
+        pitch_st = 0
+        if s_key < 0.5 and cand.camelot and getattr(current, "camelot", ""):
+            for st in (1, -1):
+                shifted = _shift_camelot(cand.camelot, st)
+                comb = abs(math.log(rate) - st * math.log(2.0) / 12.0)
+                if camelot_compat(current.camelot, shifted) >= 0.8 \
+                        and comb <= math.log(1.075):
+                    s_key = 0.7          # rescued, small residual penalty
+                    pitch_st = st
+                    break
         s_energy = math.exp(-((cand.energy_proxy() - arc_target) / 0.3) ** 2)
         s_mood = 0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                             for m, f in cand.mood_hist.items())
@@ -256,7 +279,12 @@ class Brain:
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self.rng.uniform(0.9, 1.1))
-        return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair}
+        # TEMPO ARC: the night has a planned BPM journey, not just a range.
+        if bpm_target:
+            total *= 0.55 + 0.45 * math.exp(
+                -((eff_bpm - bpm_target) / 7.0) ** 2)
+        return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
+                       "pitch_st": pitch_st}
 
     @staticmethod
     def _similarity(a, b):
@@ -275,7 +303,8 @@ class Brain:
         n = self._recent_skips.get(cand.id, 0)
         return 1.0 / (1.0 + 0.8 * n)
 
-    def choose_next(self, current, arc_target, out_bpm, now=None):
+    def choose_next(self, current, arc_target, out_bpm, now=None,
+                    bpm_target=None):
         """Returns (TrackInfo, meta) or (None, None) when the library is dry.
 
         LOOKAHEAD: greedy picking paints into corners (a great seam into a
@@ -283,7 +312,8 @@ class Brain:
         by their own best successor, so the pick keeps the set OPEN."""
         scored = []
         for cand in self.library:
-            s, meta = self.score(current, cand, arc_target, out_bpm, now)
+            s, meta = self.score(current, cand, arc_target, out_bpm, now,
+                                 bpm_target=bpm_target)
             if s > 0.0:
                 scored.append((s, cand, meta))
         if not scored:
@@ -436,6 +466,7 @@ class Brain:
                     "in_s": cand.mix_ins[0]["time_s"] if cand.mix_ins else 0.0,
                     "out_hint": "blend", "in_hint": "blend", "score": 0.1}
         rate = meta["rate"] if meta else 1.0
+        pst = (meta or {}).get("pitch_st", 0)
 
         # Style menu, gated by analysis confidence.
         weights = dict(self.theme.style_weights)
@@ -488,7 +519,8 @@ class Brain:
 
         beats = {"long_blend": 32, "bass_swap": 16, "cut_at_drop": 16,
                  "loop_roll_exit": 32, "bassline_layer": 16,
-                 "double_drop": 16, "loop_build": 16, "long_fade": 0}[style]
+                 "double_drop": 16, "loop_build": 16, "long_fade": 0,
+                 "filter_sweep": 24, "echo_out": 8}[style]
         if style == "loop_build":
             # Exit ON A's drop; the stutter build fills the bars before it.
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
@@ -496,7 +528,8 @@ class Brain:
             in_s = cand.nearest_downbeat(pair["in_s"])
             return {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats,
-                    "pair_score": pair["score"], "cand_id": cand.id}
+                    "pair_score": pair["score"], "cand_id": cand.id,
+                    "pitch_st": pst}
         if style == "double_drop":
             # A exits on ITS drop; B is cued so its drop lands on the same
             # beat. out_s/in_s become the two drop onsets.
@@ -506,7 +539,8 @@ class Brain:
             in_s = cand.nearest_downbeat(b_drop)
             plan = {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats,
-                    "pair_score": pair["score"], "cand_id": cand.id}
+                    "pair_score": pair["score"], "cand_id": cand.id,
+                    "pitch_st": pst}
             return plan
         # Blend-family styles anchor to PHRASE boundaries (16/32 beats) when
         # the hypermeter was confidently detected - the blend then completes
@@ -523,7 +557,8 @@ class Brain:
                 in_s = cand.nearest_downbeat(pd["time_s"])
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats,
-                "pair_score": pair["score"], "cand_id": cand.id}
+                "pair_score": pair["score"], "cand_id": cand.id,
+                    "pitch_st": pst}
         if style == "loop_roll_exit":
             # Loop the 16 bars-worth just before the exit point: with the
             # window pinned to out_s the first wrap and both shrink moments
@@ -582,6 +617,43 @@ class Brain:
             return ev, S0 + int((dur + 1) * RATE), S0
 
         nb = plan["beats"]
+        if style == "echo_out":
+            # Throw A's last beat into a tempo-synced delay and cut: the
+            # tail decays over B, which arrives beat-locked underneath -
+            # the clean way to LEAVE a track without a long fade.
+            S_out = clock_at(plan["out_s"])
+            lead = int(12 * cand.period_s / rate_b * RATE)
+            S0 = max(S_out - lead, now_guard)
+            cue_b = max(0.0, plan["in_s"] - (S_out - S0) / RATE * rate_b)
+            ev += [
+                {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
+                {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
+                {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
+                 "ramp_s": 0.01},
+                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
+                 "ramp_s": 0.01},
+                {"at": S0, "cmd": "start", "deck": incoming},
+                {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
+                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.9,
+                 "ramp_s": max((S_out - S0) / RATE, 0.1)},
+                # The throw: dotted-eighth echo engages one beat out.
+                {"at": S_out - int(beat_out * RATE), "cmd": "echo",
+                 "deck": active, "active": True,
+                 "delay_s": 0.75 * beat_out, "feedback": 0.62, "wet": 0.8},
+                {"at": S_out, "cmd": "gain", "deck": active, "value": 0.0,
+                 "ramp_s": 0.03},
+                {"at": S_out, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "ramp_s": 0.25},
+                {"at": S_out, "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": 2 * beat_out},
+                {"at": S_out + int(2.5 * RATE), "cmd": "stop",
+                 "deck": active},
+                {"at": S_out + int(2.5 * RATE), "cmd": "end_sync"},
+            ]
+            swap_at = S_out + int(2.5 * RATE)
+            self._glide_home(ev, incoming, rate_b, swap_at)
+            return ev, swap_at, S0
+
         if style == "cut_at_drop":
             # The cut lands on B's drop downbeat; B rides in underneath first.
             S_cut = clock_at(plan["out_s"])
@@ -614,6 +686,18 @@ class Brain:
                  "ramp_s": 0.04},
                 {"at": S_cut + int(0.5 * RATE), "cmd": "stop", "deck": active},
             ]
+            # Half the time, A leaves with a vinyl BRAKE into the drop
+            # instead of a plain cut - the platter winds down through the
+            # last bar and B's drop slams in.
+            if self.rng.random() < 0.5:
+                ev.append({"at": S_cut - int(0.9 * RATE), "cmd": "brake",
+                           "deck": active, "duration_s": 0.9})
+            # Riser through the run-in, landing exactly on the cut.
+            from lib.dj import fx as _fx
+            rise_s = min((S_cut - S0) / RATE, 8.0)
+            ev.append({"at": S_cut - int(rise_s * RATE), "cmd": "fx_play",
+                       "samples": _fx.make_riser(rise_s, gain=0.16),
+                       "gain": 1.0})
             swap_at = S_cut + int(0.5 * RATE)
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
@@ -672,6 +756,15 @@ class Brain:
                 {"at": out, "cmd": "clear_loop", "deck": active},
                 {"at": out, "cmd": "end_sync"},
             ]
+            # Production polish: riser under the shrinking loop, impact ON
+            # the drop it releases into.
+            from lib.dj import fx as _fx
+            rise_s = min((S_drop - S0) / RATE, 8.0)
+            ev.append({"at": S_drop - int(rise_s * RATE), "cmd": "fx_play",
+                       "samples": _fx.make_riser(rise_s, gain=0.16),
+                       "gain": 1.0})
+            ev.append({"at": S_drop, "cmd": "fx_play",
+                       "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
@@ -719,7 +812,17 @@ class Brain:
                  "ramp_s": 4 * beat_out},
                 {"at": out, "cmd": "stop", "deck": active},
                 {"at": out, "cmd": "end_sync"},
+                # Glue the run-in overlap: duck B on A's kicks until the drop.
+                {"at": S0, "cmd": "duck", "on": True, "depth": 0.2},
+                {"at": S_drop, "cmd": "duck", "on": False},
             ]
+            from lib.dj import fx as _fx
+            rise_s = min((S_drop - S0) / RATE, 8.0)
+            ev.append({"at": S_drop - int(rise_s * RATE), "cmd": "fx_play",
+                       "samples": _fx.make_riser(rise_s, gain=0.16),
+                       "gain": 1.0})
+            ev.append({"at": S_drop, "cmd": "fx_play",
+                       "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
@@ -845,6 +948,20 @@ class Brain:
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
              "ramp_s": half_exit},
         ]
+        # Glue the overlap: duck B a few dB on A's kicks until the swap.
+        ev += [{"at": S0, "cmd": "duck", "on": True, "depth": 0.18},
+               {"at": mid, "cmd": "duck", "on": False}]
+        if style == "filter_sweep":
+            # A leaves through a rising resonant high-pass instead of a
+            # plain fade: its weight thins musically over the second half
+            # while B (bass now in) carries the floor.
+            ev += [
+                {"at": mid, "cmd": "filter", "deck": active, "mode": "hp",
+                 "cutoff_hz": 60.0, "q": 2.2},
+                {"at": mid, "cmd": "filter", "deck": active,
+                 "cutoff_hz": 3200.0,
+                 "ramp_s": max((end - mid) / RATE, 0.5)},
+            ]
         if style == "loop_roll_exit":
             ls = plan["loop_start_s"]
             ev += [

@@ -273,7 +273,8 @@ def seam_qa(library, wav=False):
                     if t.bpm_conf > 0.6 and t.downbeat_conf > 0.3
                     and t.duration_s > 240], key=lambda t: -t.rhythm_density)
     styles = ["bass_swap", "long_blend", "cut_at_drop", "loop_build",
-              "double_drop", "loop_roll_exit", "bassline_layer"]
+              "double_drop", "loop_roll_exit", "bassline_layer",
+              "filter_sweep", "echo_out"]
     got = {}
     for style in styles:
         m = None

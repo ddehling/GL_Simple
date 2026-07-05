@@ -55,6 +55,9 @@ class DJSubmix:
         self._apll_clock = 0     # last audio-phase measurement clock
         self._apll_err = None    # latest audio-phase error (beats, + = late)
         self._apll_i = 0.0       # integral term (learned tempo bias)
+        self._fx = []            # active one-shots: [buffer, pos, gain]
+        self._duck = None        # {"on", "depth"} sidechain of the slave
+        self.record_q = None     # set to a queue to tap the mix (recording)
         self.telemetry = {}      # replaced wholesale each read()
 
     # -- control-thread API ----------------------------------------------------
@@ -76,11 +79,21 @@ class DJSubmix:
         if cmd == "_fade_out":
             self._fade = (1.0 / (e["duration"] * RATE), 0.0)
             return
+        if cmd == "fx_play":
+            # Pre-rendered one-shot (riser/impact) - the third mini-layer.
+            self._fx.append([np.asarray(e["samples"], dtype=np.float32),
+                             0, float(e.get("gain", 1.0))])
+            return
+        if cmd == "duck":
+            self._duck = ({"depth": float(e.get("depth", 0.22))}
+                          if e.get("on") else None)
+            return
         deck = self.decks.get(e.get("deck", ""))
         if cmd == "load":
             # Samples were decoded on another thread; this just mounts them.
             deck.load(e["samples"], e.get("track_id"), e.get("grid"),
-                      e.get("gain_db", 0.0), e.get("kick_offset_s", 0.0))
+                      e.get("gain_db", 0.0), e.get("kick_offset_s", 0.0),
+                      e.get("pitch_st", 0.0))
             if "cue_s" in e:
                 deck.cue(e["cue_s"])
         elif cmd == "start":
@@ -104,6 +117,18 @@ class DJSubmix:
                               e.get("ramp_s", 0.05))
         elif cmd == "rate":
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
+        elif cmd == "filter":
+            deck.filter.set(mode=e.get("mode"),
+                            cutoff_hz=e.get("cutoff_hz"),
+                            ramp_s=e.get("ramp_s", 0.0), q=e.get("q"))
+        elif cmd == "echo":
+            deck.echo.set(active=e.get("active"),
+                          delay_s=e.get("delay_s"),
+                          feedback=e.get("feedback"), wet=e.get("wet"))
+        elif cmd == "brake":
+            deck.brake(e.get("duration_s", 1.5))
+        elif cmd == "jump":
+            deck.jump_cut(e["time_s"])
         elif cmd == "sync":
             self._sync = {"slave": e["slave"], "master": e["master"]}
             sl = self.decks.get(e["slave"])
@@ -287,9 +312,32 @@ class DJSubmix:
             while self._auto and self._auto[0]["at"] <= self.clock:
                 self._apply(self._auto.pop(0))
             self._run_pll()
-            for d in self.decks.values():
-                if d.playing:
-                    out[pos:pos + m] += d.read(m)
+            slave = self._sync["slave"] if self._sync else None
+            master = self.decks.get(self._sync["master"]) if self._sync \
+                else None
+            for name, d in self.decks.items():
+                if not (d.playing or d.echo.ringing):
+                    continue
+                blk = d.read(m)
+                # SIDECHAIN DUCK: pull the incoming deck down a few dB on
+                # each of the master's kicks - overlapping tracks sound
+                # mixed, not stacked. Recovery ~90 ms, kick-shaped.
+                if (self._duck and name == slave and master is not None
+                        and master.playing and d.playing):
+                    beat_s = master.beat_period_s() or 0.5
+                    ph0 = master.beat_phase()
+                    ph = (ph0 + np.arange(m) / RATE / beat_s) % 1.0
+                    env = 1.0 - self._duck["depth"] * np.exp(
+                        -ph * beat_s / 0.09)
+                    blk = blk * env[:, None].astype(np.float32)
+                out[pos:pos + m] += blk
+            for fx in self._fx:
+                buf, fpos, g = fx
+                k = min(m, len(buf) - fpos)
+                if k > 0:
+                    out[pos:pos + k] += buf[fpos:fpos + k] * g
+                    fx[1] += k
+            self._fx = [f for f in self._fx if f[1] < len(f[0])]
             if self._fade is not None:
                 step, target = self._fade
                 g0 = self.mix_gain
@@ -303,6 +351,19 @@ class DJSubmix:
             self.clock += m
             pos += m
 
+        # Soft peak guard: two hot tracks + an impact one-shot can stack
+        # past full scale. Per-SAMPLE 3:1 soft knee above 0.92 - no
+        # frame-level normalization (that reads as pumping; see the fan
+        # limiter lesson), just gentle rounding of the rare peaks.
+        peaks = np.abs(out)
+        hot = peaks > 0.92
+        if np.any(hot):
+            out[hot] = np.sign(out[hot]) * (0.92 + (peaks[hot] - 0.92) / 3.0)
+        if self.record_q is not None:
+            try:
+                self.record_q.put_nowait(out.copy())
+            except Exception:
+                pass
         self.telemetry = self._snapshot()
         return out
 

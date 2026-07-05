@@ -25,7 +25,8 @@ class Theme:
     style_weights: dict = field(default_factory=lambda: {
         "long_blend": 1.2, "bass_swap": 1.4, "cut_at_drop": 0.15,
         "loop_roll_exit": 0.2, "bassline_layer": 0.2, "double_drop": 0.15,
-        "loop_build": 0.2, "long_fade": 0.3})
+        "loop_build": 0.2, "long_fade": 0.3,
+        "filter_sweep": 0.6, "echo_out": 0.35})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
 
@@ -61,7 +62,8 @@ BUILTIN_THEMES = {t.name: t for t in [
           mood_weights={"chill": 1.0, "ambient": 0.6, "groove": 0.4},
           style_weights={"long_blend": 1.5, "bass_swap": 0.8,
                          "cut_at_drop": 0.0, "loop_roll_exit": 0.15,
-                         "bassline_layer": 0.15, "long_fade": 0.8},
+                         "bassline_layer": 0.15, "long_fade": 0.8,
+                         "filter_sweep": 0.7, "echo_out": 0.3},
           min_play_s=210.0, max_play_s=480.0),
     Theme("groove", bpm_range=(105.0, 128.0),
           energy_base=0.55, energy_span=0.25, arc="peak_wave",
@@ -73,14 +75,15 @@ BUILTIN_THEMES = {t.name: t for t in [
           style_weights={"long_blend": 1.0, "bass_swap": 1.4,
                          "cut_at_drop": 0.4, "loop_roll_exit": 0.3,
                          "bassline_layer": 0.4, "double_drop": 0.4,
-                         "loop_build": 0.4, "long_fade": 0.1},
+                         "loop_build": 0.4, "long_fade": 0.1,
+                         "filter_sweep": 0.7, "echo_out": 0.5},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",
           mood_weights={"chill": 1.0, "ambient": 0.8, "groove": 0.3},
           style_weights={"long_blend": 1.2, "bass_swap": 0.4,
                          "cut_at_drop": 0.0, "loop_roll_exit": 0.2,
-                         "long_fade": 1.0},
+                         "long_fade": 1.0, "filter_sweep": 0.6},
           min_play_s=240.0, max_play_s=540.0),
     Theme("all_night", bpm_range=(95.0, 138.0),
           energy_base=0.55, energy_span=0.45, arc="all_night",
