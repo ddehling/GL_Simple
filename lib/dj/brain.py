@@ -284,7 +284,13 @@ class Brain:
         for when, tid, artist in self.recent:
             age_h = (now - when) / 3600.0
             if tid == track.id:
-                pen *= min(1.0, 0.05 + age_h / 6.0)     # ~6h to forgive a track
+                # Inside an hour the penalty must be a near-WALL: strong
+                # flavor leans concentrate the pool and a x0.09 penalty
+                # lost to them - measured: a track returned after 13 min
+                # on a hypnotic night. Nonzero so a truly dry pool still
+                # degrades to spaced repeats instead of stalling.
+                pen *= 0.005 if age_h < 1.0 \
+                    else min(1.0, age_h / 6.0)          # ~6h to fully forgive
             elif artist and artist == track.artist:
                 pen *= min(1.0, 0.55 + age_h / 2.0)     # ~1h for an artist
         return max(pen, 0.01)
