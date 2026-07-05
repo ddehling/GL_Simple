@@ -419,6 +419,7 @@ class PlanPreview:
                         sub.post({"cmd": "load", "deck": payload["deck"],
                                   "samples": samples, "track_id": t.id,
                                   "grid": t.grid, "gain_db": t.gain_db,
+                                  "kick_offset_s": t.kick_offset_s,
                                   "cue_s": payload["cue"]})
                         if payload.get("start"):
                             sub.post({"cmd": "gain", "deck": payload["deck"],

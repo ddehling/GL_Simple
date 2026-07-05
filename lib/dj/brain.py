@@ -45,6 +45,7 @@ class TrackInfo:
         self.camelot = row["camelot"] or ""
         self.grid = row.get("beat_grid") or []
         self.gain_db = row.get("loudness_gain_db") or 0.0
+        self.kick_offset_s = float(row.get("kick_offset_s") or 0.0)
         self.mood_hist = row.get("mood_hist") or {}
         self.rhythm_density = row.get("rhythm_density") or 0.0
         self.spectral = row.get("spectral") or {}
@@ -289,6 +290,16 @@ class Brain:
                 # blend goes quiet as the outgoing leaves.
                 early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
+                # BLEND WHERE THE BEATS ARE: a beat-matched blend is only
+                # audible as beat-matched if BOTH sides carry rhythm and
+                # comparable energy - otherwise it just reads as a fade.
+                ra = sec_a.get("rhythm_density") or 0.0
+                rb = sec_b.get("rhythm_density") or 0.0
+                ea = sec_a.get("energy") or 0.0
+                eb = sec_b.get("energy") or 0.0
+                beaty = ra >= 1.2 and rb >= 1.2
+                rhythm_fit = (1.3 if beaty else 0.55) \
+                    * math.exp(-((ea - eb) ** 2) / (2 * 0.4 ** 2))
                 # Two lead-carrying sections over each other = clash: heavy
                 # penalty (not a hard reject, so there's always a best pair).
                 clash = 1.0
@@ -300,12 +311,12 @@ class Brain:
                 # Weighted-sum form so a mediocre pair stays ~0.05-1, never
                 # collapsing to ~0 (which would zero the whole selection).
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
-                         * (0.4 + 0.6 * early_b) * clash * mp)
+                         * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp)
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),
                             "in_hint": i.get("style_hint", "blend"),
-                            "score": round(score, 5),
+                            "score": round(score, 5), "beaty": beaty,
                             "kinds": (sec_a.get("kind"), sec_b.get("kind")),
                             "busy": (round(busy_a, 2), round(busy_b, 2))}
         return best
@@ -356,7 +367,10 @@ class Brain:
         # Style menu, gated by analysis confidence.
         weights = dict(self.theme.style_weights)
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
-        if low_conf:
+        if low_conf or not pair.get("beaty", True):
+            # No confident grid, or the best seam is BEATLESS on one side:
+            # a beat-matched blend there is inaudible as such and just
+            # smears - do a deliberate clean fade on the phrase instead.
             style = "long_fade"
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
@@ -450,7 +464,7 @@ class Brain:
 
         if style == "long_fade":
             S0 = clock_at(plan["out_s"])
-            dur = 20.0
+            dur = 12.0                       # deliberate clean fade, phrase-tight
             ev += [
                 {"at": S0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},

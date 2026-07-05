@@ -339,7 +339,8 @@ class DJSystem:
         self.submix.post_many([
             {"cmd": "load", "deck": self.active_deck, "samples": samples,
              "track_id": first.id, "grid": first.grid,
-             "gain_db": first.gain_db, "cue_s": cue},
+             "gain_db": first.gain_db,
+             "kick_offset_s": first.kick_offset_s, "cue_s": cue},
             {"cmd": "gain", "deck": self.active_deck, "value": 1.0,
              "ramp_s": 1.5},
             {"cmd": "start", "deck": self.active_deck},
@@ -431,6 +432,7 @@ class DJSystem:
                           "track_id": self.next_track.id,
                           "grid": self.next_track.grid,
                           "gain_db": self.next_track.gain_db,
+                          "kick_offset_s": self.next_track.kick_offset_s,
                           "cue_s": plan["in_s"]})
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,

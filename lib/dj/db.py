@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     downbeat_offset INTEGER, downbeat_conf REAL,
     key_pc INTEGER, key_mode TEXT, camelot TEXT, key_conf REAL, key_name TEXT,
     loudness_gain_db REAL,
+    kick_offset_s REAL,
     energy_curve TEXT,                  -- JSON, 2 Hz, 0..1.2
     band_curve TEXT,                    -- JSON v3 {low/mid/high: [2Hz]}
     mood_hist TEXT,                     -- JSON {mood: fraction}
@@ -141,10 +142,12 @@ class LibraryDB:
             self.conn.executescript(_SCHEMA)     # tables are IF NOT EXISTS
             have = {r[1] for r in
                     self.conn.execute("PRAGMA table_info(tracks)")}
-            for col in ("axes", "auto_tags", "band_curve"):   # v2/v3 columns
+            for col, typ in (("axes", "TEXT"), ("auto_tags", "TEXT"),
+                             ("band_curve", "TEXT"),
+                             ("kick_offset_s", "REAL")):  # v2/v3/v4 columns
                 if col not in have:
                     self.conn.execute(
-                        f"ALTER TABLE tracks ADD COLUMN {col} TEXT")
+                        f"ALTER TABLE tracks ADD COLUMN {col} {typ}")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -190,6 +193,7 @@ class LibraryDB:
             "camelot": a.get("camelot"), "key_conf": a.get("key_conf"),
             "key_name": a.get("key_name"),
             "loudness_gain_db": a.get("loudness_gain_db"),
+            "kick_offset_s": a.get("kick_offset_s"),
             "rhythm_density": a.get("rhythm_density"),
             "analysis_version": a.get("analysis_version", 0),
             "analyzed_at": time.time(),

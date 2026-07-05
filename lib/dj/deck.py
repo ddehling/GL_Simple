@@ -16,6 +16,9 @@ from lib.dj.stretch import WSOLAStretcher
 
 RATE = 44100
 LOOP_XFADE = 128                 # frames, equal-power seam blend
+ENV_FPS = 200                    # output kick-envelope rate (5ms bins)
+ENV_LEN = 2 * ENV_FPS            # ring holds the last 2s
+_ENV_GROUP = RATE // ENV_FPS     # samples per envelope bin
 
 
 class Deck:
@@ -31,21 +34,31 @@ class Deck:
         self.rate_trim = 0.0     # PLL micro-correction, +/- ~0.003
         self._rate_ramp = None   # (target, per_second)
         self.gain = 0.0          # current linear gain
+        self.kick_offset_s = 0.0 # per-track groove offset (analysis v6)
         self._gain_ramp = None   # (target, per_second)
         self.eq = ThreeBandEQ()
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
         self.stretch = WSOLAStretcher(self._fetch)
         self._lock = threading.Lock()
+        # Running FULL-BAND amplitude envelope of this deck's OUTPUT (pre-
+        # EQ/pre-gain). The submix correlates the POSITIVE DIFFERENCE of two
+        # decks' rings - i.e. their TRANSIENTS (kick/hat attacks), which sit
+        # on the grid. (Low-band envelopes were tried and align the OFFBEAT
+        # bass stabs this genre loves, actively fighting kick alignment.)
+        self.out_env = np.zeros(ENV_LEN, dtype=np.float32)
+        self._env_rem = np.zeros(0, dtype=np.float64)
 
     # -- loading -------------------------------------------------------------
-    def load(self, samples, track_id=None, grid=None, gain_db=0.0):
+    def load(self, samples, track_id=None, grid=None, gain_db=0.0,
+             kick_offset_s=0.0):
         self.samples = np.asarray(samples, dtype=np.float32)
         if self.samples.ndim == 1:
             self.samples = np.repeat(self.samples[:, None], 2, axis=1)
         self.track_id = track_id
         self.grid = grid or []
         self.loudness_gain = float(10.0 ** (gain_db / 20.0))
+        self.kick_offset_s = float(kick_offset_s or 0.0)
         self.finished = False
         self.ready = True
 
@@ -76,6 +89,8 @@ class Deck:
         frame = int(time_s * RATE)
         self._virt = frame
         self.stretch.seek(frame)
+        self.out_env[:] = 0.0                    # stale rhythm history
+        self._env_rem = self._env_rem[:0]
 
     def start(self):
         if self.ready:
@@ -147,29 +162,6 @@ class Deck:
         return ((self.source_time_s() - g["first_beat_s"])
                 / g["period_s"]) % 1.0
 
-    def kick_env(self, dur_s=2.0, env_fps=200):
-        """Low-band (kick) amplitude envelope of the next dur_s of SOURCE
-        audio from the current play position, at env_fps - for aligning the
-        actual transients of two decks (onset-anchored sync).
-
-        Filters ONLY the dur_s window (~1ms), never the whole track: this
-        runs on the audio callback thread at the sync moment, and filtering
-        a 5-min track here caused a ~100ms stall = a dropout right as the
-        next track entered."""
-        n = int(dur_s * RATE)
-        if self.samples is None:
-            return np.zeros(int(dur_s * env_fps))
-        from scipy.signal import butter, sosfilt
-        pos = int(self._map_source(int(self.stretch.source_pos)))
-        seg = self.samples[pos:pos + n]
-        seg = seg.mean(axis=1) if seg.ndim == 2 else seg
-        if len(seg) < n:
-            seg = np.pad(seg, (0, n - len(seg)))
-        sos = butter(4, 110, "low", fs=RATE, output="sos")
-        lb = np.abs(sosfilt(sos, seg))
-        w = RATE // env_fps
-        return lb[:len(lb) // w * w].reshape(-1, w).max(axis=1)
-
     def nudge_seconds(self, dt_s):
         """Shift the play cursor by dt_s (source-domain seconds); used by
         onset-anchored sync to slide the deck onto the master's kicks."""
@@ -225,6 +217,20 @@ class Deck:
                          + src[pre] * np.sqrt(1.0 - f))
         return out
 
+    def _feed_env(self, block):
+        """Append this output block's amplitude envelope to the ring."""
+        mono = block.mean(axis=1).astype(np.float64)
+        buf = np.concatenate([self._env_rem, np.abs(mono)])
+        nbin = len(buf) // _ENV_GROUP
+        if nbin:
+            vals = buf[:nbin * _ENV_GROUP].reshape(nbin, _ENV_GROUP).max(1)
+            if nbin >= ENV_LEN:
+                self.out_env[:] = vals[-ENV_LEN:]
+            else:
+                self.out_env[:-nbin] = self.out_env[nbin:]
+                self.out_env[-nbin:] = vals
+        self._env_rem = buf[nbin * _ENV_GROUP:]
+
     def read(self, n):
         """n output frames through the whole chain. Zeros when idle."""
         if not (self.playing and self.ready and self.samples is not None):
@@ -243,6 +249,7 @@ class Deck:
             block = self.stretch.read(n).copy()
         if self.loop is None and self.stretch.source_pos >= len(self.samples):
             self.finished = True
+        self._feed_env(block)                    # pre-EQ/gain rhythm tap
         block = self.eq.process(block)
         g0 = self.gain
         if self._gain_ramp is not None:

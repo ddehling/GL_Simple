@@ -24,7 +24,12 @@ from lib.dj.deck import Deck
 
 RATE = 44100
 SUB_BLOCK = 256
-PLL_GAIN = 1.2                   # rate trim per beat of phase error
+# Loop: position error e, rate trim u, de/dt = -u + bias. With u = Kp*e +
+# Ki*int(e): e'' = -Kp e' - Ki e, damping zeta = Kp / (2 sqrt(Ki)). These
+# values give zeta ~0.8 (no ringing) with Kp = beat/TC ~0.25 (tau ~4s,
+# comfortably slower than the ~0.7s measurement delay).
+PLL_TC = 2.0                     # seconds to slew a measured error away
+PLL_KI = 0.012                   # integral gain (learns the tempo bias)
 PLL_MAX_TRIM = 0.012             # +/- 1.2% - real house grids drift this much
 PLL_DEADBAND = 0.004             # beats
 RESNAP_ERR = 0.08                # re-snap if this far off while still fading in
@@ -47,6 +52,9 @@ class DJSubmix:
         self.done = False
         self._auto = []          # automation events sorted by 'at'
         self._sync = None        # {"slave": name, "master": name}
+        self._apll_clock = 0     # last audio-phase measurement clock
+        self._apll_err = None    # latest audio-phase error (beats, + = late)
+        self._apll_i = 0.0       # integral term (learned tempo bias)
         self.telemetry = {}      # replaced wholesale each read()
 
     # -- control-thread API ----------------------------------------------------
@@ -72,7 +80,7 @@ class DJSubmix:
         if cmd == "load":
             # Samples were decoded on another thread; this just mounts them.
             deck.load(e["samples"], e.get("track_id"), e.get("grid"),
-                      e.get("gain_db", 0.0))
+                      e.get("gain_db", 0.0), e.get("kick_offset_s", 0.0))
             if "cue_s" in e:
                 deck.cue(e["cue_s"])
         elif cmd == "start":
@@ -98,57 +106,69 @@ class DJSubmix:
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
         elif cmd == "sync":
             self._sync = {"slave": e["slave"], "master": e["master"]}
-            # DJ sync SNAP. Align the incoming deck to the master (inaudible
-            # at gain ~0), then the PLL holds. Grid-phase alignment leaves
-            # ~30ms of kick flam because each track's grid sits differently
-            # vs its real kicks; so we ALSO cross-correlate the two decks'
-            # actual low-band (kick) audio and slide the slave onto the
-            # master's transients - the audio is the ground truth.
+            sl = self.decks.get(e["slave"])
+            if sl is not None:
+                sl.stretch.no_bypass = True      # no mode-flap phase kicks
+            # DJ sync SNAP: align the incoming deck at gain ~0 (inaudible),
+            # then the transient PLL holds it through the blend.
             master = self.decks.get(e["master"])
             slave = self.decks.get(e["slave"])
             if master and slave and master.playing and slave.playing \
                     and master.grid and slave.grid:
-                slave.phase_snap(master.beat_phase())     # coarse: grid
-                self._onset_align(master, slave)          # fine: real kicks
+                # Grid phase alignment: the grids are onset-locked (kick+hat
+                # transients), accurate to ~25ms - the right anchor for this
+                # genre. (Low-band audio alignment was tried and locks onto
+                # OFFBEAT bass stabs instead of kicks - worse, not better.)
+                slave.phase_snap(master.beat_phase())
         elif cmd == "end_sync":
             self._sync = None
+            self._apll_err = None
+            self._apll_i = 0.0
             for d in self.decks.values():
                 d.rate_trim = 0.0
+                d.stretch.no_bypass = False
 
-    def _onset_align(self, master, slave):
-        """Slide the slave within +/- half a beat so its actual kicks sit on
-        the master's, via low-band envelope cross-correlation."""
-        period = master.beat_period_s() or 0.5
-        env_fps = 200
-        try:
-            em = master.kick_env(2.0, env_fps)
-            es = slave.kick_env(2.0, env_fps)
-        except Exception:
-            return
-        if len(em) < 8 or len(es) < 8 or em.max() <= 0 or es.max() <= 0:
-            return
-        em = em - em.mean()
-        es = es - es.mean()
+    def _audio_phase_err(self, master, slave, beat_s):
+        """Beat-phase error measured from the two decks' ACTUAL output
+        TRANSIENTS (positive difference of the amplitude rings - kick/hat
+        attacks), cross-correlated over the last ~1.5s within +/- a QUARTER
+        beat: a refinement around the grid alignment, never a re-anchor
+        (wider windows lock onto offbeat bass patterns in this genre).
+        Positive = slave's transients land LATE. None when unconfident."""
+        from lib.dj.deck import ENV_FPS
+        n = int(1.5 * ENV_FPS)
+        em = np.maximum(np.diff(master.out_env[-n:].astype(np.float64)), 0.0)
+        es = np.maximum(np.diff(slave.out_env[-n:].astype(np.float64)), 0.0)
+        if em.max() <= 1e-5 or es.max() <= 1e-5:
+            return None
+        em -= em.mean()
+        es -= es.mean()
         xc = np.correlate(em, es, mode="full")
-        # Only search +/- half a beat so we align beat phase, not skip beats.
-        half = int(0.5 * period * env_fps)
         mid = len(es) - 1
-        lo, hi = mid - half, mid + half + 1
-        seg = xc[max(lo, 0):min(hi, len(xc))]
-        if not len(seg):
-            return
-        lag = (max(lo, 0) + int(np.argmax(seg))) - mid   # env frames
-        dt = lag / env_fps                               # seconds: slave += dt
-        # Only FINE-TUNE: the grid snap already got us within a beat; a small
-        # correction removes flam, but a large nudge here risks aligning to
-        # the wrong kick on tracks with different patterns, so cap it tight.
-        peak = float(seg.max())
-        rms = float(np.sqrt(np.mean(seg ** 2))) + 1e-9
-        if abs(dt) <= 0.05 and peak > 2.5 * rms:
-            slave.nudge_seconds(dt)
+        half = max(int(0.25 * beat_s * ENV_FPS), 2)
+        seg = xc[mid - half:mid + half + 1]
+        if len(seg) < 3:
+            return None
+        k = int(np.argmax(seg))
+        peak = float(seg[k])
+        rms = float(np.sqrt(np.mean(seg ** 2))) + 1e-12
+        if peak <= 0 or peak < 1.8 * rms:        # no confident beat pattern
+            return None
+        lag = float(k)
+        if 0 < k < len(seg) - 1:                 # parabolic sub-bin (~1ms)
+            y0, y1, y2 = seg[k - 1], seg[k], seg[k + 1]
+            den = y0 - 2 * y1 + y2
+            if abs(den) > 1e-12:
+                lag += 0.5 * (y0 - y2) / den
+        # xc[mid+lag] = sum em[i+lag]*es[i]: positive lag means es must
+        # shift LATER to match em, i.e. the slave's kicks are EARLY.
+        return -((lag - half) / ENV_FPS) / beat_s   # beats; + = slave late
 
     def _run_pll(self):
-        """Trim the slave deck's rate toward the master's beat phase."""
+        """Continuously trim the slave deck's rate to keep its ACTUAL kicks
+        on the master's - audio phase first (the grids sit differently vs
+        each track's real kicks, so grid phase alone leaves ~30ms flam),
+        grid phase as the fallback."""
         cfg = self._sync
         if not cfg:
             return
@@ -157,21 +177,52 @@ class DJSubmix:
         if not (master and slave and master.playing and slave.playing
                 and master.grid and slave.grid):
             return
-        err = slave.beat_phase() - master.beat_phase()
-        err = (err + 0.5) % 1.0 - 0.5            # wrap to [-0.5, 0.5)
+        beat_s = master.beat_period_s() or 0.5
+        grid_err = slave.beat_phase() - master.beat_phase()
+        grid_err = (grid_err + 0.5) % 1.0 - 0.5
         # If drift outruns the PLL while the slave is still fading in, snap
         # again (inaudible at low gain) rather than let it trainwreck.
-        if abs(err) > RESNAP_ERR and slave.gain < RESNAP_GAIN:
+        if abs(grid_err) > RESNAP_ERR and slave.gain < RESNAP_GAIN:
             slave.phase_snap(master.beat_phase())
             slave.rate_trim = 0.0
+            self._apll_err = None
+            self._apll_i = 0.0
             return
-        if abs(err) < PLL_DEADBAND:
-            slave.rate_trim *= 0.9               # relax toward 0
+        # Audio-phase measurement 4x/second; PI control on it. The plant is
+        # a delayed position measurement driven by a rate: the INTEGRAL term
+        # learns the true tempo-ratio bias (why grids drift at all) so the
+        # proportional term only handles small residuals - no limit cycle.
+        if self.clock - self._apll_clock >= RATE // 4:
+            self._apll_clock = self.clock
+            a = self._audio_phase_err(master, slave, beat_s)
+            if a is not None:
+                prev = self._apll_err if self._apll_err is not None else a
+                self._apll_err = 0.6 * prev + 0.4 * a
+                self._apll_i = float(np.clip(
+                    self._apll_i + PLL_KI * self._apll_err * beat_s,
+                    -0.008, 0.008))
+            else:
+                self._apll_err = None
+        if self._apll_err is not None:
+            # Still quiet? A large audio error is corrected by an inaudible
+            # JUMP (the PI slews ~12ms/s - a blend would end first).
+            if abs(self._apll_err) > 0.05 and slave.gain < RESNAP_GAIN:
+                slave.nudge_seconds(self._apll_err * beat_s)
+                self._apll_err = None
+                self._apll_i = 0.0
+                slave.rate_trim = 0.0
+                return
+            err_s = self._apll_err * beat_s      # + = slave late -> speed up
+            want = self._apll_i + err_s / PLL_TC
+        elif abs(grid_err) >= PLL_DEADBAND:
+            # Grid fallback (no confident audio): + = ahead -> slow down.
+            want = -grid_err * beat_s / PLL_TC
+        else:
+            slave.rate_trim *= 0.9
             return
-        # Positive error = slave ahead -> slow it down.
-        trim = float(np.clip(-PLL_GAIN * err, -PLL_MAX_TRIM, PLL_MAX_TRIM))
+        trim = float(np.clip(want, -PLL_MAX_TRIM, PLL_MAX_TRIM))
         # One-pole smoothing keeps the correction from breathing audibly.
-        slave.rate_trim = 0.7 * slave.rate_trim + 0.3 * trim
+        slave.rate_trim = 0.8 * slave.rate_trim + 0.2 * trim
 
     def read(self, n):
         """Called by AudioEngine._mixer on the audio thread."""

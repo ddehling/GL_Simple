@@ -29,6 +29,11 @@ class WSOLAStretcher:
         self.fetch = fetch
         self.channels = channels
         self.rate = 1.0
+        # While beat-synced, the rate trim dances around 1.0; letting the
+        # stretcher flap between bypass and WSOLA shifts output timing by up
+        # to the search width each flip (a random-walk phase kick that
+        # defeats the sync). Pin WSOLA mode during sync.
+        self.no_bypass = False
         self._win = np.hanning(N).astype(np.float64)[:, None]
         self._pos = 0.0          # nominal (rate-integrated) source frame
         self._q_prev = None      # source pos of the previous chosen window
@@ -57,7 +62,8 @@ class WSOLAStretcher:
 
     # -- internals ---------------------------------------------------------
     def _produce(self):
-        want_bypass = abs(self.rate - 1.0) < BYPASS_EPS
+        want_bypass = (abs(self.rate - 1.0) < BYPASS_EPS
+                       and not self.no_bypass)
         if want_bypass != self._bypassed:
             # Render one block in the NEW mode and crossfade from the old
             # mode's continuation so the seam never clicks.

@@ -27,7 +27,7 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 5            # v5: sensible section taxonomy (drop=moment)
+ANALYSIS_VERSION = 6            # v6: per-track groove/kick offset
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -916,6 +916,54 @@ def find_interesting(sections):
 # Loudness + energy curve
 # --------------------------------------------------------------------------
 
+def measure_kick_offset(samples, grid, max_s=180.0, env_fps=200):
+    """Per-track GROOVE OFFSET: where the low-band rhythm actually sits
+    relative to the grid beats, in seconds (+ = bass pattern peaks after
+    the beat). Measured by folding the low-band amplitude envelope over
+    hundreds of beats - robust even though any 2s window is ambiguous.
+
+    Two beat-matched decks whose grids are phase-aligned still flam by the
+    DIFFERENCE of their groove offsets (can exceed 100ms on syncopated
+    basslines); the submix subtracts these at sync launch."""
+    from scipy.signal import butter, sosfilt
+    if not grid:
+        return 0.0
+    g = max(grid, key=lambda s: s["end_s"] - s["start_s"])
+    period = g["period_s"]
+    if period <= 0:
+        return 0.0
+    a = int(max(g["start_s"], 0.0) * RATE)
+    b = int(min(g["end_s"], g["start_s"] + max_s) * RATE)
+    seg = samples[a:b]
+    if len(seg) < RATE * 10:
+        return 0.0
+    sos = butter(2, 110, "low", fs=RATE, output="sos")
+    env = np.abs(sosfilt(sos, seg.astype(np.float64)))
+    w = RATE // env_fps
+    env = env[:len(env) // w * w].reshape(-1, w).max(1)
+    t0 = a / RATE
+    # Fold onto beat phase.
+    nb_bins = max(int(round(period * env_fps)), 8)
+    prof = np.zeros(nb_bins)
+    cnt = np.zeros(nb_bins)
+    times = t0 + np.arange(len(env)) / env_fps
+    phases = ((times - g["first_beat_s"]) / period) % 1.0
+    bins = np.minimum((phases * nb_bins).astype(np.int64), nb_bins - 1)
+    np.add.at(prof, bins, env)
+    np.add.at(cnt, bins, 1)
+    prof = prof / np.maximum(cnt, 1)
+    k = int(np.argmax(prof))
+    peak = float(k)
+    y0, y1, y2 = prof[(k - 1) % nb_bins], prof[k], prof[(k + 1) % nb_bins]
+    den = y0 - 2 * y1 + y2
+    if abs(den) > 1e-12:
+        peak += 0.5 * (y0 - y2) / den
+    off = (peak / nb_bins) * period
+    if off > period / 2:
+        off -= period                             # wrap to [-p/2, p/2)
+    return round(float(off), 5)
+
+
 def estimate_loudness_gain(samples):
     """Gain (dB) that brings the loudest 60% of 0.5s frames to the target."""
     fl = RATE // 2
@@ -1054,6 +1102,7 @@ def analyze_samples(samples, deep=True):
         "camelot": camelot, "key_conf": round(key_conf, 3),
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",
         "loudness_gain_db": round(estimate_loudness_gain(samples), 2),
+        "kick_offset_s": measure_kick_offset(samples, grid),
         "energy_curve": energy_curve_2hz(bands),
         "band_curve": band_curves_2hz(bands),
         "sections": sections, "loops": loops, "mix_points": mix_points,
