@@ -28,7 +28,8 @@ PLL_GAIN = 1.2                   # rate trim per beat of phase error
 PLL_MAX_TRIM = 0.012             # +/- 1.2% - real house grids drift this much
 PLL_DEADBAND = 0.004             # beats
 RESNAP_ERR = 0.08                # re-snap if this far off while still fading in
-RESNAP_GAIN = 0.50               # ...below half gain (glitch masked by A)
+RESNAP_GAIN = 0.12               # ...only while near-silent (a reseek is a
+                                 # hard jump; never do it once audible)
 
 
 class DJSubmix:
