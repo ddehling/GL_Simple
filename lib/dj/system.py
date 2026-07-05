@@ -121,13 +121,7 @@ class DJSystem:
         except Exception as e:
             print(f"[DJ] recent-plays seed skipped: {e}")
         self._refresh_setlist_names()
-        # Tag vocabulary for the web/planner flavor chips: every tag in
-        # the library with its track count, most common first.
-        counts = {}
-        for t in lib:
-            for tag in t.all_tags:
-                counts[tag] = counts.get(tag, 0) + 1
-        self._tag_vocab = sorted(counts.items(), key=lambda kv: -kv[1])[:24]
+        self._refresh_tags()
         if self.engine is not None:
             self.engine.attach_track("dj_submix", self.submix)
         self._running = True
@@ -141,6 +135,35 @@ class DJSystem:
         print(f"[DJ] started: {len(lib)} playable tracks, "
               f"theme={self._theme_name}")
         return True
+
+    def _refresh_tags(self):
+        """Re-pull USER tags from the DB (the planner writes them while
+        the show runs) and rebuild the flavor-chip vocabulary. User tags
+        ALWAYS appear regardless of count - they are deliberate operator
+        vocabulary, not a popularity contest; auto tags fill the rest."""
+        if self.brain is None:
+            return
+        try:
+            per_track = {}
+            for r in self.db.conn.execute("SELECT track_id, tag FROM tags"):
+                per_track.setdefault(r["track_id"], []).append(r["tag"])
+            user_counts = {}
+            auto_counts = {}
+            for t in self.brain.library:
+                t.user_tags = per_track.get(t.id, [])
+                for tag in t.user_tags:
+                    user_counts[tag] = user_counts.get(tag, 0) + 1
+                for tag in t.auto_tags:
+                    auto_counts[tag] = auto_counts.get(tag, 0) + 1
+            vocab = [(tag, n, True) for tag, n in
+                     sorted(user_counts.items(), key=lambda kv: -kv[1])]
+            room = max(28 - len(vocab), 8)
+            vocab += [(tag, n, False) for tag, n in
+                      sorted(auto_counts.items(), key=lambda kv: -kv[1])
+                      if tag not in user_counts][:room]
+            self._tag_vocab = vocab
+        except Exception as e:
+            print(f"[DJ] tag refresh skipped: {e}")
 
     def _start_recording(self):
         """Tap the submix into a timestamped WAV - every night becomes
@@ -504,6 +527,7 @@ class DJSystem:
 
         if time.time() - self._setlists_checked > 10.0:
             self._refresh_setlist_names()
+            self._refresh_tags()
 
         if self.state == "idle":
             self._start_first()

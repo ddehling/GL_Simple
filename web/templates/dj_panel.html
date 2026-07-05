@@ -233,10 +233,11 @@
             if ($("dj-flavor").dataset.have === key) return;
             $("dj-flavor").dataset.have = key;
             $("dj-flavor").innerHTML = "";
-            (tags || []).forEach(([tag, n]) => {
+            (tags || []).forEach(([tag, n, isUser]) => {
                 const b = document.createElement("button");
                 b.className = "theme-btn"; b.dataset.tag = tag;
-                b.textContent = `${tag} (${n})`;
+                b.textContent = `${isUser ? "* " : ""}${tag} (${n})`;
+                if (isUser) b.style.borderColor = "#8cf";
                 b.onclick = () => {
                     flavorState[tag] = ((flavorState[tag] || 0) + 1) % 3;
                     const s = flavorState[tag];
