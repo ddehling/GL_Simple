@@ -52,7 +52,15 @@ SECTION_COLORS = {
     "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
     "breakdown": QColor(90, 70, 130),
 }
-COLS = ["title", "artist", "bpm", "key", "dur", "tags", "structure"]
+COLS = ["title", "artist", "folder", "bpm", "key", "dur", "tags",
+        "structure"]
+
+
+def track_folder(t):
+    """Subdirectory (relative to the music root) a track lives in."""
+    import os as _os
+    d = _os.path.dirname(t.path).replace("\\", "/")
+    return d or "(root)"
 
 
 # ==========================================================================
@@ -90,12 +98,14 @@ class LibraryModel(QAbstractTableModel):
             if c == 1:
                 return t.artist
             if c == 2:
-                return f"{t.bpm:.1f}"
+                return track_folder(t)
             if c == 3:
-                return t.camelot
+                return f"{t.bpm:.1f}"
             if c == 4:
-                return f"{int(t.duration_s // 60)}:{int(t.duration_s % 60):02d}"
+                return t.camelot
             if c == 5:
+                return f"{int(t.duration_s // 60)}:{int(t.duration_s % 60):02d}"
+            if c == 6:
                 return " ".join(t.all_tags)
         if role == Qt.ItemDataRole.UserRole:
             return t
@@ -149,10 +159,17 @@ class LibraryTab(QWidget):
         top.addWidget(self.scan_btn)
         self.scan_lbl = QLabel("")
         top.addWidget(self.scan_lbl, 1)
-        self.search = QLineEdit(placeholderText="search title / artist / tag...")
+        self.search = QLineEdit(
+            placeholderText="search title / artist / folder / tag...")
         self.search.textChanged.connect(
             lambda s: self.proxy.setFilterFixedString(s))
         top.addWidget(self.search, 2)
+        # One-tap folder filter: every subdirectory in the library.
+        from PyQt6.QtWidgets import QComboBox
+        self.folder_box = QComboBox()
+        self.folder_box.addItem("all folders")
+        self.folder_box.currentTextChanged.connect(self._folder_filter)
+        top.addWidget(self.folder_box, 1)
         v.addLayout(top)
 
         self.model = LibraryModel()
@@ -167,8 +184,8 @@ class LibraryTab(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setItemDelegateForColumn(6, StripDelegate())
-        for i, w in enumerate((230, 120, 52, 44, 50, 150, 260)):
+        self.table.setItemDelegateForColumn(7, StripDelegate())
+        for i, w in enumerate((230, 120, 110, 52, 44, 50, 150, 260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
@@ -226,9 +243,29 @@ class LibraryTab(QWidget):
              else self.planner.db.remove_tag)(t.id, tag)
         self.planner.reload_library()
 
+    def _folder_filter(self, name):
+        if name == "all folders":
+            self.proxy.setFilterFixedString(self.search.text())
+            self.proxy.setFilterKeyColumn(-1)
+        else:
+            self.proxy.setFilterKeyColumn(2)
+            self.proxy.setFilterFixedString(name)
+
     def refresh(self):
         self.model.set_tracks(self.planner.library)
         self.count_lbl.setText(f"{len(self.planner.library)} tracks")
+        folders = sorted({track_folder(t) for t in self.planner.library})
+        have = [self.folder_box.itemText(i)
+                for i in range(self.folder_box.count())]
+        want = ["all folders"] + folders
+        if have != want:
+            cur = self.folder_box.currentText()
+            self.folder_box.blockSignals(True)
+            self.folder_box.clear()
+            self.folder_box.addItems(want)
+            if cur in want:
+                self.folder_box.setCurrentText(cur)
+            self.folder_box.blockSignals(False)
 
     # -- scanning ------------------------------------------------------------
     def run_scan(self):
@@ -1068,8 +1105,12 @@ class Planner(QMainWindow):
     def reload_library(self, keep_analysis=False):
         self.library = load_library(self.db)
         self.library_tab.refresh()
-        self.analysis_tab.refresh_tracklist()
-        if not keep_analysis and self.set_tab.entries:
+        if not keep_analysis:
+            self.analysis_tab.refresh_tracklist()
+        # ANY library change (tags added/removed, cues marked) makes a
+        # compiled plan stale - tags steer selection and user cues
+        # OVERRIDE seam points, so the Set/Mix tabs must recompile.
+        if self.set_tab.entries:
             self.set_tab.recompile()
 
     def _open_analysis(self, track):
