@@ -101,14 +101,23 @@ def compile_plan(library, entries, theme, seed=0):
     offset = 0.0
     entry_in_s = tracks[0][0].mix_ins[0]["time_s"] \
         if tracks and tracks[0][0].mix_ins else 0.0
+    entry_rate = 1.0                 # rate this track was brought in at
     # Aim each track to play a sensible stretch before mixing out, so the
     # set doesn't lurch through 30-second snippets.
     target_play = min(max(theme.min_play_s, 150.0), 300.0)
+    from lib.dj.brain import GLIDE_PER_S
     for i, (t, e) in enumerate(tracks):
         slot = {"track": t, "entry": e, "start_offset_s": offset,
-                "in_s": entry_in_s,              # where THIS track enters
+                "in_s": entry_in_s,              # AT-SEAM source position
+                "entry_rate": entry_rate,
                 "transition": None, "warnings": []}
         in_s = entry_in_s
+        # GLIDE SKEW: while this track glides home from entry_rate to 1.0
+        # it consumes glide*(r-1)/2 source seconds more/less than wall
+        # clock. Slot boundaries placed without this skew drift up to
+        # ~200ms per seam at 2.5% stretch and CASCADE - the drawn beat
+        # grids of adjacent lanes then sit rigidly misaligned (measured).
+        skew = (entry_rate - 1.0) * abs(entry_rate - 1.0) / (2 * GLIDE_PER_S)
         if i + 1 < len(tracks):
             nxt, ne = tracks[i + 1]
             _, meta = brain.score(t, nxt, arc_target=0.6, out_bpm=t.bpm)
@@ -137,7 +146,7 @@ def compile_plan(library, entries, theme, seed=0):
             if plan.get("pair_score", 0) < 0.05:
                 slot["warnings"].append("weak seam (busy x busy?)")
             slot["transition"] = plan
-            play = max(plan["out_s"] - in_s, 40.0)
+            play = max(plan["out_s"] - in_s - skew, 40.0)
             # Blend-family overlaps play BEFORE the seam: by the time the
             # boundary (A's out point) arrives, B has already consumed the
             # blend's worth of source. slot["in_s"] is the AT-SEAM source
@@ -147,8 +156,9 @@ def compile_plan(library, entries, theme, seed=0):
                                      "filter_sweep", "loop_roll_exit") \
                 else 0.0
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]
+            entry_rate = plan["rate"]
         else:
-            play = max(t.duration_s - in_s, 40.0)
+            play = max(t.duration_s - in_s - skew, 40.0)
         slot["play_s"] = play
         slots.append(slot)
         offset += play

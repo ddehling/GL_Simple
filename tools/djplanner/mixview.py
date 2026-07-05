@@ -93,9 +93,16 @@ class MixTimeline(QWidget):
             # (A's out point); the punchy styles run their lead-in before
             # the seam too. Drawing the overlap after the seam - the old
             # geometry - put every drawn beat line a full blend late.
+            # EXCEPTION: long_fade starts B AT the out point and fades
+            # forward 12s - its overlap really is after the seam.
+            if plan["style"] == "long_fade":
+                blend_s = 13.0
+                start_s = self.slots[i + 1]["start_offset_s"]
+            else:
+                start_s = self.slots[i + 1]["start_offset_s"] - blend_s
             self.seams.append({
                 "index": i,
-                "start_s": self.slots[i + 1]["start_offset_s"] - blend_s,
+                "start_s": start_s,
                 "blend_s": blend_s, "style": plan["style"],
                 "env_a": env_a, "env_b": env_b,
             })
@@ -192,9 +199,10 @@ class MixTimeline(QWidget):
             head = 0.0
             head_rate = 1.0
             if i > 0:
-                head = next((sm["blend_s"] for sm in self.seams
-                             if sm["index"] == i - 1), 0.0)
                 pl = self.slots[i - 1]["transition"]
+                if pl is not None and pl["style"] != "long_fade":
+                    head = next((sm["blend_s"] for sm in self.seams
+                                 if sm["index"] == i - 1), 0.0)
                 head_rate = pl["rate"] if pl else 1.0
             E0 = S - head
             x0, x1 = self._t2x(E0), self._t2x(play_end)
