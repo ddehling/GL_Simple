@@ -127,6 +127,7 @@ class DJSubmix:
             for d in self.decks.values():
                 d.rate_trim = 0.0
                 d.stretch.no_bypass = False
+                d.stretch.phase_trim = 0.0
 
     def _audio_phase_err(self, master, slave, beat_s):
         """Beat-phase error measured from the two decks' ACTUAL output
@@ -196,30 +197,70 @@ class DJSubmix:
             self._apll_clock = self.clock
             a = self._audio_phase_err(master, slave, beat_s)
             if a is not None:
+                hist = getattr(self, "_apll_hist", [])
+                hist = (hist + [a])[-3:]
+                self._apll_hist = hist
                 prev = self._apll_err if self._apll_err is not None else a
                 self._apll_err = 0.6 * prev + 0.4 * a
                 self._apll_i = float(np.clip(
                     self._apll_i + PLL_KI * self._apll_err * beat_s,
                     -0.008, 0.008))
+                # PER-BEAT MICRO-FOLLOWING: absorb the measured PHASE error
+                # directly in the stretcher (click-free WSOLA cursor bias).
+                # TRUST GATES (both hard-won): (1) the correlation ring
+                # spans ~1.5s, so after a nudge the next measurements still
+                # contain pre-nudge history - nudge, then hold until the
+                # ring refreshes, or it oscillates. (2) On organic material
+                # the envelope xcorr often measures RHYTHM-PATTERN offset
+                # (A's shakers vs B's congas), not kick flam - chasing that
+                # made lag WORSE. Real flam is PERSISTENT: act only when 3
+                # consecutive raw measurements agree in sign and spread.
+                stable = (len(hist) == 3
+                          and max(hist) - min(hist) < 0.07
+                          and (all(h > 0 for h in hist)
+                               or all(h < 0 for h in hist)))
+                blended = (0.7 * (-((slave.beat_phase()
+                                     - master.beat_phase() + 0.5) % 1.0
+                                    - 0.5))
+                           + 0.3 * self._apll_err)
+                if (slave.gain >= RESNAP_GAIN and stable
+                        and abs(blended) * beat_s > 0.012
+                        and self.clock - getattr(self, "_nudge_clock", 0)
+                        >= int(1.6 * RATE)):
+                    nudge = float(np.clip(blended * beat_s * 0.7,
+                                          -0.035, 0.035))
+                    slave.stretch.phase_trim += nudge * RATE
+                    self._nudge_clock = self.clock
+                    self._apll_err = None    # stale until the ring refreshes
+                    self._apll_hist = []
             else:
                 self._apll_err = None
-        if self._apll_err is not None:
+        if self._apll_err is not None and abs(self._apll_err) > 0.05 \
+                and slave.gain < RESNAP_GAIN:
             # Still quiet? A large audio error is corrected by an inaudible
             # JUMP (the PI slews ~12ms/s - a blend would end first).
-            if abs(self._apll_err) > 0.05 and slave.gain < RESNAP_GAIN:
-                slave.nudge_seconds(self._apll_err * beat_s)
-                self._apll_err = None
-                self._apll_i = 0.0
-                slave.rate_trim = 0.0
-                return
-            err_s = self._apll_err * beat_s      # + = slave late -> speed up
-            want = self._apll_i + err_s / PLL_TC
-        elif abs(grid_err) >= PLL_DEADBAND:
-            # Grid fallback (no confident audio): + = ahead -> slow down.
-            want = -grid_err * beat_s / PLL_TC
-        else:
+            slave.nudge_seconds(self._apll_err * beat_s)
+            self._apll_err = None
+            self._apll_i = 0.0
+            slave.rate_trim = 0.0
+            return
+        # GRID IS PRIMARY. The grids are onset-locked to ~25ms; the audio
+        # xcorr on organic material often measures rhythm-PATTERN offset
+        # (shakers vs congas), not kick flam - when it was allowed to lead,
+        # it dragged decks 30-80 ms OFF grid (measured). It now only
+        # REFINES, 30% weight, and only while measurements are stable.
+        hist = getattr(self, "_apll_hist", [])
+        audio_ok = (self._apll_err is not None and len(hist) == 3
+                    and max(hist) - min(hist) < 0.07
+                    and (all(h > 0 for h in hist)
+                         or all(h < 0 for h in hist)))
+        err_s = -grid_err * beat_s
+        if audio_ok:
+            err_s = 0.7 * err_s + 0.3 * (self._apll_err * beat_s)
+        if abs(err_s) < PLL_DEADBAND * beat_s and not audio_ok:
             slave.rate_trim *= 0.9
             return
+        want = self._apll_i + err_s / PLL_TC
         trim = float(np.clip(want, -PLL_MAX_TRIM, PLL_MAX_TRIM))
         # One-pole smoothing keeps the correction from breathing audibly.
         slave.rate_trim = 0.8 * slave.rate_trim + 0.2 * trim

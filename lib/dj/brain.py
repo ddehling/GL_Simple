@@ -331,13 +331,15 @@ class Brain:
         ahead = [t for t in drops if t >= after_s]
         return min(ahead) if ahead else min(drops)
 
-    def _bass_loop(self, track, before_s):
+    def _bass_loop(self, track, before_s, after_s=0.0):
         """Best loop in `track` to isolate as a repeating groove bed: a
-        bass-heavy, low-vocal, repetitive loop before the exit. Returns the
-        loop dict (+ resolved section) or None."""
+        bass-heavy, low-vocal, repetitive loop before the exit. Only loops
+        AHEAD of `after_s` qualify - a loop behind the live playhead would
+        compile to already-past events (the whole transition fires at once
+        and the loop window never wraps)."""
         best = None
         for l in track.loops:
-            if l["start_s"] >= before_s:
+            if l["start_s"] >= before_s or l["start_s"] < after_s:
                 continue
             sec = track.section_at(l["start_s"] + 1.0)
             if sec is None:
@@ -375,14 +377,24 @@ class Brain:
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
                 weights["cut_at_drop"] = 0.0
-            if pair["in_hint"] != "pre_drop":
+            # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
+            # mix-ins qualifies, not just the best-scoring pair's (gating on
+            # pair["in_hint"] starved the style to literally zero uses
+            # across a 125-track library: pre_drop points rarely win the
+            # generic pair scoring).
+            pre_drops = [p for p in cand.mix_ins
+                         if p.get("style_hint") == "pre_drop"]
+            if not pre_drops:
                 weights["cut_at_drop"] = 0.0
+            # (loop_roll_exit rolls the 16 beats just before out_s - its
+            # window is derived, so no after_s restriction needed here.)
             loop_ok = any(l["start_s"] < pair["out_s"] for l in cur.loops)
             if not loop_ok:
                 weights["loop_roll_exit"] = 0.0
-            # bassline_layer needs a bass-heavy, low-vocal loop in A to
-            # isolate as the repeating groove.
-            if self._bass_loop(cur, pair["out_s"]) is None:
+            # bassline_layer needs a bass-heavy, low-vocal loop in A that is
+            # still AHEAD of the playhead when the transition arms.
+            if self._bass_loop(cur, pair["out_s"],
+                               after_s=after_s or 0.0) is None:
                 weights["bassline_layer"] = 0.0
             # double_drop aligns A's drop onset with B's drop onset (the
             # drop boundary IS a downbeat, so this works even where the
@@ -427,6 +439,14 @@ class Brain:
             return plan
         out_s = cur.nearest_downbeat(pair["out_s"])
         in_s = cand.nearest_downbeat(pair["in_s"])
+        if style == "cut_at_drop":
+            # Enter at B's best PRE-DROP point (the style's whole premise),
+            # not the generic pair in-point.
+            pd = max((p for p in cand.mix_ins
+                      if p.get("style_hint") == "pre_drop"),
+                     key=lambda p: p.get("score", 0.0), default=None)
+            if pd is not None:
+                in_s = cand.nearest_downbeat(pd["time_s"])
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats,
                 "pair_score": pair["score"], "cand_id": cand.id}
@@ -437,7 +457,8 @@ class Brain:
             # the shrinking span).
             plan["loop_start_s"] = max(0.0, out_s - 16 * cur.period_s)
         if style == "bassline_layer":
-            loop = self._bass_loop(cur, pair["out_s"])
+            loop = self._bass_loop(cur, pair["out_s"],
+                                   after_s=after_s or 0.0)
             beats_len = loop["beats"] if loop["beats"] in (8, 16) else 8
             plan["loop_start_s"] = cur.nearest_downbeat(loop["start_s"])
             plan["loop_beats"] = beats_len
@@ -456,6 +477,11 @@ class Brain:
 
         def clock_at(src_time_s):
             return clock + int((src_time_s - tel["time_s"]) / rate_a * RATE)
+
+        # Nothing may schedule in the past: past events all fire in one
+        # flush (run-ins vanish, sync snaps at full gain, loop windows can
+        # land entirely behind the cursor and never wrap).
+        now_guard = clock + int(0.3 * RATE)
 
         beat_out = cur.period_s / rate_a          # output-domain beat of A
         style = plan["style"]
@@ -489,8 +515,11 @@ class Brain:
             # the launch lands 16 matched beats before the cut, not 16 source
             # beats (up to 8% off - a beat-and-a-third the PLL can't absorb).
             lead = int(16 * cand.period_s / rate_b * RATE)
-            S0 = S_cut - lead
-            cue_b = max(0.0, plan["in_s"] - 16 * cand.period_s)
+            S0 = max(S_cut - lead, now_guard)
+            # B must still ARRIVE at in_s exactly at the cut, however much
+            # run-in survives the clamp.
+            cue_b = max(0.0, plan["in_s"]
+                        - (S_cut - S0) / RATE * rate_b)
             ev += [
                 {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
                 {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
@@ -524,12 +553,14 @@ class Brain:
             per = cur.period_s
             # (beats_len, output beats to hold that stage)
             stages = [(8, 8), (4, 4), (2, 2), (1, 2)]
-            S0 = clock_at(drop_s - stages[0][0] * per)   # loop engages here
+            S0 = max(clock_at(drop_s - stages[0][0] * per), now_guard)
             t = S0
             for length, hold in stages:
                 ls = drop_s - length * per
-                ev.append({"at": t, "cmd": "loop", "deck": active,
-                           "start_s": ls, "end_s": drop_s})
+                # (a late-fired loop is safe: the window END is the drop,
+                # still ahead of the cursor, so the wrap engages normally)
+                ev.append({"at": max(t, now_guard), "cmd": "loop",
+                           "deck": active, "start_s": ls, "end_s": drop_s})
                 # Filter up as it builds (rising tension), trim lows late.
                 ev.append({"at": t, "cmd": "eq", "deck": active,
                            "high": 1.0, "mid": 1.0,
@@ -577,8 +608,11 @@ class Brain:
             run_in = 16
             S_drop = clock_at(plan["out_s"])            # A's drop moment
             b_period = cand.period_s
-            S0 = S_drop - int(run_in * b_period / rate_b * RATE)
-            cue_b = max(0.0, plan["in_s"] - run_in * b_period)
+            S0 = max(S_drop - int(run_in * b_period / rate_b * RATE),
+                     now_guard)
+            # B's drop must land ON S_drop whatever run-in survives.
+            cue_b = max(0.0, plan["in_s"]
+                        - (S_drop - S0) / RATE * rate_b)
             both = S_drop + int(16 * beat_out * RATE)   # 4 bars of both
             out = both + int(4 * beat_out * RATE)
             ev += [
@@ -598,11 +632,14 @@ class Brain:
                 {"at": S_drop, "cmd": "gain", "deck": incoming, "value": 1.0,
                  "ramp_s": 0.06},
                 # A ducks and drops its low so two kicks don't muddy or clip
-                # (B is the star of the double drop); keeps some body.
+                # (B is the star of the double drop); keeps some body. The
+                # low cut is fast (no dual kick) but the GAIN duck rides
+                # down over 2 beats, masked by B's drop - an instant -6 dB
+                # duck at the drop reads as a level lurch (measured 7 dB).
                 {"at": S_drop, "cmd": "eq", "deck": active, "low": 0.0,
-                 "mid": 0.6, "ramp_s": 0.06},
+                 "mid": 0.6, "ramp_s": 0.15},
                 {"at": S_drop, "cmd": "gain", "deck": active, "value": 0.5,
-                 "ramp_s": 0.06},
+                 "ramp_s": 2 * beat_out},
                 # Hand over: A leaves, B's already full.
                 {"at": both, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": 4 * beat_out},
@@ -623,6 +660,15 @@ class Brain:
             loop_beats = plan["loop_beats"]
             layer = plan["layer_beats"]
             S0 = clock_at(ls)                 # engage the loop at its start
+            if S0 < now_guard:
+                # The chosen loop is already behind the playhead (armed
+                # late). Rebase: loop the next grid-aligned window ahead -
+                # same groove family in practice, and every event stays in
+                # the future.
+                ls = cur.nearest_downbeat(tel["time_s"] + 2 * cur.period_s)
+                while clock_at(ls) < now_guard:
+                    ls += 4 * cur.period_s
+                S0 = clock_at(ls)
             bar = 4 * beat_out
             enter = S0 + int(loop_beats * beat_out * RATE)  # B in after 1 pass
             hand = enter + int(layer * beat_out * RATE)     # hand off the low
@@ -663,10 +709,33 @@ class Brain:
         # lead); at the midpoint downbeat the bass swaps decisively in one
         # move; the outgoing track then leaves with its bass already gone.
         # No two-bass mud, no dueling low mids - the reliable pro default.
-        S0 = clock_at(plan["out_s"])
-        mid = S0 + int(nb / 2 * beat_out * RATE)
-        end = S0 + int(nb * beat_out * RATE)
-        half = nb / 2 * beat_out
+        # The blend COMPLETES at out_s - A's out point is the boundary where
+        # its groove ends (that's why the seam scored there), so playing
+        # 16-32 beats PAST it means A's own outro collapse lands mid-blend
+        # (measured as 8-9 dB level lurches). Real DJs finish the blend ON
+        # the boundary, riding A's last full-groove phrase.
+        end = clock_at(plan["out_s"])
+        S0 = max(end - int(nb * beat_out * RATE), now_guard)
+        mid = (S0 + end) // 2
+        half = (end - S0) / RATE / 2.0
+        # Never swap the bass into a BASSLESS stretch of B: cutting A's low
+        # while B enters on intro atmosphere collapses the mix floor ~8 dB
+        # (measured). Time the swap to where B's content actually carries
+        # bass, clamped inside the blend.
+        b_bassy = None
+        for sec in (cand.sections or []):
+            if sec["end_s"] <= plan["in_s"] + 0.5:
+                continue
+            if sec.get("bass_share", 0.3) >= 0.28:
+                b_bassy = max(sec["start_s"], plan["in_s"])
+                break
+        if b_bassy is not None:
+            k = round((b_bassy - plan["in_s"]) / max(cand.period_s, 1e-6))
+            mid = min(max(S0 + int(k * beat_out * RATE),
+                          S0 + int(4 * beat_out * RATE)),
+                      max(end - int(2 * beat_out * RATE), S0 + 1))
+        # A's exit fade spans swap -> blend end however late the swap lands.
+        half_exit = max((end - mid) / RATE, 2 * beat_out)
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
@@ -679,14 +748,17 @@ class Brain:
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
              "ramp_s": half},
-            # Midpoint downbeat: swap the bass in one clean move.
+            # Swap downbeat: hand the bass over across ~1.5 beats. Decisive
+            # to the ear, but on bass-dominant club material an instant
+            # swap is a measured 8 dB RMS step whenever the two tracks'
+            # low-end levels differ - the short crossfade keeps the floor.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "ramp_s": 0.25},
+             "ramp_s": 1.5 * beat_out},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "ramp_s": 0.25},
-            # Outgoing leaves over the 2nd half (bass already gone -> clean).
+             "ramp_s": 1.5 * beat_out},
+            # Outgoing leaves over the rest of the blend (bass already gone).
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
-             "ramp_s": half},
+             "ramp_s": half_exit},
         ]
         if style == "loop_roll_exit":
             ls = plan["loop_start_s"]

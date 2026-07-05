@@ -27,7 +27,8 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 6            # v6: per-track groove/kick offset
+ANALYSIS_VERSION = 7            # v7: vocalness from the ML vocal pass only
+                                #     (heuristic + per-track norm removed)
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -659,8 +660,6 @@ def build_sections(bands, chroma, beats, downbeat_offset,
         perc = onset_perc[f0:f1]
         hits = float((perc > np.percentile(onset_perc, 75)).mean()) * FPS
         beat_rate = 1.0 / max(float(beats[1] - beats[0]), 1e-6) if nb > 1 else 2.0
-        chroma_seg = chroma[f0:f1].mean(axis=0)
-        clarity = float(chroma_seg.max() / max(chroma_seg.mean(), 1e-9) / 12.0)
         rep = float(ssm[b0:b1, b0:b1].mean())
         nov_strength = float(nov[b0]) if b0 < len(nov) else 0.0
         sections.append({
@@ -674,12 +673,17 @@ def build_sections(bands, chroma, beats, downbeat_offset,
             "rhythm_density": round(hits / max(beat_rate, 1e-6), 3),
             "repetitiveness": round(rep, 3),
             "busyness": round(float(perc.mean() + seg_bands[:, 6:20].std()), 4),
-            "vocalness": round(float((mid / ssum) * clarity * 4.0), 4),
+            # vocalness is written by the ML vocal pass (lib/dj/vocals.py)
+            # AFTER the scan; no heuristic here - every spectral heuristic
+            # we tried reads melodic synths as vocals, and the old
+            # per-track max-normalization guaranteed a "1.0 vocal" section
+            # in EVERY track (instrumentals got tagged vocal-heavy).
+            "vocalness": 0.0,
             "boundary_strength": round(nov_strength, 3),
         })
 
-    # Normalize busyness/vocalness/energy to the track's own range.
-    for key in ("busyness", "vocalness"):
+    # Normalize busyness/energy to the track's own range.
+    for key in ("busyness",):
         vals = np.array([s[key] for s in sections])
         vmax = max(vals.max(), 1e-9)
         for s in sections:
@@ -705,7 +709,6 @@ def _merge_similar(sections):
         p = out[-1]
         dist = (abs(p["energy"] - s["energy"])
                 + abs(p["busyness"] - s["busyness"])
-                + abs(p["vocalness"] - s["vocalness"])
                 + 2.0 * abs(p["bass_share"] - s["bass_share"]))
         if dist < 0.25 and s["boundary_strength"] < 0.35:
             w1 = max(p["end_s"] - p["start_s"], 0.1)
@@ -839,13 +842,15 @@ def classify_axes(sections, bpm, spectral, mood_hist):
         tot = float(w.sum())
         def wavg(key):
             return float(sum(s[key] * wi for s, wi in zip(sections, w)) / tot)
-        vocal = float(sum(wi for s, wi in zip(sections, w)
-                          if s["vocalness"] > 0.55) / tot)
+        # vocal axis is 0.0 until the ML vocal pass measures the track
+        # (lib/dj/vocals.py sets axes["vocal"] + axes["vocal_src"]).
+        vocal = 0.0
         busy = wavg("busyness")
         energy = wavg("energy")
         hypnotic = wavg("repetitiveness")
     else:
-        vocal = busy = energy = hypnotic = 0.5
+        busy = energy = hypnotic = 0.5
+        vocal = 0.0
     speed = float(np.clip((bpm - 80.0) / 70.0, 0.0, 1.0))
     hardness = float(np.clip(
         0.55 * busy + 1.1 * spectral.get("bass_share", 0.33)
@@ -854,10 +859,8 @@ def classify_axes(sections, bpm, spectral, mood_hist):
             "hardness": round(hardness, 3), "energy": round(energy, 3),
             "hypnotic": round(hypnotic, 3)}
     tags = []
-    if vocal > 0.30:
-        tags.append("vocal-heavy")
-    elif vocal < 0.08:
-        tags.append("instrumental")
+    # vocal tags come from lib/dj/vocals.vocal_tags after the vocal pass -
+    # never from spectral guesses (see vocals.py header for why).
     if bpm and bpm < 105:
         tags.append("slow")
     elif bpm and bpm > 123:

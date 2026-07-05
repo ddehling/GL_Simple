@@ -252,12 +252,20 @@ class LibraryTab(QWidget):
                 pr = json.load(f)
         except Exception:
             return
-        self.scan_lbl.setText(
-            f"scanning {pr.get('done', 0)}/{pr.get('total', '?')}  "
-            f"{pr.get('current', '')[:40]}")
+        if pr.get("phase") == "vocals":
+            self.scan_lbl.setText(
+                f"vocal pass {pr.get('vocals_done', 0)}"
+                f"/{pr.get('vocals_total', '?')}  "
+                f"{pr.get('current', '')[:40]}")
+            done = pr.get("vocals_done", 0)
+        else:
+            self.scan_lbl.setText(
+                f"scanning {pr.get('done', 0)}/{pr.get('total', '?')}  "
+                f"{pr.get('current', '')[:40]}")
+            done = pr.get("done", 0)
         # New analyses landed -> live-populate the table.
-        if pr.get("done", 0) != self._last_done:
-            self._last_done = pr.get("done", 0)
+        if done != self._last_done:
+            self._last_done = done
             self.planner.reload_library()
 
     def _scan_done(self, *a):

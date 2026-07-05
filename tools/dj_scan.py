@@ -38,10 +38,17 @@ def cmd_scan(args):
         return 1
     print(f"Scanning {root}")
     s = scan_library(root, workers=args.workers, force=args.force,
-                     progress_cb=_bar)
+                     progress_cb=_bar, vocals_pass=not args.no_vocals)
     print(f"\n\nfound {s['found']} files | scanned {s['scanned']} "
           f"| skipped {s['skipped']} (unchanged) | errors {s['errors']} "
           f"| missing {s['missing']} | {s['elapsed_s']}s")
+    v = s.get("vocals") or {}
+    if v.get("status") == "unavailable":
+        print("vocal pass skipped: torch/demucs not installed "
+              "(pip install -r requirements-dj-vocals.txt)")
+    elif v:
+        print(f"vocal pass: measured {v.get('measured', 0)} tracks"
+              + (f", {v['errors']} errors" if v.get("errors") else ""))
     c = s["db_counts"]
     print(f"library now: {c['total']} tracks ({c['errors']} errored, "
           f"{c['missing']} missing)")
@@ -96,6 +103,8 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--track", default="", help="single-file debug report")
     ap.add_argument("--list", action="store_true", help="dump the library")
+    ap.add_argument("--no-vocals", action="store_true",
+                    help="skip the ML vocal-measurement pass")
     args = ap.parse_args()
     if args.track:
         return cmd_track(args)

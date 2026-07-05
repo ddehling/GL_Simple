@@ -35,6 +35,12 @@ class WSOLAStretcher:
         # defeats the sync). Pin WSOLA mode during sync.
         self.no_bypass = False
         self._win = np.hanning(N).astype(np.float64)[:, None]
+        # Pending phase correction in SOURCE FRAMES (+ = advance = play
+        # earlier material sooner). Absorbed a few frames per hop inside
+        # the WSOLA search, so beat-phase micro-corrections are click-free
+        # and pitch-true - this is how the sync PLL follows a track's
+        # bar-to-bar swing instead of chasing it with slow rate trims.
+        self.phase_trim = 0.0
         self._pos = 0.0          # nominal (rate-integrated) source frame
         self._q_prev = None      # source pos of the previous chosen window
         self._tail = np.zeros((N - HS, channels), dtype=np.float64)
@@ -44,6 +50,7 @@ class WSOLAStretcher:
     # -- public ------------------------------------------------------------
     def seek(self, source_frame):
         self._pos = float(source_frame)
+        self.phase_trim = 0.0
         self._q_prev = None
         self._tail[:] = 0.0
         self._fifo = self._fifo[:0]
@@ -128,5 +135,10 @@ class WSOLAStretcher:
         out = self._tail + w[:HS]           # 50% Hann OLA sums to unity
         self._tail = w[HS:].copy()
         self._q_prev = q
-        self._pos += ha
+        # Bleed pending phase correction into the cursor, bounded per hop
+        # (64 frames/hop ~ 62 ms/s of correction) so the search always
+        # re-aligns within its window and the OLA stays seamless.
+        step = float(np.clip(self.phase_trim, -64.0, 64.0))
+        self.phase_trim -= step
+        self._pos += ha + step
         return out

@@ -1,0 +1,17 @@
+# OPTIONAL: ML vocal detection for the DJ library scanner.
+#
+# The scanner works without these - tracks just get no vocal
+# measurements (vocalness 0.0, no vocal/instrumental tags). With them,
+# scans run a second pass that separates each track's vocal stem
+# (Demucs htdemucs) and stores real per-section vocal presence.
+#
+# Deliberately NOT in requirements.txt: torch is heavy and useless on
+# the Raspberry Pi image-display installs. Install on DJ machines only:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-dj-vocals.txt
+#
+# (The first line avoids pulling the multi-GB CUDA build on Linux; on
+# Windows the default wheel is already CPU-only.)
+torch
+demucs

@@ -65,11 +65,14 @@ def write_progress(payload):
         pass
 
 
-def scan_library(music_root, workers=None, force=False, progress_cb=None):
+def scan_library(music_root, workers=None, force=False, progress_cb=None,
+                 vocals_pass=True):
     """Run one incremental scan. Returns a summary dict.
 
     progress_cb(done, total, current_name) is called from the parent after
-    every finished track (CLI bar, Qt signal, whatever)."""
+    every finished track (CLI bar, Qt signal, whatever). After the feature
+    scan, tracks not yet measured by the ML vocal pass get one (sequential,
+    resumable; skipped silently when torch/demucs aren't installed)."""
     db = LibraryDB(music_root)
     files = list_audio_files(music_root)
     rel_present = [db.rel(p) for p in files]
@@ -101,6 +104,9 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None):
             write_progress({**summary, "total": len(todo), "done": done,
                             "current": name, "finished": False})
 
+    if vocals_pass:
+        summary["vocals"] = vocal_pass(db, progress_cb=progress_cb,
+                                       summary=summary, total=len(todo))
     _recalibrate_tags(db)
     summary["elapsed_s"] = round(time.time() - summary["started_at"], 1)
     summary["db_counts"] = db.counts()
@@ -108,6 +114,48 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None):
                     "current": "", "finished": True})
     db.close()
     return summary
+
+
+def vocal_pass(db, progress_cb=None, summary=None, total=0):
+    """ML vocal measurement for every track that doesn't have one yet.
+
+    Sequential in this process (torch parallelizes internally; a Pool of
+    model copies would just fight over cores and RAM) and resumable: each
+    track commits on completion, and tracks with axes.vocal_src are
+    skipped, so an interrupted pass continues where it stopped."""
+    import json as _json
+    from lib.dj import vocals
+    if not vocals.available():
+        return {"status": "unavailable",
+                "hint": "pip install -r requirements-dj-vocals.txt"}
+    rows = db.conn.execute(
+        "SELECT id, path, axes FROM tracks"
+        " WHERE error IS NULL AND missing = 0 AND axes IS NOT NULL"
+        " ORDER BY path").fetchall()
+    todo = [r for r in rows
+            if not _json.loads(r["axes"]).get("vocal_src")]
+    if not todo:
+        return {"status": "done", "measured": 0}
+    from lib.dj.features import decode_file
+    analyzer = vocals.VocalAnalyzer()
+    measured = errors = 0
+    base = summary or {}
+    for i, r in enumerate(todo):
+        name = os.path.basename(r["path"])
+        write_progress({**base, "total": total, "done": total,
+                        "phase": "vocals", "vocals_total": len(todo),
+                        "vocals_done": i, "current": name,
+                        "finished": False})
+        try:
+            samples = decode_file(db.abs(r["path"]))
+            analyzer.update_track(db, r["id"], samples)
+            measured += 1
+        except Exception as e:
+            errors += 1
+            print(f"  vocal pass failed on {name}: {type(e).__name__}: {e}")
+        if progress_cb:
+            progress_cb(i + 1, len(todo), f"vocals: {name}")
+    return {"status": "done", "measured": measured, "errors": errors}
 
 
 def _recalibrate_tags(db):
@@ -118,11 +166,28 @@ def _recalibrate_tags(db):
     'hard' means hard FOR THIS LIBRARY."""
     import json as _json
     import numpy as _np
+    from lib.dj.vocals import vocal_tags
     rows = db.conn.execute(
         "SELECT id, bpm, axes, mood_hist, spectral, rhythm_density"
         " FROM tracks WHERE error IS NULL AND axes IS NOT NULL").fetchall()
+    user_tags = {}
+    for r in db.conn.execute("SELECT track_id, tag FROM tags"):
+        user_tags.setdefault(r["track_id"], set()).add(r["tag"])
     if len(rows) < 8:
-        return                       # tiny library: keep per-track tags
+        # Tiny library: percentile tags are meaningless, but vocal tags
+        # come from real per-track measurements - update just those.
+        for r in rows:
+            a = _json.loads(r["axes"])
+            old = _json.loads(db.conn.execute(
+                "SELECT auto_tags FROM tracks WHERE id = ?",
+                (r["id"],)).fetchone()["auto_tags"] or "[]")
+            tags = [t for t in old
+                    if t not in ("vocal-heavy", "vocals", "instrumental")]
+            tags.extend(vocal_tags(a, user_tags.get(r["id"], ())))
+            db.conn.execute("UPDATE tracks SET auto_tags = ? WHERE id = ?",
+                            (_json.dumps(tags), r["id"]))
+        db.conn.commit()
+        return
     axes = {r["id"]: _json.loads(r["axes"]) for r in rows}
     # The stored hardness axis clips at 1.0 and saturates on club music -
     # rebuild an UNCLIPPED score from stored ingredients so percentiles
@@ -146,11 +211,7 @@ def _recalibrate_tags(db):
     for r in rows:
         a = axes[r["id"]]
         mood = _json.loads(r["mood_hist"] or "{}")
-        tags = []
-        if a.get("vocal", 0) > 0.30:
-            tags.append("vocal-heavy")
-        elif a.get("vocal", 0) < 0.08:
-            tags.append("instrumental")
+        tags = list(vocal_tags(a, user_tags.get(r["id"], ())))
         bpm = r["bpm"] or 0
         if bpm and bpm < 105:
             tags.append("slow")
