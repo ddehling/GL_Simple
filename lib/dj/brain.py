@@ -680,7 +680,7 @@ class Brain:
                 {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
                 {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
                 {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "ramp_s": 0.01},
+                 "mid": 0.55, "ramp_s": 0.01},
                 {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},
@@ -694,7 +694,7 @@ class Brain:
                 {"at": S_out, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": 0.03},
                 {"at": S_out, "cmd": "eq", "deck": incoming, "low": 1.0,
-                 "ramp_s": 0.25},
+                 "mid": 1.0, "ramp_s": 0.25},
                 {"at": S_out, "cmd": "gain", "deck": incoming, "value": 1.0,
                  "ramp_s": 2 * beat_out},
                 {"at": S_out + int(2.5 * RATE), "cmd": "stop",
@@ -721,7 +721,7 @@ class Brain:
                 {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
                 {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
                 {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "ramp_s": 0.01},
+                 "mid": 0.5, "ramp_s": 0.01},
                 {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},
@@ -732,7 +732,7 @@ class Brain:
                 {"at": S_cut, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": 0.04},
                 {"at": S_cut, "cmd": "eq", "deck": incoming, "low": 1.0,
-                 "ramp_s": 0.04},
+                 "mid": 1.0, "high": 1.0, "ramp_s": 0.04},
                 {"at": S_cut, "cmd": "gain", "deck": incoming, "value": 1.0,
                  "ramp_s": 0.04},
                 {"at": S_cut + int(0.5 * RATE), "cmd": "stop", "deck": active},
@@ -985,21 +985,28 @@ class Brain:
                       max(end - int(2 * beat_out * RATE), S0 + 1))
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 2 * beat_out)
-        # EQ CARVING from the two sections' measured spectra: don't stack
-        # B's melody on top of A's lead, don't double busy hats. B enters
-        # with its mids/highs shaded exactly where A's blend-section is
-        # crowded, and gets the full range back at the swap (A is leaving).
+        # ONE MELODY AT A TIME - the mid-range twin of the one-bassline
+        # rule. Both tracks' melodic content lives in the mids; letting
+        # the incoming open its mids at the swap while the outgoing was
+        # still audible for 12+ beats stacked clashing notes (user: 'lots
+        # of overlap of clashing notes'). The mids now HAND OVER like the
+        # bass does: B rides in on drums/air with mids shelved, the swap
+        # crossfades low AND mid decisively, A keeps only a shadow of its
+        # mids through its exit fade.
         sec_a = cur.section_at(plan["out_s"] - 1.0) or {}
-        sec_b = cand.section_at(plan["in_s"] + 1.0) or {}
-        b_mid0 = 0.55 if sec_a.get("mid_share", 0.33) > 0.42 else 1.0
+        b_mid0 = 0.3 if sec_a.get("mid_share", 0.33) > 0.42 else 0.45
         b_high0 = 0.7 if sec_a.get("high_share", 0.25) > 0.30 else 1.0
-        # A sheds its mids with the swap when B's arriving section carries
-        # its own lead - the exit fade does the rest.
-        a_mid_swap = 0.6 if sec_b.get("mid_share", 0.33) > 0.42 else 1.0
+        # Harmonic clash makes overlap unforgivable: with incompatible
+        # keys (after any pitch-shift rescue), B's melody waits until A is
+        # essentially gone before opening.
+        b_cam = _shift_camelot(cand.camelot, plan.get("pitch_st", 0) or 0)
+        key_ok = camelot_compat(cur.camelot, b_cam) >= 0.55
+        mid_open_at = mid if key_ok else \
+            min(mid + int(0.75 * (end - mid)), end)
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
-            # Incoming: bass fully cut, mids/highs carved, fade up 1st half.
+            # Incoming: bass cut, mids shelved, highs carved - drums + air.
             {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
              "mid": b_mid0, "high": b_high0, "ramp_s": 0.01},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
@@ -1008,14 +1015,15 @@ class Brain:
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
              "ramp_s": half},
-            # Swap downbeat: hand the bass over across ~1.5 beats. Decisive
-            # to the ear, but on bass-dominant club material an instant
-            # swap is a measured 8 dB RMS step whenever the two tracks'
-            # low-end levels differ - the short crossfade keeps the floor.
+            # Swap downbeat: low AND mid hand over across ~1.5-2 beats.
+            # (An instant low swap is a measured 8 dB step; two open mid
+            # ranges are a note clash - both cross here, once.)
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "mid": a_mid_swap, "ramp_s": 1.5 * beat_out},
+             "mid": 0.25, "ramp_s": 2 * beat_out},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "mid": 1.0, "high": 1.0, "ramp_s": 1.5 * beat_out},
+             "high": 1.0, "ramp_s": 1.5 * beat_out},
+            {"at": mid_open_at, "cmd": "eq", "deck": incoming, "mid": 1.0,
+             "ramp_s": 2 * beat_out},
             # Outgoing leaves over the rest of the blend (bass already gone).
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
              "ramp_s": half_exit},
