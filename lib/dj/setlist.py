@@ -138,7 +138,15 @@ def compile_plan(library, entries, theme, seed=0):
                 slot["warnings"].append("weak seam (busy x busy?)")
             slot["transition"] = plan
             play = max(plan["out_s"] - in_s, 40.0)
-            entry_in_s = plan["in_s"]            # next track enters here
+            # Blend-family overlaps play BEFORE the seam: by the time the
+            # boundary (A's out point) arrives, B has already consumed the
+            # blend's worth of source. slot["in_s"] is the AT-SEAM source
+            # so drawing/click/playhead all agree with the audio.
+            blend_wall = plan["beats"] * t.period_s \
+                if plan["style"] in ("long_blend", "bass_swap",
+                                     "filter_sweep", "loop_roll_exit") \
+                else 0.0
+            entry_in_s = plan["in_s"] + blend_wall * plan["rate"]
         else:
             play = max(t.duration_s - in_s, 40.0)
         slot["play_s"] = play

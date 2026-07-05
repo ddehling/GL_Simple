@@ -345,7 +345,9 @@ class PlanPreview:
         in_s = s.get("in_s")
         if in_s is None:
             in_s = s["track"].mix_ins[0]["time_s"] if s["track"].mix_ins else 0.0
-        return s["start_offset_s"] + max(d.get("time_s", 0.0) - in_s, 0.0)
+        # in_s is the AT-SEAM source; during the blend head the offset is
+        # legitimately negative (the incoming plays before its boundary).
+        return s["start_offset_s"] + (d.get("time_s", 0.0) - in_s)
 
     def slot_at_playhead(self):
         _, slot = self._active_deck_slot()

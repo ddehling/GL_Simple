@@ -89,9 +89,13 @@ class MixTimeline(QWidget):
                 env_b = envelopes_from_events(events, blend_at, "b", 0.0, 1.0)
             except Exception:
                 env_a = env_b = None
+            # Blend-family overlaps run BEFORE the seam and COMPLETE at it
+            # (A's out point); the punchy styles run their lead-in before
+            # the seam too. Drawing the overlap after the seam - the old
+            # geometry - put every drawn beat line a full blend late.
             self.seams.append({
                 "index": i,
-                "start_s": self.slots[i + 1]["start_offset_s"],
+                "start_s": self.slots[i + 1]["start_offset_s"] - blend_s,
                 "blend_s": blend_s, "style": plan["style"],
                 "env_a": env_a, "env_b": env_b,
             })
@@ -109,9 +113,9 @@ class MixTimeline(QWidget):
             else:
                 prev = self.slots[i - 1]["track"]
                 plan = self.slots[i - 1]["transition"]
-                blend = next((sm["blend_s"] for sm in self.seams
-                              if sm["index"] == i - 1), 10.0)
-                swap_t = S + blend
+                # The blend COMPLETES at the slot boundary; the glide home
+                # starts there, not a blend-length later.
+                swap_t = S
                 self.bpm_curve.append((swap_t, prev.bpm))
                 rate = plan["rate"] if plan else 1.0
                 glide_s = abs(rate - 1.0) / GLIDE
@@ -182,37 +186,58 @@ class MixTimeline(QWidget):
             t = s["track"]
             S = s["start_offset_s"]
             play_end = S + s["play_s"]           # click-exclusive extent
-            blend = next((sm["blend_s"] for sm in self.seams
-                          if sm["index"] == i), 0.0)
-            E = play_end + blend                 # VISUAL extent incl. overlap
-            x0, x1 = self._t2x(S), self._t2x(E)
-            xsplit = self._t2x(play_end)
+            # The overlap runs BEFORE this slot's boundary: the incoming
+            # track fades up through a HEAD that completes at S (the
+            # previous track's out point). Drawn faded, played stretched.
+            head = 0.0
+            head_rate = 1.0
+            if i > 0:
+                head = next((sm["blend_s"] for sm in self.seams
+                             if sm["index"] == i - 1), 0.0)
+                pl = self.slots[i - 1]["transition"]
+                head_rate = pl["rate"] if pl else 1.0
+            E0 = S - head
+            x0, x1 = self._t2x(E0), self._t2x(play_end)
+            xsplit = self._t2x(S)                # head | body split
             if x1 < 0 or x0 > W:
                 continue
             lane = i % 2
             y0 = lane_top + lane * (lane_h + 4)
-            p.fillRect(QRectF(x0, y0, xsplit - x0, lane_h), LANE_COLORS[lane])
-            if blend > 0:
-                # The overlap TAIL: the outgoing keeps playing under the
-                # next track - drawn faded so the overlap is visible.
-                tail = QColor(LANE_COLORS[lane])
-                tail.setAlpha(90)
-                p.fillRect(QRectF(xsplit, y0, x1 - xsplit, lane_h), tail)
+            p.fillRect(QRectF(xsplit, y0, x1 - xsplit, lane_h),
+                       LANE_COLORS[lane])
+            if head > 0:
+                hcol = QColor(LANE_COLORS[lane])
+                hcol.setAlpha(90)
+                p.fillRect(QRectF(x0, y0, xsplit - x0, lane_h), hcol)
                 p.setPen(QPen(QColor(255, 255, 255, 60), 1,
                               Qt.PenStyle.DashLine))
                 p.drawLine(int(xsplit), y0, int(xsplit), y0 + lane_h)
             p.setPen(QPen(QColor(0, 0, 0, 120), 1))
             p.drawRect(QRectF(x0, y0, x1 - x0, lane_h))
 
-            # Content maps track-time linearly from the slot's TRUE entry
-            # point (the previous seam's in-point - NOT mix_ins[0], which
-            # shifted the drawn content vs the audio by tens of seconds).
+            # Content maps track-time from the slot's AT-SEAM source
+            # position through a RATE-AWARE piecewise map: through the
+            # head (and the post-seam glide) the track plays STRETCHED,
+            # and drawing its beats at natural spacing is visibly wrong -
+            # a 2% stretch over a 25 s blend is half a second, a whole
+            # beat line of error.
             in_s = s.get("in_s")
             if in_s is None:
                 in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
+            glide_s = abs(head_rate - 1.0) / 0.0015 if head_rate != 1.0 \
+                else 0.0
+            far = play_end + 3600.0
+            walls = np.array([E0, S, S + glide_s + 1e-6, far])
+            g_src = glide_s * (head_rate + 1.0) / 2.0
+            srcs = np.array([in_s - head * head_rate, in_s,
+                             in_s + g_src + 1e-6,
+                             in_s + g_src + (far - (S + glide_s))])
 
             def tt_of_x(x):
-                return in_s + (self._x2t(x) - S)
+                return float(np.interp(self._x2t(x), walls, srcs))
+
+            def x_of_tt(tt):
+                return self._t2x(float(np.interp(tt, srcs, walls)))
 
             samples = None
             if self.samples_provider is not None and px_per_s >= 25:
@@ -237,15 +262,14 @@ class MixTimeline(QWidget):
                         continue
                     lo = float(seg.min()) / 32767.0
                     hi = float(seg.max()) / 32767.0
-                    if cx >= xsplit:
-                        p.setPen(QPen(QColor(225, 235, 245, 110), 1))
+                    p.setPen(QPen(QColor(225, 235, 245,
+                                         110 if cx < xsplit else 230), 1))
                     p.drawLine(cx, int(mid_y - hi * amp),
                                cx, int(mid_y - lo * amp))
             else:
                 # Overview zoom: three stacked band area-plots (FILLED
                 # HEIGHT = level) from the 2Hz analysis curves.
                 bc = t.row.get("band_curve") or {}
-                seg_dur = E - S
                 n_cols = max(int(x1 - x0), 8)
                 if all(k in bc and bc[k] for k in ("low", "mid", "high")):
                     band_h = lane_h / 3.0
@@ -257,7 +281,8 @@ class MixTimeline(QWidget):
                         base_y = y0 + (ri + 1) * band_h
                         poly = [QPointF(x0, base_y)]
                         for k in range(n_cols + 1):
-                            ts = in_s + seg_dur * k / n_cols
+                            ts = max(tt_of_x(x0 + (x1 - x0) * k / n_cols),
+                                     0.0)
                             ci = min(int(ts * 2), len(curve) - 1)
                             v = min(float(curve[ci]) / 1.1, 1.0)
                             poly.append(QPointF(x0 + (x1 - x0) * k / n_cols,
@@ -272,7 +297,8 @@ class MixTimeline(QWidget):
                         p.setPen(QPen(col, 1))
                         p.drawPolyline(QPolygonF(poly[1:-1]))
 
-            # Beat ticks at high zoom (across the tail too).
+            # Beat ticks at high zoom (through the head AND rate-aware:
+            # a stretched track's beats are drawn where they PLAY).
             if t.grid and span > 0:
                 period = t.grid[0]["period_s"]
                 px_beat = px_per_s * period
@@ -280,11 +306,12 @@ class MixTimeline(QWidget):
                     g = t.grid[0]
                     first_down = g["first_beat_s"] \
                         + t.downbeat_offset * g["period_s"]
-                    tt = in_s - ((in_s - g["first_beat_s"]) % period)
-                    while tt < in_s + (E - S):
-                        out_t = S + (tt - in_s)
-                        if self.view_t0 <= out_t <= self.view_t1:
-                            x = self._t2x(out_t)
+                    src0 = in_s - head * head_rate
+                    src1 = tt_of_x(self._t2x(min(play_end, self.view_t1)))
+                    tt = src0 - ((src0 - g["first_beat_s"]) % period)
+                    while tt < src1 + period:
+                        x = x_of_tt(tt)
+                        if 0 <= x <= W:
                             down = round((tt - first_down) / period) % 4 == 0
                             p.setPen(QPen(QColor(255, 255, 255,
                                                  90 if down else 35), 1))
@@ -298,9 +325,11 @@ class MixTimeline(QWidget):
                 dms = drop_moments(t.sections)
             except Exception:
                 dms = []
+            src_lo = in_s - head * head_rate - 0.5
+            src_hi = tt_of_x(self._t2x(play_end))
             for d in dms:
-                if in_s - 0.5 <= d <= in_s + (E - S):
-                    x = self._t2x(S + (d - in_s))
+                if src_lo <= d <= src_hi:
+                    x = x_of_tt(d)
                     if 0 <= x <= W:
                         p.setPen(QPen(QColor(255, 215, 80), 2))
                         p.drawLine(int(x), y0, int(x), y0 + lane_h)
@@ -309,8 +338,8 @@ class MixTimeline(QWidget):
             if px_per_s >= 8:
                 for sec in t.sections:
                     b = sec["start_s"]
-                    if in_s < b <= in_s + (E - S):
-                        x = self._t2x(S + (b - in_s))
+                    if src_lo < b <= src_hi:
+                        x = x_of_tt(b)
                         if 0 <= x <= W:
                             p.setPen(QPen(QColor(255, 255, 255, 70), 1,
                                           Qt.PenStyle.DotLine))

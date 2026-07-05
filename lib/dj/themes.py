@@ -22,11 +22,13 @@ class Theme:
     # Clean, reliable transitions dominate; the elaborate techniques are
     # occasional accents (they sound bad if even slightly off, so they must
     # be the exception, not the rule).
+    # Long smooth blends dominate; punchy exits (echo/cut/drops) are RARE
+    # accents - at equal weights the night sounded fast and harsh.
     style_weights: dict = field(default_factory=lambda: {
-        "long_blend": 1.2, "bass_swap": 1.4, "cut_at_drop": 0.15,
-        "loop_roll_exit": 0.2, "bassline_layer": 0.2, "double_drop": 0.15,
-        "loop_build": 0.2, "long_fade": 0.3,
-        "filter_sweep": 0.6, "echo_out": 0.35})
+        "long_blend": 1.7, "bass_swap": 1.2, "cut_at_drop": 0.08,
+        "loop_roll_exit": 0.15, "bassline_layer": 0.15, "double_drop": 0.08,
+        "loop_build": 0.12, "long_fade": 0.3,
+        "filter_sweep": 0.6, "echo_out": 0.12})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
 
@@ -72,11 +74,11 @@ BUILTIN_THEMES = {t.name: t for t in [
           energy_base=0.75, energy_span=0.25, arc="peak_wave",
           mood_weights={"peak": 1.0, "groove": 0.6},
           spectral_lean="bass",
-          style_weights={"long_blend": 1.0, "bass_swap": 1.4,
-                         "cut_at_drop": 0.4, "loop_roll_exit": 0.3,
-                         "bassline_layer": 0.4, "double_drop": 0.4,
-                         "loop_build": 0.4, "long_fade": 0.1,
-                         "filter_sweep": 0.7, "echo_out": 0.5},
+          style_weights={"long_blend": 1.2, "bass_swap": 1.3,
+                         "cut_at_drop": 0.25, "loop_roll_exit": 0.25,
+                         "bassline_layer": 0.3, "double_drop": 0.25,
+                         "loop_build": 0.25, "long_fade": 0.1,
+                         "filter_sweep": 0.7, "echo_out": 0.25},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",
