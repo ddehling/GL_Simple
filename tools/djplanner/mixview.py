@@ -300,16 +300,21 @@ class MixTimeline(QWidget):
             # Beat ticks at high zoom (through the head AND rate-aware:
             # a stretched track's beats are drawn where they PLAY).
             if t.grid and span > 0:
-                period = t.grid[0]["period_s"]
-                px_beat = px_per_s * period
-                if px_beat >= 6:
-                    g = t.grid[0]
+                src0 = in_s - head * head_rate
+                src1 = tt_of_x(self._t2x(min(play_end, self.view_t1)))
+                # PER SEGMENT: extrapolating grid[0] across a whole track
+                # drifts (0.1% period error = half a beat 5 minutes in) -
+                # exactly the "beat lines don't line up" look.
+                for g in t.grid:
+                    period = g["period_s"]
+                    if px_per_s * period < 6:
+                        continue
                     first_down = g["first_beat_s"] \
-                        + t.downbeat_offset * g["period_s"]
-                    src0 = in_s - head * head_rate
-                    src1 = tt_of_x(self._t2x(min(play_end, self.view_t1)))
-                    tt = src0 - ((src0 - g["first_beat_s"]) % period)
-                    while tt < src1 + period:
+                        + t.downbeat_offset * period
+                    lo = max(src0, g["start_s"] - 0.5 * period)
+                    hi = min(src1, g["end_s"])
+                    tt = lo - ((lo - g["first_beat_s"]) % period)
+                    while tt < hi + period:
                         x = x_of_tt(tt)
                         if 0 <= x <= W:
                             down = round((tt - first_down) / period) % 4 == 0

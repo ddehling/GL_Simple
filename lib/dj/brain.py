@@ -709,9 +709,11 @@ class Brain:
             # Riser through the run-in, landing exactly on the cut.
             from lib.dj import fx as _fx
             rise_s = min((S_cut - S0) / RATE, 8.0)
-            ev.append({"at": S_cut - int(rise_s * RATE), "cmd": "fx_play",
-                       "samples": _fx.make_riser(rise_s, gain=0.16),
-                       "gain": 1.0})
+            if rise_s >= 1.0:              # clamped run-ins can be ~zero
+                ev.append({"at": S_cut - int(rise_s * RATE),
+                           "cmd": "fx_play",
+                           "samples": _fx.make_riser(rise_s, gain=0.16),
+                           "gain": 1.0})
             swap_at = S_cut + int(0.5 * RATE)
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
@@ -774,9 +776,11 @@ class Brain:
             # the drop it releases into.
             from lib.dj import fx as _fx
             rise_s = min((S_drop - S0) / RATE, 8.0)
-            ev.append({"at": S_drop - int(rise_s * RATE), "cmd": "fx_play",
-                       "samples": _fx.make_riser(rise_s, gain=0.16),
-                       "gain": 1.0})
+            if rise_s >= 1.0:
+                ev.append({"at": S_drop - int(rise_s * RATE),
+                           "cmd": "fx_play",
+                           "samples": _fx.make_riser(rise_s, gain=0.16),
+                           "gain": 1.0})
             ev.append({"at": S_drop, "cmd": "fx_play",
                        "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
             self._glide_home(ev, incoming, rate_b, out)
@@ -832,9 +836,11 @@ class Brain:
             ]
             from lib.dj import fx as _fx
             rise_s = min((S_drop - S0) / RATE, 8.0)
-            ev.append({"at": S_drop - int(rise_s * RATE), "cmd": "fx_play",
-                       "samples": _fx.make_riser(rise_s, gain=0.16),
-                       "gain": 1.0})
+            if rise_s >= 1.0:
+                ev.append({"at": S_drop - int(rise_s * RATE),
+                           "cmd": "fx_play",
+                           "samples": _fx.make_riser(rise_s, gain=0.16),
+                           "gain": 1.0})
             ev.append({"at": S_drop, "cmd": "fx_play",
                        "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
             self._glide_home(ev, incoming, rate_b, out)
@@ -1000,7 +1006,10 @@ class Brain:
         clock with deck A cued at the blend start - for the planner's mix
         view and offline auditions. Returns (events, swap_at, blend_at) with
         'at' in samples where blend_at corresponds to plan['out_s']."""
-        pre = 16 * cur.period_s          # drawing/audition run-up
+        # The run-up must EXCEED the style's whole pre-roll (blend/run-in),
+        # or the no-past-events guard clamps the transition into a
+        # degenerate splice (snapshot clock is treated as NOW).
+        pre = (plan.get("beats", 16) + 24) * cur.period_s
         snapshot = {"clock": 0,
                     "decks": {"a": {"time_s": plan["out_s"] - pre,
                                     "rate": 1.0}}}

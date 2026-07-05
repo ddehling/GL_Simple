@@ -204,8 +204,14 @@ class PlanPreview:
                 break
             cur, nxt = slots[k]["track"], slots[k + 1]["track"]
             blend_clock = c_ref + int((plan["out_s"] - s_ref) * RATE)
-            snapshot = {"clock": blend_clock,
-                        "decks": {active: {"time_s": plan["out_s"],
+            # The snapshot clock is treated as NOW by build_events (its
+            # no-past-events guard clamps anything earlier). Describe the
+            # deck at its CURRENT reference, not at the seam - with the
+            # seam as "now", every run-in and blend start got clamped to
+            # 0.3s after the cut: the preview played degenerate splices
+            # with no overlap and no sync window at all.
+            snapshot = {"clock": c_ref,
+                        "decks": {active: {"time_s": s_ref,
                                            "rate": 1.0}}}
             ev, swap_at, blend_at = self.brain.build_events(
                 plan, snapshot, active, incoming, cur, nxt)
