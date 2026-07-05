@@ -6,12 +6,17 @@
 # (Demucs htdemucs) and stores real per-section vocal presence.
 #
 # Deliberately NOT in requirements.txt: torch is heavy and useless on
-# the Raspberry Pi image-display installs. Install on DJ machines only:
+# the Raspberry Pi image-display installs. Install on DJ machines only.
+#
+# WITH AN NVIDIA GPU (any DJ show machine should use this - the vocal
+# pass runs ~10-30x faster; lib/dj/vocals.py auto-detects CUDA):
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+#   pip install -r requirements-dj-vocals.txt
+#
+# CPU-only machines:
 #
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 #   pip install -r requirements-dj-vocals.txt
-#
-# (The first line avoids pulling the multi-GB CUDA build on Linux; on
-# Windows the default wheel is already CPU-only.)
 torch
 demucs
