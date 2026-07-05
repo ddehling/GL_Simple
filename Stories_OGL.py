@@ -2198,6 +2198,14 @@ class EnvironmentalSystem:
                         self._dj.seek_relative(float(arg))
                     elif action == 'to_exit':
                         self._dj.to_exit()
+                    elif action == 'hold':
+                        self._dj.hold()
+                    elif action == 'reroll':
+                        self._dj.reroll_next()
+                    elif action == 'seam_fb':
+                        self._dj.seam_feedback(bool(arg))
+                    elif action == 'arc':
+                        self._dj.set_arc_waypoints(arg or [])
                     elif action == 'mix_now':
                         self._dj.mix_now()
             except Exception as e:

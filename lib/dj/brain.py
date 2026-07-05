@@ -199,9 +199,40 @@ class Brain:
         # Merged OVER the theme - the theme is the default, the operator
         # is the boss.
         self.flavor = {}                # {prefer_tags, avoid_tags, axis_targets}
+        self.veto_ids = set()           # transient 'not this one' (reroll)
+        self.style_fb = {}              # style -> tonight multiplier (thumbs)
 
     def set_flavor(self, flavor):
         self.flavor = dict(flavor or {})
+
+    def plan_horizon(self, current, arc_fn, out_bpm, n=3):
+        """PROVISIONAL next-n chain for the trajectory display: what would
+        play if nothing changes. Pure lookahead - recency/skip state is
+        snapshotted and restored, and a fixed-seed rng keeps the preview
+        stable between recomputes (a queue that reshuffles every tick
+        reads as indecision)."""
+        saved_recent = list(self.recent)
+        saved_rng = self.rng
+        self.rng = random.Random(1234)
+        out = []
+        cur = current
+        try:
+            for i in range(n):
+                cand, meta = self.choose_next(
+                    cur, arc_fn(i + 1), cur.bpm if cur else out_bpm)
+                if cand is None:
+                    break
+                self.note_played(cand)
+                out.append({"id": cand.id, "title": cand.title,
+                            "artist": cand.artist,
+                            "bpm": round(cand.bpm, 1),
+                            "energy": round(cand.energy_proxy(), 2),
+                            "tags": cand.all_tags[:4]})
+                cur = cand
+        finally:
+            self.recent = saved_recent
+            self.rng = saved_rng
+        return out
 
     def _flavor_score(self, cand):
         """0.15..1.0 preference multiplier from theme flavor + live
@@ -228,6 +259,13 @@ class Brain:
             s *= math.exp(-((float(v) - float(target)) / 0.35) ** 2) \
                 * 0.5 + 0.5
         return max(s, 0.15)             # lean hard, never blacklist
+
+    def seam_feedback(self, style, up):
+        """Operator thumbs on the LAST transition: nudge tonight's style
+        weighting (bounded - taste input, not a kill switch)."""
+        cur = self.style_fb.get(style, 1.0)
+        cur *= 1.15 if up else 0.7
+        self.style_fb[style] = max(0.3, min(2.0, cur))
 
     def note_skipped(self, track):
         """Operator skipped it - a labeled 'not tonight' the scorer uses."""
@@ -296,7 +334,7 @@ class Brain:
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
               bpm_target=None):
-        if cand.id == getattr(current, "id", None):
+        if cand.id == getattr(current, "id", None)                 or cand.id in self.veto_ids:
             return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
         if rate is None:
@@ -542,7 +580,8 @@ class Brain:
         pst = (meta or {}).get("pitch_st", 0)
 
         # Style menu, gated by analysis confidence.
-        weights = dict(self.theme.style_weights)
+        weights = {k: w * self.style_fb.get(k, 1.0)
+                   for k, w in self.theme.style_weights.items()}
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
         # A tempo-clash pair (user-ordered set beyond the stretch range,
         # rate fell back to 1.0) can NEVER beat-match - a "blend" there is

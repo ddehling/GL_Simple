@@ -71,6 +71,11 @@ class DJSystem:
         self._energy_nudge = 0.0
         self._urgent_exit = False        # skip/mix_now: exit ASAP, not "best"
         self._tag_vocab = []             # [(tag, count)] for flavor chips
+        self._arc_waypoints = []         # [(progress 0..1, energy 0..1)]
+        self._horizon = []               # provisional next-N briefs
+        self._horizon_key = None         # staleness stamp
+        self._history = []               # tonight's tracklist briefs
+        self._last_style = None          # last completed transition style
         self._played_energy_ema = None   # arc feedback: what actually played
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
@@ -214,6 +219,27 @@ class DJSystem:
     def set_energy_nudge(self, x):
         self._energy_nudge = float(max(-0.4, min(0.4, x)))
 
+    def set_arc_waypoints(self, pts):
+        """Steer the night's arc live: [(progress 0..1, energy 0..1)]
+        interpolated over the theme's curve; empty list = back to theme."""
+        with self._lock:
+            self._pending.append(("arc", list(pts or [])))
+
+    def hold(self):
+        """Push the planned exit one phrase later (crowd's loving it)."""
+        with self._lock:
+            self._pending.append(("hold", None))
+
+    def reroll_next(self):
+        """Veto the provisional next track and pick a different one."""
+        with self._lock:
+            self._pending.append(("reroll", None))
+
+    def seam_feedback(self, up):
+        """Thumbs on the last transition - tonight's style weights learn."""
+        with self._lock:
+            self._pending.append(("seam_fb", bool(up)))
+
     def set_flavor(self, flavor):
         """Live music-type steering: {'prefer_tags': {tag: w}, 'avoid_tags':
         {tag: w}, 'axis_targets': {axis: 0..1}} merged over the theme."""
@@ -266,9 +292,25 @@ class DJSystem:
             return min(1.0, elapsed / max(self.night_hours * 3600.0, 60.0))
         return (elapsed % SET_CYCLE_S) / SET_CYCLE_S
 
-    def arc_target(self):
+    def _arc_base(self, progress):
+        """Theme arc, overridden by live waypoints when the operator has
+        drawn their own curve."""
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
-        target = theme.arc_target(self.arc_progress()) + self._energy_nudge
+        if self._arc_waypoints:
+            xs = [p for p, _ in self._arc_waypoints]
+            ys = [e for _, e in self._arc_waypoints]
+            if progress <= xs[0]:
+                return ys[0]
+            if progress >= xs[-1]:
+                return ys[-1]
+            for i in range(len(xs) - 1):
+                if xs[i] <= progress <= xs[i + 1]:
+                    f = (progress - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
+                    return ys[i] + f * (ys[i + 1] - ys[i])
+        return theme.arc_target(progress)
+
+    def arc_target(self):
+        target = self._arc_base(self.arc_progress()) + self._energy_nudge
         # ARC FEEDBACK: if what actually PLAYED has been running hotter or
         # cooler than the theme's arc (library gaps, anchor picks), lean
         # the next choice the other way instead of undershooting all night.
@@ -299,6 +341,12 @@ class DJSystem:
             "themes": sorted(BUILTIN_THEMES),
             "flavor": dict(self.brain.flavor) if self.brain else {},
             "tags": self._tag_vocab,
+            "horizon": list(self._horizon),
+            "history": self._history[-40:],
+            "arc_waypoints": list(self._arc_waypoints),
+            "arc_curve": [round(max(0.0, min(1.0, self._arc_base(i / 24.0))),
+                          3) for i in range(25)],
+            "track_map": self._track_map(),
             "autopilot": self.autopilot,
             "arc_phase": round(self.arc_progress(), 4),
             "arc_heat": round(self.arc_target(), 3),
@@ -348,6 +396,22 @@ class DJSystem:
                 "beat_phase": d.get("beat_phase"),
             })
         return out
+
+    def _track_map(self):
+        """Compact current-track geography for the web context strip."""
+        t = self.current
+        if t is None:
+            return None
+        secs = [[round(x["start_s"], 1), round(x["end_s"], 1), x["kind"],
+                 round(x.get("vocalness") or 0.0, 2)]
+                for x in t.sections][:40]
+        curve = t.row.get("energy_curve") or []
+        if curve:
+            idx = [int(i * (len(curve) - 1) / 23) for i in range(24)]
+            curve = [round(float(curve[i]), 2) for i in idx]
+        return {"duration": round(t.duration_s, 1), "sections": secs,
+                "energy": curve,
+                "exit_s": round(self.plan["out_s"], 1) if self.plan else None}
 
     def _track_brief(self, t):
         if t is None:
@@ -407,6 +471,31 @@ class DJSystem:
                     if self.state == "playing":
                         self.next_track = None      # replan from the list
                         self.plan = None
+            elif kind == "arc":
+                self._arc_waypoints = [(max(0.0, min(1.0, float(p))),
+                                        max(0.0, min(1.0, float(e))))
+                                       for p, e in val][:8]
+                self._arc_waypoints.sort()
+                self._log({"event": "arc", "waypoints": self._arc_waypoints})
+                self._horizon_key = None
+            elif kind == "hold" and self.state == "playing"                     and self.current is not None:
+                bump = (self.current.phrase_beats or 32)                     * self.current.period_s
+                self._exit_played += bump
+                self.plan = None
+                self._log({"event": "hold", "plus_s": round(bump, 1)})
+            elif kind == "reroll" and self.state == "playing":
+                if self.next_track is not None:
+                    self.brain.veto_ids.add(self.next_track.id)
+                    self._log({"event": "reroll",
+                               "vetoed": self.next_track.title})
+                self.next_track = None
+                self.plan = None
+                self._horizon_key = None
+            elif kind == "seam_fb":
+                if self._last_style:
+                    self.brain.seam_feedback(self._last_style, val)
+                    self._log({"event": "seam_fb", "up": val,
+                               "style": self._last_style})
             elif kind == "seek":
                 self._do_seek(val)
             elif kind == "mix_now":
@@ -421,9 +510,44 @@ class DJSystem:
         elif self.state == "playing":
             self._maybe_arrange()
             self._maybe_plan()
+            self._maybe_horizon()
         elif self.state == "armed":
             if self.swap_at is not None and self.submix.clock >= self.swap_at:
                 self._finish_swap()
+
+    def _maybe_horizon(self):
+        """Provisional next-N for the trajectory display; recomputed only
+        when its inputs changed (it runs real selection, not free)."""
+        if self.current is None or self.brain is None:
+            return
+        key = (self.current.id,
+               self.next_track.id if self.next_track else None,
+               self._theme_name, json.dumps(self.brain.flavor, sort_keys=True),
+               tuple(self._arc_waypoints), round(self._energy_nudge, 2))
+        if key == self._horizon_key:
+            return
+        self._horizon_key = key
+        prog0 = self.arc_progress()
+        step = 300.0 / (SET_CYCLE_S if (self.brain.theme.arc != "all_night")
+                        else max(self.night_hours * 3600.0, 60.0))
+
+        def arc_at(i):
+            return max(0.0, min(1.0, self._arc_base(
+                min(prog0 + i * step, 1.0)) + self._energy_nudge))
+        try:
+            self._horizon = self.brain.plan_horizon(
+                self.current, arc_at, self.current.bpm, n=3)
+            if self.next_track is not None and self._horizon:
+                # the committed pick leads the horizon
+                self._horizon[0] = {"id": self.next_track.id,
+                                    "title": self.next_track.title,
+                                    "artist": self.next_track.artist,
+                                    "bpm": round(self.next_track.bpm, 1),
+                                    "energy": round(
+                                        self.next_track.energy_proxy(), 2),
+                                    "tags": self.next_track.all_tags[:4]}
+        except Exception as e:
+            print(f"[DJ] horizon skipped: {e}")
 
     def _maybe_arrange(self):
         """LIVE MICRO-ARRANGEMENT: when the current track sits in a long,
@@ -495,6 +619,9 @@ class DJSystem:
         self._draw_exit()
         self.brain.note_played(first)
         self._note_energy(first)
+        self._history.append({"t": time.strftime("%H:%M"),
+                              "title": first.title, "artist": first.artist,
+                              "via": "start"})
         self._history_id = self.db.log_play_start(first.id, theme=self._theme_name)
         self._log({"event": "play", "track": first.title,
                    "artist": first.artist, "bpm": first.bpm,
@@ -631,6 +758,12 @@ class DJSystem:
         self._history_id = self.db.log_play_start(
             self.current.id, transition_style=self.plan["style"],
             theme=self._theme_name)
+        self._last_style = self.plan["style"]
+        self._history.append({"t": time.strftime("%H:%M"),
+                              "title": self.current.title,
+                              "artist": self.current.artist,
+                              "via": self.plan["style"]})
+        self._history = self._history[-60:]
         self._log({"event": "play", "track": self.current.title,
                    "artist": self.current.artist, "bpm": self.current.bpm,
                    "camelot": self.current.camelot,

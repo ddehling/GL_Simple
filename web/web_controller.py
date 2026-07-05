@@ -1029,7 +1029,8 @@ class WebController:
 
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
                       'nudge', 'next_id', 'setlist', 'seek', 'seek_rel',
-                      'to_exit', 'mix_now', 'flavor'}
+                      'to_exit', 'mix_now', 'flavor',
+                      'hold', 'reroll', 'seam_fb', 'arc'}
 
         @self.socketio.on('dj_action')
         def handle_dj_action(data):
@@ -1064,6 +1065,19 @@ class WebController:
                     arg = float(arg)
                 except (TypeError, ValueError):
                     return
+            elif action == 'seam_fb':
+                arg = bool(arg)
+            elif action == 'arc':
+                if not isinstance(arg, list):
+                    return
+                pts = []
+                for it in arg[:8]:
+                    try:
+                        pts.append((max(0.0, min(1.0, float(it[0]))),
+                                    max(0.0, min(1.0, float(it[1])))))
+                    except (TypeError, ValueError, IndexError):
+                        return
+                arg = pts
             elif action == 'flavor':
                 # Sanitize: known sections only, str tags, weights 0..1.
                 if not isinstance(arg, dict):

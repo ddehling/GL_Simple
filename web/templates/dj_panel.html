@@ -104,6 +104,10 @@
             <div class="section-header"><h3>Now Playing</h3></div>
             <div class="now-title" id="dj-title">--</div>
             <div class="now-sub" id="dj-sub"></div>
+            <canvas id="dj-strip" height="52"
+                    style="width:100%;display:block;border-radius:6px;
+                           background:#15151c;margin:6px 0 2px 0"></canvas>
+            <div class="now-sub" id="dj-vocal-hint" style="min-height:16px"></div>
             <div class="track-progress"><div class="fill" id="dj-prog"
                  style="width:0%"></div></div>
             <div class="bias-labels"><span id="dj-pos">0:00</span>
@@ -121,23 +125,43 @@
             <div class="badges" id="dj-badges"></div>
             <div class="deckrow" id="dj-decks"></div>
             <div class="next-box hidden" id="dj-next-box">
-                <div class="now-sub">UP NEXT</div>
+                <div class="now-sub">UP NEXT <span id="dj-count"
+                     style="color:#8cf;font-weight:bold"></span></div>
                 <div id="dj-next" style="font-weight:bold"></div>
                 <div class="now-sub" id="dj-next-sub"></div>
+                <div class="transport" style="margin-top:8px">
+                    <button class="btn" id="dj-hold">HOLD +1 phrase</button>
+                    <button class="btn skip" id="dj-reroll">REROLL NEXT</button>
+                </div>
+            </div>
+            <div class="transport" id="dj-fb" style="margin-top:8px" hidden>
+                <span class="now-sub" style="align-self:center">last mix:</span>
+                <button class="btn" id="dj-fb-up">GOOD</button>
+                <button class="btn" id="dj-fb-dn">BAD</button>
             </div>
         </div>
 
         <!-- The night (active) -->
         <div class="section-panel hidden" id="dj-nightcard">
             <div class="section-header"><h3>The Night</h3></div>
-            <div class="arc-bar"><div class="arc-marker" id="dj-arc-mk"
-                 style="left:0%"></div></div>
-            <div class="bias-labels"><span>warm-up</span><span>peak</span>
-                <span>landing</span></div>
+            <canvas id="dj-arc-canvas" height="110"
+                    style="width:100%;display:block;border-radius:8px;
+                           background:#15151c;touch-action:none"></canvas>
+            <div class="bias-labels"><span>warm-up - drag to steer</span>
+                <span>peak</span>
+                <span><a href="#" id="dj-arc-reset"
+                     style="color:#8cf">reset arc</a></span></div>
             <div class="kv"><span class="k">Energy target</span>
                 <span id="dj-heat">--</span></div>
             <div class="kv"><span class="k">Set position</span>
                 <span id="dj-arcpct">--</span></div>
+        </div>
+
+        <!-- Tonight's tracklist -->
+        <div class="section-panel hidden" id="dj-tonight">
+            <div class="section-header"><h3>Tonight</h3></div>
+            <div id="dj-history" style="font-size:0.85em;max-height:180px;
+                 overflow-y:auto"></div>
         </div>
 
         <!-- Prep / steer (always when available) -->
@@ -410,13 +434,195 @@
                     .filter(Boolean).join("  ·  ");
             } else show($("dj-next-box"), false);
 
-            // The night.
-            $("dj-arc-mk").style.left = (100 * (dj.arc_phase || 0)) + "%";
+            // The night: trajectory canvas + steering state.
+            lastDj = dj;
+            drawArc(dj);
+            drawStrip(dj);
+            $("dj-count").textContent = dj.blend_in_s != null
+                ? `- ${dj.style ? dj.style.replace(/_/g, " ") : "mix"} in ${Math.max(0, Math.round(dj.blend_in_s))}s` : "";
             $("dj-heat").textContent = (dj.arc_heat != null ? dj.arc_heat.toFixed(2) : "--")
                 + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
             $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
                 + (dj.night_hours ? ` of a ${dj.night_hours}h night` : "");
+            renderHistory(dj.history);
+            show($("dj-tonight"), (dj.history || []).length > 0);
+            $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
+            restoreFlavor(dj.flavor);
         });
+
+        // ---------- trajectory canvas (arc + horizon + steering) ----------
+        let lastDj = null;
+        let dragWp = null;           // {idx} while dragging
+        let localWp = null;          // waypoints being edited locally
+        function arcXY(cv, p, e) {
+            return [p * cv.width, cv.height - 8 - e * (cv.height - 22)];
+        }
+        function drawArc(dj) {
+            const cv = $("dj-arc-canvas");
+            if (!cv || !dj.arc_curve) return;
+            if (cv.width !== cv.clientWidth) cv.width = cv.clientWidth;
+            const g = cv.getContext("2d");
+            g.clearRect(0, 0, cv.width, cv.height);
+            const wps = localWp || dj.arc_waypoints || [];
+            g.strokeStyle = "#fac85a"; g.lineWidth = 2; g.beginPath();
+            dj.arc_curve.forEach((e, i) => {
+                const [x, y] = arcXY(cv, i / (dj.arc_curve.length - 1), e);
+                i ? g.lineTo(x, y) : g.moveTo(x, y);
+            });
+            g.stroke();
+            const px = (dj.arc_phase || 0) * cv.width;
+            g.strokeStyle = "#fff"; g.lineWidth = 2;
+            g.beginPath(); g.moveTo(px, 0); g.lineTo(px, cv.height); g.stroke();
+            (dj.horizon || []).forEach((h, i) => {
+                const hx = px + 14 + i * (cv.width - px - 20) / 3.2;
+                const hy = cv.height - 8 - (h.energy || 0.5) * (cv.height - 22);
+                g.fillStyle = i === 0 ? "#2e6b3a" : "#2a4a6a";
+                g.fillRect(hx, hy - 9, Math.min(120, cv.width / 3.6), 18);
+                g.fillStyle = "#dfe8f0"; g.font = "10px sans-serif";
+                g.fillText((h.title || "?").slice(0, 18), hx + 3, hy + 4);
+            });
+            wps.forEach(([p, e], i) => {
+                const [x, y] = arcXY(cv, p, e);
+                g.fillStyle = dragWp && dragWp.idx === i ? "#fff" : "#8cf";
+                g.beginPath(); g.arc(x, y, 7, 0, 7); g.fill();
+            });
+        }
+        function cvPos(cv, ev) {
+            const r = cv.getBoundingClientRect();
+            const p = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+            const e = Math.max(0, Math.min(1,
+                (cv.height - 8 - (ev.clientY - r.top) * cv.height / r.height)
+                / (cv.height - 22)));
+            return [p, e];
+        }
+        (() => {
+            const cv = $("dj-arc-canvas");
+            cv.addEventListener("pointerdown", (ev) => {
+                if (!lastDj) return;
+                cv.setPointerCapture(ev.pointerId);
+                localWp = (localWp || lastDj.arc_waypoints || []).map(w => [...w]);
+                const [p, e] = cvPos(cv, ev);
+                let idx = localWp.findIndex(([wp]) => Math.abs(wp - p) < 0.05);
+                if (idx < 0 && localWp.length < 6) {
+                    localWp.push([p, e]);
+                    localWp.sort((a, b) => a[0] - b[0]);
+                    idx = localWp.findIndex(([wp]) => wp === p);
+                }
+                if (idx >= 0) { dragWp = {idx}; localWp[idx] = [p, e]; }
+                drawArc(lastDj);
+            });
+            cv.addEventListener("pointermove", (ev) => {
+                if (!dragWp || !localWp) return;
+                localWp[dragWp.idx] = cvPos(cv, ev);
+                drawArc(lastDj);
+            });
+            const fin = () => {
+                if (dragWp && localWp) {
+                    localWp.sort((a, b) => a[0] - b[0]);
+                    emit("arc", localWp.map(([p, e]) =>
+                        [Math.round(p * 1000) / 1000,
+                         Math.round(e * 1000) / 1000]));
+                }
+                dragWp = null;
+            };
+            cv.addEventListener("pointerup", fin);
+            cv.addEventListener("pointercancel", () => { dragWp = null; });
+            $("dj-arc-reset").onclick = (ev) => {
+                ev.preventDefault(); localWp = null; emit("arc", []);
+            };
+        })();
+
+        // ---------- current-track context strip ----------
+        const SEC_COLORS = {intro: "#3a5a4a", groove: "#33567e",
+            breakdown: "#5a3f72", build: "#7e6030", outro: "#4a4a52"};
+        function drawStrip(dj) {
+            const cv = $("dj-strip");
+            const tm = dj.track_map;
+            if (!cv) return;
+            if (cv.width !== cv.clientWidth) cv.width = cv.clientWidth;
+            const g = cv.getContext("2d");
+            g.clearRect(0, 0, cv.width, cv.height);
+            if (!tm || !tm.duration) return;
+            const X = (t) => t / tm.duration * cv.width;
+            (tm.sections || []).forEach(([s0, s1, kind, voc]) => {
+                g.fillStyle = SEC_COLORS[kind] || "#333";
+                g.fillRect(X(s0), 0, Math.max(X(s1) - X(s0), 1), cv.height);
+                if (voc > 0.5) {              // measured vocal presence
+                    g.fillStyle = "#e06868";
+                    g.fillRect(X(s0), cv.height - 4, X(s1) - X(s0), 4);
+                }
+            });
+            if ((tm.energy || []).length > 2) {
+                g.strokeStyle = "#cfe0f0"; g.lineWidth = 1.5; g.beginPath();
+                tm.energy.forEach((v, i) => {
+                    const x = i / (tm.energy.length - 1) * cv.width;
+                    const y = cv.height - 5 - Math.min(v, 1.2) / 1.2
+                        * (cv.height - 10);
+                    i ? g.lineTo(x, y) : g.moveTo(x, y);
+                });
+                g.stroke();
+            }
+            if (tm.exit_s != null) {
+                g.strokeStyle = "#f5c542"; g.lineWidth = 2;
+                g.setLineDash([4, 3]);
+                g.beginPath(); g.moveTo(X(tm.exit_s), 0);
+                g.lineTo(X(tm.exit_s), cv.height); g.stroke();
+                g.setLineDash([]);
+            }
+            if (dj.current && dj.current.pos_s != null) {
+                g.strokeStyle = "#fff"; g.lineWidth = 2;
+                g.beginPath(); g.moveTo(X(dj.current.pos_s), 0);
+                g.lineTo(X(dj.current.pos_s), cv.height); g.stroke();
+                const sec = (tm.sections || []).find(
+                    ([s0, s1]) => dj.current.pos_s >= s0 && dj.current.pos_s < s1);
+                const nxt = (tm.sections || []).find(([s0]) => s0 > dj.current.pos_s);
+                let hint = sec ? `in ${sec[2]}` : "";
+                if (sec && sec[3] > 0.5) hint += "  -  VOCALS NOW";
+                else if (nxt && nxt[3] > 0.5)
+                    hint += `  -  vocals ahead (${Math.round(nxt[0] - dj.current.pos_s)}s)`;
+                $("dj-vocal-hint").textContent = hint;
+            }
+        }
+
+        // ---------- tonight tracklist ----------
+        function renderHistory(hist) {
+            const el = $("dj-history");
+            if (!el || !hist) return;
+            const key = hist.length + "|" + (hist.length ? hist[hist.length-1].title : "");
+            if (el.dataset.have === key) return;
+            el.dataset.have = key;
+            el.innerHTML = hist.slice().reverse().map((h) =>
+                `<div style="padding:2px 0;border-bottom:1px solid #2a2a33">
+                 <span style="opacity:.5">${h.t}</span> ${h.title}
+                 <span style="opacity:.55">- ${h.artist || ""}</span>
+                 <span class="badge" style="float:right">${(h.via||"").replace(/_/g," ")}</span></div>`).join("");
+        }
+
+        // ---------- controls ----------
+        $("dj-hold").onclick = () => emit("hold");
+        $("dj-reroll").onclick = () => emit("reroll");
+        const flash = (b) => { b.style.background = "#2e6b3a";
+            setTimeout(() => b.style.background = "", 600); };
+        $("dj-fb-up").onclick = () => { emit("seam_fb", true); flash($("dj-fb-up")); };
+        $("dj-fb-dn").onclick = () => { emit("seam_fb", false); flash($("dj-fb-dn")); };
+
+        // Restore flavor chip state from the system (page reloads, other
+        // operators).
+        function restoreFlavor(flavor) {
+            if (!flavor) return;
+            const want = {};
+            for (const t of Object.keys(flavor.prefer_tags || {})) want[t] = 1;
+            for (const t of Object.keys(flavor.avoid_tags || {})) want[t] = 2;
+            for (const b of document.querySelectorAll("#dj-flavor .theme-btn")) {
+                const st = want[b.dataset.tag] || 0;
+                if ((flavorState[b.dataset.tag] || 0) !== st) {
+                    flavorState[b.dataset.tag] = st;
+                    b.style.background = st === 1 ? "#2e6b3a"
+                        : st === 2 ? "#7a3030" : "";
+                    b.style.borderColor = st ? "#fff5" : "";
+                }
+            }
+        }
 
         socket.on("disconnect", () => {
             $("status-text").textContent = "Disconnected";
