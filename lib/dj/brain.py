@@ -46,6 +46,9 @@ class TrackInfo:
         self.grid = row.get("beat_grid") or []
         self.gain_db = row.get("loudness_gain_db") or 0.0
         self.kick_offset_s = float(row.get("kick_offset_s") or 0.0)
+        self.phrase_beats = int(row.get("phrase_beats") or 0)
+        self.phrase_start_s = float(row.get("phrase_start_s") or 0.0)
+        self.phrase_conf = float(row.get("phrase_conf") or 0.0)
         self.mood_hist = row.get("mood_hist") or {}
         self.rhythm_density = row.get("rhythm_density") or 0.0
         self.spectral = row.get("spectral") or {}
@@ -102,6 +105,24 @@ class TrackInfo:
         first_down = g["first_beat_s"] + self.downbeat_offset * g["period_s"]
         k = round((t - first_down) / bar)
         return first_down + k * bar
+
+    def nearest_phrase(self, t):
+        """Nearest 16/32-beat PHRASE start to t; falls back to the nearest
+        downbeat when the hypermeter wasn't confidently detected. Blends
+        that start/end on phrase boundaries land where the MUSIC breathes,
+        not just on a bar line."""
+        # Gate calibrated on the real library: conf>=0.1 detections align
+        # with section boundaries ~5x chance (0.39 vs 0.08); below that
+        # it's noise. Worst case is a bar-snap - same as no phrase data.
+        if self.phrase_beats <= 0 or self.phrase_conf < 0.1:
+            return self.nearest_downbeat(t)
+        span = self.phrase_beats * self.period_s
+        k = round((t - self.phrase_start_s) / max(span, 1e-6))
+        cand = self.phrase_start_s + k * span
+        # Keep it inside the track and grid-honest.
+        if cand < 0 or cand > self.duration_s:
+            return self.nearest_downbeat(t)
+        return self.nearest_downbeat(cand)
 
     def energy_proxy(self):
         """Cross-track comparable energy in ~0..1."""
@@ -163,6 +184,12 @@ class Brain:
         self.stretch_max = min(stretch_max, STRETCH_MAX)
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
         self.recent = []                # (wall_time, track_id, artist)
+        self._recent_skips = {}         # track_id -> skip count (tonight)
+
+    def note_skipped(self, track):
+        """Operator skipped it - a labeled 'not tonight' the scorer uses."""
+        tid = getattr(track, "id", track)
+        self._recent_skips[tid] = self._recent_skips.get(tid, 0) + 1
 
     # -- memory --------------------------------------------------------------
     def note_played(self, track, when=None):
@@ -218,18 +245,62 @@ class Brain:
             s_spec = 0.7 + 0.6 * cand.spectral.get("high_share", 0.2) * 3.0
         pair = self.best_pair(current, cand) if current is not None else None
         s_pair = pair["score"] if pair else (0.5 if current is None else 0.15)
-        total = (s_rate * s_key * s_energy * s_mood * s_spec
-                 * self._recency_penalty(cand, now) * s_pair
+        # VARIETY: two near-identical-sounding tracks back to back is the
+        # classic auto-DJ tell. Penalize spectral+character similarity to
+        # the current track (never to zero - a coherent run is fine, a
+        # clone parade is not).
+        s_var = 1.0
+        if current is not None:
+            s_var = 1.0 - 0.45 * self._similarity(current, cand)
+        total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var
+                 * self._recency_penalty(cand, now)
+                 * self._skip_penalty(cand) * s_pair
                  * self.rng.uniform(0.9, 1.1))
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair}
 
+    @staticmethod
+    def _similarity(a, b):
+        """0..1 sameness of two tracks (spectral shares + character axes)."""
+        d = (abs(a.spectral.get("bass_share", .33) - b.spectral.get("bass_share", .33))
+             + abs(a.spectral.get("mid_share", .33) - b.spectral.get("mid_share", .33))
+             + abs(a.spectral.get("high_share", .25) - b.spectral.get("high_share", .25))
+             + 0.5 * abs(a.energy_proxy() - b.energy_proxy())
+             + 0.5 * abs((a.axes.get("hypnotic", .5) or .5)
+                         - (b.axes.get("hypnotic", .5) or .5)))
+        return max(0.0, 1.0 - d * 2.0)
+
+    def _skip_penalty(self, cand):
+        """HISTORY LEARNING: tracks the operator skipped recently score
+        lower - a skip is a labeled 'not tonight'."""
+        n = self._recent_skips.get(cand.id, 0)
+        return 1.0 / (1.0 + 0.8 * n)
+
     def choose_next(self, current, arc_target, out_bpm, now=None):
-        """Returns (TrackInfo, meta) or (None, None) when the library is dry."""
-        best, best_score, best_meta = None, 0.0, None
+        """Returns (TrackInfo, meta) or (None, None) when the library is dry.
+
+        LOOKAHEAD: greedy picking paints into corners (a great seam into a
+        track nothing mixes out of). The top few candidates also get judged
+        by their own best successor, so the pick keeps the set OPEN."""
+        scored = []
         for cand in self.library:
             s, meta = self.score(current, cand, arc_target, out_bpm, now)
-            if s > best_score:
-                best, best_score, best_meta = cand, s, meta
+            if s > 0.0:
+                scored.append((s, cand, meta))
+        if not scored:
+            return None, None
+        scored.sort(key=lambda x: -x[0])
+        best, best_score, best_meta = None, 0.0, None
+        for s, cand, meta in scored[:5]:
+            succ = 0.0
+            for s2, cand2, _ in scored[:12]:
+                if cand2.id == cand.id:
+                    continue
+                p = self.best_pair(cand, cand2)
+                if p and p["score"] > succ:
+                    succ = p["score"]
+            total = s * (0.75 + 0.25 * succ)
+            if total > best_score:
+                best, best_score, best_meta = cand, total, meta
         return best, best_meta
 
     def choose_first(self, arc_target, now=None):
@@ -437,8 +508,11 @@ class Brain:
                     "in_s": in_s, "beats": beats,
                     "pair_score": pair["score"], "cand_id": cand.id}
             return plan
-        out_s = cur.nearest_downbeat(pair["out_s"])
-        in_s = cand.nearest_downbeat(pair["in_s"])
+        # Blend-family styles anchor to PHRASE boundaries (16/32 beats) when
+        # the hypermeter was confidently detected - the blend then completes
+        # where the music breathes. Drop-anchored styles keep the drop.
+        out_s = cur.nearest_phrase(pair["out_s"])
+        in_s = cand.nearest_phrase(pair["in_s"])
         if style == "cut_at_drop":
             # Enter at B's best PRE-DROP point (the style's whole premise),
             # not the generic pair in-point.
@@ -736,12 +810,23 @@ class Brain:
                       max(end - int(2 * beat_out * RATE), S0 + 1))
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 2 * beat_out)
+        # EQ CARVING from the two sections' measured spectra: don't stack
+        # B's melody on top of A's lead, don't double busy hats. B enters
+        # with its mids/highs shaded exactly where A's blend-section is
+        # crowded, and gets the full range back at the swap (A is leaving).
+        sec_a = cur.section_at(plan["out_s"] - 1.0) or {}
+        sec_b = cand.section_at(plan["in_s"] + 1.0) or {}
+        b_mid0 = 0.55 if sec_a.get("mid_share", 0.33) > 0.42 else 1.0
+        b_high0 = 0.7 if sec_a.get("high_share", 0.25) > 0.30 else 1.0
+        # A sheds its mids with the swap when B's arriving section carries
+        # its own lead - the exit fade does the rest.
+        a_mid_swap = 0.6 if sec_b.get("mid_share", 0.33) > 0.42 else 1.0
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
-            # Incoming: bass fully cut, mids/highs open, fade up over 1st half.
+            # Incoming: bass fully cut, mids/highs carved, fade up 1st half.
             {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-             "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
+             "mid": b_mid0, "high": b_high0, "ramp_s": 0.01},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
             {"at": S0, "cmd": "start", "deck": incoming},
@@ -753,9 +838,9 @@ class Brain:
             # swap is a measured 8 dB RMS step whenever the two tracks'
             # low-end levels differ - the short crossfade keeps the floor.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "ramp_s": 1.5 * beat_out},
+             "mid": a_mid_swap, "ramp_s": 1.5 * beat_out},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "ramp_s": 1.5 * beat_out},
+             "mid": 1.0, "high": 1.0, "ramp_s": 1.5 * beat_out},
             # Outgoing leaves over the rest of the blend (bass already gone).
             {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
              "ramp_s": half_exit},

@@ -93,7 +93,10 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
         done = 0
         for abs_path, result, chash in results:
             result.pop("trace", None)
+            vocal_snap = _vocal_snapshot(db, abs_path)
             db.upsert_track(abs_path, result, content_hash=chash)
+            if vocal_snap and not result.get("error"):
+                _vocal_restore(db, abs_path, vocal_snap)
             done += 1
             summary["scanned"] += 1
             if result.get("error"):
@@ -114,6 +117,47 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
                     "current": "", "finished": True})
     db.close()
     return summary
+
+
+def _vocal_snapshot(db, abs_path):
+    """The ML vocal pass costs ~1 min/track of CPU - an analysis-version
+    rescan must NOT wipe it. Snapshot the measured vocal data before the
+    upsert (which rebuilds sections) so it can be re-applied."""
+    row = db.conn.execute("SELECT id, axes FROM tracks WHERE path = ?",
+                          (db.rel(abs_path),)).fetchone()
+    if row is None or not row["axes"]:
+        return None
+    axes = json.loads(row["axes"])
+    if not axes.get("vocal_src"):
+        return None
+    secs = db.conn.execute(
+        "SELECT start_s, vocalness FROM sections WHERE track_id = ?",
+        (row["id"],)).fetchall()
+    return {"vocal": axes.get("vocal", 0.0), "src": axes["vocal_src"],
+            "secs": [(r["start_s"], r["vocalness"]) for r in secs]}
+
+
+def _vocal_restore(db, abs_path, snap):
+    """Re-apply snapshotted vocal data onto the freshly-rebuilt rows.
+    Sections are matched by start_s (same audio, same boundary logic);
+    an unmatched new section falls back to the nearest old one."""
+    row = db.conn.execute("SELECT id, axes FROM tracks WHERE path = ?",
+                          (db.rel(abs_path),)).fetchone()
+    if row is None:
+        return
+    axes = json.loads(row["axes"]) if row["axes"] else {}
+    axes["vocal"] = snap["vocal"]
+    axes["vocal_src"] = snap["src"]
+    db.conn.execute("UPDATE tracks SET axes = ? WHERE id = ?",
+                    (json.dumps(axes), row["id"]))
+    if snap["secs"]:
+        for sec in db.conn.execute(
+                "SELECT id, start_s FROM sections WHERE track_id = ?",
+                (row["id"],)).fetchall():
+            old = min(snap["secs"], key=lambda s: abs(s[0] - sec["start_s"]))
+            db.conn.execute("UPDATE sections SET vocalness = ? WHERE id = ?",
+                            (old[1], sec["id"]))
+    db.conn.commit()
 
 
 def vocal_pass(db, progress_cb=None, summary=None, total=0):

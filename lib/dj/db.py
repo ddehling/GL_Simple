@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5               # v5: phrase_beats/phrase_start_s/phrase_conf
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -144,7 +144,10 @@ class LibraryDB:
                     self.conn.execute("PRAGMA table_info(tracks)")}
             for col, typ in (("axes", "TEXT"), ("auto_tags", "TEXT"),
                              ("band_curve", "TEXT"),
-                             ("kick_offset_s", "REAL")):  # v2/v3/v4 columns
+                             ("kick_offset_s", "REAL"),   # v2/v3/v4 columns
+                             ("phrase_beats", "INTEGER"),  # v5: hypermeter
+                             ("phrase_start_s", "REAL"),
+                             ("phrase_conf", "REAL")):
                 if col not in have:
                     self.conn.execute(
                         f"ALTER TABLE tracks ADD COLUMN {col} {typ}")
@@ -194,6 +197,9 @@ class LibraryDB:
             "key_name": a.get("key_name"),
             "loudness_gain_db": a.get("loudness_gain_db"),
             "kick_offset_s": a.get("kick_offset_s"),
+            "phrase_beats": a.get("phrase_beats"),
+            "phrase_start_s": a.get("phrase_start_s"),
+            "phrase_conf": a.get("phrase_conf"),
             "rhythm_density": a.get("rhythm_density"),
             "analysis_version": a.get("analysis_version", 0),
             "analyzed_at": time.time(),

@@ -27,8 +27,9 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 7            # v7: vocalness from the ML vocal pass only
-                                #     (heuristic + per-track norm removed)
+ANALYSIS_VERSION = 8            # v8: phrase/hypermeter detection
+                                # (v7: vocalness from the ML vocal pass only;
+                                #  heuristic + per-track norm removed)
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
 
 RATE = 44100
@@ -507,6 +508,54 @@ def estimate_downbeat(beats, bands, chroma, onset_bass, onset_broad):
     conf = float(np.clip((best - second) / (abs(best) + abs(second) + 1e-6)
                          + max(scores[order[0]], 0.0) * 0.3, 0.0, 1.0))
     return int(order[0]), conf
+
+
+def estimate_phrase(beats, downbeat_offset, bands, chroma, onset_broad,
+                    novelty):
+    """Where the 16/32-beat PHRASES start (the hypermeter above bars).
+
+    Same machinery as estimate_downbeat one level up: per-BAR cues
+    (harmonic change bar-to-bar, energy step, novelty accent), scored per
+    candidate offset for 4- and 8-bar phrase lengths. Returns
+    (phrase_beats 16|32, phrase_start_s, conf) or (0, 0.0, 0.0)."""
+    nb = len(beats)
+    if nb < 40:
+        return 0, 0.0, 0.0
+    bar_starts = list(range(downbeat_offset, nb - 4, 4))
+    if len(bar_starts) < 10:
+        return 0, 0.0, 0.0
+    bar_times = beats[bar_starts]
+    ch = _beat_sync(chroma, bar_times)
+    ch = ch / (np.linalg.norm(ch, axis=1, keepdims=True) + 1e-9)
+    harm = np.zeros(len(bar_times))
+    harm[1:] = 1.0 - np.sum(ch[1:] * ch[:-1], axis=1)
+    en = _beat_sync(bands, bar_times).mean(axis=1)
+    step = np.zeros(len(bar_times))
+    step[1:] = np.abs(en[1:] - en[:-1])
+    novb = _beat_sync(novelty, bar_times)
+    for v in (harm, step, novb):
+        v[:] = (v - v.mean()) / (v.std() + 1e-9)
+    feat = harm + 0.8 * step + 0.8 * novb
+    best = (0.0, 0, 0)                     # (score, phrase_bars, offset)
+    for pb in (4, 8):
+        if len(feat) < 2 * pb + 2:
+            continue
+        for o in range(pb):
+            nph = (len(feat) - o) // pb
+            if nph < 2:
+                continue
+            m = feat[o:o + nph * pb].reshape(nph, pb)
+            prof = m.mean(axis=0)
+            sc = (prof[0] - prof[1:].mean()) \
+                * (1.0 / (1.0 + m[:, 0].std()))
+            if sc > best[0]:
+                best = (sc, pb, o)
+    if best[1] == 0:
+        return 0, 0.0, 0.0
+    sc, pb, o = best
+    conf = float(np.clip(sc * 0.5, 0.0, 1.0))
+    start_s = float(beats[bar_starts[o]])
+    return pb * 4, start_s, conf
 
 
 # --------------------------------------------------------------------------
@@ -1086,6 +1135,8 @@ def analyze_samples(samples, deep=True):
     grid, bpm, bpm_conf, beats = estimate_beat_grid(onset_mix)
     downbeat, db_conf = estimate_downbeat(beats, bands, chroma,
                                           onset_bass, onset_broad)
+    phrase_beats, phrase_start_s, phrase_conf = estimate_phrase(
+        beats, downbeat, bands, chroma, onset_broad, novelty)
 
     frame_energy = (bands / np.maximum(bands.mean(axis=0), 1e-10)).mean(axis=1)
     key_pc, key_mode, camelot, key_conf = estimate_key(chroma, frame_energy)
@@ -1103,6 +1154,9 @@ def analyze_samples(samples, deep=True):
         "beat_grid": [{k: (round(v, 5) if isinstance(v, float) else v)
                        for k, v in g.items()} for g in grid],
         "downbeat_offset": downbeat, "downbeat_conf": round(db_conf, 3),
+        "phrase_beats": phrase_beats,
+        "phrase_start_s": round(phrase_start_s, 4),
+        "phrase_conf": round(phrase_conf, 3),
         "key_pc": key_pc, "key_mode": key_mode,
         "camelot": camelot, "key_conf": round(key_conf, 3),
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",

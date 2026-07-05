@@ -68,6 +68,7 @@ class DJSystem:
         self._set_start_clock = 0
         self._history_id = None
         self._energy_nudge = 0.0
+        self._played_energy_ema = None   # arc feedback: what actually played
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
         self._setlist_name = None
@@ -178,6 +179,11 @@ class DJSystem:
         with self._lock:
             self._pending.append(("mix_now", None))
 
+    def _note_energy(self, track):
+        e = track.energy_proxy()
+        self._played_energy_ema = e if self._played_energy_ema is None \
+            else 0.6 * self._played_energy_ema + 0.4 * e
+
     # -- arc / outstate -----------------------------------------------------------
     def arc_progress(self):
         elapsed = (self.submix.clock - self._set_start_clock) / RATE
@@ -188,8 +194,14 @@ class DJSystem:
 
     def arc_target(self):
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
-        return max(0.0, min(1.0, theme.arc_target(self.arc_progress())
-                            + self._energy_nudge))
+        target = theme.arc_target(self.arc_progress()) + self._energy_nudge
+        # ARC FEEDBACK: if what actually PLAYED has been running hotter or
+        # cooler than the theme's arc (library gaps, anchor picks), lean
+        # the next choice the other way instead of undershooting all night.
+        if self._played_energy_ema is not None:
+            target += max(-0.15, min(0.15,
+                                     0.6 * (target - self._played_energy_ema)))
+        return max(0.0, min(1.0, target))
 
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
@@ -350,6 +362,7 @@ class DJSystem:
         self._started_clock = self.submix.clock
         self._draw_exit()
         self.brain.note_played(first)
+        self._note_energy(first)
         self._history_id = self.db.log_play_start(first.id, theme=self._theme_name)
         self._log({"event": "play", "track": first.title,
                    "artist": first.artist, "bpm": first.bpm,
@@ -460,6 +473,7 @@ class DJSystem:
         self._started_clock = self.submix.clock
         self._draw_exit()
         self.brain.note_played(self.current)
+        self._note_energy(self.current)
         self._history_id = self.db.log_play_start(
             self.current.id, transition_style=self.plan["style"],
             theme=self._theme_name)
@@ -508,6 +522,8 @@ class DJSystem:
         if self._history_id:
             self.db.log_play_end(self._history_id, skipped=True)
             self._history_id = None
+        if self.current is not None:
+            self.brain.note_skipped(self.current)
         self._log({"event": "skip", "track":
                    self.current.title if self.current else None})
         # Force planning NOW with an exit a few bars out.
