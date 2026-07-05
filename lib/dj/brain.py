@@ -481,6 +481,11 @@ class Brain:
         # Style menu, gated by analysis confidence.
         weights = dict(self.theme.style_weights)
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
+        # A tempo-clash pair (user-ordered set beyond the stretch range,
+        # rate fell back to 1.0) can NEVER beat-match - a "blend" there is
+        # two grids sliding past each other. Deliberate fade, always.
+        if (meta or {}).get("tempo_clash"):
+            low_conf = True
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
             # a beat-matched blend there is inaudible as such and just

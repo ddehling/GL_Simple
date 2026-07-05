@@ -127,7 +127,8 @@ def compile_plan(library, entries, theme, seed=0):
                     slot["warnings"].append(
                         f"tempo clash: {t.bpm:.0f} vs {nxt.bpm:.0f} bpm - "
                         "will long_fade")
-                    meta = {"rate": 1.0, "eff_bpm": nxt.bpm, "pair": None}
+                    meta = {"rate": 1.0, "eff_bpm": nxt.bpm, "pair": None,
+                            "tempo_clash": True}
                 else:
                     meta = {"rate": rate, "eff_bpm": eff, "pair": None}
             # Force the exit at least target_play after entry (but leave room
