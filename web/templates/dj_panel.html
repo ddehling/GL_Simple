@@ -187,9 +187,26 @@
             socket.emit("dj_action", {action, value});
         }
         $("dj-start").onclick = () => emit("start");
+        // NO POPUPS - EVER. Two-step inline confirm: first tap arms the
+        // button (turns red, relabels), second tap within 3s stops.
+        let stopArmed = null;
         $("dj-stop").onclick = () => {
-            if (confirm("Stop the DJ and hand the soundtrack back?"))
+            const b = $("dj-stop");
+            if (stopArmed) {
+                clearTimeout(stopArmed);
+                stopArmed = null;
+                b.textContent = "Stop";
+                b.style.background = "";
                 emit("stop");
+                return;
+            }
+            b.textContent = "tap again to stop";
+            b.style.background = "#a33";
+            stopArmed = setTimeout(() => {
+                stopArmed = null;
+                b.textContent = "Stop";
+                b.style.background = "";
+            }, 3000);
         };
         $("dj-skip").onclick = () => emit("skip");
         $("dj-auto").onclick = () =>

@@ -69,6 +69,7 @@ class DJSystem:
         self._set_start_clock = 0
         self._history_id = None
         self._energy_nudge = 0.0
+        self._urgent_exit = False        # skip/mix_now: exit ASAP, not "best"
         self._played_energy_ema = None   # arc feedback: what actually played
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
@@ -555,6 +556,17 @@ class DJSystem:
         if plan["out_s"] <= pos + MIN_LEAD_S:
             plan["out_s"] = self.current.nearest_downbeat(pos + MIN_LEAD_S
                                                           + 2 * self.current.period_s)
+        # URGENT EXIT (skip / mix_now): the pair scorer is free to pick a
+        # beautiful boundary MINUTES away - correct for autopilot, absurd
+        # for a button named "mix now" (measured: blend_in 419s). Force
+        # the exit onto the next phrase boundary within ~30 s.
+        if self._urgent_exit and plan["out_s"] > pos + 30.0:
+            t_exit = self.current.nearest_phrase(pos + 12.0)
+            if not (pos + MIN_LEAD_S <= t_exit <= pos + 30.0):
+                t_exit = self.current.nearest_downbeat(pos + 12.0)
+            plan["out_s"] = min(max(t_exit, pos + MIN_LEAD_S + 1.0),
+                                max(self.current.duration_s - 10.0,
+                                    pos + MIN_LEAD_S + 1.0))
         incoming = "b" if self.active_deck == "a" else "a"
         self.submix.post({"cmd": "load", "deck": incoming, "samples": samples,
                           "track_id": self.next_track.id,
@@ -571,6 +583,7 @@ class DJSystem:
         self.swap_at = swap_at
         self.blend_at = blend_at
         self.state = "armed"
+        self._urgent_exit = False
         self._log({"event": "armed", "style": plan["style"],
                    "next": self.next_track.title,
                    "rate": round(plan["rate"], 4),
@@ -640,6 +653,7 @@ class DJSystem:
             self._history_id = None
         if self.current is not None:
             self.brain.note_skipped(self.current)
+        self._urgent_exit = True
         self._log({"event": "skip", "track":
                    self.current.title if self.current else None})
         # Force planning NOW with an exit a few bars out.
