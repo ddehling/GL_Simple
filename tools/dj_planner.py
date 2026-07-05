@@ -928,6 +928,7 @@ class MixTab(QWidget):
         self.preview.stop()
         self.timeline.set_playhead(None)
         self.preview.set_plan(compiled, brain)
+        self.timeline.samples_provider = self.preview.cached_samples
         self.deckmon.attach(self.preview, compiled)
 
     def play_set(self):

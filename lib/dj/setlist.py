@@ -106,8 +106,9 @@ def compile_plan(library, entries, theme, seed=0):
     target_play = min(max(theme.min_play_s, 150.0), 300.0)
     for i, (t, e) in enumerate(tracks):
         slot = {"track": t, "entry": e, "start_offset_s": offset,
+                "in_s": entry_in_s,              # where THIS track enters
                 "transition": None, "warnings": []}
-        in_s = entry_in_s                        # where THIS track entered
+        in_s = entry_in_s
         if i + 1 < len(tracks):
             nxt, ne = tracks[i + 1]
             _, meta = brain.score(t, nxt, arc_target=0.6, out_bpm=t.bpm)

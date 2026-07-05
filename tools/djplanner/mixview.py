@@ -64,6 +64,9 @@ class MixTimeline(QWidget):
         self.selected_seam = None
         self.live_bpm = None         # what the system is tracking right now
         self.bpm_curve = []          # [(t, bpm)] planned output tempo
+        # track_id -> int16 (n,2) or None; wired to the preview's decode
+        # cache so high zoom can draw REAL waveforms at beat resolution.
+        self.samples_provider = None
         self._drag = None
 
     def set_plan(self, compiled, brain):
@@ -174,66 +177,106 @@ class MixTimeline(QWidget):
                 p.setPen(QColor(255, 240, 200))
                 p.drawText(int(min(max(x + 6, 60), W - 130)), 11, label)
 
+        px_per_s = W / max(span, 1e-6)
         for i, s in enumerate(self.slots):
             t = s["track"]
             S = s["start_offset_s"]
-            # Draw each block over its EXCLUSIVE drawn extent [S, S+play_s]
-            # so blocks tile without overlap - clicking a block always maps
-            # to that track (overlapping blocks caused seek-to-wrong-track).
-            # The blend overlap is shown by the seam envelopes below.
-            E = S + s["play_s"]
+            play_end = S + s["play_s"]           # click-exclusive extent
+            blend = next((sm["blend_s"] for sm in self.seams
+                          if sm["index"] == i), 0.0)
+            E = play_end + blend                 # VISUAL extent incl. overlap
             x0, x1 = self._t2x(S), self._t2x(E)
+            xsplit = self._t2x(play_end)
             if x1 < 0 or x0 > W:
                 continue
             lane = i % 2
             y0 = lane_top + lane * (lane_h + 4)
-            r = QRectF(x0, y0, x1 - x0, lane_h)
-            p.fillRect(r, LANE_COLORS[lane])
+            p.fillRect(QRectF(x0, y0, xsplit - x0, lane_h), LANE_COLORS[lane])
+            if blend > 0:
+                # The overlap TAIL: the outgoing keeps playing under the
+                # next track - drawn faded so the overlap is visible.
+                tail = QColor(LANE_COLORS[lane])
+                tail.setAlpha(90)
+                p.fillRect(QRectF(xsplit, y0, x1 - xsplit, lane_h), tail)
+                p.setPen(QPen(QColor(255, 255, 255, 60), 1,
+                              Qt.PenStyle.DashLine))
+                p.drawLine(int(xsplit), y0, int(xsplit), y0 + lane_h)
             p.setPen(QPen(QColor(0, 0, 0, 120), 1))
-            p.drawRect(r)
+            p.drawRect(QRectF(x0, y0, x1 - x0, lane_h))
 
-            # Spectral content mapped from track-time [in_s, out_s+blend]:
-            # three stacked band area-plots (low bottom / mid / high top),
-            # each drawn as a FILLED HEIGHT (not a shade) so intensity is
-            # actually readable - across a seam you SEE the incoming track's
-            # bass stay low until the swap while its highs are already high.
-            in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
-            seg_dur = E - S
-            bc = t.row.get("band_curve") or {}
-            n_cols = max(int(x1 - x0), 8)          # per-pixel temporal detail
-            if all(k in bc and bc[k] for k in ("low", "mid", "high")):
-                band_h = lane_h / 3.0
-                for ri, (key, col) in enumerate(
-                        (("high", EQ_COLORS["high"]),
-                         ("mid", EQ_COLORS["mid"]),
-                         ("low", EQ_COLORS["low"]))):
-                    curve = bc[key]
-                    base_y = y0 + (ri + 1) * band_h
-                    p.fillRect(QRectF(x0, y0 + ri * band_h, x1 - x0,
-                                      band_h), QColor(24, 24, 30))
-                    poly = [QPointF(x0, base_y)]
-                    for k in range(n_cols + 1):
-                        ts = in_s + seg_dur * k / n_cols
-                        ci = min(int(ts * 2), len(curve) - 1)
-                        v = min(float(curve[ci]) / 1.1, 1.0)
-                        poly.append(QPointF(x0 + (x1 - x0) * k / n_cols,
-                                            base_y - (band_h - 1) * v))
-                    poly.append(QPointF(x1, base_y))
-                    fill = QColor(col)
-                    fill.setAlpha(150)
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(fill)
-                    p.drawPolygon(QPolygonF(poly))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.setPen(QPen(col, 1))
-                    p.drawPolyline(QPolygonF(poly[1:-1]))
+            # Content maps track-time linearly from the slot's TRUE entry
+            # point (the previous seam's in-point - NOT mix_ins[0], which
+            # shifted the drawn content vs the audio by tens of seconds).
+            in_s = s.get("in_s")
+            if in_s is None:
+                in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
 
-            # Beat ticks at high zoom.
+            def tt_of_x(x):
+                return in_s + (self._x2t(x) - S)
+
+            samples = None
+            if self.samples_provider is not None and px_per_s >= 25:
+                samples = self.samples_provider(t.id)
+            if samples is not None:
+                # BEAT-LEVEL DETAIL: real waveform min/max per pixel from
+                # the preview's decoded cache (int16; ch0 is plenty for
+                # display) - the DJ-software view.
+                cx0, cx1 = max(int(x0), 0), min(int(x1), W)
+                mid_y = y0 + lane_h * 0.55
+                amp = lane_h * 0.42
+                wf = QColor(225, 235, 245, 230)
+                p.setPen(QPen(wf, 1))
+                n_src = len(samples)
+                for cx in range(cx0, cx1):
+                    a = int(tt_of_x(cx) * RATE)
+                    b = int(tt_of_x(cx + 1) * RATE)
+                    if b <= 0 or a >= n_src:
+                        continue
+                    seg = samples[max(a, 0):min(max(b, a + 1), n_src), 0]
+                    if not len(seg):
+                        continue
+                    lo = float(seg.min()) / 32767.0
+                    hi = float(seg.max()) / 32767.0
+                    if cx >= xsplit:
+                        p.setPen(QPen(QColor(225, 235, 245, 110), 1))
+                    p.drawLine(cx, int(mid_y - hi * amp),
+                               cx, int(mid_y - lo * amp))
+            else:
+                # Overview zoom: three stacked band area-plots (FILLED
+                # HEIGHT = level) from the 2Hz analysis curves.
+                bc = t.row.get("band_curve") or {}
+                seg_dur = E - S
+                n_cols = max(int(x1 - x0), 8)
+                if all(k in bc and bc[k] for k in ("low", "mid", "high")):
+                    band_h = lane_h / 3.0
+                    for ri, (key, col) in enumerate(
+                            (("high", EQ_COLORS["high"]),
+                             ("mid", EQ_COLORS["mid"]),
+                             ("low", EQ_COLORS["low"]))):
+                        curve = bc[key]
+                        base_y = y0 + (ri + 1) * band_h
+                        poly = [QPointF(x0, base_y)]
+                        for k in range(n_cols + 1):
+                            ts = in_s + seg_dur * k / n_cols
+                            ci = min(int(ts * 2), len(curve) - 1)
+                            v = min(float(curve[ci]) / 1.1, 1.0)
+                            poly.append(QPointF(x0 + (x1 - x0) * k / n_cols,
+                                                base_y - (band_h - 1) * v))
+                        poly.append(QPointF(x1, base_y))
+                        fill = QColor(col)
+                        fill.setAlpha(150)
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(fill)
+                        p.drawPolygon(QPolygonF(poly))
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+                        p.setPen(QPen(col, 1))
+                        p.drawPolyline(QPolygonF(poly[1:-1]))
+
+            # Beat ticks at high zoom (across the tail too).
             if t.grid and span > 0:
                 period = t.grid[0]["period_s"]
-                px_beat = W / (span / period)
+                px_beat = px_per_s * period
                 if px_beat >= 6:
-                    in_s = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
                     g = t.grid[0]
                     first_down = g["first_beat_s"] \
                         + t.downbeat_offset * g["period_s"]
@@ -244,10 +287,37 @@ class MixTimeline(QWidget):
                             x = self._t2x(out_t)
                             down = round((tt - first_down) / period) % 4 == 0
                             p.setPen(QPen(QColor(255, 255, 255,
-                                                 80 if down else 30), 1))
+                                                 90 if down else 35), 1))
                             p.drawLine(int(x), y0 + (2 if down else lane_h // 3),
                                        int(x), y0 + lane_h - 2)
                         tt += period
+
+            # DROP moments + section boundaries, mapped into mix time.
+            try:
+                from lib.dj.features import drop_moments
+                dms = drop_moments(t.sections)
+            except Exception:
+                dms = []
+            for d in dms:
+                if in_s - 0.5 <= d <= in_s + (E - S):
+                    x = self._t2x(S + (d - in_s))
+                    if 0 <= x <= W:
+                        p.setPen(QPen(QColor(255, 215, 80), 2))
+                        p.drawLine(int(x), y0, int(x), y0 + lane_h)
+                        if px_per_s >= 8:
+                            p.drawText(int(x) + 3, y0 + lane_h - 3, "drop")
+            if px_per_s >= 8:
+                for sec in t.sections:
+                    b = sec["start_s"]
+                    if in_s < b <= in_s + (E - S):
+                        x = self._t2x(S + (b - in_s))
+                        if 0 <= x <= W:
+                            p.setPen(QPen(QColor(255, 255, 255, 70), 1,
+                                          Qt.PenStyle.DotLine))
+                            p.drawLine(int(x), y0 + 14, int(x), y0 + lane_h)
+                            p.setPen(QColor(190, 190, 200, 170))
+                            p.drawText(int(x) + 2, y0 + 24, sec["kind"][:5])
+
             if x1 - x0 > 60:
                 p.setPen(QColor(240, 240, 240))
                 p.drawText(QRectF(x0 + 4, y0 + 2, x1 - x0 - 8, 16),

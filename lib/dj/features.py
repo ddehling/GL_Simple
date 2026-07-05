@@ -879,11 +879,13 @@ def classify_axes(sections, bpm, spectral, mood_hist):
 
 def drop_moments(sections):
     """Times where energy SLAMS up across a boundary (breakdown/build ->
-    groove) - the actual 'drops'. A moment, not a section."""
+    groove) - the actual 'drops'. A moment, not a section. Deliberately
+    strict: a real drop lands HOT (>=0.65 of the track's peak) off a real
+    dip - mild lifts don't qualify."""
     out = []
     for i in range(1, len(sections)):
         s, prev = sections[i], sections[i - 1]
-        if s["energy"] - prev["energy"] > 0.22 and s["energy"] > 0.6:
+        if s["energy"] - prev["energy"] > 0.25 and s["energy"] >= 0.65:
             out.append(s["start_s"])
     return out
 

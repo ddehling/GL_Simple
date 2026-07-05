@@ -258,7 +258,9 @@ class PlanPreview:
                 slot = i
         s = slots[slot]
         track = s["track"]
-        in_s = track.mix_ins[0]["time_s"] if track.mix_ins else 0.0
+        in_s = s.get("in_s")
+        if in_s is None:
+            in_s = track.mix_ins[0]["time_s"] if track.mix_ins else 0.0
         cue = in_s + max(drawn_t - s["start_offset_s"], 0.0)
         # Keep clear of the seam so the scripted blend still runs whole.
         if s["transition"] is not None:
@@ -340,7 +342,9 @@ class PlanPreview:
         if d is None or not self.compiled:
             return None
         s = self.compiled["slots"][slot]
-        in_s = s["track"].mix_ins[0]["time_s"] if s["track"].mix_ins else 0.0
+        in_s = s.get("in_s")
+        if in_s is None:
+            in_s = s["track"].mix_ins[0]["time_s"] if s["track"].mix_ins else 0.0
         return s["start_offset_s"] + max(d.get("time_s", 0.0) - in_s, 0.0)
 
     def slot_at_playhead(self):
