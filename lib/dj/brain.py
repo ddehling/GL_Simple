@@ -564,11 +564,12 @@ class Brain:
             styles, ws = zip(*menu)
             style = self.rng.choices(styles, weights=ws, k=1)[0]
 
-        # House blends BREATHE: 48 beats ~ 25s for the workhorse blend,
-        # 32 for the decisive ones. Short punchy exits (echo/cut) are
-        # accents, weighted rare in themes - a night of 8-second slams
-        # reads harsh and amateur (user-confirmed).
-        beats = {"long_blend": 48, "bass_swap": 32, "cut_at_drop": 16,
+        # House blends BREATHE, and real mixes cluster transition lengths
+        # at MULTIPLES OF 32 BEATS (ISMIR20, 1557 mixes) - 64 for the
+        # workhorse blend, 32 for the decisive ones. Short punchy exits
+        # (echo/cut) are accents, weighted rare in themes - a night of
+        # 8-second slams reads harsh and amateur (user-confirmed).
+        beats = {"long_blend": 64, "bass_swap": 32, "cut_at_drop": 16,
                  "loop_roll_exit": 32, "bassline_layer": 16,
                  "double_drop": 16, "loop_build": 16, "long_fade": 0,
                  "filter_sweep": 32, "echo_out": 8}[style]
