@@ -161,7 +161,7 @@ def compile_plan(library, entries, theme, seed=0):
             # Dual-bend exit ramp: while THIS deck ramps to the meeting
             # tempo it also consumes ramp*(a-1)/2 extra source vs wall.
             a_r = plan.get("a_rate", 1.0) or 1.0
-            exit_skew = (abs(a_r - 1.0) / 0.004) * (a_r - 1.0) / 2.0 / a_r \
+            exit_skew = (abs(a_r - 1.0) / 0.004) * (a_r - 1.0) / 2.0 \
                 if abs(a_r - 1.0) > 1e-4 else 0.0
             # ...and the blend itself runs at a_rate: source consumed over
             # the blend = blend_wall*a_rate, wall = blend_wall.
