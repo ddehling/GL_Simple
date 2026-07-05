@@ -145,6 +145,29 @@ def render_seam(library, cur, style, wav=False):
     end_clock = swap_at + int(10.0 * RATE)
     lags, grid_lags, dual = [], [], 0.0
     tel_log = []
+    # PER-DECK MID-BAND TAP (250-2500 Hz - where melodies live): wrap each
+    # deck's read so we can verify ONE MELODY AT A TIME in the actual
+    # rendered audio, not just in the scheduled events.
+    from scipy.signal import butter as _butter, sosfilt as _sf, sosfilt_zi
+    _mid_sos = _butter(2, [250.0, 2500.0], btype="band", fs=RATE,
+                       output="sos")
+    mid_tap = {"a": [], "b": []}
+    _zi = {}
+    for _nm, _d in sub.decks.items():
+        _zi[_nm] = np.stack([sosfilt_zi(_mid_sos) * 0.0 for _ in range(2)])
+
+        def _wrap(orig, nm):
+            def f(n):
+                blk = orig(n)
+                filt = np.empty_like(blk)
+                for c in range(2):
+                    filt[:, c], _zi[nm][c] = _sf(_mid_sos, blk[:, c],
+                                                 zi=_zi[nm][c])
+                mid_tap[nm].append((sub.clock,
+                                    float(np.sqrt((filt ** 2).mean()))))
+                return blk
+            return f
+        _d.read = _wrap(_d.read, _nm)
     i = len(rendered)
     while sub.clock < end_clock:
         rendered.append(np.frombuffer(gen.send(BLOCK),
@@ -257,6 +280,20 @@ def render_seam(library, cur, style, wav=False):
     else:
         m["bass_bump_db"] = 0.0
 
+    # ONE MELODY AT A TIME: both decks' mid-bands (250-2500 Hz) at
+    # substantial level together only during the swap handover.
+    def _bins(tap):
+        out = {}
+        for c, v in tap:
+            out.setdefault(c // (RATE // 4), []).append(v)
+        return {k: max(v) for k, v in out.items()}
+    ba, bb = _bins(mid_tap["a"]), _bins(mid_tap["b"])
+    pa = max(ba.values(), default=1e-9)
+    pb = max(bb.values(), default=1e-9)
+    m["mid_overlap_s"] = round(sum(
+        0.25 for k in set(ba) & set(bb)
+        if ba[k] > 0.4 * pa and bb[k] > 0.4 * pb), 2)
+
     if wav:
         from scipy.io import wavfile
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
@@ -319,6 +356,13 @@ def seam_qa(library, wav=False):
               f"clipped {m['clipped']}")
         check(f"{style}: no double bass", m["bass_bump_db"] < 3.5,
               f"blend low-band bump {m['bass_bump_db']:+.1f} dB")
+        if style not in ("double_drop", "long_fade"):
+            # double_drop stacks full-range on purpose; long_fade is a
+            # deliberate crossfade. Everything else: one melody at a time.
+            check(f"{style}: one melody at a time",
+                  m["mid_overlap_s"] <= 4.0,
+                  f"both mid-bands hot {m['mid_overlap_s']:.1f}s "
+                  f"(handover budget 4.0)")
         # Sync verdict on GRID delta (settled: dual > 2 s); the env-xcorr
         # lag stays in the report as the ear's-eye view but on organic
         # percussion it conflates pattern offset with flam.
