@@ -157,11 +157,10 @@ class DJSystem:
                     auto_counts[tag] = auto_counts.get(tag, 0) + 1
             vocab = [(tag, n, True) for tag, n in
                      sorted(user_counts.items(), key=lambda kv: -kv[1])]
-            room = max(28 - len(vocab), 8)
             vocab += [(tag, n, False) for tag, n in
                       sorted(auto_counts.items(), key=lambda kv: -kv[1])
-                      if tag not in user_counts][:room]
-            self._tag_vocab = vocab
+                      if tag not in user_counts]
+            self._tag_vocab = vocab[:64]     # everything, sane ceiling
         except Exception as e:
             print(f"[DJ] tag refresh skipped: {e}")
 
