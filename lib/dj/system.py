@@ -481,9 +481,9 @@ class DJSystem:
             if val[0] == "rel":
                 target = pos + val[1]
             elif val[0] == "exit":
-                # ~20s before where this track would exit, so the transition
-                # fires right away - fast mix audition.
-                target = min(self._exit_played, dur - 45.0) - 20.0
+                # Jump near the end so the exit gate (pos >= deadline-lead)
+                # arms the transition right away - fast mix audition.
+                target = dur - 55.0
                 target = max(target, pos + 4.0)
             else:
                 return
@@ -493,9 +493,10 @@ class DJSystem:
         target = self.current.nearest_downbeat(target)
         self.submix.post({"cmd": "cue", "deck": self.active_deck,
                           "time_s": target})
-        # Keep played-time bookkeeping consistent with the new position so
-        # exit planning still makes sense after a jump.
-        self._started_clock = self.submix.clock - int(target * RATE)
+        # NOTE: do NOT touch _started_clock - `played` tracks OUTPUT time the
+        # track has been up, not its source position. Seeking forward must
+        # not make the system think the track is 'done' and fire a mix (the
+        # bug that left every jump stuck in the armed state).
         self._log({"event": "seek", "to_s": round(target, 1)})
 
     def _do_skip(self):
