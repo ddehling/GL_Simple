@@ -159,6 +159,10 @@
                 <input type="range" id="dj-nudge" min="-0.4" max="0.4"
                        step="0.05" value="0" style="width:100%">
             </div>
+            <div class="now-sub" style="margin-top:12px">Music type
+                <span style="opacity:.5;font-size:11px">
+                    (tap: lean toward → avoid → off)</span></div>
+            <div class="theme-row" id="dj-flavor"></div>
             <div class="now-sub" id="dj-libinfo" style="margin-top:10px"></div>
         </div>
     </div>
@@ -170,18 +174,56 @@
     <script>
         const socket = createSocket();
         const $ = (id) => document.getElementById(id);
-        const THEMES = ["chill_evening", "groove", "peak_heavy",
-                        "wind_down", "all_night"];
         const EQC = ["#eb695a", "#78d278", "#6eaaf0"];  // low/mid/high
 
-        // Build theme buttons once.
-        THEMES.forEach((t) => {
-            const b = document.createElement("button");
-            b.className = "theme-btn"; b.dataset.theme = t;
-            b.textContent = t.replace(/_/g, " ");
-            b.onclick = () => emit("theme", t);
-            $("dj-themes").appendChild(b);
-        });
+        // Theme buttons come from the system (new themes appear on their
+        // own); rebuilt only when the list changes.
+        function buildThemes(names) {
+            const key = (names || []).join("|");
+            if ($("dj-themes").dataset.have === key) return;
+            $("dj-themes").dataset.have = key;
+            $("dj-themes").innerHTML = "";
+            (names || []).forEach((t) => {
+                const b = document.createElement("button");
+                b.className = "theme-btn"; b.dataset.theme = t;
+                b.textContent = t.replace(/_/g, " ");
+                b.onclick = () => emit("theme", t);
+                $("dj-themes").appendChild(b);
+            });
+        }
+
+        // FLAVOR CHIPS: the library's own tag vocabulary. Each chip
+        // cycles off -> LEAN TOWARD (green) -> AVOID (red) -> off, and
+        // the whole state ships as one 'flavor' action.
+        const flavorState = {};          // tag -> 0 off | 1 prefer | 2 avoid
+        function sendFlavor() {
+            const prefer = {}, avoid = {};
+            for (const [t, s] of Object.entries(flavorState)) {
+                if (s === 1) prefer[t] = 1.0;
+                if (s === 2) avoid[t] = 1.0;
+            }
+            emit("flavor", {prefer_tags: prefer, avoid_tags: avoid});
+        }
+        function buildFlavor(tags) {
+            const key = (tags || []).map((t) => t[0]).join("|");
+            if ($("dj-flavor").dataset.have === key) return;
+            $("dj-flavor").dataset.have = key;
+            $("dj-flavor").innerHTML = "";
+            (tags || []).forEach(([tag, n]) => {
+                const b = document.createElement("button");
+                b.className = "theme-btn"; b.dataset.tag = tag;
+                b.textContent = `${tag} (${n})`;
+                b.onclick = () => {
+                    flavorState[tag] = ((flavorState[tag] || 0) + 1) % 3;
+                    const s = flavorState[tag];
+                    b.style.background = s === 1 ? "#2e6b3a"
+                        : s === 2 ? "#7a3030" : "";
+                    b.style.borderColor = s ? "#fff5" : "";
+                    sendFlavor();
+                };
+                $("dj-flavor").appendChild(b);
+            });
+        }
 
         function emit(action, value) {
             socket.emit("dj_action", {action, value});
@@ -356,6 +398,8 @@
             badges.push(`<span class="badge">${dj.state}</span>`);
             $("dj-badges").innerHTML = badges.join("");
             renderDecks(dj.decks);
+            if (dj.themes) buildThemes(dj.themes);
+            if (dj.tags) buildFlavor(dj.tags);
 
             if (dj.next) {
                 show($("dj-next-box"), true);

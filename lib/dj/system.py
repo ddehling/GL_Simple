@@ -23,7 +23,7 @@ import time
 from lib.dj.brain import Brain, load_library, TrackInfo
 from lib.dj.db import LibraryDB
 from lib.dj.submix import DJSubmix
-from lib.dj.themes import get_theme
+from lib.dj.themes import BUILTIN_THEMES, get_theme
 
 RATE = 44100
 PLAN_LEAD_S = 45.0               # start choosing next this early
@@ -70,6 +70,7 @@ class DJSystem:
         self._history_id = None
         self._energy_nudge = 0.0
         self._urgent_exit = False        # skip/mix_now: exit ASAP, not "best"
+        self._tag_vocab = []             # [(tag, count)] for flavor chips
         self._played_energy_ema = None   # arc feedback: what actually played
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
@@ -115,6 +116,13 @@ class DJSystem:
         except Exception as e:
             print(f"[DJ] recent-plays seed skipped: {e}")
         self._refresh_setlist_names()
+        # Tag vocabulary for the web/planner flavor chips: every tag in
+        # the library with its track count, most common first.
+        counts = {}
+        for t in lib:
+            for tag in t.all_tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        self._tag_vocab = sorted(counts.items(), key=lambda kv: -kv[1])[:16]
         if self.engine is not None:
             self.engine.attach_track("dj_submix", self.submix)
         self._running = True
@@ -206,6 +214,12 @@ class DJSystem:
     def set_energy_nudge(self, x):
         self._energy_nudge = float(max(-0.4, min(0.4, x)))
 
+    def set_flavor(self, flavor):
+        """Live music-type steering: {'prefer_tags': {tag: w}, 'avoid_tags':
+        {tag: w}, 'axis_targets': {axis: 0..1}} merged over the theme."""
+        with self._lock:
+            self._pending.append(("flavor", dict(flavor or {})))
+
     def load_setlist(self, name):
         """Follow a preplanned set: anchors are hard, suggestions soft."""
         with self._lock:
@@ -282,6 +296,9 @@ class DJSystem:
             countdown = max(0.0, (self.blend_at - self.submix.clock) / RATE)
         return {
             "state": self.state, "theme": self._theme_name,
+            "themes": sorted(BUILTIN_THEMES),
+            "flavor": dict(self.brain.flavor) if self.brain else {},
+            "tags": self._tag_vocab,
             "autopilot": self.autopilot,
             "arc_phase": round(self.arc_progress(), 4),
             "arc_heat": round(self.arc_target(), 3),
@@ -359,6 +376,14 @@ class DJSystem:
                 self._log({"event": "theme", "theme": val})
                 if self.state == "playing":
                     self.next_track = None       # soft replan
+                    self.plan = None
+            elif kind == "flavor":
+                # Live music-type steering: tag leans + axis pulls merged
+                # over the theme; soft replan so the very next pick obeys.
+                self.brain.set_flavor(val)
+                self._log({"event": "flavor", "flavor": val})
+                if self.state == "playing":
+                    self.next_track = None
                     self.plan = None
             elif kind == "skip" and self.state in ("playing", "armed"):
                 self._do_skip()

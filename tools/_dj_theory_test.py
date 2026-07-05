@@ -167,6 +167,53 @@ def main():
           f"{clashes}/{checked} seams blend two vocal passages "
           f"(measured vocal data on both sides)")
 
+    # -- [PRACTICE] flavor steering: themes reach DIFFERENT music ---------------
+    # A real DJ's "deep hypnotic night" and "hard driving night" are not
+    # the same tracklist. Same seed, flavored themes: low overlap, and
+    # each set's tracks measurably lean toward its axis targets.
+    def _axis_mean(theme_name, axis, seed=2):
+        th = get_theme(theme_name)
+        entries = suggest_set(library, th, minutes=45, seed=seed)
+        ids = [e["track_id"] for e in entries]
+        by_id = {t.id: t for t in library}
+        vals = [by_id[i].axes.get(axis) for i in ids
+                if i in by_id and by_id[i].axes.get(axis) is not None]
+        return set(ids), float(np.mean(vals)) if vals else 0.5
+    hyp_ids, hyp_hypnotic = _axis_mean("hypnotic_deep", "hypnotic")
+    hard_ids, hard_hardness = _axis_mean("hard_drive", "hardness")
+    _, hyp_hardness = _axis_mean("hypnotic_deep", "hardness")
+    _, hard_hypnotic = _axis_mean("hard_drive", "hypnotic")
+    overlap = len(hyp_ids & hard_ids) / max(min(len(hyp_ids),
+                                                len(hard_ids)), 1)
+    check("[PRACTICE] flavored themes pick different music",
+          overlap <= 0.5 and hyp_hypnotic > hard_hypnotic
+          and hard_hardness > hyp_hardness,
+          f"track overlap {overlap * 100:.0f}%; hypnotic axis "
+          f"{hyp_hypnotic:.2f} vs {hard_hypnotic:.2f}, hardness "
+          f"{hard_hardness:.2f} vs {hyp_hardness:.2f}")
+
+    # Live flavor override shifts picks the same way mid-set.
+    from lib.dj.brain import Brain
+    b0 = Brain(library, get_theme("groove"), seed=4)
+    b1 = Brain(library, get_theme("groove"), seed=4)
+    b1.set_flavor({"prefer_tags": {"hypnotic": 1.0},
+                   "axis_targets": {"hypnotic": 0.95}})
+    cur = library[0]
+    picks0, picks1 = [], []
+    for _ in range(8):
+        c0, _m = b0.choose_next(cur, 0.6, cur.bpm)
+        c1, _m = b1.choose_next(cur, 0.6, cur.bpm)
+        if c0 is not None:
+            picks0.append(c0.axes.get("hypnotic", 0.5))
+            b0.note_played(c0)
+        if c1 is not None:
+            picks1.append(c1.axes.get("hypnotic", 0.5))
+            b1.note_played(c1)
+    check("[PRACTICE] live flavor override steers picks mid-set",
+          np.mean(picks1) > np.mean(picks0),
+          f"hypnotic-lean picks avg {np.mean(picks1):.2f} vs "
+          f"baseline {np.mean(picks0):.2f}")
+
     print()
     if failures:
         print(f"FAILED: {len(failures)}: {', '.join(failures)}")

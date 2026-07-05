@@ -31,6 +31,15 @@ class Theme:
         "filter_sweep": 0.6, "echo_out": 0.12})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
+    # FLAVOR: what KIND of music this night leans on, expressed in the
+    # library's own vocabulary. prefer_tags/avoid_tags act on each track's
+    # auto+user tags; axis_targets pull toward positions on the analysis
+    # axes (hardness / hypnotic / vocal / speed, all 0..1). Without this
+    # every theme converged on the same groove-optimal picks night after
+    # night (user-reported).
+    prefer_tags: dict = field(default_factory=dict)   # tag -> weight 0..1
+    avoid_tags: dict = field(default_factory=dict)    # tag -> weight 0..1
+    axis_targets: dict = field(default_factory=dict)  # axis -> target 0..1
 
     def arc_target(self, progress):
         """Energy target in 0..1 for set progress 0..1."""
@@ -90,6 +99,35 @@ BUILTIN_THEMES = {t.name: t for t in [
     Theme("all_night", bpm_range=(95.0, 138.0),
           energy_base=0.55, energy_span=0.45, arc="all_night",
           mood_weights={"groove": 1.0, "peak": 0.7, "chill": 0.5}),
+    # FLAVORED nights - same machinery, different corners of the library.
+    Theme("hypnotic_deep", bpm_range=(105.0, 124.0),
+          energy_base=0.5, energy_span=0.2, arc="flat",
+          mood_weights={"groove": 1.0, "chill": 0.6},
+          prefer_tags={"hypnotic": 1.0, "instrumental": 0.5},
+          avoid_tags={"peaky": 0.7, "vocals": 0.4},
+          axis_targets={"hypnotic": 0.95, "hardness": 0.45},
+          min_play_s=210.0, max_play_s=480.0),
+    Theme("vocal_journey", bpm_range=(100.0, 124.0),
+          energy_base=0.5, energy_span=0.3, arc="peak_wave",
+          mood_weights={"groove": 1.0, "chill": 0.5},
+          prefer_tags={"vocals": 1.0, "vocal-heavy": 0.8},
+          avoid_tags={"instrumental": 0.5},
+          axis_targets={"vocal": 0.6}),
+    Theme("hard_drive", bpm_range=(115.0, 132.0),
+          energy_base=0.7, energy_span=0.3, arc="rise",
+          mood_weights={"peak": 1.0, "groove": 0.7},
+          spectral_lean="bass",
+          prefer_tags={"hard": 1.0, "driving": 0.8},
+          avoid_tags={"gentle": 0.8, "mellow": 0.6},
+          axis_targets={"hardness": 0.9, "energy": 0.85},
+          min_play_s=120.0, max_play_s=300.0),
+    Theme("gentle_organic", bpm_range=(95.0, 120.0),
+          energy_base=0.4, energy_span=0.25, arc="flat",
+          mood_weights={"chill": 1.0, "groove": 0.6},
+          prefer_tags={"gentle": 1.0, "mellow": 0.7},
+          avoid_tags={"hard": 0.8, "peaky": 0.6},
+          axis_targets={"hardness": 0.2},
+          min_play_s=210.0, max_play_s=480.0),
 ]}
 
 

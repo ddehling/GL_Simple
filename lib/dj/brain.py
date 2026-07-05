@@ -194,6 +194,40 @@ class Brain:
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
         self.recent = []                # (wall_time, track_id, artist)
         self._recent_skips = {}         # track_id -> skip count (tonight)
+        # LIVE FLAVOR overrides: same shape as the theme's flavor fields,
+        # set from the web/planner mid-set ("more hypnotic", "no vocals").
+        # Merged OVER the theme - the theme is the default, the operator
+        # is the boss.
+        self.flavor = {}                # {prefer_tags, avoid_tags, axis_targets}
+
+    def set_flavor(self, flavor):
+        self.flavor = dict(flavor or {})
+
+    def _flavor_score(self, cand):
+        """0.15..1.0 preference multiplier from theme flavor + live
+        overrides: tag leans and axis-target pulls."""
+        prefer = dict(self.theme.prefer_tags)
+        avoid = dict(self.theme.avoid_tags)
+        axes_t = dict(self.theme.axis_targets)
+        prefer.update(self.flavor.get("prefer_tags") or {})
+        avoid.update(self.flavor.get("avoid_tags") or {})
+        axes_t.update(self.flavor.get("axis_targets") or {})
+        if not (prefer or avoid or axes_t):
+            return 1.0
+        tags = set(cand.all_tags)
+        s = 1.0
+        for tag, w in prefer.items():
+            s *= (1.0 + 0.9 * w) if tag in tags else (1.0 - 0.35 * w)
+        for tag, w in avoid.items():
+            if tag in tags:
+                s *= 1.0 - 0.75 * w
+        for axis, target in axes_t.items():
+            v = cand.axes.get(axis)
+            if v is None:
+                continue
+            s *= math.exp(-((float(v) - float(target)) / 0.35) ** 2) \
+                * 0.5 + 0.5
+        return max(s, 0.15)             # lean hard, never blacklist
 
     def note_skipped(self, track):
         """Operator skipped it - a labeled 'not tonight' the scorer uses."""
@@ -305,6 +339,7 @@ class Brain:
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
+                 * self._flavor_score(cand)
                  * self.rng.uniform(0.9, 1.1))
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         if bpm_target:
@@ -374,7 +409,8 @@ class Brain:
             s = math.exp(-((cand.energy_proxy() - arc_target) / 0.3) ** 2) \
                 * (0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                               for m, f in cand.mood_hist.items())) \
-                * self._recency_penalty(cand, now) * self.rng.uniform(0.9, 1.1)
+                * self._recency_penalty(cand, now) \
+                * self._flavor_score(cand) * self.rng.uniform(0.9, 1.1)
             cands.append((s, cand))
         if not cands:
             return None

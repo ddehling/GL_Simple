@@ -374,6 +374,7 @@ class EnvironmentalSystem:
         self._dj = None
         self._dj_prev_source = None            # analyzer source to restore
         self._dj_pending_setlist = None        # armed while idle, load on start
+        self._dj_pending_flavor = {}           # armed while idle, set on start
         self._dj_last_error = ""
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
@@ -2177,6 +2178,11 @@ class EnvironmentalSystem:
                     self._dj_pending_setlist = str(arg or '') or None
                     if self._dj is not None and self._dj.active:
                         self._dj.load_setlist(str(arg or ''))
+                elif action == 'flavor':
+                    # Live music-type steering (tag leans / axis pulls).
+                    self._dj_pending_flavor = dict(arg or {})
+                    if self._dj is not None and self._dj.active:
+                        self._dj.set_flavor(self._dj_pending_flavor)
                 elif self._dj is not None and self._dj.active:
                     if action == 'skip':
                         self._dj.request_skip()
@@ -2259,6 +2265,8 @@ class EnvironmentalSystem:
         self._dj_last_error = ""
         if self._dj_pending_setlist:
             self._dj.load_setlist(self._dj_pending_setlist)
+        if self._dj_pending_flavor:
+            self._dj.set_flavor(self._dj_pending_flavor)
         # The DJ takes the soundtrack: silence state ambient, point the
         # analyzer at the engine's own output.
         try:
