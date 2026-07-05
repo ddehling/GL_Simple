@@ -124,11 +124,22 @@ def compile_plan(library, entries, theme, seed=0):
             if meta is None:
                 rate, eff = brain.rate_for(t.bpm, nxt)
                 if rate is None:
-                    slot["warnings"].append(
-                        f"tempo clash: {t.bpm:.0f} vs {nxt.bpm:.0f} bpm - "
-                        "will long_fade")
-                    meta = {"rate": 1.0, "eff_bpm": nxt.bpm, "pair": None,
-                            "tempo_clash": True}
+                    # Big gap: bend BOTH decks to a meeting tempo (the
+                    # outgoing ramps into the blend, the incoming glides
+                    # home after) before ever surrendering to a fade.
+                    rate, eff, a_rate = brain.rate_for_dual(t.bpm, nxt)
+                    if rate is not None:
+                        slot["warnings"].append(
+                            f"dual bend {t.bpm:.0f}->{t.bpm * a_rate:.0f}"
+                            f"<-{nxt.bpm:.0f} bpm")
+                        meta = {"rate": rate, "eff_bpm": eff, "pair": None,
+                                "a_rate": a_rate}
+                    else:
+                        slot["warnings"].append(
+                            f"tempo clash: {t.bpm:.0f} vs {nxt.bpm:.0f} bpm"
+                            " - will long_fade")
+                        meta = {"rate": 1.0, "eff_bpm": nxt.bpm,
+                                "pair": None, "tempo_clash": True}
                 else:
                     meta = {"rate": rate, "eff_bpm": eff, "pair": None}
             # Force the exit at least target_play after entry (but leave room
@@ -147,15 +158,23 @@ def compile_plan(library, entries, theme, seed=0):
             if plan.get("pair_score", 0) < 0.05:
                 slot["warnings"].append("weak seam (busy x busy?)")
             slot["transition"] = plan
-            play = max(plan["out_s"] - in_s - skew, 40.0)
+            # Dual-bend exit ramp: while THIS deck ramps to the meeting
+            # tempo it also consumes ramp*(a-1)/2 extra source vs wall.
+            a_r = plan.get("a_rate", 1.0) or 1.0
+            exit_skew = (abs(a_r - 1.0) / 0.004) * (a_r - 1.0) / 2.0 / a_r \
+                if abs(a_r - 1.0) > 1e-4 else 0.0
+            # ...and the blend itself runs at a_rate: source consumed over
+            # the blend = blend_wall*a_rate, wall = blend_wall.
+            play = max(plan["out_s"] - in_s - skew - exit_skew, 40.0)
             # Blend-family overlaps play BEFORE the seam: by the time the
             # boundary (A's out point) arrives, B has already consumed the
             # blend's worth of source. slot["in_s"] is the AT-SEAM source
             # so drawing/click/playhead all agree with the audio.
-            blend_wall = plan["beats"] * t.period_s \
+            blend_wall = plan["beats"] * t.period_s / a_r \
                 if plan["style"] in ("long_blend", "bass_swap",
                                      "filter_sweep", "loop_roll_exit") \
                 else 0.0
+            play -= blend_wall * (a_r - 1.0)  # blend runs at meeting tempo
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]
             entry_rate = plan["rate"]
         else:

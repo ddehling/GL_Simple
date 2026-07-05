@@ -80,7 +80,8 @@ class MixTimeline(QWidget):
                 continue
             cur, nxt = s["track"], self.slots[i + 1]["track"]
             beat_out = cur.period_s
-            blend_s = (plan["beats"] * beat_out if plan["beats"]
+            a_r = plan.get("a_rate", 1.0) or 1.0
+            blend_s = (plan["beats"] * beat_out / a_r if plan["beats"]
                        else 20.0)
             try:
                 events, swap_at, blend_at = brain.preview_events(
@@ -235,11 +236,29 @@ class MixTimeline(QWidget):
             glide_s = abs(head_rate - 1.0) / 0.0015 if head_rate != 1.0 \
                 else 0.0
             far = play_end + 3600.0
-            walls = np.array([E0, S, S + glide_s + 1e-6, far])
+            walls = [E0, S, S + glide_s + 1e-6]
             g_src = glide_s * (head_rate + 1.0) / 2.0
-            srcs = np.array([in_s - head * head_rate, in_s,
-                             in_s + g_src + 1e-6,
-                             in_s + g_src + (far - (S + glide_s))])
+            srcs = [in_s - head * head_rate, in_s, in_s + g_src + 1e-6]
+            # DUAL-BEND exit: this slot's own transition may ramp the deck
+            # to a meeting tempo before its blend - draw the compression.
+            tr_out = s.get("transition")
+            a_out = (tr_out or {}).get("a_rate", 1.0) or 1.0
+            if abs(a_out - 1.0) > 1e-4 and tr_out["style"] != "long_fade":
+                blend_out = tr_out["beats"] * t.period_s / a_out
+                ramp_wall = abs(a_out - 1.0) / 0.004
+                w_blend = play_end - blend_out          # ramp completes here
+                w_ramp = max(w_blend - ramp_wall, walls[-1] + 1e-3)
+                src_ramp = srcs[-1] + (w_ramp - walls[-1])
+                rw = w_blend - w_ramp
+                walls += [w_ramp, w_blend, far]
+                srcs += [src_ramp, src_ramp + rw * (a_out + 1.0) / 2.0,
+                         src_ramp + rw * (a_out + 1.0) / 2.0
+                         + (far - w_blend) * a_out]
+            else:
+                walls.append(far)
+                srcs.append(srcs[-1] + (far - walls[-2]))
+            walls = np.array(walls)
+            srcs = np.array(srcs)
 
             def tt_of_x(x):
                 return float(np.interp(self._x2t(x), walls, srcs))

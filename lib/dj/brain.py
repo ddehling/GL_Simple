@@ -232,6 +232,33 @@ class Brain:
                     best = (r, eff)
         return best if best else (None, 0.0)
 
+    def rate_for_dual(self, out_bpm, cand):
+        """MEET-IN-THE-MIDDLE: when no single-deck stretch reaches, bend
+        BOTH decks toward a meeting tempo (geometric mean, clamped inside
+        each deck's stretch range) - doubles the reachable tempo gap
+        (~17%, more with half/double reads). Returns (rate_b, eff_bpm,
+        a_rate) or (None, 0, 1.0). a_rate is the OUTGOING deck's ramp
+        target before the blend; the incoming glides home after."""
+        best = None
+        for mult in (1.0, 2.0, 0.5):
+            eff = cand.bpm * mult
+            if eff <= 0:
+                continue
+            m = math.sqrt(out_bpm * eff)
+            m = min(max(m, out_bpm * self.stretch_min,
+                        eff * self.stretch_min),
+                    out_bpm * self.stretch_max, eff * self.stretch_max)
+            ra, rb = m / out_bpm, m / eff
+            if not (self.stretch_min <= ra <= self.stretch_max
+                    and self.stretch_min <= rb <= self.stretch_max):
+                continue
+            if abs(m / out_bpm - 1.0) > 0.081 or abs(m / eff - 1.0) > 0.081:
+                continue
+            cost = abs(math.log(ra)) + abs(math.log(rb))
+            if best is None or cost < best[3]:
+                best = (rb, eff, ra, cost)
+        return (best[0], best[1], best[2]) if best else (None, 0.0, 1.0)
+
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
               bpm_target=None):
@@ -486,6 +513,11 @@ class Brain:
         # two grids sliding past each other. Deliberate fade, always.
         if (meta or {}).get("tempo_clash"):
             low_conf = True
+        if (meta or {}).get("a_rate", 1.0) not in (1.0, None)                 and not low_conf and pair.get("beaty", True):
+            # dual-bend ramp is implemented in the blend path only
+            for k in list(weights):
+                if k not in ("long_blend", "bass_swap", "filter_sweep"):
+                    weights[k] = 0.0
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
             # a beat-matched blend there is inaudible as such and just
@@ -548,7 +580,7 @@ class Brain:
             return {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats,
                     "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
         if style == "double_drop":
             # A exits on ITS drop; B is cued so its drop lands on the same
             # beat. out_s/in_s become the two drop onsets.
@@ -559,7 +591,7 @@ class Brain:
             plan = {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats,
                     "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
             return plan
         # Blend-family styles anchor to PHRASE boundaries (16/32 beats) when
         # the hypermeter was confidently detected - the blend then completes
@@ -577,7 +609,7 @@ class Brain:
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats,
                 "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
         if style == "loop_roll_exit":
             # Loop the 16 bars-worth just before the exit point: with the
             # window pinned to out_s the first wrap and both shrink moments
@@ -917,7 +949,22 @@ class Brain:
         # (measured as 8-9 dB level lurches). Real DJs finish the blend ON
         # the boundary, riding A's last full-groove phrase.
         end = clock_at(plan["out_s"])
-        S0 = max(end - int(nb * beat_out * RATE), now_guard)
+        # DUAL-DECK TEMPO MEET: for big gaps the OUTGOING deck ramps to the
+        # meeting tempo BEFORE the blend (0.4%/s, gentle), the blend runs
+        # at that tempo, and the incoming glides home to natural after the
+        # swap. clock_at assumes constant rate, so the ramp's source-vs-
+        # wall skew is compensated in `end`.
+        a_rate = plan.get("a_rate", 1.0) or 1.0
+        if abs(a_rate - 1.0) > 1e-4:
+            ramp_wall = abs(a_rate - 1.0) / 0.004
+            end -= int(ramp_wall * (a_rate - 1.0) / 2.0 / a_rate * RATE)
+            beat_out = cur.period_s / a_rate
+            S0 = max(end - int(nb * beat_out * RATE), now_guard)
+            ev.append({"at": max(S0 - int(ramp_wall * RATE), now_guard),
+                       "cmd": "rate", "deck": active, "value": a_rate,
+                       "ramp_s": ramp_wall})
+        else:
+            S0 = max(end - int(nb * beat_out * RATE), now_guard)
         mid = (S0 + end) // 2
         half = (end - S0) / RATE / 2.0
         # Never swap the bass into a BASSLESS stretch of B: cutting A's low
