@@ -35,7 +35,6 @@ class Deck:
         self.eq = ThreeBandEQ()
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
-        self._lowband = None     # cached kick-band envelope (onset sync)
         self.stretch = WSOLAStretcher(self._fetch)
         self._lock = threading.Lock()
 
@@ -48,7 +47,6 @@ class Deck:
         self.grid = grid or []
         self.loudness_gain = float(10.0 ** (gain_db / 20.0))
         self.finished = False
-        self._lowband = None                    # recomputed lazily per track
         self.ready = True
 
     def load_file_async(self, path, track_id=None, grid=None, gain_db=0.0):
@@ -152,20 +150,25 @@ class Deck:
     def kick_env(self, dur_s=2.0, env_fps=200):
         """Low-band (kick) amplitude envelope of the next dur_s of SOURCE
         audio from the current play position, at env_fps - for aligning the
-        actual transients of two decks (onset-anchored sync)."""
+        actual transients of two decks (onset-anchored sync).
+
+        Filters ONLY the dur_s window (~1ms), never the whole track: this
+        runs on the audio callback thread at the sync moment, and filtering
+        a 5-min track here caused a ~100ms stall = a dropout right as the
+        next track entered."""
+        n = int(dur_s * RATE)
         if self.samples is None:
             return np.zeros(int(dur_s * env_fps))
-        if self._lowband is None:
-            from scipy.signal import butter, sosfilt
-            sos = butter(4, 110, "low", fs=RATE, output="sos")
-            mono = self.samples.mean(axis=1)
-            self._lowband = np.abs(sosfilt(sos, mono)).astype(np.float32)
+        from scipy.signal import butter, sosfilt
         pos = int(self._map_source(int(self.stretch.source_pos)))
-        seg = self._lowband[pos:pos + int(dur_s * RATE)]
-        if len(seg) < int(dur_s * RATE):
-            seg = np.pad(seg, (0, int(dur_s * RATE) - len(seg)))
+        seg = self.samples[pos:pos + n]
+        seg = seg.mean(axis=1) if seg.ndim == 2 else seg
+        if len(seg) < n:
+            seg = np.pad(seg, (0, n - len(seg)))
+        sos = butter(4, 110, "low", fs=RATE, output="sos")
+        lb = np.abs(sosfilt(sos, seg))
         w = RATE // env_fps
-        return seg[:len(seg) // w * w].reshape(-1, w).max(axis=1)
+        return lb[:len(lb) // w * w].reshape(-1, w).max(axis=1)
 
     def nudge_seconds(self, dt_s):
         """Shift the play cursor by dt_s (source-domain seconds); used by
