@@ -102,6 +102,17 @@ class DJSystem:
             return False
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
+        # Remember what recently played ACROSS restarts - with a cold
+        # recency memory every night opened with the same tracks in the
+        # same order.
+        try:
+            by_id = {t.id: t for t in lib}
+            for row in self.db.recent_plays(hours=12.0):
+                t = by_id.get(row["track_id"])
+                if t is not None:
+                    self.brain.note_played(t, when=row["started_at"])
+        except Exception as e:
+            print(f"[DJ] recent-plays seed skipped: {e}")
         self._refresh_setlist_names()
         if self.engine is not None:
             self.engine.attach_track("dj_submix", self.submix)
@@ -291,20 +302,30 @@ class DJSystem:
         """Compact per-deck view for the web page (what each deck plays)."""
         cur_id = self.current.id if self.current else None
         nxt_id = self.next_track.id if self.next_track else None
-        names = {}
+        names, bpms = {}, {}
         if self.current:
             names[cur_id] = self.current.title
+            bpms[cur_id] = self.current.bpm
         if self.next_track:
             names[nxt_id] = self.next_track.title
+            bpms[nxt_id] = self.next_track.bpm
+        sync = tel.get("sync") or {}
         out = []
         for name, d in (tel.get("decks") or {}).items():
             if not d.get("playing"):
                 continue
+            rate = d.get("rate", 1.0)
+            nat = bpms.get(d.get("track_id"))
             out.append({
                 "deck": name.upper(),
                 "title": names.get(d.get("track_id"), "?"),
                 "gain": round(d.get("gain", 0.0), 2),
-                "bpm": None,
+                # THE BEAT-MATCH EVIDENCE: what tempo this deck actually
+                # plays at right now, and how far its rate is bent to
+                # match the other deck (0.0% = riding natural).
+                "bpm": round(nat * rate, 1) if nat else None,
+                "rate_pct": round((rate - 1.0) * 100.0, 2),
+                "synced": name == sync.get("slave"),
                 "eq": d.get("eq"),
                 "beat_phase": d.get("beat_phase"),
             })
@@ -466,7 +487,15 @@ class DJSystem:
             return
         played = (self.submix.clock - self._started_clock) / RATE
         deadline = self.current.duration_s - 25.0
-        out_bpm = self.current.bpm       # dominant deck glides home to 1.0
+        # The tempo the incoming track must MATCH is what's actually
+        # PLAYING, not the track's natural bpm: after a short play (skip,
+        # mix_now, tight setlist) the deck is still mid-glide from the
+        # last transition, and matching against natural bpm leaves a
+        # 1-3% tempo error the PLL can't absorb - beats audibly slip
+        # through the whole next blend.
+        tel = (self.submix.telemetry or {}).get("decks", {})
+        live_rate = (tel.get(self.active_deck) or {}).get("rate", 1.0)
+        out_bpm = self.current.bpm * live_rate
 
         # EARLY: choose the next track and kick off its background decode as
         # soon as we're settled into the current one, so the decode (a ~0.5s

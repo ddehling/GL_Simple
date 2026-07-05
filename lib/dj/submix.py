@@ -379,6 +379,7 @@ class DJSubmix:
                 "gain": round(d.gain, 4),
                 "eq": [round(float(g), 3) for g in d.eq.gains],
                 "loop": d.loop,
+                "braking": d._brake is not None,
             }
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
                 "sync": dict(self._sync) if self._sync else None,

@@ -234,8 +234,14 @@
                 const eq = (d.eq || [1, 1, 1]).map((v, i) =>
                     `<div class="b" style="height:${Math.round(6 + 16 * Math.min(v, 1))}px;background:${EQC[i]}"></div>`
                 ).join("");
+                const bpm = d.bpm ? `${d.bpm.toFixed(1)} bpm` : "";
+                const bend = (d.rate_pct !== undefined && d.rate_pct !== 0)
+                    ? ` <span style="color:#8cf">${d.rate_pct > 0 ? "+" : ""}${d.rate_pct}%</span>` : "";
+                const sync = d.synced
+                    ? ` <span style="color:#6f6">SYNC</span>` : "";
                 return `<div class="deck"><span class="name">${d.deck}</span>
-                    <span style="opacity:.55"> gain ${d.gain}</span><br>
+                    <span style="opacity:.55"> gain ${d.gain}</span>
+                    <span style="opacity:.9"> ${bpm}${bend}${sync}</span><br>
                     <span>${(d.title || "?").slice(0, 22)}</span>
                     <div class="eqbars">${eq}</div></div>`;
             }).join("");

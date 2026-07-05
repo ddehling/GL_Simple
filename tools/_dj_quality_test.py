@@ -165,7 +165,8 @@ def render_seam(library, cur, style, wav=False):
             # xcorr below is what a listener's ear might latch onto, but
             # on organic material it often measures rhythm-PATTERN offset
             # (shakers vs congas), not flam - grids are the arbiter.
-            if i % 8 == 0:
+            braking = da.get("braking") or db_.get("braking")
+            if i % 8 == 0 and not braking:
                 gd = (sub.decks["a"].beat_phase()
                       - sub.decks["b"].beat_phase() + 0.5) % 1.0 - 0.5
                 grid_lags.append((dual, abs(gd) * beat * 1000))

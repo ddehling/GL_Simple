@@ -319,7 +319,7 @@ class Brain:
         if not scored:
             return None, None
         scored.sort(key=lambda x: -x[0])
-        best, best_score, best_meta = None, 0.0, None
+        finalists = []
         for s, cand, meta in scored[:5]:
             succ = 0.0
             for s2, cand2, _ in scored[:12]:
@@ -328,13 +328,18 @@ class Brain:
                 p = self.best_pair(cand, cand2)
                 if p and p["score"] > succ:
                     succ = p["score"]
-            total = s * (0.75 + 0.25 * succ)
-            if total > best_score:
-                best, best_score, best_meta = cand, total, meta
-        return best, best_meta
+            finalists.append((s * (0.75 + 0.25 * succ), cand, meta))
+        # SAMPLE among the finalists (cubed weights keep it quality-biased)
+        # instead of argmax: a deterministic winner-take-all played the
+        # same tracks in the same order every single night.
+        finalists.sort(key=lambda x: -x[0])
+        top = finalists[:3]
+        weights = [t[0] ** 3 for t in top]
+        pick = self.rng.choices(top, weights=weights, k=1)[0]
+        return pick[1], pick[2]
 
     def choose_first(self, arc_target, now=None):
-        best, best_score = None, -1.0
+        cands = []
         for cand in self.library:
             lo, hi = self.theme.bpm_range
             if not (lo * 0.93 <= cand.bpm <= hi * 1.07):
@@ -343,9 +348,14 @@ class Brain:
                 * (0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                               for m, f in cand.mood_hist.items())) \
                 * self._recency_penalty(cand, now) * self.rng.uniform(0.9, 1.1)
-            if s > best_score:
-                best, best_score = cand, s
-        return best
+            cands.append((s, cand))
+        if not cands:
+            return None
+        # Open with ANY strong fit, not always the same single winner.
+        cands.sort(key=lambda x: -x[0])
+        top = cands[:6]
+        return self.rng.choices(top, weights=[s ** 2 for s, _ in top],
+                                k=1)[0][1]
 
     # -- section-pair mixability (the anti-garbage rule) -------------------------
     def best_pair(self, cur, cand, after_s=None):
