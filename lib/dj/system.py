@@ -122,7 +122,7 @@ class DJSystem:
         for t in lib:
             for tag in t.all_tags:
                 counts[tag] = counts.get(tag, 0) + 1
-        self._tag_vocab = sorted(counts.items(), key=lambda kv: -kv[1])[:16]
+        self._tag_vocab = sorted(counts.items(), key=lambda kv: -kv[1])[:24]
         if self.engine is not None:
             self.engine.attach_track("dj_submix", self.submix)
         self._running = True

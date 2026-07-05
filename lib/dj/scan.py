@@ -212,7 +212,8 @@ def _recalibrate_tags(db):
     import numpy as _np
     from lib.dj.vocals import vocal_tags
     rows = db.conn.execute(
-        "SELECT id, bpm, axes, mood_hist, spectral, rhythm_density"
+        "SELECT id, bpm, axes, mood_hist, spectral, rhythm_density,"
+        " key_mode, duration_s, energy_curve"
         " FROM tracks WHERE error IS NULL AND axes IS NOT NULL").fetchall()
     user_tags = {}
     for r in db.conn.execute("SELECT track_id, tag FROM tags"):
@@ -252,6 +253,45 @@ def _recalibrate_tags(db):
     hi_en = pct((a.get("energy", 0.5) for a in axes.values()), 72)
     lo_en = pct((a.get("energy", 0.5) for a in axes.values()), 28)
     hi_hyp = pct((a.get("hypnotic", 0.5) for a in axes.values()), 80)
+
+    # STRUCTURAL/TEXTURAL metrics from analysis we already store - the
+    # auto vocabulary was ~11 thin tags, which dumped all real tagging on
+    # the user. Everything here is library-relative (percentiles) or a
+    # hard structural fact, so each tag discriminates on THIS collection.
+    from lib.dj.features import drop_moments
+    met = {}
+    for r in rows:
+        secs = db.sections_for(r["id"])
+        dur = max(r["duration_s"] or 1.0, 1.0)
+        intro = next((x for x in secs if x["kind"] == "intro"), None)
+        bdown = sum(x["end_s"] - x["start_s"] for x in secs
+                    if x["kind"] in ("breakdown", "build"))
+        n_loops = db.conn.execute(
+            "SELECT COUNT(*) c FROM loops WHERE track_id = ?",
+            (r["id"],)).fetchone()["c"]
+        curve = _json.loads(r["energy_curve"] or "[]")
+        spec = _json.loads(r["spectral"] or "{}")
+        met[r["id"]] = {
+            "drops": len(drop_moments(secs)),
+            "intro_s": (intro["end_s"] - intro["start_s"]) if intro else 0.0,
+            "bdown_frac": bdown / dur,
+            "n_loops": n_loops,
+            "dyn": float(_np.std(curve)) if len(curve) > 8 else 0.0,
+            "bass": spec.get("bass_share", 0.33),
+            "midsh": spec.get("mid_share", 0.33),
+            "high": spec.get("high_share", 0.25),
+            "dens": r["rhythm_density"] or 0.0,
+            "dur": dur,
+        }
+    def th(key, q):
+        return pct((m[key] for m in met.values()), q)
+    hi_dyn, lo_dyn = th("dyn", 75), th("dyn", 25)
+    hi_bd = th("bdown_frac", 75)
+    hi_loop = th("n_loops", 75)
+    hi_bass, hi_mid, hi_high = th("bass", 75), th("midsh", 75), th("high", 75)
+    lo_high = th("high", 25)
+    hi_dens, lo_dens = th("dens", 75), th("dens", 25)
+    hi_dur, lo_dur = th("dur", 78), th("dur", 22)
     for r in rows:
         a = axes[r["id"]]
         mood = _json.loads(r["mood_hist"] or "{}")
@@ -273,6 +313,39 @@ def _recalibrate_tags(db):
             tags.append("hypnotic")
         if mood.get("peak", 0.0) > 0.25:
             tags.append("peaky")
+        m = met[r["id"]]
+        if r["key_mode"] in ("minor", "major"):
+            tags.append(r["key_mode"])
+        if m["drops"] >= 2:
+            tags.append("drops")
+        elif m["drops"] == 0:
+            tags.append("no-drops")
+        if m["intro_s"] >= 45.0:
+            tags.append("long-intro")
+        if m["dyn"] >= hi_dyn:
+            tags.append("dynamic")
+        elif m["dyn"] <= lo_dyn:
+            tags.append("steady")
+        if m["bdown_frac"] >= hi_bd:
+            tags.append("breakdowny")
+        if m["n_loops"] > hi_loop:
+            tags.append("loopable")
+        if m["bass"] >= hi_bass:
+            tags.append("bass-heavy")
+        if m["midsh"] >= hi_mid:
+            tags.append("melodic")
+        if m["high"] >= hi_high:
+            tags.append("bright")
+        elif m["high"] <= lo_high:
+            tags.append("warm")
+        if m["dens"] >= hi_dens:
+            tags.append("percussive")
+        elif m["dens"] <= lo_dens:
+            tags.append("sparse")
+        if m["dur"] >= hi_dur:
+            tags.append("epic")
+        elif m["dur"] <= lo_dur:
+            tags.append("short")
         db.conn.execute("UPDATE tracks SET auto_tags = ? WHERE id = ?",
                         (_json.dumps(tags), r["id"]))
     db.conn.commit()
