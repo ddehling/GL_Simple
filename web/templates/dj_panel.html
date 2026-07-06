@@ -425,7 +425,7 @@
             $("dj-transport").hidden = false;
             show($("dj-steer"), true);
             show($("dj-now"), on);
-            show($("dj-nightcard"), on);
+            show($("dj-nightcard"), true);
 
             // Transport buttons.
             show($("dj-start"), !on);
@@ -435,7 +435,6 @@
             $("dj-auto").classList.toggle("on", !!dj.autopilot);
             $("dj-auto").textContent = "AUTOPILOT: " + (dj.autopilot ? "ON" : "OFF");
             $("dj-steer-h").textContent = on ? "Steer" : "Prepare";
-            show($("dj-nudge-wrap"), on);
 
             // Banner.
             if (dj.error) {
@@ -460,7 +459,24 @@
             if (!nudgeDragging && dj.energy_nudge != null)
                 nudge.value = dj.energy_nudge;
 
-            if (!on) return;
+            // STEERING SURFACE - built idle AND live, so the night can
+            // be shaped before START: theme, flavor chips, arc canvas.
+            if (dj.themes) buildThemes(dj.themes);
+            if (dj.tags) buildFlavor(dj.tags);
+            restoreFlavor(dj.flavor);
+            lastDj = dj;
+            drawArc(dj);
+            $("dj-cycle-lbl").textContent = dj.arc_cycle_s
+                ? (dj.arc_cycle_s >= 7200
+                    ? `full night: ${(dj.arc_cycle_s / 3600).toFixed(0)}h`
+                    : `cycle: ${Math.round(dj.arc_cycle_s / 60)} min, repeats`)
+                : "";
+            $("dj-heat").textContent = (dj.arc_heat != null ? dj.arc_heat.toFixed(2) : "--")
+                + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
+            $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
+                + (dj.night_hours ? ` of a ${dj.night_hours}h night` : "");
+
+            if (!on) { $("dj-queue").innerHTML = ""; return; }
 
             // Now playing.
             const cur = dj.current || {};
@@ -485,8 +501,6 @@
             badges.push(`<span class="badge">${dj.state}</span>`);
             $("dj-badges").innerHTML = badges.join("");
             renderDecks(dj.decks);
-            if (dj.themes) buildThemes(dj.themes);
-            if (dj.tags) buildFlavor(dj.tags);
 
             if (dj.next) {
                 show($("dj-next-box"), true);
@@ -497,26 +511,14 @@
                     .filter(Boolean).join("  ·  ");
             } else show($("dj-next-box"), false);
 
-            // The night: trajectory canvas + steering state.
-            lastDj = dj;
-            drawArc(dj);
             drawStrip(dj);
             $("dj-count").textContent = dj.blend_in_s != null
                 ? `- ${dj.style ? dj.style.replace(/_/g, " ") : "mix"} in ${Math.max(0, Math.round(dj.blend_in_s))}s` : "";
-            $("dj-heat").textContent = (dj.arc_heat != null ? dj.arc_heat.toFixed(2) : "--")
-                + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
-            $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
-                + (dj.night_hours ? ` of a ${dj.night_hours}h night` : "");
             $("dj-queue").innerHTML = (dj.horizon || []).map((h, i) =>
                 `<div style="padding:1px 0"><b>${i + 1}.</b> ` +
                 `${(h.title || "?").slice(0, 30)} ` +
                 `<span style="opacity:.6">${h.why || ""}</span></div>`
             ).join("");
-            $("dj-cycle-lbl").textContent = dj.arc_cycle_s
-                ? (dj.arc_cycle_s >= 7200
-                    ? `full night: ${(dj.arc_cycle_s / 3600).toFixed(0)}h`
-                    : `cycle: ${Math.round(dj.arc_cycle_s / 60)} min, repeats`)
-                : "";
             if (dj.level != null)
                 $("dj-level").style.width =
                     Math.min(100, dj.level * 100) + "%";
@@ -525,7 +527,6 @@
             renderHistory(dj.history);
             show($("dj-tonight"), (dj.history || []).length > 0);
             $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
-            restoreFlavor(dj.flavor);
         });
 
         // ---------- trajectory canvas (arc + horizon + steering) ----------

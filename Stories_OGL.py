@@ -375,6 +375,9 @@ class EnvironmentalSystem:
         self._dj_prev_source = None            # analyzer source to restore
         self._dj_pending_setlist = None        # armed while idle, load on start
         self._dj_pending_flavor = {}           # armed while idle, set on start
+        self._dj_pending_arc = []              # arc waypoints armed while idle
+        self._dj_pending_nudge = 0.0
+        self._dj_idle_vocab = (0.0, [])        # (stamp, tag vocab) for chips
         self._dj_last_error = ""
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
@@ -2178,6 +2181,13 @@ class EnvironmentalSystem:
                     self._dj_pending_setlist = str(arg or '') or None
                     if self._dj is not None and self._dj.active:
                         self._dj.load_setlist(str(arg or ''))
+                elif action in ('nudge', 'arc') and (
+                        self._dj is None or not self._dj.active):
+                    # IDLE STEERING: arm now, applied the moment START hits.
+                    if action == 'nudge':
+                        self._dj_pending_nudge = float(arg)
+                    else:
+                        self._dj_pending_arc = list(arg or [])
                 elif action == 'flavor':
                     # Live music-type steering (tag leans / axis pulls).
                     self._dj_pending_flavor = dict(arg or {})
@@ -2189,6 +2199,7 @@ class EnvironmentalSystem:
                     elif action == 'autopilot':
                         self._dj.set_autopilot(bool(arg))
                     elif action == 'nudge':
+                        self._dj_pending_nudge = float(arg)
                         self._dj.set_energy_nudge(float(arg))
                     elif action == 'next_id':
                         self._dj.request_next(int(arg))
@@ -2205,6 +2216,7 @@ class EnvironmentalSystem:
                     elif action == 'seam_fb':
                         self._dj.seam_feedback(bool(arg))
                     elif action == 'arc':
+                        self._dj_pending_arc = list(arg or [])
                         self._dj.set_arc_waypoints(arg or [])
                     elif action == 'moment':
                         self._dj.moment()
@@ -2230,6 +2242,11 @@ class EnvironmentalSystem:
                     "setlists": self._dj_list_setlists(),
                     "music_dir": self._dj_music_dir_display(),
                     "error": self._dj_last_error}
+            # PRE-START STEERING: the page must offer the whole steering
+            # surface BEFORE the start button - themes, flavor chips (tag
+            # vocab straight from the DB), and a draggable arc, all armed
+            # and applied the moment the DJ starts.
+            info.update(self._dj_idle_steer_info())
             self.scheduler.state['dj_active'] = False
         # DELTA payloads: heavy blobs ship only when they change (weak
         # venue Wi-Fi shouldn't carry an identical arc curve at 5 Hz).
@@ -2253,6 +2270,66 @@ class EnvironmentalSystem:
                 else:
                     self._dj_sent[k] = h
         self.web_controller.set('dj_info', info)
+
+    def _dj_idle_steer_info(self):
+        import time as _t
+        import json as _json
+        from lib.dj.themes import BUILTIN_THEMES, get_theme
+        stamp, vocab = self._dj_idle_vocab
+        if _t.time() - stamp > 30.0:
+            vocab = []
+            try:
+                from lib.dj.db import LibraryDB
+                from lib.dj import resolve_music_dir
+                db = LibraryDB(resolve_music_dir(
+                    self.dj_cfg.get('music_dir', '')))
+                user, auto = {}, {}
+                for r in db.conn.execute("SELECT track_id, tag FROM tags"):
+                    user[r['tag']] = user.get(r['tag'], 0) + 1
+                for r in db.conn.execute(
+                        "SELECT auto_tags FROM tracks WHERE error IS NULL"
+                        " AND missing = 0"):
+                    for t in _json.loads(r['auto_tags'] or '[]'):
+                        auto[t] = auto.get(t, 0) + 1
+                db.close()
+                vocab = [(t, n, True) for t, n in
+                         sorted(user.items(), key=lambda kv: -kv[1])]
+                vocab += [(t, n, False) for t, n in
+                          sorted(auto.items(), key=lambda kv: -kv[1])
+                          if t not in user][:64 - len(vocab)]
+            except Exception as e:
+                print(f"[DJ] idle vocab skipped: {e}")
+            self._dj_idle_vocab = (_t.time(), vocab)
+        theme = get_theme(self.dj_cfg.get('theme', 'groove'))
+        wps = self._dj_pending_arc
+
+        def base(p):
+            if wps:
+                xs = [w[0] for w in wps]
+                ys = [w[1] for w in wps]
+                if p <= xs[0]:
+                    return ys[0]
+                if p >= xs[-1]:
+                    return ys[-1]
+                for i in range(len(xs) - 1):
+                    if xs[i] <= p <= xs[i + 1]:
+                        f = (p - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
+                        return ys[i] + f * (ys[i + 1] - ys[i])
+            return theme.arc_target(p)
+        return {
+            "energy_nudge": self._dj_pending_nudge,
+            "arc_heat": max(0.0, min(1.0, base(0.0)
+                                     + self._dj_pending_nudge)),
+            "themes": sorted(BUILTIN_THEMES),
+            "tags": vocab,
+            "flavor": dict(self._dj_pending_flavor),
+            "arc_waypoints": list(wps),
+            "arc_cycle_s": (float(self.dj_cfg.get('night_hours', 6.0))
+                            * 3600.0 if theme.arc == 'all_night'
+                            else 90 * 60.0),
+            "arc_curve": [round(max(0.0, min(1.0, base(i / 24.0))), 3)
+                          for i in range(25)],
+        }
 
     def _dj_list_setlists(self):
         """Setlist names available in the library DB, without a running DJ."""
@@ -2298,6 +2375,10 @@ class EnvironmentalSystem:
             self._dj.load_setlist(self._dj_pending_setlist)
         if self._dj_pending_flavor:
             self._dj.set_flavor(self._dj_pending_flavor)
+        if self._dj_pending_arc:
+            self._dj.set_arc_waypoints(self._dj_pending_arc)
+        if self._dj_pending_nudge:
+            self._dj.set_energy_nudge(self._dj_pending_nudge)
         # The DJ takes the soundtrack: silence state ambient, point the
         # analyzer at the engine's own output.
         try:
