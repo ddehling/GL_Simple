@@ -359,6 +359,9 @@ class DJSubmix:
         hot = peaks > 0.92
         if np.any(hot):
             out[hot] = np.sign(out[hot]) * (0.92 + (peaks[hot] - 0.92) / 3.0)
+            # ...and a TRUE ceiling: the knee alone let a double-drop +
+            # impact stack reach 1.02 over a full simulated night.
+            np.clip(out, -0.985, 0.985, out=out)
         if self.record_q is not None:
             try:
                 self.record_q.put_nowait(out.copy())

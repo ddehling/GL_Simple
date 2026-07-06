@@ -201,6 +201,22 @@ class Brain:
         self.flavor = {}                # {prefer_tags, avoid_tags, axis_targets}
         self.veto_ids = set()           # transient 'not this one' (reroll)
         self.style_fb = {}              # style -> tonight multiplier (thumbs)
+        self.pair_memory = {}           # (a_id,b_id) -> cross-night multiplier
+
+    def load_pair_memory(self, db, days=90.0):
+        """CROSS-NIGHT TASTE: thumbs on seams and bail-out skips persist
+        as pair-level multipliers - a seam that worked last Saturday gets
+        a lasting bonus, one that got skipped carries a lasting caution.
+        Bounded 0.4..1.6: memory is a lean, never a law."""
+        fb, skips = db.pair_stats(days=days)
+        mem = {}
+        for k, (ups, downs) in fb.items():
+            mem[k] = (1.15 ** min(ups, 4)) * (0.75 ** min(downs, 4))
+        for k, n in skips.items():
+            mem[k] = mem.get(k, 1.0) * (0.85 ** min(n, 3))
+        self.pair_memory = {k: max(0.4, min(1.6, v))
+                            for k, v in mem.items() if abs(v - 1.0) > 0.01}
+        return len(self.pair_memory)
 
     def set_flavor(self, flavor):
         self.flavor = dict(flavor or {})
@@ -384,6 +400,8 @@ class Brain:
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self._flavor_score(cand)
+                 * self.pair_memory.get(
+                     (getattr(current, "id", None), cand.id), 1.0)
                  * self.rng.uniform(0.9, 1.1))
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         if bpm_target:
@@ -706,6 +724,25 @@ class Brain:
             plan["loop_beats"] = beats_len
             plan["layer_beats"] = 16          # bars both tracks play together
         return plan
+
+    @staticmethod
+    def _vocal_at(track, t):
+        """Vocal presence at a source time: fine demucs curve when stored
+        (axes['vc']), per-section mean otherwise."""
+        vc = (track.axes or {}).get("vc")
+        if vc and len(vc) >= 2:
+            xs = [p[0] for p in vc]
+            ys = [p[1] for p in vc]
+            if t <= xs[0]:
+                return ys[0]
+            if t >= xs[-1]:
+                return ys[-1]
+            for i in range(len(xs) - 1):
+                if xs[i] <= t <= xs[i + 1]:
+                    f = (t - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
+                    return ys[i] + f * (ys[i + 1] - ys[i])
+        sec = track.section_at(t)
+        return (sec.get("vocalness") or 0.0) if sec else 0.0
 
     # -- automation compilation ------------------------------------------------
     def build_events(self, plan, snapshot, active, incoming, cur, cand):
@@ -1065,6 +1102,21 @@ class Brain:
             mid = min(max(S0 + int(k * beat_out * RATE),
                           S0 + int(4 * beat_out * RATE)),
                       max(end - int(2 * beat_out * RATE), S0 + 1))
+        # VOCAL-PHRASE AWARENESS: the swap is the loudest EQ moment of the
+        # blend - never land it on a sung line. Scan 4-beat slots from the
+        # bass-ready point; take the first where BOTH decks are vocal-free
+        # (fine demucs curve when stored, section means otherwise).
+        lo_c = mid
+        hi_c = max(end - int(2 * beat_out * RATE), lo_c + 1)
+        c = lo_c
+        step = int(4 * beat_out * RATE)
+        while c <= hi_c and step > 0:
+            b_src = plan["in_s"] + (c - S0) / RATE * rate_b
+            a_src = plan["out_s"] - (end - c) / RATE * a_rate
+            if self._vocal_at(cand, b_src) < 0.5                     and self._vocal_at(cur, a_src) < 0.5:
+                mid = c
+                break
+            c += step
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 2 * beat_out)
         # ONE MELODY AT A TIME - the mid-range twin of the one-bassline

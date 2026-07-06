@@ -165,6 +165,11 @@ class VocalAnalyzer:
         axes = json.loads(row["axes"]) if row and row["axes"] else {}
         axes["vocal"] = frac
         axes["vocal_src"] = "demucs"
+        # Compact fine curve for PHRASE-LEVEL mixing decisions (time the
+        # bass swap into the gap between vocal lines, not just into a
+        # low-vocal section). ~20-40 points; sections keep the means.
+        axes["vc"] = [[round(float(t), 1), round(float(v), 2)]
+                      for t, v in zip(times, vocalness)]
         db.conn.execute("UPDATE tracks SET axes = ? WHERE id = ?",
                         (json.dumps(axes), track_id))
         db.conn.commit()

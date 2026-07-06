@@ -120,6 +120,12 @@ class DJSystem:
                     self.brain.note_played(t, when=row["started_at"])
         except Exception as e:
             print(f"[DJ] recent-plays seed skipped: {e}")
+        try:
+            n = self.brain.load_pair_memory(self.db)
+            if n:
+                print(f"[DJ] pair memory: {n} remembered seams")
+        except Exception as e:
+            print(f"[DJ] pair memory skipped: {e}")
         self._refresh_setlist_names()
         self._refresh_tags()
         if self.engine is not None:
@@ -346,10 +352,21 @@ class DJSystem:
         eta = None
         if self.blend_at is not None and self.submix.clock < self.blend_at:
             eta = (self.blend_at - self.submix.clock) / RATE
+        # TRANSITION CHOREOGRAPHY: the visuals know the future. blend_eta
+        # counts down to the overlap starting; swap_eta to the decisive
+        # bass/melody handover - the club director stages moves on these
+        # exact beats (no human DJ + VJ pair can do this).
+        swap_eta = None
+        if self.state == "armed" and self.swap_at is not None \
+                and self.submix.clock < self.swap_at:
+            swap_eta = (self.swap_at - self.submix.clock) / RATE
         return {"dj_active": self._running,
                 "dj_arc_phase": self.arc_progress(),
                 "dj_arc_heat": self.arc_target(),
-                "dj_next_drop_eta": eta}
+                "dj_next_drop_eta": eta,
+                "dj_blend_eta": eta,
+                "dj_swap_eta": swap_eta,
+                "dj_style": self.plan["style"] if self.plan else None}
 
     def status(self):
         tel = self.submix.telemetry or {}
@@ -516,6 +533,13 @@ class DJSystem:
             elif kind == "seam_fb":
                 if self._last_style:
                     self.brain.seam_feedback(self._last_style, val)
+                    pair = getattr(self, "_last_pair", None)
+                    if pair and pair[0] is not None:
+                        try:
+                            self.db.add_seam_feedback(pair[0], pair[1],
+                                                      self._last_style, val)
+                        except Exception as e:
+                            print(f"[DJ] seam fb store failed: {e}")
                     self._log({"event": "seam_fb", "up": val,
                                "style": self._last_style})
             elif kind == "seek":
@@ -782,6 +806,7 @@ class DJSystem:
             self.current.id, transition_style=self.plan["style"],
             theme=self._theme_name)
         self._last_style = self.plan["style"]
+        self._last_pair = (old.id if old else None, self.current.id)
         self._history.append({"t": time.strftime("%H:%M"),
                               "title": self.current.title,
                               "artist": self.current.artist,

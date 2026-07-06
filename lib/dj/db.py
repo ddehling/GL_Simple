@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 5               # v5: phrase_beats/phrase_start_s/phrase_conf
+SCHEMA_VERSION = 6               # v6: seam_feedback table (pair memory)
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS cues (
     label TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cues_track ON cues(track_id);
+CREATE TABLE IF NOT EXISTS seam_feedback (
+    id INTEGER PRIMARY KEY,
+    a_id INTEGER NOT NULL,              -- outgoing track
+    b_id INTEGER NOT NULL,              -- incoming track
+    style TEXT,
+    up INTEGER NOT NULL,                -- 1 thumbs-up / 0 thumbs-down
+    at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seam_fb ON seam_feedback(a_id, b_id);
 CREATE TABLE IF NOT EXISTS play_history (
     id INTEGER PRIMARY KEY,
     track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -365,6 +374,37 @@ class LibraryDB:
             (track_id, time.time(), transition_style, theme))
         self.conn.commit()
         return cur.lastrowid
+
+    def add_seam_feedback(self, a_id, b_id, style, up):
+        self.conn.execute(
+            "INSERT INTO seam_feedback (a_id, b_id, style, up, at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (a_id, b_id, style, 1 if up else 0, time.time()))
+        self.conn.commit()
+
+    def pair_stats(self, days=90.0):
+        """Cross-night pair memory inputs: thumbs per (a,b) pair and
+        skipped-shortly-after-swap counts derived from play_history."""
+        since = time.time() - days * 86400.0
+        fb = {}
+        for r in self.conn.execute(
+                "SELECT a_id, b_id, up FROM seam_feedback WHERE at > ?",
+                (since,)):
+            k = (r["a_id"], r["b_id"])
+            ups, downs = fb.get(k, (0, 0))
+            fb[k] = (ups + r["up"], downs + (1 - r["up"]))
+        skips = {}
+        rows = self.conn.execute(
+            "SELECT track_id, started_at, ended_at, skipped FROM"
+            " play_history WHERE started_at > ? ORDER BY started_at",
+            (since,)).fetchall()
+        for i in range(1, len(rows)):
+            prev, cur = rows[i - 1], rows[i]
+            # same session, consecutive, bailed within 90s of the seam
+            if cur["skipped"] and cur["ended_at"]                     and cur["started_at"] - (prev["ended_at"] or 0) < 60.0                     and cur["ended_at"] - cur["started_at"] < 90.0:
+                k = (prev["track_id"], cur["track_id"])
+                skips[k] = skips.get(k, 0) + 1
+        return fb, skips
 
     def log_play_end(self, history_id, skipped=False):
         self.conn.execute(
