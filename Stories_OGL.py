@@ -2236,6 +2236,14 @@ class EnvironmentalSystem:
         import json as _json
         if not hasattr(self, '_dj_sent'):
             self._dj_sent = {}
+            self._dj_sent_n = 0
+        # Every ~3s ship the FULL payload regardless: the sent-cache is
+        # server-global, so without this a freshly loaded page never
+        # receives fields that haven't changed since some earlier client
+        # saw them (reload -> empty flavor chips; user-reported).
+        self._dj_sent_n += 1
+        if self._dj_sent_n % 15 == 0:
+            self._dj_sent = {}
         for k in ('arc_curve', 'track_map', 'next_map', 'horizon',
                   'history', 'tags', 'themes', 'setlists'):
             if k in info:
