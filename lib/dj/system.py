@@ -570,6 +570,7 @@ class DJSystem:
                                "vetoed": self.next_track.title})
                 self.next_track = None
                 self.plan = None
+                self._horizon = self._horizon[1:]   # vetoed item leaves
                 self._horizon_key = None
             elif kind == "moment" and self.state in ("playing", "armed")                     and self.current is not None:
                 pos = self._pos_s()
@@ -625,18 +626,38 @@ class DJSystem:
             if self.swap_at is not None and self.submix.clock >= self.swap_at:
                 self._finish_swap()
 
+    def _pick_next(self, out_bpm):
+        """The live pick FOLLOWS the displayed queue: take the horizon's
+        front if it still scores, so what the operator sees is what
+        plays. Fresh selection only when the queue is empty/invalid."""
+        if self._horizon and self.brain is not None:
+            t0 = next((t for t in self.brain.library
+                       if t.id == self._horizon[0]["id"]), None)
+            if t0 is not None and t0.id != self.current.id                     and t0.id not in self.brain.veto_ids:
+                s, meta = self.brain.score(
+                    self.current, t0, self.arc_target(), out_bpm,
+                    bpm_target=self.bpm_target())
+                if s > 0 and meta is not None:
+                    return t0, meta
+        return self.brain.choose_next(
+            self.current, self.arc_target(), out_bpm,
+            bpm_target=self.bpm_target())
+
     def _maybe_horizon(self):
         """Provisional next-N for the trajectory display; recomputed only
         when its inputs changed (it runs real selection, not free)."""
         if self.current is None or self.brain is None:
             return
-        key = (self.current.id,
-               self.next_track.id if self.next_track else None,
-               self._theme_name, json.dumps(self.brain.flavor, sort_keys=True),
-               tuple(self._arc_waypoints), round(self._energy_nudge, 2))
-        if key == self._horizon_key:
+        steer = (self._theme_name,
+                 json.dumps(self.brain.flavor, sort_keys=True),
+                 tuple(self._arc_waypoints), round(self._energy_nudge, 2))
+        steered = steer != self._horizon_key
+        if not steered and len(self._horizon) >= 3                 and (self.next_track is None
+                     or self._horizon[0]["id"] == self.next_track.id):
             return
-        self._horizon_key = key
+        if steered:
+            self._horizon = []           # steering changed: replan the lot
+        self._horizon_key = steer
         prog0 = self.arc_progress()
         step = 300.0 / (SET_CYCLE_S if (self.brain.theme.arc != "all_night")
                         else max(self.night_hours * 3600.0, 60.0))
@@ -645,8 +666,15 @@ class DJSystem:
             return max(0.0, min(1.0, self._arc_base(
                 min(prog0 + i * step, 1.0)) + self._energy_nudge))
         try:
-            self._horizon = self.brain.plan_horizon(
-                self.current, arc_at, self.current.bpm, n=3)
+            by_id = {t.id: t for t in self.brain.library}
+            kept = [h for h in self._horizon if h["id"] in by_id][:3]
+            need = 3 - len(kept)
+            if need > 0:
+                tail = by_id[kept[-1]["id"]] if kept else self.current
+                pre = [by_id[h["id"]] for h in kept]
+                kept += self.brain.plan_horizon(
+                    tail, arc_at, tail.bpm, n=need, preplayed=pre)
+            self._horizon = kept
             # PROJECTED TIMELINE: when each queued track will actually
             # start (seconds from now) and how long it should run, so the
             # night chart can place them time-true instead of decoratively.
@@ -788,8 +816,7 @@ class DJSystem:
                 self.next_track, self._next_meta = \
                     self._pop_setlist_next(out_bpm)
             if self.next_track is None:
-                cand, meta = self.brain.choose_next(
-                    self.current, self.arc_target(), out_bpm)
+                cand, meta = self._pick_next(out_bpm)
                 if cand is not None:
                     self.next_track, self._next_meta = cand, meta
             if self.next_track is not None:
@@ -804,9 +831,7 @@ class DJSystem:
         if self.next_track is None and self._setlist_queue:
             self.next_track, self._next_meta = self._pop_setlist_next(out_bpm)
         if self.next_track is None:
-            cand, meta = self.brain.choose_next(
-                self.current, self.arc_target(), out_bpm,
-                bpm_target=self.bpm_target())
+            cand, meta = self._pick_next(out_bpm)
             if cand is None:
                 self.last_error = "no compatible next track"
                 return
@@ -887,6 +912,13 @@ class DJSystem:
             theme=self._theme_name)
         self._last_style = self.plan["style"]
         self._last_pair = (old.id if old else None, self.current.id)
+        # QUEUE CONTINUITY: the played track leaves the front of the
+        # horizon; the rest advances and gets topped up - never a
+        # wholesale rebuild on swap (read as 'the plan reset').
+        if self._horizon and self._horizon[0]["id"] == self.current.id:
+            self._horizon = self._horizon[1:]
+        else:
+            self._horizon = []
         self._history.append({"t": time.strftime("%H:%M"),
                               "title": self.current.title,
                               "artist": self.current.artist,

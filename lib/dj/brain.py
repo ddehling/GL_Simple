@@ -242,7 +242,7 @@ class Brain:
             bits.append("mixed well before" if pm > 1.0 else "rough before")
         return "  ".join(bits)
 
-    def plan_horizon(self, current, arc_fn, out_bpm, n=3):
+    def plan_horizon(self, current, arc_fn, out_bpm, n=3, preplayed=None):
         """PROVISIONAL next-n chain for the trajectory display: what would
         play if nothing changes. Pure lookahead - recency/skip state is
         snapshotted and restored, and a fixed-seed rng keeps the preview
@@ -254,6 +254,8 @@ class Brain:
         out = []
         cur = current
         try:
+            for t in (preplayed or []):      # queue items already shown
+                self.note_played(t)
             for i in range(n):
                 cand, meta = self.choose_next(
                     cur, arc_fn(i + 1), cur.bpm if cur else out_bpm)
