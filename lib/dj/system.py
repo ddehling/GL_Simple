@@ -110,6 +110,23 @@ class DJSystem:
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
         self._by_id = {t.id: t for t in lib}
+        # LIVE-ENERGY SCALE: energy_proxy x curve is compressed on a real
+        # library (this one: raw spans ~0.22..0.8) - published as-is the
+        # club's response was limp (user-heard). Map the library's OWN
+        # p05..p95 of instantaneous energy to 0..1 so a chill breakdown
+        # and a peak drop actually span the range.
+        vals = []
+        for t in lib:
+            pr = t.energy_proxy()
+            for c in (t.row.get("energy_curve") or [])[::4]:
+                vals.append(pr * float(c))
+        vals.sort()
+        if len(vals) >= 100:
+            self._energy_lo = vals[int(0.05 * (len(vals) - 1))]
+            self._energy_hi = max(vals[int(0.95 * (len(vals) - 1))],
+                                  self._energy_lo + 0.05)
+        else:
+            self._energy_lo, self._energy_hi = 0.0, 1.0
         # Remember what recently played ACROSS restarts - with a cold
         # recency memory every night opened with the same tracks in the
         # same order.
@@ -394,9 +411,13 @@ class DJSystem:
                 i1 = min(i0 + 1, len(curve) - 1)
                 f = i - i0
                 shape = float(curve[i0]) * (1.0 - f) + float(curve[i1]) * f
-            num += g * max(0.0, min(1.0, t.energy_proxy() * shape))
+            num += g * t.energy_proxy() * shape
             den += g
-        return (num / den) if den > 0.0 else None
+        if den <= 0.0:
+            return None
+        lo = getattr(self, "_energy_lo", 0.0)
+        hi = getattr(self, "_energy_hi", 1.0)
+        return max(0.0, min(1.0, (num / den - lo) / max(hi - lo, 1e-6)))
 
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
@@ -666,6 +687,10 @@ class DJSystem:
         """The live pick FOLLOWS the displayed queue: take the horizon's
         front if it still scores, so what the operator sees is what
         plays. Fresh selection only when the queue is empty/invalid."""
+        if self._setlist_queue:
+            t, meta = self._pop_setlist_next(out_bpm)
+            if t is not None:
+                return t, meta
         if self._horizon and self.brain is not None:
             t0 = next((t for t in self.brain.library
                        if t.id == self._horizon[0]["id"]), None)
@@ -694,6 +719,31 @@ class DJSystem:
         if steered:
             self._horizon = []           # steering changed: replan the lot
         self._horizon_key = steer
+        if self._setlist_queue:
+            # A loaded setlist IS the plan - show it, don't free-plan.
+            by_id = {t.id: t for t in self.brain.library}
+            items = []
+            if self.next_track is not None:
+                items.append({
+                    "id": self.next_track.id, "title": self.next_track.title,
+                    "artist": self.next_track.artist,
+                    "bpm": self.next_track.bpm,
+                    "energy": self.next_track.energy_proxy(),
+                    "tags": self.next_track.all_tags[:4],
+                    "why": "setlist next"})
+            for e in self._setlist_queue[:3]:
+                t = by_id.get(e["track_id"])
+                if t is None:
+                    continue
+                items.append({
+                    "id": t.id, "title": t.title, "artist": t.artist,
+                    "bpm": t.bpm, "energy": t.energy_proxy(),
+                    "tags": t.all_tags[:4],
+                    "why": "setlist " + ("anchor" if e.get("pin_type")
+                                         == "anchor" else "pick")})
+            self._annotate_horizon(items[:3])
+            self._horizon = items[:3]
+            return
         prog0 = self.arc_progress()
         step = 300.0 / (SET_CYCLE_S if (self.brain.theme.arc != "all_night")
                         else max(self.night_hours * 3600.0, 60.0))
@@ -711,20 +761,7 @@ class DJSystem:
                 kept += self.brain.plan_horizon(
                     tail, arc_at, tail.bpm, n=need, preplayed=pre)
             self._horizon = kept
-            # PROJECTED TIMELINE: when each queued track will actually
-            # start (seconds from now) and how long it should run, so the
-            # night chart can place them time-true instead of decoratively.
-            pos = self._pos_s()
-            played = (self.submix.clock - self._started_clock) / RATE
-            if self.plan and pos is not None:
-                t0 = max(self.plan["out_s"] - pos, 0.0)
-            else:
-                t0 = max(self._exit_played - played, 30.0)
-            per_play = min(max(self.brain.theme.min_play_s, 150.0), 300.0)
-            for h in self._horizon:
-                h["eta_s"] = round(t0, 1)
-                h["play_s"] = round(per_play, 1)
-                t0 += per_play
+            self._annotate_horizon(self._horizon)
             if self.next_track is not None and self._horizon:
                 # the committed pick leads the horizon
                 self._horizon[0] = {"id": self.next_track.id,
@@ -1016,6 +1053,22 @@ class DJSystem:
         self._exit_played = (self.submix.clock - self._started_clock) / RATE
         self._maybe_plan()
 
+    def _annotate_horizon(self, items):
+        """PROJECTED TIMELINE: when each queued track will actually start
+        (seconds from now) and how long it should run, so the night chart
+        can place them time-true instead of decoratively."""
+        pos = self._pos_s()
+        played = (self.submix.clock - self._started_clock) / RATE
+        if self.plan and pos is not None:
+            t0 = max(self.plan["out_s"] - pos, 0.0)
+        else:
+            t0 = max(self._exit_played - played, 30.0)
+        per_play = min(max(self.brain.theme.min_play_s, 150.0), 300.0)
+        for h in items:
+            h["eta_s"] = round(t0, 1)
+            h["play_s"] = round(per_play, 1)
+            t0 += per_play
+
     def _pop_setlist_next(self, out_bpm):
         """Next track from the loaded setlist. Anchors are HARD (played even
         if the seam needs a long_fade); a tempo-impossible SUGGESTION is
@@ -1031,13 +1084,17 @@ class DJSystem:
             _, meta = self.brain.score(self.current, t,
                                        self.arc_target(), out_bpm)
             if meta is None:
+                # The operator ordered THIS track. A tempo clash is not a
+                # reason to play something else - it's a reason to fade
+                # (the dipped handoff makes any pair playable). The old
+                # behavior substituted from the whole library, which on an
+                # eclectic setlist cascaded into a mostly-substituted
+                # night (user: 'what's the point of it?').
                 rate, eff = self.brain.rate_for(out_bpm, t)
                 meta = {"rate": rate or 1.0, "eff_bpm": eff or t.bpm,
                         "pair": None}
-                if rate is None and entry.get("pin_type") != "anchor":
-                    self._log({"event": "setlist_swap", "dropped": t.title,
-                               "why": "tempo clash - brain substitutes"})
-                    return None, None       # brain picks instead
+                if rate is None:
+                    meta["tempo_clash"] = True   # plan -> long_fade
             self._log({"event": "setlist_next", "track": t.title,
                        "pin": entry.get("pin_type", "suggestion"),
                        "remaining": len(self._setlist_queue)})
