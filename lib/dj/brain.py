@@ -796,6 +796,9 @@ class Brain:
                 {"at": S0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
                 {"at": S0, "cmd": "rate", "deck": incoming, "value": 1.0},
+                # Full-range from the first beat - a fade is not a carve.
+                {"at": S0, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
                 {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},

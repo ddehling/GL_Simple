@@ -106,6 +106,12 @@ class Deck:
     def reset_fx(self):
         self.filter.set(mode="off")
         self.echo.set(active=False)
+        # EQ must not leak across tracks: a deck that finished as the
+        # OUTGOING side of a bass swap sits at low=0 / mid=0.25, and any
+        # style that doesn't explicitly restate EQ (long_fade set gain
+        # only) played the next track with its whole bass stripped
+        # (user-heard). Every load starts flat; styles shape from there.
+        self.eq.set_gains(1.0, 1.0, 1.0, ramp_s=0.01)
         self._brake = None
         self._fade_in = 0
 
