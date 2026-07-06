@@ -80,6 +80,7 @@ class DJSystem:
         self._exit_played = 300.0    # drawn per track from theme min/max play
         self._next_meta = None
         self._setlist_name = None
+        self._setlist_mode = "order"
         self._setlist_queue = []     # upcoming entry dicts (plan-following)
         self.setlist_names = []      # for the web picker, refreshed by step()
         self._setlists_checked = 0.0
@@ -308,10 +309,12 @@ class DJSystem:
         with self._lock:
             self._pending.append(("flavor", dict(flavor or {})))
 
-    def load_setlist(self, name):
-        """Follow a preplanned set: anchors are hard, suggestions soft."""
+    def load_setlist(self, name, mode="order"):
+        """Load a setlist. mode='order': play the entries top to bottom.
+        mode='pool': the list is the POOL - the brain steers the order
+        live (arc / flavor / nudge apply), each track plays once."""
         with self._lock:
-            self._pending.append(("setlist", name))
+            self._pending.append(("setlist", (name, mode)))
 
     def seek(self, pos_s):
         """Jump the current track to an absolute position (testing)."""
@@ -487,7 +490,11 @@ class DJSystem:
             "style": self.plan["style"] if self.plan else None,
             "blend_in_s": round(countdown, 1) if countdown is not None else None,
             "setlist": self._setlist_name,
-            "setlist_remaining": len(self._setlist_queue),
+            "setlist_remaining": (len(self.brain.pool_ids)
+                                  if self.brain is not None
+                                  and self.brain.pool_ids is not None
+                                  else len(self._setlist_queue)),
+            "setlist_mode": self._setlist_mode,
             "setlists": list(self.setlist_names),
             "night_hours": self.night_hours,
             "decks": self._deck_brief(tel),
@@ -596,15 +603,28 @@ class DJSystem:
                     self._log({"event": "pick_next", "track": t.title})
             elif kind == "setlist":
                 from lib.dj.setlist import get_setlist
-                sl = get_setlist(self.db, name=val) if val else None
-                if val and sl is None:
-                    self.last_error = f"setlist '{val}' not found"
+                name, mode = val if isinstance(val, tuple) else (val, "order")
+                sl = get_setlist(self.db, name=name) if name else None
+                if name and sl is None:
+                    self.last_error = f"setlist '{name}' not found"
                 else:
-                    self._setlist_name = val or None
-                    self._setlist_queue = list(sl["entries"]) if sl else []
+                    self._setlist_name = name or None
+                    self._setlist_mode = mode
+                    self.brain.pool_ids = None
+                    self._setlist_queue = []
+                    if sl and mode == "pool":
+                        # THE LIST AS A POOL: brain picks the order, all
+                        # steering applies, nothing outside the list plays.
+                        self.brain.pool_ids = {
+                            e["track_id"] for e in sl["entries"]}
+                        if self.current is not None:
+                            self.brain.pool_ids.discard(self.current.id)
+                        self._horizon = []          # replan inside the pool
+                    elif sl:
+                        self._setlist_queue = list(sl["entries"])
                     self._log({"event": "setlist",
-                               "name": self._setlist_name,
-                               "tracks": len(self._setlist_queue)})
+                               "name": self._setlist_name, "mode": mode,
+                               "tracks": len(sl["entries"]) if sl else 0})
                     if self.state == "playing":
                         self.next_track = None      # replan from the list
                         self.plan = None
@@ -694,7 +714,14 @@ class DJSystem:
         if self._horizon and self.brain is not None:
             t0 = next((t for t in self.brain.library
                        if t.id == self._horizon[0]["id"]), None)
-            if t0 is not None and t0.id != self.current.id                     and t0.id not in self.brain.veto_ids:
+            # A stale queue front must never resurrect a track the night
+            # just played: the recency wall is deliberately nonzero for
+            # dry-pool grace, so 'scores > 0' alone is not consent.
+            now = time.time()
+            fresh = t0 is not None and not any(
+                tid == t0.id and now - w < 3600.0
+                for w, tid, _ in self.brain.recent)
+            if fresh and t0.id != self.current.id                     and t0.id not in self.brain.veto_ids:
                 s, meta = self.brain.score(
                     self.current, t0, self.arc_target(), out_bpm,
                     bpm_target=self.bpm_target())
@@ -846,6 +873,7 @@ class DJSystem:
         self._started_clock = self.submix.clock
         self._draw_exit()
         self.brain.note_played(first)
+        self._note_pool_played(first)
         self._note_energy(first)
         self._history.append({"t": time.strftime("%H:%M"),
                               "title": first.title, "artist": first.artist,
@@ -905,6 +933,25 @@ class DJSystem:
             self.next_track, self._next_meta = self._pop_setlist_next(out_bpm)
         if self.next_track is None:
             cand, meta = self._pick_next(out_bpm)
+            if cand is None and self.brain.pool_ids is not None:
+                # No pool track can FOLLOW this one tempo-wise - same
+                # answer as ordered mode: the operator's list outranks
+                # beat-matching, take the dipped fade to the closest-fit
+                # remaining pool track instead of leaving the list.
+                rest = [t for t in self.brain.library
+                        if t.id in self.brain.pool_ids]
+                if rest:
+                    arc = self.arc_target()
+                    cand = min(rest, key=lambda t: abs(
+                        t.energy_proxy() - arc))
+                    meta = {"rate": 1.0, "eff_bpm": cand.bpm,
+                            "pair": None, "tempo_clash": True}
+                    print(f"[DJ] pool tempo clash - fading to "
+                          f"{cand.title[:30]}")
+                else:
+                    self.brain.pool_ids = None
+                    self._setlist_name = None
+                    cand, meta = self._pick_next(out_bpm)
             if cand is None:
                 self.last_error = "no compatible next track"
                 return
@@ -969,6 +1016,18 @@ class DJSystem:
                    "pair_score": plan["pair_score"],
                    "blend_in_s": round((blend_at - self.submix.clock) / RATE, 1)})
 
+    def _note_pool_played(self, track):
+        pool = self.brain.pool_ids
+        if pool is None or track is None:
+            return
+        pool.discard(track.id)
+        if not pool:
+            self.brain.pool_ids = None
+            self._setlist_name = None
+            self._setlist_mode = "order"
+            self._log({"event": "setlist_pool_done"})
+            print("[DJ] setlist pool complete - free play resumes")
+
     def _finish_swap(self):
         if self._history_id:
             self.db.log_play_end(self._history_id)
@@ -979,6 +1038,7 @@ class DJSystem:
         self._started_clock = self.submix.clock
         self._draw_exit()
         self.brain.note_played(self.current)
+        self._note_pool_played(self.current)
         self._note_energy(self.current)
         self._history_id = self.db.log_play_start(
             self.current.id, transition_style=self.plan["style"],
@@ -1100,6 +1160,7 @@ class DJSystem:
                        "remaining": len(self._setlist_queue)})
             return t, meta
         self._setlist_name = None
+        self._setlist_mode = "order"
         return None, None
 
     # -- helpers ---------------------------------------------------------------

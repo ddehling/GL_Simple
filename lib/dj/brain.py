@@ -201,6 +201,10 @@ class Brain:
         self.stretch_max = min(stretch_max, STRETCH_MAX)
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
         self.recent = []                # (wall_time, track_id, artist)
+        # SETLIST POOL: when set, selection is confined to these track ids
+        # (the operator's list as a POOL - the brain steers the order via
+        # arc/flavor/nudge). System drains ids as they play; None = free.
+        self.pool_ids = None
         self._recent_skips = {}         # track_id -> skip count (tonight)
         # LIVE FLAVOR overrides: same shape as the theme's flavor fields,
         # set from the web/planner mid-set ("more hypnotic", "no vocals").
@@ -390,6 +394,8 @@ class Brain:
               bpm_target=None, relax=False):
         if cand.id == getattr(current, "id", None)                 or cand.id in self.veto_ids:
             return 0.0, None
+        if self.pool_ids is not None and cand.id not in self.pool_ids:
+            return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
         if rate is None:
             return 0.0, None
@@ -521,6 +527,8 @@ class Brain:
     def choose_first(self, arc_target, now=None):
         cands = []
         for cand in self.library:
+            if self.pool_ids is not None and cand.id not in self.pool_ids:
+                continue
             lo, hi = self.theme.bpm_range
             if not (lo * 0.93 <= cand.bpm <= hi * 1.07):
                 continue
@@ -530,6 +538,14 @@ class Brain:
                 * self._recency_penalty(cand, now) \
                 * self._flavor_score(cand) * self.rng.uniform(0.9, 1.1)
             cands.append((s, cand))
+        if not cands and self.pool_ids is not None:
+            # The operator's pool outranks the theme's tempo taste: open
+            # with the best-fitting pool track even off-window.
+            for cand in self.library:
+                if cand.id in self.pool_ids:
+                    cands.append((math.exp(-((cand.energy_proxy()
+                                              - arc_target) / 0.3) ** 2)
+                                  * self.rng.uniform(0.9, 1.1), cand))
         if not cands:
             return None
         # Open with ANY strong fit, not always the same single winner.

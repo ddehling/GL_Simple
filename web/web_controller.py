@@ -1028,8 +1028,8 @@ class WebController:
                 self._values_cache = None
 
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
-                      'nudge', 'next_id', 'setlist', 'seek', 'seek_rel',
-                      'to_exit', 'mix_now', 'flavor',
+                      'nudge', 'next_id', 'setlist', 'setlist_pool',
+                      'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
                       'hold', 'reroll', 'seam_fb', 'arc', 'moment'}
 
         @self.socketio.on('dj_action')
@@ -1055,7 +1055,7 @@ class WebController:
                     arg = int(arg)
                 except (TypeError, ValueError):
                     return
-            elif action in ('theme', 'setlist'):
+            elif action in ('theme', 'setlist', 'setlist_pool'):
                 if not isinstance(arg, str) or len(arg) > 80:
                     return
             elif action == 'autopilot':

@@ -2191,11 +2191,16 @@ class EnvironmentalSystem:
                     self.dj_cfg['theme'] = str(arg)
                     if self._dj is not None and self._dj.active:
                         self._dj.set_theme(str(arg))
-                elif action == 'setlist':
+                elif action in ('setlist', 'setlist_pool'):
                     # Idle: arm the setlist to load on start. Live: load now.
-                    self._dj_pending_setlist = str(arg or '') or None
+                    # 'setlist' plays the list in order; 'setlist_pool'
+                    # confines the DJ to the list but lets it steer the
+                    # order (arc / flavor / nudge all apply).
+                    mode = 'pool' if action == 'setlist_pool' else 'order'
+                    name = str(arg or '') or None
+                    self._dj_pending_setlist = (name, mode) if name else None
                     if self._dj is not None and self._dj.active:
-                        self._dj.load_setlist(str(arg or ''))
+                        self._dj.load_setlist(str(arg or ''), mode=mode)
                 elif action in ('nudge', 'arc') and (
                         self._dj is None or not self._dj.active):
                     # IDLE STEERING: arm now, applied the moment START hits.
@@ -2253,7 +2258,10 @@ class EnvironmentalSystem:
                     "theme": self.dj_cfg.get("theme", "groove"),
                     "autopilot": True, "energy_nudge": 0.0,
                     "arc_phase": 0.0, "arc_heat": 0.5,
-                    "setlist": self._dj_pending_setlist,
+                    "setlist": (self._dj_pending_setlist[0]
+                                if isinstance(self._dj_pending_setlist,
+                                              tuple)
+                                else self._dj_pending_setlist),
                     "setlists": self._dj_list_setlists(),
                     "music_dir": self._dj_music_dir_display(),
                     "error": self._dj_last_error}
@@ -2387,7 +2395,10 @@ class EnvironmentalSystem:
             return
         self._dj_last_error = ""
         if self._dj_pending_setlist:
-            self._dj.load_setlist(self._dj_pending_setlist)
+            name, mode = (self._dj_pending_setlist
+                          if isinstance(self._dj_pending_setlist, tuple)
+                          else (self._dj_pending_setlist, 'order'))
+            self._dj.load_setlist(name, mode=mode)
         if self._dj_pending_flavor:
             self._dj.set_flavor(self._dj_pending_flavor)
         if self._dj_pending_arc:

@@ -189,7 +189,11 @@
                     <option value="">(free play — autonomous)</option>
                 </select>
                 <button class="btn" id="dj-setlist-load"
-                        style="width:auto">LOAD</button>
+                        style="width:auto" title="play the list top to
+bottom, exactly as written">IN ORDER</button>
+                <button class="btn" id="dj-setlist-pool"
+                        style="width:auto" title="only these songs, but the
+DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             </div>
             <div id="dj-nudge-wrap" style="margin-top:14px">
                 <div class="bias-labels"><span>mellower</span>
@@ -338,6 +342,8 @@
             emit("autopilot", !$("dj-auto").classList.contains("on"));
         $("dj-setlist-load").onclick = () =>
             emit("setlist", $("dj-setlist").value);
+        $("dj-setlist-pool").onclick = () =>
+            emit("setlist_pool", $("dj-setlist").value);
 
         let nudgeDragging = false;
         const nudge = $("dj-nudge");
