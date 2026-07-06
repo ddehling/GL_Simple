@@ -699,7 +699,7 @@
         $("dj-moment").onclick = () => emit("moment");
         $("dj-vol").oninput = () =>
             socket.emit("update_global",
-                        {name: "master_volume",
+                        {modifier: "master_volume",
                          value: parseFloat($("dj-vol").value)});
         $("dj-reroll").onclick = () => emit("reroll");
         const flash = (b) => { b.style.background = "#2e6b3a";
