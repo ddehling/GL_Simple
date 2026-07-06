@@ -7,7 +7,7 @@ to an energy TARGET the brain chases when picking the next track; the
 and is the source of outstate['dj_arc_phase'] for the visual night phase.
 """
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass
@@ -65,6 +65,46 @@ class Theme:
             shape = 0.5
         return max(0.0, min(1.0, self.energy_base
                             + self.energy_span * (shape - 0.5) * 2.0))
+
+
+# Where each theme LIVES in a library's tempo landscape, as percentiles of
+# the library's own bpm distribution. The authored bpm_range numbers below
+# assume an EDM-shaped library (~110-130); on an eclectic library (this
+# user's: median 100, p10 77) those absolute windows strand the brain in a
+# thin corner - measured on the real 573-track library: 31% of tracks had
+# NO compatible successor, stretches were forced to 7.7%, and 54% of seams
+# fell back to long_fade. adapt_theme() keeps each theme's CHARACTER (its
+# relative position: peak_heavy = the fast end) while fitting the numbers
+# to the music that's actually there.
+THEME_BPM_PERCENTILES = {
+    "chill_evening": (0.08, 0.45),
+    "groove": (0.35, 0.75),
+    "peak_heavy": (0.62, 0.97),
+    "wind_down": (0.03, 0.40),
+    "all_night": (0.10, 0.92),
+    "hypnotic_deep": (0.30, 0.68),
+    "vocal_journey": (0.25, 0.65),
+    "hard_drive": (0.55, 0.90),
+    "gentle_organic": (0.15, 0.55),
+}
+
+
+def adapt_theme(theme, bpms, min_width=14.0):
+    """Return a copy of ``theme`` with bpm_range fitted to THIS library's
+    tempo distribution (see THEME_BPM_PERCENTILES). On an EDM library the
+    percentiles land back on EDM numbers, so well-matched libraries are
+    unchanged in practice. Unknown/custom themes and tiny libraries pass
+    through untouched."""
+    pcts = THEME_BPM_PERCENTILES.get(theme.name)
+    v = sorted(b for b in (bpms or []) if b and b > 0)
+    if not pcts or len(v) < 20:
+        return theme
+    lo = v[int(pcts[0] * (len(v) - 1))]
+    hi = v[int(pcts[1] * (len(v) - 1))]
+    if hi - lo < min_width:
+        mid = 0.5 * (lo + hi)
+        lo, hi = mid - min_width / 2.0, mid + min_width / 2.0
+    return replace(theme, bpm_range=(round(lo, 1), round(hi, 1)))
 
 
 BUILTIN_THEMES = {t.name: t for t in [

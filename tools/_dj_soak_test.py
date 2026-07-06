@@ -21,7 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 RATE = 44100
 BLOCK = 1024
-MUSIC = "D:/Media/Desert Whomp"
+# The SHOW library - measure on the music the DJ actually plays.
+MUSIC = "C:/Users/ddehl/Desktop/Devel/music"
+import sys as _sys
+if "--music" in _sys.argv:
+    MUSIC = _sys.argv[_sys.argv.index("--music") + 1]
 
 failures = []
 

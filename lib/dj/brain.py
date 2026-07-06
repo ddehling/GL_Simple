@@ -15,6 +15,8 @@ import math
 import random
 import time
 
+from lib.dj.themes import adapt_theme
+
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
@@ -188,7 +190,13 @@ def _shift_camelot(cam, semitones):
 class Brain:
     def __init__(self, library, theme, seed=None, stretch_max=STRETCH_MAX):
         self.library = list(library)
-        self.theme = theme
+        self._lib_bpms = [t.bpm for t in self.library]
+        self.theme = adapt_theme(theme, self._lib_bpms)
+        if self.theme.bpm_range != theme.bpm_range:
+            print(f"[DJ] theme '{theme.name}' tempo window fitted to this "
+                  f"library: {theme.bpm_range[0]:.0f}-{theme.bpm_range[1]:.0f}"
+                  f" -> {self.theme.bpm_range[0]:.0f}-"
+                  f"{self.theme.bpm_range[1]:.0f} bpm")
         self.rng = random.Random(seed)
         self.stretch_max = min(stretch_max, STRETCH_MAX)
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
@@ -379,14 +387,15 @@ class Brain:
 
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
-              bpm_target=None):
+              bpm_target=None, relax=False):
         if cand.id == getattr(current, "id", None)                 or cand.id in self.veto_ids:
             return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
         if rate is None:
             return 0.0, None
         lo, hi = self.theme.bpm_range
-        if not (lo * 0.93 <= eff_bpm <= hi * 1.07):
+        wide = 1.12 if relax else 1.0
+        if not (lo * 0.93 / wide <= eff_bpm <= hi * 1.07 * wide):
             return 0.0, None
         s_rate = math.exp(-((abs(math.log(rate))) / 0.045) ** 2)
         s_key = camelot_compat(getattr(current, "camelot", ""), cand.camelot)
@@ -427,12 +436,25 @@ class Brain:
                  * self.pair_memory.get(
                      (getattr(current, "id", None), cand.id), 1.0)
                  * self.rng.uniform(0.9, 1.1))
+        # STRETCH WALL: beyond ~5.5% the time-stretch is audible as feel
+        # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
+        # a dry pool may still cross it rather than strand the set.
+        if abs(math.log(rate)) > math.log(1.055):
+            total *= 0.05
+        # Confident grids keep the CHAIN mixable: a low-conf pick forces
+        # long_fade on both its seams. Mild lean only - flavor can still
+        # bring in a loose-gridded track it really wants.
+        total *= 0.75 + 0.25 * min(cand.bpm_conf, 1.0)
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         if bpm_target:
             total *= 0.55 + 0.45 * math.exp(
                 -((eff_bpm - bpm_target) / 7.0) ** 2)
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
                        "pitch_st": pitch_st}
+
+    def set_theme(self, theme):
+        """Live retheme - same library fitting as construction."""
+        self.theme = adapt_theme(theme, self._lib_bpms)
 
     @staticmethod
     def _similarity(a, b):
@@ -464,6 +486,16 @@ class Brain:
                                  bpm_target=bpm_target)
             if s > 0.0:
                 scored.append((s, cand, meta))
+        if not scored:
+            # DEAD-END RESCUE: from tempo-extreme tracks the theme window
+            # can be unreachable (measured: 69/573 on the real library).
+            # Widen the gate rather than strand the set - the stretch wall
+            # still keeps rates sane, and a long_fade is always available.
+            for cand in self.library:
+                s, meta = self.score(current, cand, arc_target, out_bpm,
+                                     now, bpm_target=bpm_target, relax=True)
+                if s > 0.0:
+                    scored.append((s, cand, meta))
         if not scored:
             return None, None
         scored.sort(key=lambda x: -x[0])
@@ -649,6 +681,14 @@ class Brain:
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
                 weights["cut_at_drop"] = 0.0
+            # Short-dual precision styles (a few bars of overlap, no time
+            # for the PLL to settle) demand STRONG grids on both sides -
+            # at conf ~0.6 the stored grid itself wobbles 25-50ms
+            # (measured on the real library) and the seam audibly flams.
+            if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
+                for k in ("cut_at_drop", "double_drop", "echo_out",
+                          "bassline_layer"):
+                    weights[k] = 0.0
             # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
             # mix-ins qualifies, not just the best-scoring pair's (gating on
             # pair["in_hint"] starved the style to literally zero uses
@@ -686,6 +726,20 @@ class Brain:
                 menu = [("bass_swap", 1.0)]
             styles, ws = zip(*menu)
             style = self.rng.choices(styles, weights=ws, k=1)[0]
+
+        # NEVER BLEND TWO SUNG PASSAGES: the swap-slot scan protects the
+        # swap beat, but if A exits THROUGH a vocal passage while B enters
+        # on one, the whole overlap is two voices fighting. The dipped
+        # fade handles that pair gracefully - use it.
+        if style != "long_fade":
+            sa_v = (cur.section_at(pair["out_s"] - 1.0) or {})
+            sb_v = (cand.section_at(pair["in_s"] + 1.0) or {})
+            both_pt = (self._vocal_at(cur, pair["out_s"]) > 0.5
+                       and self._vocal_at(cand, pair["in_s"]) > 0.5)
+            both_sec = ((sa_v.get("vocalness") or 0) > 0.5
+                        and (sb_v.get("vocalness") or 0) > 0.5)
+            if both_pt or both_sec:
+                style = "long_fade"
 
         # House blends BREATHE, and real mixes cluster transition lengths
         # at MULTIPLES OF 32 BEATS (ISMIR20, 1557 mixes) - 64 for the
@@ -792,26 +846,39 @@ class Brain:
         ev = []
 
         if style == "long_fade":
+            # DIPPED HANDOFF, not a symmetric wash. This style exists
+            # precisely because the pair CANNOT be beat-matched (loose
+            # grid / tempo clash) - so a long full-range overlap is two
+            # unrelated songs fighting (measured ~half of all seams on an
+            # eclectic library; user-heard as 'terribly mixed'). Radio
+            # rule instead: the outgoing track is mostly GONE before the
+            # incoming one rises, with a deliberate low-level dip between
+            # chapters. Overlap where both are loud: ~2s instead of 12.
             S0 = clock_at(plan["out_s"])
-            dur = 12.0                       # deliberate clean fade, phrase-tight
+            fade_a = 5.5                     # outgoing exit ramp
+            lag_b = 1.5                      # incoming waits for the dip...
+            rise_b = 4.0                     # ...then arrives with intent
+            # (measured: lag 3.0/rise 6.0 dug an -22 dB hole when B's
+            # entry was a quiet intro - a dip is not dead air)
+            B0 = S0 + int(lag_b * RATE)
             ev += [
-                {"at": S0, "cmd": "cue", "deck": incoming,
+                {"at": B0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
-                {"at": S0, "cmd": "rate", "deck": incoming, "value": 1.0},
+                {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
                 # Full-range from the first beat - a fade is not a carve.
-                {"at": S0, "cmd": "eq", "deck": incoming, "low": 1.0,
+                {"at": B0, "cmd": "eq", "deck": incoming, "low": 1.0,
                  "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
+                {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
-                {"at": S0, "cmd": "start", "deck": incoming},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
-                 "ramp_s": dur},
+                {"at": B0, "cmd": "start", "deck": incoming},
+                {"at": B0, "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": rise_b},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": dur},
-                {"at": S0 + int((dur + 1) * RATE), "cmd": "stop",
+                 "ramp_s": fade_a},
+                {"at": S0 + int((fade_a + 1) * RATE), "cmd": "stop",
                  "deck": active},
             ]
-            return ev, S0 + int((dur + 1) * RATE), S0
+            return ev, S0 + int((fade_a + 1) * RATE), S0
 
         nb = plan["beats"]
         if style == "echo_out":

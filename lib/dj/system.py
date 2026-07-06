@@ -551,7 +551,7 @@ class DJSystem:
             requests, self._pending = self._pending, []
         for kind, val in requests:
             if kind == "theme":
-                self.brain.theme = get_theme(val)
+                self.brain.set_theme(get_theme(val))
                 self._theme_name = val
                 self._log({"event": "theme", "theme": val})
                 if self.state == "playing":
