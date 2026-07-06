@@ -2263,6 +2263,9 @@ class EnvironmentalSystem:
                                 if isinstance(self._dj_pending_setlist,
                                               tuple)
                                 else self._dj_pending_setlist),
+                    "setlist_mode": (self._dj_pending_setlist[1]
+                                     if isinstance(self._dj_pending_setlist,
+                                                   tuple) else "order"),
                     "setlists": self._dj_list_setlists(),
                     "music_dir": self._dj_music_dir_display(),
                     "error": self._dj_last_error}

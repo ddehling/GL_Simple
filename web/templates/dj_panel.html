@@ -449,7 +449,7 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             } else if (on) {
                 banner.className = "dj-banner on";
                 banner.textContent = "DJ live — driving the soundtrack"
-                    + (dj.setlist ? ` · setlist “${dj.setlist}” (${dj.setlist_remaining} left)` : " · free play");
+                    + (dj.setlist ? ` · setlist “${dj.setlist}” · ${dj.setlist_mode === "pool" ? "steer pool" : "in order"} (${dj.setlist_remaining} left)` : " · free play");
             } else {
                 banner.className = "dj-banner";
                 banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
@@ -462,6 +462,11 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             document.querySelectorAll(".theme-btn").forEach((b) =>
                 b.classList.toggle("on", b.dataset.theme === dj.theme));
             fillSetlists(dj.setlists, dj.setlist);
+            // Which load mode is ACTIVE right now lights up its button.
+            $("dj-setlist-load").classList.toggle(
+                "on", !!dj.setlist && dj.setlist_mode !== "pool");
+            $("dj-setlist-pool").classList.toggle(
+                "on", !!dj.setlist && dj.setlist_mode === "pool");
             if (!nudgeDragging && dj.energy_nudge != null)
                 nudge.value = dj.energy_nudge;
 
