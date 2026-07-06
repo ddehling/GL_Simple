@@ -320,14 +320,28 @@ class LibraryDB:
         return out
 
     def loops_for(self, track_id):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM loops WHERE track_id = ? ORDER BY score DESC",
-            (track_id,)).fetchall()]
+        out = []
+        for r in self.conn.execute(
+                "SELECT * FROM loops WHERE track_id = ? ORDER BY score DESC",
+                (track_id,)).fetchall():
+            d = dict(r)
+            for k in ("start_s", "score"):
+                if d.get(k) is None:
+                    d[k] = 0.0
+            out.append(d)
+        return out
 
     def mix_points_for(self, track_id):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM mix_points WHERE track_id = ?"
-            " ORDER BY kind, score DESC", (track_id,)).fetchall()]
+        out = []
+        for r in self.conn.execute(
+                "SELECT * FROM mix_points WHERE track_id = ?"
+                " ORDER BY kind, score DESC", (track_id,)).fetchall():
+            d = dict(r)
+            for k in ("time_s", "score"):
+                if d.get(k) is None:
+                    d[k] = 0.0
+            out.append(d)
+        return out
 
     def counts(self):
         row = self.conn.execute(
