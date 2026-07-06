@@ -241,7 +241,7 @@ check("dj drop-eta pre-arms the room",
       f"dest={state.get('_drop_dest')}")
 
 # ---- DJ swap choreography: the move matches the seam's character ---------
-def _handover(style, energy=0.5, room="club_runway"):
+def _handover(style, energy=0.5, room="club_runway", last_jump=-1e9):
     state, out = fresh(room)
     out['dj_active'] = True
     out['dj_swap_eta'] = 3.0
@@ -250,7 +250,7 @@ def _handover(style, energy=0.5, room="club_runway"):
     run(0.5, state, out, energy=energy)
     out['dj_swap_eta'] = None             # the handover landed
     out['dj_style'] = style
-    state['_last_jump_t'] = -1e9          # dwell satisfied
+    state['_last_jump_t'] = last_jump     # -1e9 = ancient (refresh due)
     _, reqs, _, durs = run(1.0, state, out, energy=energy)
     return reqs, durs
 
@@ -264,8 +264,15 @@ check("blend handover glides (no snap)",
       len(reqs) == 1 and durs[0] == 12.0,
       f"reqs={reqs} durs={durs}")
 
-reqs, durs = _handover('long_fade')
-check("long fade rides in place", len(reqs) == 0,
+reqs, durs = _handover('long_fade', last_jump=-58.0)
+check("fresh room: long fade rides in place", len(reqs) == 0,
+      f"reqs={reqs} durs={durs}")
+
+# STALE-ROOM REFRESH: heat fits, but the room hasn't changed in ages -
+# the next musical handover (even a fade) glides somewhere new.
+reqs, durs = _handover('long_fade', last_jump=-1e9)
+check("stale room: fade handover freshens with a glide",
+      len(reqs) == 1 and durs[0] == 12.0,
       f"reqs={reqs} durs={durs}")
 
 print()
