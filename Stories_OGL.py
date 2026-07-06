@@ -2199,6 +2199,7 @@ class EnvironmentalSystem:
                     mode = 'pool' if action == 'setlist_pool' else 'order'
                     name = str(arg or '') or None
                     self._dj_pending_setlist = (name, mode) if name else None
+                    self._dj_idle_vocab = (0.0, [])   # re-scope the chips
                     if self._dj is not None and self._dj.active:
                         self._dj.load_setlist(str(arg or ''), mode=mode)
                 elif action in ('nudge', 'arc') and (
@@ -2306,12 +2307,30 @@ class EnvironmentalSystem:
                 from lib.dj import resolve_music_dir
                 db = LibraryDB(resolve_music_dir(
                     self.dj_cfg.get('music_dir', '')))
+                # An armed setlist scopes the chips to ITS songs, so the
+                # prep page steers with the vocabulary of what will play.
+                scope = None
+                if self._dj_pending_setlist:
+                    nm = (self._dj_pending_setlist[0]
+                          if isinstance(self._dj_pending_setlist, tuple)
+                          else self._dj_pending_setlist)
+                    try:
+                        from lib.dj.setlist import get_setlist
+                        sl = get_setlist(db, name=nm)
+                        if sl:
+                            scope = {e['track_id'] for e in sl['entries']}
+                    except Exception:
+                        pass
                 user, auto = {}, {}
                 for r in db.conn.execute("SELECT track_id, tag FROM tags"):
+                    if scope is not None and r['track_id'] not in scope:
+                        continue
                     user[r['tag']] = user.get(r['tag'], 0) + 1
                 for r in db.conn.execute(
-                        "SELECT auto_tags FROM tracks WHERE error IS NULL"
-                        " AND missing = 0"):
+                        "SELECT id, auto_tags FROM tracks WHERE error"
+                        " IS NULL AND missing = 0"):
+                    if scope is not None and r['id'] not in scope:
+                        continue
                     for t in _json.loads(r['auto_tags'] or '[]'):
                         auto[t] = auto.get(t, 0) + 1
                 db.close()

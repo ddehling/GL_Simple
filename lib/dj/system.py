@@ -172,10 +172,24 @@ class DJSystem:
             per_track = {}
             for r in self.db.conn.execute("SELECT track_id, tag FROM tags"):
                 per_track.setdefault(r["track_id"], []).append(r["tag"])
+            # A loaded setlist narrows the night to ITS songs - the
+            # steering chips should speak that subset's vocabulary, not
+            # the whole library's (tags absent from the list are dead
+            # controls). Counts recount inside the list; falls back to
+            # the full library when nothing is loaded.
+            scope = None
+            if self.brain.pool_ids is not None:
+                scope = set(self.brain.pool_ids)
+            elif self._setlist_queue:
+                scope = {e["track_id"] for e in self._setlist_queue}
+            if scope is not None and self.current is not None:
+                scope.add(self.current.id)
             user_counts = {}
             auto_counts = {}
             for t in self.brain.library:
                 t.user_tags = per_track.get(t.id, [])
+                if scope is not None and t.id not in scope:
+                    continue
                 for tag in t.user_tags:
                     user_counts[tag] = user_counts.get(tag, 0) + 1
                 for tag in t.auto_tags:
@@ -625,6 +639,7 @@ class DJSystem:
                     self._log({"event": "setlist",
                                "name": self._setlist_name, "mode": mode,
                                "tracks": len(sl["entries"]) if sl else 0})
+                    self._refresh_tags()
                     if self.state == "playing":
                         self.next_track = None      # replan from the list
                         self.plan = None
@@ -787,6 +802,22 @@ class DJSystem:
                 pre = [by_id[h["id"]] for h in kept]
                 kept += self.brain.plan_horizon(
                     tail, arc_at, tail.bpm, n=need, preplayed=pre)
+            if self.brain.pool_ids is not None and len(kept) < 3:
+                # From an off-pool (or tempo-remote) current track the
+                # planner may reach nothing - but the pool WILL play,
+                # via the dipped-fade fallback. Show it.
+                have = {h["id"] for h in kept}
+                arc = self.arc_target()
+                rest = sorted((t for t in self.brain.library
+                               if t.id in self.brain.pool_ids
+                               and t.id not in have),
+                              key=lambda t: abs(t.energy_proxy() - arc))
+                for t in rest[:3 - len(kept)]:
+                    kept.append({"id": t.id, "title": t.title,
+                                 "artist": t.artist, "bpm": t.bpm,
+                                 "energy": t.energy_proxy(),
+                                 "tags": t.all_tags[:4],
+                                 "why": "setlist pool (fade in)"})
             self._horizon = kept
             self._annotate_horizon(self._horizon)
             if self.next_track is not None and self._horizon:
