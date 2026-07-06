@@ -52,7 +52,14 @@ SECTION_COLORS = {
     "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
     "breakdown": QColor(90, 70, 130),
 }
-COLS = ["title", "artist", "bpm", "key", "dur", "tags", "structure"]
+COLS = ["title", "artist", "bpm", "key", "dur", "energy", "tags",
+        "structure"]
+
+
+def energy_glyph(e):
+    """Compact energy readout: number + a little bar, sorts as text too."""
+    e = max(0.0, min(1.0, float(e or 0.0)))
+    return f"{e:.2f} " + chr(9601 + int(e * 7 + 0.5))   # 0.00▁ .. 1.00█
 FOLDER_ROLE = Qt.ItemDataRole.UserRole + 1     # folder row -> [TrackInfo]
 
 
@@ -146,6 +153,8 @@ class LibraryTreeModel(QAbstractItemModel):
             if c == 4:
                 return f"{int(t.duration_s // 60)}:{int(t.duration_s % 60):02d}"
             if c == 5:
+                return energy_glyph(t.energy_proxy())
+            if c == 6:
                 return " ".join(t.all_tags)
         if role == Qt.ItemDataRole.UserRole:
             return t
@@ -299,8 +308,8 @@ class LibraryTab(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setItemDelegateForColumn(6, StripDelegate())
-        for i, w in enumerate((250, 120, 52, 44, 50, 150, 260)):
+        self.table.setItemDelegateForColumn(7, StripDelegate())
+        for i, w in enumerate((250, 120, 52, 44, 50, 62, 150, 260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
@@ -954,7 +963,8 @@ class SetTab(QWidget):
         tag = "⚓ " if e["pin_type"] == "anchor" else "• "
         pin = (f"  @{e['target_offset_min']:.0f}min"
                if e.get("target_offset_min") else "")
-        bpm = f"  ({t.bpm:.0f} {t.camelot})" if t else ""
+        bpm = (f"  ({t.bpm:.0f} {t.camelot}  "
+               f"{energy_glyph(t.energy_proxy())})" if t else "")
         return tag + name + bpm + pin
 
     def _rebuild(self):
