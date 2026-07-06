@@ -109,6 +109,7 @@ class DJSystem:
             return False
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
+        self._by_id = {t.id: t for t in lib}
         # Remember what recently played ACROSS restarts - with a cold
         # recency memory every night opened with the same tracks in the
         # same order.
@@ -363,6 +364,40 @@ class DJSystem:
                                      0.6 * (target - self._played_energy_ema)))
         return max(0.0, min(1.0, target))
 
+    def live_energy(self):
+        """Ground-truth energy of what's playing RIGHT NOW, 0..1.
+
+        The DSP estimate downstream (audio_signals) is built on AGC bands
+        that hover near a constant during any steady music, so the club
+        read every track as 'medium'. The DJ doesn't have to guess: each
+        track's cross-track level (energy_proxy) shaped by its own 2 Hz
+        energy curve at the playhead, gain-weighted across live decks, IS
+        the floor's energy - breakdowns dip, drops slam, chill is chill.
+        Returns None when nothing useful is playing (caller falls back to
+        the measured signal).
+        """
+        tel = self.submix.telemetry or {}
+        by_id = getattr(self, "_by_id", None) or {}
+        num = den = 0.0
+        for d in (tel.get("decks") or {}).values():
+            g = float(d.get("gain") or 0.0)
+            if not d.get("playing") or g <= 0.02:
+                continue
+            t = by_id.get(d.get("track_id"))
+            if t is None:
+                continue
+            shape = 1.0
+            curve = t.row.get("energy_curve") or []
+            if curve:
+                i = float(d.get("time_s") or 0.0) * 2.0
+                i0 = max(0, min(int(i), len(curve) - 1))
+                i1 = min(i0 + 1, len(curve) - 1)
+                f = i - i0
+                shape = float(curve[i0]) * (1.0 - f) + float(curve[i1]) * f
+            num += g * max(0.0, min(1.0, t.energy_proxy() * shape))
+            den += g
+        return (num / den) if den > 0.0 else None
+
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
         eta = None
@@ -385,6 +420,7 @@ class DJSystem:
         return {"dj_active": self._running,
                 "dj_arc_phase": self.arc_progress(),
                 "dj_arc_heat": self.arc_target(),
+                "dj_energy": self.live_energy(),
                 "dj_next_drop_eta": eta,
                 "dj_blend_eta": eta,
                 "dj_swap_eta": swap_eta,

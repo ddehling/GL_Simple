@@ -295,9 +295,18 @@ class AudioStructure:
             hit = max(0.0, min(1.0, (raw_v - PUNCH_FLOOR) / PUNCH_SPAN))
             setattr(self, attr, max(getattr(self, attr) * rel, hit))
 
-        # --- Slow overall energy (2.5s baseline -> volume independent) -----
+        # --- Slow overall energy (2.5s baseline x absolute level) ----------
+        # The AGC-normalized mean hovers at ~1.0 during ANY steady music, so
+        # on its own it reads chill and peak both as ~0.5 - the club could
+        # never tell them apart (user-visible: rooms didn't react to the
+        # set's energy). Scale it by how loud the room actually is vs its
+        # own recent peak (the gate's ratio, volume-calibrated by the 60s
+        # peak decay): full-tilt music ~1.0, laid-back passages ~0.7,
+        # breakdowns ~0.55 - honest dynamic range for the director's
+        # percentile calibration to chew on.
         ae = 1.0 - math.exp(-dt / ENERGY_TAU)
-        energy_now = gate * float(np.clip(np.mean(lrow) * 0.5, 0.0, 1.0))
+        amp = 0.4 + 0.6 * min(ratio * 1.25, 1.0)
+        energy_now = gate * amp * float(np.clip(np.mean(lrow) * 0.5, 0.0, 1.0))
         self._energy += (energy_now - self._energy) * ae
         self._energy_hist.append((self._t, self._energy))
 

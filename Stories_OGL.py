@@ -2021,6 +2021,21 @@ class EnvironmentalSystem:
         state["high_punch"] = sig["high_punch"]
         state["audio_punch"] = sig["punch"]
         state["audio_energy"] = sig["energy"]
+        # When the autonomous DJ is playing, it KNOWS the energy of what's
+        # on the decks (per-track level x playhead energy curve) - the DSP
+        # estimate reads every steady track as ~medium (AGC bands hover at
+        # 1.0), which left the club unable to tell chill from peak. Ground
+        # truth wins; the DSP value remains the mic-mode fallback. Smoothed
+        # here (~2s) so the 2 Hz curve steps don't twitch the visuals.
+        dj_e = state.get("dj_energy")
+        if state.get("dj_active") and dj_e is not None:
+            prev = getattr(self, "_dj_energy_sm", None)
+            k = 1.0 - float(np.exp(-(audio_dt or 0.025) / 2.0))
+            sm = dj_e if prev is None else prev + (float(dj_e) - prev) * k
+            self._dj_energy_sm = sm
+            state["audio_energy"] = sm
+        else:
+            self._dj_energy_sm = None
         state["build_level"] = sig["build"]
         state["drop"] = sig["drop"]
         state["drop_decay"] = sig["drop_decay"]
