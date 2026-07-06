@@ -692,10 +692,12 @@ class AnalysisTab(QWidget):
             f"{track.camelot}  {int(track.duration_s // 60)}:"
             f"{int(track.duration_s % 60):02d}   tags: "
             f"{' '.join(track.all_tags) or '-'}")
+        def _n(v):
+            return float(v) if v is not None else 0.0
         secs = "\n".join(
-            f"  {s['kind']:9s} {s['start_s']:6.1f}-{s['end_s']:6.1f}s  "
-            f"energy {s['energy']:.2f}  busy {s['busyness']:.2f}  "
-            f"vocal {s['vocalness']:.2f}  rep {s['repetitiveness']:.2f}"
+            f"  {s['kind']:9s} {_n(s['start_s']):6.1f}-{_n(s['end_s']):6.1f}s  "
+            f"energy {_n(s['energy']):.2f}  busy {_n(s['busyness']):.2f}  "
+            f"vocal {_n(s['vocalness']):.2f}  rep {_n(s['repetitiveness']):.2f}"
             for s in track.sections)
         self.detail.setPlainText(
             f"axes: {json.dumps(axes)}   live: bpm {lc.get('live_bpm')} "
