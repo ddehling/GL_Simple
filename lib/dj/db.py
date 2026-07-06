@@ -299,10 +299,25 @@ class LibraryDB:
             q += " WHERE " + " AND ".join(conds)
         return [self._hydrate(r) for r in self.conn.execute(q).fetchall()]
 
+    _SEC_NUM = ("start_s", "end_s", "energy", "bass_share", "mid_share",
+                "high_share", "rhythm_density", "repetitiveness",
+                "busyness", "vocalness", "boundary_strength")
+
     def sections_for(self, track_id):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM sections WHERE track_id = ? ORDER BY start_s",
-            (track_id,)).fetchall()]
+        # Sanitize on READ: a handful of real-library tracks carry NULL
+        # section metrics (edge-case analyses); every consumer does math
+        # on these fields and None crashes them (drop_moments took down
+        # tag recalibration for a whole 580-track scan).
+        out = []
+        for r in self.conn.execute(
+                "SELECT * FROM sections WHERE track_id = ? ORDER BY start_s",
+                (track_id,)).fetchall():
+            d = dict(r)
+            for k in self._SEC_NUM:
+                if d.get(k) is None:
+                    d[k] = 0.0
+            out.append(d)
+        return out
 
     def loops_for(self, track_id):
         return [dict(r) for r in self.conn.execute(
