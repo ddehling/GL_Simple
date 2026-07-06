@@ -405,6 +405,10 @@ class DJSystem:
             "horizon": list(self._horizon),
             "history": self._history[-40:],
             "arc_waypoints": list(self._arc_waypoints),
+            "arc_cycle_s": (self.night_hours * 3600.0
+                            if (self.brain and
+                                self.brain.theme.arc == "all_night")
+                            else SET_CYCLE_S),
             "arc_curve": [round(max(0.0, min(1.0, self._arc_base(i / 24.0))),
                           3) for i in range(25)],
             "track_map": self._track_map(),
@@ -643,6 +647,20 @@ class DJSystem:
         try:
             self._horizon = self.brain.plan_horizon(
                 self.current, arc_at, self.current.bpm, n=3)
+            # PROJECTED TIMELINE: when each queued track will actually
+            # start (seconds from now) and how long it should run, so the
+            # night chart can place them time-true instead of decoratively.
+            pos = self._pos_s()
+            played = (self.submix.clock - self._started_clock) / RATE
+            if self.plan and pos is not None:
+                t0 = max(self.plan["out_s"] - pos, 0.0)
+            else:
+                t0 = max(self._exit_played - played, 30.0)
+            per_play = min(max(self.brain.theme.min_play_s, 150.0), 300.0)
+            for h in self._horizon:
+                h["eta_s"] = round(t0, 1)
+                h["play_s"] = round(per_play, 1)
+                t0 += per_play
             if self.next_track is not None and self._horizon:
                 # the committed pick leads the horizon
                 self._horizon[0] = {"id": self.next_track.id,
