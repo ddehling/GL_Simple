@@ -871,13 +871,25 @@ class Brain:
             # incoming one rises, with a deliberate low-level dip between
             # chapters. Overlap where both are loud: ~2s instead of 12.
             S0 = clock_at(plan["out_s"])
-            fade_a = 5.5                     # outgoing exit ramp
-            lag_b = 1.5                      # incoming waits for the dip...
-            rise_b = 4.0                     # ...then arrives with intent
-            # (measured: lag 3.0/rise 6.0 dug an -22 dB hole when B's
-            # entry was a quiet intro - a dip is not dead air)
-            B0 = S0 + int(lag_b * RATE)
+            # Shape (v3): the outgoing song RECEDES to ~half level first
+            # (still carrying the room), the incoming arrives underneath
+            # over ~9s, and only then does the outgoing leave. v2's
+            # 5.5s-out/4s-in handoff was heard as songs slamming into
+            # each other - at ~half of all seams on an eclectic library
+            # the fade IS the mix, it has to breathe. v1's symmetric 12s
+            # full-level wash (mud) and v2's -22dB hole (lag 3/rise 6
+            # into a quiet intro) both stay dead: A holds 0.45 through
+            # B's rise, so the room never empties and never doubles.
+            # The shape lives mostly BEFORE the out point: past out_s the
+            # outgoing track's own arrangement often collapses (that IS
+            # the boundary), so v3's hold-A-past-the-seam dug a -23 dB
+            # hole. Recede through A's final LOUD phrase instead, get B
+            # half-up by the boundary, and let A leave just after it.
+            A0 = max(S0 - int(8.0 * RATE), now_guard)
+            B0 = max(S0 - int(4.0 * RATE), A0)
             ev += [
+                {"at": A0, "cmd": "gain", "deck": active, "value": 0.5,
+                 "ramp_s": 8.0},
                 {"at": B0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
                 {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
@@ -887,14 +899,17 @@ class Brain:
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
-                {"at": B0, "cmd": "gain", "deck": incoming, "value": 1.0,
-                 "ramp_s": rise_b},
+                # Arrive in two stages: present quickly, full gently.
+                {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.6,
+                 "ramp_s": 3.5},
+                {"at": B0 + int(3.5 * RATE), "cmd": "gain",
+                 "deck": incoming, "value": 1.0, "ramp_s": 8.0},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": fade_a},
-                {"at": S0 + int((fade_a + 1) * RATE), "cmd": "stop",
+                 "ramp_s": 5.0},
+                {"at": S0 + int(6.0 * RATE), "cmd": "stop",
                  "deck": active},
             ]
-            return ev, S0 + int((fade_a + 1) * RATE), S0
+            return ev, S0 + int(6.0 * RATE), A0
 
         nb = plan["beats"]
         if style == "echo_out":
