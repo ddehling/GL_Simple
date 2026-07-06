@@ -2407,12 +2407,10 @@ class EnvironmentalSystem:
             night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
             stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)),
             record=bool(self.dj_cfg.get("record", False)))
-        if not self._dj.start():
-            self._dj_last_error = self._dj.last_error or "DJ failed to start"
-            self._dj = None
-            print(f"[DJ] start failed: {self._dj_last_error}")
-            return
-        self._dj_last_error = ""
+        # Armed idle steering queues BEFORE start(): start() spawns the
+        # step thread, and its very first step picks the OPENING track -
+        # queuing after it raced that pick (user-heard: a pool night
+        # opened with an off-pool song, then corrected).
         if self._dj_pending_setlist:
             name, mode = (self._dj_pending_setlist
                           if isinstance(self._dj_pending_setlist, tuple)
@@ -2424,6 +2422,12 @@ class EnvironmentalSystem:
             self._dj.set_arc_waypoints(self._dj_pending_arc)
         if self._dj_pending_nudge:
             self._dj.set_energy_nudge(self._dj_pending_nudge)
+        if not self._dj.start():
+            self._dj_last_error = self._dj.last_error or "DJ failed to start"
+            self._dj = None
+            print(f"[DJ] start failed: {self._dj_last_error}")
+            return
+        self._dj_last_error = ""
         # The DJ takes the soundtrack: silence state ambient, point the
         # analyzer at the engine's own output.
         try:
