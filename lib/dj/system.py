@@ -224,8 +224,16 @@ class DJSystem:
                 self.step()
             except Exception as e:
                 self.last_error = f"{type(e).__name__}: {e}"
+                self._error_t = time.time()
                 import traceback
                 traceback.print_exc()
+                try:
+                    with open(os.path.join(self.log_dir, "dj_error.log"),
+                              "a") as f:
+                        f.write(time.strftime("%Y-%m-%d %H:%M:%S ")
+                                + traceback.format_exc() + chr(10))
+                except OSError:
+                    pass
             time.sleep(0.4)
 
     # -- control surface ---------------------------------------------------------
@@ -423,7 +431,9 @@ class DJSystem:
             "night_hours": self.night_hours,
             "decks": self._deck_brief(tel),
             "deck_telemetry": tel,
-            "error": self.last_error,
+            # A transient step error shouldn't scare the banner forever.
+            "error": self.last_error
+            if time.time() - getattr(self, "_error_t", 0) < 60.0 else "",
         }
 
     def _deck_brief(self, tel):
