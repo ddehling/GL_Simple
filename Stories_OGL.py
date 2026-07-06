@@ -2039,6 +2039,59 @@ class EnvironmentalSystem:
         state["build_level"] = sig["build"]
         state["drop"] = sig["drop"]
         state["drop_decay"] = sig["drop_decay"]
+        # DJ ground-truth drops: the decks KNOW when a drop section lands
+        # (published as a wall-time stamp). Fire the same drop/drop_decay
+        # signals the DSP detector would - hard sets never give the DSP
+        # path the quiet episode it needs to arm, so without this the
+        # club sat still through the hardest-hitting moments.
+        ddt = state.get("dj_drop_t")
+        if (state.get("dj_active") and ddt
+                and ddt != getattr(self, "_dj_drop_seen", None)):
+            self._dj_drop_seen = ddt
+            self._dj_drop_env = 1.0
+            state["drop"] = True
+        env = getattr(self, "_dj_drop_env", 0.0)
+        if env > 0.001:
+            state["drop_decay"] = max(state["drop_decay"], env)
+            self._dj_drop_env = env * float(
+                np.exp(-(audio_dt or 0.025) / 0.35))
+        # GROUND-TRUTH BEAT: while the DJ plays, the audible deck's stored
+        # grid IS the beat - sample-tight bpm/phase/bar/phrase for every
+        # beat-synced shader, where the DSP detector on the mix lags and
+        # quantizes ('doesn't respond to beats in a clear manner' - user).
+        # Punches get a grid-pulse FLOOR scaled by the section's bass
+        # share: relentless hard sets flatten the AGC punch envelopes
+        # exactly when the floor hits hardest.
+        lb = None
+        if self._dj is not None and self._dj.active:
+            try:
+                lb = self._dj.live_beat()
+            except Exception:
+                lb = None
+        if lb is not None:
+            state["bpm"] = lb["bpm"]
+            ph = lb["phase"]
+            prev_ph = getattr(self, "_dj_beat_prev", None)
+            onset = prev_ph is not None and ph < prev_ph - 0.5
+            self._dj_beat_prev = ph
+            if onset:
+                self._dj_beat_env = 1.0
+            benv = getattr(self, "_dj_beat_env", 0.0)
+            state["beat"] = bool(state["beat"]) or onset
+            state["beat_decay"] = max(state["beat_decay"], benv)
+            state["beat_phase"] = ph
+            state["bar_phase"] = lb["bar_phase"]
+            state["phrase_phase"] = lb["phrase_phase"]
+            state["beat_confidence"] = max(state["beat_confidence"], 0.95)
+            pulse = benv * min(1.0, lb["bass_share"] * 2.5)
+            state["beat_intensity"] = max(state["beat_intensity"], pulse)
+            state["bass_punch"] = max(state["bass_punch"], pulse)
+            state["audio_punch"] = max(state["audio_punch"], pulse)
+            self._dj_beat_env = benv * float(
+                np.exp(-(audio_dt or 0.025) / 0.18))
+        else:
+            self._dj_beat_prev = None
+            self._dj_beat_env = 0.0
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
         state["rhythm_density"] = sig["density"]

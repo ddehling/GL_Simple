@@ -434,7 +434,40 @@ class DJSystem:
             return None
         lo = getattr(self, "_energy_lo", 0.0)
         hi = getattr(self, "_energy_hi", 1.0)
-        return max(0.0, min(1.0, (num / den - lo) / max(hi - lo, 1e-6)))
+        # Floor: percentile expansion sent soft stretches to 0.0 and the
+        # room went DARK (user). Playing music is never less than a low
+        # simmer.
+        return max(0.12, min(1.0, (num / den - lo) / max(hi - lo, 1e-6)))
+
+    def live_beat(self):
+        """Ground-truth beat state of the audible deck, computed from the
+        stored grid at the live playhead - sample-tight where the DSP
+        detector on the mix is laggy/quantized. Cheap enough to call per
+        render frame. None when nothing usable is playing."""
+        tel = self.submix.telemetry or {}
+        d = (tel.get("decks") or {}).get(self.active_deck)
+        t = self.current
+        if not d or t is None or not d.get("playing") or not d.get("ready"):
+            return None
+        pos = float(d.get("time_s") or 0.0)
+        rate = max(float(d.get("rate") or 1.0), 1e-6)
+        gseg = None
+        for g in (t.grid or []):
+            if pos >= float(g.get("start_s", 0.0)):
+                gseg = g
+        per = float((gseg or {}).get("period_s") or t.period_s or 0.0)
+        if per <= 0.0:
+            return None
+        fb = float((gseg or {}).get("first_beat_s") or 0.0)
+        idx = (pos - fb) / per
+        off = int(t.row.get("downbeat_offset") or 0)
+        pb = int(t.phrase_beats or 32)
+        sec = t.section_at(pos) or {}
+        return {"bpm": 60.0 * rate / per,
+                "phase": float(d.get("beat_phase") or 0.0),
+                "bar_phase": ((idx - off) % 4.0) / 4.0,
+                "phrase_phase": ((idx - off) % pb) / float(pb),
+                "bass_share": float(sec.get("bass_share") or 0.33)}
 
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
@@ -455,11 +488,39 @@ class DJSystem:
         if m_clk > self.submix.clock:
             m_eta = (m_clk - self.submix.clock) / RATE
             eta = m_eta if eta is None else min(eta, m_eta)
+        # GROUND-TRUTH MUSICAL DROPS: the DB knows every drop section of
+        # every track. The DSP drop detector needs a QUIET episode to arm
+        # (by design, so fades can't fake drops) - a relentless hard set
+        # never gives it one, so the club barely slammed all night
+        # (user-heard). Publish the next drop's ETA for visual pre-arm
+        # and stamp the moment the playhead crosses one.
+        drop_eta = None
+        pos = self._pos_s()
+        if self.current is not None and pos is not None:
+            cid, moments = getattr(self, "_drops_cache", (None, []))
+            if cid != self.current.id:
+                from lib.dj.features import drop_moments
+                moments = drop_moments(self.current.sections)
+                self._drops_cache = (self.current.id, moments)
+            prev_id, prev_pos = getattr(self, "_drop_scan_prev", (None, None))
+            for st in moments:
+                d = st - pos
+                if 0.0 < d < 20.0 and (drop_eta is None or d < drop_eta):
+                    drop_eta = d
+                if (prev_id == self.current.id and prev_pos is not None
+                        and prev_pos < st <= pos
+                        and pos - prev_pos < 2.0):     # not a seek jump
+                    self._dj_drop_wall = time.time()
+            self._drop_scan_prev = (self.current.id, pos)
+        ndrop = eta
+        if drop_eta is not None:
+            ndrop = drop_eta if ndrop is None else min(ndrop, drop_eta)
         return {"dj_active": self._running,
                 "dj_arc_phase": self.arc_progress(),
                 "dj_arc_heat": self.arc_target(),
                 "dj_energy": self.live_energy(),
-                "dj_next_drop_eta": eta,
+                "dj_drop_t": getattr(self, "_dj_drop_wall", None),
+                "dj_next_drop_eta": ndrop,
                 "dj_blend_eta": eta,
                 "dj_swap_eta": swap_eta,
                 "dj_style": self.plan["style"] if self.plan else None}

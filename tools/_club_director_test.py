@@ -251,6 +251,7 @@ def _handover(style, energy=0.5, room="club_runway", last_jump=-1e9):
     out['dj_swap_eta'] = None             # the handover landed
     out['dj_style'] = style
     state['_last_jump_t'] = last_jump     # -1e9 = ancient (refresh due)
+    state['_room_since'] = last_jump      # room age drives the refresh
     _, reqs, _, durs = run(1.0, state, out, energy=energy)
     return reqs, durs
 
