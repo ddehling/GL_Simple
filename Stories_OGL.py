@@ -2026,11 +2026,11 @@ class EnvironmentalSystem:
         # estimate reads every steady track as ~medium (AGC bands hover at
         # 1.0), which left the club unable to tell chill from peak. Ground
         # truth wins; the DSP value remains the mic-mode fallback. Smoothed
-        # here (~2s) so the 2 Hz curve steps don't twitch the visuals.
+        # here (~0.8s) - just enough to hide the 2 Hz curve steps.
         dj_e = state.get("dj_energy")
         if state.get("dj_active") and dj_e is not None:
             prev = getattr(self, "_dj_energy_sm", None)
-            k = 1.0 - float(np.exp(-(audio_dt or 0.025) / 2.0))
+            k = 1.0 - float(np.exp(-(audio_dt or 0.025) / 0.8))
             sm = dj_e if prev is None else prev + (float(dj_e) - prev) * k
             self._dj_energy_sm = sm
             state["audio_energy"] = sm

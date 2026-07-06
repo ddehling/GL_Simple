@@ -895,6 +895,14 @@ class SetTab(QWidget):
         rm_btn = QPushButton("Remove selected (Del)")
         rm_btn.clicked.connect(self._remove_entry)
         rrow.addWidget(rm_btn)
+        dup_btn = QPushButton("Remove duplicates")
+        dup_btn.setToolTip("Detects the same song appearing twice - "
+                           "including byte-identical copies living in "
+                           "other directories (content hash) and re-rips "
+                           "(same title/artist, similar length). Keeps "
+                           "the anchored or first copy.")
+        dup_btn.clicked.connect(self.remove_duplicates)
+        rrow.addWidget(dup_btn)
         rrow.addStretch(1)
         left.addLayout(rrow)
         arow = QHBoxLayout()
@@ -985,6 +993,83 @@ class SetTab(QWidget):
             self.entries.pop(i)
             self._rebuild()
             self.recompile()
+
+    def _dup_keys(self, t):
+        """Identity keys for duplicate detection. A byte-identical copy
+        in another directory shares the scan's content hash; a re-rip or
+        re-encode falls back to normalized title/artist plus a coarse
+        length bucket (so a radio edit never collides with the extended
+        mix of the same name)."""
+        keys = []
+        h = ((t.row.get("content_hash") or "").strip()
+             if getattr(t, "row", None) else "")
+        if h:
+            keys.append(("h", h))
+        ti = (t.title or "").strip().lower()
+        ar = (t.artist or "").strip().lower()
+        if ti:
+            keys.append(("m", ti, ar, int((t.duration_s or 0.0) // 8)))
+        return keys
+
+    def remove_duplicates(self):
+        by_id = {t.id: t for t in self.planner.library}
+        # Union entries that share ANY identity key.
+        owner = {}                    # key -> first entry index
+        parent = list(range(len(self.entries)))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i, e in enumerate(self.entries):
+            t = by_id.get(e["track_id"])
+            keys = self._dup_keys(t) if t is not None else []
+            keys.append(("id", e["track_id"]))     # literal repeats
+            for k in keys:
+                if k in owner:
+                    parent[find(i)] = find(owner[k])
+                else:
+                    owner[k] = i
+        groups = {}
+        for i in range(len(self.entries)):
+            groups.setdefault(find(i), []).append(i)
+        drops = []
+        for idxs in groups.values():
+            if len(idxs) < 2:
+                continue
+            keep = next((i for i in idxs
+                         if self.entries[i]["pin_type"] == "anchor"),
+                        idxs[0])
+            drops.extend(i for i in idxs if i != keep)
+        if not drops:
+            self.status.setText("No duplicates found - every entry is a "
+                                "distinct song.")
+            return
+        drops.sort()
+
+        def _title(i):
+            t = by_id.get(self.entries[i]["track_id"])
+            path = (t.row.get("path", "") if t is not None
+                    and getattr(t, "row", None) else "")
+            return (t.title if t else f"track {self.entries[i]['track_id']}"
+                    ) + (f"   [{path}]" if path else "")
+        preview = "\n".join(_title(i) for i in drops[:12])
+        if len(drops) > 12:
+            preview += f"\n... and {len(drops) - 12} more"
+        if QMessageBox.question(
+                self, "Remove duplicates",
+                f"Remove {len(drops)} duplicate entr"
+                f"{'y' if len(drops) == 1 else 'ies'}?\n\n{preview}")                 != QMessageBox.StandardButton.Yes:
+            return
+        for i in reversed(drops):
+            self.entries.pop(i)
+        self._rebuild()
+        self.recompile()
+        self.status.setText(f"Removed {len(drops)} duplicate"
+                            f"{'' if len(drops) == 1 else 's'} - kept the "
+                            "anchored/first copy of each song.")
 
     # -- plan mode ---------------------------------------------------------------
     def suggest(self):
