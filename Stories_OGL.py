@@ -2206,6 +2206,8 @@ class EnvironmentalSystem:
                         self._dj.seam_feedback(bool(arg))
                     elif action == 'arc':
                         self._dj.set_arc_waypoints(arg or [])
+                    elif action == 'moment':
+                        self._dj.moment()
                     elif action == 'mix_now':
                         self._dj.mix_now()
             except Exception as e:
@@ -2229,6 +2231,19 @@ class EnvironmentalSystem:
                     "music_dir": self._dj_music_dir_display(),
                     "error": self._dj_last_error}
             self.scheduler.state['dj_active'] = False
+        # DELTA payloads: heavy blobs ship only when they change (weak
+        # venue Wi-Fi shouldn't carry an identical arc curve at 5 Hz).
+        import json as _json
+        if not hasattr(self, '_dj_sent'):
+            self._dj_sent = {}
+        for k in ('arc_curve', 'track_map', 'next_map', 'horizon',
+                  'history', 'tags', 'themes', 'setlists'):
+            if k in info:
+                h = hash(_json.dumps(info[k], sort_keys=True, default=str))
+                if self._dj_sent.get(k) == h:
+                    del info[k]
+                else:
+                    self._dj_sent[k] = h
         self.web_controller.set('dj_info', info)
 
     def _dj_list_setlists(self):

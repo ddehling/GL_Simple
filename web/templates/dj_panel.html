@@ -116,6 +116,7 @@
             <input type="range" id="dj-scrub" min="0" max="1000" value="0"
                    style="width:100%; margin-top:4px">
             <div class="transport" style="margin-top:6px">
+                <button class="btn go" id="dj-moment">✦ MOMENT</button>
                 <button class="btn" id="dj-restart">⟲ Start</button>
                 <button class="btn" id="dj-back">−30s</button>
                 <button class="btn" id="dj-fwd">+30s</button>
@@ -123,7 +124,19 @@
                 <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
             </div>
             <div class="badges" id="dj-badges"></div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                <span class="now-sub">out</span>
+                <div style="flex:1;height:8px;background:#222;border-radius:4px;overflow:hidden">
+                    <div id="dj-level" style="height:100%;width:0%;background:linear-gradient(90deg,#3a6,#cc4)"></div>
+                </div>
+                <span class="now-sub">vol</span>
+                <input type="range" id="dj-vol" min="0" max="2" step="0.05"
+                       value="1" style="width:110px">
+            </div>
             <div class="deckrow" id="dj-decks"></div>
+            <canvas id="dj-next-strip" height="30" class="hidden"
+                    style="width:100%;display:block;border-radius:6px;
+                           background:#141419;margin-top:6px"></canvas>
             <div class="next-box hidden" id="dj-next-box">
                 <div class="now-sub">UP NEXT <span id="dj-count"
                      style="color:#8cf;font-weight:bold"></span></div>
@@ -147,6 +160,7 @@
             <canvas id="dj-arc-canvas" height="110"
                     style="width:100%;display:block;border-radius:8px;
                            background:#15151c;touch-action:none"></canvas>
+            <div id="dj-queue" style="font-size:0.8em;margin:4px 0"></div>
             <div class="bias-labels"><span>warm-up - drag to steer</span>
                 <span>peak</span>
                 <span><a href="#" id="dj-arc-reset"
@@ -228,12 +242,56 @@
             }
             emit("flavor", {prefer_tags: prefer, avoid_tags: avoid});
         }
+        const TAG_GROUPS = [
+            ["yours", null],
+            ["texture", ["bass-heavy","melodic","bright","warm","percussive",
+                         "sparse","hard","gentle"]],
+            ["structure", ["drops","no-drops","long-intro","breakdowny",
+                           "loopable","epic","short"]],
+            ["dynamics", ["dynamic","steady","driving","mellow","peaky",
+                          "hypnotic"]],
+            ["voice/key", ["vocals","vocal-heavy","instrumental","minor",
+                           "major"]],
+            ["tempo", ["slow","fast"]]];
         function buildFlavor(tags) {
             const key = (tags || []).map((t) => t[0]).join("|");
             if ($("dj-flavor").dataset.have === key) return;
             $("dj-flavor").dataset.have = key;
             $("dj-flavor").innerHTML = "";
-            (tags || []).forEach(([tag, n, isUser]) => {
+            const clr = document.createElement("button");
+            clr.className = "theme-btn"; clr.textContent = "clear all";
+            clr.style.borderColor = "#a66";
+            clr.onclick = () => {
+                for (const k of Object.keys(flavorState)) flavorState[k] = 0;
+                for (const b of document.querySelectorAll(
+                        "#dj-flavor .theme-btn[data-tag]")) {
+                    b.style.background = ""; }
+                sendFlavor();
+            };
+            $("dj-flavor").appendChild(clr);
+            const rest = new Set((tags || []).map((t) => t[0]));
+            const ordered = [];
+            for (const [label, names] of TAG_GROUPS) {
+                const grp = (tags || []).filter(([tag, n, isUser]) =>
+                    names === null ? isUser
+                    : (names.includes(tag) && rest.has(tag)));
+                if (!grp.length) continue;
+                ordered.push([label, grp]);
+                grp.forEach(([t]) => rest.delete(t));
+            }
+            const leftover = (tags || []).filter(([t]) => rest.has(t));
+            if (leftover.length) ordered.push(["other", leftover]);
+            ordered.forEach(([label, grp]) => {
+                const lab = document.createElement("span");
+                lab.className = "now-sub";
+                lab.style.cssText = "width:100%;margin-top:4px";
+                lab.textContent = label;
+                $("dj-flavor").appendChild(lab);
+                grp.forEach(([tag, n, isUser]) => addChip(tag, n, isUser));
+            });
+        }
+        function addChip(tag, n, isUser) {
+            (function([tag, n, isUser]) {
                 const b = document.createElement("button");
                 b.className = "theme-btn"; b.dataset.tag = tag;
                 b.textContent = `${isUser ? "* " : ""}${tag} (${n})`;
@@ -247,7 +305,7 @@
                     sendFlavor();
                 };
                 $("dj-flavor").appendChild(b);
-            });
+            })([tag, n, isUser]);
         }
 
         function emit(action, value) {
@@ -346,7 +404,11 @@
 
         socket.on("state_update", (s) => {
             $("status-text").textContent = "Connected";
-            const dj = s.dj;
+            // DELTA payloads: heavy fields are omitted when unchanged -
+            // merge over the last full picture.
+            const dj = s.dj ? Object.assign({}, lastFullDj || {}, s.dj)
+                            : s.dj;
+            if (dj) lastFullDj = dj;
             const banner = $("dj-banner");
 
             if (!dj) {
@@ -445,6 +507,16 @@
                 + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
             $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
                 + (dj.night_hours ? ` of a ${dj.night_hours}h night` : "");
+            $("dj-queue").innerHTML = (dj.horizon || []).map((h, i) =>
+                `<div style="padding:1px 0"><b>${i + 1}.</b> ` +
+                `${(h.title || "?").slice(0, 30)} ` +
+                `<span style="opacity:.6">${h.why || ""}</span></div>`
+            ).join("");
+            if (dj.level != null)
+                $("dj-level").style.width =
+                    Math.min(100, dj.level * 100) + "%";
+            $("dj-moment").textContent = dj.moment_eta != null
+                ? `✦ ${Math.max(0, dj.moment_eta).toFixed(0)}s` : "✦ MOMENT";
             renderHistory(dj.history);
             show($("dj-tonight"), (dj.history || []).length > 0);
             $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
@@ -453,6 +525,7 @@
 
         // ---------- trajectory canvas (arc + horizon + steering) ----------
         let lastDj = null;
+        let lastFullDj = null;       // delta payloads merge into this
         let dragWp = null;           // {idx} while dragging
         let localWp = null;          // waypoints being edited locally
         function arcXY(cv, p, e) {
@@ -537,8 +610,21 @@
         const SEC_COLORS = {intro: "#3a5a4a", groove: "#33567e",
             breakdown: "#5a3f72", build: "#7e6030", outro: "#4a4a52"};
         function drawStrip(dj) {
-            const cv = $("dj-strip");
-            const tm = dj.track_map;
+            drawMap("dj-strip", dj.track_map,
+                    dj.current ? dj.current.pos_s : null, dj);
+            // Incoming deck strip during blends: find the deck playing
+            // the NEXT track for its live position.
+            const ns = $("dj-next-strip");
+            if (dj.next_map && dj.next) {
+                ns.classList.remove("hidden");
+                let pos = null;
+                for (const d of (dj.decks || []))
+                    if (d.track_id === dj.next.id) pos = d.time_s;
+                drawMap("dj-next-strip", dj.next_map, pos, null);
+            } else ns.classList.add("hidden");
+        }
+        function drawMap(cid, tm, pos_s, dj) {
+            const cv = $(cid);
             if (!cv) return;
             if (cv.width !== cv.clientWidth) cv.width = cv.clientWidth;
             const g = cv.getContext("2d");
@@ -570,18 +656,27 @@
                 g.lineTo(X(tm.exit_s), cv.height); g.stroke();
                 g.setLineDash([]);
             }
-            if (dj.current && dj.current.pos_s != null) {
+            if (tm.entry_s != null) {
+                g.strokeStyle = "#6fd"; g.lineWidth = 2;
+                g.setLineDash([4, 3]);
+                g.beginPath(); g.moveTo(X(tm.entry_s), 0);
+                g.lineTo(X(tm.entry_s), cv.height); g.stroke();
+                g.setLineDash([]);
+            }
+            if (pos_s != null) {
                 g.strokeStyle = "#fff"; g.lineWidth = 2;
-                g.beginPath(); g.moveTo(X(dj.current.pos_s), 0);
-                g.lineTo(X(dj.current.pos_s), cv.height); g.stroke();
-                const sec = (tm.sections || []).find(
-                    ([s0, s1]) => dj.current.pos_s >= s0 && dj.current.pos_s < s1);
-                const nxt = (tm.sections || []).find(([s0]) => s0 > dj.current.pos_s);
-                let hint = sec ? `in ${sec[2]}` : "";
-                if (sec && sec[3] > 0.5) hint += "  -  VOCALS NOW";
-                else if (nxt && nxt[3] > 0.5)
-                    hint += `  -  vocals ahead (${Math.round(nxt[0] - dj.current.pos_s)}s)`;
-                $("dj-vocal-hint").textContent = hint;
+                g.beginPath(); g.moveTo(X(pos_s), 0);
+                g.lineTo(X(pos_s), cv.height); g.stroke();
+                if (dj) {
+                    const sec = (tm.sections || []).find(
+                        ([s0, s1]) => pos_s >= s0 && pos_s < s1);
+                    const nxt = (tm.sections || []).find(([s0]) => s0 > pos_s);
+                    let hint = sec ? `in ${sec[2]}` : "";
+                    if (sec && sec[3] > 0.5) hint += "  -  VOCALS NOW";
+                    else if (nxt && nxt[3] > 0.5)
+                        hint += `  -  vocals ahead (${Math.round(nxt[0] - pos_s)}s)`;
+                    $("dj-vocal-hint").textContent = hint;
+                }
             }
         }
 
@@ -601,6 +696,11 @@
 
         // ---------- controls ----------
         $("dj-hold").onclick = () => emit("hold");
+        $("dj-moment").onclick = () => emit("moment");
+        $("dj-vol").oninput = () =>
+            socket.emit("update_global",
+                        {name: "master_volume",
+                         value: parseFloat($("dj-vol").value)});
         $("dj-reroll").onclick = () => emit("reroll");
         const flash = (b) => { b.style.background = "#2e6b3a";
             setTimeout(() => b.style.background = "", 600); };

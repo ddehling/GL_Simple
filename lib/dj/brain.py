@@ -221,6 +221,27 @@ class Brain:
     def set_flavor(self, flavor):
         self.flavor = dict(flavor or {})
 
+    def explain_pick(self, cur, cand, meta):
+        """One human line of WHY this track won - keys, stretch, flavor
+        tags that matched, remembered seams. Steering needs reasons."""
+        bits = []
+        if cur is not None and cur.camelot and cand.camelot:
+            c = camelot_compat(cur.camelot, cand.camelot)
+            bits.append(f"{cur.camelot}->{cand.camelot}"
+                        + ("" if c >= 0.9 else " ok" if c >= 0.55 else " !"))
+        r = (meta or {}).get("rate")
+        if r:
+            bits.append(f"{(r - 1) * 100:+.1f}%")
+        prefer = dict(self.theme.prefer_tags)
+        prefer.update(self.flavor.get("prefer_tags") or {})
+        hit = [t for t in prefer if t in cand.all_tags][:3]
+        if hit:
+            bits.append("+" + "+".join(hit))
+        pm = self.pair_memory.get((getattr(cur, "id", None), cand.id))
+        if pm:
+            bits.append("mixed well before" if pm > 1.0 else "rough before")
+        return "  ".join(bits)
+
     def plan_horizon(self, current, arc_fn, out_bpm, n=3):
         """PROVISIONAL next-n chain for the trajectory display: what would
         play if nothing changes. Pure lookahead - recency/skip state is
@@ -243,7 +264,8 @@ class Brain:
                             "artist": cand.artist,
                             "bpm": round(cand.bpm, 1),
                             "energy": round(cand.energy_proxy(), 2),
-                            "tags": cand.all_tags[:4]})
+                            "tags": cand.all_tags[:4],
+                            "why": self.explain_pick(cur, cand, meta)})
                 cur = cand
         finally:
             self.recent = saved_recent

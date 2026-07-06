@@ -268,6 +268,14 @@ class DJSystem:
         with self._lock:
             self._pending.append(("seam_fb", bool(up)))
 
+    def moment(self):
+        """OPERATOR MOMENT: build a riser into the next phrase boundary
+        and land an impact ON it - a crowd moment on demand, phrase-tight.
+        The visuals pre-arm through the published ETA and hear the impact
+        as a drop."""
+        with self._lock:
+            self._pending.append(("moment", None))
+
     def set_flavor(self, flavor):
         """Live music-type steering: {'prefer_tags': {tag: w}, 'avoid_tags':
         {tag: w}, 'axis_targets': {axis: 0..1}} merged over the theme."""
@@ -360,6 +368,12 @@ class DJSystem:
         if self.state == "armed" and self.swap_at is not None \
                 and self.submix.clock < self.swap_at:
             swap_eta = (self.swap_at - self.submix.clock) / RATE
+        # A pending operator MOMENT pre-arms the visuals the same way an
+        # approaching seam does.
+        m_clk = getattr(self, "_moment_clock", 0)
+        if m_clk > self.submix.clock:
+            m_eta = (m_clk - self.submix.clock) / RATE
+            eta = m_eta if eta is None else min(eta, m_eta)
         return {"dj_active": self._running,
                 "dj_arc_phase": self.arc_progress(),
                 "dj_arc_heat": self.arc_target(),
@@ -386,6 +400,15 @@ class DJSystem:
             "arc_curve": [round(max(0.0, min(1.0, self._arc_base(i / 24.0))),
                           3) for i in range(25)],
             "track_map": self._track_map(),
+            "next_map": self._track_map(
+                self.next_track,
+                entry=self.plan["in_s"] if self.plan else None)
+            if self.next_track is not None else None,
+            "level": round(float(tel.get("peak", 0.0)), 3),
+            "moment_eta": round((self._moment_clock - self.submix.clock)
+                                / RATE, 1)
+            if getattr(self, "_moment_clock", 0) > self.submix.clock
+            else None,
             "autopilot": self.autopilot,
             "arc_phase": round(self.arc_progress(), 4),
             "arc_heat": round(self.arc_target(), 3),
@@ -423,6 +446,8 @@ class DJSystem:
             nat = bpms.get(d.get("track_id"))
             out.append({
                 "deck": name.upper(),
+                "track_id": d.get("track_id"),
+                "time_s": d.get("time_s"),
                 "title": names.get(d.get("track_id"), "?"),
                 "gain": round(d.get("gain", 0.0), 2),
                 # THE BEAT-MATCH EVIDENCE: what tempo this deck actually
@@ -436,9 +461,9 @@ class DJSystem:
             })
         return out
 
-    def _track_map(self):
-        """Compact current-track geography for the web context strip."""
-        t = self.current
+    def _track_map(self, t=None, entry=None):
+        """Compact track geography for the web context strips."""
+        t = t if t is not None else self.current
         if t is None:
             return None
         secs = [[round(x["start_s"], 1), round(x["end_s"], 1), x["kind"],
@@ -450,7 +475,9 @@ class DJSystem:
             curve = [round(float(curve[i]), 2) for i in idx]
         return {"duration": round(t.duration_s, 1), "sections": secs,
                 "energy": curve,
-                "exit_s": round(self.plan["out_s"], 1) if self.plan else None}
+                "entry_s": round(entry, 1) if entry is not None else None,
+                "exit_s": round(self.plan["out_s"], 1)
+                if (self.plan and t is self.current) else None}
 
     def _track_brief(self, t):
         if t is None:
@@ -530,6 +557,28 @@ class DJSystem:
                 self.next_track = None
                 self.plan = None
                 self._horizon_key = None
+            elif kind == "moment" and self.state in ("playing", "armed")                     and self.current is not None:
+                pos = self._pos_s()
+                tel_d = (self.submix.telemetry or {}).get("decks", {})
+                rate = (tel_d.get(self.active_deck) or {}).get("rate", 1.0)
+                if pos is not None:
+                    t_hit = self.current.nearest_phrase(
+                        pos + 4 * self.current.period_s)
+                    while t_hit < pos + 2.5:
+                        t_hit += (self.current.phrase_beats or 32)                             * self.current.period_s
+                    eta = (t_hit - pos) / max(rate, 1e-6)
+                    hit = self.submix.clock + int(eta * RATE)
+                    from lib.dj import fx as _fx
+                    rise = min(eta - 0.1, 8.0)
+                    if rise >= 1.0:
+                        self.submix.post({"at": hit - int(rise * RATE),
+                                          "cmd": "fx_play",
+                                          "samples": _fx.make_riser(
+                                              rise, gain=0.16)})
+                    self.submix.post({"at": hit, "cmd": "fx_play",
+                                      "samples": _fx.make_impact(gain=0.26)})
+                    self._moment_clock = hit
+                    self._log({"event": "moment", "in_s": round(eta, 1)})
             elif kind == "seam_fb":
                 if self._last_style:
                     self.brain.seam_feedback(self._last_style, val)
@@ -592,7 +641,10 @@ class DJSystem:
                                     "bpm": round(self.next_track.bpm, 1),
                                     "energy": round(
                                         self.next_track.energy_proxy(), 2),
-                                    "tags": self.next_track.all_tags[:4]}
+                                    "tags": self.next_track.all_tags[:4],
+                                    "why": self.brain.explain_pick(
+                                        self.current, self.next_track,
+                                        self._next_meta)}
         except Exception as e:
             print(f"[DJ] horizon skipped: {e}")
 

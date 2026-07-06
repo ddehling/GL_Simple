@@ -1030,7 +1030,7 @@ class WebController:
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
                       'nudge', 'next_id', 'setlist', 'seek', 'seek_rel',
                       'to_exit', 'mix_now', 'flavor',
-                      'hold', 'reroll', 'seam_fb', 'arc'}
+                      'hold', 'reroll', 'seam_fb', 'arc', 'moment'}
 
         @self.socketio.on('dj_action')
         def handle_dj_action(data):

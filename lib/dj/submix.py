@@ -367,7 +367,9 @@ class DJSubmix:
                 self.record_q.put_nowait(out.copy())
             except Exception:
                 pass
-        self.telemetry = self._snapshot()
+        snap = self._snapshot()
+        snap["peak"] = float(np.abs(out).max()) if len(out) else 0.0
+        self.telemetry = snap
         return out
 
     def _snapshot(self):
