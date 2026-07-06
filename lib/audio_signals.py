@@ -73,11 +73,22 @@ PUNCH_SPAN = 0.8
 PUNCH_RELEASE_TAU = 0.16      # fast enough to reach near-zero between
                               # 4-on-the-floor kicks (0.47s apart)
 
-# --- Silence gate (raw level vs slow-decaying peak of itself) ---------------
-LEVEL_TAU = 0.4               # raw-level smoothing before the peak/ratio
-PEAK_DECAY_TAU = 60.0         # peak forgets old loudness over ~1 min
-GATE_LO = 0.05                # level <= 5% of peak  -> gate 0 (silence)
-GATE_HI = 0.25                # level >= 25% of peak -> gate 1 (music)
+# --- Silence gate + loudness reference ---------------------------------------
+# The reference is TWO-SIDED with minute-scale memory (user-tuned): it
+# rises fast when the room gets louder (a couple of seconds - loud jumps
+# must not read as clipping-bright forever) and falls on a ~25s release,
+# but ONLY while music is playing - during silence it FREEZES, so a long
+# pause never re-sensitizes onto the noise floor and blasts on resume.
+# The old one-sided 60s-decay peak desensitized instantly on one loud pop
+# and took 1-3 minutes to recover when the show got quieter (user: 'takes
+# too long to adjust to the sound level'). A 10s breakdown moves this
+# reference < 1/3 of the way - musical dynamics are preserved, only
+# sustained level changes re-calibrate.
+LEVEL_TAU = 0.4               # raw-level smoothing before the ratio
+LEVEL_REF_UP_TAU = 3.0        # reference attack when louder
+LEVEL_REF_DOWN_TAU = 25.0     # reference release when quieter (music only)
+GATE_LO = 0.05                # level <= 5% of ref  -> gate 0 (silence)
+GATE_HI = 0.25                # level >= 25% of ref -> gate 1 (music)
 GATE_TAU = 0.25               # gate smoothing
 
 # --- Build detector ---------------------------------------------------------
@@ -92,7 +103,11 @@ BUILD_SLOPE_GAIN = 8.0        # slope (energy units / s) -> 0..1
 # rising-cross is still required at slam time so a slow fade-in doesn't fire.
 BASS_LEVEL_TAU = 0.1          # raw bass level smoothing (fast - a drop must
                               # register on the FIRST kick, not a second late)
-BASS_PEAK_TAU = 60.0          # bass peak memory
+BASS_REF_UP_TAU = 3.0         # bass reference attack
+BASS_REF_DOWN_TAU = 30.0      # ...release - and only while bass is PRESENT
+                              # (>=30% of ref): a breakdown must not erode
+                              # the very reference that defines 'quiet',
+                              # or long breakdowns disarm drop detection
 DROP_QUIET_FRAC = 0.15        # bass below 15% of its peak counts as quiet...
 DROP_QUIET_MIN_S = 1.5        # ...sustained at least this long to arm
 DROP_ARM_WINDOW_S = 20.0      # armed for this long after quiet begins
@@ -257,10 +272,17 @@ class AudioStructure:
         lrow = np.asarray(long_[0], dtype=np.float32)
         rrow = np.asarray(raw[0], dtype=np.float32)
 
-        # --- Silence gate: smoothed raw level vs its own slow-decaying peak --
+        # --- Silence gate: smoothed raw level vs the loudness reference ------
         raw_level = float(np.mean(rrow))
         self._level += (raw_level - self._level) * (1.0 - math.exp(-dt / LEVEL_TAU))
-        self._peak = max(self._peak * math.exp(-dt / PEAK_DECAY_TAU), self._level, 1e-9)
+        if self._level > self._peak:
+            self._peak += (self._level - self._peak) * (
+                1.0 - math.exp(-dt / LEVEL_REF_UP_TAU))
+        elif self._gate > 0.25:       # music playing: track quieter shows
+            self._peak += (self._level - self._peak) * (
+                1.0 - math.exp(-dt / LEVEL_REF_DOWN_TAU))
+        # (silence: reference FROZEN - never re-sensitize onto noise)
+        self._peak = max(self._peak, 1e-9)
         ratio = self._level / self._peak
         gate_now = (ratio - GATE_LO) / (GATE_HI - GATE_LO)
         gate_now = max(0.0, min(1.0, gate_now))
@@ -321,8 +343,14 @@ class AudioStructure:
         raw_bass = float(np.mean(rrow[BASS_SLICE]))
         ab = 1.0 - math.exp(-dt / BASS_LEVEL_TAU)
         self._bass_level += (raw_bass - self._bass_level) * ab
-        self._bass_peak = max(self._bass_peak * math.exp(-dt / BASS_PEAK_TAU),
-                              self._bass_level, 1e-9)
+        if self._bass_level > self._bass_peak:
+            self._bass_peak += (self._bass_level - self._bass_peak) * (
+                1.0 - math.exp(-dt / BASS_REF_UP_TAU))
+        elif (self._bass_level > 0.3 * self._bass_peak
+                and self._gate > 0.25):
+            self._bass_peak += (self._bass_level - self._bass_peak) * (
+                1.0 - math.exp(-dt / BASS_REF_DOWN_TAU))
+        self._bass_peak = max(self._bass_peak, 1e-9)
         bass_long = gate * float(np.mean(lrow[BASS_SLICE]))
         drop = False
         if self._bass_level < DROP_QUIET_FRAC * self._bass_peak:
