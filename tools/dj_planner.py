@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
     QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
     QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit)
+    QPlainTextEdit, QSlider)
 
 from lib.dj import resolve_music_dir
 from lib.dj.db import LibraryDB
@@ -287,13 +287,35 @@ class LibraryTab(QWidget):
                           ("> Play", self._play_selected),
                           ("|| Pause", self._pause_play),
                           ("[] Stop", lambda: self.planner.stop_all_playback()),
-                          (">| Next", lambda: self._step_play(1))):
+                          (">| Next", lambda: self._step_play(1)),
+                          ("<< 15s", lambda: self._seek_rel(-15.0)),
+                          ("15s >>", lambda: self._seek_rel(15.0))):
             b = QPushButton(label)
             b.clicked.connect(cb)
             prow.addWidget(b)
         self.play_lbl = QLabel("")
         prow.addWidget(self.play_lbl, 1)
         v.addLayout(prow)
+
+        # SCRUB BAR: skip around inside the playing track (evaluation is
+        # mostly 'what do the drop and the middle sound like?' - nobody
+        # wants to sit through the intro to find out). Live-seeks while
+        # dragging; TrackPlayer's seek is sample-accurate and instant.
+        srow = QHBoxLayout()
+        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setRange(0, 1000)
+        self._seek_drag = False
+        self.seek_slider.sliderPressed.connect(
+            lambda: setattr(self, "_seek_drag", True))
+        self.seek_slider.sliderReleased.connect(self._seek_released)
+        self.seek_slider.sliderMoved.connect(self._seek_frac)
+        srow.addWidget(self.seek_slider, 1)
+        self.time_lbl = QLabel("-:-- / -:--")
+        srow.addWidget(self.time_lbl)
+        v.addLayout(srow)
+        self._seek_timer = QTimer(self)
+        self._seek_timer.timeout.connect(self._seek_tick)
+        self._seek_timer.start(150)
 
         self.model = LibraryTreeModel()
         self.proxy = LibraryProxy()
@@ -456,6 +478,44 @@ class LibraryTab(QWidget):
         self._play_idx = next((i for i, x in enumerate(self._play_list)
                                if x.id == t.id), 0)
         self._play_track(t)
+
+    # -- scrubbing ----------------------------------------------------------
+    def _dur_s(self):
+        p = self.lib_player
+        return (len(p.samples) / 44100.0
+                if p.samples is not None and len(p.samples) else 0.0)
+
+    def _seek_frac(self, v):
+        d = self._dur_s()
+        if d > 0:
+            self.lib_player.seek(v / 1000.0 * d)
+
+    def _seek_released(self):
+        self._seek_drag = False
+        self._seek_frac(self.seek_slider.value())
+
+    def _seek_rel(self, dt):
+        p = self.lib_player
+        if p.samples is not None:
+            p.seek(max(0.0, p.time_s() + dt))
+
+    @staticmethod
+    def _mmss(t):
+        return f"{int(t // 60)}:{int(t % 60):02d}"
+
+    def _seek_tick(self):
+        d = self._dur_s()
+        if d <= 0:
+            self.time_lbl.setText("-:-- / -:--")
+            if not self._seek_drag:
+                self.seek_slider.setValue(0)
+            return
+        t = self.lib_player.time_s()
+        self.time_lbl.setText(f"{self._mmss(t)} / {self._mmss(d)}")
+        if not self._seek_drag:
+            self.seek_slider.blockSignals(True)
+            self.seek_slider.setValue(int(t / d * 1000))
+            self.seek_slider.blockSignals(False)
 
     def _pause_play(self):
         if self.lib_player.playing:
