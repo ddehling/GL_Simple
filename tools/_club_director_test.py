@@ -240,20 +240,33 @@ check("dj drop-eta pre-arms the room",
       and state.get('_drop_dest') in SCENE_HEAT,
       f"dest={state.get('_drop_dest')}")
 
-# ---- DJ swap choreography: a cut fires ON the handover beat --------------
-state, out = fresh("club_runway")
-out['dj_active'] = True
-out['dj_swap_eta'] = 3.0
-run(2.0, state, out, energy=0.5)          # counting down, pre-armed
-out['dj_swap_eta'] = 0.4
-run(0.5, state, out, energy=0.5)
-out['dj_swap_eta'] = None                 # the handover landed
-out['dj_style'] = 'bass_swap'
-state['_last_jump_t'] = -1e9              # dwell satisfied
-run(1.0, state, out, energy=0.5)
-check("dj swap handover fires a choreographed cut",
-      state.get('_last_jump_t', -1e9) > -1e8,   # the jump actually executed
-      f"last_jump_t={state.get('_last_jump_t')}")
+# ---- DJ swap choreography: the move matches the seam's character ---------
+def _handover(style, energy=0.5, room="club_runway"):
+    state, out = fresh(room)
+    out['dj_active'] = True
+    out['dj_swap_eta'] = 3.0
+    run(2.0, state, out, energy=energy)   # counting down, pre-armed
+    out['dj_swap_eta'] = 0.4
+    run(0.5, state, out, energy=energy)
+    out['dj_swap_eta'] = None             # the handover landed
+    out['dj_style'] = style
+    state['_last_jump_t'] = -1e9          # dwell satisfied
+    _, reqs, _, durs = run(1.0, state, out, energy=energy)
+    return reqs, durs
+
+reqs, durs = _handover('cut_at_drop')
+check("punchy handover snap-cuts",
+      len(reqs) == 1 and durs[0] == 0.7,
+      f"reqs={reqs} durs={durs}")
+
+reqs, durs = _handover('bass_swap')      # runway 0.72 vs mid target: glide
+check("blend handover glides (no snap)",
+      len(reqs) == 1 and durs[0] == 12.0,
+      f"reqs={reqs} durs={durs}")
+
+reqs, durs = _handover('long_fade')
+check("long fade rides in place", len(reqs) == 0,
+      f"reqs={reqs} durs={durs}")
 
 print()
 if failures:
