@@ -160,6 +160,7 @@ class LibraryProxy(QSortFilterProxyModel):
         super().__init__()
         self.text = ""
         self.folder = None           # None = all folders
+        self.tag = None              # None = all tags
 
     def set_text(self, text):
         self.text = (text or "").lower()
@@ -169,9 +170,15 @@ class LibraryProxy(QSortFilterProxyModel):
         self.folder = name
         self.invalidateFilter()
 
+    def set_tag(self, tag):
+        self.tag = tag
+        self.invalidateFilter()
+
     def _track_matches(self, m, f_row, t_row):
         fd = m.folders[f_row]
         t = fd["tracks"][t_row]
+        if self.tag is not None and self.tag not in t.all_tags:
+            return False
         hay = f"{t.title} {t.artist} {' '.join(t.all_tags)}".lower()
         return self.text in hay
 
@@ -181,7 +188,8 @@ class LibraryProxy(QSortFilterProxyModel):
             name = m.folder_name(row)
             if self.folder is not None and name != self.folder:
                 return False
-            if not self.text or self.text in name.lower():
+            if self.tag is None and (not self.text
+                                     or self.text in name.lower()):
                 return True
             return any(self._track_matches(m, row, r)
                        for r in range(len(m.folders[row]["tracks"])))
@@ -189,7 +197,8 @@ class LibraryProxy(QSortFilterProxyModel):
         if self.folder is not None \
                 and m.folder_name(f_row) != self.folder:
             return False
-        if not self.text or self.text in m.folder_name(f_row).lower():
+        if self.tag is None and self.text \
+                and self.text in m.folder_name(f_row).lower():
             return True
         return self._track_matches(m, f_row, row)
 
@@ -252,7 +261,30 @@ class LibraryTab(QWidget):
         self.folder_box.addItem("all folders")
         self.folder_box.currentTextChanged.connect(self._folder_filter)
         top.addWidget(self.folder_box, 1)
+        # Tag BROWSER (not just search): every tag with its count.
+        self.tag_box = QComboBox()
+        self.tag_box.addItem("all tags")
+        self.tag_box.currentTextChanged.connect(self._tag_filter)
+        top.addWidget(self.tag_box, 1)
         v.addLayout(top)
+
+        # Quick-audition transport for the library list.
+        self.lib_player = TrackPlayer()
+        self._lib_decoder = None
+        self._play_list = []
+        self._play_idx = -1
+        prow = QHBoxLayout()
+        for label, cb in (("|< Back", lambda: self._step_play(-1)),
+                          ("> Play", self._play_selected),
+                          ("|| Pause", self._pause_play),
+                          ("[] Stop", lambda: self.planner.stop_all_playback()),
+                          (">| Next", lambda: self._step_play(1))):
+            b = QPushButton(label)
+            b.clicked.connect(cb)
+            prow.addWidget(b)
+        self.play_lbl = QLabel("")
+        prow.addWidget(self.play_lbl, 1)
+        v.addLayout(prow)
 
         self.model = LibraryTreeModel()
         self.proxy = LibraryProxy()
@@ -272,6 +304,8 @@ class LibraryTab(QWidget):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
+        self.table.selectionModel().selectionChanged.connect(
+            self._extend_folder_selection)
         v.addWidget(self.table)
 
         bot = QHBoxLayout()
@@ -335,8 +369,115 @@ class LibraryTab(QWidget):
              else self.planner.db.remove_tag)(t.id, tag)
         self.planner.reload_library()
 
+    def _extend_folder_selection(self, selected, _deselected):
+        """Clicking a folder line selects every track inside it - the
+        one-gesture 'select all songs in this directory'."""
+        if getattr(self, "_extending_sel", False):
+            return
+        from PyQt6.QtCore import QItemSelection, QItemSelectionModel
+        add = QItemSelection()
+        for idx in selected.indexes():
+            if idx.column() != 0:
+                continue
+            if self.proxy.data(idx, Qt.ItemDataRole.UserRole) is None \
+                    and self.proxy.data(idx, FOLDER_ROLE) is not None:
+                n = self.proxy.rowCount(idx)
+                if n:
+                    add.select(self.proxy.index(0, 0, idx),
+                               self.proxy.index(n - 1, 0, idx))
+                self.table.setExpanded(idx, True)
+        if not add.isEmpty():
+            self._extending_sel = True
+            self.table.selectionModel().select(
+                add, QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows)
+            self._extending_sel = False
+
+    # -- quick audition ------------------------------------------------------
+    def _visible_tracks(self):
+        out = []
+        for fr in range(self.proxy.rowCount()):
+            fidx = self.proxy.index(fr, 0)
+            for tr in range(self.proxy.rowCount(fidx)):
+                t = self.proxy.data(self.proxy.index(tr, 0, fidx),
+                                    Qt.ItemDataRole.UserRole)
+                if t is not None:
+                    out.append(t)
+        return out
+
+    def _play_track(self, t):
+        from tools.djplanner.player import TrackPlayer  # noqa: F401
+        self.planner.claim_playback("library")
+        self.play_lbl.setText(f"decoding  {t.title[:40]}...")
+
+        class _D(QThread):
+            done = pyqtSignal(object)
+
+            def __init__(self, db, tr):
+                super().__init__()
+                self.db, self.tr = db, tr
+
+            def run(self):
+                try:
+                    from lib.dj.features import decode_file_stereo
+                    self.done.emit(decode_file_stereo(
+                        self.db.abs(self.tr.path)))
+                except Exception as e:
+                    self.done.emit(str(e))
+        self._lib_decoder = _D(self.planner.db, t)
+
+        def _go(samples, tr=t):
+            if isinstance(samples, str):
+                self.play_lbl.setText(f"decode failed: {samples[:60]}")
+                return
+            self.planner.claim_playback("library")
+            self.lib_player.load(samples)
+            self.lib_player.play()
+            self.play_lbl.setText(f"playing  {tr.title[:44]}")
+        self._lib_decoder.done.connect(_go)
+        self._lib_decoder.start()
+
+    def _play_selected(self):
+        sel = self.selected_tracks()
+        self._play_list = sel if len(sel) > 1 else self._visible_tracks()
+        t = sel[0] if sel else (self._play_list[0] if self._play_list
+                                else None)
+        if t is None:
+            return
+        self._play_idx = next((i for i, x in enumerate(self._play_list)
+                               if x.id == t.id), 0)
+        self._play_track(t)
+
+    def _pause_play(self):
+        if self.lib_player.playing:
+            self.lib_player.pause()
+            self.play_lbl.setText(self.play_lbl.text().replace(
+                "playing", "paused"))
+        elif self.lib_player.samples is not None:
+            self.planner.claim_playback("library")
+            self.lib_player.play()
+            self.play_lbl.setText(self.play_lbl.text().replace(
+                "paused", "playing"))
+
+    def _step_play(self, d):
+        if not self._play_list:
+            self._play_list = self._visible_tracks()
+        if not self._play_list:
+            return
+        self._play_idx = (self._play_idx + d) % len(self._play_list)
+        self._play_track(self._play_list[self._play_idx])
+
+    def stop_playback(self):
+        self.lib_player.pause()
+        self.lib_player.samples = None
+        self.play_lbl.setText("")
+
     def _folder_filter(self, name):
         self.proxy.set_folder(None if name == "all folders" else name)
+
+    def _tag_filter(self, label):
+        tag = None if label == "all tags" else label.split("  (")[0]
+        self.proxy.set_tag(tag)
 
     def refresh(self):
         # Preserve which folders are open across rescans/tag edits.
@@ -354,6 +495,22 @@ class LibraryTab(QWidget):
             src = self.proxy.mapToSource(idx)
             name = self.model.folder_name(src.row())
             self.table.setExpanded(idx, first or name in open_names)
+        counts = {}
+        for t in self.planner.library:
+            for tag in t.all_tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        want_tags = ["all tags"] + [f"{k}  ({n})" for k, n in
+                                    sorted(counts.items())]
+        have_tags = [self.tag_box.itemText(i)
+                     for i in range(self.tag_box.count())]
+        if have_tags != want_tags:
+            cur = self.tag_box.currentText()
+            self.tag_box.blockSignals(True)
+            self.tag_box.clear()
+            self.tag_box.addItems(want_tags)
+            if cur in want_tags:
+                self.tag_box.setCurrentText(cur)
+            self.tag_box.blockSignals(False)
         folders = sorted({track_folder(t) for t in self.planner.library})
         have = [self.folder_box.itemText(i)
                 for i in range(self.folder_box.count())]
@@ -551,6 +708,7 @@ class AnalysisTab(QWidget):
             self.player.pause()
             self.play_btn.setText("▶ Play")
         else:
+            self.planner.claim_playback("analysis")
             self.player.play()
             self.play_btn.setText("⏸ Pause")
 
@@ -728,7 +886,15 @@ class SetTab(QWidget):
         rm.setShortcut("Delete")
         rm.triggered.connect(self._remove_entry)
         self.set_list.addAction(rm)
+        self.set_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.ActionsContextMenu)
         left.addWidget(self.set_list, 1)
+        rrow = QHBoxLayout()
+        rm_btn = QPushButton("Remove selected (Del)")
+        rm_btn.clicked.connect(self._remove_entry)
+        rrow.addWidget(rm_btn)
+        rrow.addStretch(1)
+        left.addLayout(rrow)
         arow = QHBoxLayout()
         arow.addWidget(QLabel("Anchor @"))
         self.anchor_min = QDoubleSpinBox(maximum=600.0, decimals=0)
@@ -750,7 +916,7 @@ class SetTab(QWidget):
         self.audition_btn.clicked.connect(self.audition)
         brow.addWidget(self.audition_btn)
         st = QPushButton("■ Stop")
-        st.clicked.connect(self.seam_player.close)
+        st.clicked.connect(lambda: self.planner.stop_all_playback())
         brow.addWidget(st)
         brow.addStretch(1)
         right.addLayout(brow)
@@ -978,6 +1144,7 @@ class SetTab(QWidget):
             self.status.setText("audition failed: " + result)
             return
         self.status.setText(f"playing seam ({len(result) / RATE:.0f}s)")
+        self.planner.claim_playback("seam")
         self.seam_player.load(result)
         self.seam_player.play()
 
@@ -1081,10 +1248,11 @@ class MixTab(QWidget):
             self.status.setText("build a set first")
             return
         self.pause_btn.setChecked(False)
+        self.planner.claim_playback("preview")
         self.preview.play_at(0.0)
 
     def stop(self):
-        self.preview.stop()
+        self.planner.stop_all_playback()
         self.timeline.set_playhead(None)
         self.deckmon.update()
         self.status.setText("stopped")
@@ -1102,6 +1270,7 @@ class MixTab(QWidget):
         self.planner.set_tab.select_seam(index)
 
     def _time_clicked(self, t):
+        self.planner.claim_playback("preview")
         """Standard DJ-software click-around: playing or stopped, a click
         on the timeline plays from there (instant via the decode cache)."""
         if not self.planner.set_tab.compiled:
@@ -1202,6 +1371,33 @@ class Planner(QMainWindow):
         self.reload_library()
         self.set_tab.refresh_setlists()
 
+    # ---- playback arbiter: ONE thing plays at a time --------------------
+    def claim_playback(self, owner):
+        """Starting ANY playback silences every other player first."""
+        if getattr(self, "_pb_owner", None) not in (None, owner):
+            self._stop_owner(self._pb_owner)
+        self._pb_owner = owner
+
+    def _stop_owner(self, owner):
+        try:
+            if owner == "analysis":
+                if self.analysis_tab.player.playing:
+                    self.analysis_tab._toggle_play()
+            elif owner == "library":
+                self.library_tab.stop_playback()
+            elif owner == "seam":
+                self.set_tab.seam_player.close()
+            elif owner == "preview":
+                self.mix_tab.preview.stop()
+        except Exception:
+            pass
+
+    def stop_all_playback(self):
+        """ANY stop button stops ANY playing."""
+        for o in ("analysis", "library", "seam", "preview"):
+            self._stop_owner(o)
+        self._pb_owner = None
+
     def reload_library(self, keep_analysis=False):
         self.library = load_library(self.db)
         self.library_tab.refresh()
@@ -1221,6 +1417,7 @@ class Planner(QMainWindow):
         self.analysis_tab.close()
         self.mix_tab.close()
         self.set_tab.seam_player.close()
+        self.library_tab.lib_player.close()
         super().closeEvent(ev)
 
 
