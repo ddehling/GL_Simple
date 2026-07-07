@@ -2037,6 +2037,15 @@ class EnvironmentalSystem:
         else:
             self._dj_energy_sm = None
         state["build_level"] = sig["build"]
+        # DJ FOREKNOWLEDGE -> deterministic build: the decks publish the
+        # next drop/seam ETA; ramp build_level through the final 8s so
+        # every pattern's coil-up (and the director's squeeze) lands
+        # BEFORE every known drop - the DSP riser detector only catches
+        # builds the mastering makes obvious.
+        dj_eta = state.get("dj_next_drop_eta")
+        if state.get("dj_active") and dj_eta is not None and dj_eta < 8.0:
+            state["build_level"] = max(state["build_level"],
+                                       min(1.0, 1.0 - dj_eta / 8.0))
         state["drop"] = sig["drop"]
         state["drop_decay"] = sig["drop_decay"]
         # DJ ground-truth drops: the decks KNOW when a drop section lands
