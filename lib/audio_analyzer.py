@@ -282,6 +282,7 @@ class MicrophoneAnalyzer:
         self._noise_floor = self._NF_INIT  # adaptive floor estimate (RMS)
         self._rms_smooth = 0.0   # ~0.25s-smoothed input RMS the gate acts on
         self._gate = 0.0         # smoothed gate factor, 0 (closed) .. 1 (open)
+        self._gate_debug = os.environ.get("AUDIO_GATE_DEBUG") == "1"
 
         # Audio parameters
         self.CHUNK = 4096  # FFT size for good frequency resolution
@@ -463,7 +464,7 @@ class MicrophoneAnalyzer:
             # on a silent loopback with rms 1.7x its floor).
             rms = float(np.sqrt(np.mean(data * data)))
             self._rms_smooth += (rms - self._rms_smooth) * 0.1  # tau ~0.25s @40fps
-            stale = time.time() - getattr(self, '_last_ingest_t', 0.0) > 0.5
+            stale = time.time() - getattr(self, '_last_ingest_t', 0.0) > 1.2
             # Adaptive floor estimate: tracks DOWN toward the smoothed quiet
             # level (not its minima), creeps UP very slowly (so sustained
             # music can't inflate it), hard-capped at _NF_CEIL. FROZEN while
@@ -497,6 +498,16 @@ class MicrophoneAnalyzer:
             # slow enough that quiet passages don't flicker the visuals off.
             alpha = 0.3 if target > self._gate else 0.02
             self._gate += (target - self._gate) * alpha
+            # DIAGNOSTIC (AUDIO_GATE_DEBUG=1): throttled gate telemetry so a
+            # live loopback run shows WHY the gate is where it is.
+            if self._gate_debug:
+                self._dbg_n = getattr(self, '_dbg_n', 0) + 1
+                if self._dbg_n % 40 == 0:      # ~1 Hz
+                    age = time.time() - getattr(self, '_last_ingest_t', 0.0)
+                    print(f"[GATE] src={self._active_source} rms={rms:.5f} "
+                          f"rms_sm={self._rms_smooth:.5f} floor={self._noise_floor:.5f} "
+                          f"lo={self._noise_floor * 2.5 + 1.5e-3:.5f} "
+                          f"gate={self._gate:.3f} stale={stale} ingest_age={age:.2f}s")
             # ----------------------------------------------------------------
 
             # Apply window and compute FFT
