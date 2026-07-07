@@ -10,6 +10,12 @@ SpectrogramPlotter (matplotlib) is included for standalone diagnostic use.
 
 import sounddevice as sd
 import numpy as np
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from math import gcd
@@ -233,6 +239,9 @@ class MicrophoneAnalyzer:
         self._active_source = None     # set by _open_source()
         self._sc_thread = None         # soundcard loopback capture thread
         self._sc_stop = threading.Event()
+        self._pa_thread = None         # parec (PipeWire/Pulse node) capture thread
+        self._pa_stop = threading.Event()
+        self._pa_proc = None           # running parec subprocess, if any
         print(f"[Audio] analyzer source='{source}' (target {self.RATE} Hz)")
 
         # Averaging parameters
@@ -258,6 +267,17 @@ class MicrophoneAnalyzer:
         
         # Sensitivity multiplier (controlled via web UI)
         self._sensitivity = 1.0
+
+        # Noise gate. The normalized band outputs are RATIOS (power / its own
+        # running average) - an AGC that rides its gain down into the noise
+        # floor, so a silent input's hiss normalizes to ~1.0, indistinguishable
+        # from steady music. The gate tracks the input's noise floor and
+        # closes the normalized outputs when the level is at/near it, so
+        # silence actually reads as silence downstream.
+        self._NF_CEIL = 0.01     # floor estimate ceiling: music can never become "the floor"
+        self._noise_floor = self._NF_CEIL  # adaptive floor estimate (RMS)
+        self._rms_smooth = 0.0   # ~0.25s-smoothed input RMS the gate acts on
+        self._gate = 0.0         # smoothed gate factor, 0 (closed) .. 1 (open)
 
         # Audio parameters
         self.CHUNK = 4096  # FFT size for good frequency resolution
@@ -411,7 +431,9 @@ class MicrophoneAnalyzer:
             status = "ok"
         return {"status": status, "rms": round(rms, 5), "peak": round(peak, 3),
                 "clip_pct": round(clip_pct, 2), "dc": round(dc, 3),
-                "stale_s": round(stale_s, 1), "silent_s": round(silent_s, 1)}
+                "stale_s": round(stale_s, 1), "silent_s": round(silent_s, 1),
+                "gate": round(self._gate, 3),
+                "noise_floor": round(self._noise_floor, 5)}
 
     def feed(self, stereo_buf):
         """Internal-source tap target. Called from the AudioEngine audio thread
@@ -429,12 +451,47 @@ class MicrophoneAnalyzer:
             # Always process, even if data hasn't changed much
             # Make a quick copy without holding a lock
             data = self.audio_buffer.copy()
-            
+
+            # --- Noise gate -------------------------------------------------
+            # Gate on a ~0.25s-smoothed RMS, NOT the instantaneous frame RMS:
+            # noise spikes cross any threshold occasionally, and a fast-attack
+            # gate parks itself open on them (observed live: gate stuck at 0.8
+            # on a silent loopback with rms 1.7x its floor).
+            rms = float(np.sqrt(np.mean(data * data)))
+            self._rms_smooth += (rms - self._rms_smooth) * 0.1  # tau ~0.25s @40fps
+            # Adaptive floor estimate: tracks DOWN toward the smoothed quiet
+            # level (not its minima), creeps UP very slowly (so sustained
+            # music can't inflate it), hard-capped at _NF_CEIL.
+            if self._rms_smooth < self._noise_floor:
+                self._noise_floor += (self._rms_smooth - self._noise_floor) * 0.05
+            else:
+                # Up-creep ~30s: slow enough that a track can't lift the floor
+                # mid-song, fast enough to re-learn a noisier input. _NF_CEIL
+                # caps it regardless, so music can never gate itself off.
+                self._noise_floor += (self._rms_smooth - self._noise_floor) * 1e-3
+            self._noise_floor = min(max(self._noise_floor, 1e-6), self._NF_CEIL)
+            # Soft threshold with wide margins: the floor converges onto the
+            # smoothed silence level itself, so "music" must clear well above.
+            lo = self._noise_floor * 2.5 + 1.5e-3
+            hi = self._noise_floor * 5.0 + 3e-3
+            x = min(max((self._rms_smooth - lo) / (hi - lo), 0.0), 1.0)
+            target = x * x * (3.0 - 2.0 * x)  # smoothstep
+            # A stale buffer (capture stopped delivering - e.g. the bluetooth
+            # node suspends when the phone pauses) would otherwise re-analyze
+            # the last chunk of music forever. Treat stale as silence.
+            if time.time() - getattr(self, '_last_ingest_t', 0.0) > 0.5:
+                target = 0.0
+            # Attack ~3 frames, release ~1.2s: quick to open on real music,
+            # slow enough that quiet passages don't flicker the visuals off.
+            alpha = 0.3 if target > self._gate else 0.02
+            self._gate += (target - self._gate) * alpha
+            # ----------------------------------------------------------------
+
             # Apply window and compute FFT
             windowed = data * self.window
             fft = np.fft.rfft(windowed)
             magnitudes = np.abs(fft)
-            
+
             # Skip DC component (bin 0) to avoid DC offset issues
             magnitudes[0] = 0
             try:
@@ -443,8 +500,10 @@ class MicrophoneAnalyzer:
                 # First frame - initialize magnitudes
                 self.magnitudes = magnitudes.copy()
 
-            # Update spectrum history using circular buffer
-            normalized_magnitudes = magnitudes / (self.magnitudes + 10E-10)
+            # Update spectrum history using circular buffer. Gated: during
+            # silence the ratio would read ~1.0 (noise / its own average),
+            # which is exactly what steady music reads as.
+            normalized_magnitudes = (magnitudes / (self.magnitudes + 10E-10)) * self._gate
             self.spectrum_history.append(normalized_magnitudes)
             
             # Calculate band powers and update history with better noise handling
@@ -578,7 +637,16 @@ class MicrophoneAnalyzer:
         
         # Calculate ReLU(norm_long - 1) - highlights when bands are above long-term average
         norm_long_relu = np.maximum(0, norm_long - 1)
-        
+
+        # Noise gate on the normalized (ratio) outputs: with a silent input
+        # they read ~1.0 (noise / its own average) - steady-music territory.
+        # raw_bands stays ungated: it reports honest absolute level.
+        g = self._gate
+        if g < 0.999:
+            norm_short = norm_short * g
+            norm_long = norm_long * g
+            norm_long_relu = norm_long_relu * g
+
         # Apply sensitivity multiplier to raw and normalized bands
         s = self._sensitivity
         if s != 1.0:
@@ -596,7 +664,8 @@ class MicrophoneAnalyzer:
             'band_edges': self.band_edges.copy(),
             'timestamp': time.time(),
             'averaging_method': 'exponential' if self.use_exponential else 'mean',
-            'sensitivity': self._sensitivity
+            'sensitivity': self._sensitivity,
+            'gate': self._gate
         }
 
     def get_chroma(self):
@@ -643,10 +712,13 @@ class MicrophoneAnalyzer:
         peak = float(np.max(np.abs(w))) if w.size else 0.0
         self._wave_peak = max(getattr(self, '_wave_peak', 1e-6) * 0.995,
                               peak, 1e-6)
-        # Silence gate: don't amplify noise up to full scale.
+        # Silence gate: don't amplify noise up to full scale. The absolute
+        # 1e-4 check alone misses analog noise floors (~1e-2), which this
+        # AGC would happily draw as a full-scale wave - scale by the noise
+        # gate so silence actually draws a flat line.
         if self._wave_peak < 1e-4:
             return np.zeros(n, dtype=np.float32)
-        return np.clip(w / self._wave_peak, -1.0, 1.0).astype(np.float32)
+        return (np.clip(w / self._wave_peak, -1.0, 1.0) * self._gate).astype(np.float32)
 
     def get_current_bands(self, normalize='none'):
         """
@@ -699,14 +771,37 @@ class MicrophoneAnalyzer:
         self._active_source = source
         # Start the new source from silence so a stale window doesn't linger.
         self.audio_buffer = np.zeros(self.CHUNK)
+        # Each source has its own noise floor (floating line-in >> digital BT
+        # silence). Restart the estimate from the ceiling; it snaps down to
+        # the new source's floor within a second of quiet.
+        self._noise_floor = self._NF_CEIL
+        self._rms_smooth = 0.0
         if source == "internal":
             # No device stream; AudioEngine.feed() drives _ingest.
             print("[Audio] source=internal (AudioEngine mix tap)")
             return
 
-        # Loopback prefers the `soundcard` library (true output loopback of any
-        # device, Windows + Linux). Fall back to a Stereo Mix / monitor INPUT
-        # device via sounddevice if soundcard is unavailable or fails.
+        # Loopback + bluetooth need nodes that only exist inside the
+        # PipeWire/Pulse graph (a sink's monitor, a bluez A2DP source).
+        # PortAudio (sounddevice) never enumerates those - it only sees
+        # ALSA-level devices like "pulse" and "default" - so the generic path
+        # below silently falls back to the default input (the mic/line-in)
+        # and the visuals react to room bleed instead of the actual audio.
+        # Capture the node directly: pw-record (native PipeWire - REQUIRED on
+        # PipeWire hosts, whose pulse shim can serve hw-sink monitors broken/
+        # silent, breaking parec AND the soundcard library), else parec
+        # (genuine PulseAudio hosts).
+        if source in ("loopback", "bluetooth"):
+            if self._start_pulse_capture(source):
+                return
+            if sys.platform.startswith("linux"):
+                # Expected on Linux - say so. On Windows this is the normal
+                # route to the WASAPI (soundcard) path below; stay quiet.
+                print(f"[Audio] no pw-record/parec; trying legacy paths for '{source}'")
+
+        # Legacy loopback: the `soundcard` library (WASAPI loopback - the
+        # Windows path). Falls back further to a Stereo Mix / monitor INPUT
+        # device via sounddevice if unavailable.
         if source == "loopback" and _soundcard is not None:
             if self._start_soundcard_loopback(self._device_names.get("loopback")):
                 return
@@ -784,12 +879,207 @@ class MicrophoneAnalyzer:
         self._sc_thread.start()
         return True
 
+    @staticmethod
+    def _resolve_pulse_node(fragment=None):
+        """Name of the PipeWire/Pulse *source* node for the connected Bluetooth
+        device, or None. Prefers a bluez node containing `fragment` (the
+        underscored MAC), else any bluez node.
+
+        Scans BOTH layers: `pactl list sources` (genuine PulseAudio hosts) and
+        the native graph via `pw-cli ls Node` - on PipeWire the pulse shim can
+        omit bluez nodes entirely (observed live: bluez_input.<MAC>.2 existed
+        natively and captured fine while pactl listed no bluez source at all)."""
+        names = []
+        try:
+            out = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True, timeout=5).stdout
+            names += [line.split("\t")[1] for line in out.splitlines()
+                      if "\t" in line]
+        except Exception:
+            pass
+        if shutil.which("pw-cli"):
+            try:
+                out = subprocess.run(
+                    ["pw-cli", "ls", "Node"],
+                    capture_output=True, text=True, timeout=5).stdout
+                names += [m.group(1) for m in
+                          re.finditer(r'node\.name = "([^"]+)"', out)]
+            except Exception:
+                pass
+        # Capture-side bluez nodes only: bluez_input/bluez_source (a phone
+        # streaming in), NOT bluez_output (us playing to headphones) or
+        # bluez_midi.
+        bluez = [n for n in names
+                 if n.lower().startswith(("bluez_input", "bluez_source"))]
+        if fragment:
+            frag = fragment.lower()
+            for n in bluez:
+                if frag in n.lower():
+                    return n
+        return bluez[0] if bluez else None
+
+    def _pw_capture_cmd(self, source):
+        """Resolve (argv, label) for a native graph capture of `source`, or
+        None if the node isn't there (yet). Prefers pw-record: on PipeWire
+        hosts the pulse compatibility shim can serve hw-sink monitor sources
+        broken/silent (observed live: parec returned ZERO bytes from a real
+        monitor while pw-record captured it fine), which also breaks the
+        soundcard library. parec remains the genuine-PulseAudio fallback."""
+        pw = shutil.which("pw-record") is not None
+        if source == "bluetooth":
+            node = self._resolve_pulse_node(self._device_names.get("bluetooth"))
+            if node is None:
+                return None
+            if pw:
+                return (["pw-record", "--target", node,
+                         "--format", "f32", "--rate", str(self.RATE),
+                         "--channels", "2", "--raw", "-"], node)
+            return (["parec", f"--device={node}", "--raw",
+                     "--format=float32le", f"--rate={self.RATE}",
+                     "--channels=2", "--latency-msec=50"], node)
+        if source == "loopback":
+            sink = None
+            frag = (self._device_names.get("loopback") or "").lower()
+            try:
+                if frag:
+                    out = subprocess.run(
+                        ["pactl", "list", "sinks", "short"],
+                        capture_output=True, text=True, timeout=5).stdout
+                    sinks = [line.split("\t")[1] for line in out.splitlines()
+                             if "\t" in line]
+                    sink = next((s for s in sinks if frag in s.lower()), None)
+                if sink is None:
+                    sink = subprocess.run(
+                        ["pactl", "get-default-sink"],
+                        capture_output=True, text=True, timeout=5).stdout.strip()
+            except Exception:
+                return None
+            if not sink:
+                return None
+            if pw:
+                # Target the SINK node in capture-sink mode. The pulse-layer
+                # "<sink>.monitor" alias does not exist in the native graph -
+                # pw-record with that name silently falls back to the default
+                # source (the mic), which is exactly the bug this replaces.
+                return (["pw-record", "--target", sink,
+                         "-P", "{ stream.capture.sink = true }",
+                         "--format", "f32", "--rate", str(self.RATE),
+                         "--channels", "2", "--raw", "-"], f"{sink} (output mix)")
+            return (["parec", f"--device={sink}.monitor", "--raw",
+                     "--format=float32le", f"--rate={self.RATE}",
+                     "--channels=2", "--latency-msec=50"], f"{sink}.monitor")
+        return None
+
+    def _start_pulse_capture(self, source):
+        """Start a background thread capturing `source` ("loopback" or
+        "bluetooth") from the PipeWire/Pulse graph via pw-record/parec,
+        feeding _ingest at the target rate. Returns True on success (thread
+        started; node resolution retries briefly inside the thread since a
+        bluez node can appear a moment after BlueZ reports the device
+        connected)."""
+        if shutil.which("pactl") is None:
+            return False
+        if shutil.which("pw-record") is None and shutil.which("parec") is None:
+            return False
+
+        self._src_rate = self.RATE  # capture command resamples to our rate
+        stop = threading.Event()    # per-thread: a fast source-switch must not
+        self._pa_stop = stop        # cross-talk with a lingering old thread
+
+        def _loop():
+            # PERSISTENT capture loop. The target node is TRANSIENT: a bluez
+            # A2DP source exists only while the phone is actually streaming -
+            # it appears seconds after play and vanishes seconds after pause.
+            # So: poll for the node for as long as this source stays active,
+            # capture while it lives, and go back to waiting when it drops.
+            # (The analyzer's stale-buffer gate reads the in-between as
+            # silence, so nothing downstream free-runs on the last chunk.)
+            waiting_said = False
+            while not stop.is_set():
+                resolved = self._pw_capture_cmd(source)
+                if resolved is None:
+                    if not waiting_said:
+                        print(f"[Audio] waiting for a '{source}' capture node "
+                              "(bluetooth: appears when the phone starts playing)")
+                        waiting_said = True
+                    stop.wait(1.0)
+                    continue
+                argv, label = resolved
+                try:
+                    proc = subprocess.Popen(
+                        argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                except Exception as e:
+                    print(f"[Audio] {argv[0]} failed to start: {e}")
+                    stop.wait(2.0)
+                    continue
+                self._pa_proc = proc
+                if stop.is_set():  # closed while we were spawning
+                    proc.terminate()
+                    return
+                print(f"[Audio] source={source} via {argv[0]} '{label}' @ {self.RATE} Hz")
+                waiting_said = False
+                # Read ~4 callback blocks (~46ms) per wakeup, matching the
+                # soundcard loopback path. Non-blocking reads + a 1s node
+                # watchdog: pw-record does NOT exit when its target node
+                # vanishes - it silently falls back to the DEFAULT SOURCE
+                # (the mic!), which is exactly the bug this path exists to
+                # fix. Re-verify the resolved target every second and
+                # restart the capture the moment it changes or disappears.
+                nbytes = self.CALLBACK_BLOCKSIZE * 4 * 2 * 4  # frames * ch * f32
+                fd = proc.stdout.fileno()
+                pending = b""
+                last_verify = time.time()
+                try:
+                    while not stop.is_set():
+                        r, _, _ = select.select([fd], [], [], 0.25)
+                        if r:
+                            chunk = os.read(fd, nbytes)
+                            if not chunk:  # EOF: capture process died
+                                break
+                            pending += chunk
+                            usable = len(pending) // 8 * 8  # whole stereo f32 frames
+                            if usable:
+                                data = np.frombuffer(pending[:usable],
+                                                     dtype="<f4").reshape(-1, 2)
+                                pending = pending[usable:]
+                                # Already at target rate; just downmixes.
+                                self._ingest(self._to_target(data, self.RATE))
+                        if time.time() - last_verify >= 1.0:
+                            last_verify = time.time()
+                            if self._pw_capture_cmd(source) != resolved:
+                                print(f"[Audio] '{source}' capture node changed/"
+                                      "vanished; reopening")
+                                break
+                except Exception as e:
+                    print(f"[Audio] {source} capture stopped: {e}")
+                finally:
+                    proc.terminate()
+                    self._pa_proc = None
+                if not stop.is_set():
+                    stop.wait(0.5)  # brief breather, then re-resolve
+
+        self._pa_thread = threading.Thread(target=_loop, daemon=True)
+        self._pa_thread.start()
+        return True
+
     def _close_stream(self):
         # Stop a soundcard loopback thread, if running.
         if self._sc_thread is not None:
             self._sc_stop.set()
             self._sc_thread.join(timeout=1.0)
             self._sc_thread = None
+        # Stop a parec bluetooth capture thread, if running.
+        if self._pa_thread is not None:
+            self._pa_stop.set()
+            if self._pa_proc is not None:
+                try:
+                    self._pa_proc.terminate()
+                except Exception:
+                    pass
+                self._pa_proc = None
+            self._pa_thread.join(timeout=1.0)
+            self._pa_thread = None
         if self.stream is not None:
             try:
                 self.stream.stop()

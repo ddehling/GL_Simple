@@ -13,7 +13,7 @@ scipy
 scikit-image
 miniaudio
 sounddevice
-soundcard  # cross-platform output loopback (audio.source: loopback) - WASAPI on Windows, PulseAudio monitor on Linux
+soundcard  # WASAPI output loopback on WINDOWS (audio.source: loopback). Linux uses native pw-record/parec instead (its Pulse-shim monitor capture is unreliable on PipeWire)
 soundfile
 av
 zeroconf

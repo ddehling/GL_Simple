@@ -290,11 +290,19 @@ class AudioStructure:
         rrow = np.asarray(raw[0], dtype=np.float32)
 
         # --- Silence gate: smoothed raw level vs the loudness reference ------
+        # The analyzer's noise gate ('gate' in the sound dict) is the absolute
+        # anchor: it knows the input's real level vs its noise floor. Without
+        # it, this RELATIVE reference anchors onto whatever it hears first -
+        # start the app in silence and _peak learns the noise floor itself,
+        # ratio ~= 1, and silence reads as music forever (the freeze below
+        # only protects a reference learned on real music).
+        g_in = float(sound.get("gate", 1.0))
         raw_level = float(np.mean(rrow))
         self._level += (raw_level - self._level) * (1.0 - math.exp(-dt / LEVEL_TAU))
         if self._level > self._peak:
-            self._peak += (self._level - self._peak) * (
-                1.0 - math.exp(-dt / LEVEL_REF_UP_TAU))
+            if g_in > 0.25:           # never learn the noise floor as "loud"
+                self._peak += (self._level - self._peak) * (
+                    1.0 - math.exp(-dt / LEVEL_REF_UP_TAU))
         elif self._gate > 0.25:       # music playing: track quieter shows
             self._peak += (self._level - self._peak) * (
                 1.0 - math.exp(-dt / LEVEL_REF_DOWN_TAU))
@@ -302,7 +310,7 @@ class AudioStructure:
         self._peak = max(self._peak, 1e-9)
         ratio = self._level / self._peak
         gate_now = (ratio - GATE_LO) / (GATE_HI - GATE_LO)
-        gate_now = max(0.0, min(1.0, gate_now))
+        gate_now = max(0.0, min(1.0, gate_now)) * g_in
         self._gate += (gate_now - self._gate) * (1.0 - math.exp(-dt / GATE_TAU))
         gate = self._gate
 

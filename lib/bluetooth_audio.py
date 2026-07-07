@@ -336,6 +336,23 @@ class _BlueZReceiver:
             arg0=_DEVICE_IFACE,
             path_keyword="path",
         )
+        # Seed with devices that are ALREADY connected: a phone paired and
+        # attached before the app (re)started never fires PropertiesChanged,
+        # so without this scan it stays invisible and the analyzer's
+        # bluetooth auto-switch never triggers.
+        try:
+            mgr = self._dbus.Interface(
+                self._bus.get_object(_BLUEZ_SERVICE, "/"), _OBJMGR_IFACE)
+            for path, ifaces in mgr.GetManagedObjects().items():
+                dev = ifaces.get(_DEVICE_IFACE)
+                if dev and bool(dev.get("Connected", False)):
+                    mac = self._mac_from_path(str(path))
+                    name = str(dev.get("Name", mac))
+                    with self._lock:
+                        self._connected[mac] = {"mac": mac, "name": name}
+                    print(f"[BT] already connected: {name} [{mac}]")
+        except Exception as e:
+            print(f"[BT] connected-device scan failed: {e}")
 
     def _on_device_props(self, interface, changed, invalidated, path=None):
         if "Connected" not in changed or path is None:

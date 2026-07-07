@@ -116,6 +116,7 @@ This feature **cannot be tested on Windows** (the dev box) — verify it here.
 | Block shows "unavailable" | `import dbus`/`gi` fails in the venv, or no BlueZ adapter. Run the import check; ensure `bluetoothd` is running (`systemctl status bluetooth`). |
 | `lucifera` not discoverable | Toggle is off, or adapter is soft-blocked: `rfkill unblock bluetooth`. Check `bluetoothctl show`. |
 | Pairs but no audio source | PipeWire BT plugin missing — install `libspa-0.2-bluetooth` (or `pulseaudio-module-bluetooth`) and restart the audio service / re-login. Confirm with `pactl list short sources | grep bluez`. |
+| Connected but visuals barely react / react to the room | The analyzer must capture the bluez node natively — the log should say `[Audio] source=bluetooth via pw-record 'bluez_input...'` (or `via parec` on genuine PulseAudio). If it says `via 'default'` or `no capture node found`, install `pipewire-utils`/`pulseaudio-utils` (`pw-record`, `pactl`). Without them, PortAudio can't see bluez nodes and silently captures the default input (the mic) instead. Note: on PipeWire, `parec` can also serve hw-sink monitors broken/silent — `pw-record` is the reliable path. |
 | Approval card never appears | App not in the `bluetooth` group (re-login after `usermod`), or another default agent is registered (e.g. a desktop's). Stop competing agents or run on a headless box. |
 | Audio is choppy | A2DP codec/quality — usually fine; check `pw-top` / CPU on a Pi. |
 
