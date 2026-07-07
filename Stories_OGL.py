@@ -2108,6 +2108,28 @@ class EnvironmentalSystem:
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
         state["rhythm_density"] = sig["density"]
+        # DIAGNOSTIC (AUDIO_DEBUG=1): the EXACT reactive values reaching the
+        # patterns, whatever the source (loopback / internal-DJ / mic). One
+        # line/sec ends the guesswork about where reactivity dies.
+        if getattr(self, "_audio_dbg", None) is None:
+            import os as _os
+            self._audio_dbg = _os.environ.get("AUDIO_DEBUG") == "1"
+            self._audio_dbg_n = 0
+        if self._audio_dbg:
+            self._audio_dbg_n += 1
+            if self._audio_dbg_n % 40 == 0:
+                snd = state.get("sound") or {}
+                dj = bool(getattr(self, "_dj", None) and self._dj.active)
+                print(f"[AUDIO] dj={dj} src={getattr(self.analyzer,'_active_source','?')} "
+                      f"gate={float(snd.get('gate', -1)):.2f} "
+                      f"energy={state.get('audio_energy',0):.2f} "
+                      f"bass_p={state.get('bass_punch',0):.2f} "
+                      f"mid_p={state.get('mid_punch',0):.2f} "
+                      f"high_p={state.get('high_punch',0):.2f} "
+                      f"beat_d={state.get('beat_decay',0):.2f} "
+                      f"drop_d={state.get('drop_decay',0):.2f} "
+                      f"cE={state.get('club_energy',0):.2f} "
+                      f"bpm={state.get('bpm',0):.0f} conf={state.get('beat_confidence',0):.2f}")
         key = self._harmonic_tracker.update(state.get("chroma"), audio_dt)
         state["key_center"] = key["center"]
         state["key_strength"] = key["strength"]
