@@ -64,12 +64,24 @@ DROP_DECAY_TAU = 0.35         # drop punch envelope
 
 # --- Punch envelopes ---------------------------------------------------------
 # A hit = the instantaneous norm_short mean of a range jumping above its
-# steady-state ~1.0. Deviation above PUNCH_FLOOR maps to 0..1 over
-# PUNCH_SPAN (norm 1.1 -> 0, norm 1.9 -> 1), attack instant, release
-# exponential. This is what gives visuals temporal contrast: 0 between
-# hits, ~1 on the hit.
-PUNCH_FLOOR = 1.1
-PUNCH_SPAN = 0.8
+# steady-state ~1.0. AUTO-RANGING (user: 'the autopower sets limits too
+# strictly - beats can't trigger anything'): the fixed 1.1..1.9 mapping
+# assumed dynamic material, but on compressed/dense music the AGC caps
+# deviations near 0.3, so real kicks peaked at ~0.25 punch - under every
+# pattern trigger. Each range now normalizes hits against its OWN recent
+# hit size (fast learn up, ~30s release, music-gated) with an absolute
+# floor so pads/noise can't fake full hits. Attack instant, release
+# exponential: 0 between hits, ~1 on the hit - whatever the mastering.
+PUNCH_DEADZONE = 0.06         # deviation below this is texture, not a hit
+DEV_BG_TAU = 1.5              # running average deviation = the range's
+                              # BACKGROUND busyness; a hit is deviation
+                              # ABOVE it (true temporal contrast - FFT
+                              # jitter on pads IS the background, a kick
+                              # stands clear of it)
+DEV_BG_K = 1.6                # background rejection strength
+DEV_REF_MIN = 0.30            # a +0.30 contrast is ALWAYS a full punch
+DEV_REF_UP_TAU = 1.5          # reference learns bigger hits quickly
+DEV_REF_DOWN_TAU = 30.0       # ...and forgets on minute scale (music only)
 PUNCH_RELEASE_TAU = 0.16      # fast enough to reach near-zero between
                               # 4-on-the-floor kicks (0.47s apart)
 
@@ -160,6 +172,11 @@ class AudioStructure:
         self._bass_punch = 0.0
         self._mid_punch = 0.0
         self._high_punch = 0.0
+        # Per-range adaptive hit reference (auto-ranging punch gain).
+        self._dev_ref = {"b": DEV_REF_MIN, "m": DEV_REF_MIN,
+                         "h": DEV_REF_MIN}
+        self._dev_prev = {"b": 0.0, "m": 0.0, "h": 0.0}
+        self._dev_bg = {"b": 0.0, "m": 0.0, "h": 0.0}
         self._energy = 0.0
         self._gate = 0.0
         self._level = 0.0             # smoothed absolute raw level
@@ -312,9 +329,30 @@ class AudioStructure:
 
         # --- Punch envelopes: instant attack on a hit, ~0.25s release -------
         rel = math.exp(-dt / PUNCH_RELEASE_TAU)
-        for attr, raw_v in (("_bass_punch", bass), ("_mid_punch", mid),
-                            ("_high_punch", high)):
-            hit = max(0.0, min(1.0, (raw_v - PUNCH_FLOOR) / PUNCH_SPAN))
+        for key, attr, raw_v in (("b", "_bass_punch", bass),
+                                 ("m", "_mid_punch", mid),
+                                 ("h", "_high_punch", high)):
+            dev = max(0.0, raw_v - 1.0 - PUNCH_DEADZONE)
+            # Temporal contrast: only deviation ABOVE the range's own
+            # running background counts. Sparse kicks tower over a low
+            # background; pad jitter IS the background and cancels out.
+            contrast = max(0.0, dev - DEV_BG_K * self._dev_bg[key])
+            self._dev_bg[key] += (dev - self._dev_bg[key]) * (
+                1.0 - math.exp(-dt / DEV_BG_TAU))
+            ref = self._dev_ref[key]
+            if contrast > ref:
+                ref += (contrast - ref) * (
+                    1.0 - math.exp(-dt / DEV_REF_UP_TAU))
+            elif gate > 0.25:
+                ref += (DEV_REF_MIN - ref) * (
+                    1.0 - math.exp(-dt / DEV_REF_DOWN_TAU))
+            self._dev_ref[key] = max(ref, DEV_REF_MIN)
+            # SHARPNESS gate: a kick arrives in one frame, a swell over
+            # hundreds of ms - only fast rises count as hits.
+            rise = dev - self._dev_prev[key]
+            self._dev_prev[key] = dev
+            sharp = max(0.0, min(1.0, rise / max(0.4 * dev, 0.02)))
+            hit = max(0.0, min(1.0, contrast / self._dev_ref[key])) * sharp
             setattr(self, attr, max(getattr(self, attr) * rel, hit))
 
         # --- Slow overall energy (2.5s baseline x absolute level) ----------
