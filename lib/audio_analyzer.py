@@ -733,13 +733,15 @@ class MicrophoneAnalyzer:
         peak = float(np.max(np.abs(w))) if w.size else 0.0
         self._wave_peak = max(getattr(self, '_wave_peak', 1e-6) * 0.995,
                               peak, 1e-6)
-        # Silence gate: don't amplify noise up to full scale. The absolute
-        # 1e-4 check alone misses analog noise floors (~1e-2), which this
-        # AGC would happily draw as a full-scale wave - scale by the noise
-        # gate so silence actually draws a flat line.
+        # Silence: the absolute peak check draws a flat line on true
+        # (digital / loopback) silence. NOT scaled by the analyzer gate -
+        # that fragile tracker collapsed on real music and would fade the
+        # waveform shaders with it (see a60c2ec). An analog noise floor may
+        # draw a faint wave in silence; harmless, and it's the day-ago
+        # behaviour.
         if self._wave_peak < 1e-4:
             return np.zeros(n, dtype=np.float32)
-        return (np.clip(w / self._wave_peak, -1.0, 1.0) * self._gate).astype(np.float32)
+        return np.clip(w / self._wave_peak, -1.0, 1.0).astype(np.float32)
 
     def get_current_bands(self, normalize='none'):
         """
