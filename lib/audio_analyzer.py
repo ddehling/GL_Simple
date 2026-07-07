@@ -472,9 +472,14 @@ class MicrophoneAnalyzer:
             if not stale:
                 if self._rms_smooth < self._noise_floor:
                     self._noise_floor += (self._rms_smooth - self._noise_floor) * 0.05
-                else:
-                    # Up-creep ~30s: slow enough that a track can't lift the
-                    # floor mid-song, fast enough to re-learn a noisier input.
+                elif self._rms_smooth < self._NF_CEIL:
+                    # Up-creep ~30s, but ONLY from sub-ceiling input. During
+                    # steady music _rms_smooth IS the music level, and letting
+                    # it lift the floor raised the threshold until the gate
+                    # shut on the very music that opened it (user: 'finds
+                    # stuff, then everything fades'). Loudness is the
+                    # discriminator: anything >= _NF_CEIL is music, never the
+                    # floor. Genuinely noisy (sub-ceiling) inputs still learn.
                     self._noise_floor += (self._rms_smooth - self._noise_floor) * 1e-3
                 self._noise_floor = min(max(self._noise_floor, 1e-6), self._NF_CEIL)
             # Soft threshold with wide margins: the floor converges onto the
