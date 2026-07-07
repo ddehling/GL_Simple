@@ -77,6 +77,11 @@ def main():
     from projects.fan.shaders.club_chaser import ClubChaserEffect
     from projects.fan.shaders.club_ribbon import ClubRibbonEffect
     from projects.fan.shaders.club_radar_sweep import ClubRadarSweepEffect
+    from projects.fan.shaders.club_urchin import ClubUrchinEffect
+    from projects.fan.shaders.club_predator import ClubPredatorEffect
+    from projects.fan.shaders.club_crystal import ClubCrystalEffect
+    from projects.fan.shaders.club_digital_flame import ClubDigitalFlameEffect
+    from projects.fan.shaders.club_singularity import ClubSingularityEffect
     from renderer.effects.audio_balls import AudioBallsEffect
 
     effects = [
@@ -110,6 +115,11 @@ def main():
         ("club_chaser", ClubChaserEffect),
         ("club_ribbon", ClubRibbonEffect),
         ("club_radar_sweep", ClubRadarSweepEffect),
+        ("club_urchin", ClubUrchinEffect),
+        ("club_predator", ClubPredatorEffect),
+        ("club_crystal", ClubCrystalEffect),
+        ("club_digital_flame", ClubDigitalFlameEffect),
+        ("club_singularity", ClubSingularityEffect),
         ("audio_balls", AudioBallsEffect),
     ]
 
