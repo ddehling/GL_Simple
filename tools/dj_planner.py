@@ -81,13 +81,19 @@ class LibraryTreeModel(QAbstractItemModel):
         super().__init__()
         self.folders = []            # [{"name": str, "tracks": [TrackInfo]}]
 
-    def set_tracks(self, tracks):
+    def set_tracks(self, tracks, flat=False):
         self.beginResetModel()
-        by = {}
-        for t in tracks:
-            by.setdefault(track_folder(t), []).append(t)
-        self.folders = [{"name": k, "tracks": v}
-                        for k, v in sorted(by.items())]
+        if flat:
+            # One container holding EVERYTHING; the view roots itself at
+            # this row, so tracks read as one big globally sortable list.
+            self.folders = [{"name": "(all tracks)",
+                             "tracks": list(tracks)}]
+        else:
+            by = {}
+            for t in tracks:
+                by.setdefault(track_folder(t), []).append(t)
+            self.folders = [{"name": k, "tracks": v}
+                            for k, v in sorted(by.items())]
         self.endResetModel()
 
     # -- structure ---------------------------------------------------------
@@ -170,6 +176,8 @@ class LibraryProxy(QSortFilterProxyModel):
         self.text = ""
         self.folder = None           # None = all folders
         self.tag = None              # None = all tags
+        self.flat = False            # flat list: folder filter applies to
+                                     # each track's REAL directory
 
     def set_text(self, text):
         self.text = (text or "").lower()
@@ -186,14 +194,38 @@ class LibraryProxy(QSortFilterProxyModel):
     def _track_matches(self, m, f_row, t_row):
         fd = m.folders[f_row]
         t = fd["tracks"][t_row]
+        if self.flat and self.folder is not None \
+                and track_folder(t) != self.folder:
+            return False
         if self.tag is not None and self.tag not in t.all_tags:
             return False
         hay = f"{t.title} {t.artist} {' '.join(t.all_tags)}".lower()
         return self.text in hay
 
+    def lessThan(self, left, right):
+        # Numeric columns sort numerically (bpm/dur/energy) - string
+        # sorting put 99 bpm after 121.
+        m = self.sourceModel()
+        ta = m.data(left, Qt.ItemDataRole.UserRole)
+        tb = m.data(right, Qt.ItemDataRole.UserRole)
+        if ta is not None and tb is not None:
+            c = left.column()
+            if c == 2:
+                return (ta.bpm or 0.0) < (tb.bpm or 0.0)
+            if c == 4:
+                return (ta.duration_s or 0.0) < (tb.duration_s or 0.0)
+            if c == 5:
+                return ta.energy_proxy() < tb.energy_proxy()
+            ka = (m.data(left, Qt.ItemDataRole.DisplayRole) or "").lower()
+            kb = (m.data(right, Qt.ItemDataRole.DisplayRole) or "").lower()
+            return ka < kb
+        return super().lessThan(left, right)
+
     def filterAcceptsRow(self, row, parent):
         m = self.sourceModel()
         if not parent.isValid():                           # folder row
+            if self.flat:
+                return True                    # single root-hidden container
             name = m.folder_name(row)
             if self.folder is not None and name != self.folder:
                 return False
@@ -203,12 +235,13 @@ class LibraryProxy(QSortFilterProxyModel):
             return any(self._track_matches(m, row, r)
                        for r in range(len(m.folders[row]["tracks"])))
         f_row = parent.row()
-        if self.folder is not None \
-                and m.folder_name(f_row) != self.folder:
-            return False
-        if self.tag is None and self.text \
-                and self.text in m.folder_name(f_row).lower():
-            return True
+        if not self.flat:
+            if self.folder is not None \
+                    and m.folder_name(f_row) != self.folder:
+                return False
+            if self.tag is None and self.text \
+                    and self.text in m.folder_name(f_row).lower():
+                return True
         return self._track_matches(m, f_row, row)
 
 
@@ -293,6 +326,15 @@ class LibraryTab(QWidget):
             b = QPushButton(label)
             b.clicked.connect(cb)
             prow.addWidget(b)
+        add_btn = QPushButton("Add selected to set →")
+        add_btn.clicked.connect(self._add_selected)
+        prow.addWidget(add_btn)
+        self.flat_btn = QPushButton("View: folders")
+        self.flat_btn.setCheckable(True)
+        self.flat_btn.setToolTip("Toggle between the directory tree and "
+                                 "one big sortable list of every track")
+        self.flat_btn.toggled.connect(self._toggle_flat)
+        prow.addWidget(self.flat_btn)
         self.play_lbl = QLabel("")
         prow.addWidget(self.play_lbl, 1)
         v.addLayout(prow)
@@ -340,9 +382,6 @@ class LibraryTab(QWidget):
         v.addWidget(self.table)
 
         bot = QHBoxLayout()
-        b1 = QPushButton("Add selected to set →")
-        b1.clicked.connect(self._add_selected)
-        bot.addWidget(b1)
         b2 = QPushButton("Open in Analysis")
         b2.clicked.connect(self._open_analysis)
         bot.addWidget(b2)
@@ -548,22 +587,36 @@ class LibraryTab(QWidget):
         tag = None if label == "all tags" else label.split("  (")[0]
         self.proxy.set_tag(tag)
 
+    def _toggle_flat(self, on):
+        self.flat_btn.setText("View: flat list" if on else "View: folders")
+        self.proxy.flat = bool(on)
+        self.refresh()
+
     def refresh(self):
+        flat = getattr(self, "flat_btn", None) is not None             and self.flat_btn.isChecked()
         # Preserve which folders are open across rescans/tag edits.
         open_names = set()
-        for r in range(self.proxy.rowCount()):
-            idx = self.proxy.index(r, 0)
-            if self.table.isExpanded(idx):
-                src = self.proxy.mapToSource(idx)
-                open_names.add(self.model.folder_name(src.row()))
+        if not flat:
+            for r in range(self.proxy.rowCount()):
+                idx = self.proxy.index(r, 0)
+                if self.table.isExpanded(idx):
+                    src = self.proxy.mapToSource(idx)
+                    open_names.add(self.model.folder_name(src.row()))
         first = not self.model.folders
-        self.model.set_tracks(self.planner.library)
+        self.model.set_tracks(self.planner.library, flat=flat)
         self.count_lbl.setText(f"{len(self.planner.library)} tracks")
-        for r in range(self.proxy.rowCount()):
-            idx = self.proxy.index(r, 0)
-            src = self.proxy.mapToSource(idx)
-            name = self.model.folder_name(src.row())
-            self.table.setExpanded(idx, first or name in open_names)
+        if flat:
+            # Root the view AT the single container: pure sortable list.
+            src0 = self.model.index(0, 0)
+            self.table.setRootIndex(self.proxy.mapFromSource(src0))
+        else:
+            from PyQt6.QtCore import QModelIndex
+            self.table.setRootIndex(QModelIndex())
+            for r in range(self.proxy.rowCount()):
+                idx = self.proxy.index(r, 0)
+                src = self.proxy.mapToSource(idx)
+                name = self.model.folder_name(src.row())
+                self.table.setExpanded(idx, first or name in open_names)
         counts = {}
         for t in self.planner.library:
             for tag in t.all_tags:
