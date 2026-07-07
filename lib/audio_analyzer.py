@@ -275,7 +275,11 @@ class MicrophoneAnalyzer:
         # closes the normalized outputs when the level is at/near it, so
         # silence actually reads as silence downstream.
         self._NF_CEIL = 0.01     # floor estimate ceiling: music can never become "the floor"
-        self._noise_floor = self._NF_CEIL  # adaptive floor estimate (RMS)
+        self._NF_INIT = 3e-4     # START sensitive (near digital silence) and
+                                 # let the slow up-creep raise the floor only
+                                 # if the input genuinely carries sustained
+                                 # floor noise - NOT the other way round.
+        self._noise_floor = self._NF_INIT  # adaptive floor estimate (RMS)
         self._rms_smooth = 0.0   # ~0.25s-smoothed input RMS the gate acts on
         self._gate = 0.0         # smoothed gate factor, 0 (closed) .. 1 (open)
 
@@ -459,17 +463,20 @@ class MicrophoneAnalyzer:
             # on a silent loopback with rms 1.7x its floor).
             rms = float(np.sqrt(np.mean(data * data)))
             self._rms_smooth += (rms - self._rms_smooth) * 0.1  # tau ~0.25s @40fps
+            stale = time.time() - getattr(self, '_last_ingest_t', 0.0) > 0.5
             # Adaptive floor estimate: tracks DOWN toward the smoothed quiet
             # level (not its minima), creeps UP very slowly (so sustained
-            # music can't inflate it), hard-capped at _NF_CEIL.
-            if self._rms_smooth < self._noise_floor:
-                self._noise_floor += (self._rms_smooth - self._noise_floor) * 0.05
-            else:
-                # Up-creep ~30s: slow enough that a track can't lift the floor
-                # mid-song, fast enough to re-learn a noisier input. _NF_CEIL
-                # caps it regardless, so music can never gate itself off.
-                self._noise_floor += (self._rms_smooth - self._noise_floor) * 1e-3
-            self._noise_floor = min(max(self._noise_floor, 1e-6), self._NF_CEIL)
+            # music can't inflate it), hard-capped at _NF_CEIL. FROZEN while
+            # stale - a paused source retains its last music buffer, and
+            # learning from it would drag the floor up toward music level.
+            if not stale:
+                if self._rms_smooth < self._noise_floor:
+                    self._noise_floor += (self._rms_smooth - self._noise_floor) * 0.05
+                else:
+                    # Up-creep ~30s: slow enough that a track can't lift the
+                    # floor mid-song, fast enough to re-learn a noisier input.
+                    self._noise_floor += (self._rms_smooth - self._noise_floor) * 1e-3
+                self._noise_floor = min(max(self._noise_floor, 1e-6), self._NF_CEIL)
             # Soft threshold with wide margins: the floor converges onto the
             # smoothed silence level itself, so "music" must clear well above.
             lo = self._noise_floor * 2.5 + 1.5e-3
@@ -479,7 +486,7 @@ class MicrophoneAnalyzer:
             # A stale buffer (capture stopped delivering - e.g. the bluetooth
             # node suspends when the phone pauses) would otherwise re-analyze
             # the last chunk of music forever. Treat stale as silence.
-            if time.time() - getattr(self, '_last_ingest_t', 0.0) > 0.5:
+            if stale:
                 target = 0.0
             # Attack ~3 frames, release ~1.2s: quick to open on real music,
             # slow enough that quiet passages don't flicker the visuals off.
@@ -772,9 +779,11 @@ class MicrophoneAnalyzer:
         # Start the new source from silence so a stale window doesn't linger.
         self.audio_buffer = np.zeros(self.CHUNK)
         # Each source has its own noise floor (floating line-in >> digital BT
-        # silence). Restart the estimate from the ceiling; it snaps down to
-        # the new source's floor within a second of quiet.
-        self._noise_floor = self._NF_CEIL
+        # silence). Restart the estimate LOW (sensitive) and let it creep up
+        # only if the new source proves noisy - starting from the ceiling
+        # left real audio unable to open the gate until a silent gap dragged
+        # the floor back down (deadlock; user-reported).
+        self._noise_floor = self._NF_INIT
         self._rms_smooth = 0.0
         if source == "internal":
             # No device stream; AudioEngine.feed() drives _ingest.
