@@ -2074,10 +2074,14 @@ class EnvironmentalSystem:
             prev_ph = getattr(self, "_dj_beat_prev", None)
             onset = prev_ph is not None and ph < prev_ph - 0.5
             self._dj_beat_prev = ph
-            if onset:
-                self._dj_beat_env = 1.0
+            drive = lb.get("drive", 1.0)
+            if onset and drive >= 0.2:
+                self._dj_beat_env = drive
             benv = getattr(self, "_dj_beat_env", 0.0)
-            state["beat"] = bool(state["beat"]) or onset
+            # Phases/bpm stay grid-true through breakdowns (motion should
+            # keep gliding); PULSES follow the section's actual rhythm -
+            # a resting kick must not flash the room.
+            state["beat"] = bool(state["beat"]) or (onset and drive >= 0.2)
             state["beat_decay"] = max(state["beat_decay"], benv)
             state["beat_phase"] = ph
             state["bar_phase"] = lb["bar_phase"]

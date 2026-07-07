@@ -449,6 +449,13 @@ class DJSystem:
         t = self.current
         if not d or t is None or not d.get("playing") or not d.get("ready"):
             return None
+        # TRUST GATE: the analyzer emits SOME grid for any audio -
+        # autocorrelation on a beatless Zimmer drone found 111 bpm at
+        # conf 0.04, and publishing it as ground truth made the club
+        # pulse on beats that don't exist (user-heard on 'Mesa').
+        # Same bar the mixing brain uses for beat-matching.
+        if (t.bpm_conf or 0.0) < 0.5:
+            return None
         pos = float(d.get("time_s") or 0.0)
         rate = max(float(d.get("rate") or 1.0), 1e-6)
         gseg = None
@@ -463,11 +470,18 @@ class DJSystem:
         off = int(t.row.get("downbeat_offset") or 0)
         pb = int(t.phrase_beats or 32)
         sec = t.section_at(pos) or {}
+        # DRIVE: how much rhythm the playing SECTION actually has - the
+        # grid keeps ticking through a breakdown, but the room must not
+        # pulse on resting kicks. (Section density ~6-9 in grooves on
+        # this analyzer's scale, ~0 in breakdowns.)
+        drive = max(0.0, min(1.0, float(
+            sec.get("rhythm_density") or 0.0) / 4.0))
         return {"bpm": 60.0 * rate / per,
                 "phase": float(d.get("beat_phase") or 0.0),
                 "bar_phase": ((idx - off) % 4.0) / 4.0,
                 "phrase_phase": ((idx - off) % pb) / float(pb),
-                "bass_share": float(sec.get("bass_share") or 0.33)}
+                "bass_share": float(sec.get("bass_share") or 0.33),
+                "drive": drive}
 
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
@@ -674,6 +688,7 @@ class DJSystem:
                 t = next((x for x in self.brain.library if x.id == val), None)
                 if t is not None and self.state == "playing":
                     self.next_track = t
+                    self._next_requested = True
                     self.plan = None
                     self._log({"event": "pick_next", "track": t.title})
             elif kind == "setlist":
@@ -1142,6 +1157,7 @@ class DJSystem:
         old = self.current
         self.current = self.next_track
         self.next_track = None
+        self._next_requested = False
         self.active_deck = "b" if self.active_deck == "a" else "a"
         self._started_clock = self.submix.clock
         self._draw_exit()
@@ -1215,8 +1231,11 @@ class DJSystem:
         self._urgent_exit = True
         self._log({"event": "skip", "track":
                    self.current.title if self.current else None})
-        # Force planning NOW with an exit a few bars out.
-        self.next_track = None
+        # Force planning NOW with an exit a few bars out. An explicitly
+        # REQUESTED next survives the skip - 'play this next' + 'mix now'
+        # must not throw the request away.
+        if not getattr(self, "_next_requested", False):
+            self.next_track = None
         self.plan = None
         self._exit_played = (self.submix.clock - self._started_clock) / RATE
         self._maybe_plan()
