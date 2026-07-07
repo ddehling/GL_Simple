@@ -794,8 +794,9 @@ class DJSystem:
             # just played: the recency wall is deliberately nonzero for
             # dry-pool grace, so 'scores > 0' alone is not consent.
             now = time.time()
+            ck0 = self.brain.ckey.get(t0.id, t0.id) if t0 is not None else None
             fresh = t0 is not None and not any(
-                tid == t0.id and now - w < 3600.0
+                tid == ck0 and now - w < 3600.0
                 for w, tid, _ in self.brain.recent)
             if fresh and t0.id != self.current.id                     and t0.id not in self.brain.veto_ids:
                 s, meta = self.brain.score(
@@ -856,7 +857,14 @@ class DJSystem:
                 min(prog0 + i * step, 1.0)) + self._energy_nudge))
         try:
             by_id = {t.id: t for t in self.brain.library}
-            kept = [h for h in self._horizon if h["id"] in by_id][:3]
+            ck = self.brain.ckey
+            kept, seen = [], {ck.get(self.current.id, self.current.id)}
+            for h in self._horizon:
+                k = ck.get(h["id"], h["id"])
+                if h["id"] in by_id and k not in seen:
+                    seen.add(k)
+                    kept.append(h)
+            kept = kept[:3]
             need = 3 - len(kept)
             if need > 0:
                 tail = by_id[kept[-1]["id"]] if kept else self.current
@@ -893,6 +901,14 @@ class DJSystem:
                                     "why": self.brain.explain_pick(
                                         self.current, self.next_track,
                                         self._next_meta)}
+                # The same song must not appear twice in the triplet: the
+                # committed pick may ALSO be sitting at slot 1/2 from an
+                # earlier preview (reroll / fresh pick paths) - evict it.
+                nk = self.brain.ckey.get(self.next_track.id,
+                                         self.next_track.id)
+                self._horizon = [self._horizon[0]] + [
+                    h for h in self._horizon[1:]
+                    if self.brain.ckey.get(h["id"], h["id"]) != nk]
         except Exception as e:
             print(f"[DJ] horizon skipped: {e}")
 

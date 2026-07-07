@@ -190,6 +190,17 @@ def _shift_camelot(cam, semitones):
 class Brain:
     def __init__(self, library, theme, seed=None, stretch_max=STRETCH_MAX):
         self.library = list(library)
+        # CONTENT IDENTITY: the real library holds dozens of byte-identical
+        # copies under different track ids (plus re-rips). For recency and
+        # queue purposes a copy IS the song - per-id memory let 'the same
+        # song' reappear via its twin (user-seen in the next-3 queue).
+        def _ck(t):
+            h = (t.row.get("content_hash") or "").strip()
+            if h:
+                return "h:" + h
+            return ("m:" + (t.title or "").strip().lower() + "|"
+                    + (t.artist or "").strip().lower())
+        self.ckey = {t.id: _ck(t) for t in library}
         self._lib_bpms = [t.bpm for t in self.library]
         self.theme = adapt_theme(theme, self._lib_bpms)
         if self.theme.bpm_range != theme.bpm_range:
@@ -326,16 +337,19 @@ class Brain:
 
     # -- memory --------------------------------------------------------------
     def note_played(self, track, when=None):
-        self.recent.append((when or time.time(), track.id, track.artist))
+        self.recent.append((when or time.time(),
+                            self.ckey.get(track.id, track.id),
+                            track.artist))
         cutoff = (when or time.time()) - 10 * 3600
         self.recent = [r for r in self.recent if r[0] > cutoff]
 
     def _recency_penalty(self, track, now=None):
         now = now or time.time()
         pen = 1.0
+        ck = self.ckey.get(track.id, track.id)
         for when, tid, artist in self.recent:
             age_h = (now - when) / 3600.0
-            if tid == track.id:
+            if tid == ck:
                 # Inside an hour the penalty must be a near-WALL: strong
                 # flavor leans concentrate the pool and a x0.09 penalty
                 # lost to them - measured: a track returned after 13 min
