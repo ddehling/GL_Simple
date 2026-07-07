@@ -290,19 +290,21 @@ class AudioStructure:
         rrow = np.asarray(raw[0], dtype=np.float32)
 
         # --- Silence gate: smoothed raw level vs the loudness reference ------
-        # The analyzer's noise gate ('gate' in the sound dict) is the absolute
-        # anchor: it knows the input's real level vs its noise floor. Without
-        # it, this RELATIVE reference anchors onto whatever it hears first -
-        # start the app in silence and _peak learns the noise floor itself,
-        # ratio ~= 1, and silence reads as music forever (the freeze below
-        # only protects a reference learned on real music).
-        g_in = float(sound.get("gate", 1.0))
+        # This is the ONLY silence gate on the reactive path (the analyzer
+        # gate no longer attenuates the bands - it was fragile and collapsed
+        # loopback music). RELATIVE + scale-independent: level vs a two-
+        # sided reference with minute-scale memory (fast up, ~25s down
+        # while music plays, frozen in silence). Steady music sits at
+        # ratio ~1 -> gate ~1 (CANNOT collapse - the failure users hit);
+        # a real silence AFTER music drops level far below the remembered
+        # peak -> gate shuts in ~1-2s. Only a cold start straight into
+        # silence briefly reads as active until the reference settles -
+        # harmless (day-ago behaviour).
         raw_level = float(np.mean(rrow))
         self._level += (raw_level - self._level) * (1.0 - math.exp(-dt / LEVEL_TAU))
         if self._level > self._peak:
-            if g_in > 0.25:           # never learn the noise floor as "loud"
-                self._peak += (self._level - self._peak) * (
-                    1.0 - math.exp(-dt / LEVEL_REF_UP_TAU))
+            self._peak += (self._level - self._peak) * (
+                1.0 - math.exp(-dt / LEVEL_REF_UP_TAU))
         elif self._gate > 0.25:       # music playing: track quieter shows
             self._peak += (self._level - self._peak) * (
                 1.0 - math.exp(-dt / LEVEL_REF_DOWN_TAU))
@@ -310,7 +312,7 @@ class AudioStructure:
         self._peak = max(self._peak, 1e-9)
         ratio = self._level / self._peak
         gate_now = (ratio - GATE_LO) / (GATE_HI - GATE_LO)
-        gate_now = max(0.0, min(1.0, gate_now)) * g_in
+        gate_now = max(0.0, min(1.0, gate_now))
         self._gate += (gate_now - self._gate) * (1.0 - math.exp(-dt / GATE_TAU))
         gate = self._gate
 

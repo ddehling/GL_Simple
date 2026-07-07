@@ -661,14 +661,12 @@ class MicrophoneAnalyzer:
         # Calculate ReLU(norm_long - 1) - highlights when bands are above long-term average
         norm_long_relu = np.maximum(0, norm_long - 1)
 
-        # Noise gate on the normalized (ratio) outputs: with a silent input
-        # they read ~1.0 (noise / its own average) - steady-music territory.
-        # raw_bands stays ungated: it reports honest absolute level.
-        g = self._gate
-        if g < 0.999:
-            norm_short = norm_short * g
-            norm_long = norm_long * g
-            norm_long_relu = norm_long_relu * g
+        # (The analyzer noise gate is exposed as 'gate' in the extended dict
+        # for display shaders that want it, but it NO LONGER attenuates the
+        # reactive norm bands: its adaptive-floor tracker proved fragile and
+        # collapsed steady loopback music to silence. audio_signals gates
+        # its own energy/punch/mood outputs on the honest absolute level,
+        # so silence is still rejected downstream without this multiply.)
 
         # Apply sensitivity multiplier to raw and normalized bands
         s = self._sensitivity
