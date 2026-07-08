@@ -82,6 +82,9 @@ def main():
     from projects.fan.shaders.club_crystal import ClubCrystalEffect
     from projects.fan.shaders.club_digital_flame import ClubDigitalFlameEffect
     from projects.fan.shaders.club_singularity import ClubSingularityEffect
+    from projects.fan.shaders.club_spots import ClubSpotsEffect
+    from projects.fan.shaders.club_spectrogram import ClubSpectrogramEffect
+    from projects.fan.shaders.club_voronoi_sphere import ClubVoronoiSphereEffect
     from renderer.effects.audio_balls import AudioBallsEffect
 
     effects = [
@@ -120,6 +123,9 @@ def main():
         ("club_crystal", ClubCrystalEffect),
         ("club_digital_flame", ClubDigitalFlameEffect),
         ("club_singularity", ClubSingularityEffect),
+        ("club_spots", ClubSpotsEffect),
+        ("club_spectrogram", ClubSpectrogramEffect),
+        ("club_voronoi_sphere", ClubVoronoiSphereEffect),
         ("audio_balls", AudioBallsEffect),
     ]
 
