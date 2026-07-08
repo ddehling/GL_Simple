@@ -85,6 +85,7 @@ def main():
     from projects.fan.shaders.club_spots import ClubSpotsEffect
     from projects.fan.shaders.club_spectrogram import ClubSpectrogramEffect
     from projects.fan.shaders.club_voronoi_sphere import ClubVoronoiSphereEffect
+    from projects.fan.shaders.club_rain import ClubRainEffect
     from renderer.effects.audio_balls import AudioBallsEffect
 
     effects = [
@@ -126,6 +127,7 @@ def main():
         ("club_spots", ClubSpotsEffect),
         ("club_spectrogram", ClubSpectrogramEffect),
         ("club_voronoi_sphere", ClubVoronoiSphereEffect),
+        ("club_rain", ClubRainEffect),
         ("audio_balls", AudioBallsEffect),
     ]
 
