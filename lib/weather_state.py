@@ -295,7 +295,7 @@ class WeatherStateController:
             # in event_map / weather_params / the director tables.
             "orb_level": self.weather_params.get("orb_level", 0.0),
             "spots_level": self.weather_params.get("spots_level", 0.0),
-            "spectrogram_level": self.weather_params.get("spectrogram_level", 0.0),
+            "audiocurve_level": self.weather_params.get("audiocurve_level", 0.0),
             "rain_level": self.weather_params.get("rain_level", 0.0),
             "crystal_level": self.weather_params.get("crystal_level", 0.0),
             "urchin_level": self.weather_params.get("urchin_level", 0.0),
