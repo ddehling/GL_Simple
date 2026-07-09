@@ -289,7 +289,19 @@ class WeatherStateController:
             "club_energy": self.weather_params.get("club_energy", 0.0),
             "club_palette": self.weather_params.get("club_palette", 0.0),
             # Club pattern levels (one per audio-reactive pattern; 0 = out).
+            # NOTE: this dict is the PUBLISH ALLOWLIST - a weather param only
+            # reaches outstate (and thus its shader) if it's listed here. A
+            # new club pattern needs its <x>_level added HERE too, not just
+            # in event_map / weather_params / the director tables.
             "orb_level": self.weather_params.get("orb_level", 0.0),
+            "spots_level": self.weather_params.get("spots_level", 0.0),
+            "spectrogram_level": self.weather_params.get("spectrogram_level", 0.0),
+            "rain_level": self.weather_params.get("rain_level", 0.0),
+            "crystal_level": self.weather_params.get("crystal_level", 0.0),
+            "urchin_level": self.weather_params.get("urchin_level", 0.0),
+            "predator_level": self.weather_params.get("predator_level", 0.0),
+            "flame_level": self.weather_params.get("flame_level", 0.0),
+            "singularity_level": self.weather_params.get("singularity_level", 0.0),
             "tunnel_level": self.weather_params.get("tunnel_level", 0.0),
             "star_field_level": self.weather_params.get("star_field_level", 0.0),
             "shockwave_level": self.weather_params.get("shockwave_level", 0.0),
