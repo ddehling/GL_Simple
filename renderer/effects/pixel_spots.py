@@ -14,19 +14,26 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_pixel_spots(state, outstate, intensity=1.0, audio_sensitivity=1.5):
+def shader_pixel_spots(state, outstate, intensity=1.0, audio_sensitivity=1.5,
+                       audio_reactive=True):
     """
     Shader-based pixel spots effect compatible with EventScheduler
-    
+
     Usage:
         scheduler.schedule_event(0, 60, shader_pixel_spots, intensity=1.0, frame_id=0)
-    
+
     Args:
         state: Event state dict (contains start_time, elapsed_time, count, frame_id)
         outstate: Global state dict (from EventScheduler)
         intensity: Overall intensity multiplier (affects spawn rate)
         audio_sensitivity: Multiplier for audio reactivity (default 1.5)
-    
+        audio_reactive: True (default) = spawn rate follows bass energy —
+            near-silent baseline with bursts on pulses (WoL leaves canvas).
+            False = steady twinkle at a constant rate, no audio coupling
+            (cyberpunk: with the AGC'd bass signal hovering near 0, the
+            reactive mode spent most of its life invisible and then
+            burst, which read as broken rather than musical).
+
     Global Parameters (from outstate):
         spot_rate: Rate multiplier for spot appearance (default 1.0)
         spot_decay: Speed multiplier for spot decay (default 1.0)
@@ -53,7 +60,8 @@ def shader_pixel_spots(state, outstate, intensity=1.0, audio_sensitivity=1.5):
             spots_effect = viewport.add_effect(
                 PixelSpotsEffect,
                 intensity=intensity,
-                audio_sensitivity=audio_sensitivity
+                audio_sensitivity=audio_sensitivity,
+                audio_reactive=audio_reactive
             )
             state['effect'] = spots_effect
             print(f"✓ Initialized shader pixel spots for frame {frame_id}")
@@ -74,9 +82,9 @@ def shader_pixel_spots(state, outstate, intensity=1.0, audio_sensitivity=1.5):
         # Pass current time for rolling hue
         effect.current_time = state.get('elapsed_time', 0.0)
         
-        # Pass audio data to effect (only bass)
+        # Pass audio data to effect (only bass; skipped in steady mode)
         audio_data = outstate.get('sound')
-        if audio_data is not None:
+        if audio_reactive and audio_data is not None:
             # Get norm_long_relu for current frame [0]
             audio_bands = audio_data['norm_long_relu'][0]
             
@@ -101,10 +109,12 @@ def shader_pixel_spots(state, outstate, intensity=1.0, audio_sensitivity=1.5):
 class PixelSpotsEffect(ShaderEffect):
     """GPU-based pixel spots effect using instanced rendering"""
     
-    def __init__(self, viewport, intensity: float = 1.0, audio_sensitivity: float = 1.5):
+    def __init__(self, viewport, intensity: float = 1.0, audio_sensitivity: float = 1.5,
+                 audio_reactive: bool = True):
         super().__init__(viewport)
         self.intensity = intensity
         self.audio_sensitivity = audio_sensitivity
+        self.audio_reactive = bool(audio_reactive)
 
         # Must render AFTER cyber_city_skyline (priority 6.0) so the
         # building silhouette's depth values (written by skyline as
@@ -210,11 +220,16 @@ class PixelSpotsEffect(ShaderEffect):
             self.lifetimes = self.lifetimes[alive_mask]
             self.max_lifetimes = self.max_lifetimes[alive_mask]
         
-        # Calculate spawn rate based on bass energy only
         base_rate = self.spot_rate * self.intensity * 50.0  # Base spots per second
-        
-        # Audio-driven spawn rate with dramatic response to loud pulses
-        spawn_rate = base_rate * (0.05 + self.bass_energy * 15.0)  # Very high sensitivity to bass
+
+        if self.audio_reactive:
+            # Audio-driven spawn rate with dramatic response to loud pulses
+            spawn_rate = base_rate * (0.05 + self.bass_energy * 15.0)  # Very high sensitivity to bass
+        else:
+            # Steady twinkle: constant rate, no audio coupling. 0.6 of
+            # base (~60 spots/s at defaults) with 0.5-2s lifetimes keeps
+            # ~75 spots alive - a calm, continuous shimmer.
+            spawn_rate = base_rate * 0.6
         
         # Accumulate spawn probability
         self.spawn_accumulator += dt
