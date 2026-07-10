@@ -142,6 +142,9 @@ horizon.
 | 0.95 | storm_sky | back-plane sky color-grade (writes depth) |
 | 0.90 | stars | engine, visible through cloud breaks |
 | 0.88 | storm_moonbow | faint lunar rainbow arc, clearing |
+| 0.87 | storm_moonbow_reveal | one-shot sweep along the bow on STORM_MOONBOW entry |
+| 0.85 | storm_thunder | flash->delay->rumble sheet, backlights the clouds |
+| 0.84 | storm_thunderclap | one-shot opening clap on ROLLING_THUNDER / SUPER_HURRICANE entry |
 | 0.80 | storm_clouds | scrolling layered cloud deck |
 | 0.62 | storm_color_band | drifting aurora-like colored squall |
 | 0.30 - 0.55 | storm_rain | per-drop depth; intensity/speed/angle/vortex/color params |
