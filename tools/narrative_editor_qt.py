@@ -3767,6 +3767,39 @@ class NarrativeNode(BaseNode):
 # PropertiesPanel
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _find_term_spans(text: str, term: str, whole_word: bool = False) -> list:
+    """Case-insensitive (start, end) spans of `term` inside `text`.
+
+    With ``whole_word``, occurrences flanked by word characters are
+    excluded — searching 'rain' stops matching 'train' or 'raining'.
+    Boundary guards are applied only where the TERM's own edge is a word
+    character, so punctuation-edged terms behave sensibly: '...' still
+    matches 'wait...', and 'rain,' matches 'rain,' but not 'train,'.
+
+    Single source of truth for search matching: used by the node search
+    (MainWindow._cmd_search) AND every highlight renderer (text view,
+    label/tags line edits, arc-beat label), so what lights up is always
+    exactly what matched.
+    """
+    if not term or not text:
+        return []
+    if whole_word:
+        head = r'(?<!\w)' if re.match(r'\w', term[0]) else ''
+        tail = r'(?!\w)' if re.match(r'\w', term[-1]) else ''
+        pat = re.compile(head + re.escape(term) + tail, re.IGNORECASE)
+        return [(m.start(), m.end()) for m in pat.finditer(text)]
+    tlow, qlow = text.lower(), term.lower()
+    spans = []
+    start = 0
+    while True:
+        idx = tlow.find(qlow, start)
+        if idx < 0:
+            break
+        spans.append((idx, idx + len(qlow)))
+        start = idx + max(1, len(qlow))
+    return spans
+
+
 class _HighlightLineEdit(QLineEdit):
     """QLineEdit that paints a translucent yellow highlight rectangle over
     every substring matching a search term. QLineEdit has no native subrange
@@ -3776,12 +3809,15 @@ class _HighlightLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._highlight_term: str = ''
+        self._highlight_word: bool = False
 
-    def set_highlight_term(self, term: str):
+    def set_highlight_term(self, term: str, whole_word: bool = False):
         new = term or ''
-        if new == self._highlight_term:
+        word = bool(whole_word)
+        if new == self._highlight_term and word == self._highlight_word:
             return
         self._highlight_term = new
+        self._highlight_word = word
         self.update()  # trigger repaint
 
     def paintEvent(self, event):
@@ -3792,9 +3828,8 @@ class _HighlightLineEdit(QLineEdit):
         text = self.text()
         if not text:
             return
-        qlow = self._highlight_term.lower()
-        tlow = text.lower()
-        if qlow not in tlow:
+        spans = _find_term_spans(text, self._highlight_term, self._highlight_word)
+        if not spans:
             return
 
         from PySide6.QtWidgets import QStyle, QStyleOptionFrame
@@ -3818,16 +3853,10 @@ class _HighlightLineEdit(QLineEdit):
             color = QColor(255, 220, 100, 150)  # translucent yellow
             painter.setBrush(color)
             painter.setPen(_Qt.PenStyle.NoPen)
-            start = 0
-            n = len(qlow)
-            while True:
-                idx = tlow.find(qlow, start)
-                if idx < 0:
-                    break
-                x = x_base + fm.horizontalAdvance(text[:idx])
-                w = fm.horizontalAdvance(text[idx:idx + n])
+            for s, e in spans:
+                x = x_base + fm.horizontalAdvance(text[:s])
+                w = fm.horizontalAdvance(text[s:e])
                 painter.drawRect(QRect(x, y_offset, w, text_h))
-                start = idx + max(1, n)
         finally:
             painter.end()
 
@@ -3844,6 +3873,8 @@ class PropertiesPanel(QWidget):
         self._ai: Optional[AIAssistant] = None
         self._ui_queue: Optional[queue.SimpleQueue] = None
         self._search_term: str = ''  # current main-window search term for in-text highlighting
+        self._search_text_only: bool = False  # mirror of the main window's Text-only search toggle
+        self._search_whole_word: bool = False  # mirror of the main window's Word search toggle
         self._arc_beat_raw: str = ''  # raw arc_beat text (so we can re-render with highlights)
         self._build_ui()
 
@@ -4120,6 +4151,26 @@ class PropertiesPanel(QWidget):
         self._search_term = new
         self._apply_search_highlights()
 
+    def set_search_scope(self, text_only: bool):
+        """Called by MainWindow when the Text-only search toggle flips.
+        In text-only mode the label / tags / arc-beat fields stop
+        highlighting — they no longer participate in matching, and a lit
+        highlight there would misreport what the search actually hit."""
+        flag = bool(text_only)
+        if flag == self._search_text_only:
+            return
+        self._search_text_only = flag
+        self._apply_search_highlights()
+
+    def set_search_word(self, whole_word: bool):
+        """Called by MainWindow when the whole-Word search toggle flips.
+        Highlights re-render so 'rain' stops lighting up 'train'."""
+        flag = bool(whole_word)
+        if flag == self._search_whole_word:
+            return
+        self._search_whole_word = flag
+        self._apply_search_highlights()
+
     def _apply_search_highlights(self):
         """Highlight occurrences of the current search term across every
         property-panel field that participates in node search:
@@ -4138,29 +4189,25 @@ class PropertiesPanel(QWidget):
         selections = []
         if qlow:
             text = self.text_edit.toPlainText()
-            tlow = text.lower()
             fmt = QTextCharFormat()
             fmt.setBackground(QColor(255, 220, 100, 180))
             fmt.setForeground(QColor(0, 0, 0))
-            start = 0
-            while True:
-                idx = tlow.find(qlow, start)
-                if idx < 0:
-                    break
+            for s, e in _find_term_spans(text, term, self._search_whole_word):
                 cursor = self.text_edit.textCursor()
-                cursor.setPosition(idx)
-                cursor.setPosition(idx + len(qlow), QTextCursor.MoveMode.KeepAnchor)
+                cursor.setPosition(s)
+                cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
                 sel = _QTE.ExtraSelection()
                 sel.cursor = cursor
                 sel.format = fmt
                 selections.append(sel)
-                start = idx + max(1, len(qlow))
         self.text_edit.setExtraSelections(selections)
 
         # 2 + 3. label_edit & tags_edit — push the term into our
         # _HighlightLineEdit subclass, which overlays per-match rects.
-        self.label_edit.set_highlight_term(self._search_term)
-        self.tags_edit.set_highlight_term(self._search_term)
+        # Suppressed in text-only mode: those fields aren't searched.
+        meta_term = '' if self._search_text_only else self._search_term
+        self.label_edit.set_highlight_term(meta_term, self._search_whole_word)
+        self.tags_edit.set_highlight_term(meta_term, self._search_whole_word)
 
         # 4. arc_beat_lbl — re-render with <mark> spans.
         self._render_arc_beat_label()
@@ -4190,25 +4237,22 @@ class PropertiesPanel(QWidget):
             return
         import html as _html
         body = _html.escape(raw)
-        qlow = self._search_term.lower()
-        if qlow:
-            # Walk lowercased body for case-insensitive hits, splice marks
-            # into the original-cased escaped body. Done on a copy so we
-            # can offset as we insert.
-            raw_low = raw.lower()
+        # No arc-beat highlights in text-only mode — the field isn't searched.
+        term = '' if self._search_text_only else self._search_term
+        spans = _find_term_spans(raw, term, self._search_whole_word)
+        if spans:
+            # Splice <mark> spans into the escaped body, escaping each
+            # segment separately so offsets stay aligned with `raw`.
             out = []
             i = 0
-            while i < len(raw):
-                idx = raw_low.find(qlow, i)
-                if idx < 0:
-                    out.append(_html.escape(raw[i:]))
-                    break
-                out.append(_html.escape(raw[i:idx]))
+            for s, e in spans:
+                out.append(_html.escape(raw[i:s]))
                 out.append(
                     '<span style="background-color:#ffdc64; color:#000;">'
-                    f'{_html.escape(raw[idx:idx + len(qlow)])}</span>'
+                    f'{_html.escape(raw[s:e])}</span>'
                 )
-                i = idx + max(1, len(qlow))
+                i = e
+            out.append(_html.escape(raw[i:]))
             body = ''.join(out)
         self._arc_beat_lbl.setText(
             f'<span style="color:#7799cc; font-size:10px;">'
@@ -7112,6 +7156,35 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+/"), self, activated=self._search_bar.setFocus)
         QShortcut(QKeySequence("Escape"), self, activated=self._cancel_pending_connect)
 
+        # Text-only search scope: when checked, the search matches ONLY
+        # each node's text body — not the ID, label, tags, or arc beat.
+        self._text_only_btn = QPushButton("Text")
+        self._text_only_btn.setCheckable(True)
+        self._text_only_btn.setFixedWidth(46)
+        self._text_only_btn.setFixedHeight(24)
+        self._text_only_btn.setToolTip(
+            "Search node text only.\n"
+            "When on, matches ignore node IDs, labels, tags, and arc beats.")
+        self._text_only_btn.setStyleSheet(
+            "QPushButton { background: #2a2a3a; border: 1px solid #555; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:checked { background: #1a4a3a; border: 1px solid #20c080; color: #50e0a0; }"
+        )
+        self._text_only_btn.toggled.connect(self._cmd_search_scope_toggled)
+
+        # Whole-word matching: 'rain' stops matching 'train' / 'raining'.
+        self._word_btn = QPushButton("Word")
+        self._word_btn.setCheckable(True)
+        self._word_btn.setFixedWidth(46)
+        self._word_btn.setFixedHeight(24)
+        self._word_btn.setToolTip(
+            "Match whole words only.\n"
+            "When on, 'rain' no longer matches 'train' or 'raining'.")
+        self._word_btn.setStyleSheet(
+            "QPushButton { background: #2a2a3a; border: 1px solid #555; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:checked { background: #1a3a5a; border: 1px solid #2080e0; color: #50a0f0; }"
+        )
+        self._word_btn.toggled.connect(self._cmd_search_word_toggled)
+
         self._freq_btn = QPushButton("Freq")
         self._freq_btn.setCheckable(True)
         self._freq_btn.setFixedWidth(46)
@@ -7146,6 +7219,8 @@ class MainWindow(QMainWindow):
         search_row_layout.setContentsMargins(2, 2, 2, 2)
         search_row_layout.setSpacing(4)
         search_row_layout.addWidget(self._search_bar)
+        search_row_layout.addWidget(self._text_only_btn)
+        search_row_layout.addWidget(self._word_btn)
         search_row_layout.addWidget(self._apply_trigger_btn)
         search_row_layout.addWidget(self._freq_btn)
 
@@ -9211,10 +9286,29 @@ class MainWindow(QMainWindow):
             c = (self._freq_counts.get(from_nid, 0) + self._freq_counts.get(to_nid, 0)) / 2
             pipe.setOpacity(max(0.03, c / max_count))
 
+    def _cmd_search_scope_toggled(self, checked: bool):
+        """The Text-only toggle changed: re-run the current search under
+        the new scope and tell the properties panel so its field
+        highlights track what is actually being matched."""
+        self.props_panel.set_search_scope(checked)
+        self._search_bar.setPlaceholderText(
+            "Search node text only…  (Ctrl+/)" if checked
+            else "Search nodes by text, tags, arc beat, ID…  (Ctrl+/)")
+        self._cmd_search(self._search_bar.text())
+
+    def _cmd_search_word_toggled(self, checked: bool):
+        """The whole-Word toggle changed: re-run the current search and
+        re-render the properties panel's highlights under the new rule."""
+        self.props_panel.set_search_word(checked)
+        self._cmd_search(self._search_bar.text())
+
     def _cmd_search(self, text: str):
         """Apply crosshatch overlays to nodes matching the search term, and
         highlight occurrences of the term inside the selected node's text view.
-        Does not change node opacity — selection highlight is fully independent."""
+        Does not change node opacity — selection highlight is fully independent.
+        The Text-only toggle narrows matching to the node text body; the Word
+        toggle requires whole-word matches (via _find_term_spans, the shared
+        matcher the highlight renderers also use)."""
         # Push the (possibly empty) term to the properties panel so in-node
         # highlights track the search bar even when the term is cleared.
         self.props_panel.set_search_term(text)
@@ -9222,20 +9316,28 @@ class MainWindow(QMainWindow):
             self._clear_search_overlays()
             self._update_apply_trigger_btn()
             return
-        term = text.strip().lower()
+        term = text.strip()
+        text_only = self._text_only_btn.isChecked()
+        whole_word = self._word_btn.isChecked()
         matched = set()
         for nid, nd in self.script.nodes.items():
-            haystack = ' '.join([
-                nid,
-                nd.get('label', '') or '',
-                nd.get('text', '') or '',
-                ' '.join(nd.get('tags', [])),
-                nd.get('arc_beat', '') or '',
-            ]).lower()
-            if term in haystack:
+            if text_only:
+                haystack = nd.get('text', '') or ''
+            else:
+                haystack = ' '.join([
+                    nid,
+                    nd.get('label', '') or '',
+                    nd.get('text', '') or '',
+                    ' '.join(nd.get('tags', [])),
+                    nd.get('arc_beat', '') or '',
+                ])
+            if _find_term_spans(haystack, term, whole_word):
                 matched.add(nid)
         self._apply_search_overlays(matched)
-        self.status_bar.showMessage(f"Search: {len(matched)} matching node(s)")
+        scope = "text-only" if text_only else "all fields"
+        if whole_word:
+            scope += ", whole word"
+        self.status_bar.showMessage(f"Search ({scope}): {len(matched)} matching node(s)")
         self._update_apply_trigger_btn()
 
     def _update_apply_trigger_btn(self):
