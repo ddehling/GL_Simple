@@ -287,16 +287,21 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets,
     lines.append("]")
     lines.append("")
     
-    # PARAMETER_DEFINITIONS + DEFAULT_WEATHER_PARAMS: preserve the project
-    # file's blocks VERBATIM (including comments, ordering, np.array literals,
-    # and any project-specific params the editor doesn't know about). Without
-    # this the generator drops every param not in the lib defaults - which is
-    # how all the storm/cyber/etc. params kept getting stripped on save.
+    # PARAMETER_DEFINITIONS + DEFAULT_WEATHER_PARAMS + OUTSTATE_PUBLISH:
+    # preserve the project file's blocks VERBATIM (including comments,
+    # ordering, np.array literals, lambdas, and any project-specific
+    # params the editor doesn't know about). Without this the generator
+    # drops every param not in the lib defaults - which is how all the
+    # storm/cyber/etc. params kept getting stripped on save.
+    # OUTSTATE_PUBLISH is the project's outstate publish table (see
+    # lib/weather_state.py get_state_output) — it contains lambdas the
+    # editor can never round-trip as data, so verbatim text is the ONLY
+    # safe way to carry it through a save.
     preserved = {}
     if existing_path is not None:
         preserved = _extract_assignments_text(
             Path(existing_path),
-            ('PARAMETER_DEFINITIONS', 'DEFAULT_WEATHER_PARAMS'),
+            ('PARAMETER_DEFINITIONS', 'DEFAULT_WEATHER_PARAMS', 'OUTSTATE_PUBLISH'),
         )
 
     lines.append("# Parameter definitions for the weather editor")
@@ -342,7 +347,13 @@ def generate_weather_params_file(weather_states, weather_presets, weather_sets,
                 lines.append(f'    "{key}": {value},')
         lines.append("}")
     lines.append("")
-    
+
+    # OUTSTATE_PUBLISH: verbatim only — there is no data fallback (a
+    # project without one simply publishes the engine core outputs).
+    if 'OUTSTATE_PUBLISH' in preserved:
+        lines.append(preserved['OUTSTATE_PUBLISH'].rstrip('\n'))
+        lines.append("")
+
     # WEATHER_PRESETS
     lines.append("# Weather presets")
     lines.append("# Weather state parameters")

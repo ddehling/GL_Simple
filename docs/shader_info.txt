@@ -64,10 +64,13 @@ camera = drawn on top, large z = far from camera = drawn behind".
 |---|---|---|
 | 0.05 | ocean_red_tide (front bloom discoloration, state-gated overlay) | flat |
 | 0.10 | ocean_reflection (sky on water) | flat |
+| 0.12 | ocean_rain_rings (surf-zone raindrop impact rings, driven by rain_rate) | flat |
+| 0.16 | ocean_hunt_shadows (NIGHT_HUNT predator silhouettes + biolum wakes, state-gated) | flat |
 | 0.18 – 0.32 | fish | per-fish (assigned at spawn) |
 | 0.38 – 0.48 | ocean_fish_wakes | per-particle (assigned at spawn) |
 | 0.45 – 0.60 | bubbles | per-particle (assigned at spawn) |
 | 0.50 – 0.70 | bioluminescence | per-particle (already varying) |
+| 0.62 | ocean_upwelling_plume (UPWELLING rising nutrient columns, state-gated) | flat |
 | 0.65 | ocean_godrays (water column light) | flat |
 | 0.33 – 0.38 | ocean_megafauna small kinds (dolphin 0.33, manta 0.34, mola_mola 0.35, shark 0.36, giant_squid 0.37, sea_turtle 0.38) | in front of water/atmosphere via z_centroid (giant_squid varies its z per spawn) |
 | 0.70 – 0.80 | kelp | per-blade (hashed from strandId) |
@@ -75,7 +78,6 @@ camera = drawn on top, large z = far from camera = drawn behind".
 | 0.84 | coral | flat — MUST stay < ocean_waves (0.85): ocean_waves is the lone ocean layer that writes depth, so coral behind it (0.87) was depth-rejected and invisible |
 | 0.845 | ocean_megafauna WHALE (deep silhouette) | draws first + WRITES depth, so it sits behind everything except ocean_waves |
 | 0.85 | ocean_waves (deep ocean body, surface tint, foam) | per-vertex mappedDepth from `depth` uniform = 85 |
-| 0.95 | ocean_background (deepest base layer, wave-equation sim) | flat |
 
 Adding a new ocean effect: pick a z slot that doesn't collide with anything above
 and document it here.
@@ -219,8 +221,9 @@ Club conventions: every pattern self-gates on its LEVEL PARAM (a normal
 weather param, default 0 -> INVISIBLE) and hue-shifts from ``club_palette``
 — states mix scenes by dialing a few levels up, and patterns crossfade
 in/out through ordinary state-transition param interpolation, exactly like
-the seasonal sets. Adding a club pattern = new level param (remember
-``lib/weather_state.py get_state_output``!) + a self-gating shader + a slot
+the seasonal sets. Adding a club pattern = new level param (remember the
+``OUTSTATE_PUBLISH`` table in the project's weather_params.py — that is
+the publish allowlist!) + a self-gating shader + a slot
 in this table. Beat-locked motion must gate on ``beat_confidence`` and
 free-run below ~0.3 (see shader_audio_reactivity.md). The strobe stays
 reserved for beats/drops and is SECTORED — never light the full field
@@ -335,7 +338,7 @@ stays at the class default forever and the param does nothing. Symptom: changing
 the param in weather presets has no visible effect.
 
 For the param to also flow from weather presets through to outstate:
-5. **Add to `lib/weather_state.py` `get_state_output()`**: include `"my_param": self.weather_params.get("my_param", 0.0)`
+5. **Add to the project's `OUTSTATE_PUBLISH` table** (in `projects/<id>/weather_params.py`): include `"my_param": 0.0` (or a `lambda params, season, t: ...` for derived values). The engine (`lib/weather_state.py get_state_output`) only publishes the generic core — fog/wind/rain/stars/ambient_light — so a realm param that isn't in the project table NEVER reaches outstate.
 6. **Add to `lib/weather_params.py` `PARAMETER_DEFINITIONS`**: type/step entry
 7. **Add to `lib/weather_params.py` `DEFAULT_WEATHER_PARAMS`**: default value
 8. **Add to the relevant set's `allowed_parameters`**: so it's editable in that set

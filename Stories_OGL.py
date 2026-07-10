@@ -341,6 +341,7 @@ class EnvironmentalSystem:
             weather_state_enum=self._weather_state_enum,
             weather_presets=self._weather_presets,
             default_weather_params=self._default_weather_params,
+            output_map=self._outstate_publish,
         )
         self.season = 0.0
         self.analyzer = None
@@ -557,6 +558,17 @@ class EnvironmentalSystem:
         self._default_weather_set = getattr(mod, "DEFAULT_WEATHER_SET", _LIB_DEFAULT_WEATHER_SET)
         self._weather_presets = getattr(mod, "WEATHER_PRESETS", _LIB_PRESETS)
         self._default_weather_params = getattr(mod, "DEFAULT_WEATHER_PARAMS", _LIB_DEFAULT_PARAMS)
+        # Project outstate publish table (realm-specific params). The
+        # engine core only publishes the generic weather vocabulary; a
+        # project without this table gets ONLY the core — its realm
+        # shaders would run blind at their wrapper defaults, so warn
+        # loudly rather than fail silently.
+        self._outstate_publish = getattr(mod, "OUTSTATE_PUBLISH", None)
+        if self._outstate_publish is None:
+            print("[Project] WARNING: weather module defines no OUTSTATE_PUBLISH "
+                  "table — only core weather outputs (fog/wind/rain/stars/...) "
+                  "will reach effects. Realm-specific params need an entry there.")
+            self._outstate_publish = {}
         # Module identity — used by the web editor save / reload paths
         # to write back to the project's own weather_params.py rather
         # than lib's (saves to lib are silently overridden by any
@@ -1376,6 +1388,7 @@ class EnvironmentalSystem:
             weather_state_enum=self._weather_state_enum,
             weather_presets=self._weather_presets,
             default_weather_params=self._default_weather_params,
+            output_map=self._outstate_publish,
         )
         self.active_effects = {"world": None, "ambient_sound": None}
 
@@ -1908,7 +1921,9 @@ class EnvironmentalSystem:
         state['club_palette_override'] = club_palette_override
         state['club_density'] = club_density
         state['club_theme'] = club_theme
-        output = self.weather_state.get_state_output(self.season, self.current_time)
+        output = self.weather_state.get_state_output(
+            self.season, self.current_time,
+            self.weather_set.get_season_atmosphere_coupling())
 
         # Apply global modifiers and overrides to the output (not to weather_params)
         if self.enable_web_control and self.web_controller is not None:

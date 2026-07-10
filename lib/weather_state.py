@@ -28,10 +28,19 @@ class WeatherStateController:
         weather_state_enum=None,
         default_weather_params: dict | None = None,
         weather_presets: dict | None = None,
+        output_map: dict | None = None,
     ):
         self._weather_state_enum = (
             weather_state_enum if weather_state_enum is not None else _DEFAULT_WEATHER_STATE_ENUM
         )
+        # Project-supplied outstate publish table (``OUTSTATE_PUBLISH`` in
+        # the project's weather_params.py). Maps output key -> either a
+        # plain default (published as ``weather_params.get(key, default)``)
+        # or a callable ``(weather_params, season, current_time) -> value``
+        # for derived outputs. get_state_output publishes the generic core
+        # plus everything in this table — realm-specific params (cyber_*,
+        # storm_*, club levels, ...) belong to their project, not here.
+        self.output_map = dict(output_map) if output_map else {}
         if initial_weather is None:
             # Default to the enum's CLEAR if it has one; otherwise the first member.
             initial_weather = getattr(self._weather_state_enum, "CLEAR", None) \
@@ -141,16 +150,34 @@ class WeatherStateController:
                 self.current_weather = self.target_weather
                 self.weather_params = target_params.copy()
 
-    def get_state_output(self, season: float, current_time: float) -> dict:
+    def get_state_output(self, season: float, current_time: float,
+                         atmos_coupling: float = 1.0) -> dict:
         """Return scheduler.state keys derived purely from weather_params.
 
         Does NOT include: sound, celestial_bodies, scale, season — those come from
         other subsystems and remain in send_variables().
+
+        Publishes the GENERIC CORE (derived atmosphere values plus the
+        universal weather vocabulary consumed by the shared engine
+        effects: stars, clouds, rain, fog, firefly, lightning), then
+        applies the project's ``output_map`` (``OUTSTATE_PUBLISH`` in the
+        project's weather_params.py). Realm-specific params — cyber_*,
+        storm_*, club pattern levels, heart_*, ocean, elements gates —
+        live in their project's table, NOT here. A weather param only
+        reaches outstate (and thus its shader) if the core or the
+        project table publishes it.
+
+        ``atmos_coupling`` (0..1, from the active set's
+        ``season_atmosphere_coupling``) blends the season modulation of
+        the derived 'wind' and fog outputs: 1.0 = classic signed/scaled
+        behavior, 0.0 = a state's wind_speed/fog render at face value
+        (sets where season is a fast time-of-day clock, e.g. ocean).
         """
+        c = float(np.clip(atmos_coupling, 0.0, 1.0))
         fog = np.maximum(
             0,
             self.weather_params["fog"]
-            * (0.75 - 0.25 * np.cos(np.pi * 2 * (season - 0.625))),
+            * ((1.0 - c) + c * (0.75 - 0.25 * np.cos(np.pi * 2 * (season - 0.625)))),
         )
         cloudyness = (
             (1 - self.weather_params["starryness"])
@@ -160,189 +187,35 @@ class WeatherStateController:
             + self.weather_params["wind_speed"] / 3
         ) / 4
 
-        return {
+        out = {
             "cloudyness": cloudyness,
             "fog_strength": fog,
             "fog_color": self.weather_params["fog_color"],
             "wind": self.weather_params["wind_speed"]
-            * np.cos(np.pi * 2 * (season - 0.125)),
+            * ((1.0 - c) + c * np.cos(np.pi * 2 * (season - 0.125))),
             "rain": self.weather_params["rain_rate"],
             "starryness": self.weather_params["starryness"],
             "celestial_visibility": self.weather_params["celestial_visibility"],
             "firefly_density": self.weather_params["firefly_density"],
             "meteor_rate": self.weather_params["meteor_rate"],
-            "volcano_level": (np.sin(current_time / 100) * 0.5 + 0.5)
-            * self.weather_params["volcano_level"],
-            "sand_density": self.weather_params.get("sand_density", 0),
-            "tree_growth": self.weather_params.get("tree_prob", 0) + 0.25,
-            "wave_speed": self.weather_params.get("wave_speed", 0.5),
-            "wave_amplitude": self.weather_params.get("wave_amplitude", 0.5),
-            "tide_level": self.weather_params.get("tide_level", 0.5),
-            "bioluminescence": self.weather_params.get("bioluminescence", 0.0),
-            "bubble_density": self.weather_params.get("bubble_density", 0.0),
-            "marine_life_activity": self.weather_params.get("marine_life_activity", 0.0),
-            "kelp_density": self.weather_params.get("kelp_density", 0.0),
-            "vent_activity": self.weather_params.get("vent_activity", 0.0),
-            "train_speed": self.weather_params.get("train_speed", 8.0),
-            "train_density": self.weather_params.get("train_density", 1.0),
-            "pride_intensity": self.weather_params.get("pride_intensity", 0.0),
-            "godray_strength": self.weather_params.get("godray_strength", 0.0),
-            "canopy_density": self.weather_params.get("canopy_density", 0.0),
-            "snow_rate": self.weather_params.get("snow_rate", 0.0),
-            "spore_density": self.weather_params.get("spore_density", 0.0),
-            "spore_color": self.weather_params.get("spore_color", 0.0),
-            "dapple_strength": self.weather_params.get("dapple_strength", 0.0),
-            "stream_flow_rate": self.weather_params.get("stream_flow_rate", 0.0),
-            "eye_density": self.weather_params.get("eye_density", 0.0),
-            "frost_level": self.weather_params.get("frost_level", 0.0),
-            "spookyness": self.weather_params.get("spookyness", 0.0),
-            "season_preference": self.weather_params.get("season_preference", 0.5),
-            "rainbow_intensity": self.weather_params.get("rainbow_intensity", 0.0),
             "lightning_probability": self.weather_params.get("lightning_probability", 0.0),
-            # Multiplier on forest_birds spawn rate. 1.0 = default, >1 boosts
-            # density (e.g. migration state). Effects can read this from
-            # outstate without weather_state itself needing to know what
-            # forest_birds does with it.
-            "bird_density": self.weather_params.get("bird_density", 1.0),
+            "season_preference": self.weather_params.get("season_preference", 0.5),
             # Ambient light level in [0.25, 1.0]: peaks at noon (season=0.5),
             # minimum at midnight (season=0 / 1). In the ocean set season is
             # repurposed as time of day, so effects that want to dim at
             # night (fish, kelp) scale their output by this value.
             "ambient_light": 0.25 + 0.75 * (0.5 - 0.5 * np.cos(2 * np.pi * season)),
-            # ── Cyberpunk state-tied shader params ────────────────────
-            # Without these, every cyber_* shader runs at its wrapper
-            # default and is blind to per-state customization. See
-            # renderer/effects/cyber_*.py wrappers — each does
-            # outstate.get(<param>, <kwarg_default>).
-            "neon_intensity": self.weather_params.get("neon_intensity", 0.0),
-            "hologram_density": self.weather_params.get("hologram_density", 0.0),
-            "pollution_level": self.weather_params.get("pollution_level", 0.0),
-            "light_pollution": self.weather_params.get("light_pollution", 0.0),
-            "drone_activity": self.weather_params.get("drone_activity", 0.0),
-            "scan_line_intensity": self.weather_params.get("scan_line_intensity", 0.0),
-            "data_flow_rate": self.weather_params.get("data_flow_rate", 0.0),
-            "electric_interference": self.weather_params.get("electric_interference", 0.0),
-            "glitch_probability": self.weather_params.get("glitch_probability", 0.0),
-            "cyber_skyline_density": self.weather_params.get("cyber_skyline_density", 0.0),
-            "cyber_signage_density": self.weather_params.get("cyber_signage_density", 0.0),
-            "cyber_underway_intensity": self.weather_params.get("cyber_underway_intensity", 0.0),
-            "cyber_transit_intensity": self.weather_params.get("cyber_transit_intensity", 0.0),
-            "cyber_view_elevation": self.weather_params.get("cyber_view_elevation", 0.0),
-            # Color arrays: per-state palette overrides for cyber shaders.
-            # `cyber_rain_color` is consumed by cyber_rain to tint drops
-            # acid green / electric blue / sodium amber per state.
-            "cyber_rain_color": self.weather_params.get("cyber_rain_color"),
-            # `velocity_direction` is a unit vector consumed by
-            # velocity_streaks so each arc can pick its motion axis
-            # (e.g. (0, -1) for upward ascent in Subroutine 9).
-            "velocity_direction": self.weather_params.get("velocity_direction"),
-            # ── Storm Watch realm params ────────────────────────────
-            "rain_speed": self.weather_params.get("rain_speed", 1.0),
-            "rain_angle": self.weather_params.get("rain_angle", 0.0),
-            "rain_vortex": self.weather_params.get("rain_vortex", 0.0),
-            "rain_color": self.weather_params.get("rain_color"),
-            "cloud_darkness": self.weather_params.get("cloud_darkness", 0.5),
-            # Cloud structure lever (0 stratus .. 0.5 cumulus .. 1 thunderhead)
-            # for the Storm Watch realm - changes the actual cloud FORM per
-            # state, not just its color.
-            "cloud_type": self.weather_params.get("cloud_type", 0.4),
-            # Rain-on-the-glass rivulets (Steady "Seen Through Rain" signature).
-            "window_streaks": self.weather_params.get("window_streaks", 0.0),
-            # Flash->delay->rumble (Rolling Thunder "Thunderhead" signature).
-            "thunder": self.weather_params.get("thunder", 0.0),
-            # Moonbeam through a cloud gap (Easing "The Break" signature).
-            "moonshaft": self.weather_params.get("moonshaft", 0.0),
-            # Per-state mood color (vec3): the dominant palette lever for the
-            # Storm Watch realm. Washes sky + clouds so each state reads as a
-            # distinct mood rather than "same storm, louder".
-            "storm_tint": self.weather_params.get("storm_tint"),
-            "mist_density": self.weather_params.get("mist_density", 0.0),
-            "color_band": self.weather_params.get("color_band", 0.0),
-            "puddle_density": self.weather_params.get("puddle_density", 0.0),
-            "moonbow_intensity": self.weather_params.get("moonbow_intensity", 0.0),
-            # ── Beloved (Weather of the Heart) realm params ──────────
-            # The heart's own climate, consumed by the heart_* state
-            # shaders (heart_sky, ember_drift, memory_veil, heart_tide,
-            # heart_pulse). Distinct from the story_* narrative variables
-            # published by NarrativePlayer — these are state-driven.
-            # `heart_tint` is a vec3 colour like storm_tint.
-            "heart_tint": self.weather_params.get("heart_tint"),
-            "heart_warmth": self.weather_params.get("heart_warmth", 0.0),
-            "ember_density": self.weather_params.get("ember_density", 0.0),
-            "ember_lift": self.weather_params.get("ember_lift", 0.0),
-            "veil_density": self.weather_params.get("veil_density", 0.0),
-            "stillness": self.weather_params.get("stillness", 0.0),
-            "turmoil": self.weather_params.get("turmoil", 0.0),
-            "pulse_rate": self.weather_params.get("pulse_rate", 0.0),
-            # ── Club / DJ realm params ───────────────────────────────
-            # The music-reactive energy levers each club scene pulls,
-            # consumed by the club_eq_bars / club_strobe / club_lasers
-            # shaders. The beat_* keys those shaders also read are NOT
-            # weather params - they're published directly to state by
-            # BeatDetector in Stories_OGL.send_variables().
-            "beat_flash_amount": self.weather_params.get("beat_flash_amount", 0.0),
-            "strobe_rate": self.weather_params.get("strobe_rate", 0.0),
-            "strobe_brightness": self.weather_params.get("strobe_brightness", 0.0),
-            "laser_density": self.weather_params.get("laser_density", 0.0),
-            "eq_gain": self.weather_params.get("eq_gain", 0.0),
-            "eq_color_mode": self.weather_params.get("eq_color_mode", 0.0),
-            "club_energy": self.weather_params.get("club_energy", 0.0),
-            "club_palette": self.weather_params.get("club_palette", 0.0),
-            # Club pattern levels (one per audio-reactive pattern; 0 = out).
-            # NOTE: this dict is the PUBLISH ALLOWLIST - a weather param only
-            # reaches outstate (and thus its shader) if it's listed here. A
-            # new club pattern needs its <x>_level added HERE too, not just
-            # in event_map / weather_params / the director tables.
-            "orb_level": self.weather_params.get("orb_level", 0.0),
-            "spots_level": self.weather_params.get("spots_level", 0.0),
-            "audiocurve_level": self.weather_params.get("audiocurve_level", 0.0),
-            "rain_level": self.weather_params.get("rain_level", 0.0),
-            "crystal_level": self.weather_params.get("crystal_level", 0.0),
-            "urchin_level": self.weather_params.get("urchin_level", 0.0),
-            "predator_level": self.weather_params.get("predator_level", 0.0),
-            "flame_level": self.weather_params.get("flame_level", 0.0),
-            "singularity_level": self.weather_params.get("singularity_level", 0.0),
-            "tunnel_level": self.weather_params.get("tunnel_level", 0.0),
-            "star_field_level": self.weather_params.get("star_field_level", 0.0),
-            "shockwave_level": self.weather_params.get("shockwave_level", 0.0),
-            "kick_flare_level": self.weather_params.get("kick_flare_level", 0.0),
-            "sparkle_level": self.weather_params.get("sparkle_level", 0.0),
-            "chaser_level": self.weather_params.get("chaser_level", 0.0),
-            "ribbon_level": self.weather_params.get("ribbon_level", 0.0),
-            "horizon_glow_level": self.weather_params.get("horizon_glow_level", 0.0),
-            "radar_sweep_level": self.weather_params.get("radar_sweep_level", 0.0),
-            "milk_echo_level": self.weather_params.get("milk_echo_level", 0.0),
-            "mandala_level": self.weather_params.get("mandala_level", 0.0),
-            "flow_field_level": self.weather_params.get("flow_field_level", 0.0),
-            "wave_dance_level": self.weather_params.get("wave_dance_level", 0.0),
-            "pyramid_level": self.weather_params.get("pyramid_level", 0.0),
-            "fiber_level": self.weather_params.get("fiber_level", 0.0),
-            "airhandler_level": self.weather_params.get("airhandler_level", 0.0),
-            "soul_level": self.weather_params.get("soul_level", 0.0),
-            "tesla_level": self.weather_params.get("tesla_level", 0.0),
-            "fountain_level": self.weather_params.get("fountain_level", 0.0),
-            "interference_level": self.weather_params.get("interference_level", 0.0),
-            "spiral_level": self.weather_params.get("spiral_level", 0.0),
-            "membrane_level": self.weather_params.get("membrane_level", 0.0),
-            "turntable_level": self.weather_params.get("turntable_level", 0.0),
-            "starfall_level": self.weather_params.get("starfall_level", 0.0),
-            "fractal_level": self.weather_params.get("fractal_level", 0.0),
-            "rorschach_level": self.weather_params.get("rorschach_level", 0.0),
-            "spirograph_level": self.weather_params.get("spirograph_level", 0.0),
-            # ── Weight of Light "Elements" realm params ──────────────
-            # Per-theme intensity gates consumed by the elements_* / wol_*
-            # background shaders. Each theme layer renders ~0 alpha when
-            # its gate is 0, so cross-fading these between states (via
-            # WeatherStateController's param interpolation) dissolves one
-            # element into the next. ``earth_mode`` morphs EARTH from calm
-            # (0) to upbeat jungle (1) — the state-1->2 "pattern change".
-            "earth_intensity": self.weather_params.get("earth_intensity", 0.0),
-            "earth_mode": self.weather_params.get("earth_mode", 0.0),
-            "wind_intensity": self.weather_params.get("wind_intensity", 0.0),
-            "fire_intensity": self.weather_params.get("fire_intensity", 0.0),
-            "water_intensity": self.weather_params.get("water_intensity", 0.0),
-            "space_intensity": self.weather_params.get("space_intensity", 0.0),
         }
+
+        # Project-declared outputs: plain default -> passthrough;
+        # callable -> derived value (params, season, current_time).
+        params = self.weather_params
+        for key, spec in self.output_map.items():
+            if callable(spec):
+                out[key] = spec(params, season, current_time)
+            else:
+                out[key] = params.get(key, spec)
+        return out
 
     def select_next_weather(
         self,

@@ -118,6 +118,19 @@ class WeatherSetManager:
     def get_season_extremity(self) -> float:
         return self.get_current_set_config().get("season_extremity", 1.0)
 
+    def get_season_atmosphere_coupling(self) -> float:
+        """How much season modulates the derived wind/fog outputs (0..1).
+
+        1.0 (default) keeps the classic land-realm behavior: published
+        'wind' is wind_speed * cos(2*pi*(season - 0.125)) — signed and
+        season-scaled — and fog strength breathes +-25% over the season
+        cycle. Sets that repurpose season as a fast time-of-day clock
+        (ocean) set this to 0 so a state's declared wind_speed/fog render
+        at face value instead of collapsing to ~0 whenever the clock
+        crosses a cosine zero (e.g. a maelstrom with no current).
+        """
+        return float(self.get_current_set_config().get("season_atmosphere_coupling", 1.0))
+
     def get_narrative_script(self) -> Optional[str]:
         """Return the current set's narrative script path, or None if unset.
 
