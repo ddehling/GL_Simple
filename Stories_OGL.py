@@ -1711,8 +1711,10 @@ class EnvironmentalSystem:
                 random_events, _ = self.weather_set.get_random_events_config()
                 event_name = np.random.choice(random_events) if random_events else None
             if event_name:
-                print(f"[WEB] Triggered event: {event_name}")
-                self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
+                duration = float(self.weather_set.get_current_set_config()
+                                 .get("random_event_duration", 60))
+                print(f"[WEB] Triggered event: {event_name} ({duration:.0f}s)")
+                self._schedule_event_from_map(event_name, 0, duration, frame_id=0)
 
         # Apply audio sensitivity from global modifiers
         if self.analyzer:
@@ -2192,10 +2194,14 @@ class EnvironmentalSystem:
                 seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
                 closest_index = np.argmin(seasonal_distances)
                 event_name = random_events[closest_index]
+                # Per-set dwell time; 60 s when the set doesn't specify.
+                duration = float(self.weather_set.get_current_set_config()
+                                 .get("random_event_duration", 60))
                 print(f"   🎲 Seasonal event triggered: {event_name} "
                       f"(season: {self.season:.3f}, "
-                      f"position: {event_positions[closest_index]:.3f})")
-                self._schedule_event_from_map(event_name, 0, 60, frame_id=0)
+                      f"position: {event_positions[closest_index]:.3f}, "
+                      f"{duration:.0f}s)")
+                self._schedule_event_from_map(event_name, 0, duration, frame_id=0)
 
         # ---- project-specific hook ----
         hook = self.project.load_hook("random_events")
