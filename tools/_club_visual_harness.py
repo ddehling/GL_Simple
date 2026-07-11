@@ -77,7 +77,7 @@ from projects.fan.shaders.club_chaser import shader_club_chaser
 from projects.fan.shaders.club_kick_flare import shader_club_kick_flare
 from projects.fan.shaders.club_shockwave import shader_club_shockwave
 from projects.fan.shaders.club_strobe import shader_club_strobe
-from renderer.effects.audio_balls import shader_audio_balls
+from projects.fan.shaders.audio_balls import shader_audio_balls
 
 WRAPPERS = [
     ("horizon_glow", shader_club_horizon_glow, {}),

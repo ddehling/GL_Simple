@@ -112,8 +112,10 @@ lib/
 renderer/
   shader_renderer.py        # GLFW window + OpenGL rendering loop
   fan_geometry.py           # Pure-numpy fan/polar geometry (shared by GL and web preview)
-  effects/                  # 40+ individual shader effect modules
+  effects/                  # Engine INFRASTRUCTURE only — no visual content lives here
     base.py                 # ShaderEffect base class — all effects extend this
+    narrative_player.py     # + sound_pool.py, celestial_bodies.py: core features every project inherits
+                            # ALL content shaders live in projects/<id>/shaders/ (per-project repos)
 web/
   web_controller.py         # Flask web control panel + preview frame streaming
   templates/                # Flask HTML templates for web UI
@@ -154,9 +156,11 @@ otherwise — non-audio shaders don't need it.
    what you're building.
 2. If audio-reactive: also read
    [docs/shader_audio_reactivity.md](docs/shader_audio_reactivity.md).
-3. Create a new file in `renderer/effects/` extending `ShaderEffect` from `base.py`
+3. Create a new file in the active project's `projects/<id>/shaders/` extending
+   `ShaderEffect` from `renderer/effects/base.py`. Content shaders NEVER go in
+   `renderer/effects/` — that folder is engine infrastructure only.
 4. Implement `__init__`, `update(dt, audio_data)`, and `render()` methods
-5. Register it in `Stories_OGL.py`'s `event_map` or schedule it directly in the `__main__` block
+5. Register it in the project's `event_map.py`
 6. If the effect introduces new weather params, follow the wiring checklist in
    [docs/shader_info.txt](docs/shader_info.txt) ("Wiring a New Uniform").
 
@@ -170,7 +174,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 
 ## Audio Input
 
-`lib/audio_analyzer.py` captures microphone input and extracts frequency bands. `renderer/effects/audio_*.py` effects subscribe to this data. Run `tools/sound_editor.py` to identify the correct device name if audio isn't working.
+`lib/audio_analyzer.py` captures microphone input and extracts frequency bands. Audio-reactive project shaders (e.g. `projects/fan/shaders/audio_*.py`) subscribe to this data. Run `tools/sound_editor.py` to identify the correct device name if audio isn't working.
 
 ## Documentation
 

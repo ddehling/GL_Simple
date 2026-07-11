@@ -7,9 +7,11 @@ visuals. New projects shouldn't have to remember to re-register them;
 project's own ``EVENT_MAP`` (project entries override the defaults if
 they redeclare a key by name).
 
-Entries here must reference shaders / effects from the shared
-``renderer.effects`` library — anything that's only meaningful inside one
-project belongs in that project's ``event_map.py``, not here.
+Entries here must reference engine-side infrastructure effects only —
+``renderer/effects/`` deliberately contains NO visual content (every
+content shader lives in a project repo under ``projects/<id>/shaders/``).
+Anything that's only meaningful inside one project belongs in that
+project's ``event_map.py``, not here.
 """
 from renderer import effects as fx
 

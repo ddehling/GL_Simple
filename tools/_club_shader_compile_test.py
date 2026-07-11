@@ -86,7 +86,7 @@ def main():
     from projects.fan.shaders.club_audio_curve import ClubAudioCurveEffect
     from projects.fan.shaders.club_voronoi_sphere import ClubVoronoiSphereEffect
     from projects.fan.shaders.club_rain import ClubRainEffect
-    from renderer.effects.audio_balls import AudioBallsEffect
+    from projects.fan.shaders.audio_balls import AudioBallsEffect
 
     effects = [
         ("club_eq_bars", ClubEqBarsEffect),
