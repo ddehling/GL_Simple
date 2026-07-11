@@ -75,7 +75,7 @@ camera = drawn on top, large z = far from camera = drawn behind".
 | 0.33 – 0.38 | ocean_megafauna small kinds (dolphin 0.33, manta 0.34, mola_mola 0.35, shark 0.36, giant_squid 0.37, sea_turtle 0.38) | in front of water/atmosphere via z_centroid (giant_squid varies its z per spawn) |
 | 0.70 – 0.80 | kelp | per-blade (hashed from strandId) |
 | 0.82 | tube_worms | flat (procedural fullscreen quad) |
-| 0.84 | coral | flat — MUST stay < ocean_waves (0.85): ocean_waves is the lone ocean layer that writes depth, so coral behind it (0.87) was depth-rejected and invisible |
+| 0.84 | coral | draw-order slot only; WRITES gl_FragDepth per fragment — each structure hashes its own depth within its tier's band: front bommies 0.16-0.24 (fish weave among them), mid towers 0.24-0.44 (deep fish/megafauna/wakes weave), back wall structures 0.55-0.79 (bubbles/biolum/kelp weave), seabed+encrusting 0.81. Opaque cutout (depth-writer, HARD RULE 6) at ALL times, including state fades: the transition is geometric+tonal (structures grow/shrink staggered, colors emerge from/recede into the haze) — an alpha-fade mode switch (depth-write off during ramp) was tried and popped occlusion in a single frame (kelp jumped in front of the towers). Draws early (z_centroid 0.84 < ocean_waves 0.85) so later per-particle layers depth-test against it |
 | 0.845 | ocean_megafauna WHALE (deep silhouette) | draws first + WRITES depth, so it sits behind everything except ocean_waves |
 | 0.85 | ocean_waves (deep ocean body, surface tint, foam) | per-vertex mappedDepth from `depth` uniform = 85 |
 
