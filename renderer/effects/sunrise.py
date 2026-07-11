@@ -11,24 +11,25 @@ from .base import ShaderEffect
 # Event Wrapper Function - Integrates with EventScheduler
 # ============================================================================
 
-def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio_sensitivity=2.0):
+def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0):
     """
-    Sound-reactive sunrise with animated tentacles
-    
+    Sunrise with animated tentacles. Purely time-driven: the rise/set
+    choreography follows the event clock. (It was audio-reactive once —
+    a high-band brightness wash — but the AGC-normalized signal hovers
+    near 1.0, so it read as a flickery constant lift, not reactivity.)
+
     Usage:
-        scheduler.schedule_event(0, 120, shader_sunrise, 
-                               tentacle_count=8, audio_sensitivity=2.5, frame_id=0)
-    
+        scheduler.schedule_event(0, 120, shader_sunrise,
+                               tentacle_count=8, frame_id=0)
+
     Args:
         state: Event state dict
         outstate: Global state dict
         tentacle_count: Number of tentacles emanating from sun
         color_intensity: Brightness multiplier for colors
-        audio_sensitivity: How strongly audio affects tentacle movement
     """
     frame_id = state.get('frame_id', 0)
     shader_renderer = outstate.get('shader_renderer')
-    audio_data = outstate.get('sound')
     scale = outstate.get('scale', 1.0)
     squish_top_width = 1.0 / scale if scale != 0 else 1.0  # Get inverse scale from state
     
@@ -52,7 +53,6 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
                 SunriseEffect,
                 tentacle_count=tentacle_count,
                 color_intensity=color_intensity,
-                audio_sensitivity=audio_sensitivity,
                 squish_top_width=squish_top_width
             )
             state['effect'] = effect
@@ -63,7 +63,7 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
             traceback.print_exc()
             return
     
-    # Update from audio data and time every frame
+    # Update the rise/set choreography every frame (time-driven only)
     if 'effect' in state:
         elapsed_time = state['elapsed_time']
         total_duration = state['duration']
@@ -84,24 +84,6 @@ def shader_sunrise(state, outstate, tentacle_count=8, color_intensity=1.0, audio
             rise_factor = 1.0
         
         state['effect'].rise_factor = np.clip(rise_factor, 0, 1)
-        
-        # Update from audio data
-        if audio_data is not None:
-            # Use short-term normalized for responsive tentacle movement
-            bands = audio_data['norm_short'][0]
-            
-            # Bass drives tentacle intensity
-            bass_energy = np.mean(bands[0:8])
-            mid_energy = np.mean(bands[8:20])
-            high_energy = np.mean(bands[20:32])
-            
-            state['effect'].bass_intensity = bass_energy * audio_sensitivity
-            state['effect'].mid_intensity = mid_energy * audio_sensitivity
-            state['effect'].high_intensity = high_energy * audio_sensitivity
-            
-            # Overall energy affects sun glow
-            overall_energy = np.mean(bands)
-            state['effect'].audio_energy = overall_energy
     
     # Cleanup on close
     if state['count'] == -1:
@@ -120,7 +102,7 @@ class SunriseEffect(ShaderEffect):
     """Sound-reactive sunrise with animated tentacles"""
     
     def __init__(self, viewport, tentacle_count: int = 8, 
-                 color_intensity: float = 1.0, audio_sensitivity: float = 2.0,
+                 color_intensity: float = 1.0,
                  squish_top_width: float = 1.0):
         super().__init__(viewport)
         # Sky-band event at z=0.97 (just behind canopy_godrays at 0.95).
@@ -128,7 +110,6 @@ class SunriseEffect(ShaderEffect):
         self.render_priority = 5.4  # legacy fallback
         self.tentacle_count = tentacle_count
         self.color_intensity = color_intensity
-        self.audio_sensitivity = audio_sensitivity
         self.squish_top_width = squish_top_width
         
         # Animation state
@@ -136,10 +117,6 @@ class SunriseEffect(ShaderEffect):
         self.time = 0.0
         
         # Audio response
-        self.bass_intensity = 0.0
-        self.mid_intensity = 0.0
-        self.high_intensity = 0.0
-        self.audio_energy = 0.0
         
         # Fade control
         self.fade_factor = 1.0
@@ -213,10 +190,6 @@ class SunriseEffect(ShaderEffect):
         uniform float time;
         uniform float riseFactor;
         uniform int tentacleCount;
-        uniform float bassIntensity;
-        uniform float midIntensity;
-        uniform float highIntensity;
-        uniform float audioEnergy;
         uniform float colorIntensity;
         uniform float fadeAlpha;
         uniform float squishTopWidth;
@@ -431,9 +404,6 @@ class SunriseEffect(ShaderEffect):
                     color = mix(farColor, bgColor, (distFactor - 0.55) / 0.45);
                 }
                 
-                // Audio modulation: high frequencies add brightness
-                color += vec3(highIntensity * 0.15);
-                
                 // Apply color intensity
                 color *= colorIntensity*0.5;
 
@@ -536,18 +506,6 @@ class SunriseEffect(ShaderEffect):
         
         tentacle_loc = glGetUniformLocation(self.shader, "tentacleCount")
         glUniform1i(tentacle_loc, self.tentacle_count)
-        
-        bass_loc = glGetUniformLocation(self.shader, "bassIntensity")
-        glUniform1f(bass_loc, self.bass_intensity)
-        
-        mid_loc = glGetUniformLocation(self.shader, "midIntensity")
-        glUniform1f(mid_loc, self.mid_intensity)
-        
-        high_loc = glGetUniformLocation(self.shader, "highIntensity")
-        glUniform1f(high_loc, self.high_intensity)
-        
-        energy_loc = glGetUniformLocation(self.shader, "audioEnergy")
-        glUniform1f(energy_loc, self.audio_energy)
         
         intensity_loc = glGetUniformLocation(self.shader, "colorIntensity")
         glUniform1f(intensity_loc, self.color_intensity)
