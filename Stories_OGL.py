@@ -1609,14 +1609,22 @@ class EnvironmentalSystem:
         self._state_hold_start = None
         target_params = self.weather_state.start_transition(new_weather, transition_duration, time.time())
         
-        # Schedule events based on on_transition_events in weather preset
+        # Schedule events based on on_transition_events in weather preset.
+        # Entry schema: [name, duration, delay=0, frame_id=0]. The third
+        # slot is a START DELAY in seconds — every preset author wrote it
+        # that way (staggered lightning strikes, a whale 20s after the
+        # dolphins) — but it was historically consumed as a frame_id,
+        # which silently no-op'd those entries on single-canvas projects
+        # (the viewport lookup failed). frame_id moved to the 4th slot.
         on_transition_events = target_params.get("on_transition_events", [])
         for event_config in on_transition_events:
             if isinstance(event_config, (tuple, list)) and len(event_config) >= 2:
                 event_name, duration = event_config[:2]
-                frame_id = event_config[2] if len(event_config) > 2 else 0
-                print(f"[WEATHER]   Transition event: {event_name} ({duration}s)")
-                self._schedule_event_from_map(event_name, 0, duration, frame_id=frame_id)
+                delay = float(event_config[2]) if len(event_config) > 2 else 0.0
+                frame_id = int(event_config[3]) if len(event_config) > 3 else 0
+                tag = f" +{delay:.0f}s" if delay else ""
+                print(f"[WEATHER]   Transition event: {event_name} ({duration}s{tag})")
+                self._schedule_event_from_map(event_name, delay, duration, frame_id=frame_id)
             else:
                 print(f"[WEATHER]   Invalid on_transition_event format: {event_config!r}")
 

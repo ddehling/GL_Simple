@@ -1912,7 +1912,10 @@ function renderOnTransitionEvents(state, events) {
     events.forEach((eventConfig, i) => {
         const eventName = Array.isArray(eventConfig) ? eventConfig[0] : '';
         const duration = Array.isArray(eventConfig) && eventConfig.length > 1 ? eventConfig[1] : 60;
-        const frameId = Array.isArray(eventConfig) && eventConfig.length > 2 ? eventConfig[2] : 0;
+        // Schema: [name, duration, delay=0, frame_id=0] — the 3rd slot is
+        // a start delay in seconds (matches the engine's consumer).
+        const delay = Array.isArray(eventConfig) && eventConfig.length > 2 ? eventConfig[2] : 0;
+        const frameId = Array.isArray(eventConfig) && eventConfig.length > 3 ? eventConfig[3] : 0;
         
         // Build options for event dropdown
         let options = '';
@@ -1935,9 +1938,16 @@ function renderOnTransitionEvents(state, events) {
                        value="${duration}"
                        onchange="updateOnTransitionEvent('${state}', ${i}, 'duration', parseFloat(this.value))"
                        style="width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+                <label style="margin: 0; white-space: nowrap;">Delay (s):</label>
+                <input type="number"
+                       step="1"
+                       min="0"
+                       value="${delay}"
+                       onchange="updateOnTransitionEvent('${state}', ${i}, 'delay', parseFloat(this.value))"
+                       style="width: 70px; padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
                 <label style="margin: 0;">Frame:</label>
-                <input type="number" 
-                       step="1" 
+                <input type="number"
+                       step="1"
                        min="0"
                        value="${frameId}"
                        onchange="updateOnTransitionEvent('${state}', ${i}, 'frame', parseInt(this.value))"
@@ -1966,12 +1976,16 @@ function updateOnTransitionEvent(state, index, field, value) {
         events[index] = ['clouds', 60, 0];
     }
     
+    // Schema: [name, duration, delay=0, frame_id=0]
+    while (events[index].length < 4) events[index].push(0);
     if (field === 'event') {
         events[index][0] = value;
     } else if (field === 'duration') {
         events[index][1] = value;
-    } else if (field === 'frame') {
+    } else if (field === 'delay') {
         events[index][2] = value;
+    } else if (field === 'frame') {
+        events[index][3] = value;
     }
     
     triggerAutoSave();
