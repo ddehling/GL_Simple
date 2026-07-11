@@ -327,10 +327,15 @@ void main() {
         return points
 
     def _generate_fan_bolt_path(self, anchor_phys_x_ft):
-        """Generate the main bolt path + branches in physical feet, then
-        convert every point to ABSOLUTE PIXEL coords for the renderer.
+        """Generate the main bolt path + branches in PHYSICAL FEET.
+
+        Points stay in feet: the renderer converts them to pixels per
+        RIBBON CORNER (see _add_fan_ribbon), so the bolt keeps a constant
+        physical width everywhere on the fan. The old approach converted
+        the polyline points and drew GL_LINES with a pixel line width —
+        which ballooned to ~5x the physical thickness at the outer ring
+        (where the cloud end of every bolt lives).
         """
-        fan = self._fan
         full_height_ft = self._fan_top_ft - self._fan_bottom_ft
         segment_height_ft = full_height_ft / self.num_segments
 
@@ -359,18 +364,76 @@ void main() {
                 if len(sub) > 1:
                     branches_phys.append(sub)
 
-        # Convert all (phys_x_ft, phys_y_ft) → absolute (pixel_x, pixel_y).
-        def phys_to_px_array(pts):
-            out = []
-            for px, py in pts:
-                ix, iy = fan.physical_to_px(float(px), float(py))
-                out.append([float(ix), float(iy)])
-            return np.array(out, dtype=np.float32)
-
         return {
-            'main':     phys_to_px_array(main_phys),
-            'branches': [phys_to_px_array(b) for b in branches_phys],
+            'main':     np.array(main_phys, dtype=np.float32),
+            'branches': [np.array(b, dtype=np.float32) for b in branches_phys],
         }
+
+    # Fan-mode ribbon half-widths (feet). Halo roughly matches the old
+    # 6px line at the INNER radius; the core stays a hot thin filament.
+    _FAN_HALO_HALF_FT = 0.22
+    _FAN_CORE_HALF_FT = 0.08
+
+    def _add_fan_ribbon(self, path_ft, half_w_ft, z, brightness,
+                        all_vertices, all_offsets, all_brightness):
+        """Emit a triangle ribbon (2 tris/segment) for a polyline in FEET.
+
+        Offsets are applied perpendicular to each segment in physical
+        space and each corner is converted feet->pixels individually, so
+        the ribbon has constant PHYSICAL width and follows the fan's
+        polar curvature. The half-width is floored at ~1.4 local pixels
+        so thin cores never alias away near the rim.
+        """
+        fan = self._fan
+        span = fan.outer_r_ft - fan.inner_r_ft
+        for i in range(len(path_ft) - 1):
+            x1, y1 = float(path_ft[i][0]), float(path_ft[i][1])
+            x2, y2 = float(path_ft[i + 1][0]), float(path_ft[i + 1][1])
+            dx, dy = x2 - x1, y2 - y1
+            seg_len = (dx * dx + dy * dy) ** 0.5
+            if seg_len < 1e-4:
+                continue
+            ux, uy = dx / seg_len, dy / seg_len
+            # Local pixel floor at the segment midpoint.
+            mx, my = (x1 + x2) * 0.5, (y1 + y2) * 0.5
+            r = max((mx * mx + my * my) ** 0.5, fan.inner_r_ft)
+            vfrac = min(max((r - fan.inner_r_ft) / span, 0.0), 1.0)
+            w = max(half_w_ft, fan.arc_width_ft(vfrac) * 0.7, 0.05)
+            # Extend segment ends by ~w so consecutive quads overlap at
+            # the joints instead of leaving notches on sharp kinks.
+            ex1, ey1 = x1 - ux * w * 0.35, y1 - uy * w * 0.35
+            ex2, ey2 = x2 + ux * w * 0.35, y2 + uy * w * 0.35
+            px, py = -uy * w, ux * w
+            c0 = fan.physical_to_px(ex1 + px, ey1 + py)
+            c1 = fan.physical_to_px(ex1 - px, ey1 - py)
+            c2 = fan.physical_to_px(ex2 + px, ey2 + py)
+            c3 = fan.physical_to_px(ex2 - px, ey2 - py)
+            for vx, vy in (c0, c1, c2, c1, c3, c2):
+                all_vertices.append([float(vx), float(vy)])
+                all_offsets.append([0.0, 0.0, z])
+                all_brightness.append(brightness)
+
+    def build_fan_render_data(self):
+        """Fan-mode geometry: two triangle sets (halo, core) built from
+        the feet-space bolt paths with constant physical widths."""
+        halo_v, halo_o, halo_b = [], [], []
+        core_v, core_o, core_b = [], [], []
+        for bolt in self.bolts:
+            z = float(bolt['position'][2])
+            brightness = bolt['brightness']
+            paths = [(bolt['main_path'], 1.0)] + \
+                    [(br, 0.7) for br in bolt['branches']]
+            for path, dim in paths:
+                self._add_fan_ribbon(path, self._FAN_HALO_HALF_FT * dim, z,
+                                     brightness * dim, halo_v, halo_o, halo_b)
+                self._add_fan_ribbon(path, self._FAN_CORE_HALF_FT, z,
+                                     brightness * dim, core_v, core_o, core_b)
+        def pack(v, o, b):
+            if not v:
+                return None, None, None, 0
+            return (np.array(v, dtype=np.float32), np.array(o, dtype=np.float32),
+                    np.array(b, dtype=np.float32), len(v))
+        return pack(halo_v, halo_o, halo_b), pack(core_v, core_o, core_b)
         
     def spawn_bolt(self):
         """Create a new lightning bolt with branches"""
@@ -541,8 +604,15 @@ void main() {
         if not self.bolts:
             return
 
-        # Build render data
-        vertices, offsets, brightness_data, vertex_count = self.build_render_data()
+        # Build render data. Fan mode uses physical-width triangle
+        # ribbons (two sets: halo + core); classic mode uses GL_LINES.
+        if self.fan_aware and self._fan is not None:
+            halo_pack, core_pack = self.build_fan_render_data()
+            if halo_pack[3] == 0 and core_pack[3] == 0:
+                return
+            vertex_count = halo_pack[3] + core_pack[3]
+        else:
+            vertices, offsets, brightness_data, vertex_count = self.build_render_data()
 
         if vertex_count == 0:
             return
@@ -579,29 +649,46 @@ void main() {
             glUniform2f(res_loc, float(self.viewport.width), float(self.viewport.height))
 
         glBindVertexArray(self.VAO)
-
-        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
-        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_DYNAMIC_DRAW)
-        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_offsets)
-        glBufferData(GL_ARRAY_BUFFER, offsets.nbytes, offsets, GL_DYNAMIC_DRAW)
-        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_brightness)
-        glBufferData(GL_ARRAY_BUFFER, brightness_data.nbytes, brightness_data, GL_DYNAMIC_DRAW)
-
-        old_line_width = glGetFloatv(GL_LINE_WIDTH)
         glow_loc = glGetUniformLocation(self.shader, b"u_glow")
 
-        # Wide cool halo underneath.
-        if glow_loc >= 0:
-            glUniform1f(glow_loc, 1.0)
-        glLineWidth(6.0)
-        glDrawArrays(GL_LINES, 0, vertex_count)
+        def upload(v, o, b):
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
+            glBufferData(GL_ARRAY_BUFFER, v.nbytes, v, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo_offsets)
+            glBufferData(GL_ARRAY_BUFFER, o.nbytes, o, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo_brightness)
+            glBufferData(GL_ARRAY_BUFFER, b.nbytes, b, GL_DYNAMIC_DRAW)
 
-        # Thin hot white core on top.
-        if glow_loc >= 0:
-            glUniform1f(glow_loc, 0.0)
-        glLineWidth(2.5)
-        glDrawArrays(GL_LINES, 0, vertex_count)
-        glLineWidth(old_line_width)
+        if self.fan_aware and self._fan is not None:
+            # Physical-width ribbons: wide cool halo, then hot core.
+            hv, ho, hb, hn = halo_pack
+            if hn:
+                upload(hv, ho, hb)
+                if glow_loc >= 0:
+                    glUniform1f(glow_loc, 1.0)
+                glDrawArrays(GL_TRIANGLES, 0, hn)
+            cv, co, cb, cn = core_pack
+            if cn:
+                upload(cv, co, cb)
+                if glow_loc >= 0:
+                    glUniform1f(glow_loc, 0.0)
+                glDrawArrays(GL_TRIANGLES, 0, cn)
+        else:
+            upload(vertices, offsets, brightness_data)
+            old_line_width = glGetFloatv(GL_LINE_WIDTH)
+
+            # Wide cool halo underneath.
+            if glow_loc >= 0:
+                glUniform1f(glow_loc, 1.0)
+            glLineWidth(6.0)
+            glDrawArrays(GL_LINES, 0, vertex_count)
+
+            # Thin hot white core on top.
+            if glow_loc >= 0:
+                glUniform1f(glow_loc, 0.0)
+            glLineWidth(2.5)
+            glDrawArrays(GL_LINES, 0, vertex_count)
+            glLineWidth(old_line_width)
 
         glBindVertexArray(0)
         glUseProgram(0)
