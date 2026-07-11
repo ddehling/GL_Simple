@@ -114,6 +114,13 @@ class SoundPoolEffect(ShaderEffect):
 
         self._sound_dir: str = ''
         self._files: list = []
+        # Shuffle-bag: play every file once per cycle in a shuffled order,
+        # reshuffle when empty. Guarantees no immediate repeats and even
+        # coverage — a plain uniform choice repeated tracks back-to-back
+        # (1/N per boundary) and could starve others for hours.
+        self._bag: list = []
+        self._last_pick = None
+        self._rng = np.random.RandomState()
         self._next_play_time: float = 0.0
         # Engine key of the clip currently playing, so crossfade mode can
         # fade it out as the next clip fades in. None until the first clip.
@@ -138,6 +145,9 @@ class SoundPoolEffect(ShaderEffect):
             self.enabled = False
             return False
 
+        # Fresh pool -> fresh bag (keep _last_pick: if the same dir reloads,
+        # the first draw still avoids repeating what just played).
+        self._bag = []
         # Reset the cooldown so a freshly-loaded pool doesn't immediately
         # fire a clip on top of whatever was playing before, but also
         # doesn't wait an unpredictable amount of time from a prior pool.
@@ -153,8 +163,27 @@ class SoundPoolEffect(ShaderEffect):
         """Disable the effect and drop the cached file list."""
         self._sound_dir = ''
         self._files = []
+        self._bag = []
         self._current_key = None
         self.enabled = False
+
+    def _next_pick(self):
+        """Draw from the shuffle-bag, refilling (reshuffled) when empty.
+
+        On refill, if the new bag would hand out the previous clip again
+        immediately, that entry is swapped deeper into the bag (only
+        possible when the pool has more than one file).
+        """
+        if not self._bag:
+            self._bag = list(self._files)
+            self._rng.shuffle(self._bag)
+            if len(self._bag) > 1 and self._bag[-1] == self._last_pick:
+                # .pop() takes from the END — swap the would-be repeat
+                # somewhere earlier in the bag.
+                j = int(self._rng.randint(0, len(self._bag) - 1))
+                self._bag[-1], self._bag[j] = self._bag[j], self._bag[-1]
+        self._last_pick = self._bag.pop()
+        return self._last_pick
 
     @property
     def sound_dir(self) -> str:
@@ -183,7 +212,7 @@ class SoundPoolEffect(ShaderEffect):
             # schedule point sits crossfade seconds before the previous clip
             # ends), fading it in while the outgoing clip fades out across
             # the same window. No probability gate, no cooldown.
-            pick = np.random.choice(self._files)
+            pick = self._next_pick()
             dur = _audio_duration_seconds(pick)
             xf = min(self.crossfade, dur)  # never fade longer than the clip
             if self._current_key is not None:
@@ -199,7 +228,7 @@ class SoundPoolEffect(ShaderEffect):
         if np.random.random() >= self.probability:
             return
 
-        pick = np.random.choice(self._files)
+        pick = self._next_pick()
         dur = _audio_duration_seconds(pick)
         engine.schedule_event(str(pick), volume=self.volume, soundpool=True)
         # Block further picks for the clip's duration + cooldown pad so
