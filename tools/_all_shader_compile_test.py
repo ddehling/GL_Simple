@@ -35,8 +35,19 @@ def main():
     if not glfw.init():
         print("FAIL: glfw.init()")
         sys.exit(1)
+    # Prefer a GLES 3.1 context — it catches GLSL-ES-only failures
+    # (reserved words, missing precision) that a desktop-GL compatibility
+    # context lets slide. Fall back to the default API on drivers that
+    # refuse ES contexts.
+    glfw.window_hint(glfw.CLIENT_API, glfw.OPENGL_ES_API)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
     glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
     win = glfw.create_window(64, 64, "all-shader-compile-test", None, None)
+    if win is None:
+        glfw.default_window_hints()
+        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+        win = glfw.create_window(64, 64, "all-shader-compile-test", None, None)
     if win is None:
         print("FAIL: could not create a hidden GL context")
         glfw.terminate()
