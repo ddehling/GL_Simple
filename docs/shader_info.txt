@@ -123,6 +123,8 @@ and atmospherics in front.
 | 0.58 | desert_heat_shimmer | mirage/heat distortion over the horizon |
 | 0.55 | desert_dunes | dune surface |
 | 0.52 | desert_sand_ripples | wind ripples on the dune surface |
+| 0.50 – 0.51 | desert cacti (saguaro 0.500, joshua 0.502, prickly pear 0.504, barrel 0.506) | rare random-event characters standing on the dune band; four distinct z so overlapping events can't fight |
+| 0.49 | desert_toads | hopping ground troupe (random event, dusk/night slot); RIDES desert_dunes' migrating front layer — dunes publish outstate['dune_wind_phase'], toads mirror ridge_h() on CPU for placement and re-evaluate it per fragment to discard below-sand pixels (GPU-exact contact/occlusion). Keep the front-layer constants in the two files in sync |
 | 0.45 | desert_vultures | circling silhouettes, mid-air |
 | 0.40 | desert_dust_devil | rotating sand column |
 | 0.35 | sandstorm | blowing sand particles |
