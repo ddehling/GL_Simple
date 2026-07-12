@@ -1,0 +1,41 @@
+# OPTIONAL: ML mood/valence descriptors for the DJ library (Music2Emo).
+#
+# The DJ system works without this - danceability/valence/mood are DERIVED
+# heuristically (lib/dj/character.py). With it, the "Mood (ML)" button in the
+# planner (or `python tools/dj_mood.py`) runs the Music2Emo model over each
+# track and stores REAL valence/arousal + mood tags (dark, party, epic,
+# melancholic...), which character.py then prefers over the heuristic.
+#
+# Deliberately NOT in requirements.txt: this pulls a heavy torch/transformers
+# stack, useless on the Raspberry Pi image-display installs. DJ machines only.
+#
+# TWO STEPS:
+#
+# 1) The Python deps (needs torch already installed - see
+#    requirements-dj-vocals.txt for the CUDA/CPU torch install; the same
+#    torch serves both passes):
+#
+#      pip install -r requirements-dj-mood.txt
+#
+# 2) The model code + weights (a few hundred MB of checkpoints - too large to
+#    vendor here). Clone it next to GL_Simple, or set $DJ_MOOD_MODEL_DIR:
+#
+#      git clone https://github.com/AMAAI-Lab/Music2Emotion
+#      # -> place as a sibling of the GL_Simple repo, or:
+#      export DJ_MOOD_MODEL_DIR=/path/to/Music2Emotion
+#
+# lib/dj/mood_ml.find_model_dir() locates it; without it the button reports
+# the model is missing and nothing runs. First run downloads MERT (~400 MB)
+# from HuggingFace. ~3-5 s/track on GPU; incremental and resumable.
+transformers
+nnAudio
+pytorch_lightning
+torchmetrics
+torch_optimizer
+music21
+hydra-core
+omegaconf
+chordparser
+pretty_midi
+mir_eval
+librosa

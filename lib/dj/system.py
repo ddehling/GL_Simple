@@ -29,6 +29,9 @@ RATE = 44100
 PLAN_LEAD_S = 45.0               # start choosing next this early
 MIN_LEAD_S = 8.0                 # never arm closer than this to the seam
 SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
+WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
+                                 # the end of the current track unarmed
+WD_LOOP_S = 15.0                 # ...and buys time with a safety loop here
 
 
 def _intro_start(track):
@@ -84,6 +87,11 @@ class DJSystem:
         self._setlist_queue = []     # upcoming entry dicts (plan-following)
         self.setlist_names = []      # for the web picker, refreshed by step()
         self._setlists_checked = 0.0
+        self._txn_id = 0             # transition transaction tag (abort)
+        self._recovery_txn = None    # abort-recovery events still queued
+        self._wd_loop = False        # continuity watchdog's safety loop
+        self._seam_metrics = None    # collected while a transition runs
+        self._last_seam = None       # last seam's measured quality (web)
         self._decoded = {}           # track_id -> stereo samples (RAM cache)
         self._decoded_order = []
         self._decoding = set()
@@ -103,7 +111,8 @@ class DJSystem:
     def start(self):
         """Open the library, attach the submix, begin conducting."""
         self.db = LibraryDB(self.music_root)     # planner-thread connection
-        lib = load_library(self.db)
+        # 'do not use' tracks (DB v11) are never grabbed by the autoDJ.
+        lib = [t for t in load_library(self.db) if not t.excluded]
         if not lib:
             self.last_error = "library is empty - run tools/dj_scan.py"
             print(f"[DJ] {self.last_error}")
@@ -277,6 +286,13 @@ class DJSystem:
     def request_skip(self):
         with self._lock:
             self._pending.append(("skip", None))
+
+    def abort_transition(self):
+        """TRAINWRECK RESCUE: recall an armed transition (only before its
+        point of no return) and restore the playing deck - no skip, the
+        current track just keeps going."""
+        with self._lock:
+            self._pending.append(("abort", None))
 
     def request_next(self, track_id):
         with self._lock:
@@ -577,6 +593,11 @@ class DJSystem:
             "current": self._track_brief(cur),
             "next": self._track_brief(nxt),
             "style": self.plan["style"] if self.plan else None,
+            "last_seam": self._last_seam,
+            "abortable": (self.state == "armed" and self.plan is not None
+                          and self.plan.get("no_return_at") is not None
+                          and self.submix.clock
+                          < self.plan["no_return_at"] - int(0.5 * RATE)),
             "blend_in_s": round(countdown, 1) if countdown is not None else None,
             "setlist": self._setlist_name,
             "setlist_remaining": (len(self.brain.pool_ids)
@@ -684,6 +705,8 @@ class DJSystem:
                     self.plan = None
             elif kind == "skip" and self.state in ("playing", "armed"):
                 self._do_skip()
+            elif kind == "abort" and self.state == "armed":
+                self._do_abort(via="abort")
             elif kind == "next_id":
                 t = next((x for x in self.brain.library if x.id == val), None)
                 if t is not None and self.state == "playing":
@@ -791,8 +814,11 @@ class DJSystem:
             self._maybe_plan()
             self._maybe_horizon()
         elif self.state == "armed":
+            self._collect_seam_metrics()
             if self.swap_at is not None and self.submix.clock >= self.swap_at:
                 self._finish_swap()
+        if self.state == "playing":
+            self._watchdog(self._pos_s())
 
     def _pick_next(self, out_bpm):
         """The live pick FOLLOWS the displayed queue: take the horizon's
@@ -969,6 +995,8 @@ class DJSystem:
             entry = self._setlist_queue.pop(0)
             first = next((x for x in self.brain.library
                           if x.id == entry["track_id"]), None)
+            if first is not None:
+                self._play_hint_s = entry.get("target_play_s")
         if first is None:
             first = self.brain.choose_first(self.arc_target())
         if first is None:
@@ -1012,6 +1040,11 @@ class DJSystem:
         return d["time_s"] if d and d["ready"] else None
 
     def _maybe_plan(self):
+        if self._wd_loop:
+            # The continuity watchdog's safety loop is wrapping the deck's
+            # cursor - build_events' source->clock mapping is invalid there.
+            # The watchdog owns the endgame (clock-domain handoff).
+            return
         if not self.autopilot and self.next_track is None:
             return
         pos = self._pos_s()
@@ -1084,8 +1117,16 @@ class DJSystem:
             _, self._next_meta = self.brain.score(
                 self.current, self.next_track, self.arc_target(), out_bpm)
             if self._next_meta is None:
-                self._next_meta = {"rate": 1.0, "eff_bpm": self.next_track.bpm,
+                # Requested/injected next that the scorer rejects: same
+                # answer as an ordered setlist entry - read the tempo
+                # honestly so an unreachable stretch becomes a deliberate
+                # fade, never a fake blend of two sliding grids.
+                rate, eff = self.brain.rate_for(out_bpm, self.next_track)
+                self._next_meta = {"rate": rate or 1.0,
+                                   "eff_bpm": eff or self.next_track.bpm,
                                    "pair": None}
+                if rate is None:
+                    self._next_meta["tempo_clash"] = True
         # Use the RAM-cached samples; if the background decode isn't done
         # yet, wait (we still have PLAN_LEAD_S of runway) rather than decode
         # inline and risk starving the audio callback.
@@ -1115,6 +1156,11 @@ class DJSystem:
                                 max(self.current.duration_s - 10.0,
                                     pos + MIN_LEAD_S + 1.0))
         incoming = "b" if self.active_deck == "a" else "a"
+        if self._recovery_txn is not None:
+            # A pending abort-recovery still holds a delayed stop for this
+            # deck - recall it before the new transition takes over.
+            self.submix.post({"cmd": "cancel", "txn": self._recovery_txn})
+            self._recovery_txn = None
         self.submix.post({"cmd": "load", "deck": incoming, "samples": samples,
                           "track_id": self.next_track.id,
                           "grid": self.next_track.grid,
@@ -1125,11 +1171,19 @@ class DJSystem:
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,
             self.current, self.next_track)
+        # Tag the whole script as one transaction so _do_abort can recall
+        # every not-yet-fired event with a single cancel.
+        self._txn_id += 1
+        for e in events:
+            e["txn"] = self._txn_id
         self.submix.post_many(events)
         self.plan = plan
         self.swap_at = swap_at
         self.blend_at = blend_at
         self.state = "armed"
+        self._seam_metrics = {"style": plan["style"], "max_err": 0.0,
+                              "err_n": 0, "hole_s": 0.0, "low_since": None,
+                              "urgent": self._urgent_exit}
         self._urgent_exit = False
         self._log({"event": "armed", "style": plan["style"],
                    "next": self.next_track.title,
@@ -1169,6 +1223,8 @@ class DJSystem:
             theme=self._theme_name)
         self._last_style = self.plan["style"]
         self._last_pair = (old.id if old else None, self.current.id)
+        self._wd_loop = False
+        self._assess_seam(old)
         # QUEUE CONTINUITY: the played track leaves the front of the
         # horizon; the rest advances and gets topped up - never a
         # wholesale rebuild on swap (read as 'the plan reset').
@@ -1219,10 +1275,74 @@ class DJSystem:
         # bug that left every jump stuck in the armed state).
         self._log({"event": "seek", "to_s": round(target, 1)})
 
+    def _do_abort(self, via="abort"):
+        """Recall an ARMED transition: cancel its not-yet-fired events and
+        restore the outgoing deck. Only possible BEFORE the plan's point of
+        no return (the bass swap / cut / drop) - past that, finishing the
+        mix sounds better than any rescue. Returns True if recalled."""
+        if self.state != "armed" or self.plan is None:
+            return False
+        clk = self.submix.clock
+        nra = self.plan.get("no_return_at")
+        if nra is None or clk >= nra - int(0.5 * RATE):
+            return False
+        incoming = "b" if self.active_deck == "a" else "a"
+        tel = (self.submix.telemetry or {}).get("decks", {})
+        a_rate = float((tel.get(self.active_deck) or {}).get("rate") or 1.0)
+        # Cancel first (FIFO: it reaches the submix before the recovery).
+        # Posted separately so the recovery-txn tagging below can't clobber
+        # its target txn (it once did - the blend script survived its own
+        # abort and its stale events fired minutes later).
+        self.submix.post({"cmd": "cancel", "txn": self._txn_id})
+        # Then unwind whatever already fired: kill the incoming deck, and
+        # restate everything a style may have already shaped on the
+        # outgoing one (EQ carve, filter, echo, loop, duck, dual-bend).
+        ev = [{"cmd": "end_sync"},
+              {"cmd": "duck", "on": False},
+              {"cmd": "gain", "deck": incoming, "value": 0.0, "ramp_s": 0.4},
+              {"at": clk + int(0.6 * RATE), "cmd": "stop", "deck": incoming},
+              {"cmd": "release_loop", "deck": self.active_deck},
+              {"cmd": "filter", "deck": self.active_deck, "mode": "off"},
+              {"cmd": "echo", "deck": self.active_deck, "active": False},
+              {"cmd": "eq", "deck": self.active_deck, "low": 1.0,
+               "mid": 1.0, "high": 1.0, "ramp_s": 1.2},
+              {"cmd": "gain", "deck": self.active_deck, "value": 1.0,
+               "ramp_s": 1.2}]
+        if abs(a_rate - 1.0) > 1e-3:     # dual-bend ramp already under way
+            ev.append({"cmd": "rate", "deck": self.active_deck, "value": 1.0,
+                       "ramp_s": abs(a_rate - 1.0) / 0.0015})
+        # The recovery is its own transaction: its DELAYED incoming-deck
+        # stop must be recallable, or a skip's immediate urgent re-arm (new
+        # blend can start at +0.3s) gets its deck killed at +0.6s by the
+        # leftover stop (measured: the room went silent while the
+        # bookkeeping 'handover' completed).
+        self._txn_id += 1
+        for e in ev:
+            e["txn"] = self._txn_id
+        self._recovery_txn = self._txn_id
+        self.submix.post_many(ev)
+        style = self.plan["style"]
+        self.plan = None
+        self.swap_at = None
+        self.blend_at = None
+        self.state = "playing"
+        self._seam_metrics = None
+        # Don't instantly re-arm the same seam: push the drawn exit past
+        # the planning lead (an exactly-PLAN_LEAD_S push re-arms the very
+        # same step) so the operator (or the skip flow) decides what's next.
+        played = (clk - self._started_clock) / RATE
+        self._exit_played = max(self._exit_played, played + PLAN_LEAD_S + 30.0)
+        self._log({"event": "abort", "via": via, "style": style})
+        return True
+
     def _do_skip(self):
         """Exit at the earliest musical opportunity."""
         if self.state == "armed":
-            return                        # transition already rolling
+            # A transition in flight can be recalled up to its decisive
+            # moment - then the skip replans an urgent exit. Past the point
+            # of no return, letting it finish IS the fastest skip.
+            if not self._do_abort(via="skip"):
+                return
         if self._history_id:
             self.db.log_play_end(self._history_id, skipped=True)
             self._history_id = None
@@ -1239,6 +1359,199 @@ class DJSystem:
         self.plan = None
         self._exit_played = (self.submix.clock - self._started_clock) / RATE
         self._maybe_plan()
+
+    def _watchdog(self, pos):
+        """CONTINUITY WATCHDOG: the music must never simply run out. If the
+        current track is nearly over and no transition armed (persistent
+        'no compatible next', a decode that never landed, autopilot off with
+        an empty queue), escalate: force a pick (ignoring tempo gates if it
+        comes to that), buy time with a safety loop over the last phrase,
+        and hand off with a clock-domain fade the moment samples are ready."""
+        if self.state != "playing" or self.current is None or pos is None:
+            return
+        tel = (self.submix.telemetry or {}).get("decks", {})
+        d = tel.get(self.active_deck) or {}
+        rate = max(float(d.get("rate") or 1.0), 1e-6)
+        remaining = (self.current.duration_s - pos) / rate
+        if self._wd_loop and remaining > 45.0:
+            # Operator seeked back out of the endgame: the cursor is behind
+            # the loop window again (a bare clear is mapping-safe there);
+            # hand planning back to the brain.
+            self.submix.post({"cmd": "clear_loop", "deck": self.active_deck})
+            self._wd_loop = False
+            self._log({"event": "watchdog_release"})
+            return
+        if remaining > WATCHDOG_S:
+            return
+        # 1) Make sure SOMETHING is queued. The emergency pick ignores the
+        # tempo gates entirely - continuity outranks polish, the seam will
+        # be a fade. Autopilot-off is respected: no pick is forced, the
+        # safety loop below holds the floor until the operator acts.
+        if self.next_track is None and self.autopilot:
+            out_bpm = self.current.bpm * rate
+            cand, meta = self._pick_next(out_bpm)
+            if cand is None:
+                cand, meta = self.brain.emergency_pick(
+                    self.current, self.arc_target())
+                if cand is not None:
+                    self._log({"event": "watchdog_pick", "track": cand.title})
+            if cand is not None:
+                self.next_track, self._next_meta = cand, meta
+                self._predecode(self.next_track)
+        # 2) Between WATCHDOG_S and WD_LOOP_S the normal planner gets first
+        # shot at the injected pick (a real musical seam beats a rescue
+        # fade). Below WD_LOOP_S with samples in RAM, hand off NOW - and
+        # never via build_events: with the safety loop wrapping the cursor
+        # its source->clock mapping is invalid, so the handoff is scheduled
+        # purely in clock time.
+        if remaining >= WD_LOOP_S and not self._wd_loop:
+            return
+        samples = None
+        if self.next_track is not None:
+            with self._decode_lock:
+                samples = self._decoded.get(self.next_track.id)
+            if samples is None and not self.threaded:
+                samples = self._decoded_samples(self.next_track)
+        if samples is not None:
+            self._emergency_handoff(samples, pos)
+            return
+        # 3) Buy time: loop the last phrase until the decode lands (or the
+        # operator queues something). Idempotent; released by the handoff.
+        if not self._wd_loop and remaining < WD_LOOP_S:
+            per = max(self.current.period_s, 0.1)
+            le = self.current.nearest_downbeat(self.current.duration_s - 3.0)
+            if le <= pos + 1.0:
+                le = min(self.current.duration_s - 0.5, pos + 4 * per)
+            ls = max(0.0, le - 16 * per)
+            self.submix.post({"cmd": "loop", "deck": self.active_deck,
+                              "start_s": ls, "end_s": le})
+            self._wd_loop = True
+            self._log({"event": "watchdog_loop", "track": self.current.title,
+                       "start_s": round(ls, 1), "end_s": round(le, 1),
+                       "autopilot": self.autopilot})
+            print(f"[DJ] watchdog: looping '{self.current.title[:30]}' outro"
+                  f" to keep the floor alive")
+
+    def _emergency_handoff(self, samples, pos):
+        """Watchdog handoff: a 6s clock-domain dipped fade to the queued
+        next track. Deliberately styleless - it exists so the room never
+        goes silent, not to win seam-of-the-night."""
+        nxt = self.next_track
+        incoming = "b" if self.active_deck == "a" else "a"
+        if self._recovery_txn is not None:
+            self.submix.post({"cmd": "cancel", "txn": self._recovery_txn})
+            self._recovery_txn = None
+        clk = self.submix.clock
+        in_s = nxt.nearest_downbeat(_intro_start(nxt))
+        end = clk + int(6.0 * RATE)
+        ev = [
+            {"at": clk, "cmd": "load", "deck": incoming, "samples": samples,
+             "track_id": nxt.id, "grid": nxt.grid, "gain_db": nxt.gain_db,
+             "kick_offset_s": nxt.kick_offset_s, "cue_s": in_s},
+            {"at": clk, "cmd": "gain", "deck": incoming, "value": 0.0,
+             "ramp_s": 0.01},
+            {"at": clk, "cmd": "start", "deck": incoming},
+            {"at": clk, "cmd": "gain", "deck": incoming, "value": 1.0,
+             "ramp_s": 4.0},
+            {"at": clk, "cmd": "gain", "deck": self.active_deck,
+             "value": 0.0, "ramp_s": 5.0},
+            {"at": end, "cmd": "stop", "deck": self.active_deck},
+            {"at": end, "cmd": "clear_loop", "deck": self.active_deck},
+        ]
+        self._txn_id += 1
+        for e in ev:
+            e["txn"] = self._txn_id
+        self.submix.post_many(ev)
+        self.plan = {"style": "emergency_fade", "rate": 1.0,
+                     "out_s": pos, "in_s": in_s, "beats": 0,
+                     "pair_score": 0.0, "cand_id": nxt.id,
+                     "no_return_at": clk}
+        self.swap_at = end
+        self.blend_at = clk
+        self.state = "armed"
+        self._seam_metrics = None        # nothing to judge on a rescue fade
+        self._wd_loop = False
+        self._log({"event": "watchdog_handoff", "next": nxt.title})
+        print(f"[DJ] watchdog: emergency fade into '{nxt.title[:30]}'")
+
+    def _collect_seam_metrics(self):
+        """Sampled each step while a transition runs: worst audible grid
+        flam between the synced decks and any level hole in the overlap -
+        the raw material for the seam self-assessment."""
+        m = self._seam_metrics
+        if m is None:
+            return
+        tel = self.submix.telemetry or {}
+        decks = tel.get("decks") or {}
+        sync = tel.get("sync")
+        clk = tel.get("clock", 0)
+        if sync:
+            sl = decks.get(sync.get("slave"))
+            ms = decks.get(sync.get("master"))
+            if (sl and ms and sl.get("playing") and ms.get("playing")
+                    and (sl.get("gain") or 0) > 0.25
+                    and (ms.get("gain") or 0) > 0.25):
+                err = ((float(sl.get("beat_phase") or 0.0)
+                        - float(ms.get("beat_phase") or 0.0)
+                        + 0.5) % 1.0) - 0.5
+                if abs(err) > m["max_err"]:
+                    m["max_err"] = abs(err)
+                if abs(err) > 0.12:      # flam must PERSIST, not spike once
+                    m["err_n"] += 1
+        rms = tel.get("rms")
+        if (rms is not None and self.blend_at is not None
+                and clk >= self.blend_at):
+            if rms < 0.02:
+                if m["low_since"] is None:
+                    m["low_since"] = clk
+                m["hole_s"] = max(m["hole_s"],
+                                  (clk - m["low_since"]) / RATE)
+            else:
+                m["low_since"] = None
+        st = tel.get("sync_stats") or {}
+        m["resnaps"] = st.get("resnaps", 0)
+        m["nudges"] = st.get("nudges", 0)
+
+    def _assess_seam(self, old):
+        """SEAM SELF-ASSESSMENT: judge the transition that just finished
+        from its own measurements and remember measured train-wrecks as a
+        gentle auto thumbs-down in pair memory - the DJ gets better every
+        night without anyone touching a button."""
+        m, self._seam_metrics = self._seam_metrics, None
+        if m is None or old is None or self.current is None:
+            return
+        style = m.get("style")
+        beat_matched = style not in (None, "long_fade", "emergency_fade")
+        # 0.12 beats sustained while both decks are audible is a clearly
+        # audible flam (~55ms at 128 bpm) - well past the PLL's deadband
+        # and beyond what a healthy lock ever shows.
+        flam = beat_matched and m["max_err"] > 0.12 and m.get("err_n", 0) >= 2
+        hole = m.get("hole_s", 0.0) > 1.5
+        verdict = "flam" if flam else ("hole" if hole else "clean")
+        self._last_seam = {"style": style, "verdict": verdict,
+                           "max_err_beats": round(m["max_err"], 3),
+                           "hole_s": round(m.get("hole_s", 0.0), 2),
+                           "resnaps": m.get("resnaps", 0),
+                           "b": self.current.title}
+        self._log({"event": "seam_quality", **self._last_seam,
+                   "a": old.title, "urgent": m.get("urgent", False)})
+        if verdict == "clean":
+            return
+        if m.get("urgent"):
+            # A skip/mix-now seam exits from wherever the track happened to
+            # be - a hole or rough lock there indicts the button press, not
+            # the pairing. Measure and log, but never charge pair memory.
+            return
+        try:
+            self.db.add_seam_feedback(old.id, self.current.id, style,
+                                      up=False, source="auto")
+        except Exception as e:
+            print(f"[DJ] auto seam feedback store failed: {e}")
+        key = (old.id, self.current.id)
+        cur = self.brain.pair_memory.get(key, 1.0)
+        self.brain.pair_memory[key] = max(0.4, cur * 0.85)
+        print(f"[DJ] seam self-assessment: {verdict} on "
+              f"'{old.title[:24]}' -> '{self.current.title[:24]}' ({style})")
 
     def _annotate_horizon(self, items):
         """PROJECTED TIMELINE: when each queued track will actually start
@@ -1282,6 +1595,7 @@ class DJSystem:
                         "pair": None}
                 if rate is None:
                     meta["tempo_clash"] = True   # plan -> long_fade
+            self._play_hint_s = entry.get("target_play_s")
             self._log({"event": "setlist_next", "track": t.title,
                        "pin": entry.get("pin_type", "suggestion"),
                        "remaining": len(self._setlist_queue)})
@@ -1300,6 +1614,14 @@ class DJSystem:
             pass
 
     def _draw_exit(self):
+        # An ordered-setlist entry may carry the autofill timing solver's
+        # play hint - honoring it is what makes timed anchors land live,
+        # not just in the compiled preview. Consumed once per track.
+        hint = getattr(self, "_play_hint_s", None)
+        self._play_hint_s = None
+        if hint:
+            self._exit_played = max(40.0, float(hint))
+            return
         theme = self.brain.theme
         span = max(theme.max_play_s - theme.min_play_s, 1.0)
         self._exit_played = theme.min_play_s + self.brain.rng.random() * span

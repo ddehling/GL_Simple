@@ -8,12 +8,41 @@ timing estimates and per-seam transition plans (style, exit/entry points,
 stretch rate, warnings) using the same Brain machinery the live DJ runs -
 what you audition in the planner is what plays at night.
 
-`autofill()` inserts brain-chosen suggestions between anchors until the
-estimated timeline reaches each anchor's target offset.
+`optimize_order()` runs a BEAM SEARCH over suggestion orderings (anchors
+pinned) maximizing the whole set's seam quality + arc fit. `autofill()` is
+an anchor TIMING SOLVER: it picks how many fills each gap needs and gives
+every entry a target_play_s so timed anchors actually land near their
+offsets (compile_plan and the live order-mode both honor the hint).
+`bridge()` finds the best 1-2 track chain between two remote tracks.
 """
+import math
 import time
 
 from lib.dj.brain import Brain, camelot_compat
+
+
+def _make_edge(brain):
+    """Cached seam-quality edge: score(a -> b at arc), floored so a dead
+    edge never -inf's a whole ordering. The brain's rng jitter is baked
+    into the first evaluation per key, so orderings compare consistently
+    within one search."""
+    cache = {}
+
+    def edge(a, b, arc):
+        key = (a.id, b.id, round(arc, 1))
+        v = cache.get(key)
+        if v is None:
+            s, _ = brain.score(a, b, arc, a.bpm)
+            v = max(s, 1e-6)
+            cache[key] = v
+        return v
+    return edge
+
+
+def _play_estimate(theme, t):
+    """Planning-time guess of how long a track will hold the floor."""
+    return min(max((theme.min_play_s + theme.max_play_s) / 2.0, 60.0),
+               max(t.duration_s - 45.0, 60.0))
 
 
 # --------------------------------------------------------------------------
@@ -57,17 +86,18 @@ def get_setlist(db, setlist_id=None, name=None):
 
 def save_entries(db, setlist_id, entries):
     """Replace a setlist's entries. Each entry: {track_id, pin_type,
-    target_offset_min, style_override} in play order."""
+    target_offset_min, style_override, target_play_s} in play order."""
     db.conn.execute("DELETE FROM setlist_entries WHERE setlist_id = ?",
                     (setlist_id,))
     for pos, e in enumerate(entries):
         db.conn.execute(
             "INSERT INTO setlist_entries (setlist_id, position, track_id,"
-            " pin_type, target_offset_min, style_override)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " pin_type, target_offset_min, style_override, target_play_s)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (setlist_id, pos, e["track_id"],
              e.get("pin_type", "suggestion"),
-             e.get("target_offset_min"), e.get("style_override")))
+             e.get("target_offset_min"), e.get("style_override"),
+             e.get("target_play_s")))
     db.conn.execute("UPDATE setlists SET updated_at = ? WHERE id = ?",
                     (time.time(), setlist_id))
     db.conn.commit()
@@ -77,17 +107,22 @@ def save_entries(db, setlist_id, entries):
 # Compiler
 # --------------------------------------------------------------------------
 
-def compile_plan(library, entries, theme, seed=0):
+def compile_plan(library, entries, theme, seed=0, pair_memory=None):
     """Resolve an ordered entry list into slot timings + seam plans.
 
     Returns {"slots": [...], "total_s", "warnings"}. Each slot:
         track (TrackInfo), entry, start_offset_s, play_s,
-        transition (plan dict to NEXT slot | None), warnings [str]
+        transition (plan dict to NEXT slot | None), warnings [str],
+        seam_info ({key_fit, d_off, floor, fade, pair_mem} | None)
     Timing model matches the live system: each track enters at the seam's
-    in-point and exits at the next seam's out-point.
+    in-point and exits at the next seam's out-point. pair_memory (the
+    cross-night seam multipliers) is display/steering input the caller
+    loads on its own thread - the compiler itself never touches the DB.
     """
     by_id = {t.id: t for t in library}
     brain = Brain(library, theme, seed=seed)
+    if pair_memory:
+        brain.pair_memory = dict(pair_memory)
     slots, warnings = [], []
     tracks = []
     for e in entries:
@@ -110,7 +145,7 @@ def compile_plan(library, entries, theme, seed=0):
         slot = {"track": t, "entry": e, "start_offset_s": offset,
                 "in_s": entry_in_s,              # AT-SEAM source position
                 "entry_rate": entry_rate,
-                "transition": None, "warnings": []}
+                "transition": None, "seam_info": None, "warnings": []}
         in_s = entry_in_s
         # GLIDE SKEW: while this track glides home from entry_rate to 1.0
         # it consumes glide*(r-1)/2 source seconds more/less than wall
@@ -143,9 +178,27 @@ def compile_plan(library, entries, theme, seed=0):
                 else:
                     meta = {"rate": rate, "eff_bpm": eff, "pair": None}
             # Force the exit at least target_play after entry (but leave room
-            # before the track ends), so it plays a real stretch first.
-            after = min(in_s + target_play, max(t.duration_s - 50.0, in_s + 40))
+            # before the track ends), so it plays a real stretch first. An
+            # autofill-stamped target_play_s (the anchor timing solver)
+            # overrides the generic clamp.
+            tp = float(e.get("target_play_s") or target_play)
+            after = min(in_s + tp, max(t.duration_s - 50.0, in_s + 40))
             plan = brain.plan_transition(t, nxt, meta, after_s=after)
+            # An EXPLICIT play hint (the anchor timing solver) is a timing
+            # promise, not a suggestion: if the chosen seam overshoots it,
+            # force the exit onto the nearest phrase - same trade the live
+            # urgent exit makes. Drop-anchored styles keep their drop (the
+            # exit IS the drop; moving it breaks the style's premise).
+            if (e.get("target_play_s")
+                    and plan["style"] not in ("cut_at_drop", "double_drop",
+                                              "loop_build")
+                    and plan["out_s"] > in_s + tp + 45.0):
+                forced = t.nearest_phrase(in_s + tp)
+                plan["out_s"] = min(max(forced, in_s + 40.0),
+                                    max(t.duration_s - 30.0, in_s + 40.0))
+                if plan["style"] == "loop_roll_exit":
+                    plan["loop_start_s"] = max(
+                        0.0, plan["out_s"] - 16 * t.period_s)
             if ne.get("style_override"):
                 plan["style"] = ne["style_override"]
             key_fit = camelot_compat(t.camelot, nxt.camelot)
@@ -158,6 +211,16 @@ def compile_plan(library, entries, theme, seed=0):
             if plan.get("pair_score", 0) < 0.05:
                 slot["warnings"].append("weak seam (busy x busy?)")
             slot["transition"] = plan
+            # SEAM SIGNALS for the planner cockpit - the same physics the
+            # live selection leans on, surfaced per seam.
+            slot["seam_info"] = {
+                "key_fit": round(key_fit, 2),
+                "d_off": round(abs(t.kick_offset_s - nxt.kick_offset_s), 3),
+                "floor": round(brain._blend_floor(
+                    t, plan["out_s"], nxt, plan["in_s"]), 2),
+                "fade": plan["style"] == "long_fade",
+                "pair_mem": brain.pair_memory.get((t.id, nxt.id)),
+            }
             # Dual-bend exit ramp: while THIS deck ramps to the meeting
             # tempo it also consumes ramp*(a-1)/2 extra source vs wall.
             a_r = plan.get("a_rate", 1.0) or 1.0
@@ -197,13 +260,22 @@ def compile_plan(library, entries, theme, seed=0):
     return {"slots": slots, "total_s": offset, "warnings": warnings}
 
 
-def suggest_set(library, theme, minutes, seed=0, start_track_id=None):
+def suggest_set(library, theme, minutes, seed=0, start_track_id=None,
+                pool_ids=None, flavor=None, unique=True):
     """PLAN MODE: generate a whole set from scratch. Inputs are the how-the-
     night-should-go controls: theme (bpm window, energy ARC, moods) and
     target length; the brain chains tracks so each seam is mixable and the
     energy tracks the arc. Returns entry dicts (all suggestions - pin what
-    you care about afterwards)."""
+    you care about afterwards).
+
+    pool_ids: confine selection to these track ids (a genre/vibe subset) so
+    the set is COHERENT, not a smattering of the whole library. flavor:
+    {prefer_tags, avoid_tags, axis_targets} leaning within the pool."""
     brain = Brain(library, theme, seed=seed)
+    if pool_ids is not None:
+        brain.pool_ids = set(pool_ids)
+    if flavor:
+        brain.set_flavor(flavor)
     total_s = minutes * 60.0
     cur = None
     if start_track_id is not None:
@@ -215,110 +287,287 @@ def suggest_set(library, theme, minutes, seed=0, start_track_id=None):
     entries = [{"track_id": cur.id, "pin_type": "suggestion",
                 "target_offset_min": None, "style_override": None}]
     brain.note_played(cur)
+    if unique:
+        # A PLANNED set must never repeat a track. The recency penalty is
+        # deliberately soft (so the live all-night DJ can gracefully repeat
+        # on a dry pool), so we hard-VETO each played track here: once used
+        # it can never be chosen again, and when the pool is exhausted the
+        # set simply ends (shorter) instead of looping the same songs.
+        brain.veto_ids.add(cur.id)
     elapsed = 0.0
     while elapsed < total_s and len(entries) < 200:
         arc = theme.arc_target(min(elapsed / max(total_s, 60.0), 1.0))
         cand, meta = brain.choose_next(cur, arc, cur.bpm)
         if cand is None:
-            break
+            break                        # pool/library exhausted - stop clean
         plan = brain.plan_transition(cur, cand, meta)
         in_s = cur.mix_ins[0]["time_s"] if cur.mix_ins else 0.0
         elapsed += max(plan["out_s"] - in_s, 60.0)
         entries.append({"track_id": cand.id, "pin_type": "suggestion",
-                        "target_offset_min": None, "style_override": None})
+                        "target_offset_min": None, "style_override": None,
+                        "target_play_s": None})
         brain.note_played(cand)
+        if unique:
+            brain.veto_ids.add(cand.id)
         cur = cand
     return entries
 
 
-def optimize_order(library, entries, theme, seed=0):
+def optimize_order(library, entries, theme, seed=0, beam=24):
     """Reorder the set's SUGGESTIONS for better seams and arc fit; anchors
-    stay exactly where they are. Greedy: at each position pick the pooled
-    suggestion that scores best against the previous track at that moment's
-    arc target."""
+    stay exactly at their positions.
+
+    BEAM SEARCH over orderings (v3; was greedy): the objective is the sum
+    of log seam scores across every consecutive pair at that slot's arc
+    target - the same brain.score the live DJ selects with, so fade-risk,
+    groove offsets, blend floors and pair memory all steer the order.
+    Greedy grabbed the best next seam and painted the tail of the set into
+    corners; the beam keeps the ~24 best partial orderings alive so a
+    slightly worse seam now can buy a much better back half."""
     by_id = {t.id: t for t in library}
-    brain = Brain(library, theme, seed=seed)
-    n = len(entries)
-    if n <= 2:
+    valid = [e for e in entries if e["track_id"] in by_id]
+    if len(valid) <= 2:
         return list(entries)
-    pool = [e for e in entries if e.get("pin_type") != "anchor"
-            and e["track_id"] in by_id]
-    est_total = sum(min(max(by_id[e["track_id"]].duration_s * 0.6, 90.0),
-                        360.0) for e in entries if e["track_id"] in by_id)
-    out, elapsed, prev = [], 0.0, None
-    for i, slot in enumerate(entries):
-        if slot.get("pin_type") == "anchor":
-            pick = slot
-        else:
-            if not pool:
-                continue
-            arc = theme.arc_target(min(elapsed / max(est_total, 60.0), 1.0))
-            best, best_s = None, -1.0
-            for e in pool:
+    brain = Brain(library, theme, seed=seed)
+    edge = _make_edge(brain)
+    est_total = max(sum(_play_estimate(theme, by_id[e["track_id"]])
+                        for e in valid), 60.0)
+    sugg = [e for e in valid if e.get("pin_type") != "anchor"]
+    sugg_ids = {e["track_id"]: e for e in sugg}
+
+    def arc_at(elapsed):
+        return theme.arc_target(min(elapsed / est_total, 1.0))
+
+    # State: (neg_score, picks tuple, used frozenset, last_track_id,
+    #         elapsed). Dedup on (used, last) keeps the best prefix only.
+    states = [(0.0, (), frozenset(), None, 0.0)]
+    for slot in valid:
+        anchor = slot.get("pin_type") == "anchor"
+        nxt_states = {}
+        for neg, picks, used, last_id, elapsed in states:
+            if anchor:
+                cands = [slot]
+            else:
+                cands = [e for tid, e in sugg_ids.items() if tid not in used]
+                if len(cands) > 16 and last_id is not None:
+                    # Cheap prefilter before the expensive full score:
+                    # tempo reachability + energy fit keeps beam expansion
+                    # bounded on very long sets.
+                    prev_t = by_id[last_id]
+                    a = arc_at(elapsed)
+
+                    def cheap(e):
+                        t = by_id[e["track_id"]]
+                        r, _ = brain.rate_for(prev_t.bpm, t)
+                        return ((0.0 if r is None else 1.0)
+                                - abs(t.energy_proxy() - a))
+                    cands = sorted(cands, key=cheap, reverse=True)[:16]
+            for e in cands:
                 t = by_id[e["track_id"]]
-                if prev is None:
-                    s = 1.0 - abs(t.energy_proxy() - arc)
+                a = arc_at(elapsed)
+                if last_id is None:
+                    s = max(1e-6, 1.0 - abs(t.energy_proxy() - a))
                 else:
-                    s, _ = brain.score(prev, t, arc, prev.bpm)
-                if s > best_s:
-                    best, best_s = e, s
-            pick = best
-            pool.remove(best)
-        out.append(pick)
-        t = by_id.get(pick["track_id"])
-        if t is not None:
-            brain.note_played(t)
-            elapsed += min(max(t.duration_s * 0.6, 90.0), 360.0)
-            prev = t
-    return out
+                    s = edge(by_id[last_id], t, a)
+                key = (used | {e["track_id"]}, e["track_id"])
+                cand_state = (neg - math.log(s), picks + (e,),
+                              key[0], e["track_id"],
+                              elapsed + _play_estimate(theme, t))
+                best = nxt_states.get(key)
+                if best is None or cand_state[0] < best[0]:
+                    nxt_states[key] = cand_state
+        states = sorted(nxt_states.values(), key=lambda st: st[0])[:beam]
+        if not states:
+            return list(entries)         # degenerate input - keep as-is
+    return list(states[0][1])
 
 
 def autofill(library, entries, theme, seed=0):
-    """Insert brain-chosen suggestions between anchors so each timed anchor
-    lands near its target offset. Returns a NEW entry list (anchors kept
-    in order and untouched)."""
+    """ANCHOR TIMING SOLVER (v3): insert brain-chosen suggestions between
+    anchors AND size everyone's play length so each timed anchor actually
+    lands near its target offset - not just "fill until the estimate says
+    stop". For every gap it solves how many fills fit (each track can hold
+    the floor for min_play..~max_play), chains them with the same scoring
+    the live DJ uses (the last fill is weighted toward mixing INTO the
+    anchor), and stamps target_play_s on the entries; compile_plan and the
+    live order-mode both honor the stamp. Returns a NEW entry list
+    (anchors kept in order and untouched)."""
     by_id = {t.id: t for t in library}
     brain = Brain(library, theme, seed=seed)
-    anchors = [e for e in entries if e.get("pin_type") == "anchor"]
+    edge = _make_edge(brain)
+    anchors = [e for e in entries if e.get("pin_type") == "anchor"
+               and e["track_id"] in by_id]
     if not anchors:
         return list(entries)
     used = {e["track_id"] for e in entries}
+    lo_play = max(theme.min_play_s, 60.0)
+    horizon = max((float(a.get("target_offset_min") or 0.0) * 60.0
+                   for a in anchors), default=0.0) or 3600.0
     out = []
     offset = 0.0
-
-    def track_play_estimate(t):
-        return min(max(theme.min_play_s * 0.5 + theme.max_play_s * 0.5,
-                       60.0), max(t.duration_s - 45.0, 60.0))
-
     prev_track = None
+
+    def hi_play(t):
+        # A track can hold the floor a bit past the theme's usual draw
+        # when the timeline needs it, but never into its own outro.
+        return min(theme.max_play_s * 1.3, max(t.duration_s - 60.0, lo_play))
+
     for a in anchors:
+        at = by_id[a["track_id"]]
         target_min = a.get("target_offset_min")
-        at = by_id.get(a["track_id"])
-        if at is None:
-            continue
-        # Fill until this anchor's target offset is nearly reached.
-        while target_min is not None and \
-                offset / 60.0 < float(target_min) - \
-                track_play_estimate(at) / 60.0:
-            arc = theme.arc_target(min(offset / max(
-                float(anchors[-1].get("target_offset_min") or 60) * 60.0,
-                60.0), 1.0))
-            cand, meta = brain.choose_next(
-                prev_track, arc, prev_track.bpm if prev_track else
-                sum(theme.bpm_range) / 2.0)
-            if cand is None or cand.id in used:
-                # library dry for this moment - relax recency and move on
-                break
-            out.append({"track_id": cand.id, "pin_type": "suggestion",
-                        "target_offset_min": None, "style_override": None})
-            used.add(cand.id)
-            brain.note_played(cand)
-            offset += track_play_estimate(cand)
-            prev_track = cand
-        out.append(dict(a))
+        if target_min is not None:
+            gap = float(target_min) * 60.0 - offset
+            # How many fills CAN occupy this gap given per-track bounds?
+            k_min = int(math.ceil(gap / (theme.max_play_s * 1.3))) \
+                if gap > 0 else 0
+            k_max = int(gap // lo_play)
+            k = min(max(int(round(gap / max(
+                (theme.min_play_s + theme.max_play_s) / 2.0, 60.0))),
+                k_min, 0), max(k_max, 0))
+            for step in range(k):
+                remaining = float(target_min) * 60.0 - offset
+                want = remaining / (k - step)
+                arc = theme.arc_target(min(offset / horizon, 1.0))
+                best, best_s = None, -1.0
+                for t in library:
+                    if t.id in used or t.duration_s < lo_play + 60.0:
+                        continue
+                    s = (edge(prev_track, t, arc) if prev_track is not None
+                         else max(1e-6, 1.0 - abs(t.energy_proxy() - arc)))
+                    if step == k - 1:
+                        # The last fill must also REACH the anchor - a
+                        # great seam into a dead end still fades.
+                        s *= edge(t, at, arc) ** 0.5
+                    if s > best_s:
+                        best, best_s = t, s
+                if best is None:
+                    break                # library truly dry for this gap
+                play = min(max(want, lo_play), hi_play(best))
+                out.append({"track_id": best.id, "pin_type": "suggestion",
+                            "target_offset_min": None,
+                            "style_override": None,
+                            "target_play_s": round(play, 1)})
+                used.add(best.id)
+                brain.note_played(best)
+                offset += play
+                prev_track = best
+        entry = dict(a)
+        # Stamp the anchor's own play too: the solver's clock and the
+        # compiler must run the same model, or every untimed anchor
+        # drifts the timeline by (compiler default - solver estimate).
+        if not entry.get("target_play_s"):
+            entry["target_play_s"] = round(_play_estimate(theme, at), 1)
+        out.append(entry)
         brain.note_played(at)
-        offset = max(offset + track_play_estimate(at),
-                     (float(target_min) * 60.0 + track_play_estimate(at))
-                     if target_min is not None else 0.0)
+        if target_min is not None:
+            # The anchor starts NOW; report drift via compile, but keep
+            # the running clock honest either way.
+            offset = max(offset, float(target_min) * 60.0)
+        offset += float(entry["target_play_s"])
         prev_track = at
     return out
+
+
+def order_by_shape(library, entries, theme, metric="tempo", shape="rise",
+                   seed=0, beam=24):
+    """Reorder a set so a chosen METRIC follows a target SHAPE across the
+    night, while keeping seams beat-matchable. This is what makes a set
+    actually BUILD - suggest_set/optimize_order chain by seam quality and
+    won't produce a monotonic climb on their own.
+
+    metric: 'tempo' (bpm) or 'energy'. shape: 'rise' (low->high, a build),
+    'wind_down' (high->low), 'peak' (low->high->low), 'flat' (steady).
+
+    Beam search minimizing per-slot distance to the target curve PLUS a seam
+    penalty (an un-beat-matchable adjacency costs). For metric='tempo',
+    'rise' naturally yields near-perfect seams (adjacent tempos are close).
+    Anchors keep their flags but not their positions - shape owns the order;
+    use autofill afterwards if you need timed anchors."""
+    by_id = {t.id: t for t in library}
+    items, seen = [], set()
+    for e in entries:                    # dedupe - a planned set is unique
+        tid = e["track_id"]
+        if tid in by_id and tid not in seen:
+            seen.add(tid)
+            items.append((e, by_id[tid]))
+    n = len(items)
+    if n <= 2:
+        return [e for e, _ in items]
+    brain = Brain(library, theme, seed=seed)
+
+    def mval(t):
+        return t.bpm if metric == "tempo" else t.energy_proxy()
+    vals = [mval(t) for _, t in items]
+    vlo, span = min(vals), max(max(vals) - min(vals), 1e-6)
+
+    def target(pos):
+        f = pos / (n - 1)
+        if shape == "rise":
+            return f
+        if shape == "wind_down":
+            return 1.0 - f
+        if shape == "peak":
+            return 1.0 - abs(2.0 * f - 1.0)      # 0 -> 1 -> 0
+        return 0.5                               # flat
+
+    def seam_pen(a, b):
+        r, _ = brain.rate_for(a.bpm, b)
+        if r is None:
+            return 1.0                           # fade only
+        return 0.0 if abs(math.log(r)) < math.log(1.055) else 0.4
+
+    # State: (cost, picks tuple, used frozenset, last_track).
+    states = [(0.0, (), frozenset(), None)]
+    for pos in range(n):
+        tgt = target(pos)
+        nxt = {}
+        for cost, picks, used, last in states:
+            cands = [(e, t) for (e, t) in items if t.id not in used]
+            cands.sort(key=lambda et: abs((mval(et[1]) - vlo) / span - tgt))
+            for e, t in cands[:12]:
+                arc_err = abs((mval(t) - vlo) / span - tgt)
+                pen = seam_pen(last, t) if last is not None else 0.0
+                c = cost + arc_err + 0.6 * pen
+                key = (used | {t.id}, t.id)
+                if key not in nxt or c < nxt[key][0]:
+                    nxt[key] = (c, picks + (e,), used | {t.id}, t)
+        states = sorted(nxt.values(), key=lambda s: s[0])[:beam]
+        if not states:
+            return list(entries)
+    return list(states[0][1])
+
+
+def bridge(library, a, b, theme, seed=0, exclude_ids=()):
+    """Best 1-2 track chain CONNECTING a -> b: the repair move for two
+    tempo/key-remote tracks (typically anchors) whose direct seam would
+    fade. Maximizes the BOTTLENECK seam score of the chain - one great
+    seam must not hide one dead one. Returns (tracks, bottleneck_score);
+    ([], direct_score) when nothing beats the direct seam."""
+    brain = Brain(library, theme, seed=seed)
+    edge = _make_edge(brain)
+    arc = (a.energy_proxy() + b.energy_proxy()) / 2.0
+    skip = set(exclude_ids) | {a.id, b.id}
+    direct = edge(a, b, arc)
+    pool = [t for t in library if t.id not in skip]
+    best_chain, best_v = [], direct
+    singles = sorted(((min(edge(a, x, arc), edge(x, b, arc)), x)
+                      for x in pool), key=lambda p: -p[0])
+    if singles and singles[0][0] > best_v * 1.3:
+        best_v, best_chain = singles[0][0], [singles[0][1]]
+    # Two-track chains: only worth the extra floor time when they beat the
+    # best single by a real margin. Search the top single-hop candidates.
+    top_x = [x for _, x in sorted(((edge(a, x, arc), x) for x in pool),
+                                  key=lambda p: -p[0])[:20]]
+    top_y = [y for _, y in sorted(((edge(y, b, arc), y) for y in pool),
+                                  key=lambda p: -p[0])[:20]]
+    for x in top_x:
+        ax = edge(a, x, arc)
+        if ax <= best_v * 1.3:
+            continue
+        for y in top_y:
+            if y.id == x.id:
+                continue
+            v = min(ax, edge(x, y, arc), edge(y, b, arc))
+            if v > best_v * 1.3:
+                best_v, best_chain = v, [x, y]
+    return best_chain, best_v

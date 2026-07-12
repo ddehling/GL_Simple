@@ -40,6 +40,10 @@ class Theme:
     prefer_tags: dict = field(default_factory=dict)   # tag -> weight 0..1
     avoid_tags: dict = field(default_factory=dict)    # tag -> weight 0..1
     axis_targets: dict = field(default_factory=dict)  # axis -> target 0..1
+    # ML-mood lever (Music2Emo): danceability target the brain pulls toward,
+    # 0..1 or None. ONLY bites once tracks are mood-scored (lib/dj/mood_ml);
+    # None on unscored libraries, so it never changes pre-mood behavior.
+    dance_target: float = None                        # 0..1 or None
 
     def arc_target(self, progress):
         """Energy target in 0..1 for set progress 0..1."""
@@ -115,9 +119,12 @@ BUILTIN_THEMES = {t.name: t for t in [
                          "cut_at_drop": 0.0, "loop_roll_exit": 0.15,
                          "bassline_layer": 0.15, "long_fade": 0.8,
                          "filter_sweep": 0.7, "echo_out": 0.3},
+          dance_target=0.3,
+          prefer_tags={"relaxing": 0.5, "calm": 0.4},
           min_play_s=210.0, max_play_s=480.0),
     Theme("groove", bpm_range=(105.0, 128.0),
           energy_base=0.55, energy_span=0.25, arc="peak_wave",
+          dance_target=0.65,
           mood_weights={"groove": 1.0, "chill": 0.4, "peak": 0.5}),
     Theme("peak_heavy", bpm_range=(122.0, 145.0),
           energy_base=0.75, energy_span=0.25, arc="peak_wave",
@@ -128,6 +135,8 @@ BUILTIN_THEMES = {t.name: t for t in [
                          "bassline_layer": 0.3, "double_drop": 0.25,
                          "loop_build": 0.25, "long_fade": 0.1,
                          "filter_sweep": 0.7, "echo_out": 0.25},
+          dance_target=0.85,
+          prefer_tags={"party": 0.6, "energetic": 0.5},
           min_play_s=120.0, max_play_s=300.0),
     Theme("wind_down", bpm_range=(80.0, 112.0),
           energy_base=0.35, energy_span=0.3, arc="wind_down",
@@ -135,9 +144,12 @@ BUILTIN_THEMES = {t.name: t for t in [
           style_weights={"long_blend": 1.2, "bass_swap": 0.4,
                          "cut_at_drop": 0.0, "loop_roll_exit": 0.2,
                          "long_fade": 1.0, "filter_sweep": 0.6},
+          dance_target=0.25,
+          prefer_tags={"relaxing": 0.5, "melancholic": 0.3},
           min_play_s=240.0, max_play_s=540.0),
     Theme("all_night", bpm_range=(95.0, 138.0),
           energy_base=0.55, energy_span=0.45, arc="all_night",
+          dance_target=0.6,
           mood_weights={"groove": 1.0, "peak": 0.7, "chill": 0.5}),
     # FLAVORED nights - same machinery, different corners of the library.
     Theme("hypnotic_deep", bpm_range=(105.0, 124.0),
@@ -146,13 +158,15 @@ BUILTIN_THEMES = {t.name: t for t in [
           prefer_tags={"hypnotic": 1.0, "instrumental": 0.5},
           avoid_tags={"peaky": 0.7, "vocals": 0.4},
           axis_targets={"hypnotic": 0.95, "hardness": 0.45},
+          dance_target=0.7,
           min_play_s=210.0, max_play_s=480.0),
     Theme("vocal_journey", bpm_range=(100.0, 124.0),
           energy_base=0.5, energy_span=0.3, arc="peak_wave",
           mood_weights={"groove": 1.0, "chill": 0.5},
           prefer_tags={"vocals": 1.0, "vocal-heavy": 0.8},
           avoid_tags={"instrumental": 0.5},
-          axis_targets={"vocal": 0.6}),
+          axis_targets={"vocal": 0.6},
+          dance_target=0.6),
     Theme("hard_drive", bpm_range=(115.0, 132.0),
           energy_base=0.7, energy_span=0.3, arc="rise",
           mood_weights={"peak": 1.0, "groove": 0.7},
@@ -160,13 +174,15 @@ BUILTIN_THEMES = {t.name: t for t in [
           prefer_tags={"hard": 1.0, "driving": 0.8},
           avoid_tags={"gentle": 0.8, "mellow": 0.6},
           axis_targets={"hardness": 0.9, "energy": 0.85},
+          dance_target=0.85,
           min_play_s=120.0, max_play_s=300.0),
     Theme("gentle_organic", bpm_range=(95.0, 120.0),
           energy_base=0.4, energy_span=0.25, arc="flat",
           mood_weights={"chill": 1.0, "groove": 0.6},
-          prefer_tags={"gentle": 1.0, "mellow": 0.7},
+          prefer_tags={"gentle": 1.0, "mellow": 0.7, "relaxing": 0.5},
           avoid_tags={"hard": 0.8, "peaky": 0.6},
           axis_targets={"hardness": 0.2},
+          dance_target=0.35,
           min_play_s=210.0, max_play_s=480.0),
 ]}
 

@@ -54,11 +54,37 @@ class TrackInfo:
         self.mood_hist = row.get("mood_hist") or {}
         self.rhythm_density = row.get("rhythm_density") or 0.0
         self.spectral = row.get("spectral") or {}
+        self.key_mode = row.get("key_mode")
+        # Character (danceability/valence) is library-ranked in load_library;
+        # None until then (ghosts/tests fall back to raw via character.py).
+        self.danceability = None
+        self.valence = None
+        self.arousal = None
+        # Music2Emo ML descriptors when the mood pass has run (tracks.mood_ml):
+        # normalized valence/arousal (0..1) + predicted mood tags. character.py
+        # PREFERS ml_valence over its heuristic; moods fold into all_tags.
+        mm = row.get("mood_ml") or {}
+        self.ml_valence = mm.get("valence")
+        self.ml_arousal = mm.get("arousal")
+        self.ml_moods = mm.get("moods") or []
         self.sections = sections
         self.loops = loops
         self.axes = row.get("axes") or {}
         self.auto_tags = row.get("auto_tags") or []
         self.user_tags = list(user_tags or [])
+        # MusicBrainz enrichment (genre/year/era), when present. Merged into
+        # all_tags so flavor steering + the copilot see genres for free.
+        enr = row.get("enrichment") or {}
+        self.genres = enr.get("genres") or []
+        self.year = enr.get("year")
+        self.decade = enr.get("decade")
+        self.enrichment = enr
+        # Embedded container genre tag (free, from the file itself). Populated
+        # on (re)scan; complements MusicBrainz genres for un-enriched tracks.
+        self.file_genre = row.get("file_genre") or ""
+        # 'do not use' flag (DB v11). Kept on the object so the library
+        # browser can show + toggle it; callers that auto-select filter it out.
+        self.excluded = bool(row.get("excluded"))
         self.cues = list(cues or [])
         self.mix_ins = [p for p in mix_points if p["kind"] == "in"]
         self.mix_outs = [p for p in mix_points if p["kind"] == "out"]
@@ -80,7 +106,21 @@ class TrackInfo:
 
     @property
     def all_tags(self):
-        return sorted(set(self.auto_tags) | set(self.user_tags))
+        extra = {g.lower() for g in self.genres}
+        if self.decade:
+            extra.add(self.decade)
+        # embedded file genre (e.g. "Electronic", "Rock/Pop") -> split parts
+        for part in self.file_genre.replace("/", ",").replace(";", ",").split(","):
+            part = part.strip().lower()
+            if part:
+                extra.add(part)
+        # ML mood tags (dark, party, melancholic, epic, ...) steer flavor,
+        # copilot and search for free once the mood pass has run.
+        extra.update(m.lower() for m in self.ml_moods)
+        if self.danceability is not None:
+            from lib.dj.character import character_tags
+            extra.update(character_tags(self))
+        return sorted(set(self.auto_tags) | set(self.user_tags) | extra)
 
     @property
     def period_s(self):
@@ -126,14 +166,24 @@ class TrackInfo:
             return self.nearest_downbeat(t)
         return self.nearest_downbeat(cand)
 
-    def energy_proxy(self):
-        """Cross-track comparable energy in ~0..1."""
+    def _raw_energy(self):
         mh = self.mood_hist
         mood_e = mh.get("peak", 0.0) + 0.6 * mh.get("groove", 0.0) \
             + 0.25 * mh.get("chill", 0.0)
         dens = min(self.rhythm_density / 3.0, 1.0)
         bass = self.spectral.get("bass_share", 0.33)
         return max(0.0, min(1.0, 0.45 * mood_e + 0.35 * dens + 0.2 * bass * 2.0))
+
+    def energy_proxy(self):
+        """Cross-track comparable energy 0..1. LIBRARY-RELATIVE when the
+        track was loaded via load_library: the raw proxy clusters ~0.5-0.72
+        on real libraries (mood_hist + density + bass all saturate), which
+        washes out energy arcs and energy-based selection. load_library
+        percentile-RANKS the raw values so they actually span 0..1 - a
+        chill breakdown and a peak now sit at opposite ends. Falls back to
+        raw for tracks built outside a library (ghosts, tests)."""
+        r = getattr(self, "energy_rank", None)
+        return r if r is not None else self._raw_energy()
 
 
 def load_library(db):
@@ -149,6 +199,19 @@ def load_library(db):
                              db.mix_points_for(row["id"]),
                              cues=db.cues_for(row["id"]),
                              user_tags=db.tags_for(row["id"])))
+    # LIBRARY-RELATIVE ENERGY: percentile-rank each track's raw energy so
+    # the values span 0..1 (the raw proxy clusters ~0.5-0.72). This is what
+    # makes energy arcs and energy-based selection discriminate.
+    if len(out) >= 4:
+        import bisect
+        raws = sorted(t._raw_energy() for t in out)
+        denom = max(len(raws) - 1, 1)
+        for t in out:
+            t.energy_rank = bisect.bisect_left(raws, t._raw_energy()) / denom
+    # DERIVED CHARACTER: danceability + valence, library-ranked (see
+    # lib/dj/character.py). Adds mood/danceability the scanner never exposed.
+    from lib.dj.character import rank_library
+    rank_library(out)
     return out
 
 
@@ -190,6 +253,14 @@ def _shift_camelot(cam, semitones):
 class Brain:
     def __init__(self, library, theme, seed=None, stretch_max=STRETCH_MAX):
         self.library = list(library)
+        # ML MOOD STEERING kicks in ONLY when most of the library is mood-
+        # scored (lib/dj/mood_ml). On a partially-scored library the few
+        # scored tracks would be judged on valence/danceability while the
+        # unscored majority stay neutral - an asymmetry that measurably
+        # demoted good picks. All-or-(mostly)-nothing avoids that.
+        scored = sum(1 for t in self.library
+                     if getattr(t, "ml_valence", None) is not None)
+        self._use_mood = bool(self.library) and scored >= 0.8 * len(self.library)
         # CONTENT IDENTITY: the real library holds dozens of byte-identical
         # copies under different track ids (plus re-rips). For recency and
         # queue purposes a copy IS the song - per-id memory let 'the same
@@ -263,6 +334,8 @@ class Brain:
         pm = self.pair_memory.get((getattr(cur, "id", None), cand.id))
         if pm:
             bits.append("mixed well before" if pm > 1.0 else "rough before")
+        if (meta or {}).get("forced_fade"):
+            bits.append("fade seam")
         return "  ".join(bits)
 
     def plan_horizon(self, current, arc_fn, out_bpm, n=3, preplayed=None):
@@ -296,6 +369,18 @@ class Brain:
             self.recent = saved_recent
             self.rng = saved_rng
         return out
+
+    def _arc_energy(self, cand):
+        """The value the energy ARC chases for a candidate. Blends real ML
+        AROUSAL (a cleaner intensity measure than the compressed energy proxy)
+        in when the track is mood-scored; falls back to energy_proxy alone
+        otherwise. Both are library percentiles, so they share the arc's 0..1
+        scale."""
+        e = cand.energy_proxy()
+        ar = getattr(cand, "arousal_rank", None)
+        if ar is None or not self._use_mood:
+            return e
+        return 0.6 * e + 0.4 * ar
 
     def _flavor_score(self, cand):
         """0.15..1.0 preference multiplier from theme flavor + live
@@ -429,12 +514,35 @@ class Brain:
                 comb = abs(math.log(rate) - st * math.log(2.0) / 12.0)
                 if camelot_compat(current.camelot, shifted) >= 0.8 \
                         and comb <= math.log(1.075):
-                    s_key = 0.7          # rescued, small residual penalty
+                    # Rescued - but priced BELOW an honestly-ok key (0.55
+                    # tier at dn=2): real DJs transpose ~2.5% of seams, and
+                    # once the fade-avoidance lean landed, 0.7 made rescues
+                    # win 10% of the time. A last resort, not a habit.
+                    s_key = 0.62
                     pitch_st = st
                     break
-        s_energy = math.exp(-((cand.energy_proxy() - arc_target) / 0.3) ** 2)
+        s_energy = math.exp(-((self._arc_energy(cand) - arc_target) / 0.3) ** 2)
         s_mood = 0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                             for m, f in cand.mood_hist.items())
+        # ML MOOD AWARENESS (Music2Emo). All three are no-ops until tracks are
+        # mood-scored (ml_valence/arousal present), so pre-mood behavior is
+        # unchanged. (a) VALENCE CONTINUITY: don't cut a dark track into a
+        # bubbly one - a big mood jump reads as jarring as a key clash. Soft
+        # lean (0.6..1.0), both sides must be scored.
+        s_valence = 1.0
+        cv = getattr(current, "ml_valence", None) if current is not None else None
+        if self._use_mood and cv is not None and cand.ml_valence is not None:
+            s_valence = 0.6 + 0.4 * math.exp(
+                -((cand.ml_valence - cv) / 0.35) ** 2)
+        # (b) DANCEABILITY TARGET: club themes pull toward high danceability,
+        # downtempo toward low. Only when this track is mood-scored and the
+        # theme sets a target.
+        s_dance = 1.0
+        if self._use_mood and self.theme.dance_target is not None \
+                and cand.ml_valence is not None \
+                and getattr(cand, "danceability", None) is not None:
+            s_dance = 0.5 + 0.5 * math.exp(
+                -((cand.danceability - self.theme.dance_target) / 0.35) ** 2)
         s_spec = 1.0
         if self.theme.spectral_lean == "bass":
             s_spec = 0.7 + 0.6 * cand.spectral.get("bass_share", 0.33) * 2.0
@@ -442,6 +550,29 @@ class Brain:
             s_spec = 0.7 + 0.6 * cand.spectral.get("high_share", 0.2) * 3.0
         pair = self.best_pair(current, cand) if current is not None else None
         s_pair = pair["score"] if pair else (0.5 if current is None else 0.15)
+        # TRANSITION-AWARE SELECTION: a candidate whose best seam would be
+        # FORCED to long_fade (loose grid on either side, beatless seam, or
+        # two sung passages over each other - the same gates plan_transition
+        # applies) drags the night toward fades even though other candidates
+        # would keep the real repertoire open. Lean away, never reject: on a
+        # loose-gridded pool the fade is still the correct seam.
+        s_style = 1.0
+        forced_fade = False
+        if current is not None and pair is not None:
+            conf_min = min(current.bpm_conf or 0.0, cand.bpm_conf or 0.0)
+            forced_fade = (conf_min < 0.5
+                           or not pair.get("beaty", True)
+                           or (self._vocal_at(current, pair["out_s"]) > 0.5
+                               and self._vocal_at(cand, pair["in_s"]) > 0.5))
+            if forced_fade:
+                s_style = 0.55
+            elif conf_min < 0.7:
+                s_style = 0.9        # blends fine, precision styles gated off
+            # GROOVE-OFFSET LEAN: grid-phase sync still flams by the two
+            # tracks' kick-offset difference (the PLL's target is the grid,
+            # not the kicks). Soft: a big offset gap only costs ~half.
+            d_off = abs(current.kick_offset_s - cand.kick_offset_s)
+            s_style *= 0.55 + 0.45 * math.exp(-((d_off / 0.045) ** 2))
         # VARIETY: two near-identical-sounding tracks back to back is the
         # classic auto-DJ tell. Penalize spectral+character similarity to
         # the current track (never to zero - a coherent run is fine, a
@@ -449,7 +580,8 @@ class Brain:
         s_var = 1.0
         if current is not None:
             s_var = 1.0 - 0.45 * self._similarity(current, cand)
-        total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var
+        total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
+                 * s_valence * s_dance
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self._flavor_score(cand)
@@ -470,7 +602,7 @@ class Brain:
             total *= 0.55 + 0.45 * math.exp(
                 -((eff_bpm - bpm_target) / 7.0) ** 2)
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
-                       "pitch_st": pitch_st}
+                       "pitch_st": pitch_st, "forced_fade": forced_fade}
 
     def set_theme(self, theme):
         """Live retheme - same library fitting as construction."""
@@ -538,6 +670,26 @@ class Brain:
         pick = self.rng.choices(top, weights=weights, k=1)[0]
         return pick[1], pick[2]
 
+    def emergency_pick(self, current, arc_target, now=None):
+        """CONTINUITY OUTRANKS POLISH: the watchdog's last resort when even
+        the relaxed selection came up empty with the current track about to
+        run out. Every gate except recency is ignored - closest energy fit
+        wins and the seam will be a fade. (None, None) only on an empty
+        library."""
+        pool = [t for t in self.library
+                if t.id != getattr(current, "id", None)
+                and (self.pool_ids is None or t.id in self.pool_ids)]
+        if not pool:
+            pool = [t for t in self.library
+                    if t.id != getattr(current, "id", None)]
+        if not pool:
+            return None, None
+        best = max(pool, key=lambda t: (
+            math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+            * self._recency_penalty(t, now)))
+        return best, {"rate": 1.0, "eff_bpm": best.bpm, "pair": None,
+                      "tempo_clash": True}
+
     def choose_first(self, arc_target, now=None):
         cands = []
         for cand in self.library:
@@ -546,7 +698,7 @@ class Brain:
             lo, hi = self.theme.bpm_range
             if not (lo * 0.93 <= cand.bpm <= hi * 1.07):
                 continue
-            s = math.exp(-((cand.energy_proxy() - arc_target) / 0.3) ** 2) \
+            s = math.exp(-((self._arc_energy(cand) - arc_target) / 0.3) ** 2) \
                 * (0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                               for m, f in cand.mood_hist.items())) \
                 * self._recency_penalty(cand, now) \
@@ -557,7 +709,7 @@ class Brain:
             # with the best-fitting pool track even off-window.
             for cand in self.library:
                 if cand.id in self.pool_ids:
-                    cands.append((math.exp(-((cand.energy_proxy()
+                    cands.append((math.exp(-((self._arc_energy(cand)
                                               - arc_target) / 0.3) ** 2)
                                   * self.rng.uniform(0.9, 1.1), cand))
         if not cands:
@@ -630,10 +782,18 @@ class Brain:
                 if voc_a > 0.5 and voc_b > 0.5:
                     clash *= 0.25
                 mp = 0.5 + 0.5 * max(o["score"], 0.0) * max(i["score"], 0.0)
+                # NO HOLES IN THE BLEND: section MEANS hide a near-silent
+                # stretch inside the overlap (a breakdown bar, a stripped
+                # intro) - the render then dips to nothing mid-blend
+                # (measured rms 0.04, user-audible dead air). Walk the two
+                # 2 Hz energy curves through the aligned overlap window and
+                # punish any moment where BOTH sides are quiet at once.
+                hole = self._blend_floor(cur, o["time_s"], cand, i["time_s"])
                 # Weighted-sum form so a mediocre pair stays ~0.05-1, never
                 # collapsing to ~0 (which would zero the whole selection).
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
-                         * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp)
+                         * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp
+                         * (0.25 + 0.75 * min(hole / 0.25, 1.0)))
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),
@@ -642,6 +802,37 @@ class Brain:
                             "kinds": (sec_a.get("kind"), sec_b.get("kind")),
                             "busy": (round(busy_a, 2), round(busy_b, 2))}
         return best
+
+    @staticmethod
+    def _blend_floor(cur, out_s, cand, in_s, span_s=15.0, carry_s=40.0):
+        """Quietest combined moment of the seam, walked through the stored
+        2 Hz energy curves (0..1.2, per-track p95-normalized): during the
+        ~span_s overlap A ([out_s-span, out_s]) still carries the room, so
+        the floor is max(A, B); PAST the seam B is alone - a mix-in at the
+        top of a long dying breakdown reads fine as a section mean but
+        leaves the room empty for 20s once A is gone (measured rms 0.04).
+        Returns the min; 1.0 when either curve is missing (no evidence,
+        no penalty)."""
+        ca = cur.row.get("energy_curve") or []
+        cb = cand.row.get("energy_curve") or []
+        if not ca or not cb:
+            return 1.0
+        floor = 1.0
+        for k in range(int(carry_s * 2) + 1):
+            tau = k * 0.5
+            ib = int((in_s + tau) * 2.0)
+            if ib >= len(cb):
+                break
+            eb = float(cb[ib]) if ib >= 0 else 0.0
+            ea = 0.0
+            if tau <= span_s:
+                ia = int((out_s - span_s + tau) * 2.0)
+                if 0 <= ia < len(ca):
+                    ea = float(ca[ia])
+            m = max(ea, eb)
+            if m < floor:
+                floor = m
+        return floor
 
     def _drop_after(self, track, after_s):
         """First DROP MOMENT (energy slams up at a boundary) at/after
@@ -718,6 +909,16 @@ class Brain:
             if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
                 for k in ("cut_at_drop", "double_drop", "echo_out",
                           "bassline_layer"):
+                    weights[k] = 0.0
+            # Short-dual styles are exposed to raw GROOVE-OFFSET flam: the
+            # PLL is grid-primary, so two tracks whose basslines sit
+            # differently against their own grids flam by the OFFSET
+            # DIFFERENCE for the whole (short) overlap - measured 170ms
+            # deltas on confident grids. Long blends ride it out; the
+            # punchy styles can't.
+            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.035:
+                for k in ("cut_at_drop", "double_drop", "echo_out",
+                          "bassline_layer", "loop_build"):
                     weights[k] = 0.0
             # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
             # mix-ins qualifies, not just the best-scoring pair's (gating on
@@ -869,6 +1070,10 @@ class Brain:
         # flush (run-ins vanish, sync snaps at full gain, loop windows can
         # land entirely behind the cursor and never wrap).
         now_guard = clock + int(0.3 * RATE)
+        # Each style stamps plan["no_return_at"]: the decisive clock beyond
+        # which aborting sounds worse than finishing (the bass/melody swap,
+        # the cut, the drop). DJSystem._do_abort recalls the transition only
+        # BEFORE this point; past it, the mix is committed.
 
         beat_out = cur.period_s / rate_a          # output-domain beat of A
         style = plan["style"]
@@ -923,6 +1128,7 @@ class Brain:
                 {"at": S0 + int(6.0 * RATE), "cmd": "stop",
                  "deck": active},
             ]
+            plan["no_return_at"] = S0        # A starts leaving at the seam
             return ev, S0 + int(6.0 * RATE), A0
 
         nb = plan["beats"]
@@ -960,6 +1166,7 @@ class Brain:
                 {"at": S_out + int(2.5 * RATE), "cmd": "end_sync"},
             ]
             swap_at = S_out + int(2.5 * RATE)
+            plan["no_return_at"] = S_out - int(beat_out * RATE)  # echo throw
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
 
@@ -1010,6 +1217,7 @@ class Brain:
                            "samples": _fx.make_riser(rise_s, gain=0.16),
                            "gain": 1.0})
             swap_at = S_cut + int(0.5 * RATE)
+            plan["no_return_at"] = S_cut - int(1.2 * RATE)   # covers the brake
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
 
@@ -1078,6 +1286,7 @@ class Brain:
                            "gain": 1.0})
             ev.append({"at": S_drop, "cmd": "fx_play",
                        "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
+            plan["no_return_at"] = S_drop        # the loop releases into it
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
@@ -1138,6 +1347,7 @@ class Brain:
                            "gain": 1.0})
             ev.append({"at": S_drop, "cmd": "fx_play",
                        "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
+            plan["no_return_at"] = S_drop        # both drops hit together
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
@@ -1191,6 +1401,7 @@ class Brain:
                 {"at": out, "cmd": "clear_loop", "deck": active},
                 {"at": out, "cmd": "end_sync"},
             ]
+            plan["no_return_at"] = hand          # the low-end handover
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
@@ -1258,6 +1469,7 @@ class Brain:
             c += step
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 2 * beat_out)
+        plan["no_return_at"] = mid               # the bass/mid handover
         # ONE MELODY AT A TIME - the mid-range twin of the one-bassline
         # rule. Both tracks' melodic content lives in the mids; letting
         # the incoming open its mids at the swap while the outgoing was

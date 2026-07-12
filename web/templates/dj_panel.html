@@ -122,6 +122,12 @@
                 <button class="btn" id="dj-fwd">+30s</button>
                 <button class="btn" id="dj-toexit">⤓ To exit</button>
                 <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
+                <!-- Trainwreck rescue: recalls an armed transition. Only
+                     shown while the plan is still before its point of no
+                     return (dj.abortable). -->
+                <button class="btn hidden" id="dj-abort"
+                        style="border-color:#a55;background:#3a1414;color:#f99">
+                    ⛔ ABORT MIX</button>
             </div>
             <div class="badges" id="dj-badges"></div>
             <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
@@ -338,6 +344,7 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             }, 3000);
         };
         $("dj-skip").onclick = () => emit("skip");
+        $("dj-abort").onclick = () => emit("abort");
         $("dj-auto").onclick = () =>
             emit("autopilot", !$("dj-auto").classList.contains("on"));
         $("dj-setlist-load").onclick = () =>
@@ -511,6 +518,7 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             badges.push(`<span class="badge">theme: ${dj.theme}</span>`);
             badges.push(`<span class="badge">${dj.state}</span>`);
             $("dj-badges").innerHTML = badges.join("");
+            show($("dj-abort"), !!dj.abortable);
             renderDecks(dj.decks);
 
             if (dj.next) {

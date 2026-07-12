@@ -92,7 +92,11 @@ def main():
                 dual_run = dual_run + 32 * BLOCK / RATE if both else 0.0
                 # SETTLED only (>2s dual) - the same standard as the seam
                 # harness; the snap+PLL convergence window isn't a verdict.
-                if (both and dual_run > 2.0
+                # SYNCED overlaps only: long_fade/emergency_fade run two
+                # free-running grids on purpose (the pair can't be
+                # beat-matched), so their "grid delta" is arbitrary - the
+                # per-seam quality harness skips them for the same reason.
+                if (both and dual_run > 2.0 and tel.get("sync")
                         and not (da.get("braking") or db_.get("braking")
                                  or da.get("loop") or db_.get("loop"))
                         and dj.current is not None):

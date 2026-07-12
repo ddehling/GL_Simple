@@ -32,7 +32,11 @@ def build_temp_library(tmp):
     from tools._dj_brain_test import synth_structured
     from lib.dj.scan import scan_library
     specs = [(122.0, 5, 54.0, 220.0), (126.0, 6, 58.0, 262.0),
-             (124.0, 7, 50.0, 294.0), (85.0, 8, 46.0, 330.0)]
+             (124.0, 7, 50.0, 294.0), (85.0, 8, 46.0, 330.0),
+             # A tempo CHAIN for the beam/bridge gates: 120 <-> 112 <-> 104
+             # are pairwise reachable (<8% stretch) but 120 <-> 104 is not.
+             (120.0, 9, 52.0, 246.0), (112.0, 10, 48.0, 208.0),
+             (104.0, 11, 56.0, 233.0)]
     for i, (bpm, seed, bass, pad) in enumerate(specs):
         wavfile.write(os.path.join(tmp, f"song_{i}_{int(bpm)}.wav"), RATE,
                       (synth_structured(bpm, 150.0, seed, bass, pad)
@@ -142,6 +146,13 @@ def main():
         check("suggest_set builds a set", len(sugg) >= 3
               and len({e["track_id"] for e in sugg}) >= 3,
               f"{len(sugg)} entries: {[e['track_id'] for e in sugg]}")
+        # A PLANNED set must never repeat a track, even asking for a long set
+        # from a small pool - it just ends short instead of looping.
+        longask = SL.suggest_set(lib, theme, minutes=120.0, seed=1)
+        lids = [e["track_id"] for e in longask]
+        check("suggest_set never repeats a track (unique)",
+              len(lids) == len(set(lids)),
+              f"{len(lids)} entries, {len(set(lids))} unique")
         mixed = [
             {"track_id": ids[3], "pin_type": "suggestion"},
             {"track_id": ids[0], "pin_type": "anchor",
@@ -170,6 +181,79 @@ def main():
         check("autofill inserts suggestions", n_sugg >= 1,
               f"{n_sugg} suggestions inserted "
               f"({[e['track_id'] for e in filled]})")
+        # v3 TIMING SOLVER: the timed anchor must actually LAND near its
+        # target in the compiled timeline (v2 just filled and hoped).
+        fplan = SL.compile_plan(lib, filled, theme)
+        a_slot = next(s for s in fplan["slots"]
+                      if s["entry"].get("pin_type") == "anchor"
+                      and s["entry"].get("target_offset_min"))
+        err_s = abs(a_slot["start_offset_s"] - 4.0 * 60.0)
+        check("autofill lands the timed anchor", err_s <= 90.0,
+              f"anchor at {a_slot['start_offset_s']:.0f}s vs target 240s "
+              f"(err {err_s:.0f}s)")
+        check("autofill stamps play hints",
+              all(e.get("target_play_s") for e in filled
+                  if e["pin_type"] == "suggestion"),
+              f"hints={[e.get('target_play_s') for e in filled]}")
+
+        # -- Shape ordering: the set follows a tempo curve ---------------------
+        by_id = {t.id: t for t in lib}
+        shape_pool = [{"track_id": t.id, "pin_type": "suggestion"}
+                      for t in sorted(lib, key=lambda x: x.bpm)]
+        ris = SL.order_by_shape(lib, shape_pool, theme, metric="tempo",
+                                shape="rise")
+        rb = [by_id[e["track_id"]].bpm for e in ris]
+        check("order_by_shape rise climbs in tempo",
+              len(rb) == len(shape_pool) and rb[0] <= rb[-1]
+              and rb == sorted(rb) or rb[0] < rb[-1],
+              f"first={rb[0]:.0f} last={rb[-1]:.0f}")
+        pk = SL.order_by_shape(lib, shape_pool, theme, metric="tempo",
+                               shape="peak")
+        pb = [by_id[e["track_id"]].bpm for e in pk]
+        mid = len(pb) // 2
+        check("order_by_shape peak crests in the middle",
+              pb[mid] >= pb[0] and pb[mid] >= pb[-1],
+              f"ends {pb[0]:.0f}/{pb[-1]:.0f}, mid {pb[mid]:.0f}")
+
+        # -- Beam ordering: no dead seam when a live order exists ---------------
+        by_id = {t.id: t for t in lib}
+        b120 = next(t for t in lib if abs(t.bpm - 120.0) < 1).id
+        b112 = next(t for t in lib if abs(t.bpm - 112.0) < 1).id
+        b104 = next(t for t in lib if abs(t.bpm - 104.0) < 1).id
+        bad_order = [{"track_id": i, "pin_type": "suggestion"}
+                     for i in (b120, b104, b112)]     # 120->104 is dead
+        from lib.dj.brain import Brain as _Brain
+        _b = _Brain(lib, theme)
+
+        def dead_seams(order):
+            n = 0
+            for i in range(len(order) - 1):
+                a, c = by_id[order[i]["track_id"]], \
+                    by_id[order[i + 1]["track_id"]]
+                r, _ = _b.rate_for(a.bpm, c)
+                n += r is None
+            return n
+        opt2 = SL.optimize_order(lib, bad_order, theme, seed=1)
+        check("beam ordering avoids the dead seam",
+              len(opt2) == 3 and dead_seams(opt2) == 0
+              and dead_seams(bad_order) == 1,
+              f"in={[by_id[e['track_id']].bpm for e in bad_order]} -> "
+              f"out={[by_id[e['track_id']].bpm for e in opt2]}")
+
+        # -- Bridge finder ---------------------------------------------------------
+        chain, score = SL.bridge(lib, by_id[b120], by_id[b104], theme)
+        check("bridge connects the tempo islands",
+              len(chain) >= 1 and any(t.id == b112 for t in chain),
+              f"chain={[round(t.bpm) for t in chain]} score={score:.3f}")
+
+        # -- target_play_s survives the DB round-trip ------------------------------
+        sid2 = SL.create_setlist(db, "timed", theme="groove")
+        SL.save_entries(db, sid2, [
+            {"track_id": ids[0], "pin_type": "suggestion",
+             "target_play_s": 123.4}])
+        got = SL.get_setlist(db, name="timed")["entries"][0]
+        check("play hint round-trips", got.get("target_play_s") == 123.4,
+              f"target_play_s={got.get('target_play_s')}")
 
         # -- Plan-following through the live system ---------------------------------
         from lib.dj.system import DJSystem
@@ -225,10 +309,32 @@ def main():
             mono = decode_file_stereo(db.abs(t.path)).mean(axis=1)
             w.analysis_tab.wave.set_track(t, mono, db.cues_for(t.id))
             wave_ok = len(w.analysis_tab.wave._pyramid) >= 2
+            # v3 cockpit: arc strip carries the compiled shape, the report
+            # card summarizes it, and the repair affordances compute.
+            strip_ok = (len(st.arc_strip.slots) == len(compiled["slots"])
+                        and not st.arc_strip.grab().isNull())
+            report_txt = st.status.text()      # capture BEFORE bridge runs
+            report_ok = "beat-matched" in report_txt or "tracks" in report_txt
+            seam_info_ok = all(
+                s["seam_info"] is not None for s in compiled["slots"][:-1])
+            alts = st._slot_alternatives(0)
+            st.set_list.setCurrentRow(0)
+            n_before = len(st.entries)
+            st._insert_bridge()      # 122 -> 126 is mixable; may no-op
+            bridge_ran = len(st.entries) >= n_before
             w.close()
             check("planner v2 builds headless",
-                  n_rows >= 3 and w.tabs.count() == 4,
-                  f"{len(w.library)} tracks, {n_rows} plan rows, 4 tabs")
+                  n_rows >= 3 and w.tabs.count() >= 4,
+                  f"{len(w.library)} tracks, {n_rows} plan rows, "
+                  f"{w.tabs.count()} tabs")
+            check("v3 cockpit renders", strip_ok and report_ok
+                  and seam_info_ok,
+                  "strip slots=%d, report='%s'" % (
+                      len(st.arc_strip.slots),
+                      report_txt[:60].encode("ascii", "replace").decode()))
+            check("v3 repair affordances compute",
+                  isinstance(alts, list) and bridge_ran,
+                  f"{len(alts)} alternatives for slot 0")
             check("mix timeline seams + envelopes",
                   n_seams == 1 and env_ok, f"{n_seams} seams, env={env_ok}")
             check("waveform pyramid built", wave_ok,
@@ -238,6 +344,103 @@ def main():
             traceback.print_exc()
             check("planner v2 builds headless", False,
                   f"{type(e).__name__}: {e}")
+
+        # -- Set Copilot backend (scripted fake client, no network) -----------
+        try:
+            from types import SimpleNamespace as NS
+            from tools.djplanner.copilot import SetCopilot
+
+            def tu(name, args, tid="t1"):
+                return NS(type="tool_use", name=name, input=args, id=tid)
+
+            def resp(stop, blocks):
+                return NS(stop_reason=stop, content=blocks, usage=None)
+
+            script = [
+                resp("tool_use", [NS(type="text", text="searching"),
+                                  tu("search_library",
+                                     {"bpm_min": 100, "bpm_max": 130})]),
+                resp("tool_use", [tu("add_tracks",
+                                     {"track_ids": [ids[0], ids[1]]})]),
+                resp("tool_use", [tu("add_tracks",
+                                     {"track_ids": [999999]})]),  # bad id
+                resp("tool_use", [tu("pin_anchor",
+                                     {"position": 1, "offset_min": 6})]),
+                resp("tool_use", [tu("get_set", {})]),
+                resp("end_turn", [NS(type="text",
+                                     text="Two tracks in, slot 1 anchored "
+                                          "at 6 min.")]),
+            ]
+            fake = NS(messages=NS(create=lambda **kw: script.pop(0)))
+            cp = SetCopilot(lib, theme_name="groove", client=fake)
+            events = []
+            reply = cp.run_turn("build me a tiny set",
+                                on_event=lambda k, p: events.append((k, p)))
+            check("copilot turn completes", "anchored" in reply
+                  and len(events) == 5,
+                  f"reply='{reply[:40]}' events={len(events)}")
+            check("copilot edits the set",
+                  [e["track_id"] for e in cp.entries] == [ids[0], ids[1]]
+                  and cp.entries[1]["pin_type"] == "anchor"
+                  and cp.entries[1]["target_offset_min"] == 6.0,
+                  f"entries={[(e['track_id'], e['pin_type']) for e in cp.entries]}")
+            bad = [r for m in cp.messages if isinstance(m.get("content"),
+                                                        list)
+                   for r in m["content"]
+                   if isinstance(r, dict) and r.get("is_error")]
+            check("copilot guards bad ids", len(bad) == 1
+                  and "999999" in bad[0]["content"],
+                  f"{len(bad)} error results")
+            state = cp.run_tool("get_set", {})
+            check("copilot reads compiled state",
+                  len(state["slots"]) == 2 and "beat_matched" in state
+                  and state["slots"][1]["anchor"],
+                  f"slots={len(state['slots'])} "
+                  f"bm={state.get('beat_matched')}")
+
+            # CLI transport: text command-protocol loop, no subprocess.
+            cli = SetCopilot(lib, theme_name="groove")
+            cli._mode = "cli"
+            cli._claude_exe = "fake"
+            cli_script = [
+                '```json\n{"tool": "search_library", '
+                '"input": {"bpm_min": 118}}\n```',
+                "Found matching tracks in the library. The set looks good.",
+            ]
+            cli._call_claude = lambda sysp, prompt: cli_script.pop(0)
+            cli_ev = []
+            cli_reply = cli.run_turn(
+                "find some tracks",
+                on_event=lambda k, p: cli_ev.append(p.get("name")))
+            check("copilot CLI transport runs tools + returns text",
+                  cli_ev == ["search_library"]
+                  and "looks good" in cli_reply
+                  and "```" not in cli_reply,
+                  f"tools={cli_ev} reply='{cli_reply[:40]}'")
+
+            # build_set confines the brain to a filtered pool (the fix for
+            # "it just returns random songs").
+            cp2 = SetCopilot(lib, theme_name="groove", client=object())
+            bpms = sorted(t.bpm for t in lib)
+            lo, hi = bpms[0], bpms[len(bpms) // 2]
+            res = cp2.run_tool("build_set",
+                               {"minutes": 10, "bpm_min": lo, "bpm_max": hi})
+            got = [next(x for x in lib if x.id == e["track_id"]).bpm
+                   for e in cp2.entries]
+            check("build_set confines the set to the pool",
+                  res["ok"] and got and all(lo <= b <= hi for b in got),
+                  f"pool={res.get('pool_size')} {len(got)} tracks, all in "
+                  f"[{lo:.0f},{hi:.0f}]? {all(lo <= b <= hi for b in got)}")
+            narrow = cp2.run_tool("build_set",
+                                  {"minutes": 10, "bpm_min": 999,
+                                   "bpm_max": 1000})
+            check("build_set degrades gracefully on empty pool",
+                  not narrow["ok"] and narrow["pool_size"] == 0,
+                  f"ok={narrow['ok']} pool={narrow['pool_size']}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            check("copilot turn completes", False, f"{type(e).__name__}: {e}")
 
         # -- PlanPreview: the preview must EXECUTE the compiled plan ----------
         try:

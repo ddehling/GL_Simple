@@ -27,7 +27,11 @@ import os
 
 import numpy as np
 
-ANALYSIS_VERSION = 8            # v8: phrase/hypermeter detection
+ANALYSIS_VERSION = 9            # v9: embedded genre tag (read_metadata) - bump
+                                #     so a normal scan backfills it on every
+                                #     already-scanned track (needs_scan re-runs
+                                #     anything below the current version)
+                                # v8: phrase/hypermeter detection
                                 # (v7: vocalness from the ML vocal pass only;
                                 #  heuristic + per-track norm removed)
 MIN_SECTION_BEATS = 16          # v2: no more 8-beat confetti sections
@@ -123,9 +127,12 @@ def decode_file_stereo(path):
 
 
 def read_metadata(path):
-    """Title/artist/album from container tags (PyAV); filename fallback."""
+    """Title/artist/album/genre from container tags (PyAV); filename fallback.
+    The embedded genre ID3/Vorbis tag is free (most purchased files carry it)
+    and gives selection something to steer on before the MusicBrainz enrich
+    pass ever runs."""
     title = os.path.splitext(os.path.basename(path))[0]
-    artist = album = ""
+    artist = album = genre = ""
     try:
         import av
         with av.open(path) as c:
@@ -136,9 +143,10 @@ def read_metadata(path):
         title = meta.get("title", title) or title
         artist = meta.get("artist", meta.get("album_artist", "")) or ""
         album = meta.get("album", "") or ""
+        genre = meta.get("genre", "") or ""
     except Exception:
         pass
-    return {"title": title, "artist": artist, "album": album}
+    return {"title": title, "artist": artist, "album": album, "genre": genre}
 
 
 # --------------------------------------------------------------------------
@@ -421,13 +429,24 @@ def estimate_beat_grid(onset, kick=None):
             t += period_s
 
     # Track BPM = the longest segment's; confidence blends window agreement
-    # (how many windows voted for it) with comb sharpness vs the mean onset.
+    # with comb sharpness vs the mean onset. Agreement is WEIGHTED by each
+    # window's own comb score: a breakdown / ambient-intro window whose
+    # onsets barely comb used to get the same vote as a full-power groove
+    # window, so tracks with long quiet stretches read as 'unsure tempo'
+    # and were gated out of the precision transition styles for no musical
+    # reason. Weight capped at 3x the median so one hot drop can't carry a
+    # wrong tempo either.
     main = max(grid, key=lambda s: s["end_s"] - s["start_s"])
     bpm = main["bpm"]
-    votes = [w[2] for w in wins]
-    agree = np.mean([1.0 if min(abs(v - bpm) / bpm, abs(v - 2 * bpm) / (2 * bpm),
-                                abs(v - 0.5 * bpm) / (0.5 * bpm)) < 0.04 else 0.0
-                     for v in votes])
+    votes = np.array([w[2] for w in wins], dtype=float)
+    vote_w = np.array([max(w[3], 0.0) for w in wins], dtype=float)
+    cap = 3.0 * max(float(np.median(vote_w)), 1e-9)
+    vote_w = np.minimum(vote_w, cap)
+    hits = np.array([1.0 if min(abs(v - bpm) / bpm,
+                                abs(v - 2 * bpm) / (2 * bpm),
+                                abs(v - 0.5 * bpm) / (0.5 * bpm)) < 0.04
+                     else 0.0 for v in votes])
+    agree = float((vote_w * hits).sum() / max(vote_w.sum(), 1e-9))
     base = max(np.mean(onset), 1e-9)
     sharp = np.clip((main["score"] / base - 1.0) / 3.0, 0.0, 1.0)
     bpm_conf = float(np.clip(0.6 * agree + 0.4 * sharp, 0.0, 1.0))

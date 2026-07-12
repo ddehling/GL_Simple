@@ -66,13 +66,20 @@ def write_progress(payload):
 
 
 def scan_library(music_root, workers=None, force=False, progress_cb=None,
-                 vocals_pass=True):
+                 vocals_pass=True, refine_grids=False):
     """Run one incremental scan. Returns a summary dict.
 
     progress_cb(done, total, current_name) is called from the parent after
     every finished track (CLI bar, Qt signal, whatever). After the feature
     scan, tracks not yet measured by the ML vocal pass get one (sequential,
-    resumable; skipped silently when torch/demucs aren't installed)."""
+    resumable; skipped silently when torch/demucs aren't installed).
+
+    refine_grids=True additionally RE-analyzes every unchanged track whose
+    stored bpm_conf sits below 0.75: the grid estimator's confidence now
+    weights window votes by comb strength (quiet stretches no longer dilute
+    agreement), so the low-confidence band is exactly where a re-run can
+    promote tracks back into the precision transition styles. Vocal data is
+    preserved as on any rescan; the summary reports the conf movement."""
     db = LibraryDB(music_root)
     files = list_audio_files(music_root)
     rel_present = [db.rel(p) for p in files]
@@ -80,6 +87,17 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
 
     todo = [p for p in files
             if force or db.needs_scan(p, ANALYSIS_VERSION)]
+    prior_conf = {}
+    if refine_grids and not force:
+        seen = {os.path.normcase(p) for p in todo}
+        for r in db.conn.execute(
+                "SELECT path, bpm_conf FROM tracks WHERE error IS NULL"
+                " AND missing = 0 AND bpm_conf IS NOT NULL"
+                " AND bpm_conf < 0.75"):
+            p = db.abs(r["path"])
+            if os.path.normcase(p) not in seen and os.path.exists(p):
+                todo.append(p)
+                prior_conf[db.rel(p)] = float(r["bpm_conf"])
     summary = {"found": len(files), "scanned": 0, "errors": 0,
                "skipped": len(files) - len(todo), "missing": n_missing,
                "started_at": time.time()}
@@ -106,6 +124,27 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
                 progress_cb(done, len(todo), name)
             write_progress({**summary, "total": len(todo), "done": done,
                             "current": name, "finished": False})
+
+    if prior_conf:
+        deltas, promoted = [], 0
+        for rel, old in prior_conf.items():
+            row = db.conn.execute(
+                "SELECT bpm_conf FROM tracks WHERE path = ?"
+                " AND error IS NULL", (rel,)).fetchone()
+            if row is None or row["bpm_conf"] is None:
+                continue
+            new = float(row["bpm_conf"])
+            deltas.append(new - old)
+            if old < 0.7 <= new:      # crossed the precision-style gate
+                promoted += 1
+        if deltas:
+            summary["grid_refine"] = {
+                "refined": len(deltas),
+                "improved": sum(1 for d in deltas if d > 0.02),
+                "regressed": sum(1 for d in deltas if d < -0.02),
+                "mean_delta": round(sum(deltas) / len(deltas), 3),
+                "promoted_070": promoted,
+            }
 
     if vocals_pass:
         summary["vocals"] = vocal_pass(db, progress_cb=progress_cb,

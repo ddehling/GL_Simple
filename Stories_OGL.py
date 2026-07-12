@@ -2360,6 +2360,8 @@ class EnvironmentalSystem:
                         self._dj.moment()
                     elif action == 'mix_now':
                         self._dj.mix_now()
+                    elif action == 'abort':
+                        self._dj.abort_transition()
             except Exception as e:
                 print(f"[DJ] action '{action}' failed: {e}")
 

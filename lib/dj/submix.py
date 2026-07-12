@@ -15,6 +15,10 @@ own sample clock, evaluated in 256-frame sub-blocks:
                 |"gain"|"eq"|"rate"|"sync"|"end_sync"|"load", "deck", ...}
 so a transition scripted 2 bars ahead lands on the exact downbeat sample
 regardless of the device's callback size.
+
+Events may carry a "txn" tag; {"cmd": "cancel", "txn": id} recalls every
+NOT-YET-FIRED event of that transaction - the abort path for an armed
+transition (already-fired events are the caller's to unwind).
 """
 from queue import SimpleQueue
 
@@ -58,6 +62,8 @@ class DJSubmix:
         self._fx = []            # active one-shots: [buffer, pos, gain]
         self._duck = None        # {"on", "depth"} sidechain of the slave
         self.record_q = None     # set to a queue to tap the mix (recording)
+        self._stat_resnaps = 0   # per-sync seam-quality counters (telemetry)
+        self._stat_nudges = 0
         self.telemetry = {}      # replaced wholesale each read()
 
     # -- control-thread API ----------------------------------------------------
@@ -87,6 +93,13 @@ class DJSubmix:
         if cmd == "duck":
             self._duck = ({"depth": float(e.get("depth", 0.22))}
                           if e.get("on") else None)
+            return
+        if cmd == "cancel":
+            # Recall a transaction: drop every queued event carrying this
+            # txn tag. Fired events are gone - the caller posts its own
+            # recovery ramp (see DJSystem._do_abort).
+            txn = e.get("txn")
+            self._auto = [a for a in self._auto if a.get("txn") != txn]
             return
         deck = self.decks.get(e.get("deck", ""))
         if cmd == "load":
@@ -131,6 +144,8 @@ class DJSubmix:
             deck.jump_cut(e["time_s"])
         elif cmd == "sync":
             self._sync = {"slave": e["slave"], "master": e["master"]}
+            self._stat_resnaps = 0
+            self._stat_nudges = 0
             sl = self.decks.get(e["slave"])
             if sl is not None:
                 sl.stretch.no_bypass = True      # no mode-flap phase kicks
@@ -213,6 +228,7 @@ class DJSubmix:
             slave.rate_trim = 0.0
             self._apll_err = None
             self._apll_i = 0.0
+            self._stat_resnaps += 1
             return
         # Audio-phase measurement 4x/second; PI control on it. The plant is
         # a delayed position measurement driven by a rate: the INTEGRAL term
@@ -256,6 +272,7 @@ class DJSubmix:
                                           -0.035, 0.035))
                     slave.stretch.phase_trim += nudge * RATE
                     self._nudge_clock = self.clock
+                    self._stat_nudges += 1
                     self._apll_err = None    # stale until the ring refreshes
                     self._apll_hist = []
             else:
@@ -369,6 +386,8 @@ class DJSubmix:
                 pass
         snap = self._snapshot()
         snap["peak"] = float(np.abs(out).max()) if len(out) else 0.0
+        # Block RMS for the seam self-assessment (dead-air / hole detection).
+        snap["rms"] = float(np.sqrt(np.mean(out ** 2))) if len(out) else 0.0
         self.telemetry = snap
         return out
 
@@ -388,5 +407,7 @@ class DJSubmix:
             }
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
                 "sync": dict(self._sync) if self._sync else None,
+                "sync_stats": {"resnaps": self._stat_resnaps,
+                               "nudges": self._stat_nudges},
                 "mix_gain": round(self.mix_gain, 4), "decks": decks,
                 "pending_events": len(self._auto)}

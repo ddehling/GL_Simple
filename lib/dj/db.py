@@ -13,7 +13,10 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 6               # v6: seam_feedback table (pair memory)
+SCHEMA_VERSION = 11              # v11: tracks.excluded (do-not-use flag)
+                                 # (v10: tracks.mood_ml / Music2Emo)
+                                 # (v9: tracks.enrichment / MusicBrainz)
+                                 # (v8: setlist_entries.target_play_s)
 DB_FILENAME = "dj_library.sqlite3"
 
 _SCHEMA = """
@@ -39,6 +42,10 @@ CREATE TABLE IF NOT EXISTS tracks (
     live_check TEXT,                    -- JSON live-pipeline cross-check
     axes TEXT,                          -- JSON v2 character axes (0..1)
     auto_tags TEXT,                     -- JSON v2 derived tag list
+    enrichment TEXT,                    -- JSON v9 MusicBrainz enrichment blob
+    mood_ml TEXT,                       -- JSON v10 Music2Emo {valence,arousal,moods}
+    file_genre TEXT,                    -- v10 embedded genre tag (free, from container)
+    excluded INTEGER NOT NULL DEFAULT 0, -- v11 do-not-use: hidden from all selection
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -90,7 +97,8 @@ CREATE TABLE IF NOT EXISTS seam_feedback (
     b_id INTEGER NOT NULL,              -- incoming track
     style TEXT,
     up INTEGER NOT NULL,                -- 1 thumbs-up / 0 thumbs-down
-    at REAL NOT NULL
+    at REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'user' -- 'user' thumbs | 'auto' assessment
 );
 CREATE INDEX IF NOT EXISTS idx_seam_fb ON seam_feedback(a_id, b_id);
 CREATE TABLE IF NOT EXISTS play_history (
@@ -114,13 +122,15 @@ CREATE TABLE IF NOT EXISTS setlist_entries (
     track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     pin_type TEXT NOT NULL DEFAULT 'suggestion',   -- 'anchor' | 'suggestion'
     target_offset_min REAL,             -- anchor's desired minutes into the set
-    style_override TEXT
+    style_override TEXT,
+    target_play_s REAL                  -- autofill timing solver's play hint
 );
 CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, position);
 """
 
 _JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
-              "spectral", "live_check", "axes", "auto_tags")
+              "spectral", "live_check", "axes", "auto_tags", "enrichment",
+              "mood_ml")
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -160,6 +170,31 @@ class LibraryDB:
                 if col not in have:
                     self.conn.execute(
                         f"ALTER TABLE tracks ADD COLUMN {col} {typ}")
+            have_fb = {r[1] for r in
+                       self.conn.execute("PRAGMA table_info(seam_feedback)")}
+            if have_fb and "source" not in have_fb:      # v7
+                self.conn.execute(
+                    "ALTER TABLE seam_feedback ADD COLUMN source TEXT"
+                    " NOT NULL DEFAULT 'user'")
+            have_se = {r[1] for r in self.conn.execute(
+                "PRAGMA table_info(setlist_entries)")}
+            if have_se and "target_play_s" not in have_se:   # v8
+                self.conn.execute(
+                    "ALTER TABLE setlist_entries ADD COLUMN"
+                    " target_play_s REAL")
+            if "enrichment" not in have:                     # v9
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN enrichment TEXT")
+            if "mood_ml" not in have:                         # v10
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN mood_ml TEXT")
+            if "file_genre" not in have:                      # v10
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN file_genre TEXT")
+            if "excluded" not in have:                        # v11
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN excluded INTEGER "
+                    "NOT NULL DEFAULT 0")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -196,7 +231,7 @@ class LibraryDB:
             "file_size": st.st_size, "mtime": st.st_mtime,
             "content_hash": content_hash,
             "title": a.get("title"), "artist": a.get("artist"),
-            "album": a.get("album"),
+            "album": a.get("album"), "file_genre": a.get("genre"),
             "duration_s": a.get("duration_s"),
             "bpm": a.get("bpm"), "bpm_conf": a.get("bpm_conf"),
             "downbeat_offset": a.get("downbeat_offset"),
@@ -256,6 +291,54 @@ class LibraryDB:
                  p.get("style_hint")))
         self.conn.commit()
         return track_id
+
+    def set_enrichment(self, track_id, blob):
+        """Store a track's MusicBrainz enrichment blob (JSON). Genres/era
+        surface via TrackInfo.all_tags in memory, so we never touch the
+        user-authored `tags` table."""
+        self.conn.execute("UPDATE tracks SET enrichment = ? WHERE id = ?",
+                          (json.dumps(blob) if blob is not None else None,
+                           track_id))
+        self.conn.commit()
+
+    def enrichment_for(self, track_id):
+        row = self.conn.execute(
+            "SELECT enrichment FROM tracks WHERE id = ?",
+            (track_id,)).fetchone()
+        if row and row["enrichment"]:
+            try:
+                return json.loads(row["enrichment"])
+            except ValueError:
+                return None
+        return None
+
+    def set_mood_ml(self, track_id, blob):
+        """Store a track's Music2Emo ML descriptor blob (JSON): normalized
+        valence/arousal (0..1) + predicted mood tags. Moods surface via
+        TrackInfo.all_tags in memory; we never touch the user `tags` table."""
+        self.conn.execute("UPDATE tracks SET mood_ml = ? WHERE id = ?",
+                          (json.dumps(blob) if blob is not None else None,
+                           track_id))
+        self.conn.commit()
+
+    def mood_ml_for(self, track_id):
+        row = self.conn.execute(
+            "SELECT mood_ml FROM tracks WHERE id = ?",
+            (track_id,)).fetchone()
+        if row and row["mood_ml"]:
+            try:
+                return json.loads(row["mood_ml"])
+            except ValueError:
+                return None
+        return None
+
+    def set_excluded(self, track_id, flag):
+        """Mark/unmark a track 'do not use'. Excluded tracks stay in the DB and
+        the library browser but are removed from everything that auto-selects
+        (set generation, the copilot pool, and the live autoDJ brain)."""
+        self.conn.execute("UPDATE tracks SET excluded = ? WHERE id = ?",
+                          (1 if flag else 0, track_id))
+        self.conn.commit()
 
     def mark_missing(self, present_rel_paths):
         """Flag DB rows whose file vanished (history preserved, not deleted)."""
@@ -404,11 +487,11 @@ class LibraryDB:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_seam_feedback(self, a_id, b_id, style, up):
+    def add_seam_feedback(self, a_id, b_id, style, up, source="user"):
         self.conn.execute(
-            "INSERT INTO seam_feedback (a_id, b_id, style, up, at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (a_id, b_id, style, 1 if up else 0, time.time()))
+            "INSERT INTO seam_feedback (a_id, b_id, style, up, at, source)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (a_id, b_id, style, 1 if up else 0, time.time(), source))
         self.conn.commit()
 
     def pair_stats(self, days=90.0):
@@ -417,11 +500,15 @@ class LibraryDB:
         since = time.time() - days * 86400.0
         fb = {}
         for r in self.conn.execute(
-                "SELECT a_id, b_id, up FROM seam_feedback WHERE at > ?",
-                (since,)):
+                "SELECT a_id, b_id, up, source FROM seam_feedback"
+                " WHERE at > ?", (since,)):
             k = (r["a_id"], r["b_id"])
-            ups, downs = fb.get(k, (0, 0))
-            fb[k] = (ups + r["up"], downs + (1 - r["up"]))
+            # The machine's self-assessment counts, but at half an
+            # operator's vote - measured train-wrecks lean the memory,
+            # human taste steers it.
+            w = 0.5 if (r["source"] or "user") == "auto" else 1.0
+            ups, downs = fb.get(k, (0.0, 0.0))
+            fb[k] = (ups + w * r["up"], downs + w * (1 - r["up"]))
         skips = {}
         rows = self.conn.execute(
             "SELECT track_id, started_at, ended_at, skipped FROM"

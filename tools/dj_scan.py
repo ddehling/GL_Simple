@@ -8,6 +8,7 @@ Usage:
     python tools/dj_scan.py                     # incremental scan, default dir
     python tools/dj_scan.py --dir D:/music      # explicit library
     python tools/dj_scan.py --force             # re-analyze everything
+    python tools/dj_scan.py --refine-grids      # + re-run low-conf beat grids
     python tools/dj_scan.py --workers 4
     python tools/dj_scan.py --track "song.mp3"  # single-file debug report
     python tools/dj_scan.py --list              # dump the library table
@@ -38,10 +39,17 @@ def cmd_scan(args):
         return 1
     print(f"Scanning {root}")
     s = scan_library(root, workers=args.workers, force=args.force,
-                     progress_cb=_bar, vocals_pass=not args.no_vocals)
+                     progress_cb=_bar, vocals_pass=not args.no_vocals,
+                     refine_grids=args.refine_grids)
     print(f"\n\nfound {s['found']} files | scanned {s['scanned']} "
           f"| skipped {s['skipped']} (unchanged) | errors {s['errors']} "
           f"| missing {s['missing']} | {s['elapsed_s']}s")
+    g = s.get("grid_refine")
+    if g:
+        print(f"grid refine: {g['refined']} low-conf tracks re-run | "
+              f"{g['improved']} improved, {g['regressed']} regressed "
+              f"(mean {g['mean_delta']:+.3f}) | "
+              f"{g['promoted_070']} promoted past the 0.70 precision gate")
     v = s.get("vocals") or {}
     if v.get("status") == "unavailable":
         print("vocal pass skipped: torch/demucs not installed "
@@ -105,6 +113,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="dump the library")
     ap.add_argument("--no-vocals", action="store_true",
                     help="skip the ML vocal-measurement pass")
+    ap.add_argument("--refine-grids", action="store_true",
+                    help="also re-analyze unchanged tracks with bpm_conf"
+                         " < 0.75 (vote-weighted grid confidence)")
     args = ap.parse_args()
     if args.track:
         return cmd_track(args)

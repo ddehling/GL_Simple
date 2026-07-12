@@ -28,19 +28,20 @@ import numpy as np
 from PyQt6.QtCore import (QAbstractItemModel, Qt, QAbstractTableModel, QModelIndex, QRect,
                           QSortFilterProxyModel, QThread, QTimer, QProcess,
                           pyqtSignal)
-from PyQt6.QtGui import QColor, QPalette, QAction
+from PyQt6.QtGui import QColor, QPalette, QAction, QCursor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
     QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
     QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit, QSlider)
+    QPlainTextEdit, QSlider, QMenu)
 
 from lib.dj import resolve_music_dir
 from lib.dj.db import LibraryDB
 from lib.dj.brain import Brain, load_library
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
+from tools.djplanner.arcstrip import ArcStrip
 from tools.djplanner.waveform import WaveformView
 from tools.djplanner.mixview import MixTimeline
 from tools.djplanner.deckmon import DeckMonitor
@@ -52,8 +53,17 @@ SECTION_COLORS = {
     "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
     "breakdown": QColor(90, 70, 130),
 }
-COLS = ["title", "artist", "bpm", "key", "dur", "energy", "tags",
+COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "tags",
         "structure"]
+
+
+def track_genre(t):
+    """Best single genre label for a track: MusicBrainz genre (from the
+    Enrich pass) first, else the embedded file genre tag."""
+    g = getattr(t, "genres", None)
+    if g:
+        return g[0]
+    return (getattr(t, "file_genre", "") or "").split(",")[0].split("/")[0].strip()
 
 
 def energy_glyph(e):
@@ -147,6 +157,18 @@ class LibraryTreeModel(QAbstractItemModel):
                 return fd["tracks"]
             return None
         t = f["tracks"][index.row()]
+        if getattr(t, "excluded", False):
+            if role == Qt.ItemDataRole.FontRole:
+                from PyQt6.QtGui import QFont
+                fnt = QFont()
+                fnt.setStrikeOut(True)
+                fnt.setItalic(True)
+                return fnt
+            if role == Qt.ItemDataRole.ForegroundRole:
+                from PyQt6.QtGui import QColor
+                return QColor("#8a8a95")
+            if role == Qt.ItemDataRole.DisplayRole and c == 0:
+                return "🚫 " + t.title
         if role == Qt.ItemDataRole.DisplayRole:
             if c == 0:
                 return t.title
@@ -161,6 +183,8 @@ class LibraryTreeModel(QAbstractItemModel):
             if c == 5:
                 return energy_glyph(t.energy_proxy())
             if c == 6:
+                return track_genre(t)
+            if c == 7:
                 return " ".join(t.all_tags)
         if role == Qt.ItemDataRole.UserRole:
             return t
@@ -276,6 +300,51 @@ class StripDelegate(QStyledItemDelegate):
         p.restore()
 
 
+class EnrichWorker(QThread):
+    """MusicBrainz enrichment in-process (no subprocess). Rate-limited to
+    ~1 req/s inside the client, so it runs on this thread and streams
+    progress. Opens its own DB connection on the worker thread."""
+    progress = pyqtSignal(int, int, int, int, str)  # done,total,matched,missed,cur
+    finished_run = pyqtSignal(int, int)             # matched, missed
+
+    def __init__(self, music_dir, force=False):
+        super().__init__()
+        self.music_dir, self.force = music_dir, force
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        from lib.dj.db import LibraryDB
+        from lib.dj.enrich import MusicBrainzClient, enrich_track
+        db = LibraryDB(self.music_dir)
+        rows = db.all_tracks()
+        todo = [r for r in rows if self.force or not r.get("enrichment")]
+        mb = MusicBrainzClient()
+        matched = missed = 0
+        for i, r in enumerate(todo):
+            if self._stop:
+                break
+            track = {"title": r.get("title") or "",
+                     "artist": r.get("artist") or "",
+                     "duration_s": r.get("duration_s")}
+            try:
+                blob = enrich_track(track, mb=mb)
+            except Exception:
+                blob = None
+            db.set_enrichment(r["id"], blob or {"source": "musicbrainz",
+                                                "matched": False})
+            if blob:
+                matched += 1
+            else:
+                missed += 1
+            self.progress.emit(i + 1, len(todo), matched, missed,
+                              (r.get("title") or "")[:36])
+        db.close()
+        self.finished_run.emit(matched, missed)
+
+
 class LibraryTab(QWidget):
     openAnalysis = pyqtSignal(object)          # TrackInfo
     addTracks = pyqtSignal(list)               # [TrackInfo]
@@ -284,12 +353,42 @@ class LibraryTab(QWidget):
         super().__init__()
         self.planner = planner
         self._proc = None
+        self._enrich = None
+        self._mood_proc = None
         v = QVBoxLayout(self)
 
         top = QHBoxLayout()
         self.scan_btn = QPushButton("Scan library")
-        self.scan_btn.clicked.connect(self.run_scan)
+        self.scan_btn.setToolTip("Analyze new/changed tracks and any whose "
+                                 "analysis is older than the current feature "
+                                 "set (incremental).")
+        self.scan_btn.clicked.connect(lambda: self.run_scan(force=False))
         top.addWidget(self.scan_btn)
+        self.rescan_btn = QPushButton("Rescan all")
+        self.rescan_btn.setToolTip("Force a full re-analysis of EVERY track "
+                                   "(ignores the up-to-date check). Use after "
+                                   "a big library move or to be certain every "
+                                   "track has the latest features.")
+        self.rescan_btn.clicked.connect(lambda: self.run_scan(force=True))
+        top.addWidget(self.rescan_btn)
+        # Enrich = pull genre/year/era/label from MusicBrainz (in-process).
+        self.enrich_btn = QPushButton("Enrich (MusicBrainz)")
+        self.enrich_btn.setToolTip(
+            "Fetch genre, release year/era and label from MusicBrainz for "
+            "every track that lacks it. Genres become tags that steer "
+            "selection and the copilot. ~1 track/sec; background, resumable.")
+        self.enrich_btn.clicked.connect(self.run_enrich)
+        top.addWidget(self.enrich_btn)
+        # Mood (ML) = score valence/arousal/mood tags with Music2Emo (GPU pass).
+        self.mood_btn = QPushButton("Mood (ML)")
+        self.mood_btn.setToolTip(
+            "Run the Music2Emo model over every un-scored track to get real "
+            "valence/arousal and mood tags (dark, party, melancholic, epic...). "
+            "Upgrades danceable/dark/uplifting tags and valence steering from "
+            "heuristic to ML. Needs a Music2Emotion clone; ~3-5s/track on GPU, "
+            "background and resumable.")
+        self.mood_btn.clicked.connect(self.run_mood)
+        top.addWidget(self.mood_btn)
         self.scan_lbl = QLabel("")
         top.addWidget(self.scan_lbl, 1)
         self.search = QLineEdit(
@@ -372,13 +471,22 @@ class LibraryTab(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setItemDelegateForColumn(7, StripDelegate())
-        for i, w in enumerate((250, 120, 52, 44, 50, 62, 150, 260)):
+        self.table.setItemDelegateForColumn(8, StripDelegate())
+        for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 150, 260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
         self.table.selectionModel().selectionChanged.connect(
             self._extend_folder_selection)
+        # Right-click: same do-not-use toggle as the buttons below.
+        excl_act = QAction("🚫 Mark do-not-use", self)
+        excl_act.triggered.connect(lambda: self._set_excluded(True))
+        self.table.addAction(excl_act)
+        allow_act = QAction("✓ Allow (clear do-not-use)", self)
+        allow_act.triggered.connect(lambda: self._set_excluded(False))
+        self.table.addAction(allow_act)
+        self.table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.ActionsContextMenu)
         v.addWidget(self.table)
 
         bot = QHBoxLayout()
@@ -395,6 +503,19 @@ class LibraryTab(QWidget):
         br = QPushButton("Remove tag")
         br.clicked.connect(lambda: self._tag(False))
         bot.addWidget(br)
+        bot.addSpacing(16)
+        # Do-not-use: hide from ALL auto-selection (set generation, copilot,
+        # autoDJ). Track stays in the library, greyed + struck through.
+        bx = QPushButton("🚫 Do not use")
+        bx.setToolTip("Flag the selected tracks so no system grabs them - "
+                      "set generation, the Copilot, and the live autoDJ all "
+                      "skip them. They stay in the library; hit Allow to undo.")
+        bx.clicked.connect(lambda: self._set_excluded(True))
+        bot.addWidget(bx)
+        ba = QPushButton("✓ Allow")
+        ba.setToolTip("Clear the do-not-use flag on the selected tracks.")
+        ba.clicked.connect(lambda: self._set_excluded(False))
+        bot.addWidget(ba)
         bot.addStretch(1)
         self.count_lbl = QLabel("")
         bot.addWidget(self.count_lbl)
@@ -438,6 +559,19 @@ class LibraryTab(QWidget):
             (self.planner.db.add_tag if add
              else self.planner.db.remove_tag)(t.id, tag)
         self.planner.reload_library()
+
+    def _set_excluded(self, flag):
+        """Flag/unflag the selected tracks 'do not use' (DB v11). Reload so
+        they drop out of (or return to) planner.library everywhere at once."""
+        ts = self.selected_tracks()
+        if not ts:
+            return
+        for t in ts:
+            self.planner.db.set_excluded(t.id, flag)
+        self.planner.reload_library()
+        n = len(ts)
+        self.scan_lbl.setText(
+            f"{'flagged do-not-use' if flag else 'allowed'}: {n} track(s)")
 
     def _extend_folder_selection(self, selected, _deselected):
         """Clicking a folder line selects every track inside it - the
@@ -603,8 +737,12 @@ class LibraryTab(QWidget):
                     src = self.proxy.mapToSource(idx)
                     open_names.add(self.model.folder_name(src.row()))
         first = not self.model.folders
-        self.model.set_tracks(self.planner.library, flat=flat)
-        self.count_lbl.setText(f"{len(self.planner.library)} tracks")
+        tracks = self.planner.library_all or self.planner.library
+        self.model.set_tracks(tracks, flat=flat)
+        n_excl = sum(1 for t in tracks if getattr(t, "excluded", False))
+        self.count_lbl.setText(
+            f"{len(tracks)} tracks"
+            + (f"  ({n_excl} do-not-use)" if n_excl else ""))
         if flat:
             # Root the view AT the single container: pure sortable list.
             src0 = self.model.index(0, 0)
@@ -647,17 +785,20 @@ class LibraryTab(QWidget):
             self.folder_box.blockSignals(False)
 
     # -- scanning ------------------------------------------------------------
-    def run_scan(self):
+    def run_scan(self, force=False):
         if self._proc is not None:
             return
         script = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "tools", "dj_scan.py")
+        args = [script, "--dir", self.planner.music_dir]
+        if force:
+            args.append("--force")
         self._proc = QProcess(self)
         self._proc.finished.connect(self._scan_done)
-        self._proc.start(sys.executable,
-                         [script, "--dir", self.planner.music_dir])
+        self._proc.start(sys.executable, args)
         self.scan_btn.setEnabled(False)
-        self.scan_lbl.setText("scanning...")
+        self.rescan_btn.setEnabled(False)
+        self.scan_lbl.setText("rescanning all..." if force else "scanning...")
         self._last_done = -1
         self._scan_timer.start(1500)
 
@@ -688,7 +829,88 @@ class LibraryTab(QWidget):
         self._proc = None
         self._scan_timer.stop()
         self.scan_btn.setEnabled(True)
+        self.rescan_btn.setEnabled(True)
         self.scan_lbl.setText("scan complete")
+        self.planner.reload_library()
+
+    # -- enrichment (MusicBrainz, in-process) --------------------------------
+    def run_enrich(self):
+        if self._enrich is not None and self._enrich.isRunning():
+            self._enrich.stop()                      # button toggles to stop
+            self.enrich_btn.setText("stopping...")
+            return
+        self._enrich = EnrichWorker(self.planner.music_dir)
+        self._enrich.progress.connect(self._enrich_progress)
+        self._enrich.finished_run.connect(self._enrich_done)
+        self._enrich.start()
+        self.enrich_btn.setText("Stop enrich")
+
+    def _enrich_progress(self, done, total, matched, missed, cur):
+        self.scan_lbl.setText(f"enriching {done}/{total}  "
+                              f"({matched} matched, {missed} no-match)  {cur}")
+        # Live-populate genres into the table + tag browser every 15 tracks.
+        if done % 15 == 0:
+            self.planner.reload_library()
+
+    def _enrich_done(self, matched, missed):
+        self.enrich_btn.setText("Enrich (MusicBrainz)")
+        self.scan_lbl.setText(f"enrichment done: {matched} matched, "
+                              f"{missed} no-match")
+        self.planner.reload_library()
+
+    # -- mood (Music2Emo ML, subprocess) -------------------------------------
+    def run_mood(self):
+        if self._mood_proc is not None:                  # toggles to stop
+            self._mood_proc.kill()
+            self.mood_btn.setText("stopping...")
+            return
+        from lib.dj.mood_ml import find_model_dir
+        if find_model_dir() is None:
+            self.scan_lbl.setText(
+                "Mood model not found - clone github.com/AMAAI-Lab/"
+                "Music2Emotion next to GL_Simple or set $DJ_MOOD_MODEL_DIR")
+            return
+        script = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tools", "dj_mood.py")
+        self._mood_proc = QProcess(self)
+        self._mood_proc.setProcessChannelMode(
+            QProcess.ProcessChannelMode.MergedChannels)
+        self._mood_proc.readyReadStandardOutput.connect(self._mood_stdout)
+        self._mood_proc.finished.connect(self._mood_done)
+        self._mood_proc.start(sys.executable,
+                              [script, "--dir", self.planner.music_dir])
+        self._mood_done_count = -1
+        self.mood_btn.setText("Stop mood")
+        self.scan_lbl.setText("mood pass: loading model...")
+
+    def _mood_stdout(self):
+        if self._mood_proc is None:
+            return
+        data = bytes(self._mood_proc.readAllStandardOutput()).decode(
+            "utf-8", "replace")
+        for line in data.splitlines():
+            if not line.startswith("PROGRESS "):
+                continue
+            parts = line.split(" ", 5)
+            if len(parts) < 6:
+                continue
+            done, total, matched, missed, cur = parts[1:6]
+            self.scan_lbl.setText(
+                f"mood {done}/{total}  ({matched} scored, {missed} failed)  "
+                f"{cur[:40]}")
+            # Live-populate mood tags into the table + tag browser periodically.
+            try:
+                d = int(done)
+            except ValueError:
+                continue
+            if d != self._mood_done_count and d % 15 == 0:
+                self._mood_done_count = d
+                self.planner.reload_library()
+
+    def _mood_done(self, *a):
+        self._mood_proc = None
+        self.mood_btn.setText("Mood (ML)")
+        self.scan_lbl.setText("mood pass complete")
         self.planner.reload_library()
 
 
@@ -886,14 +1108,16 @@ class AnalysisTab(QWidget):
 class CompileWorker(QThread):
     done = pyqtSignal(object)
 
-    def __init__(self, library, entries, theme):
+    def __init__(self, library, entries, theme, pair_memory=None):
         super().__init__()
         self.library, self.entries, self.theme = library, entries, theme
+        self.pair_memory = dict(pair_memory or {})
 
     def run(self):
         try:
             self.done.emit(SL.compile_plan(self.library, self.entries,
-                                           self.theme))
+                                           self.theme,
+                                           pair_memory=self.pair_memory))
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -999,8 +1223,33 @@ class SetTab(QWidget):
         prow2.addWidget(af)
         left.addLayout(prow2)
 
+        # SHAPE the set: order it so tempo/energy follows a curve (the only
+        # control that actually makes a set BUILD; keeps seams mixable).
+        prow3 = QHBoxLayout()
+        prow3.addWidget(QLabel("Shape:"))
+        self.shape_metric = QComboBox()
+        self.shape_metric.addItems(["tempo", "energy"])
+        prow3.addWidget(self.shape_metric)
+        self.shape_curve = QComboBox()
+        self.shape_curve.addItems(["rise", "peak", "wind_down", "flat"])
+        prow3.addWidget(self.shape_curve)
+        shb = QPushButton("Apply shape")
+        shb.setToolTip("Reorder the set so the chosen metric follows the "
+                       "curve — rise = build, peak = up then down. Tempo "
+                       "shaping gives the cleanest result.")
+        shb.clicked.connect(self.apply_shape)
+        prow3.addWidget(shb)
+        prow3.addStretch(1)
+        left.addLayout(prow3)
+
+        # THE ARC STRIP: the set's shape (energy vs the theme's target,
+        # bpm path, seam quality) visible WHILE building, not only after
+        # reading the compiled text. Click a bar to select its entry.
+        self.arc_strip = ArcStrip()
+        self.arc_strip.slotClicked.connect(self._strip_clicked)
+        left.addWidget(self.arc_strip)
         left.addWidget(QLabel("Set (drag to reorder, double-click = anchor,"
-                              " Del = remove)"))
+                              " Del = remove, right-click = repair)"))
         self.set_list = QListWidget()
         self.set_list.setDragDropMode(
             QAbstractItemView.DragDropMode.InternalMove)
@@ -1010,6 +1259,12 @@ class SetTab(QWidget):
         rm.setShortcut("Delete")
         rm.triggered.connect(self._remove_entry)
         self.set_list.addAction(rm)
+        alt = QAction("suggest alternatives for this slot", self)
+        alt.triggered.connect(self._suggest_alternatives)
+        self.set_list.addAction(alt)
+        br = QAction("insert bridge to next track", self)
+        br.triggered.connect(self._insert_bridge)
+        self.set_list.addAction(br)
         self.set_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.ActionsContextMenu)
         left.addWidget(self.set_list, 1)
@@ -1052,9 +1307,40 @@ class SetTab(QWidget):
         brow.addWidget(st)
         brow.addStretch(1)
         right.addLayout(brow)
+        # Play the whole compiled set WITHOUT leaving the Set tab - drives the
+        # Mix tab's preview (which already holds the current plan via the
+        # planCompiled->set_plan wiring), so audio plays regardless of which
+        # tab is showing.
+        pbrow = QHBoxLayout()
+        self.play_set_btn = QPushButton("▶ Play set")
+        self.play_set_btn.setToolTip("Play the whole compiled set from the "
+                                     "start (same engine as the Mix tab).")
+        self.play_set_btn.clicked.connect(self._play_set)
+        pbrow.addWidget(self.play_set_btn)
+        self.set_pause_btn = QPushButton("⏸")
+        self.set_pause_btn.setCheckable(True)
+        self.set_pause_btn.toggled.connect(
+            lambda on: self.planner.mix_tab._pause(on))
+        pbrow.addWidget(self.set_pause_btn)
+        pstop = QPushButton("■ Stop")
+        pstop.clicked.connect(lambda: self.planner.stop_all_playback())
+        pbrow.addWidget(pstop)
+        pnext = QPushButton("⏭ track")
+        pnext.clicked.connect(lambda: self.planner.mix_tab._jump(+1))
+        pbrow.addWidget(pnext)
+        pseam = QPushButton("→ seam")
+        pseam.clicked.connect(lambda: self.planner.mix_tab._next_seam())
+        pbrow.addWidget(pseam)
+        pbrow.addStretch(1)
+        right.addLayout(pbrow)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         right.addWidget(self.status)
+        # Conversational set-builder (Claude tool-loop over this same set).
+        from tools.djplanner.copilot_panel import CopilotPanel
+        self.copilot_panel = CopilotPanel(planner, self)
+        self.copilot_panel.entriesApplied.connect(self._copilot_applied)
+        right.addWidget(self.copilot_panel, 1)
         h.addLayout(right, 1)
 
     # -- entries ------------------------------------------------------------
@@ -1065,12 +1351,13 @@ class SetTab(QWidget):
         for t in tracks:
             self.entries.append({"track_id": t.id, "pin_type": "suggestion",
                                  "target_offset_min": None,
-                                 "style_override": None})
+                                 "style_override": None,
+                                 "target_play_s": None})
         self._rebuild()
         self.recompile()
 
     def _entry_label(self, e):
-        t = next((x for x in self.planner.library
+        t = next((x for x in (self.planner.library_all or self.planner.library)
                   if x.id == e["track_id"]), None)
         name = t.title if t else f"track {e['track_id']}"
         tag = "⚓ " if e["pin_type"] == "anchor" else "• "
@@ -1217,6 +1504,17 @@ class SetTab(QWidget):
         self._rebuild()
         self.recompile()
 
+    def apply_shape(self):
+        if len(self.entries) <= 2:
+            self.status.setText("build a set first, then shape its curve.")
+            return
+        self.entries = SL.order_by_shape(
+            self.planner.library, self.entries, self.theme(),
+            metric=self.shape_metric.currentText(),
+            shape=self.shape_curve.currentText())
+        self._rebuild()
+        self.recompile()
+
     # -- persistence ------------------------------------------------------------
     def refresh_setlists(self):
         self.set_combo.blockSignals(True)
@@ -1238,38 +1536,70 @@ class SetTab(QWidget):
         self.setlist_id = sl["id"]
         self.entries = [{k: e.get(k) for k in
                          ("track_id", "pin_type", "target_offset_min",
-                          "style_override")} for e in sl["entries"]]
+                          "style_override", "target_play_s")}
+                        for e in sl["entries"]]
         if sl.get("theme") in BUILTIN_THEMES:
             self.theme_combo.setCurrentText(sl["theme"])
         self._rebuild()
         self.recompile()
 
-    def new_set(self):
-        name, ok = QInputDialog.getText(self, "New setlist", "Name:")
+    def _create_named_setlist(self, title):
+        """Prompt for a name and create an (empty) setlist row. Returns its id
+        or None. Does NOT touch self.entries - callers decide what to save."""
+        name, ok = QInputDialog.getText(self, title, "Name:")
         if not (ok and name):
-            return
+            return None
         try:
-            self.setlist_id = SL.create_setlist(
+            return SL.create_setlist(
                 self.planner.db, name, theme=self.theme_combo.currentText())
         except Exception as e:
-            QMessageBox.warning(self, "New setlist", str(e))
+            QMessageBox.warning(self, title, str(e))
+            return None
+
+    def _select_combo_silently(self, sid):
+        """Reflect a setlist id in the combo without firing _load_set (which
+        would reload entries from the DB and clobber the working set)."""
+        row = self.planner.db.conn.execute(
+            "SELECT name FROM setlists WHERE id = ?", (sid,)).fetchone()
+        if row:
+            self.set_combo.blockSignals(True)
+            self.set_combo.setCurrentText(row["name"])
+            self.set_combo.blockSignals(False)
+
+    def new_set(self):
+        sid = self._create_named_setlist("New setlist")
+        if sid is None:
             return
-        self.entries = []
+        self.setlist_id = sid
+        self.entries = []                    # New = deliberately start empty
         self._rebuild()
         self.refresh_setlists()
-        self.set_combo.setCurrentText(name)
+        self._select_combo_silently(sid)
 
     def save_set(self):
+        # An unsaved set: name + create the row, but KEEP the working entries
+        # (the bug was calling new_set(), which cleared them before saving).
         if self.setlist_id is None:
-            self.new_set()
-            if self.setlist_id is None:
+            sid = self._create_named_setlist("Save setlist as")
+            if sid is None:
                 return
+            self.setlist_id = sid
         SL.save_entries(self.planner.db, self.setlist_id, self.entries)
         self.planner.db.conn.execute(
             "UPDATE setlists SET theme = ? WHERE id = ?",
             (self.theme_combo.currentText(), self.setlist_id))
         self.planner.db.conn.commit()
-        self.status.setText("saved.")
+        self.refresh_setlists()
+        self._select_combo_silently(self.setlist_id)
+        self.status.setText(f"saved {len(self.entries)} tracks.")
+
+    def _play_set(self):
+        if not self.compiled:
+            self.status.setText("build a set first")
+            return
+        self.set_pause_btn.setChecked(False)
+        self.planner.mix_tab.play_set()
+        self.status.setText("playing set (Mix tab shows the live timeline).")
 
     def delete_set(self):
         if self.setlist_id is not None and QMessageBox.question(
@@ -1288,8 +1618,9 @@ class SetTab(QWidget):
             self._pending = True
             return
         self._pending = False
-        self._worker = CompileWorker(self.planner.library,
-                                     list(self.entries), self.theme())
+        self._worker = CompileWorker(
+            self.planner.library, list(self.entries), self.theme(),
+            pair_memory=getattr(self.planner, "pair_memory", None))
         self._worker.done.connect(self._compiled)
         self._worker.start()
 
@@ -1311,20 +1642,194 @@ class SetTab(QWidget):
             p = s["transition"]
             if p:
                 nxt = result["slots"][i + 1]["track"]
+                si = s.get("seam_info") or {}
+                badges = []
+                if si.get("fade"):
+                    badges.append("FADE")
+                if si.get("floor") is not None and si["floor"] < 0.25:
+                    badges.append(f"floor {si['floor']:.2f}")
+                if (si.get("d_off") or 0) > 0.035:
+                    badges.append(f"Δgroove {si['d_off'] * 1000:.0f}ms")
+                pm = si.get("pair_mem")
+                if pm:
+                    badges.append("★ mixed well before" if pm > 1.0
+                                  else "✖ rough before")
                 warn = ("   ⚠ " + "; ".join(s["warnings"])
                         if s["warnings"] else "")
                 item = QListWidgetItem(
                     f"      ↳ {p['style']} @ {p['out_s']:.0f}s "
-                    f"(rate {p['rate']:.3f}, seam {p['pair_score']:.2f}) "
+                    f"(rate {p['rate']:.3f}, seam {p['pair_score']:.2f}"
+                    + ("".join(", " + b for b in badges)) + ") "
                     f"→ {nxt.title}{warn}", self.plan_list)
                 item.setData(Qt.ItemDataRole.UserRole, i)
-                if s["warnings"]:
+                if si.get("floor") is not None and si["floor"] < 0.15:
+                    item.setForeground(QColor(230, 110, 110))
+                elif s["warnings"]:
                     item.setForeground(QColor(255, 170, 100))
-        self.status.setText(
-            f"set ~{result['total_s'] / 3600.0:.1f} h, "
-            f"{len(result['slots'])} tracks, "
-            f"{len(result['warnings'])} warnings")
+                elif si.get("fade"):
+                    item.setForeground(QColor(160, 160, 170))
+        self._update_strip(result)
+        self.status.setText(self._report_card(result))
         self.planCompiled.emit(result)
+
+    def _update_strip(self, result):
+        theme = self.theme()
+        strip = [{"off": s["start_offset_s"], "play": s["play_s"],
+                  "energy": s["track"].energy_proxy(),
+                  "bpm": s["track"].bpm,
+                  "anchor": s["entry"].get("pin_type") == "anchor",
+                  "seam": s.get("seam_info"),
+                  "warn": bool(s["warnings"])}
+                 for s in result["slots"]]
+        arc = [(i / 24.0, max(0.0, min(1.0, theme.arc_target(i / 24.0))))
+               for i in range(25)]
+        self.arc_strip.set_data(strip, arc)
+
+    def _report_card(self, result):
+        """One line the whole set can be judged by."""
+        slots = result["slots"]
+        seams = [s for s in slots[:-1] if s["transition"]]
+        n_bm = sum(1 for s in seams
+                   if s["transition"]["style"] != "long_fade")
+        total = max(result["total_s"], 60.0)
+        theme = self.theme()
+        fits = [1.0 - abs(s["track"].energy_proxy()
+                          - theme.arc_target(min(
+                              s["start_offset_s"] / total, 1.0)))
+                for s in slots]
+        drifts = [abs(s["start_offset_s"]
+                      - float(s["entry"]["target_offset_min"]) * 60.0)
+                  for s in slots
+                  if s["entry"].get("pin_type") == "anchor"
+                  and s["entry"].get("target_offset_min")]
+        bits = [f"~{result['total_s'] / 3600.0:.1f} h",
+                f"{len(slots)} tracks"]
+        if seams:
+            scores = sorted(s["transition"]["pair_score"] for s in seams)
+            bits.append(f"{n_bm}/{len(seams)} beat-matched "
+                        f"({n_bm / len(seams):.0%})")
+            bits.append(f"median seam {scores[len(scores) // 2]:.2f}")
+        if fits:
+            bits.append(f"arc fit {sum(fits) / len(fits):.2f}")
+        if drifts:
+            bits.append(f"anchor drift ≤ {max(drifts) / 60.0:.1f} min")
+        if result["warnings"]:
+            bits.append(f"{len(result['warnings'])} warnings")
+        return "  ·  ".join(bits)
+
+    def _strip_clicked(self, i):
+        if 0 <= i < self.set_list.count():
+            self.set_list.setCurrentRow(i)
+            self.select_seam(i)
+
+    def _copilot_applied(self, entries, theme_name):
+        """Adopt the copilot's (or a revert's) entries + theme. Runs on the
+        GUI thread via the panel's signal."""
+        if theme_name in BUILTIN_THEMES:
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentText(theme_name)
+            self.theme_combo.blockSignals(False)
+        self.entries = [dict(e) for e in entries]
+        self._rebuild()
+        self.recompile()
+
+    # -- repair: alternatives + bridge -----------------------------------------
+    def _slot_alternatives(self, i, n=8):
+        """Top replacement candidates for slot i: geometric mean of the
+        seam INTO the slot and the seam OUT of it, at that moment's arc -
+        the same scoring the live DJ picks with (pair memory included)."""
+        if not (0 <= i < len(self.entries)):
+            return []
+        by_id = {t.id: t for t in self.planner.library}
+        cur_ids = {e["track_id"] for e in self.entries}
+        prev = by_id.get(self.entries[i - 1]["track_id"]) if i > 0 else None
+        nxt = by_id.get(self.entries[i + 1]["track_id"]) \
+            if i + 1 < len(self.entries) else None
+        brain = Brain(self.planner.library, self.theme())
+        brain.pair_memory = dict(
+            getattr(self.planner, "pair_memory", {}) or {})
+        arc = 0.6
+        if self.compiled and i < len(self.compiled["slots"]):
+            total = max(self.compiled["total_s"], 60.0)
+            arc = self.theme().arc_target(min(
+                self.compiled["slots"][i]["start_offset_s"] / total, 1.0))
+        scored = []
+        for t in self.planner.library:
+            if t.id in cur_ids:
+                continue
+            # Cheap tempo gate before the expensive pair scoring.
+            if prev is not None and brain.rate_for(prev.bpm, t)[0] is None:
+                continue
+            if nxt is not None and brain.rate_for(t.bpm, nxt)[0] is None:
+                continue
+            s_in = (brain.score(prev, t, arc, prev.bpm)[0]
+                    if prev is not None
+                    else max(1e-6, 1.0 - abs(t.energy_proxy() - arc)))
+            s_out = (brain.score(t, nxt, arc, t.bpm)[0]
+                     if nxt is not None else 1.0)
+            v = (max(s_in, 1e-9) * max(s_out, 1e-9)) ** 0.5
+            scored.append((v, t))
+        scored.sort(key=lambda p: -p[0])
+        return scored[:n]
+
+    def _suggest_alternatives(self):
+        i = self.set_list.currentRow()
+        if i < 0:
+            return
+        if self.entries[i].get("pin_type") == "anchor":
+            self.status.setText("that's an anchor - unpin it first if you"
+                                " want the machine's opinion")
+            return
+        self.status.setText("scoring alternatives...")
+        QApplication.processEvents()
+        alts = self._slot_alternatives(i)
+        if not alts:
+            self.status.setText("no tempo-reachable alternative for this"
+                                " slot")
+            return
+        menu = QMenu(self)
+        for v, t in alts:
+            act = menu.addAction(f"{t.title[:44]}  ({t.bpm:.0f} "
+                                 f"{t.camelot})  fit {v:.3f}")
+            act.setData(t.id)
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            self.status.setText("")
+            return
+        self.entries[i]["track_id"] = chosen.data()
+        self._rebuild()
+        self.recompile()
+
+    def _insert_bridge(self):
+        i = self.set_list.currentRow()
+        if not (0 <= i < len(self.entries) - 1):
+            self.status.setText("select the entry BEFORE the seam you want"
+                                " bridged")
+            return
+        by_id = {t.id: t for t in self.planner.library}
+        a = by_id.get(self.entries[i]["track_id"])
+        b = by_id.get(self.entries[i + 1]["track_id"])
+        if a is None or b is None:
+            return
+        self.status.setText("searching for a bridge...")
+        QApplication.processEvents()
+        chain, score = SL.bridge(
+            self.planner.library, a, b, self.theme(),
+            exclude_ids={e["track_id"] for e in self.entries})
+        if not chain:
+            self.status.setText(f"no bridge beats the direct seam "
+                                f"{a.title[:20]} -> {b.title[:20]}")
+            return
+        for k, t in enumerate(chain):
+            self.entries.insert(i + 1 + k, {
+                "track_id": t.id, "pin_type": "suggestion",
+                "target_offset_min": None, "style_override": None,
+                "target_play_s": None})
+        self._rebuild()
+        self.recompile()
+        self.status.setText(
+            "bridged via " + " -> ".join(t.title[:24] for t in chain)
+            + f"  (bottleneck {score:.3f})")
 
     def select_seam(self, index):
         for r in range(self.plan_list.count()):
@@ -1561,7 +2066,8 @@ class Planner(QMainWindow):
         self.resize(1500, 900)
         os.makedirs(music_dir, exist_ok=True)
         self.db = LibraryDB(music_dir)
-        self.library = []
+        self.library = []            # SELECTABLE tracks (excluded removed)
+        self.library_all = []        # everything, for the library browser
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -1573,6 +2079,14 @@ class Planner(QMainWindow):
         self.tabs.addTab(self.analysis_tab, "Analysis")
         self.tabs.addTab(self.set_tab, "Set")
         self.tabs.addTab(self.mix_tab, "Mix")
+        # Discover (Beatport) is optional - only if the module imports.
+        self.discover_tab = None
+        try:
+            from tools.djplanner.discover import DiscoverTab
+            self.discover_tab = DiscoverTab(self)
+            self.tabs.addTab(self.discover_tab, "Discover")
+        except Exception as e:
+            print(f"[planner] Discover tab unavailable: {e}")
 
         self.library_tab.openAnalysis.connect(self._open_analysis)
         self.library_tab.addTracks.connect(self.set_tab.add_tracks)
@@ -1599,17 +2113,35 @@ class Planner(QMainWindow):
                 self.set_tab.seam_player.close()
             elif owner == "preview":
                 self.mix_tab.preview.stop()
+            elif owner == "discover":
+                if self.discover_tab is not None:
+                    self.discover_tab.stop_preview()
         except Exception:
             pass
 
     def stop_all_playback(self):
         """ANY stop button stops ANY playing."""
-        for o in ("analysis", "library", "seam", "preview"):
+        for o in ("analysis", "library", "seam", "preview", "discover"):
             self._stop_owner(o)
         self._pb_owner = None
 
     def reload_library(self, keep_analysis=False):
-        self.library = load_library(self.db)
+        # library_all = everything (the browser shows + toggles do-not-use);
+        # library = what every auto-selector sees (excluded removed), so set
+        # generation, the copilot, and the live autoDJ never grab a flagged
+        # track.
+        self.library_all = load_library(self.db)
+        self.library = [t for t in self.library_all if not t.excluded]
+        # Cross-night pair memory (thumbs + auto seam assessments) is
+        # display/steering input for the Set tab; loaded HERE on the UI
+        # thread so the compile worker never touches the shared sqlite
+        # connection.
+        try:
+            _b = Brain([], get_theme("groove"))
+            _b.load_pair_memory(self.db)
+            self.pair_memory = _b.pair_memory
+        except Exception:
+            self.pair_memory = {}
         self.library_tab.refresh()
         if not keep_analysis:
             self.analysis_tab.refresh_tracklist()
@@ -1628,6 +2160,15 @@ class Planner(QMainWindow):
         self.mix_tab.close()
         self.set_tab.seam_player.close()
         self.library_tab.lib_player.close()
+        if self.library_tab._enrich is not None \
+                and self.library_tab._enrich.isRunning():
+            self.library_tab._enrich.stop()
+            self.library_tab._enrich.wait(2000)
+        if self.library_tab._mood_proc is not None:
+            self.library_tab._mood_proc.kill()
+            self.library_tab._mood_proc.waitForFinished(2000)
+        if self.discover_tab is not None:
+            self.discover_tab.close()
         super().closeEvent(ev)
 
 
