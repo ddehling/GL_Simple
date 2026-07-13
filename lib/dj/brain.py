@@ -13,6 +13,7 @@ submix automation using a telemetry snapshot for the clock mapping.
 """
 import math
 import random
+import re
 import time
 
 from lib.dj import stretch_engine_name
@@ -269,6 +270,22 @@ def _shift_camelot(cam, semitones):
 # Brain
 # --------------------------------------------------------------------------
 
+_VERSION_WORDS = ("mix", "remix", "edit", "version", "extended", "original",
+                  "radio", "club", "dub", "instrumental", "remaster",
+                  "rework", "rmx", "bootleg", "vip")
+
+
+def _title_root(title):
+    """A song's identity with version/mix decorations stripped: 'Dunkel
+    (Hobin Rude Remix)' and 'Dunkel (Original Mix)' -> 'dunkel'. Feat
+    clauses go too. Empty when nothing is left (all-decoration titles)."""
+    t = (title or "").strip().lower()
+    t = re.sub(r"[(\[][^)\]]*\b(%s)\b[^)\]]*[)\]]" % "|".join(_VERSION_WORDS),
+               " ", t)
+    t = re.sub(r"\s*[-(\[]?\s*(feat\.|ft\.|featuring)\s.*$", " ", t)
+    return re.sub(r"\s+", " ", t).strip(" -_")
+
+
 class Brain:
     def __init__(self, library, theme, seed=None, stretch_max=STRETCH_MAX):
         self.library = list(library)
@@ -290,11 +307,19 @@ class Brain:
         # queue purposes a copy IS the song - per-id memory let 'the same
         # song' reappear via its twin (user-seen in the next-3 queue).
         def _ck(t):
+            # VERSION FAMILIES: 'Dunkel (Original Mix)' and 'Dunkel (Hobin
+            # Rude Remix)' are the same SONG to a listener - hash/title keys
+            # left them unlinked and they played back-to-back (2026-07-12
+            # night log). Key on the stripped title root when there is one;
+            # hash only rescues untitled files.
+            root = _title_root(t.title)
+            artist = (t.artist or "").strip().lower()
+            if root:
+                return "m:" + root + "|" + artist
             h = (t.row.get("content_hash") or "").strip()
             if h:
                 return "h:" + h
-            return ("m:" + (t.title or "").strip().lower() + "|"
-                    + (t.artist or "").strip().lower())
+            return ("m:" + (t.title or "").strip().lower() + "|" + artist)
         self.ckey = {t.id: _ck(t) for t in library}
         self._lib_bpms = [t.bpm for t in self.library]
         self.theme = adapt_theme(theme, self._lib_bpms)
@@ -324,6 +349,7 @@ class Brain:
         # is the boss.
         self.flavor = {}                # {prefer_tags, avoid_tags, axis_targets}
         self.veto_ids = set()           # transient 'not this one' (reroll)
+        self.last_scored_n = None       # candidates the last pick drew from
         self.style_fb = {}              # style -> tonight multiplier (thumbs)
         self.pair_memory = {}           # (a_id,b_id) -> cross-night multiplier
 
@@ -487,11 +513,17 @@ class Brain:
         ds = self._distinct_since_map().get(ck)
         if ds is not None and ds < self.norepeat_n:
             pen *= 0.003 + 0.997 * (ds / self.norepeat_n) ** 2
+        # Same-artist spacing is BOUNDED (min x0.25 total): stacking it per
+        # recent play drove EVERY candidate in a few-artist pool below the
+        # old 0.01 floor, the floor flattened them equal, and the oldest-
+        # first ordering vanished (measured: ds=1 repeats won in a 27-song
+        # genre pool). The distinct-song term must stay the dominant order.
+        art = 1.0
         for when, tid, artist in self.recent:
             if tid != ck and artist and artist == track.artist:
                 age_h = (now - when) / 3600.0
-                pen *= min(1.0, 0.6 + age_h / 2.0)      # ~1h for an artist
-        return max(pen, 0.01)
+                art *= min(1.0, 0.6 + age_h / 2.0)      # ~1h for an artist
+        return max(pen * max(art, 0.25), 1e-4)
 
     # -- tempo ---------------------------------------------------------------
     def rate_for(self, out_bpm, cand):
@@ -537,13 +569,24 @@ class Brain:
 
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
-              bpm_target=None, relax=False):
+              bpm_target=None, relax=False, allow_repeat=False):
         if cand.id == getattr(current, "id", None)                 or cand.id in self.veto_ids:
             return 0.0, None
         if self.pool_ids is not None and cand.id not in self.pool_ids:
             return 0.0, None
         if not self._tag_ok(cand):          # hard "only these tags play"
             return 0.0, None
+        # HARD NO-REPEAT (user: "repeats within the bulk of the set should
+        # be deeply disallowed"): inside the norepeat window a song scores
+        # ZERO - the soft penalty still let beat-similar recents outscore
+        # fresh-but-unreachable songs, funneling the night onto the same
+        # mixable cluster. choose_next's cascade prefers a FADE into fresh
+        # music before ever setting allow_repeat.
+        if not allow_repeat:
+            ds = self._distinct_since_map().get(
+                self.ckey.get(cand.id, cand.id))
+            if ds is not None and ds < self.norepeat_n:
+                return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
         if rate is None:
             return 0.0, None
@@ -672,6 +715,16 @@ class Brain:
         return (not self.require_tags
                 or bool(self.require_tags & set(cand.all_tags)))
 
+    def eligible_pool_size(self):
+        """How many songs the selectors can actually draw from right now
+        (setlist pool ∩ hard tag filter). Surfaced on the live panel: a
+        tiny pool makes repeats ARITHMETICALLY forced ('only these tags' +
+        4 matching songs = a repeat every ~4 songs), and the night reads
+        wrong unless the operator can see why."""
+        return sum(1 for t in self.library
+                   if (self.pool_ids is None or t.id in self.pool_ids)
+                   and self._tag_ok(t))
+
     @staticmethod
     def _similarity(a, b):
         """0..1 sameness of two tracks (spectral shares + character axes)."""
@@ -702,6 +755,11 @@ class Brain:
                                  bpm_target=bpm_target)
             if s > 0.0:
                 scored.append((s, cand, meta))
+        # Surfaced on the live panel: the pool a pick ACTUALLY drew from
+        # (tag filter ∩ tempo-reachable from the current track). A narrow
+        # style + skipping through it shrinks this to a handful, and then
+        # repeats are forced no matter what the wall says.
+        self.last_scored_n = len(scored)
         if not scored:
             # DEAD-END RESCUE: from tempo-extreme tracks the theme window
             # can be unreachable (measured: 69/573 on the real library).
@@ -713,7 +771,51 @@ class Brain:
                 if s > 0.0:
                     scored.append((s, cand, meta))
         if not scored:
-            return None, None
+            # FRESH-OVER-REPEAT: every tempo-reachable candidate is inside
+            # the no-repeat window. A FADE into a fresh song (any tempo in
+            # the theme window) beats a beatmatched repeat - otherwise the
+            # night funnels onto the same beat-similar cluster forever.
+            pick = self._fresh_fade_pick(current, arc_target, now)
+            if pick is not None:
+                return pick, {"rate": 1.0, "eff_bpm": pick.bpm, "pair": None,
+                              "tempo_clash": True}
+        if not scored:
+            # LAST RESORT - repeats allowed, and OLDEST-FIRST IS ABSOLUTE:
+            # take the oldest cohort of eligible songs (within 4 distinct
+            # of the oldest available), prefer a beatmatched seam INSIDE
+            # it, fade otherwise. Ranking by score let seam quality win -
+            # a 2-song tempo island then flip-flopped A-B-A-B forever
+            # while 20-song-old material sat one fade away (measured).
+            # Returns (None, None) only on an empty/vetoed pool, which is
+            # how planned sets end short instead of repeating.
+            ds_map = self._distinct_since_map()
+            elig = [t for t in self.library
+                    if t.id != getattr(current, "id", None)
+                    and t.id not in self.veto_ids
+                    and (self.pool_ids is None or t.id in self.pool_ids)
+                    and self._tag_ok(t)]
+            if not elig:
+                return None, None
+
+            def _age(t):
+                d = ds_map.get(self.ckey.get(t.id, t.id))
+                return self.norepeat_n if d is None else d
+            oldest = max(_age(t) for t in elig)
+            cohort = [t for t in elig if _age(t) >= oldest - 4]
+            best = None
+            for cand in cohort:
+                s, meta = self.score(current, cand, arc_target, out_bpm,
+                                     now, bpm_target=bpm_target, relax=True,
+                                     allow_repeat=True)
+                if s > 0.0 and (best is None or s > best[0]):
+                    best = (s, cand, meta)
+            if best is not None:
+                return best[1], best[2]
+            pick = max(cohort, key=lambda t: (
+                math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+                * self._flavor_score(t) * self._skip_penalty(t)))
+            return pick, {"rate": 1.0, "eff_bpm": pick.bpm, "pair": None,
+                          "tempo_clash": True}
         scored.sort(key=lambda x: -x[0])
         finalists = []
         for s, cand, meta in scored[:5]:
@@ -734,6 +836,37 @@ class Brain:
         pick = self.rng.choices(top, weights=weights, k=1)[0]
         return pick[1], pick[2]
 
+    def _fresh_fade_pick(self, current, arc_target, now=None):
+        """A FRESH song to fade into when every tempo-reachable candidate is
+        a near repeat. Stays inside the theme's bpm window (half/double
+        reads count) so the night keeps its character; the seam will be a
+        deliberate long_fade (caller passes tempo_clash meta)."""
+        lo, hi = self.theme.bpm_range
+        ds_map = self._distinct_since_map()
+        pool = []
+        for t in self.library:
+            if t.id == getattr(current, "id", None) or t.id in self.veto_ids:
+                continue
+            if self.pool_ids is not None and t.id not in self.pool_ids:
+                continue
+            if not self._tag_ok(t):
+                continue
+            ds = ds_map.get(self.ckey.get(t.id, t.id))
+            if ds is not None and ds < self.norepeat_n:
+                continue
+            if not any(lo * 0.93 <= t.bpm * m <= hi * 1.07
+                       for m in (1.0, 2.0, 0.5)):
+                continue
+            pool.append(t)
+        if not pool:
+            return None
+        ranked = [(math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+                   * self._flavor_score(t) * self._skip_penalty(t)
+                   * self._recency_penalty(t, now)
+                   * self.rng.uniform(0.9, 1.1), t) for t in pool]
+        ranked.sort(key=lambda x: -x[0])
+        return ranked[0][1]
+
     def emergency_pick(self, current, arc_target, now=None):
         """CONTINUITY OUTRANKS POLISH: the watchdog's last resort when even
         the relaxed selection came up empty with the current track about to
@@ -742,11 +875,13 @@ class Brain:
         library."""
         pool = [t for t in self.library
                 if t.id != getattr(current, "id", None)
+                and t.id not in self.veto_ids
                 and (self.pool_ids is None or t.id in self.pool_ids)
                 and self._tag_ok(t)]
         if not pool:
             pool = [t for t in self.library
-                    if t.id != getattr(current, "id", None)]
+                    if t.id != getattr(current, "id", None)
+                    and t.id not in self.veto_ids]
         if not pool:
             return None, None
         best = max(pool, key=lambda t: (

@@ -147,6 +147,62 @@ def unit_tests():
           p_recent < 0.05 and p_older > p_recent * 5,
           f"just-played {p_recent:.3f} vs 2-songs-ago {p_older:.3f}")
 
+    # VERSION FAMILIES: different mixes of the same song share a recency
+    # key - playing one walls the others (Dunkel Original followed Dunkel
+    # Remix back-to-back on a real night before this).
+    va = fake_track(21, 122.0, "8A", artist="hobin")
+    vb = fake_track(22, 124.0, "8A", artist="hobin")
+    vc = fake_track(23, 124.0, "8A", artist="hobin")
+    va.title = "Dunkel (Hobin Rude Remix)"
+    vb.title = "Dunkel (Original Mix)"
+    vc.title = "Massacre"
+    b3 = Brain([va, vb, vc], theme)
+    check("mix versions share a recency key",
+          b3.ckey[21] == b3.ckey[22] and b3.ckey[22] != b3.ckey[23],
+          f"{b3.ckey[21]} vs {b3.ckey[23]}")
+    b3.note_played(va)
+    check("playing one version walls its twin",
+          b3._recency_penalty(vb) < 0.05 and b3._recency_penalty(vc) > 0.5,
+          f"twin {b3._recency_penalty(vb):.3f} vs other "
+          f"{b3._recency_penalty(vc):.3f}")
+
+    # HARD NO-REPEAT + fresh-over-repeat cascade: a near repeat scores ZERO;
+    # when every tempo-reachable candidate is walled, choose_next fades into
+    # a FRESH in-window song (tempo_clash meta) rather than repeating; only
+    # a fully-walled pool degrades to spaced repeats (never None).
+    hb = Brain(lib, theme, seed=2)
+    hb.note_played(lib[1])
+    check("near repeat scores hard zero",
+          hb.score(cur, lib[1], 0.6, cur.bpm)[0] == 0.0
+          and hb.score(cur, lib[1], 0.6, cur.bpm,
+                       allow_repeat=True)[0] > 0.0,
+          "0.0 walled; >0 with allow_repeat")
+    # current 122bpm: reachable neighbours are walled; the only fresh song
+    # is tempo-UNREACHABLE (150bpm) but inside the theme window (100-132
+    # via half-time read? 150*0.5=75 no; use a 100bpm fresh: reachable?
+    # 122->100 = rate 0.82 unreachable; window 100-132 contains it.)
+    f_lib = [cur, fake_track(31, 124.0, "8A"), fake_track(32, 100.0, "5A")]
+    hb2 = Brain(f_lib, theme, seed=2)
+    hb2.note_played(f_lib[1])                 # wall the only reachable one
+    pick, meta = hb2.choose_next(cur, 0.6, cur.bpm)
+    check("prefers a FADE into fresh music over a beatmatched repeat",
+          pick is not None and pick.id == 32
+          and (meta or {}).get("tempo_clash"),
+          f"picked {pick.id if pick else None} meta={meta and meta.get('tempo_clash')}")
+    hb2.note_played(f_lib[2])                 # now EVERYTHING is walled
+    pick2, meta2 = hb2.choose_next(cur, 0.6, cur.bpm)
+    check("fully-walled pool degrades to a spaced repeat, not silence",
+          pick2 is not None, f"picked {pick2.id if pick2 else None}")
+
+    # eligible_pool_size respects the hard tag filter.
+    vc.user_tags = ["techno"]
+    b3.set_require_tags(["techno"])
+    check("eligible_pool_size follows the tag filter",
+          b3.eligible_pool_size() == 1, f"{b3.eligible_pool_size()}")
+    b3.set_require_tags([])
+    check("eligible_pool_size unfiltered = library",
+          b3.eligible_pool_size() == 3, f"{b3.eligible_pool_size()}")
+
     # Busy x busy penalty: mixing two walls of sound is heavily penalized
     # (not hard-rejected - a pair is always returned so planning never falls
     # back to a blind exit), so a quiet candidate must out-score it a lot.

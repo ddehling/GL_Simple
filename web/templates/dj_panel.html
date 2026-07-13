@@ -478,8 +478,23 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
                 banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
                     + "Starting pauses state ambient and points the visuals at the mix.";
             }
-            $("dj-libinfo").textContent = dj.music_dir
-                ? "library: " + dj.music_dir : "";
+            // Rotation size: with a hard tag filter, a small pool makes
+            // repeats unavoidable - say so instead of looking broken.
+            const pool = dj.eligible_pool || 0;
+            const filtered = (dj.require_tags || []).length > 0;
+            let poolTxt = dj.music_dir ? "library: " + dj.music_dir : "";
+            const reach = dj.reachable_now;
+            if (pool > 0 && filtered) {
+                poolTxt = pool + " songs in rotation (tag filter)"
+                    + (reach != null && reach > 0
+                       ? ", " + reach + " mixable from here" : "")
+                    + (pool < 15 || (reach != null && reach < 8)
+                       ? " - too few to avoid repeats!" : "");
+            }
+            $("dj-libinfo").textContent = poolTxt;
+            $("dj-libinfo").style.color =
+                (filtered && (pool < 15 || (reach != null && reach < 8)))
+                ? "#f0a05a" : "";
 
             // Theme highlight + setlist options (work idle and live).
             document.querySelectorAll(".theme-btn").forEach((b) =>

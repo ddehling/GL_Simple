@@ -587,6 +587,10 @@ class DJSystem:
             "flavor": dict(self.brain.flavor) if self.brain else {},
             "require_tags": (sorted(self.brain.require_tags)
                              if self.brain else []),
+            "eligible_pool": (self.brain.eligible_pool_size()
+                              if self.brain else 0),
+            "reachable_now": (getattr(self.brain, "last_scored_n", None)
+                              if self.brain else None),
             "tags": self._tag_vocab,
             "genre_tags": sorted(self._genre_tags),
             "horizon": list(self._horizon),
@@ -862,13 +866,13 @@ class DJSystem:
             t0 = next((t for t in self.brain.library
                        if t.id == self._horizon[0]["id"]), None)
             # A stale queue front must never resurrect a track the night
-            # just played: the recency wall is deliberately nonzero for
-            # dry-pool grace, so 'scores > 0' alone is not consent.
-            now = time.time()
+            # just played - freshness is DISTINCT-SONG based, same model as
+            # the brain's hard no-repeat window.
             ck0 = self.brain.ckey.get(t0.id, t0.id) if t0 is not None else None
-            fresh = t0 is not None and not any(
-                tid == ck0 and now - w < 3600.0
-                for w, tid, _ in self.brain.recent)
+            ds0 = (self.brain._distinct_since_map().get(ck0)
+                   if ck0 is not None else None)
+            fresh = t0 is not None and (ds0 is None
+                                        or ds0 >= self.brain.norepeat_n)
             if fresh and t0.id != self.current.id                     and t0.id not in self.brain.veto_ids:
                 s, meta = self.brain.score(
                     self.current, t0, self.arc_target(), out_bpm,

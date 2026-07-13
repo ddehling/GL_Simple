@@ -978,6 +978,17 @@ class EnvironmentalSystem:
             print(f"[WEATHER] Already in set '{new_set_name}', skipping")
             return True
 
+        # Changing SET is the operator asking for that set's full experience,
+        # soundscape included - hand the soundtrack back if the DJ still owns
+        # it. (Measured 2026-07-12: the DJ kept running across a set change,
+        # its ambient-suppression guard stayed engaged, and the new set
+        # arrived silent with no hint why.)
+        dj = getattr(self, "_dj", None)
+        if dj is not None and dj.active:
+            print("[DJ] weather set changed - stopping the DJ and handing "
+                  "the soundtrack back")
+            self._dj_stop()
+
         if immediate:
             # Apply the change immediately
             print(f"[WEATHER] Switching weather set immediately: '{self.weather_set.current_set}' -> '{new_set_name}'")
@@ -1258,6 +1269,14 @@ class EnvironmentalSystem:
             print(f"[Project] Already on '{new_project_id}'; no-op")
             return True
         print(f"[Project] Swap requested: {self.project.id} -> {new_project_id}")
+
+        # Same rule as a weather-set change: a project swap wants the new
+        # project's soundscape - the DJ must hand the soundtrack back first
+        # (and never survive across a swap that resets active_effects).
+        dj = getattr(self, "_dj", None)
+        if dj is not None and dj.active:
+            print("[DJ] project swap - stopping the DJ")
+            self._dj_stop()
 
         # ---- Phase A: pre-validate ----
         # Loading the new project's event_map is the gating step:
