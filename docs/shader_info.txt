@@ -211,7 +211,6 @@ depth-based approach — new club effects must too.
 | 0.48 | club_chaser | chaser_level | marquee chase dots, one step/beat |
 | 0.45 | club_kick_flare | kick_flare_level | star-burst rays on each kick |
 | 0.47 | club_spirograph | spirograph_level | MilkDrop Wire Spirograph port: counter-rotating roses, petal count snaps per bar |
-| 0.43 | club_airhandler | airhandler_level | Aderrasi 'Airhandler' port: comet arcs swinging one full swing per 2 beats |
 | 0.40 | club_shockwave | shockwave_level | bass rings in real feet |
 | 0.38 | club_fountain | fountain_level | ballistic particles erupting on kicks, gravity pulls them home |
 | 0.35 | club_tesla | tesla_level | branching hub-to-rim lightning on hard kicks + treble corona |

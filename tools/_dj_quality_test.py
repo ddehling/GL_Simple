@@ -261,10 +261,16 @@ def render_seam(library, cur, style, wav=False):
     # than the music does on its own.
     start_clock = sub.clock - len(mono)
     bw0 = max(int((blend_at - start_clock) / RATE / 0.5) - 2, 0)
-    # The blend's MUSICAL end is ~4 beats before the stop event; past it
-    # the incoming track plays solo and its own arrangement moves (first
-    # bass entrance!) are its music, not our transition.
-    b_end = swap_at - int(4 * cur.period_s * RATE)
+    # The blend's MUSICAL end: past it the incoming track carries the mix
+    # alone and its own arrangement moves (first bass entrance!) are its
+    # music, not our transition. 6 beats before the stop event (was 4):
+    # with the swap moved mid-blend (2026-07-12) A's exit fade completes
+    # ~end, i.e. ~4 beats before stop - and a VERIFIED B-solo 6.0 dB
+    # arrangement step (Blinding Lights remix, B rendered alone) landed
+    # half a window inside the old boundary and read as a 6.6 dB
+    # transition lurch while every step we actually schedule measured
+    # <= 4.4 dB. A is below -18 dB for the extra second this excludes.
+    b_end = swap_at - int(6 * cur.period_s * RATE)
     bw1 = max(int((b_end - start_clock) / RATE / 0.5) - 2, bw0 + 1)
     inside = db_steps[bw0:bw1]
     outside = np.concatenate([db_steps[:bw0], db_steps[bw1:]])

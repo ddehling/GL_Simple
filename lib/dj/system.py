@@ -20,7 +20,7 @@ import os
 import threading
 import time
 
-from lib.dj.brain import Brain, load_library, TrackInfo
+from lib.dj.brain import GLIDE_PER_S, Brain, load_library, TrackInfo
 from lib.dj.db import LibraryDB
 from lib.dj.submix import DJSubmix
 from lib.dj.themes import BUILTIN_THEMES, get_theme
@@ -74,6 +74,7 @@ class DJSystem:
         self._energy_nudge = 0.0
         self._urgent_exit = False        # skip/mix_now: exit ASAP, not "best"
         self._tag_vocab = []             # [(tag, count)] for flavor chips
+        self._genre_tags = set()         # which vocab tags are genres
         self._arc_waypoints = []         # [(progress 0..1, energy 0..1)]
         self._horizon = []               # provisional next-N briefs
         self._horizon_key = None         # staleness stamp
@@ -195,6 +196,7 @@ class DJSystem:
                 scope.add(self.current.id)
             user_counts = {}
             auto_counts = {}
+            genre_counts = {}
             for t in self.brain.library:
                 t.user_tags = per_track.get(t.id, [])
                 if scope is not None and t.id not in scope:
@@ -203,12 +205,29 @@ class DJSystem:
                     user_counts[tag] = user_counts.get(tag, 0) + 1
                 for tag in t.auto_tags:
                     auto_counts[tag] = auto_counts.get(tag, 0) + 1
+                # GENRE chips: MusicBrainz genres + embedded file genre. Both
+                # already fold into all_tags, so selecting one drives the hard
+                # filter / soft lean immediately.
+                for g in (getattr(t, "genres", None) or []):
+                    gl = str(g).lower()
+                    genre_counts[gl] = genre_counts.get(gl, 0) + 1
+                for part in (getattr(t, "file_genre", "") or "").replace(
+                        "/", ",").replace(";", ",").split(","):
+                    part = part.strip().lower()
+                    if part:
+                        genre_counts[part] = genre_counts.get(part, 0) + 1
             vocab = [(tag, n, True) for tag, n in
                      sorted(user_counts.items(), key=lambda kv: -kv[1])]
+            genre_top = sorted(genre_counts.items(),
+                               key=lambda kv: -kv[1])[:24]
+            self._genre_tags = {g for g, _ in genre_top
+                                if g not in user_counts}
+            vocab += [(g, n, False) for g, n in genre_top
+                      if g in self._genre_tags]
             vocab += [(tag, n, False) for tag, n in
                       sorted(auto_counts.items(), key=lambda kv: -kv[1])
-                      if tag not in user_counts]
-            self._tag_vocab = vocab[:64]     # everything, sane ceiling
+                      if tag not in user_counts and tag not in self._genre_tags]
+            self._tag_vocab = vocab[:80]     # everything, sane ceiling
         except Exception as e:
             print(f"[DJ] tag refresh skipped: {e}")
 
@@ -566,7 +585,10 @@ class DJSystem:
             "state": self.state, "theme": self._theme_name,
             "themes": sorted(BUILTIN_THEMES),
             "flavor": dict(self.brain.flavor) if self.brain else {},
+            "require_tags": (sorted(self.brain.require_tags)
+                             if self.brain else []),
             "tags": self._tag_vocab,
+            "genre_tags": sorted(self._genre_tags),
             "horizon": list(self._horizon),
             "history": self._history[-40:],
             "arc_waypoints": list(self._arc_waypoints),
@@ -696,13 +718,21 @@ class DJSystem:
                     self.next_track = None       # soft replan
                     self.plan = None
             elif kind == "flavor":
-                # Live music-type steering: tag leans + axis pulls merged
-                # over the theme; soft replan so the very next pick obeys.
+                # Live music-type steering: soft tag leans + axis pulls, PLUS a
+                # HARD tag filter (require_tags) - only tracks carrying a
+                # required tag may play. Soft replan so the very next pick
+                # obeys; a changed hard filter also drops the planned horizon
+                # (it may hold now-ineligible picks).
+                old_req = set(self.brain.require_tags)
                 self.brain.set_flavor(val)
+                self.brain.set_require_tags(
+                    val.get("require_tags") if isinstance(val, dict) else None)
                 self._log({"event": "flavor", "flavor": val})
                 if self.state == "playing":
                     self.next_track = None
                     self.plan = None
+                    if self.brain.require_tags != old_req:
+                        self._horizon = []
             elif kind == "skip" and self.state in ("playing", "armed"):
                 self._do_skip()
             elif kind == "abort" and self.state == "armed":
@@ -856,6 +886,7 @@ class DJSystem:
             return
         steer = (self._theme_name,
                  json.dumps(self.brain.flavor, sort_keys=True),
+                 tuple(sorted(self.brain.require_tags)),   # genre/tag HARD filter
                  tuple(self._arc_waypoints), round(self._energy_nudge, 2))
         steered = steer != self._horizon_key
         if not steered and len(self._horizon) >= 3                 and (self.next_track is None
@@ -1310,7 +1341,7 @@ class DJSystem:
                "ramp_s": 1.2}]
         if abs(a_rate - 1.0) > 1e-3:     # dual-bend ramp already under way
             ev.append({"cmd": "rate", "deck": self.active_deck, "value": 1.0,
-                       "ramp_s": abs(a_rate - 1.0) / 0.0015})
+                       "ramp_s": abs(a_rate - 1.0) / GLIDE_PER_S})
         # The recovery is its own transaction: its DELAYED incoming-deck
         # stop must be recallable, or a skip's immediate urgent re-arm (new
         # blend can start at +0.3s) gets its deck killed at +0.6s by the

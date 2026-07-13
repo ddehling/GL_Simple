@@ -131,6 +131,12 @@ CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, po
 _JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
               "spectral", "live_check", "axes", "auto_tags", "enrichment",
               "mood_ml")
+# JSON columns the SCANNER owns and writes. enrichment (MusicBrainz) and
+# mood_ml (Music2Emo) come from SEPARATE passes and must NEVER be touched by
+# upsert_track - a re-scan's analysis dict lacks them, so writing them would
+# NULL them out (wiped genres + ML mood on every re-scan).
+_SCAN_JSON_COLS = tuple(c for c in _JSON_COLS
+                        if c not in ("enrichment", "mood_ml"))
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -249,7 +255,7 @@ class LibraryDB:
             "analyzed_at": time.time(),
             "error": a.get("error"), "missing": 0,
         }
-        for col in _JSON_COLS:
+        for col in _SCAN_JSON_COLS:     # NOT enrichment/mood_ml (separate passes)
             vals[col] = json.dumps(a[col]) if a.get(col) is not None else None
         cols = ", ".join(vals)
         marks = ", ".join("?" for _ in vals)

@@ -7,13 +7,29 @@ the wrap. Decode happens on a daemon thread; `ready` flips when the samples
 are in RAM (a 5-minute stereo track is ~106 MB float32 - fine on the PCs
 this targets).
 """
+import os
 import threading
 
 import numpy as np
 
+from lib.dj import stretch_engine_name
 from lib.dj.eq import ThreeBandEQ
 from lib.dj.fx import EchoDelay, SweepFilter
 from lib.dj.stretch import WSOLAStretcher
+from lib.dj.pv_stretch import PhaseVocoderStretcher
+from lib.dj.varispeed import VarispeedStretcher
+
+# Tempo engine (env DJ_STRETCH_ENGINE, see lib.dj.stretch_engine_name).
+# 'vari' (default): turntable mode - pitch rides tempo, zero stretch
+# artifacts; the brain meets both decks in the middle so each song shifts
+# half as far. 'wsola'/'pv': keylock engines (constant pitch, each with its
+# own artifact tradeoff) for A/B by ear.
+_ENGINES = {"pv": PhaseVocoderStretcher, "wsola": WSOLAStretcher,
+            "vari": VarispeedStretcher}
+
+
+def _stretch_engine():
+    return _ENGINES.get(stretch_engine_name(), VarispeedStretcher)
 
 RATE = 44100
 LOOP_XFADE = 128                 # frames, equal-power seam blend
@@ -51,7 +67,7 @@ class Deck:
         self._rs_pos = 0.0
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
-        self.stretch = WSOLAStretcher(self._fetch)
+        self.stretch = _stretch_engine()(self._fetch)
         self._lock = threading.Lock()
         # Running FULL-BAND amplitude envelope of this deck's OUTPUT (pre-
         # EQ/pre-gain). The submix correlates the POSITIVE DIFFERENCE of two

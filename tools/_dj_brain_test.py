@@ -109,6 +109,44 @@ def unit_tests():
     check("recency penalty bites", s_played < s_fresh * 0.5,
           f"just-played 8A scores {s_played:.4f} vs fresh key-clash {s_fresh:.4f}")
 
+    # HARD tag filter (live panel "only these tags play"): tagged eligible,
+    # untagged blocked; choose_next only returns a tagged track; clearing
+    # restores everyone.
+    brain = Brain(lib, theme, seed=1)
+    lib[1].user_tags = ["techno"]           # id 2
+    lib[5].user_tags = ["techno"]           # id 6
+    brain.set_require_tags(["techno"])
+    check("require_tags blocks untagged", brain.score(cur, lib[2], 0.6, cur.bpm)[0] == 0.0
+          and brain.score(cur, lib[1], 0.6, cur.bpm)[0] > 0.0,
+          "id3(untagged)=0, id2(techno)>0")
+    nxt, _ = brain.choose_next(cur, 0.6, cur.bpm)
+    check("choose_next honors require_tags",
+          nxt is not None and "techno" in nxt.all_tags, f"picked {nxt.id if nxt else None}")
+    brain.set_require_tags([])
+    check("clearing require_tags restores untagged",
+          brain.score(cur, lib[2], 0.6, cur.bpm)[0] > 0.0, "id3 eligible again")
+    lib[1].user_tags = []
+    lib[5].user_tags = []
+
+    # DISTINCT-SONG no-repeat: a song is a near-wall until norepeat_n OTHER
+    # distinct songs have played, easing as more play (round-robins a pool,
+    # not a wall-clock timer). Old timestamps -> artist term ~inert here.
+    b2 = Brain(lib, theme, seed=1)
+    b2.norepeat_n = 3
+    b2.recent = [(1000.0, b2.ckey[lib[1].id], lib[1].artist),
+                 (1000.0, b2.ckey[lib[2].id], lib[2].artist),
+                 (1000.0, b2.ckey[lib[3].id], lib[3].artist)]
+    dsm = b2._distinct_since_map()
+    check("distinct-since counts songs after a track's last play",
+          dsm[b2.ckey[lib[3].id]] == 0 and dsm[b2.ckey[lib[1].id]] == 2,
+          f"just-played=0 got {dsm[b2.ckey[lib[3].id]]}, "
+          f"2-ago got {dsm[b2.ckey[lib[1].id]]}")
+    p_recent = b2._recency_penalty(lib[3])
+    p_older = b2._recency_penalty(lib[1])
+    check("no-repeat wall eases as more songs play",
+          p_recent < 0.05 and p_older > p_recent * 5,
+          f"just-played {p_recent:.3f} vs 2-songs-ago {p_older:.3f}")
+
     # Busy x busy penalty: mixing two walls of sound is heavily penalized
     # (not hard-rejected - a pair is always returned so planning never falls
     # back to a blind exit), so a quiet candidate must out-score it a lot.

@@ -15,6 +15,7 @@ import math
 import random
 import time
 
+from lib.dj import stretch_engine_name
 from lib.dj.themes import adapt_theme
 
 RATE = 44100
@@ -22,7 +23,14 @@ RATE = 44100
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "bassline_layer", "double_drop", "loop_build", "long_fade")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
-GLIDE_PER_S = 0.0015             # post-transition rate->1.0 glide speed
+# Rate-gradient speeds. Both were tuned in the WSOLA era when a tempo ramp
+# had NO pitch consequence; with the varispeed engine every gradient IS a
+# pitch glide, and glides (not static offsets) are what ears catch (user:
+# 'noticeable tonal shifts due to the speed shift gradients'). 0.0008/s =
+# 1.4 cents/s and 0.0015/s = 2.6 cents/s - both under the slow-drift
+# noticing threshold on tonal material; the old 0.004 A-ramp was ~7 cents/s.
+GLIDE_PER_S = 0.0008             # post-transition rate->1.0 glide speed
+ARATE_RAMP_PER_S = 0.0015        # outgoing deck's pre-blend meet-tempo ramp
 
 
 # --------------------------------------------------------------------------
@@ -106,6 +114,15 @@ class TrackInfo:
 
     @property
     def all_tags(self):
+        # CACHED: selection scores every track and calls set(all_tags) several
+        # times per candidate per horizon rebuild; recomputing this (character
+        # tags, genre/mood folding) each access was a live-CPU cost that showed
+        # as a visual slowdown when tag steering was on. Everything here is set
+        # once at load except user_tags (mutated by _refresh_tags) and
+        # danceability (set by rank_library) - so key the cache on those.
+        key = (tuple(self.user_tags), self.danceability is not None)
+        if getattr(self, "_all_tags_key", None) == key:
+            return self._all_tags_cache
         extra = {g.lower() for g in self.genres}
         if self.decade:
             extra.add(self.decade)
@@ -120,7 +137,9 @@ class TrackInfo:
         if self.danceability is not None:
             from lib.dj.character import character_tags
             extra.update(character_tags(self))
-        return sorted(set(self.auto_tags) | set(self.user_tags) | extra)
+        result = sorted(set(self.auto_tags) | set(self.user_tags) | extra)
+        self._all_tags_cache, self._all_tags_key = result, key
+        return result
 
     @property
     def period_s(self):
@@ -261,6 +280,11 @@ class Brain:
         scored = sum(1 for t in self.library
                      if getattr(t, "ml_valence", None) is not None)
         self._use_mood = bool(self.library) and scored >= 0.8 * len(self.library)
+        # HARD tag filter (live panel "only these tags play"): a candidate must
+        # carry at least one of these tags to be eligible. Empty = no filter.
+        # Independent of pool_ids (setlist) and flavor (soft lean), so all
+        # three compose (steer WITHIN a pool, within the required tags).
+        self.require_tags = set()
         # CONTENT IDENTITY: the real library holds dozens of byte-identical
         # copies under different track ids (plus re-rips). For recency and
         # queue purposes a copy IS the song - per-id memory let 'the same
@@ -283,6 +307,12 @@ class Brain:
         self.stretch_max = min(stretch_max, STRETCH_MAX)
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
         self.recent = []                # (wall_time, track_id, artist)
+        self._ds_cache = {}             # ckey -> distinct songs since last play
+        self._ds_cache_key = None
+        # NO-REPEAT DEPTH: how many DISTINCT other songs must play before one
+        # can return. Scales with the library so a big collection never
+        # replays soon, while a small pool just round-robins its members.
+        self.norepeat_n = max(6, min(len(self.library) // 4, 35))
         # SETLIST POOL: when set, selection is confined to these track ids
         # (the operator's list as a POOL - the brain steers the order via
         # arc/flavor/nudge). System drains ids as they play; None = free.
@@ -428,22 +458,39 @@ class Brain:
         cutoff = (when or time.time()) - 10 * 3600
         self.recent = [r for r in self.recent if r[0] > cutoff]
 
+    def _distinct_since_map(self):
+        """{ckey -> number of DISTINCT other songs played since it last
+        played}. A song not in recent memory is absent (== infinitely far).
+        Cached per recent-list state (rebuilt on note_played)."""
+        key = (len(self.recent), self.recent[-1][0] if self.recent else None)
+        if self._ds_cache_key == key:
+            return self._ds_cache
+        seen_after, ds = set(), {}
+        for _, tid, _ in reversed(self.recent):     # newest -> oldest
+            if tid not in ds:                        # this is its LAST play
+                ds[tid] = len(seen_after)            # distinct songs after it
+            seen_after.add(tid)
+        self._ds_cache, self._ds_cache_key = ds, key
+        return ds
+
     def _recency_penalty(self, track, now=None):
+        """DISTINCT-SONG no-repeat (tempo/duration independent): a song is a
+        near-wall until norepeat_n OTHER distinct songs have played, then
+        forgiven on a quadratic ramp. This is what stops 'the same song a
+        lot' on small/steered pools - it round-robins the members instead of
+        letting a wall-clock timer bring one back every hour. Nonzero floor so
+        a genuinely dry pool still degrades to spaced repeats, not a stall.
+        Same-artist spacing stays time-based."""
         now = now or time.time()
-        pen = 1.0
         ck = self.ckey.get(track.id, track.id)
+        pen = 1.0
+        ds = self._distinct_since_map().get(ck)
+        if ds is not None and ds < self.norepeat_n:
+            pen *= 0.003 + 0.997 * (ds / self.norepeat_n) ** 2
         for when, tid, artist in self.recent:
-            age_h = (now - when) / 3600.0
-            if tid == ck:
-                # Inside an hour the penalty must be a near-WALL: strong
-                # flavor leans concentrate the pool and a x0.09 penalty
-                # lost to them - measured: a track returned after 13 min
-                # on a hypnotic night. Nonzero so a truly dry pool still
-                # degrades to spaced repeats instead of stalling.
-                pen *= 0.005 if age_h < 1.0 \
-                    else min(1.0, age_h / 6.0)          # ~6h to fully forgive
-            elif artist and artist == track.artist:
-                pen *= min(1.0, 0.55 + age_h / 2.0)     # ~1h for an artist
+            if tid != ck and artist and artist == track.artist:
+                age_h = (now - when) / 3600.0
+                pen *= min(1.0, 0.6 + age_h / 2.0)      # ~1h for an artist
         return max(pen, 0.01)
 
     # -- tempo ---------------------------------------------------------------
@@ -495,6 +542,8 @@ class Brain:
             return 0.0, None
         if self.pool_ids is not None and cand.id not in self.pool_ids:
             return 0.0, None
+        if not self._tag_ok(cand):          # hard "only these tags play"
+            return 0.0, None
         rate, eff_bpm = self.rate_for(out_bpm, cand)
         if rate is None:
             return 0.0, None
@@ -507,8 +556,12 @@ class Brain:
         # KEY-SHIFT RESCUE: a clashing pair may become compatible with the
         # candidate pitched +/-1 semitone (deck does it tempo-neutrally).
         # Only when the shift direction keeps the COMBINED stretch sane.
+        # NOT with the varispeed engine: pitch already rides tempo there, so
+        # an independent transpose is impossible (the deck's stretch+resample
+        # pitch path nets out to a plain rate change).
         pitch_st = 0
-        if s_key < 0.5 and cand.camelot and getattr(current, "camelot", ""):
+        if s_key < 0.5 and cand.camelot and getattr(current, "camelot", "") \
+                and stretch_engine_name() != "vari":
             for st in (1, -1):
                 shifted = _shift_camelot(cand.camelot, st)
                 comb = abs(math.log(rate) - st * math.log(2.0) / 12.0)
@@ -608,6 +661,17 @@ class Brain:
         """Live retheme - same library fitting as construction."""
         self.theme = adapt_theme(theme, self._lib_bpms)
 
+    def set_require_tags(self, tags):
+        """Set the HARD tag filter (live panel). Only tracks carrying at least
+        one of these tags may play; empty clears the filter."""
+        self.require_tags = {str(t) for t in (tags or [])}
+
+    def _tag_ok(self, cand):
+        """True if the candidate satisfies the hard tag filter (has at least
+        one required tag), or no filter is set."""
+        return (not self.require_tags
+                or bool(self.require_tags & set(cand.all_tags)))
+
     @staticmethod
     def _similarity(a, b):
         """0..1 sameness of two tracks (spectral shares + character axes)."""
@@ -678,7 +742,8 @@ class Brain:
         library."""
         pool = [t for t in self.library
                 if t.id != getattr(current, "id", None)
-                and (self.pool_ids is None or t.id in self.pool_ids)]
+                and (self.pool_ids is None or t.id in self.pool_ids)
+                and self._tag_ok(t)]
         if not pool:
             pool = [t for t in self.library
                     if t.id != getattr(current, "id", None)]
@@ -694,6 +759,8 @@ class Brain:
         cands = []
         for cand in self.library:
             if self.pool_ids is not None and cand.id not in self.pool_ids:
+                continue
+            if not self._tag_ok(cand):
                 continue
             lo, hi = self.theme.bpm_range
             if not (lo * 0.93 <= cand.bpm <= hi * 1.07):
@@ -1019,6 +1086,18 @@ class Brain:
                 "out_s": out_s, "in_s": in_s, "beats": beats,
                 "pair_score": pair["score"], "cand_id": cand.id,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
+        # VARISPEED MEET-IN-THE-MIDDLE: with the varispeed engine pitch rides
+        # tempo, so a single-sided match puts the whole pitch shift on B.
+        # Split the bend across BOTH decks instead - A ramps to a_rate before
+        # the blend (build_events schedules it), B enters at sqrt(rate) and
+        # glides home from HALF the distance. Blend-family styles only: they
+        # are the ones whose event builder implements the outgoing ramp.
+        if (stretch_engine_name() == "vari"
+                and style in ("long_blend", "bass_swap", "filter_sweep")
+                and plan["a_rate"] in (1.0, None) and not pst
+                and abs(math.log(max(plan["rate"], 1e-6))) > 0.010):
+            plan["rate"] = math.sqrt(plan["rate"])
+            plan["a_rate"] = 1.0 / plan["rate"]
         if style == "loop_roll_exit":
             # Loop the 16 bars-worth just before the exit point: with the
             # window pinned to out_s the first wrap and both shrink moments
@@ -1418,14 +1497,15 @@ class Brain:
         # (measured as 8-9 dB level lurches). Real DJs finish the blend ON
         # the boundary, riding A's last full-groove phrase.
         end = clock_at(plan["out_s"])
-        # DUAL-DECK TEMPO MEET: for big gaps the OUTGOING deck ramps to the
-        # meeting tempo BEFORE the blend (0.4%/s, gentle), the blend runs
-        # at that tempo, and the incoming glides home to natural after the
-        # swap. clock_at assumes constant rate, so the ramp's source-vs-
+        # DUAL-DECK TEMPO MEET: the OUTGOING deck ramps to the meeting tempo
+        # BEFORE the blend (ARATE_RAMP_PER_S - a slow pitch glide under
+        # varispeed, so it must stay below the drift-noticing threshold),
+        # the blend runs at that tempo, and the incoming glides home after
+        # the swap. clock_at assumes constant rate, so the ramp's source-vs-
         # wall skew is compensated in `end`.
         a_rate = plan.get("a_rate", 1.0) or 1.0
         if abs(a_rate - 1.0) > 1e-4:
-            ramp_wall = abs(a_rate - 1.0) / 0.004
+            ramp_wall = abs(a_rate - 1.0) / ARATE_RAMP_PER_S
             end -= int(ramp_wall * (a_rate - 1.0) / 2.0 / a_rate * RATE)
             beat_out = cur.period_s / a_rate
             S0 = max(end - int(nb * beat_out * RATE), now_guard)
@@ -1449,15 +1529,23 @@ class Brain:
                 break
         if b_bassy is not None:
             k = round((b_bassy - plan["in_s"]) / max(cand.period_s, 1e-6))
-            mid = min(max(S0 + int(k * beat_out * RATE),
+            # B's bass arrival is a FLOOR on the swap, never a pull-forward:
+            # the old form replaced the halfway default outright, so a track
+            # entering already-bassy (most club mix-ins) swapped 4 BEATS in -
+            # A spent the whole blend as a bassless ghost and the two songs
+            # audibly coexisted for seconds (user: 'blending seems real
+            # short'; measured median swap at 8% of the blend). Keep the swap
+            # no earlier than halfway, no later than 8 beats before the end
+            # (the exit fade must survive as a real fade, not a 1s cut).
+            mid = min(max(mid, S0 + int(k * beat_out * RATE),
                           S0 + int(4 * beat_out * RATE)),
-                      max(end - int(2 * beat_out * RATE), S0 + 1))
+                      max(end - int(8 * beat_out * RATE), S0 + 1))
         # VOCAL-PHRASE AWARENESS: the swap is the loudest EQ moment of the
         # blend - never land it on a sung line. Scan 4-beat slots from the
         # bass-ready point; take the first where BOTH decks are vocal-free
         # (fine demucs curve when stored, section means otherwise).
         lo_c = mid
-        hi_c = max(end - int(2 * beat_out * RATE), lo_c + 1)
+        hi_c = max(end - int(8 * beat_out * RATE), lo_c + 1)
         c = lo_c
         step = int(4 * beat_out * RATE)
         while c <= hi_c and step > 0:
@@ -1500,18 +1588,31 @@ class Brain:
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
              "ramp_s": half},
-            # Swap downbeat: low AND mid hand over across ~1.5-2 beats.
-            # (An instant low swap is a measured 8 dB step; two open mid
-            # ranges are a note clash - both cross here, once.)
+            # Swap downbeat: low AND mid hand over across 4 beats. (An
+            # instant low swap is a measured 8 dB step. The swap now lands
+            # mid-blend with BOTH decks at full gain - the old 1.5-2 beat
+            # ramps that were inaudible against a quiet B read as a level
+            # lurch there; 4 beats stays decisive but spreads the step.)
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "mid": 0.25, "ramp_s": 2 * beat_out},
+             "mid": 0.25, "ramp_s": 4 * beat_out},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "high": 1.0, "ramp_s": 1.5 * beat_out},
+             "high": 1.0, "ramp_s": 4 * beat_out},
+            # A key-clash-delayed mid open happens with B carrying the mix
+            # alone - opening the shelf (up to +10 dB of mid band) over 4
+            # beats measured as a 6.6 dB mix lurch. A is ~gone by then, so
+            # take 8 beats; on-key opens stay at 4 (they cross A's mids).
             {"at": mid_open_at, "cmd": "eq", "deck": incoming, "mid": 1.0,
-             "ramp_s": 2 * beat_out},
+             "ramp_s": (4 if key_ok else 8) * beat_out},
             # Outgoing leaves over the rest of the blend (bass already gone).
-            {"at": mid, "cmd": "gain", "deck": active, "value": 0.0,
-             "ramp_s": half_exit},
+            # TWO-STAGE fade ~ equal-power: a single linear ramp loses most
+            # of its dB in its final second (measured 6.6 dB mix steps at
+            # the fade tail once the swap moved mid-blend); dropping to
+            # -9 dB first means the terminal collapse happens with A
+            # already buried under B.
+            {"at": mid, "cmd": "gain", "deck": active, "value": 0.35,
+             "ramp_s": 0.6 * half_exit},
+            {"at": mid + int(0.6 * half_exit * RATE), "cmd": "gain",
+             "deck": active, "value": 0.0, "ramp_s": 0.4 * half_exit},
         ]
         # Glue the overlap: duck B a few dB on A's kicks until the swap.
         ev += [{"at": S0, "cmd": "duck", "on": True, "depth": 0.18},

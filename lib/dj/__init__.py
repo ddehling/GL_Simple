@@ -29,3 +29,14 @@ def resolve_music_dir(configured=""):
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
     return default_music_dir()
+
+
+def stretch_engine_name():
+    """Selected time-stretch engine (env DJ_STRETCH_ENGINE):
+    'vari'  - varispeed/turntable mode (DEFAULT): pitch rides tempo like a
+              pitch fader; zero time-stretch artifacts. The brain splits each
+              tempo match across BOTH decks so each song shifts half as far.
+    'wsola' - keylock via WSOLA (constant pitch, slight warble under stretch)
+    'pv'    - keylock via phase vocoder (less warble, weaker seams)
+    Read dynamically (not cached) so tests can flip engines per-process."""
+    return os.environ.get("DJ_STRETCH_ENGINE", "vari").lower()

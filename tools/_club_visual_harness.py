@@ -54,7 +54,6 @@ from projects.fan.shaders.club_flow_field import shader_club_flow_field
 from projects.fan.shaders.club_wave_dance import shader_club_wave_dance
 from projects.fan.shaders.club_pyramids import shader_club_pyramids
 from projects.fan.shaders.club_fibers import shader_club_fibers
-from projects.fan.shaders.club_airhandler import shader_club_airhandler
 from projects.fan.shaders.club_soul import shader_club_soul
 from projects.fan.shaders.club_tesla import shader_club_tesla
 from projects.fan.shaders.club_fountain import shader_club_fountain
@@ -87,7 +86,6 @@ WRAPPERS = [
     ("wave_dance", shader_club_wave_dance, {}),
     ("pyramids", shader_club_pyramids, {}),
     ("fibers", shader_club_fibers, {}),
-    ("airhandler", shader_club_airhandler, {}),
     ("soul", shader_club_soul, {}),
     ("tesla", shader_club_tesla, {}),
     ("fountain", shader_club_fountain, {}),
@@ -205,7 +203,6 @@ def scene_outstate(preset, renderer):
             "mandala_level", "flow_field_level", "wave_dance_level",
             "pyramid_level",
             "fiber_level",
-            "airhandler_level",
             "soul_level",
             "tesla_level",
             "fountain_level",

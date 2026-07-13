@@ -78,6 +78,18 @@ def cmd_score(args):
             print(f"  [{i}/{total}] {title:40s} -> no result", flush=True)
         # machine-parseable line for the GUI worker
         print(f"PROGRESS {i} {total} {matched} {missed} {title}", flush=True)
+        # Keep memory bounded across a long library: release per-track buffers
+        # and the torch CUDA cache periodically so the pass (and the rest of
+        # the machine) doesn't creep toward OOM.
+        if i % 25 == 0:
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     print(f"\nscored {matched}, failed {missed}", flush=True)
     db.close()
     return 0

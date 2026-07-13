@@ -609,9 +609,31 @@ class LibraryTab(QWidget):
                     out.append(t)
         return out
 
+    def _select_playing_in_list(self, t):
+        """Highlight + scroll to the now-playing track so Back/Next (and Play)
+        keep the list selection in sync with what's audible. No-op if the
+        track is currently filtered out of view."""
+        from PyQt6.QtCore import QItemSelectionModel
+        m = self.model
+        for f_row, fd in enumerate(m.folders):
+            for t_row, tr in enumerate(fd["tracks"]):
+                if tr.id == t.id:
+                    parent = m.index(f_row, 0)
+                    pidx = self.proxy.mapFromSource(m.index(t_row, 0, parent))
+                    if pidx.isValid():
+                        self._extending_sel = True   # skip folder-expand logic
+                        self.table.selectionModel().setCurrentIndex(
+                            pidx,
+                            QItemSelectionModel.SelectionFlag.ClearAndSelect
+                            | QItemSelectionModel.SelectionFlag.Rows)
+                        self._extending_sel = False
+                        self.table.scrollTo(pidx)
+                    return
+
     def _play_track(self, t):
         from tools.djplanner.player import TrackPlayer  # noqa: F401
         self.planner.claim_playback("library")
+        self._select_playing_in_list(t)
         self.play_lbl.setText(f"decoding  {t.title[:40]}...")
 
         class _D(QThread):
@@ -879,7 +901,6 @@ class LibraryTab(QWidget):
         self._mood_proc.finished.connect(self._mood_done)
         self._mood_proc.start(sys.executable,
                               [script, "--dir", self.planner.music_dir])
-        self._mood_done_count = -1
         self.mood_btn.setText("Stop mood")
         self.scan_lbl.setText("mood pass: loading model...")
 
@@ -898,20 +919,22 @@ class LibraryTab(QWidget):
             self.scan_lbl.setText(
                 f"mood {done}/{total}  ({matched} scored, {missed} failed)  "
                 f"{cur[:40]}")
-            # Live-populate mood tags into the table + tag browser periodically.
-            try:
-                d = int(done)
-            except ValueError:
-                continue
-            if d != self._mood_done_count and d % 15 == 0:
-                self._mood_done_count = d
-                self.planner.reload_library()
+            # NOTE: no mid-scan reload_library() here. The mood subprocess
+            # holds a heavy torch/MERT + decoded-audio footprint; re-hydrating
+            # the whole library on top of it OOM'd the GUI (MemoryError in
+            # all_tracks). The pass writes to the DB continuously (resumable),
+            # so we just show progress and reload ONCE at completion, after the
+            # subprocess has exited and freed its memory.
 
     def _mood_done(self, *a):
         self._mood_proc = None
         self.mood_btn.setText("Mood (ML)")
         self.scan_lbl.setText("mood pass complete")
-        self.planner.reload_library()
+        try:
+            self.planner.reload_library()
+        except MemoryError:
+            self.scan_lbl.setText("mood pass complete - reopen the planner "
+                                  "to see the new tags (low memory)")
 
 
 # ==========================================================================
@@ -1313,8 +1336,9 @@ class SetTab(QWidget):
         # tab is showing.
         pbrow = QHBoxLayout()
         self.play_set_btn = QPushButton("▶ Play set")
-        self.play_set_btn.setToolTip("Play the whole compiled set from the "
-                                     "start (same engine as the Mix tab).")
+        self.play_set_btn.setToolTip("Play the compiled set from the SELECTED "
+                                     "song (from the top when none selected); "
+                                     "same engine as the Mix tab.")
         self.play_set_btn.clicked.connect(self._play_set)
         pbrow.addWidget(self.play_set_btn)
         self.set_pause_btn = QPushButton("⏸")
@@ -1593,13 +1617,32 @@ class SetTab(QWidget):
         self._select_combo_silently(self.setlist_id)
         self.status.setText(f"saved {len(self.entries)} tracks.")
 
+    def _selected_slot_start(self):
+        """Wall-clock offset of the SELECTED entry's compiled slot, so Play
+        starts from the highlighted song. 0.0 when nothing/first selected."""
+        row = self.set_list.currentRow()
+        slots = (self.compiled or {}).get("slots") or []
+        if row <= 0 or not slots:
+            return 0.0
+        if row < len(self.entries):
+            target = self.entries[row]
+            for sl in slots:          # compiler may skip missing tracks -
+                if sl.get("entry") is target:      # match the entry itself
+                    return float(sl.get("start_offset_s") or 0.0)
+        if row < len(slots):          # fallback: positional
+            return float(slots[row].get("start_offset_s") or 0.0)
+        return 0.0
+
     def _play_set(self):
         if not self.compiled:
             self.status.setText("build a set first")
             return
         self.set_pause_btn.setChecked(False)
-        self.planner.mix_tab.play_set()
-        self.status.setText("playing set (Mix tab shows the live timeline).")
+        start_s = self._selected_slot_start()
+        self.planner.mix_tab.play_set(start_s)
+        which = "from the selected song" if start_s > 0.0 else "from the top"
+        self.status.setText(
+            f"playing set {which} (Mix tab shows the live timeline).")
 
     def delete_set(self):
         if self.setlist_id is not None and QMessageBox.question(
@@ -1958,13 +2001,13 @@ class MixTab(QWidget):
         self.timeline.samples_provider = self.preview.cached_samples
         self.deckmon.attach(self.preview, compiled)
 
-    def play_set(self):
+    def play_set(self, start_s=0.0):
         if not self.planner.set_tab.compiled:
             self.status.setText("build a set first")
             return
         self.pause_btn.setChecked(False)
         self.planner.claim_playback("preview")
-        self.preview.play_at(0.0)
+        self.preview.play_at(float(start_s or 0.0))
 
     def stop(self):
         self.planner.stop_all_playback()

@@ -1095,6 +1095,11 @@ class WebController:
                             continue
                     if kept:
                         clean[sec] = kept
+                # require_tags: HARD filter - a list of tag strings.
+                req = arg.get('require_tags')
+                if isinstance(req, (list, tuple)):
+                    clean['require_tags'] = [str(t)[:32] for t in req[:24]
+                                             if isinstance(t, str) and t]
                 arg = clean
             with self._dict_lock:
                 q = self.control_dict.setdefault('request_dj_actions', [])

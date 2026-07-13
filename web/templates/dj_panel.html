@@ -209,7 +209,7 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             </div>
             <div class="now-sub" style="margin-top:12px">Music type
                 <span style="opacity:.5;font-size:11px">
-                    (tap: lean toward → avoid → off)</span></div>
+                    (tap: only this → avoid → off)</span></div>
             <div class="theme-row" id="dj-flavor"></div>
             <div class="now-sub" id="dj-libinfo" style="margin-top:10px"></div>
         </div>
@@ -241,16 +241,17 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
         }
 
         // FLAVOR CHIPS: the library's own tag vocabulary. Each chip
-        // cycles off -> LEAN TOWARD (green) -> AVOID (red) -> off, and
-        // the whole state ships as one 'flavor' action.
-        const flavorState = {};          // tag -> 0 off | 1 prefer | 2 avoid
+        // cycles off -> ONLY THIS (green) -> AVOID (red) -> off. Green chips
+        // are a HARD filter: when any are lit, ONLY tracks carrying at least
+        // one lit tag may play (not merely boosted). Red chips soft-avoid.
+        const flavorState = {};          // tag -> 0 off | 1 require | 2 avoid
         function sendFlavor() {
-            const prefer = {}, avoid = {};
+            const require = [], avoid = {};
             for (const [t, s] of Object.entries(flavorState)) {
-                if (s === 1) prefer[t] = 1.0;
+                if (s === 1) require.push(t);
                 if (s === 2) avoid[t] = 1.0;
             }
-            emit("flavor", {prefer_tags: prefer, avoid_tags: avoid});
+            emit("flavor", {require_tags: require, avoid_tags: avoid});
         }
         const TAG_GROUPS = [
             ["yours", null],
@@ -263,8 +264,9 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             ["voice/key", ["vocals","vocal-heavy","instrumental","minor",
                            "major"]],
             ["tempo", ["slow","fast"]]];
-        function buildFlavor(tags) {
-            const key = (tags || []).map((t) => t[0]).join("|");
+        function buildFlavor(tags, genreTags) {
+            const key = (tags || []).map((t) => t[0]).join("|")
+                + "#" + (genreTags || []).join("|");
             if ($("dj-flavor").dataset.have === key) return;
             $("dj-flavor").dataset.have = key;
             $("dj-flavor").innerHTML = "";
@@ -281,10 +283,24 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             $("dj-flavor").appendChild(clr);
             const rest = new Set((tags || []).map((t) => t[0]));
             const ordered = [];
+            // user tags first, then GENRES, then the known texture/etc groups
+            const yoursGrp = (tags || []).filter(
+                ([tag, n, isUser]) => isUser && rest.has(tag));
+            if (yoursGrp.length) {
+                ordered.push(["yours", yoursGrp]);
+                yoursGrp.forEach(([t]) => rest.delete(t));
+            }
+            const genreSet = new Set(genreTags || []);
+            const genreGrp = (tags || []).filter(
+                ([tag]) => genreSet.has(tag) && rest.has(tag));
+            if (genreGrp.length) {
+                ordered.push(["genre", genreGrp]);
+                genreGrp.forEach(([t]) => rest.delete(t));
+            }
             for (const [label, names] of TAG_GROUPS) {
-                const grp = (tags || []).filter(([tag, n, isUser]) =>
-                    names === null ? isUser
-                    : (names.includes(tag) && rest.has(tag)));
+                if (names === null) continue;      // 'yours' already handled
+                const grp = (tags || []).filter(
+                    ([tag]) => names.includes(tag) && rest.has(tag));
                 if (!grp.length) continue;
                 ordered.push([label, grp]);
                 grp.forEach(([t]) => rest.delete(t));
@@ -480,8 +496,8 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             // STEERING SURFACE - built idle AND live, so the night can
             // be shaped before START: theme, flavor chips, arc canvas.
             if (dj.themes) buildThemes(dj.themes);
-            if (dj.tags) buildFlavor(dj.tags);
-            restoreFlavor(dj.flavor);
+            if (dj.tags) buildFlavor(dj.tags, dj.genre_tags);
+            restoreFlavor(dj.flavor, dj.require_tags);
             lastDj = dj;
             drawArc(dj);
             $("dj-cycle-lbl").textContent = dj.arc_cycle_s
@@ -755,11 +771,11 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
 
         // Restore flavor chip state from the system (page reloads, other
         // operators).
-        function restoreFlavor(flavor) {
-            if (!flavor) return;
+        function restoreFlavor(flavor, requireTags) {
             const want = {};
-            for (const t of Object.keys(flavor.prefer_tags || {})) want[t] = 1;
-            for (const t of Object.keys(flavor.avoid_tags || {})) want[t] = 2;
+            for (const t of (requireTags || [])) want[t] = 1;   // green = require
+            for (const t of Object.keys((flavor && flavor.avoid_tags) || {}))
+                want[t] = 2;
             for (const b of document.querySelectorAll("#dj-flavor .theme-btn")) {
                 const st = want[b.dataset.tag] || 0;
                 if ((flavorState[b.dataset.tag] || 0) !== st) {
