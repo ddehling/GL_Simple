@@ -26,7 +26,12 @@ from lib.dj.submix import DJSubmix
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 
 RATE = 44100
-PLAN_LEAD_S = 45.0               # start choosing next this early
+PLAN_LEAD_S = 60.0               # start choosing next this early. Must
+                                 # exceed the LONGEST blend (96 beats at
+                                 # 90 bpm = 64s worst case, ~46s typical):
+                                 # build_events clamps the blend start to
+                                 # 'now' (now_guard), so arming later than
+                                 # the blend span SILENTLY SHORTENS it.
 MIN_LEAD_S = 8.0                 # never arm closer than this to the seam
 SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
 WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
@@ -121,14 +126,16 @@ class DJSystem:
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
         self._by_id = {t.id: t for t in lib}
-        # LIVE-ENERGY SCALE: energy_proxy x curve is compressed on a real
+        # LIVE-ENERGY SCALE: drive x curve is compressed on a real
         # library (this one: raw spans ~0.22..0.8) - published as-is the
         # club's response was limp (user-heard). Map the library's OWN
         # p05..p95 of instantaneous energy to 0..1 so a chill breakdown
-        # and a peak drop actually span the range.
+        # and a peak drop actually span the range. Uses DRIVE (rhythm/mood,
+        # no loudness term), not energy_proxy: playback is loudness-
+        # compensated, so mastering level must not dim the visuals.
         vals = []
         for t in lib:
-            pr = t.energy_proxy()
+            pr = t.drive()
             for c in (t.row.get("energy_curve") or [])[::4]:
                 vals.append(pr * float(c))
         vals.sort()
@@ -439,11 +446,13 @@ class DJSystem:
         The DSP estimate downstream (audio_signals) is built on AGC bands
         that hover near a constant during any steady music, so the club
         read every track as 'medium'. The DJ doesn't have to guess: each
-        track's cross-track level (energy_proxy) shaped by its own 2 Hz
-        energy curve at the playhead, gain-weighted across live decks, IS
-        the floor's energy - breakdowns dip, drops slam, chill is chill.
-        Returns None when nothing useful is playing (caller falls back to
-        the measured signal).
+        track's cross-track DRIVE (rhythm/mood rank - not energy_proxy;
+        playback is loudness-compensated so mastering level must not dim
+        the room) shaped by its own 2 Hz energy curve at the playhead,
+        gain-weighted across live decks, IS the floor's energy -
+        breakdowns dip, drops slam, chill is chill. Returns None when
+        nothing useful is playing (caller falls back to the measured
+        signal).
         """
         tel = self.submix.telemetry or {}
         by_id = getattr(self, "_by_id", None) or {}
@@ -463,7 +472,7 @@ class DJSystem:
                 i1 = min(i0 + 1, len(curve) - 1)
                 f = i - i0
                 shape = float(curve[i0]) * (1.0 - f) + float(curve[i1]) * f
-            num += g * t.energy_proxy() * shape
+            num += g * t.drive() * shape
             den += g
         if den <= 0.0:
             return None
@@ -671,6 +680,10 @@ class DJSystem:
                 "rate_pct": round((rate - 1.0) * 100.0, 2),
                 "synced": name == sync.get("slave"),
                 "eq": d.get("eq"),
+                # Live DSP state - a stuck sweep filter/echo is otherwise
+                # invisible on the panel (undiagnosable "no bass" night).
+                "filter": d.get("filter", "off"),
+                "echo": bool(d.get("echo")),
                 "beat_phase": d.get("beat_phase"),
             })
         return out
@@ -1526,8 +1539,12 @@ class DJSystem:
             if (sl and ms and sl.get("playing") and ms.get("playing")
                     and (sl.get("gain") or 0) > 0.25
                     and (ms.get("gain") or 0) > 0.25):
+                # Judge against the PLL's actual target: sync holds the
+                # slave's grid OFFSET by the kick-alignment bias, so raw
+                # phase difference minus that bias is the real flam.
                 err = ((float(sl.get("beat_phase") or 0.0)
                         - float(ms.get("beat_phase") or 0.0)
+                        - float(sync.get("bias_beats") or 0.0)
                         + 0.5) % 1.0) - 0.5
                 if abs(err) > m["max_err"]:
                     m["max_err"] = abs(err)

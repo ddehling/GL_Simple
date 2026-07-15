@@ -26,8 +26,11 @@
         .btn.skip { border-color: #46a; background: #14203a; color: #9bf; }
         .btn.wide { width: 100%; }
         .btn.on { border-color: #3a6; background: #123a22; color: #9f9; }
-        .transport { display: flex; gap: 8px; margin-bottom: 10px; }
-        .transport .btn { flex: 1; }
+        /* Wrap instead of squishing: 7 buttons in a no-wrap flexbox made
+           phone-width tap targets slivers, with ABORT next to Mix now. */
+        .transport { display: flex; gap: 8px; margin-bottom: 10px;
+                     flex-wrap: wrap; }
+        .transport .btn { flex: 1 1 auto; min-width: 90px; }
         .now-title { font-size: 1.25em; font-weight: bold; }
         .now-sub { font-size: 0.85em; opacity: 0.7; }
         .kv { display: flex; justify-content: space-between; font-size: 0.85em;
@@ -115,12 +118,12 @@
             <!-- Scrub within the current track (drag to seek). -->
             <input type="range" id="dj-scrub" min="0" max="1000" value="0"
                    style="width:100%; margin-top:4px">
+            <!-- Live row: only the buttons a live set actually needs. The
+                 seek/jump controls live behind ••• - they are for rehearsal
+                 and testing, and they were crowding ABORT-sized mis-taps
+                 into a 7-button phone row. -->
             <div class="transport" style="margin-top:6px">
                 <button class="btn go" id="dj-moment">✦ MOMENT</button>
-                <button class="btn" id="dj-restart">⟲ Start</button>
-                <button class="btn" id="dj-back">−30s</button>
-                <button class="btn" id="dj-fwd">+30s</button>
-                <button class="btn" id="dj-toexit">⤓ To exit</button>
                 <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
                 <!-- Trainwreck rescue: recalls an armed transition. Only
                      shown while the plan is still before its point of no
@@ -128,6 +131,16 @@
                 <button class="btn hidden" id="dj-abort"
                         style="border-color:#a55;background:#3a1414;color:#f99">
                     ⛔ ABORT MIX</button>
+                <button class="btn" id="dj-jump-toggle"
+                        style="flex:0 0 auto;min-width:56px"
+                        title="show seek controls (rehearsal/testing)">•••
+                </button>
+            </div>
+            <div class="transport hidden" id="dj-jumprow">
+                <button class="btn" id="dj-restart">⟲ Start</button>
+                <button class="btn" id="dj-back">−30s</button>
+                <button class="btn" id="dj-fwd">+30s</button>
+                <button class="btn" id="dj-toexit">⤓ To exit</button>
             </div>
             <div class="badges" id="dj-badges"></div>
             <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
@@ -376,7 +389,14 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
             emit("nudge", parseFloat(nudge.value));
         });
 
-        // Jump controls (testing).
+        // Seek/jump controls (rehearsal/testing) - collapsed behind ••• so
+        // the live row keeps big targets and no accidental seeks mid-set.
+        $("dj-jump-toggle").onclick = () => {
+            const row = $("dj-jumprow");
+            row.classList.toggle("hidden");
+            $("dj-jump-toggle").classList.toggle(
+                "on", !row.classList.contains("hidden"));
+        };
         $("dj-restart").onclick = () => emit("seek", 0);
         $("dj-back").onclick = () => emit("seek_rel", -30);
         $("dj-fwd").onclick = () => emit("seek_rel", 30);
@@ -410,9 +430,12 @@ DJ steers the order - arc, chips and nudge all apply">STEER POOL</button>
                     ? ` <span style="color:#8cf">${d.rate_pct > 0 ? "+" : ""}${d.rate_pct}%</span>` : "";
                 const sync = d.synced
                     ? ` <span style="color:#6f6">SYNC</span>` : "";
+                const dsp = (d.filter && d.filter !== "off"
+                    ? ` <span style="color:#fa4">FILT:${d.filter}</span>` : "")
+                    + (d.echo ? ` <span style="color:#fa4">ECHO</span>` : "");
                 return `<div class="deck"><span class="name">${d.deck}</span>
                     <span style="opacity:.55"> gain ${d.gain}</span>
-                    <span style="opacity:.9"> ${bpm}${bend}${sync}</span><br>
+                    <span style="opacity:.9"> ${bpm}${bend}${sync}${dsp}</span><br>
                     <span>${(d.title || "?").slice(0, 22)}</span>
                     <div class="eqbars">${eq}</div></div>`;
             }).join("");

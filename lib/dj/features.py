@@ -110,17 +110,31 @@ def decode_file_stereo(path):
     import av
     from av.audio.resampler import AudioResampler
     resampler = AudioResampler(format="flt", layout="stereo", rate=RATE)
+
+    def _stereo(a):
+        # PACKED 'flt' frames come back from to_ndarray() as ONE plane of
+        # INTERLEAVED samples, shape (1, n*2) - NOT planar (2, n). The old
+        # planar check (shape[0]==2) never matched, so every PyAV-decoded
+        # file (m4a/aac on Windows, or any file miniaudio fails to open,
+        # e.g. mojibake filenames) fell into the mono-repeat branch and
+        # played as double-length interleave-scrambled garbage: half
+        # speed, bass cancelled, "highly filtered" (user-heard 2026-07-13,
+        # 'All Around Us'). The ANALYSIS decoder was never affected
+        # (packed mono reshapes correctly), so grids/bpm for these tracks
+        # are fine - only playback was wrong.
+        if a.ndim == 2 and a.shape[0] == 1:
+            return a.reshape(-1, 2)              # packed stereo
+        if a.ndim == 2 and a.shape[0] == 2:
+            return a.T                            # planar stereo
+        return np.repeat(a.reshape(-1, 1), 2, axis=1)   # true mono
+
     chunks = []
     with av.open(path) as container:
         for frame in container.decode(container.streams.audio[0]):
             for out in resampler.resample(frame):
-                a = out.to_ndarray()
-                chunks.append(a.T if a.shape[0] == 2 else
-                              np.repeat(a.reshape(-1, 1), 2, axis=1))
+                chunks.append(_stereo(out.to_ndarray()))
         for out in resampler.resample(None):
-            a = out.to_ndarray()
-            chunks.append(a.T if a.shape[0] == 2 else
-                          np.repeat(a.reshape(-1, 1), 2, axis=1))
+            chunks.append(_stereo(out.to_ndarray()))
     if not chunks:
         raise ValueError("no audio decoded")
     return np.concatenate(chunks, axis=0).astype(np.float32)
@@ -997,7 +1011,13 @@ def measure_kick_offset(samples, grid, max_s=180.0, env_fps=200):
 
     Two beat-matched decks whose grids are phase-aligned still flam by the
     DIFFERENCE of their groove offsets (can exceed 100ms on syncopated
-    basslines); the submix subtracts these at sync launch."""
+    basslines). NOTE: this measures where the BASS ENERGY sits in the beat
+    (median 0.35 beats on the real library - offbeat basslines), NOT
+    kick-vs-grid skew. The brain leans selection away from big offset
+    DIFFERENCES and gates the short-dual precision styles on them; do NOT
+    'compensate' it at sync - shifting grids to align bass placement pulls
+    the real kicks apart (tried 2026-07-13, user-heard double beats,
+    reverted to opt-in DJ_KICK_ALIGN=1)."""
     from scipy.signal import butter, sosfilt
     if not grid:
         return 0.0

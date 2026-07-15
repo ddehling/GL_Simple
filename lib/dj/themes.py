@@ -171,15 +171,18 @@ BUILTIN_THEMES = {t.name: t for t in [
           energy_base=0.7, energy_span=0.3, arc="rise",
           mood_weights={"peak": 1.0, "groove": 0.7},
           spectral_lean="bass",
-          prefer_tags={"hard": 1.0, "driving": 0.8},
-          avoid_tags={"gentle": 0.8, "mellow": 0.6},
+          # Tag names must exist in the library's actual vocabulary or the
+          # lever is a silent no-op ('driving'/'mellow' matched 0 tracks on
+          # the real library; 'energetic'/'calm' are ML-mood tags that do).
+          prefer_tags={"hard": 1.0, "energetic": 0.7, "party": 0.5},
+          avoid_tags={"gentle": 0.8, "calm": 0.6},
           axis_targets={"hardness": 0.9, "energy": 0.85},
           dance_target=0.85,
           min_play_s=120.0, max_play_s=300.0),
     Theme("gentle_organic", bpm_range=(95.0, 120.0),
           energy_base=0.4, energy_span=0.25, arc="flat",
           mood_weights={"chill": 1.0, "groove": 0.6},
-          prefer_tags={"gentle": 1.0, "mellow": 0.7, "relaxing": 0.5},
+          prefer_tags={"gentle": 1.0, "calm": 0.7, "relaxing": 0.5},
           avoid_tags={"hard": 0.8, "peaky": 0.6},
           axis_targets={"hardness": 0.2},
           dance_target=0.35,

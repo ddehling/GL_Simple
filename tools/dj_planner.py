@@ -371,6 +371,16 @@ class LibraryTab(QWidget):
                                    "track has the latest features.")
         self.rescan_btn.clicked.connect(lambda: self.run_scan(force=True))
         top.addWidget(self.rescan_btn)
+        # Refine grids = dj_scan --refine-grids, previously CLI-only. Tracks
+        # promoted past bpm_conf 0.70 regain the precision transition styles.
+        self.refine_btn = QPushButton("Refine grids")
+        self.refine_btn.setToolTip(
+            "Re-run beat-grid analysis on unchanged tracks whose grid "
+            "confidence sits below 0.75. Promoting a track past 0.70 lets "
+            "the DJ use the precision transition styles (cuts, double "
+            "drops, loop builds) on it instead of falling back to fades.")
+        self.refine_btn.clicked.connect(lambda: self.run_scan(refine=True))
+        top.addWidget(self.refine_btn)
         # Enrich = pull genre/year/era/label from MusicBrainz (in-process).
         self.enrich_btn = QPushButton("Enrich (MusicBrainz)")
         self.enrich_btn.setToolTip(
@@ -807,7 +817,7 @@ class LibraryTab(QWidget):
             self.folder_box.blockSignals(False)
 
     # -- scanning ------------------------------------------------------------
-    def run_scan(self, force=False):
+    def run_scan(self, force=False, refine=False):
         if self._proc is not None:
             return
         script = os.path.join(os.path.dirname(os.path.dirname(
@@ -815,12 +825,17 @@ class LibraryTab(QWidget):
         args = [script, "--dir", self.planner.music_dir]
         if force:
             args.append("--force")
+        if refine:
+            args.append("--refine-grids")
         self._proc = QProcess(self)
         self._proc.finished.connect(self._scan_done)
         self._proc.start(sys.executable, args)
         self.scan_btn.setEnabled(False)
         self.rescan_btn.setEnabled(False)
-        self.scan_lbl.setText("rescanning all..." if force else "scanning...")
+        self.refine_btn.setEnabled(False)
+        self.scan_lbl.setText(
+            "refining low-confidence grids..." if refine
+            else "rescanning all..." if force else "scanning...")
         self._last_done = -1
         self._scan_timer.start(1500)
 
@@ -852,6 +867,7 @@ class LibraryTab(QWidget):
         self._scan_timer.stop()
         self.scan_btn.setEnabled(True)
         self.rescan_btn.setEnabled(True)
+        self.refine_btn.setEnabled(True)
         self.scan_lbl.setText("scan complete")
         self.planner.reload_library()
 
@@ -1147,6 +1163,25 @@ class CompileWorker(QThread):
             self.done.emit({"error": f"{type(e).__name__}: {e}"})
 
 
+class PlanOpWorker(QThread):
+    """One long planning operation (suggest / optimize / autofill / shape /
+    slot alternatives / bridge) off the GUI thread: the beam searches walk
+    the whole library and froze the UI for seconds when run inline."""
+    done = pyqtSignal(object)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self._fn())
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.done.emit({"error": f"{type(e).__name__}: {e}"})
+
+
 class AuditionWorker(QThread):
     done = pyqtSignal(object)
     status = pyqtSignal(str)
@@ -1206,6 +1241,8 @@ class SetTab(QWidget):
         self.setlist_id = None
         self._worker = None
         self._aud = None
+        self._op = None                  # running PlanOpWorker, one at a time
+        self._plan_btns = []             # greyed out while an op runs
         self.seam_player = TrackPlayer()
 
         h = QHBoxLayout(self)
@@ -1245,6 +1282,7 @@ class SetTab(QWidget):
         af.clicked.connect(self.autofill)
         prow2.addWidget(af)
         left.addLayout(prow2)
+        self._plan_btns += [sg, op, af]
 
         # SHAPE the set: order it so tempo/energy follows a curve (the only
         # control that actually makes a set BUILD; keeps seams mixable).
@@ -1264,6 +1302,7 @@ class SetTab(QWidget):
         prow3.addWidget(shb)
         prow3.addStretch(1)
         left.addLayout(prow3)
+        self._plan_btns.append(shb)
 
         # THE ARC STRIP: the set's shape (energy vs the theme's target,
         # bpm path, seam quality) visible WHILE building, not only after
@@ -1506,38 +1545,77 @@ class SetTab(QWidget):
                             "anchored/first copy of each song.")
 
     # -- plan mode ---------------------------------------------------------------
+    # -- long planning ops (all off the GUI thread) ----------------------------
+    def _run_plan_op(self, label, fn, apply_fn):
+        """Run one planning operation on a worker thread. The beam searches
+        (optimize/shape), whole-library chains (suggest/autofill) and pair
+        scoring (alternatives/bridge) take seconds on a big library - inline
+        they froze the whole window. One op at a time; the plan buttons grey
+        out and the status line says what's cooking. `fn` runs on the worker
+        (must only touch snapshots it captured); `apply_fn(result)` runs back
+        on the GUI thread."""
+        if self._op is not None and self._op.isRunning():
+            self.status.setText("another planning operation is running...")
+            return
+        self.status.setText(label + "...")
+        for b in self._plan_btns:
+            b.setEnabled(False)
+
+        def _done(result):
+            for b in self._plan_btns:
+                b.setEnabled(True)
+            if isinstance(result, dict) and "error" in result:
+                self.status.setText(f"{label} failed: {result['error']}")
+                return
+            apply_fn(result)
+        self._op = PlanOpWorker(fn)
+        self._op.done.connect(_done)
+        self._op.start()
+
+    def _apply_entries(self, entries):
+        self.entries = entries
+        self._rebuild()
+        self.recompile()
+        self.status.setText("")
+
     def suggest(self):
         if self.entries and QMessageBox.question(
                 self, "Suggest set", "Replace the current set?") \
                 != QMessageBox.StandardButton.Yes:
             return
-        self.entries = SL.suggest_set(self.planner.library, self.theme(),
-                                      float(self.minutes_spin.value()))
-        self._rebuild()
-        self.recompile()
+        lib, theme = self.planner.library, self.theme()
+        minutes = float(self.minutes_spin.value())
+        self._run_plan_op("suggesting a set",
+                          lambda: SL.suggest_set(lib, theme, minutes),
+                          self._apply_entries)
 
     def optimize(self):
-        self.entries = SL.optimize_order(self.planner.library, self.entries,
-                                         self.theme())
-        self._rebuild()
-        self.recompile()
+        lib, theme = self.planner.library, self.theme()
+        entries = list(self.entries)
+        self._run_plan_op("optimizing order (beam search)",
+                          lambda: SL.optimize_order(lib, entries, theme),
+                          self._apply_entries)
 
     def autofill(self):
-        self.entries = SL.autofill(self.planner.library, self.entries,
-                                   self.theme())
-        self._rebuild()
-        self.recompile()
+        lib, theme = self.planner.library, self.theme()
+        entries = list(self.entries)
+        self._run_plan_op("solving anchor timing + fills",
+                          lambda: SL.autofill(lib, entries, theme),
+                          self._apply_entries)
 
     def apply_shape(self):
         if len(self.entries) <= 2:
             self.status.setText("build a set first, then shape its curve.")
             return
-        self.entries = SL.order_by_shape(
-            self.planner.library, self.entries, self.theme(),
-            metric=self.shape_metric.currentText(),
-            shape=self.shape_curve.currentText())
-        self._rebuild()
-        self.recompile()
+        lib, theme = self.planner.library, self.theme()
+        entries = list(self.entries)
+        metric = self.shape_metric.currentText()
+        shape = self.shape_curve.currentText()
+        self._run_plan_op(
+            f"shaping ({metric} {shape})",
+            lambda: SL.order_by_shape(lib, entries, theme,
+                                      metric=metric, shape=shape),
+            self._apply_entries)
 
     # -- persistence ------------------------------------------------------------
     def refresh_setlists(self):
@@ -1823,13 +1901,16 @@ class SetTab(QWidget):
             self.status.setText("that's an anchor - unpin it first if you"
                                 " want the machine's opinion")
             return
-        self.status.setText("scoring alternatives...")
-        QApplication.processEvents()
-        alts = self._slot_alternatives(i)
+        self._run_plan_op("scoring alternatives",
+                          lambda: self._slot_alternatives(i),
+                          lambda alts: self._show_alternatives(i, alts))
+
+    def _show_alternatives(self, i, alts):
         if not alts:
             self.status.setText("no tempo-reachable alternative for this"
                                 " slot")
             return
+        self.status.setText("")
         menu = QMenu(self)
         for v, t in alts:
             act = menu.addAction(f"{t.title[:44]}  ({t.bpm:.0f} "
@@ -1838,6 +1919,9 @@ class SetTab(QWidget):
         chosen = menu.exec(QCursor.pos())
         if chosen is None:
             self.status.setText("")
+            return
+        if not (0 <= i < len(self.entries)):     # list edited while scoring
+            self.status.setText("the set changed while scoring - try again")
             return
         self.entries[i]["track_id"] = chosen.data()
         self._rebuild()
@@ -1854,14 +1938,22 @@ class SetTab(QWidget):
         b = by_id.get(self.entries[i + 1]["track_id"])
         if a is None or b is None:
             return
-        self.status.setText("searching for a bridge...")
-        QApplication.processEvents()
-        chain, score = SL.bridge(
-            self.planner.library, a, b, self.theme(),
-            exclude_ids={e["track_id"] for e in self.entries})
+        lib, theme = self.planner.library, self.theme()
+        excl = {e["track_id"] for e in self.entries}
+        self._run_plan_op(
+            "searching for a bridge",
+            lambda: SL.bridge(lib, a, b, theme, exclude_ids=excl),
+            lambda res: self._apply_bridge(i, a, b, res))
+
+    def _apply_bridge(self, i, a, b, res):
+        chain, score = res
         if not chain:
             self.status.setText(f"no bridge beats the direct seam "
                                 f"{a.title[:20]} -> {b.title[:20]}")
+            return
+        if not (0 <= i < len(self.entries) - 1
+                and self.entries[i].get("track_id") == a.id):
+            self.status.setText("the set changed while searching - try again")
             return
         for k, t in enumerate(chain):
             self.entries.insert(i + 1 + k, {
@@ -2210,6 +2302,8 @@ class Planner(QMainWindow):
         if self.library_tab._mood_proc is not None:
             self.library_tab._mood_proc.kill()
             self.library_tab._mood_proc.waitForFinished(2000)
+        if self.set_tab._op is not None and self.set_tab._op.isRunning():
+            self.set_tab._op.wait(3000)      # a beam search can't be killed
         if self.discover_tab is not None:
             self.discover_tab.close()
         super().closeEvent(ev)

@@ -76,6 +76,15 @@ from projects.fan.shaders.club_chaser import shader_club_chaser
 from projects.fan.shaders.club_kick_flare import shader_club_kick_flare
 from projects.fan.shaders.club_shockwave import shader_club_shockwave
 from projects.fan.shaders.club_strobe import shader_club_strobe
+from projects.fan.shaders.club_urchin import shader_club_urchin
+from projects.fan.shaders.club_predator import shader_club_predator
+from projects.fan.shaders.club_crystal import shader_club_crystal
+from projects.fan.shaders.club_digital_flame import shader_club_digital_flame
+from projects.fan.shaders.club_singularity import shader_club_singularity
+from projects.fan.shaders.club_spots import shader_club_spots
+from projects.fan.shaders.club_rain import shader_club_rain
+from projects.fan.shaders.club_voronoi_sphere import shader_club_voronoi_sphere
+from projects.fan.shaders.club_audio_curve import shader_club_audio_curve
 from projects.fan.shaders.audio_balls import shader_audio_balls
 
 WRAPPERS = [
@@ -112,6 +121,19 @@ WRAPPERS = [
     ("kick_flare", shader_club_kick_flare, {}),
     ("shockwave", shader_club_shockwave, {}),
     ("strobe", shader_club_strobe, {}),
+    # Wave-5 ports + the shared-effect club rewrites. These were MISSING
+    # from the harness (found 2026-07-13: club_thorn_garden rendered pure
+    # black here while working in the app) - any new pattern must be added
+    # to WRAPPERS or its rooms silently under-render in this tool.
+    ("urchin", shader_club_urchin, {}),
+    ("predator", shader_club_predator, {}),
+    ("crystal", shader_club_crystal, {}),
+    ("digital_flame", shader_club_digital_flame, {}),
+    ("singularity", shader_club_singularity, {}),
+    ("spots", shader_club_spots, {}),
+    ("club_rain", shader_club_rain, {}),
+    ("voronoi_sphere", shader_club_voronoi_sphere, {}),
+    ("audio_curve", shader_club_audio_curve, {}),
 ]
 
 
@@ -192,28 +214,17 @@ def build_signal_timeline():
 
 
 def scene_outstate(preset, renderer):
-    """Static (non-signal) outstate keys for a scene."""
+    """Static (non-signal) outstate keys for a scene.
+
+    Level keys are DERIVED from the project defaults, not hardcoded: a
+    hardcoded list silently dropped every pattern added after spirograph
+    (urchin/predator/crystal/flame/singularity/spots/rain/audiocurve) and
+    their showcase rooms rendered black HERE while fine in the app."""
     o = {"shader_renderer": renderer}
     keys = ["club_energy", "club_palette", "eq_gain", "eq_color_mode",
             "laser_density", "beat_flash_amount", "strobe_rate",
-            "strobe_brightness", "orb_level", "tunnel_level",
-            "star_field_level", "shockwave_level", "kick_flare_level",
-            "sparkle_level", "chaser_level", "ribbon_level",
-            "horizon_glow_level", "radar_sweep_level", "milk_echo_level",
-            "mandala_level", "flow_field_level", "wave_dance_level",
-            "pyramid_level",
-            "fiber_level",
-            "soul_level",
-            "tesla_level",
-            "fountain_level",
-            "interference_level",
-            "spiral_level",
-            "membrane_level",
-            "turntable_level",
-            "starfall_level",
-            "fractal_level",
-            "rorschach_level",
-            "spirograph_level"]
+            "strobe_brightness"]
+    keys += [k for k in wp.DEFAULT_WEATHER_PARAMS if k.endswith("_level")]
     for k in keys:
         o[k] = preset.get(k, wp.DEFAULT_WEATHER_PARAMS.get(k, 0.0))
     return o

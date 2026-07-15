@@ -134,7 +134,11 @@ def render_seam(library, cur, style, wav=False):
     engine = AudioEngine()
     sub = DJSubmix()
     engine.attach_track("dj", sub)
-    pre_roll = 20.0
+    # The render must start BEFORE the blend does: build_events clamps the
+    # blend start to 'now', so a fixed 20s pre-roll silently truncated
+    # every 64-beat blend to its last ~20s - the gate measured (and
+    # blessed) blends the live system never actually played that short.
+    pre_roll = max(20.0, plan["beats"] * cur.period_s + 8.0)
     cue_a = max(cur.nearest_downbeat(plan["out_s"] - pre_roll), 0.0)
     sub.post({"cmd": "load", "deck": "a", "samples": a, "grid": cur.grid,
               "gain_db": cur.gain_db, "cue_s": cue_a})
@@ -208,8 +212,15 @@ def render_seam(library, cur, style, wav=False):
             braking = da.get("braking") or db_.get("braking")
             looping = bool(da.get("loop")) or bool(db_.get("loop"))
             if i % 8 == 0 and not braking and not looping:
+                # Sync intentionally offsets the slave's GRID by the kick-
+                # alignment bias (kicks in register, not grids) - measure
+                # lock against that target, not raw grid coincidence.
+                sy = tel.get("sync") or {}
+                bias = float(sy.get("bias_beats") or 0.0)
+                if sy.get("slave") == "a":
+                    bias = -bias
                 gd = (sub.decks["a"].beat_phase()
-                      - sub.decks["b"].beat_phase() + 0.5) % 1.0 - 0.5
+                      - sub.decks["b"].beat_phase() + bias + 0.5) % 1.0 - 0.5
                 grid_lags.append((dual, abs(gd) * beat * 1000))
             # A looping/stuttering deck breaks envelope correlation - skip.
             # And require a CONFIDENT beat pattern (same 1.8x-rms gate the
@@ -298,7 +309,15 @@ def render_seam(library, cur, style, wav=False):
     mid_seg = lo_rms[blend_w0:max(swap_w, blend_w0 + 1)]
     post = lo_rms[swap_w:]
     if len(pre) and len(mid_seg) and len(post):
-        solo = max(np.median(pre), np.median(post))
+        # Judged against the pair's own SOLO low-band PEAKS (p95 of the
+        # windows where one deck carries the mix alone), not the median:
+        # a bass-dynamic track swings its OWN low band 7+ dB (measured
+        # 2026-07-13: 'Axe Nord Sud' solo p95/median = +7.4 dB, rendered
+        # alone at the same cue/rate), and the old median reference read
+        # that crest as double bass. Same lesson as the lurch gate: the
+        # transition must not out-peak the music's own peaks - but the
+        # music's peaks are its own business.
+        solo = max(np.percentile(pre, 95), np.percentile(post, 95))
         m["bass_bump_db"] = float(20 * np.log10(
             max(mid_seg.max(), 1e-9) / max(solo, 1e-9)))
     else:

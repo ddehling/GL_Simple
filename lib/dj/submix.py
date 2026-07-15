@@ -20,6 +20,7 @@ Events may carry a "txn" tag; {"cmd": "cancel", "txn": id} recalls every
 NOT-YET-FIRED event of that transaction - the abort path for an armed
 transition (already-fired events are the caller's to unwind).
 """
+import os
 from queue import SimpleQueue
 
 import numpy as np
@@ -56,6 +57,7 @@ class DJSubmix:
         self.done = False
         self._auto = []          # automation events sorted by 'at'
         self._sync = None        # {"slave": name, "master": name}
+        self._sync_bias = 0.0    # kick-alignment bias (beats) the PLL holds
         self._apll_clock = 0     # last audio-phase measurement clock
         self._apll_err = None    # latest audio-phase error (beats, + = late)
         self._apll_i = 0.0       # integral term (learned tempo bias)
@@ -158,16 +160,42 @@ class DJSubmix:
                 # Grid phase alignment: the grids are onset-locked (kick+hat
                 # transients), accurate to ~25ms - the right anchor for this
                 # genre. (Low-band audio alignment was tried and locks onto
-                # OFFBEAT bass stabs instead of kicks - worse, not better.)
-                slave.phase_snap(master.beat_phase())
+                # OFFBEAT bass stabs instead of kicks - worse, not better;
+                # kick_offset_s-biased alignment was tried 2026-07-13 and
+                # REVERTED for the same reason, see _sync_bias_beats.)
+                slave.phase_snap(master.beat_phase()
+                                 + self._sync_bias_beats(master, slave))
         elif cmd == "end_sync":
             self._sync = None
+            self._sync_bias = 0.0
             self._apll_err = None
             self._apll_i = 0.0
             for d in self.decks.values():
                 d.rate_trim = 0.0
                 d.stretch.no_bypass = False
                 d.stretch.phase_trim = 0.0
+
+    @staticmethod
+    def _sync_bias_beats(master, slave):
+        """OFF BY DEFAULT (DJ_KICK_ALIGN=1 to experiment). The idea was to
+        offset the slave's grid target by the kick-offset difference so the
+        KICKS land together - but kick_offset_s is a folded LOW-BAND energy
+        profile, and measured on the real library it is dominated by BASS
+        PLACEMENT, not kick-vs-grid skew (median |offset| = 196ms = 0.35
+        beats across 395 confident tracks; true grid skew is ~25ms). House
+        basslines live on the offbeat, so 'compensating' shifted whole
+        tracks up to a quarter beat to align bass stabs while pulling the
+        REAL kicks apart - user-heard as a mismatched double beat at
+        transitions (2026-07-13). Grid-phase alignment is the correct
+        anchor; groove-offset DIFFERENCES are handled in selection (lean +
+        precision-style gate), where a big difference means the pair's
+        groove feels clash and the punchy styles are vetoed."""
+        if os.environ.get("DJ_KICK_ALIGN", "0") not in ("1", "on"):
+            return 0.0
+        pm = master.beat_period_s() or 0.5
+        ps = slave.beat_period_s() or 0.5
+        bias = slave.kick_offset_s / ps - master.kick_offset_s / pm
+        return float(np.clip(bias, -0.25, 0.25))
 
     def _audio_phase_err(self, master, slave, beat_s):
         """Beat-phase error measured from the two decks' ACTUAL output
@@ -219,12 +247,16 @@ class DJSubmix:
                 and master.grid and slave.grid):
             return
         beat_s = master.beat_period_s() or 0.5
-        grid_err = slave.beat_phase() - master.beat_phase()
+        # The PLL's target carries the kick-alignment bias (see
+        # _sync_bias_beats): zero error = the KICKS are in register.
+        bias = self._sync_bias_beats(master, slave)
+        self._sync_bias = bias                   # published in telemetry
+        grid_err = slave.beat_phase() - master.beat_phase() - bias
         grid_err = (grid_err + 0.5) % 1.0 - 0.5
         # If drift outruns the PLL while the slave is still fading in, snap
         # again (inaudible at low gain) rather than let it trainwreck.
         if abs(grid_err) > RESNAP_ERR and slave.gain < RESNAP_GAIN:
-            slave.phase_snap(master.beat_phase())
+            slave.phase_snap(master.beat_phase() + bias)
             slave.rate_trim = 0.0
             self._apll_err = None
             self._apll_i = 0.0
@@ -260,10 +292,7 @@ class DJSubmix:
                           and max(hist) - min(hist) < 0.07
                           and (all(h > 0 for h in hist)
                                or all(h < 0 for h in hist)))
-                blended = (0.7 * (-((slave.beat_phase()
-                                     - master.beat_phase() + 0.5) % 1.0
-                                    - 0.5))
-                           + 0.3 * self._apll_err)
+                blended = 0.7 * (-grid_err) + 0.3 * self._apll_err
                 if (slave.gain >= RESNAP_GAIN and stable
                         and abs(blended) * beat_s > 0.012
                         and self.clock - getattr(self, "_nudge_clock", 0)
@@ -402,11 +431,22 @@ class DJSubmix:
                 "rate": round(d.effective_rate(), 5),
                 "gain": round(d.gain, 4),
                 "eq": [round(float(g), 3) for g in d.eq.gains],
+                # DSP state the EQ numbers can't show - a stuck sweep
+                # filter or echo is invisible without these (a "no bass"
+                # night was undiagnosable from telemetry, 2026-07-13).
+                "filter": getattr(d.filter, "mode", "off") or "off",
+                "echo": bool(d.echo.active),
                 "loop": d.loop,
                 "braking": d._brake is not None,
             }
+        sync = dict(self._sync) if self._sync else None
+        if sync is not None:
+            # Kick-alignment bias the PLL is holding: consumers measuring
+            # seam lock from raw deck phases must subtract this, or an
+            # intentionally offset grid reads as flam.
+            sync["bias_beats"] = round(getattr(self, "_sync_bias", 0.0), 4)
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
-                "sync": dict(self._sync) if self._sync else None,
+                "sync": sync,
                 "sync_stats": {"resnaps": self._stat_resnaps,
                                "nudges": self._stat_nudges},
                 "mix_gain": round(self.mix_gain, 4), "decks": decks,

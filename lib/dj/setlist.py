@@ -25,7 +25,14 @@ def _make_edge(brain):
     """Cached seam-quality edge: score(a -> b at arc), floored so a dead
     edge never -inf's a whole ordering. The brain's rng jitter is baked
     into the first evaluation per key, so orderings compare consistently
-    within one search."""
+    within one search.
+
+    Floor 1e-12, NOT 1e-6: a legit-but-rough edge (a bridge leg beyond
+    the stretch wall x a big energy gap) can land under 1e-6, and a high
+    floor FLATTENS such edges equal - ordering vanishes and bridge()
+    can't tell the honest connector from a truly dead pair (same failure
+    class as the artist-penalty floor: penalties + a floor = ordering
+    destruction). log(1e-12) is a harsh but finite -27.6 in the beam."""
     cache = {}
 
     def edge(a, b, arc):
@@ -33,7 +40,7 @@ def _make_edge(brain):
         v = cache.get(key)
         if v is None:
             s, _ = brain.score(a, b, arc, a.bpm)
-            v = max(s, 1e-6)
+            v = max(s, 1e-12)
             cache[key] = v
         return v
     return edge

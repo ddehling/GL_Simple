@@ -91,6 +91,16 @@ class TrackInfo:
         # Embedded container genre tag (free, from the file itself). Populated
         # on (re)scan; complements MusicBrainz genres for un-enriched tracks.
         self.file_genre = row.get("file_genre") or ""
+        # Genre identity for the brain's coherence lean: MusicBrainz genres +
+        # the embedded file genre ONLY (moods/user/character tags aren't
+        # genres). Precomputed - score() touches this per candidate.
+        gs = {g.strip().lower() for g in self.genres if g and g.strip()}
+        for part in self.file_genre.replace("/", ",").replace(";", ",") \
+                .split(","):
+            part = part.strip().lower()
+            if part:
+                gs.add(part)
+        self.genre_set = gs
         # 'do not use' flag (DB v11). Kept on the object so the library
         # browser can show + toggle it; callers that auto-select filter it out.
         self.excluded = bool(row.get("excluded"))
@@ -187,12 +197,28 @@ class TrackInfo:
         return self.nearest_downbeat(cand)
 
     def _raw_energy(self):
+        """Absolute intensity from MEASURED loudness + sustain + rhythm.
+        The old mood_hist/density/bass blend saturated on club material
+        (everything read 0.5-0.72); integrated loudness and the 2 Hz curve
+        were already stored but only used for level-matching. Loudness is
+        the strongest separator (a quiet ambient piece and a slammed peak
+        master differ by dB, not by mood buckets)."""
+        # loudness_gain_db = gain that brings this track TO the target
+        # (clipped +/-9): negative = hotter than target. Map to 0..1.
+        loud = max(0.0, min(1.0, 0.5 - self.gain_db / 18.0))
+        # SUSTAIN: mean of the per-track p95-normalized 2 Hz curve - a
+        # track that sits near its own peak the whole time (steady club
+        # groove) vs one that spends most bars far below it (long ambient
+        # valleys, huge breakdowns). Neutral when unanalyzed (ghosts).
+        curve = self.row.get("energy_curve") or []
+        sustain = min(sum(curve) / len(curve), 1.0) if curve else 0.55
+        dens = min(self.rhythm_density / 3.0, 1.0)
         mh = self.mood_hist
         mood_e = mh.get("peak", 0.0) + 0.6 * mh.get("groove", 0.0) \
             + 0.25 * mh.get("chill", 0.0)
-        dens = min(self.rhythm_density / 3.0, 1.0)
         bass = self.spectral.get("bass_share", 0.33)
-        return max(0.0, min(1.0, 0.45 * mood_e + 0.35 * dens + 0.2 * bass * 2.0))
+        return max(0.0, min(1.0, 0.34 * loud + 0.22 * dens + 0.16 * sustain
+                            + 0.16 * mood_e + 0.12 * bass * 2.0))
 
     def energy_proxy(self):
         """Cross-track comparable energy 0..1. LIBRARY-RELATIVE when the
@@ -204,6 +230,26 @@ class TrackInfo:
         raw for tracks built outside a library (ghosts, tests)."""
         r = getattr(self, "energy_rank", None)
         return r if r is not None else self._raw_energy()
+
+    def _raw_drive(self):
+        """Rhythmic drive from mood/density/bass ONLY - no loudness term.
+        This feeds the LIVE visual energy (system.live_energy): the submix
+        loudness-COMPENSATES mastering at playback, so a quietly-mastered
+        banger sounds as loud as anything in the room - judging it by its
+        master level dimmed the visuals on music that was audibly driving
+        (user-heard, 2026-07-13). Selection/arcs keep the loudness-aware
+        energy_proxy; the floor's lights follow the groove."""
+        mh = self.mood_hist
+        mood_e = mh.get("peak", 0.0) + 0.6 * mh.get("groove", 0.0) \
+            + 0.25 * mh.get("chill", 0.0)
+        dens = min(self.rhythm_density / 3.0, 1.0)
+        bass = self.spectral.get("bass_share", 0.33)
+        return max(0.0, min(1.0, 0.45 * mood_e + 0.35 * dens + 0.2 * bass * 2.0))
+
+    def drive(self):
+        """Library-ranked rhythmic drive 0..1 (see _raw_drive)."""
+        r = getattr(self, "drive_rank", None)
+        return r if r is not None else self._raw_drive()
 
 
 def load_library(db):
@@ -225,9 +271,11 @@ def load_library(db):
     if len(out) >= 4:
         import bisect
         raws = sorted(t._raw_energy() for t in out)
+        drvs = sorted(t._raw_drive() for t in out)
         denom = max(len(raws) - 1, 1)
         for t in out:
             t.energy_rank = bisect.bisect_left(raws, t._raw_energy()) / denom
+            t.drive_rank = bisect.bisect_left(drvs, t._raw_drive()) / denom
     # DERIVED CHARACTER: danceability + valence, library-ranked (see
     # lib/dj/character.py). Adds mood/danceability the scanner never exposed.
     from lib.dj.character import rank_library
@@ -352,12 +400,36 @@ class Brain:
         self.last_scored_n = None       # candidates the last pick drew from
         self.style_fb = {}              # style -> tonight multiplier (thumbs)
         self.pair_memory = {}           # (a_id,b_id) -> cross-night multiplier
+        self.class_memory = {}          # (key,off,conf) bucket -> multiplier
+        self.style_memory = {}          # style -> cross-night multiplier
+
+    @staticmethod
+    def _pair_class(a, b):
+        """Feature-space bucket a seam belongs to: key fit x groove-offset
+        gap x grid confidence. This is how one night's feedback GENERALIZES -
+        the exact A->B pair rarely recurs on a big library, but 'clash-key
+        wide-offset loose-grid seams keep flamming' is a lesson every future
+        pick can use."""
+        kc = camelot_compat(a.camelot, b.camelot)
+        key = "good" if kc >= 0.9 else ("ok" if kc >= 0.55 else "clash")
+        d_off = abs(a.kick_offset_s - b.kick_offset_s)
+        off = "tight" if d_off <= 0.035 else ("mid" if d_off <= 0.09
+                                              else "wide")
+        conf = "precise" if min(a.bpm_conf or 0.0,
+                                b.bpm_conf or 0.0) >= 0.7 else "loose"
+        return (key, off, conf)
 
     def load_pair_memory(self, db, days=90.0):
         """CROSS-NIGHT TASTE: thumbs on seams and bail-out skips persist
         as pair-level multipliers - a seam that worked last Saturday gets
         a lasting bonus, one that got skipped carries a lasting caution.
-        Bounded 0.4..1.6: memory is a lean, never a law."""
+        Bounded 0.4..1.6: memory is a lean, never a law.
+
+        The same feedback also aggregates into CLASS memory (feature
+        buckets, see _pair_class) and STYLE memory (cross-night style
+        multipliers applied in plan_transition) - both bounded tighter
+        than pair memory because they apply broadly, and both gated on
+        >=3 weighted votes so one odd night can't tilt a whole class."""
         fb, skips = db.pair_stats(days=days)
         mem = {}
         for k, (ups, downs) in fb.items():
@@ -366,6 +438,37 @@ class Brain:
             mem[k] = mem.get(k, 1.0) * (0.85 ** min(n, 3))
         self.pair_memory = {k: max(0.4, min(1.6, v))
                             for k, v in mem.items() if abs(v - 1.0) > 0.01}
+        by_id = {t.id: t for t in self.library}
+        cls, sty = {}, {}
+        try:
+            rows = db.seam_feedback_rows(days=days)
+        except Exception:
+            rows = []
+        for r in rows:
+            w = 0.5 if (r["source"] or "user") == "auto" else 1.0
+            up = 1 if r["up"] else 0
+            if r.get("style"):
+                u, d = sty.get(r["style"], (0.0, 0.0))
+                sty[r["style"]] = (u + w * up, d + w * (1 - up))
+            a, b = by_id.get(r["a_id"]), by_id.get(r["b_id"])
+            if a is not None and b is not None:
+                k = self._pair_class(a, b)
+                u, d = cls.get(k, (0.0, 0.0))
+                cls[k] = (u + w * up, d + w * (1 - up))
+        self.class_memory = {}
+        for k, (u, d) in cls.items():
+            if u + d >= 3.0:
+                v = max(0.75, min(1.25,
+                                  (1.04 ** min(u, 8)) * (0.93 ** min(d, 8))))
+                if abs(v - 1.0) > 0.01:
+                    self.class_memory[k] = v
+        self.style_memory = {}
+        for s, (u, d) in sty.items():
+            if u + d >= 3.0:
+                v = max(0.6, min(1.4,
+                                 (1.06 ** min(u, 8)) * (0.90 ** min(d, 8))))
+                if abs(v - 1.0) > 0.01:
+                    self.style_memory[s] = v
         return len(self.pair_memory)
 
     def set_flavor(self, flavor):
@@ -617,7 +720,12 @@ class Brain:
                     s_key = 0.62
                     pitch_st = st
                     break
-        s_energy = math.exp(-((self._arc_energy(cand) - arc_target) / 0.3) ** 2)
+        # Sigma 0.21 (was 0.3): the arc is chased on a library-PERCENTILE
+        # scale, so a tight pull can't strand selection - material exists
+        # near any target. At 0.3 a candidate 0.3 off-target still scored
+        # 0.37 and the theme arcs measurably flattened (hard_drive's rise
+        # materialized at 41% of its plan; user: "themes seem flat").
+        s_energy = math.exp(-((self._arc_energy(cand) - arc_target) / 0.21) ** 2)
         s_mood = 0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                             for m, f in cand.mood_hist.items())
         # ML MOOD AWARENESS (Music2Emo). All three are no-ops until tracks are
@@ -639,6 +747,26 @@ class Brain:
                 and getattr(cand, "danceability", None) is not None:
             s_dance = 0.5 + 0.5 * math.exp(
                 -((cand.danceability - self.theme.dance_target) / 0.35) ** 2)
+        # GENRE/ERA COHERENCE: free-play nights should hang together without
+        # the operator lighting chips. Adjacent tracks sharing a genre get a
+        # mild edge, fully disjoint ones a mild drag; a big release-year jump
+        # (decades apart) leans down a touch. EVIDENCE-GATED like _blend_floor:
+        # missing genre/year on either side is neutral - no evidence, no
+        # penalty. Soft on purpose (min ~0.77 combined): a deliberate genre
+        # pivot must stay one good seam away, and the operator's chips/flavor
+        # always outrank this.
+        s_cohere = 1.0
+        if current is not None:
+            ga = getattr(current, "genre_set", None) or set()
+            gb = getattr(cand, "genre_set", None) or set()
+            if ga and gb:
+                frac = len(ga & gb) / min(len(ga), len(gb))
+                s_cohere *= 0.84 + 0.16 * frac
+            ya = getattr(current, "year", None)
+            yb = getattr(cand, "year", None)
+            if ya and yb:
+                s_cohere *= 0.92 + 0.08 * math.exp(
+                    -((float(ya) - float(yb)) / 15.0) ** 2)
         s_spec = 1.0
         if self.theme.spectral_lean == "bass":
             s_spec = 0.7 + 0.6 * cand.spectral.get("bass_share", 0.33) * 2.0
@@ -667,6 +795,10 @@ class Brain:
             # GROOVE-OFFSET LEAN: grid-phase sync still flams by the two
             # tracks' kick-offset difference (the PLL's target is the grid,
             # not the kicks). Soft: a big offset gap only costs ~half.
+            # Do NOT try to compensate this at sync instead: kick_offset_s
+            # is bass PLACEMENT (median 0.35 beats on the real library),
+            # not grid skew - shifting grids to align it pulled the real
+            # kicks apart (user-heard double beats, 2026-07-13, reverted).
             d_off = abs(current.kick_offset_s - cand.kick_offset_s)
             s_style *= 0.55 + 0.45 * math.exp(-((d_off / 0.045) ** 2))
         # VARIETY: two near-identical-sounding tracks back to back is the
@@ -676,8 +808,17 @@ class Brain:
         s_var = 1.0
         if current is not None:
             s_var = 1.0 - 0.45 * self._similarity(current, cand)
+        # GENERALIZED SEAM MEMORY: exact-pair memory only bites when the same
+        # A->B recurs (rare on a 500+ library). class_memory buckets the same
+        # feedback by pair FEATURES (key fit / groove-offset gap / grid conf),
+        # so one measured train-wreck teaches the brain about the whole class.
+        # Bounded tighter than pair memory - it applies broadly.
+        s_class = 1.0
+        if current is not None and self.class_memory:
+            s_class = self.class_memory.get(
+                self._pair_class(current, cand), 1.0)
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
-                 * s_valence * s_dance
+                 * s_valence * s_dance * s_cohere * s_class
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self._flavor_score(cand)
@@ -694,8 +835,10 @@ class Brain:
         # bring in a loose-gridded track it really wants.
         total *= 0.75 + 0.25 * min(cand.bpm_conf, 1.0)
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
+        # (Weight raised 0.45->0.60: at 0.45 a rise-theme night walked only
+        # ~40% of its planned tempo climb - seam-quality terms outvoted it.)
         if bpm_target:
-            total *= 0.55 + 0.45 * math.exp(
+            total *= 0.40 + 0.60 * math.exp(
                 -((eff_bpm - bpm_target) / 7.0) ** 2)
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
                        "pitch_st": pitch_st, "forced_fade": forced_fade}
@@ -812,7 +955,7 @@ class Brain:
             if best is not None:
                 return best[1], best[2]
             pick = max(cohort, key=lambda t: (
-                math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+                math.exp(-((self._arc_energy(t) - arc_target) / 0.21) ** 2)
                 * self._flavor_score(t) * self._skip_penalty(t)))
             return pick, {"rate": 1.0, "eff_bpm": pick.bpm, "pair": None,
                           "tempo_clash": True}
@@ -860,7 +1003,7 @@ class Brain:
             pool.append(t)
         if not pool:
             return None
-        ranked = [(math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+        ranked = [(math.exp(-((self._arc_energy(t) - arc_target) / 0.21) ** 2)
                    * self._flavor_score(t) * self._skip_penalty(t)
                    * self._recency_penalty(t, now)
                    * self.rng.uniform(0.9, 1.1), t) for t in pool]
@@ -885,7 +1028,7 @@ class Brain:
         if not pool:
             return None, None
         best = max(pool, key=lambda t: (
-            math.exp(-((self._arc_energy(t) - arc_target) / 0.3) ** 2)
+            math.exp(-((self._arc_energy(t) - arc_target) / 0.21) ** 2)
             * self._recency_penalty(t, now)))
         return best, {"rate": 1.0, "eff_bpm": best.bpm, "pair": None,
                       "tempo_clash": True}
@@ -900,7 +1043,7 @@ class Brain:
             lo, hi = self.theme.bpm_range
             if not (lo * 0.93 <= cand.bpm <= hi * 1.07):
                 continue
-            s = math.exp(-((self._arc_energy(cand) - arc_target) / 0.3) ** 2) \
+            s = math.exp(-((self._arc_energy(cand) - arc_target) / 0.21) ** 2) \
                 * (0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                               for m, f in cand.mood_hist.items())) \
                 * self._recency_penalty(cand, now) \
@@ -912,7 +1055,7 @@ class Brain:
             for cand in self.library:
                 if cand.id in self.pool_ids:
                     cands.append((math.exp(-((self._arc_energy(cand)
-                                              - arc_target) / 0.3) ** 2)
+                                              - arc_target) / 0.21) ** 2)
                                   * self.rng.uniform(0.9, 1.1), cand))
         if not cands:
             return None
@@ -1082,8 +1225,11 @@ class Brain:
         rate = meta["rate"] if meta else 1.0
         pst = (meta or {}).get("pitch_st", 0)
 
-        # Style menu, gated by analysis confidence.
+        # Style menu, gated by analysis confidence. Weighted by tonight's
+        # thumbs (style_fb) AND cross-night learned style taste
+        # (style_memory, from persisted seam feedback).
         weights = {k: w * self.style_fb.get(k, 1.0)
+                   * self.style_memory.get(k, 1.0)
                    for k, w in self.theme.style_weights.items()}
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
         # A tempo-clash pair (user-ordered set beyond the stretch range,
@@ -1117,7 +1263,8 @@ class Brain:
             # differently against their own grids flam by the OFFSET
             # DIFFERENCE for the whole (short) overlap - measured 170ms
             # deltas on confident grids. Long blends ride it out; the
-            # punchy styles can't.
+            # punchy styles can't. (Sync-side compensation was tried and
+            # REVERTED - the offset is bass placement, not grid skew.)
             if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.035:
                 for k in ("cut_at_drop", "double_drop", "echo_out",
                           "bassline_layer", "loop_build"):
@@ -1183,6 +1330,12 @@ class Brain:
                  "loop_roll_exit": 32, "bassline_layer": 16,
                  "double_drop": 16, "loop_build": 16, "long_fade": 0,
                  "filter_sweep": 32, "echo_out": 8}[style]
+        if style == "long_blend":
+            # LENGTH VARIETY: the workhorse mostly runs 64 beats; about a
+            # third of the time it stretches to a 96-beat marathon (still a
+            # 32-multiple). One fixed length for every blend read as
+            # uniform pacing (user: "there should be some variety").
+            beats = 64 if self.rng.random() < 0.65 else 96
         if style == "loop_build":
             # Exit ON A's drop; the stutter build fills the bars before it.
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
@@ -1704,6 +1857,21 @@ class Brain:
         sec_a = cur.section_at(plan["out_s"] - 1.0) or {}
         b_mid0 = 0.3 if sec_a.get("mid_share", 0.33) > 0.42 else 0.45
         b_high0 = 0.7 if sec_a.get("high_share", 0.25) > 0.30 else 1.0
+        # LONG_BLEND = the STAGED MIGRATION (the classic technique): the
+        # beats run together at near-full presence for bars, then the HIGH
+        # END hands over subtly, and only then the mid/bass commitment.
+        # Without the staging, even a 64-beat span perceptually collapsed
+        # to the ~4-beat swap crossfade - the whole song identity flipped
+        # in ~2s and every blend read fast (user). bass_swap/filter_sweep
+        # keep the decisive single-swap geometry - that contrast IS the
+        # style variety.
+        long_stage = style == "long_blend"
+        if long_stage:
+            b_high0 = min(b_high0, 0.5)     # enter carved; highs migrate later
+            # B rides the long dual at near-FULL gain (that's the point),
+            # so its mid shelf must sit lower than the ramping-gain case
+            # or the shelf x 0.92 puts a second melody under A for bars.
+            b_mid0 = min(b_mid0, 0.3)
         # Harmonic clash makes overlap unforgivable: with incompatible
         # keys (after any pitch-shift rescue), B's melody waits until A is
         # essentially gone before opening.
@@ -1711,6 +1879,11 @@ class Brain:
         key_ok = camelot_compat(cur.camelot, b_cam) >= 0.55
         mid_open_at = mid if key_ok else \
             min(mid + int(0.75 * (end - mid)), end)
+        # Swap crossfade width: an instant low swap is a measured 8 dB
+        # step; 4 beats stays decisive but spreads it. The staged long
+        # blend widens to 6 - by then the highs have already migrated, so
+        # the swap is the SECOND move, not the whole transition.
+        swap_beats = 6 if long_stage else 4
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
@@ -1721,17 +1894,35 @@ class Brain:
              "ramp_s": 0.01},
             {"at": S0, "cmd": "start", "deck": incoming},
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
-            {"at": S0, "cmd": "gain", "deck": incoming, "value": 1.0,
-             "ramp_s": half},
-            # Swap downbeat: low AND mid hand over across 4 beats. (An
-            # instant low swap is a measured 8 dB step. The swap now lands
-            # mid-blend with BOTH decks at full gain - the old 1.5-2 beat
-            # ramps that were inaudible against a quiet B read as a level
-            # lurch there; 4 beats stays decisive but spreads the step.)
+        ]
+        if long_stage:
+            span_s = (end - S0) / RATE
+            # Stage 1 - BEATS TOGETHER: B rises to near-full presence over
+            # the first third and RIDES there (drums+air under A, EQ keeps
+            # one bassline / one melody), instead of still creeping up
+            # when the swap arrives.
+            ev.append({"at": S0, "cmd": "gain", "deck": incoming,
+                       "value": 0.92, "ramp_s": 0.35 * span_s})
+            ev.append({"at": mid, "cmd": "gain", "deck": incoming,
+                       "value": 1.0, "ramp_s": 4 * beat_out})
+            # Stage 2 - THE SUBTLE HIGH SWAP: hats/air hand over across 12
+            # beats, ending before the earliest possible swap (the EQ ramp
+            # clock is shared per deck - overlapping ramps stretch each
+            # other).
+            hi_at = S0 + int(0.22 * (end - S0))
+            ev.append({"at": hi_at, "cmd": "eq", "deck": incoming,
+                       "high": 1.0, "ramp_s": 12 * beat_out})
+            ev.append({"at": hi_at, "cmd": "eq", "deck": active,
+                       "high": 0.35, "ramp_s": 12 * beat_out})
+        else:
+            ev.append({"at": S0, "cmd": "gain", "deck": incoming,
+                       "value": 1.0, "ramp_s": half})
+        ev += [
+            # Stage 3 - the swap downbeat: low AND mid hand over.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
-             "mid": 0.25, "ramp_s": 4 * beat_out},
+             "mid": 0.25, "ramp_s": swap_beats * beat_out},
             {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
-             "high": 1.0, "ramp_s": 4 * beat_out},
+             "high": 1.0, "ramp_s": swap_beats * beat_out},
             # A key-clash-delayed mid open happens with B carrying the mix
             # alone - opening the shelf (up to +10 dB of mid band) over 4
             # beats measured as a 6.6 dB mix lurch. A is ~gone by then, so

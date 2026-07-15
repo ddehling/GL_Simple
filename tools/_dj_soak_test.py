@@ -101,9 +101,15 @@ def main():
                                  or da.get("loop") or db_.get("loop"))
                         and dj.current is not None):
                     beat = dj.current.period_s
+                    # Lock is judged against the PLL's kick-aligned target
+                    # (sync offsets the slave's grid by bias_beats).
+                    sy = tel.get("sync") or {}
+                    bias = float(sy.get("bias_beats") or 0.0)
+                    if sy.get("slave") == "a":
+                        bias = -bias
                     gd = (dj.submix.decks["a"].beat_phase()
                           - dj.submix.decks["b"].beat_phase()
-                          + 0.5) % 1.0 - 0.5
+                          + bias + 0.5) % 1.0 - 0.5
                     grid_lags.append((dj.submix.clock / RATE,
                                       abs(gd) * beat * 1000))
         if i % (n_blocks // 20) == 0 and i:

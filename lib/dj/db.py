@@ -500,6 +500,15 @@ class LibraryDB:
             (a_id, b_id, style, 1 if up else 0, time.time(), source))
         self.conn.commit()
 
+    def seam_feedback_rows(self, days=90.0):
+        """Raw recent seam feedback (a_id, b_id, style, up, source) - the
+        brain generalizes these into class/style memory (see
+        Brain.load_pair_memory); pair_stats keeps the exact-pair view."""
+        since = time.time() - days * 86400.0
+        return [dict(r) for r in self.conn.execute(
+            "SELECT a_id, b_id, style, up, source FROM seam_feedback"
+            " WHERE at > ?", (since,))]
+
     def pair_stats(self, days=90.0):
         """Cross-night pair memory inputs: thumbs per (a,b) pair and
         skipped-shortly-after-swap counts derived from play_history."""
