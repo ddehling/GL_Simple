@@ -2677,11 +2677,24 @@ class EnvironmentalSystem:
         if self.scheduler.state.get('_transition_hold_until', 0.0) > time.time():
             return
 
+        # Operator "Weather Time" slider (web control panel): scales every
+        # state's dwell time, 0.5x (fast cycle) .. 2x (slow). Applies to
+        # both the deterministic state_duration timer and the probabilistic
+        # Switch_rate roll below.
+        time_scale = 1.0
+        if self.enable_web_control:
+            try:
+                time_scale = float(
+                    self.web_controller.get('weather_time_scale', 1.0) or 1.0)
+            except (TypeError, ValueError):
+                time_scale = 1.0
+        time_scale = max(0.5, min(2.0, time_scale))
+
         # Deterministic per-state duration (Weight of Light "Elements" set):
         # when the active state declares state_duration > 0, ignore the
         # probabilistic Switch_rate roll entirely and advance on a fixed
         # timer measured from when the transition INTO this state completed
-        # (progress >= 1.0). Gives the even ~5-min-per-stage pacing a linear
+        # (progress >= 1.0). Gives the even per-stage pacing a linear
         # designed sequence wants, instead of the geometric-variance roll.
         state_duration = float(
             self.weather_state.weather_params.get("state_duration", 0.0) or 0.0
@@ -2691,14 +2704,14 @@ class EnvironmentalSystem:
                 now = time.time()
                 if self._state_hold_start is None:
                     self._state_hold_start = now
-                elif now - self._state_hold_start >= state_duration:
+                elif now - self._state_hold_start >= state_duration * time_scale:
                     self._perform_weather_transition()
             return
 
         transition_speed_mult = self.weather_set.get_transition_speed()
 
         randcheck = np.random.random()
-        if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult) and (self.weather_state.progress >= 1.0):
+        if (randcheck < (1 / 800) * self.weather_state.weather_params["Switch_rate"] * transition_speed_mult / time_scale) and (self.weather_state.progress >= 1.0):
             self._perform_weather_transition()
 
     def shutdown(self):

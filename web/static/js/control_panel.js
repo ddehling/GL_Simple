@@ -141,6 +141,18 @@ function connectSocket() {
         _seasonLocked = !!data.season_locked;
         updateSeasonLockButton(_seasonLocked);
 
+        // Weather Time slider (dwell-time scale 0.5x..2x); keep in sync
+        // with the server unless the user is dragging it.
+        const wtScale = data.weather_time_scale ?? 1.0;
+        const wtSlider = document.getElementById('weather-time-slider');
+        if (wtSlider && !wtSlider.matches(':active') && !isOnCooldown('weather-time-slider')) {
+            wtSlider.value = wtScale;
+        }
+        const wtDisp = document.getElementById('weather-time-display');
+        if (wtDisp && !isOnCooldown('weather-time-slider')) {
+            wtDisp.textContent = wtScale.toFixed(2) + '×';
+        }
+
         const factor = data.brightness_limiting_factor ?? 1.0;
         const bEl = document.getElementById('brightness-limiting-display');
         bEl.textContent = factor.toFixed(3);
@@ -765,6 +777,18 @@ function onSeasonSlider(value) {
     }
     if (socket && socket.connected) {
         socket.emit('set_season', { value: v, locked: true });
+    }
+}
+
+function onWeatherTimeSlider(value) {
+    // User is dragging the weather-time slider. Cooldown so server status
+    // updates don't clobber the value while they're moving it.
+    setInteractionCooldown('weather-time-slider');
+    const v = parseFloat(value);
+    const disp = document.getElementById('weather-time-display');
+    if (disp) disp.textContent = v.toFixed(2) + '×';
+    if (socket && socket.connected) {
+        socket.emit('set_weather_time_scale', { value: v });
     }
 }
 

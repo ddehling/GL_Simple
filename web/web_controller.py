@@ -967,6 +967,17 @@ class WebController:
                     self.control_dict['season_locked'] = bool(locked)
             self._values_cache = None
 
+        @self.socketio.on('set_weather_time_scale')
+        def handle_set_weather_time_scale(data):
+            """Scale every weather state's dwell time (0.5x .. 2x)."""
+            try:
+                value = float((data or {}).get('value', 1.0))
+            except (TypeError, ValueError):
+                return
+            with self._dict_lock:
+                self.control_dict['weather_time_scale'] = max(0.5, min(2.0, value))
+            self._values_cache = None
+
         @self.socketio.on('set_club_heat_bias')
         def handle_set_club_heat_bias(data):
             """Operator calmer/hotter bias for the club music director."""
@@ -1245,6 +1256,7 @@ class WebController:
                                 "current_weather": self.control_dict.get('current_weather', 'unknown'),
                                 "season": self.control_dict.get('season', 0.0),
                                 "season_locked": self.control_dict.get('season_locked', False),
+                                "weather_time_scale": self.control_dict.get('weather_time_scale', 1.0),
                                 "club": self.control_dict.get('club_director_info'),
                                 "club_controls": {
                                     "heat_bias": self.control_dict.get('club_heat_bias', 0.0),

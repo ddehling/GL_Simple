@@ -76,6 +76,14 @@
                 <button id="season-lock-btn" onclick="toggleSeasonLock()" class="btn-small">Auto</button>
             </div>
             <div class="info-row">
+                <span class="info-label">Weather Time:</span>
+                <span class="info-value" id="weather-time-display">1.00&times;</span>
+            </div>
+            <div class="info-row" style="align-items: center; gap: 8px;">
+                <input type="range" id="weather-time-slider" min="0.5" max="2" step="0.05" value="1"
+                       style="flex: 1;" oninput="onWeatherTimeSlider(this.value)">
+            </div>
+            <div class="info-row">
                 <span class="info-label">Brightness Limiting:</span>
                 <span class="info-value" id="brightness-limiting-display">1.000</span>
             </div>
