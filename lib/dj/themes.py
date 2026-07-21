@@ -28,7 +28,10 @@ class Theme:
         "long_blend": 1.7, "bass_swap": 1.2, "cut_at_drop": 0.08,
         "loop_roll_exit": 0.15, "bassline_layer": 0.15, "double_drop": 0.08,
         "loop_build": 0.12, "long_fade": 0.3,
-        "filter_sweep": 0.6, "echo_out": 0.12})
+        "filter_sweep": 0.6, "echo_out": 0.12,
+        # Stem styles (inert until tools/dj_stems.py has rendered stems):
+        # accents, same tier as the other elaborate techniques.
+        "stem_drum_swap": 0.3, "acapella_out": 0.2})
     min_play_s: float = 150.0
     max_play_s: float = 420.0
     # FLAVOR: what KIND of music this night leans on, expressed in the

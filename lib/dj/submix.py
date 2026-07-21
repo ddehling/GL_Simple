@@ -66,6 +66,9 @@ class DJSubmix:
         self.record_q = None     # set to a queue to tap the mix (recording)
         self._stat_resnaps = 0   # per-sync seam-quality counters (telemetry)
         self._stat_nudges = 0
+        self._stat_cals = 0      # run-in tempo calibrations applied
+        self._cal_last = None    # clock of the last pre-audible resnap
+        self._cal_applied = 0.0  # cumulative base-rate correction (frac)
         self.telemetry = {}      # replaced wholesale each read()
 
     # -- control-thread API ----------------------------------------------------
@@ -108,9 +111,15 @@ class DJSubmix:
             # Samples were decoded on another thread; this just mounts them.
             deck.load(e["samples"], e.get("track_id"), e.get("grid"),
                       e.get("gain_db", 0.0), e.get("kick_offset_s", 0.0),
-                      e.get("pitch_st", 0.0))
+                      e.get("pitch_st", 0.0), stems=e.get("stems"))
             if "cue_s" in e:
                 deck.cue(e["cue_s"])
+        elif cmd == "attach_stems":
+            # Late stem mount for an ALREADY-PLAYING deck (the outgoing
+            # side of acapella_out): inert until a stem gain diverges.
+            deck.attach_stems(e.get("stems") or {})
+        elif cmd == "stem_gains":
+            deck.set_stem_gains(e.get("gains") or {}, e.get("ramp_s", 0.05))
         elif cmd == "start":
             deck.start()
         elif cmd == "stop":
@@ -148,6 +157,9 @@ class DJSubmix:
             self._sync = {"slave": e["slave"], "master": e["master"]}
             self._stat_resnaps = 0
             self._stat_nudges = 0
+            self._stat_cals = 0
+            self._cal_last = None
+            self._cal_applied = 0.0
             sl = self.decks.get(e["slave"])
             if sl is not None:
                 sl.stretch.no_bypass = True      # no mode-flap phase kicks
@@ -256,6 +268,27 @@ class DJSubmix:
         # If drift outruns the PLL while the slave is still fading in, snap
         # again (inaudible at low gain) rather than let it trainwreck.
         if abs(grid_err) > RESNAP_ERR and slave.gain < RESNAP_GAIN:
+            # RUN-IN TEMPO CALIBRATION: each resnap IS a drift measurement
+            # - grid_err beats accumulated since the last snap. A stored
+            # bpm wrong beyond the trim cap (the measured half-beat flam
+            # class: 17-38 resnaps, then audible double beats) shows up
+            # here as a consistent drift RATE; fold it into the deck's
+            # BASE rate while still inaudible, where a rate step is free.
+            # By the time the deck is audible the tempo ratio is right and
+            # the PLL only holds phase.
+            now = self.clock
+            last = self._cal_last
+            if last is not None:
+                dt = (now - last) / RATE
+                if 0.6 <= dt <= 12.0:
+                    corr = float(np.clip(-grid_err * beat_s / dt,
+                                         -0.02, 0.02))
+                    if abs(corr) > 0.0015 \
+                            and abs(self._cal_applied + corr) <= 0.05:
+                        slave.rate *= (1.0 + corr)
+                        self._cal_applied += corr
+                        self._stat_cals += 1
+            self._cal_last = now
             slave.phase_snap(master.beat_phase() + bias)
             slave.rate_trim = 0.0
             self._apll_err = None
@@ -448,6 +481,8 @@ class DJSubmix:
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
                 "sync": sync,
                 "sync_stats": {"resnaps": self._stat_resnaps,
-                               "nudges": self._stat_nudges},
+                               "nudges": self._stat_nudges,
+                               "cals": self._stat_cals,
+                               "cal_applied": round(self._cal_applied, 4)},
                 "mix_gain": round(self.mix_gain, 4), "decks": decks,
                 "pending_events": len(self._auto)}

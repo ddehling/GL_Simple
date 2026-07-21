@@ -603,6 +603,22 @@ def camelot_of(pc, mode):
     return f"{num}{'A' if mode == 'minor' else 'B'}"
 
 
+def chroma_profile(chroma_a_origin, frame_energy):
+    """Energy-weighted mean 12-bin A-origin chroma, L1-normalized - the
+    track's persistent harmonic fingerprint (DB v12 tracks.chroma). Seam
+    scoring rotates it by the planned playback rate's TRUE (fractional)
+    pitch shift, which integer Camelot space cannot express, and it is
+    robust to key-detection mislabels because it never names a key."""
+    w = np.maximum(frame_energy, 0.0)
+    if w.sum() <= 0:
+        w = np.ones_like(w)
+    mean_a = (chroma_a_origin * w[:, None]).sum(axis=0) / w.sum()
+    tot = float(mean_a.sum())
+    if tot <= 1e-12:
+        return None
+    return [round(float(v), 5) for v in (mean_a / tot)]
+
+
 def estimate_key(chroma_a_origin, frame_energy):
     """Krumhansl-Schmuckler over the energy-weighted mean chroma.
 
@@ -1199,6 +1215,7 @@ def analyze_samples(samples, deep=True):
         "key_pc": key_pc, "key_mode": key_mode,
         "camelot": camelot, "key_conf": round(key_conf, 3),
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",
+        "chroma": chroma_profile(chroma, frame_energy),
         "loudness_gain_db": round(estimate_loudness_gain(samples), 2),
         "kick_offset_s": measure_kick_offset(samples, grid),
         "energy_curve": energy_curve_2hz(bands),

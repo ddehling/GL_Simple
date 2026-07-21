@@ -1,0 +1,55 @@
+# OPTIONAL: ML music-structure labeling for the DJ library
+# (tools/dj_structure.py / the planner's "Structure (ML)" button).
+#
+# Everything works without these - tracks just keep the internal SSM
+# sections and get no chorus/verse/bridge labels. With them, allin1
+# (All-In-One Music Structure Analyzer) labels every track's segments
+# and seam planning stops entering tracks mid-chorus.
+#
+# Deliberately NOT in requirements.txt: torch is heavy and useless on
+# the Raspberry Pi image-display installs. Install on DJ machines only.
+#
+# Install torch first exactly as for the vocal pass (see
+# requirements-dj-vocals.txt: cu126 index for NVIDIA, cpu index
+# otherwise), then:
+#
+#   pip install -r requirements-dj-structure.txt
+#
+# WINDOWS NOTE - NATTEN: allin1 depends on natten (neighborhood
+# attention), which publishes NO Windows wheels at all (verified
+# 2026-07-20 against https://whl.natten.org - linux x86-64/aarch64
+# only). On Windows, the supported route is a WSL Ubuntu venv; the
+# planner's "Structure (ML)" button and the "Analyze all" pipeline
+# auto-detect it and launch the pass through wsl.exe.
+#
+# VERSION TRAP (learned 2026-07-20): allin1 (2023) uses NATTEN's OLD
+# functional API (natten1dav/natten1dqkrpb), REMOVED in natten >= 0.15.
+# Modern natten wheels import fine but allin1 then fails with
+# "cannot import name 'natten1dav'". Upstream has open, unmerged
+# compatibility PRs. The working stack is the era-correct pin:
+#   Python 3.11 + torch 2.0.1+cu118 + natten 0.14.6+torch200cu118
+# The 0.14.6 wheels live only on the LEGACY archive
+# (shi-labs.com/natten/wheels - TLS cert expired, hence curl -k below;
+# whl.natten.org only hosts >= 0.17.5).
+#
+#   # PowerShell (admin), then reboot:
+#   wsl --install -d Ubuntu-24.04
+#
+#   # inside Ubuntu (python3.11 via uv - no sudo needed for it):
+#   sudo apt update && sudo apt install -y python3-dev build-essential ffmpeg
+#   curl -LsSf https://astral.sh/uv/install.sh | sh
+#   ~/.local/bin/uv venv ~/allin1 --python 3.11 --seed
+#   ~/allin1/bin/pip install torch==2.0.1 torchaudio==2.0.2 \
+#       --index-url https://download.pytorch.org/whl/cu118
+#   curl -sk -o /tmp/natten.whl "https://shi-labs.com/natten/wheels/cu118/torch2.0.0/natten-0.14.6%2Btorch200cu118-cp311-cp311-linux_x86_64.whl"
+#   ~/allin1/bin/pip install /tmp/natten.whl
+#   ~/allin1/bin/pip install "numpy<2" cython
+#   ~/allin1/bin/pip install --no-build-isolation git+https://github.com/CPJKU/madmom
+#   ~/allin1/bin/pip install allin1
+#
+# The venv must live at ~/allin1 (or set $DJ_WSL_ALLIN1_PY on Windows to
+# the venv's python path). The planner's "Structure (ML)" button and the
+# "Analyze all" pipeline auto-detect it and launch through wsl.exe.
+#
+# If none of this works, skip the feature - it degrades gracefully.
+allin1

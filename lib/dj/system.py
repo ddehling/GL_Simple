@@ -20,6 +20,8 @@ import os
 import threading
 import time
 
+import numpy as np
+
 from lib.dj.brain import GLIDE_PER_S, Brain, load_library, TrackInfo
 from lib.dj.db import LibraryDB
 from lib.dj.submix import DJSubmix
@@ -98,9 +100,14 @@ class DJSystem:
         self._wd_loop = False        # continuity watchdog's safety loop
         self._seam_metrics = None    # collected while a transition runs
         self._last_seam = None       # last seam's measured quality (web)
+        self._flam_pairs = set()     # (a_id, b_id) seams that flam-bailed:
+                                     # retries become deliberate fades
+        self._pulse = (0.0, 0.0)     # momentary energy tap: (value, t_set)
         self._decoded = {}           # track_id -> stereo samples (RAM cache)
         self._decoded_order = []
         self._decoding = set()
+        self._decoded_stems = {}     # track_id -> {stem: float16 array}
+        self._grid_fix = {}          # track_id -> verified-tempo correction
         self._decode_lock = threading.Lock()
         self._pending = []           # queued control requests
         self._lock = threading.Lock()
@@ -328,7 +335,36 @@ class DJSystem:
         self.autopilot = bool(on)
 
     def set_energy_nudge(self, x):
-        self._energy_nudge = float(max(-0.4, min(0.4, x)))
+        x = float(max(-0.4, min(0.4, x)))
+        changed = abs(x - self._energy_nudge) > 0.049
+        self._energy_nudge = x
+        if changed:
+            self._queue_steer_replan()
+
+    def set_energy_pulse(self, x):
+        """Momentary PUSH/COOL tap: +-x on the arc target from NOW,
+        decaying linearly to zero over 15 min. Unlike the nudge slider
+        (which stays where you left it all night), a tap is a reaction -
+        it should wear off on its own."""
+        self._pulse = (float(max(-0.4, min(0.4, x))), time.time())
+        self._queue_steer_replan()
+
+    def _queue_steer_replan(self):
+        """Energy steering must be FELT: the next pick is locked in
+        minutes before the seam (early decode), so without this a
+        nudge/tap/arc-edit only steers the pick AFTER next - the controls
+        read as dead. Queue a soft replan so the very next transition
+        obeys the new target."""
+        with self._lock:
+            self._pending.append(("steer_replan", None))
+
+    def energy_pulse(self):
+        """The tap's current (decayed) contribution."""
+        val, t0 = self._pulse
+        if not val:
+            return 0.0
+        left = 1.0 - (time.time() - t0) / 900.0
+        return val * left if left > 0.0 else 0.0
 
     def set_arc_waypoints(self, pts):
         """Steer the night's arc live: [(progress 0..1, energy 0..1)]
@@ -431,7 +467,8 @@ class DJSystem:
         return theme.arc_target(progress)
 
     def arc_target(self):
-        target = self._arc_base(self.arc_progress()) + self._energy_nudge
+        target = self._arc_base(self.arc_progress()) + self._energy_nudge \
+            + self.energy_pulse()
         # ARC FEEDBACK: if what actually PLAYED has been running hotter or
         # cooler than the theme's arc (library gaps, anchor picks), lean
         # the next choice the other way instead of undershooting all night.
@@ -625,6 +662,7 @@ class DJSystem:
             "arc_phase": round(self.arc_progress(), 4),
             "arc_heat": round(self.arc_target(), 3),
             "energy_nudge": self._energy_nudge,
+            "energy_pulse": round(self.energy_pulse(), 2),
             "current": self._track_brief(cur),
             "next": self._track_brief(nxt),
             "style": self.plan["style"] if self.plan else None,
@@ -796,6 +834,22 @@ class DJSystem:
                 self._arc_waypoints.sort()
                 self._log({"event": "arc", "waypoints": self._arc_waypoints})
                 self._horizon_key = None
+                # A drawn curve is steering too - next pick must obey it.
+                if self.state == "playing" \
+                        and not getattr(self, "_next_requested", False):
+                    self.next_track = None
+                    self.plan = None
+            elif kind == "steer_replan" and self.state == "playing":
+                # Nudge/tap changed the energy target: drop the locked-in
+                # next pick (unless the user chose it by hand) so the very
+                # next transition follows the new target. Armed transitions
+                # are left alone - too late to re-aim those.
+                if not getattr(self, "_next_requested", False):
+                    self.next_track = None
+                    self.plan = None
+                    self._horizon = []
+                    self._horizon_key = None
+                    self._log({"event": "steer_replan"})
             elif kind == "hold" and self.state == "playing"                     and self.current is not None:
                 bump = (self.current.phrase_beats or 32)                     * self.current.period_s
                 self._exit_played += bump
@@ -857,7 +911,6 @@ class DJSystem:
         if self.state == "idle":
             self._start_first()
         elif self.state == "playing":
-            self._maybe_arrange()
             self._maybe_plan()
             self._maybe_horizon()
         elif self.state == "armed":
@@ -1001,42 +1054,6 @@ class DJSystem:
         except Exception as e:
             print(f"[DJ] horizon skipped: {e}")
 
-    def _maybe_arrange(self):
-        """LIVE MICRO-ARRANGEMENT: when the current track sits in a long,
-        highly repetitive groove with plenty of runway left, jump forward
-        exactly one phrase (a 32-beat cut preserves beat/bar/phrase phase,
-        so it's rhythmically seamless) - the radio-edit move a DJ does with
-        hot cues. At most once per track, never while a transition is
-        armed, never near the planned exit."""
-        cur = self.current
-        if cur is None or self.next_track is not None:
-            return
-        if getattr(self, "_arranged_track", None) == cur.id:
-            return
-        if cur.phrase_beats <= 0 or cur.phrase_conf < 0.1:
-            return
-        tel = self.submix.telemetry
-        deck = (tel or {}).get("decks", {}).get(self.active_deck)
-        if not deck or not deck.get("playing"):
-            return
-        pos = deck["time_s"]
-        played = (self.submix.clock - self._started_clock) / RATE
-        span = cur.phrase_beats * cur.period_s
-        # Runway: the jump must not swallow the planned exit region.
-        if played < 75.0 or pos + 2 * span > cur.duration_s - 60.0:
-            return
-        sec = cur.section_at(pos)
-        if (sec and sec.get("kind") == "groove"
-                and sec.get("repetitiveness", 0.0) > 0.8
-                and sec["end_s"] - sec["start_s"] > 75.0
-                and pos - sec["start_s"] > 30.0
-                and sec["end_s"] - pos > span + 15.0):
-            self.submix.post({"cmd": "jump", "deck": self.active_deck,
-                              "time_s": pos + span})
-            self._arranged_track = cur.id
-            self._log({"event": "phrase_jump", "track": cur.title,
-                       "from_s": round(pos, 1), "beats": cur.phrase_beats})
-
     def _start_first(self):
         first = None
         while self._setlist_queue and first is None:
@@ -1108,7 +1125,9 @@ class DJSystem:
         # through the whole next blend.
         tel = (self.submix.telemetry or {}).get("decks", {})
         live_rate = (tel.get(self.active_deck) or {}).get("rate", 1.0)
-        out_bpm = self.current.bpm * live_rate
+        # Verified tempo when we have one: the stored bpm of the PLAYING
+        # track may be the wrong side of a flam pair too.
+        out_bpm = self._true_bpm(self.current) * live_rate
 
         # EARLY: choose the next track and kick off its background decode as
         # soon as we're settled into the current one, so the decode (a ~0.5s
@@ -1185,10 +1204,32 @@ class DJSystem:
             self.brain.library.remove(self.next_track)
             self.next_track = None
             return
+        # A seam that already flam-bailed can't hold a lock (one side's
+        # grid is untrustworthy despite its confidence) - retry it as a
+        # DELIBERATE fade, the same honest answer given to tempo clashes.
+        if (self.current.id, self.next_track.id) in self._flam_pairs:
+            self._next_meta = dict(self._next_meta or {})
+            self._next_meta["tempo_clash"] = True
         after = pos + max(self._exit_played - played, MIN_LEAD_S)
         plan = self.brain.plan_transition(self.current, self.next_track,
                                           self._next_meta,
-                                          after_s=min(after, deadline))
+                                          after_s=min(after, deadline),
+                                          arc=self.arc_target())
+        # VERIFIED TEMPO: the plan's rate was computed from the STORED
+        # bpm; when predecode measured the incoming track's true tempo,
+        # rescale so the deck plays at the tempo that actually matches
+        # (split-aware: under the varispeed meet-in-the-middle both
+        # sides carry sqrt of the correction).
+        fix = self._grid_fix.get(self.next_track.id)
+        if fix:
+            f = self.next_track.bpm / fix["bpm"]
+            if abs(f - 1.0) > 0.003:
+                import math as _m
+                if plan.get("a_rate") not in (1.0, None):
+                    plan["rate"] *= _m.sqrt(f)
+                    plan["a_rate"] /= _m.sqrt(f)
+                else:
+                    plan["rate"] *= f
         if plan["out_s"] <= pos + MIN_LEAD_S:
             plan["out_s"] = self.current.nearest_downbeat(pos + MIN_LEAD_S
                                                           + 2 * self.current.period_s)
@@ -1209,16 +1250,55 @@ class DJSystem:
             # deck - recall it before the new transition takes over.
             self.submix.post({"cmd": "cancel", "txn": self._recovery_txn})
             self._recovery_txn = None
+        # STEM STYLES: verify the decoded stems actually made it (disk may
+        # have changed since library load, decode may have failed) - if
+        # not, downgrade to the classic geometry BEFORE building events so
+        # the stem_gains commands are never posted against a stem-less
+        # deck (which would no-op and leave the full mix riding).
+        with self._decode_lock:
+            stems_b = self._decoded_stems.get(self.next_track.id)
+            stems_a = self._decoded_stems.get(self.current.id) \
+                if self.current is not None else None
+        need_a = plan["style"] in ("stem_drum_swap", "acapella_out")
+        need_b = plan["style"] == "stem_drum_swap"
+        if need_a and stems_a is None:
+            # Cache may have evicted A's stems (loaded two tracks ago) -
+            # they're on disk, re-decode inline (a few seconds on the
+            # planner thread, well before the blend arms), aligned to the
+            # ACTIVE deck's buffer so attach_stems maps 1:1.
+            try:
+                d = self.submix.decks.get(self.active_deck)
+                n = len(d.samples) if (d is not None
+                                       and d.samples is not None) else 0
+                if n and getattr(self.current, "has_stems", False):
+                    from lib.dj.stems import load_stems
+                    stems_a = load_stems(self.db.music_root,
+                                         self.current.id, expected_len=n)
+            except Exception as e:
+                print(f"[DJ] stem re-decode failed: {e}")
+                stems_a = None
+        if (need_b and stems_b is None) or (need_a and stems_a is None):
+            self._log({"event": "stem_downgrade", "style": plan["style"]})
+            plan["style"] = "bass_swap"
+            plan.pop("tail_beats", None)
+        elif need_a and stems_a is not None:
+            self.submix.post({"cmd": "attach_stems",
+                              "deck": self.active_deck, "stems": stems_a})
         self.submix.post({"cmd": "load", "deck": incoming, "samples": samples,
                           "track_id": self.next_track.id,
-                          "grid": self.next_track.grid,
+                          # The corrected grid IS the sync reference - a
+                          # wrong-tempo grid is what the flam seams chased.
+                          "grid": (fix["grid"] if fix
+                                   else self.next_track.grid),
                           "gain_db": self.next_track.gain_db,
                           "kick_offset_s": self.next_track.kick_offset_s,
                           "pitch_st": plan.get("pitch_st", 0),
-                          "cue_s": plan["in_s"]})
+                          "cue_s": plan["in_s"],
+                          "stems": stems_b})
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,
             self.current, self.next_track)
+        events += self._perc_bed_events(plan, blend_at, swap_at)
         # Tag the whole script as one transaction so _do_abort can recall
         # every not-yet-fired event with a single cancel.
         self._txn_id += 1
@@ -1292,6 +1372,10 @@ class DJSystem:
         self.plan = None
         self.swap_at = None
         self.blend_at = None
+        # Verified-tempo fixes: keep only the now-playing track's (the
+        # next track re-verifies at its own predecode).
+        self._grid_fix = {k: v for k, v in self._grid_fix.items()
+                          if k == self.current.id}
         self.state = "playing"
 
     def _do_seek(self, val):
@@ -1536,7 +1620,16 @@ class DJSystem:
         if sync:
             sl = decks.get(sync.get("slave"))
             ms = decks.get(sync.get("master"))
-            if (sl and ms and sl.get("playing") and ms.get("playing")
+            # SETTLING GRACE: the first seconds after the blend starts are
+            # the PLL converging from its snap - especially urgent exits
+            # (mix_now arms with ~0.3s run-in, no quiet settling window).
+            # Counting convergence as flam made the bailout abort EVERY
+            # mix_now (measured: 0.22-0.47 beats within 3s, four aborts in
+            # a row on the same pair). Judge only settled lock.
+            settled = (self.blend_at is not None
+                       and clk >= self.blend_at + int(6.0 * RATE))
+            if (settled and sl and ms
+                    and sl.get("playing") and ms.get("playing")
                     and (sl.get("gain") or 0) > 0.25
                     and (ms.get("gain") or 0) > 0.25):
                 # Judge against the PLL's actual target: sync holds the
@@ -1550,6 +1643,18 @@ class DJSystem:
                     m["max_err"] = abs(err)
                 if abs(err) > 0.12:      # flam must PERSIST, not spike once
                     m["err_n"] += 1
+                # LIVE FLAM BAILOUT: persistent large error with both decks
+                # audible means a stored tempo is wrong beyond the PLL's
+                # trim authority - the drift only grows (measured seams ran
+                # to half-beat OPPOSITION for the rest of the blend, 17-38
+                # resnaps, user-heard double beats). Clean seams never
+                # sustain: p90 max_err 0.094 and spikes don't repeat, so
+                # err_n>=3 with a current error near a fifth of a beat is
+                # unambiguous. Bail once, live, instead of logging it after.
+                if (not m.get("bailed") and m["err_n"] >= 3
+                        and abs(err) >= 0.18):
+                    m["bailed"] = True
+                    self._flam_bailout(abs(err))
         rms = tel.get("rms")
         if (rms is not None and self.blend_at is not None
                 and clk >= self.blend_at):
@@ -1563,6 +1668,37 @@ class DJSystem:
         st = tel.get("sync_stats") or {}
         m["resnaps"] = st.get("resnaps", 0)
         m["nudges"] = st.get("nudges", 0)
+        m["cals"] = st.get("cals", 0)
+        m["cal_applied"] = st.get("cal_applied", 0.0)
+
+    def _flam_bailout(self, err):
+        """The PLL is losing this blend. Before the commit point, recall
+        the whole transition (the rescue layer restores A and replans);
+        past it, FINISH FAST - collapse the outgoing deck over ~4 beats so
+        the opposition kicks stop, instead of riding the double beat for
+        the rest of the overlap. The seam self-assessment still records
+        the flam, so pair memory demotes this pairing either way. The pair
+        also goes on the session's flam list: a retry of the SAME seam
+        must be a deliberate fade, not the identical doomed beat-match
+        (measured: mix_now retried the same plan and abort-looped)."""
+        clk = self.submix.clock
+        if self.current is not None and self.next_track is not None:
+            self._flam_pairs.add((self.current.id, self.next_track.id))
+        if self._do_abort(via="flam"):
+            self._log({"event": "flam_bailout", "mode": "abort",
+                       "err_beats": round(err, 3)})
+            return
+        beat = self.current.period_s if self.current is not None else 0.5
+        incoming = "b" if self.active_deck == "a" else "a"
+        self.submix.post_many([
+            {"at": clk, "cmd": "gain", "deck": self.active_deck,
+             "value": 0.0, "ramp_s": 4 * beat},
+            {"at": clk, "cmd": "eq", "deck": incoming, "low": 1.0,
+             "mid": 1.0, "high": 1.0, "ramp_s": 2 * beat},
+            {"at": clk + int(4 * beat * RATE), "cmd": "end_sync"},
+        ])
+        self._log({"event": "flam_bailout", "mode": "finish_fast",
+                   "err_beats": round(err, 3)})
 
     def _assess_seam(self, old):
         """SEAM SELF-ASSESSMENT: judge the transition that just finished
@@ -1676,7 +1812,14 @@ class DJSystem:
             return
         theme = self.brain.theme
         span = max(theme.max_play_s - theme.min_play_s, 1.0)
-        self._exit_played = theme.min_play_s + self.brain.rng.random() * span
+        # ARC-COUPLED ROTATION: at peak heat tracks rotate fast (real DJs
+        # ride 2-3 minutes per record and keep hitting); in the valleys
+        # they breathe long. heat=0 -> [0.25..1.0] of the span, heat=1 ->
+        # [0..0.45] - pacing itself follows the night's shape.
+        heat = self.arc_target()
+        frac = min(1.0, self.brain.rng.random() * (1.0 - 0.55 * heat)
+                   + 0.25 * (1.0 - heat))
+        self._exit_played = theme.min_play_s + frac * span
 
     def _predecode(self, track):
         """Start decoding `track` on a background daemon thread so the whole
@@ -1700,17 +1843,187 @@ class DJSystem:
                 s = None
                 self.last_error = f"decode failed: {track.path}: {e}"
                 print(f"[DJ] {self.last_error}")
+            stems = self._decode_stems(track, s)
+            if s is not None and track.id not in self._grid_fix:
+                self._verify_tempo(track, s)
             with self._decode_lock:
                 self._decoding.discard(track.id)
                 if s is not None:
                     self._decoded[track.id] = s
+                    if stems is not None:
+                        self._decoded_stems[track.id] = stems
                     # Keep only a couple of tracks cached (~106MB each).
                     while len(self._decoded_order) >= 3:
                         old = self._decoded_order.pop(0)
                         if old != track.id:
                             self._decoded.pop(old, None)
+                            self._decoded_stems.pop(old, None)
                     self._decoded_order.append(track.id)
         threading.Thread(target=work, daemon=True).start()
+
+    def _perc_bed_events(self, plan, blend_at, swap_at):
+        """PERCUSSION BED under a long_fade: the fade exists because the
+        pair can't beat-match, and its dip is where the floor's energy
+        leaks out. When the OUTGOING track has stems, tile 8 beats of its
+        own drums (downbeat-aligned, its own tempo - A is still the only
+        groove in the room) across the handoff, faded out before B's
+        groove needs the space. One pre-baked buffer through the fx bus -
+        no new mixer machinery."""
+        if plan["style"] != "long_fade" or self.current is None:
+            return []
+        d = self.submix.decks.get(self.active_deck)
+        stems = getattr(d, "stems", None) or \
+            self._decoded_stems.get(self.current.id)
+        if not stems or "drums" not in stems:
+            return []
+        cur = self.current
+        per = cur.period_s
+        ls = cur.nearest_downbeat(plan["out_s"] - 24 * per)
+        a = int(ls * RATE)
+        b = a + int(8 * per * RATE)
+        drums = stems["drums"]
+        if a < 0 or b > len(drums):
+            return []
+        loop = drums[a:b].astype(np.float32)
+        if float(np.abs(loop).max()) < 0.05:
+            return []                       # that stretch has no drums
+        span_s = min((swap_at - blend_at) / RATE + 2.0, 30.0)
+        if span_s < 6.0:
+            return []
+        reps = int(np.ceil(span_s / max(8 * per, 0.5)))
+        bed = np.tile(loop, (reps, 1))[:int(span_s * RATE)]
+        n = len(bed)
+        fi = int(min(2.0, span_s * 0.2) * RATE)
+        fo = int(min(5.0, span_s * 0.4) * RATE)
+        env = np.ones(n, dtype=np.float32)
+        env[:fi] = np.linspace(0.0, 1.0, fi, dtype=np.float32)
+        env[n - fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+        bed *= env[:, None] * 0.45 * getattr(d, "loudness_gain", 1.0)
+        self._log({"event": "perc_bed", "span_s": round(span_s, 1)})
+        return [{"at": blend_at, "cmd": "fx_play", "samples": bed,
+                 "gain": 1.0}]
+
+    def _verify_tempo(self, track, samples):
+        """TRUST BUT VERIFY the stored tempo against the ACTUAL audio.
+
+        The measured flam class (seams drifting to half-beat opposition,
+        17-38 resnaps) is a stored BPM wrong beyond the PLL's +/-1.2%
+        trim authority - the deck's grid becomes a WRONG sync reference
+        and the blend chases it. The full samples are in RAM at predecode
+        time, so re-measure the beat period on an 80s groove window and,
+        when the library disagrees, hand the deck a corrected grid and
+        rescale the planned rate. Local tempo on a groove window is a far
+        easier measurement than the scanner's whole-track problem (no
+        intros, no tempo ramps), so a confident local read outranks the
+        stored value. Runs on the decode background thread - zero cost to
+        the audio path."""
+        try:
+            if samples is None or track.bpm <= 0:
+                return
+            if self._urgent_exit:
+                # An urgent transition is waiting on this decode - a CPU
+                # burst here starves the audio callback (audible dropout
+                # right at the seam; user-heard). Skip: the run-in
+                # calibration + flam bailout cover this one seam, and the
+                # track gets verified on its next normal load.
+                return
+            dur = (len(samples) if samples.ndim == 1
+                   else samples.shape[0]) / RATE
+            if dur < 60.0:
+                return
+            span = min(64.0, dur * 0.5)
+            t0 = max(0.0, dur * 0.5 - span * 0.5)
+            a0, b0 = int(t0 * RATE), int((t0 + span) * RATE)
+            mono = (samples[a0:b0].mean(axis=1) if samples.ndim == 2
+                    else samples[a0:b0]).astype(np.float32)
+            from lib.dj.features import (frame_track, _onset_channels,
+                                         estimate_beat_grid, HOP, CHUNK)
+            # GIL-FRIENDLY framing: one 80s frame_track call holds the
+            # GIL in ~190ms batches (measured 1.15s total) - enough to
+            # underrun the Python audio callback. Chunk into 4s pieces
+            # (~60ms holds) with real sleeps between, each chunk padded
+            # 1s and trimmed so the causal band smoothing is warmed up -
+            # the concatenated frames are IDENTICAL to the single call
+            # (no boundary onsets to bias the tempo vote).
+            F, PAD = 160, 40                 # frames per chunk / warm-up
+            n_total = max(0, (len(mono) - CHUNK) // HOP + 1)
+            fb, fc = [], []
+            k = 0
+            while k < n_total:
+                nf = min(F, n_total - k)
+                pre = min(PAD, k)
+                a = (k - pre) * HOP
+                b = a + (pre + nf - 1) * HOP + CHUNK
+                if b > len(mono):
+                    break
+                bb, cc = frame_track(np.ascontiguousarray(mono[a:b]))
+                fb.append(bb[pre:])
+                fc.append(cc[pre:])
+                k += nf
+                time.sleep(0.015)            # air for the audio callback
+            if not fb:
+                return
+            bands = np.concatenate(fb)
+            onset_broad, _ob, onset_perc, _nov = _onset_channels(bands)
+            time.sleep(0.02)
+            grid, bpm, conf, _beats = estimate_beat_grid(
+                onset_broad + 0.5 * onset_perc)
+            if not grid or conf < 0.5 or bpm <= 0:
+                return
+            # Fold the measurement into the stored value's octave (a
+            # half/double-time read is a READ, not a tempo error).
+            best = min((bpm * m for m in (1.0, 2.0, 0.5)),
+                       key=lambda b: abs(np.log(b / track.bpm)))
+            dev = best / track.bpm - 1.0
+            if abs(dev) < 0.006:
+                return                      # stored value is fine
+            if abs(dev) > 0.06:
+                # A disagreement this large is more likely an estimator
+                # dispute (meter/half-time ambiguity) than a 6% tempo
+                # error - don't "correct" onto a maybe-wrong value.
+                self._log({"event": "tempo_dispute", "track": track.title,
+                           "stored": round(track.bpm, 2),
+                           "measured": round(best, 2)})
+                return
+            g0 = max(grid, key=lambda g: g.get("score", 0.0))
+            period = 60.0 / best
+            fb = (t0 + g0["first_beat_s"]) % period
+            self._grid_fix[track.id] = {
+                "bpm": best,
+                "grid": [{"start_s": 0.0, "end_s": dur, "period_s": period,
+                          "first_beat_s": fb, "bpm": best, "score": 1.0}],
+            }
+            self._log({"event": "tempo_fix", "track": track.title,
+                       "stored": round(track.bpm, 2),
+                       "measured": round(best, 2),
+                       "dev_pct": round(dev * 100.0, 2),
+                       "conf": round(conf, 2)})
+            print(f"[DJ] tempo fix: {track.title[:30]} stored "
+                  f"{track.bpm:.2f} -> measured {best:.2f} "
+                  f"({dev * 100:+.2f}%)")
+        except Exception as e:
+            print(f"[DJ] tempo verify failed for {track.path}: {e}")
+
+    def _true_bpm(self, track):
+        """The track's bpm with any verified-tempo fix applied."""
+        if track is None:
+            return 0.0
+        fix = self._grid_fix.get(track.id)
+        return fix["bpm"] if fix else track.bpm
+
+    def _decode_stems(self, track, samples):
+        """Decode a track's pre-rendered stems (float16, ~2x the mix's RAM
+        for all four) when they exist on disk. None on any failure - the
+        stem styles then downgrade to classic geometry at plan time."""
+        if samples is None or not getattr(track, "has_stems", False):
+            return None
+        try:
+            from lib.dj.stems import load_stems
+            return load_stems(self.db.music_root, track.id,
+                              expected_len=len(samples))
+        except Exception as e:
+            print(f"[DJ] stem decode failed for {track.path}: {e}")
+            return None
 
     def _decode_gil_friendly(self, path):
         """Decode to stereo float32, converting in chunks that RELEASE the
@@ -1745,8 +2058,13 @@ class DJSystem:
         if not self.threaded:
             s = self._decode(track)
             if s is not None:
+                stems = self._decode_stems(track, s)
+                if track.id not in self._grid_fix:
+                    self._verify_tempo(track, s)
                 with self._decode_lock:
                     self._decoded[track.id] = s
+                    if stems is not None:
+                        self._decoded_stems[track.id] = stems
                     self._decoded_order.append(track.id)
             return s
         self._predecode(track)

@@ -406,7 +406,19 @@ class BeatportClient:
     def search(self, query, type="tracks", per_page=25, page=1, **filters):
         """Catalog search. type: tracks|releases|artists|labels|charts.
         Extra keyword filters (bpm_low, bpm_high, genre_id, key_id, ...)
-        pass through to the API. Returns the list of result dicts."""
+        pass through to the API. Returns the list of result dicts.
+
+        NOTE: the API wants RANGE filters in colon syntax ("bpm":
+        "110:128") and SILENTLY IGNORES bpm_low/bpm_high (verified live
+        2026-07-20 - every bpm-boxed search since this integration
+        shipped was actually unfiltered). Translated here so callers keep
+        the readable kwargs. Empty query + genre_id is a valid paginated
+        full-catalog browse."""
+        lo = filters.pop("bpm_low", None)
+        hi = filters.pop("bpm_high", None)
+        if lo is not None or hi is not None:
+            filters["bpm"] = (f"{int(lo if lo is not None else 40)}:"
+                              f"{int(hi if hi is not None else 999)}")
         params = {"q": query, "type": type, "per_page": per_page,
                   "page": page, **filters}
         payload = self._get("catalog/search/", params) or {}
@@ -422,6 +434,11 @@ class BeatportClient:
     def top(self, genre_id, per_page=100):
         payload = self._get(f"catalog/tracks/top/{int(genre_id)}/",
                             {"per_page": per_page}) or {}
+        return payload.get("results", payload.get("data", []))
+
+    def genres(self):
+        """All Beatport genres, [{'id': ..., 'name': ...}, ...]."""
+        payload = self._get("catalog/genres/", {"per_page": 200}) or {}
         return payload.get("results", payload.get("data", []))
 
     def my_tracks(self, page=1, per_page=100):
@@ -626,6 +643,46 @@ def fit_vs_track(cur, cand, brain=None):
                and key_fit >= 0.55 else "workable")
     return {"mixable": True, "stretch_pct": pct, "half_double": hd,
             "key_fit": round(key_fit, 2), "verdict": verdict}
+
+
+def fit_between(a, b, ghost, brain=None):
+    """CONNECTOR fit: how well `ghost` bridges the gap a -> X -> b.
+    Both directions must work - X mixes out of a AND b mixes out of X.
+    Returns {mixable, key_fit, verdict, in_fit, out_fit} where key_fit is
+    the geometric mean of the two directional key fits and verdict is the
+    WORSE of the two directions (a bridge is only as good as its weaker
+    seam)."""
+    from lib.dj.brain import Brain
+    if brain is None:
+        brain = Brain([], _neutral_theme())
+    f_in = fit_vs_track(a, ghost, brain=brain)       # a -> X
+    f_out = fit_vs_track(ghost, b, brain=brain)      # X -> b
+    rank = {"great": 3, "good": 2, "workable": 1}
+    v_in = rank.get(f_in["verdict"], 0)
+    v_out = rank.get(f_out["verdict"], 0)
+    worse = min((v_in, f_in["verdict"]), (v_out, f_out["verdict"]))[1]
+    kf = (max(f_in["key_fit"], 0.0) * max(f_out["key_fit"], 0.0)) ** 0.5
+    return {"mixable": f_in["mixable"] and f_out["mixable"],
+            "key_fit": round(kf, 2),
+            "verdict": worse if (f_in["mixable"] and f_out["mixable"])
+            else "fade only (bridges one side, not both)",
+            "in_fit": f_in, "out_fit": f_out,
+            # fit_vs_track's shape so the Discover fit column renders it.
+            "stretch_pct": f_in.get("stretch_pct"),
+            "half_double": (f_in.get("half_double")
+                            or f_out.get("half_double"))}
+
+
+def connector_bpm_window(a, b, stretch=1.075):
+    """BPM range a connector must sit in to be tempo-reachable from BOTH
+    sides ([lo, hi], or a widened midpoint window when the two tracks'
+    reachable ranges don't overlap - the two-step bridge mentality)."""
+    lo = max(a.bpm / stretch, b.bpm / stretch)
+    hi = min(a.bpm * stretch, b.bpm * stretch)
+    if lo <= hi:
+        return lo, hi
+    mid = (a.bpm * b.bpm) ** 0.5
+    return mid / stretch, mid * stretch
 
 
 def fit_vs_library(library, cand, top=5):

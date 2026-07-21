@@ -301,6 +301,17 @@ class AudioEngine:
         # the caller's thread in schedule_event (before the async decode) so
         # the caller can reference the track later via fade_out_event.
         self._evt_seq = itertools.count()
+        # STOP GENERATION: stop_all() can only fade tracks that already
+        # exist - a oneshot whose background DECODE was still in flight
+        # would materialize AFTER the stop and play right through a set
+        # switch (user-heard: the old set's music under the new set / the
+        # DJ). stop_all bumps this; an in-flight decode captured the old
+        # value and silently drops its post.
+        self._stop_gen = 0
+        # While True, schedule_event is a no-op (the DJ owns the
+        # soundtrack: weather events keep driving visuals but must not
+        # layer their sounds over the mix). Set by Stories_OGL._dj_start.
+        self.oneshots_muted = False
         # Optional monitor tap: a callable(buf) invoked with each mixed output
         # block (shape (frames, CHANNELS) float32 @ SAMPLE_RATE) on the audio
         # thread. Lets the audio analyzer react to the show's OWN output (the
@@ -348,7 +359,10 @@ class AudioEngine:
         self._cmds.put(("stop_ambient", duration))
 
     def stop_all(self, duration: float = FADE_OUT):
-        """Fade out all tracks (ambient + oneshots)."""
+        """Fade out all tracks (ambient + oneshots) AND invalidate any
+        oneshot whose decode is still in flight (it would otherwise
+        materialize after this stop and play right through)."""
+        self._stop_gen += 1
         self._cmds.put(("stop_all", duration))
 
     def schedule_event(self, path, volume: float = 1.0, duration: float = 0.0,
@@ -369,6 +383,10 @@ class AudioEngine:
         # Generate the key now, on the caller's thread, so it can be returned
         # before the async decode posts the track to the mixer.
         key = f"os_{p.name}_{time.monotonic_ns()}_{next(self._evt_seq)}"
+        if self.oneshots_muted:
+            return key            # DJ owns the soundtrack; key stays valid
+        gen = self._stop_gen      # captured BEFORE the async decode
+
         def _decode_and_queue():
             try:
                 decoded = miniaudio.decode_file(
@@ -379,6 +397,15 @@ class AudioEngine:
                 raw_bytes = bytes(decoded.samples)
                 samples = np.frombuffer(raw_bytes,
                                         dtype=np.float32).reshape(-1, CHANNELS)
+                if gen != self._stop_gen or self.oneshots_muted:
+                    # A stop_all (set switch / DJ takeover) landed while
+                    # this decode was in flight - the show that scheduled
+                    # this sound is gone. Posting it would play the OLD
+                    # set's audio under the new one (the intermittent
+                    # "previous set keeps playing" bug).
+                    print(f"[AudioEngine] Dropped stale oneshot {p.name} "
+                          "(stopped while decoding)")
+                    return
                 self._cmds.put(("oneshot_mem", samples, p, volume, duration,
                                 narrative, fade_in, key, soundpool))
             except Exception as e:

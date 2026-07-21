@@ -2358,6 +2358,8 @@ class EnvironmentalSystem:
                     elif action == 'nudge':
                         self._dj_pending_nudge = float(arg)
                         self._dj.set_energy_nudge(float(arg))
+                    elif action == 'pulse':
+                        self._dj.set_energy_pulse(float(arg))
                     elif action == 'next_id':
                         self._dj.request_next(int(arg))
                     elif action == 'seek':
@@ -2541,6 +2543,19 @@ class EnvironmentalSystem:
         from lib.dj import resolve_music_dir
         from lib.dj.system import DJSystem
         engine = self.scheduler.state.get("soundengine")
+        # FULL soundtrack takeover BEFORE the DJ mounts its submix (queue
+        # order matters: this stop_all must precede the attach or it would
+        # fade the DJ's own track). stop_ambient alone left long ONESHOTS
+        # (random-event clips, narrative beds) playing under the mix, and
+        # its generation bump kills any oneshot still decoding. Muting
+        # keeps weather events (which continue for the visuals) from
+        # layering new sounds over the set.
+        if engine is not None:
+            try:
+                engine.stop_all(duration=1.5)
+                engine.oneshots_muted = True
+            except Exception:
+                pass
         self._dj = DJSystem(
             resolve_music_dir(self.dj_cfg.get("music_dir", "")),
             engine=engine,
@@ -2567,6 +2582,10 @@ class EnvironmentalSystem:
             self._dj_last_error = self._dj.last_error or "DJ failed to start"
             self._dj = None
             print(f"[DJ] start failed: {self._dj_last_error}")
+            # Give the soundtrack back - we already stopped/muted it above.
+            if engine is not None:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
             return
         self._dj_last_error = ""
         # The DJ takes the soundtrack: silence state ambient, point the
@@ -2590,12 +2609,21 @@ class EnvironmentalSystem:
             self.set_audio_source(self._dj_prev_source)
             self._dj_prev_source = None
         self.scheduler.state['dj_active'] = False
-        # Hand the soundtrack back: re-trigger the current state's ambient
-        # (remembered by _trigger-time bookkeeping even while the DJ played).
+        # Hand the soundtrack back: unmute event sounds and re-trigger the
+        # current state's ambient (remembered by _trigger-time bookkeeping
+        # even while the DJ played).
+        engine = self.scheduler.state.get("soundengine")
+        if engine is not None:
+            engine.oneshots_muted = False
+            self._restore_state_ambient(engine)
+        print("[DJ] stopped - state ambient restored")
+
+    def _restore_state_ambient(self, engine):
+        """Re-trigger the current weather state's ambient bed (used when
+        the DJ hands the soundtrack back, or fails to take it)."""
         try:
             ambient = self.active_effects.get("ambient_sound")
             if ambient:
-                engine = self.scheduler.state["soundengine"]
                 media_root = Path(self.scheduler.state.get("media_root",
                                                            "media"))
                 params = self.weather_state.get_weather_params(
@@ -2605,7 +2633,6 @@ class EnvironmentalSystem:
                                     ari=params.get("ARI", 0.0))
         except Exception as e:
             print(f"[DJ] ambient restore failed: {e}")
-        print("[DJ] stopped - state ambient restored")
 
     def _cycle_audio_source(self):
         if self.analyzer is None:

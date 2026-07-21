@@ -91,9 +91,16 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
     if refine_grids and not force:
         seen = {os.path.normcase(p) for p in todo}
         for r in db.conn.execute(
-                "SELECT path, bpm_conf FROM tracks WHERE error IS NULL"
+                "SELECT path, bpm_conf, axes FROM tracks WHERE error IS NULL"
                 " AND missing = 0 AND bpm_conf IS NOT NULL"
                 " AND bpm_conf < 0.75"):
+            # ONE refine attempt per analysis version: a track whose conf
+            # stays low AFTER a refine is honestly low (loose grid, live
+            # material) - requeueing it forever made every button press
+            # re-chew the same stubborn tail (user-reported).
+            ax = json.loads(r["axes"]) if r["axes"] else {}
+            if ax.get("grid_refined_v") == ANALYSIS_VERSION:
+                continue
             p = db.abs(r["path"])
             if os.path.normcase(p) not in seen and os.path.exists(p):
                 todo.append(p)
@@ -129,14 +136,22 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
         deltas, promoted = [], 0
         for rel, old in prior_conf.items():
             row = db.conn.execute(
-                "SELECT bpm_conf FROM tracks WHERE path = ?"
+                "SELECT id, bpm_conf, axes FROM tracks WHERE path = ?"
                 " AND error IS NULL", (rel,)).fetchone()
             if row is None or row["bpm_conf"] is None:
                 continue
+            # Stamp the attempt (survives rescans via _KEEP_AXES_KEYS) so
+            # the next refine run skips this track instead of re-chewing
+            # the stubborn tail forever.
+            ax = json.loads(row["axes"]) if row["axes"] else {}
+            ax["grid_refined_v"] = ANALYSIS_VERSION
+            db.conn.execute("UPDATE tracks SET axes = ? WHERE id = ?",
+                            (json.dumps(ax), row["id"]))
             new = float(row["bpm_conf"])
             deltas.append(new - old)
             if old < 0.7 <= new:      # crossed the precision-style gate
                 promoted += 1
+        db.conn.commit()
         if deltas:
             summary["grid_refine"] = {
                 "refined": len(deltas),
@@ -158,35 +173,46 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
     return summary
 
 
+# Axes keys owned by SEPARATE passes that must survive a rescan: upsert
+# replaces the whole axes JSON with the fresh analysis result, which knows
+# nothing about them. Missing "vc"/"vc_hop" here was a real bug (2026-07-20):
+# every grid-refine rescan silently WIPED the fine demucs vocal curves, and
+# the next vocal-curves pass re-measured all of them on GPU - the "scanning
+# tools redo everything" loop.
+_KEEP_AXES_KEYS = ("vocal", "vocal_src", "vc", "vc_hop", "grid_refined_v")
+
+
 def _vocal_snapshot(db, abs_path):
-    """The ML vocal pass costs ~1 min/track of CPU - an analysis-version
-    rescan must NOT wipe it. Snapshot the measured vocal data before the
-    upsert (which rebuilds sections) so it can be re-applied."""
+    """Separate-pass results cost minutes/track of GPU - an analysis-version
+    rescan must NOT wipe them. Snapshot the preserved axes keys + measured
+    section vocalness before the upsert (which rebuilds sections)."""
     row = db.conn.execute("SELECT id, axes FROM tracks WHERE path = ?",
                           (db.rel(abs_path),)).fetchone()
     if row is None or not row["axes"]:
         return None
     axes = json.loads(row["axes"])
-    if not axes.get("vocal_src"):
+    keep = {k: axes[k] for k in _KEEP_AXES_KEYS if k in axes}
+    if not keep:
         return None
-    secs = db.conn.execute(
-        "SELECT start_s, vocalness FROM sections WHERE track_id = ?",
-        (row["id"],)).fetchall()
-    return {"vocal": axes.get("vocal", 0.0), "src": axes["vocal_src"],
-            "secs": [(r["start_s"], r["vocalness"]) for r in secs]}
+    snap = {"axes": keep, "secs": []}
+    if axes.get("vocal_src"):
+        secs = db.conn.execute(
+            "SELECT start_s, vocalness FROM sections WHERE track_id = ?",
+            (row["id"],)).fetchall()
+        snap["secs"] = [(r["start_s"], r["vocalness"]) for r in secs]
+    return snap
 
 
 def _vocal_restore(db, abs_path, snap):
-    """Re-apply snapshotted vocal data onto the freshly-rebuilt rows.
-    Sections are matched by start_s (same audio, same boundary logic);
-    an unmatched new section falls back to the nearest old one."""
+    """Re-apply snapshotted separate-pass data onto the freshly-rebuilt
+    rows. Sections are matched by start_s (same audio, same boundary
+    logic); an unmatched new section falls back to the nearest old one."""
     row = db.conn.execute("SELECT id, axes FROM tracks WHERE path = ?",
                           (db.rel(abs_path),)).fetchone()
     if row is None:
         return
     axes = json.loads(row["axes"]) if row["axes"] else {}
-    axes["vocal"] = snap["vocal"]
-    axes["vocal_src"] = snap["src"]
+    axes.update(snap["axes"])
     db.conn.execute("UPDATE tracks SET axes = ? WHERE id = ?",
                     (json.dumps(axes), row["id"]))
     if snap["secs"]:
@@ -199,13 +225,18 @@ def _vocal_restore(db, abs_path, snap):
     db.conn.commit()
 
 
-def vocal_pass(db, progress_cb=None, summary=None, total=0):
+def vocal_pass(db, progress_cb=None, summary=None, total=0, refine=False):
     """ML vocal measurement for every track that doesn't have one yet.
 
     Sequential in this process (torch parallelizes internally; a Pool of
     model copies would just fight over cores and RAM) and resumable: each
     track commits on completion, and tracks with axes.vocal_src are
-    skipped, so an interrupted pass continues where it stopped."""
+    skipped, so an interrupted pass continues where it stopped.
+
+    refine=True also re-measures tracks whose stored curve is COARSER
+    than the current HOP_S (measured before the fine-resolution upgrade;
+    axes.vc_hop missing or larger). Cheap for instrumentals - the
+    6-window screen short-circuits them again."""
     import json as _json
     from lib.dj import vocals
     if not vocals.available():
@@ -215,10 +246,20 @@ def vocal_pass(db, progress_cb=None, summary=None, total=0):
         "SELECT id, path, axes FROM tracks"
         " WHERE error IS NULL AND missing = 0 AND axes IS NOT NULL"
         " ORDER BY path").fetchall()
-    todo = [r for r in rows
-            if not _json.loads(r["axes"]).get("vocal_src")]
+
+    def _needs(axes_json):
+        a = _json.loads(axes_json)
+        if not a.get("vocal_src"):
+            return True
+        return refine and float(a.get("vc_hop") or 1e9) > vocals.HOP_S
+
+    todo = [r for r in rows if _needs(r["axes"])]
     if not todo:
         return {"status": "done", "measured": 0}
+    if progress_cb:
+        # Show the queue size BEFORE the model load (~15-30s) - without
+        # this the caller sits on "starting..." until track 1 completes.
+        progress_cb(0, len(todo), "loading demucs model...")
     from lib.dj.features import decode_file
     analyzer = vocals.VocalAnalyzer()
     measured = errors = 0

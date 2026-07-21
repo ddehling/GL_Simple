@@ -67,6 +67,14 @@ class Deck:
         self._rs_pos = 0.0
         self.loop = None         # (start_frame, end_frame) in source domain
         self._virt = 0           # virtual cursor (frames, int, output of map)
+        # STEMS (optional): pre-rendered demucs stems aligned to `samples`
+        # ({name: (n,2) float16/float32}). While every stem gain sits at
+        # 1.0 the deck reads the ORIGINAL mix buffer (bit-exact bypass -
+        # the stems' sum only approximates the master); the moment a gain
+        # ramp diverges, _fetch switches to the per-stem weighted sum.
+        self.stems = None
+        self.stem_gain = {}      # current per-stem gains
+        self._stem_ramp = None   # (targets dict, per_second)
         self.stretch = _stretch_engine()(self._fetch)
         self._lock = threading.Lock()
         # Running FULL-BAND amplitude envelope of this deck's OUTPUT (pre-
@@ -84,7 +92,7 @@ class Deck:
         self._rs_pos = 0.0
 
     def load(self, samples, track_id=None, grid=None, gain_db=0.0,
-             kick_offset_s=0.0, pitch_st=0.0):
+             kick_offset_s=0.0, pitch_st=0.0, stems=None):
         self.samples = np.asarray(samples, dtype=np.float32)
         if self.samples.ndim == 1:
             self.samples = np.repeat(self.samples[:, None], 2, axis=1)
@@ -95,7 +103,49 @@ class Deck:
         self.set_pitch(pitch_st or 0.0)
         self.finished = False
         self.reset_fx()                          # no stale FX across tracks
+        self.stems = None
+        if stems:
+            self.attach_stems(stems)
         self.ready = True
+
+    def attach_stems(self, stems):
+        """Attach pre-rendered stem buffers ({name: (n,2) array}, kept in
+        their stored dtype - float16 halves the RAM; _fetch upcasts per
+        block). Length-aligned to `samples`; safe on a playing deck (the
+        mix path stays active until a stem gain diverges from 1.0)."""
+        if self.samples is None or not stems:
+            return
+        n = len(self.samples)
+        fixed = {}
+        for name, arr in stems.items():
+            a = np.asarray(arr)
+            if a.ndim == 1:
+                a = np.repeat(a[:, None], 2, axis=1)
+            if len(a) < n:
+                pad = np.zeros((n - len(a), 2), dtype=a.dtype)
+                a = np.concatenate([a, pad])
+            fixed[name] = a[:n]
+        self.stems = fixed
+        self.stem_gain = {name: 1.0 for name in fixed}
+        self._stem_ramp = None
+
+    def set_stem_gains(self, gains, ramp_s=0.0):
+        """Ramp per-stem gains ({name: 0..1}; unnamed stems keep their
+        current value). No-op without attached stems."""
+        if self.stems is None:
+            return
+        targets = {name: float(gains.get(name, self.stem_gain.get(name, 1.0)))
+                   for name in self.stems}
+        if ramp_s <= 0.01:
+            self.stem_gain = targets
+            self._stem_ramp = None
+        else:                       # all stems arrive together
+            self._stem_ramp = (dict(self.stem_gain), targets,
+                               float(ramp_s), float(ramp_s))
+
+    def _stems_active(self):
+        return self.stems is not None and any(
+            abs(g - 1.0) > 1e-4 for g in self.stem_gain.values())
 
     def load_file_async(self, path, track_id=None, grid=None, gain_db=0.0):
         self.ready = False
@@ -117,6 +167,9 @@ class Deck:
         self.track_id = None
         self.loop = None
         self.finished = False
+        self.stems = None
+        self.stem_gain = {}
+        self._stem_ramp = None
         self.reset_fx()
 
     def reset_fx(self):
@@ -130,6 +183,11 @@ class Deck:
         self.eq.set_gains(1.0, 1.0, 1.0, ramp_s=0.01)
         self._brake = None
         self._fade_in = 0
+        # Stem gains back to unity = bit-exact mix bypass. Stems stay
+        # attached (they belong to the loaded track, not the style).
+        if self.stems is not None:
+            self.stem_gain = {name: 1.0 for name in self.stems}
+        self._stem_ramp = None
 
     # -- transport -----------------------------------------------------------
     def cue(self, time_s):
@@ -249,6 +307,41 @@ class Deck:
         return self.rate * (1.0 + self.rate_trim)
 
     # -- audio ---------------------------------------------------------------
+    def _src_slice(self, a, b):
+        """Contiguous source frames [a, b): the mix buffer, or the
+        stem-weighted sum while a stem gain diverges from 1.0."""
+        if not self._stems_active():
+            return self.samples[a:b]
+        acc = None
+        for name, arr in self.stems.items():
+            g = self.stem_gain.get(name, 1.0)
+            if g <= 1e-4:
+                continue
+            blk = arr[a:b].astype(np.float32)
+            if g != 1.0:
+                blk = blk * g
+            acc = blk if acc is None else acc + blk
+        if acc is None:
+            return np.zeros((b - a, 2), dtype=np.float32)
+        return acc
+
+    def _src_index(self, idx):
+        """Fancy-indexed source frames (loop path), stem-aware."""
+        if not self._stems_active():
+            return self.samples[idx]
+        acc = None
+        for name, arr in self.stems.items():
+            g = self.stem_gain.get(name, 1.0)
+            if g <= 1e-4:
+                continue
+            blk = arr[idx].astype(np.float32)
+            if g != 1.0:
+                blk = blk * g
+            acc = blk if acc is None else acc + blk
+        if acc is None:
+            return np.zeros((len(idx), 2), dtype=np.float32)
+        return acc
+
     def _fetch(self, pos, n):
         """Stretcher pull: n frames at virtual position pos, loop-mapped,
         zero-padded past the end (equal-power blend at the loop seam)."""
@@ -262,7 +355,7 @@ class Deck:
             got = b - a
             k0 = a - pos
             out[:k0] = 0.0
-            out[k0:k0 + got] = src[a:b]
+            out[k0:k0 + got] = self._src_slice(a, b)
             out[k0 + got:] = 0.0
             return out
         ls, le = self.loop
@@ -270,7 +363,7 @@ class Deck:
         v = pos + np.arange(n)
         s = np.where(v < le, v, ls + (v - ls) % span)
         s_ok = np.clip(s, 0, len(src) - 1)
-        out[:] = src[s_ok]
+        out[:] = self._src_index(s_ok)
         out[(s < 0) | (s >= len(src))] = 0.0
         # Equal-power blend across the seam: during the first LOOP_XFADE
         # frames after each wrap, mix in the audio from just before the seam.
@@ -278,8 +371,9 @@ class Deck:
         if np.any(seam):
             f = ((s[seam] - ls) / LOOP_XFADE)[:, None]
             pre = np.clip(le - LOOP_XFADE + (s[seam] - ls), 0, len(src) - 1)
-            out[seam] = (src[np.clip(s[seam], 0, len(src) - 1)] * np.sqrt(f)
-                         + src[pre] * np.sqrt(1.0 - f))
+            out[seam] = (self._src_index(np.clip(s[seam], 0, len(src) - 1))
+                         * np.sqrt(f)
+                         + self._src_index(pre) * np.sqrt(1.0 - f))
         return out
 
     def _feed_env(self, block):
@@ -356,6 +450,17 @@ class Deck:
                 self._rate_ramp = None
             else:
                 self.rate += step if target > self.rate else -step
+        if self._stem_ramp is not None:
+            start, targets, rem, tot = self._stem_ramp
+            rem -= dt
+            if rem <= 0.0:
+                self.stem_gain = dict(targets)
+                self._stem_ramp = None
+            else:
+                f = 1.0 - rem / tot
+                self.stem_gain = {k: start[k] + (targets[k] - start[k]) * f
+                                  for k in targets}
+                self._stem_ramp = (start, targets, rem, tot)
         self.stretch.rate = self.effective_rate() / self._pitch_f
         with self._lock:
             if self._brake is not None:

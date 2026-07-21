@@ -15,9 +15,9 @@ import tempfile
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel,
-                             QLineEdit, QListWidget, QListWidgetItem,
-                             QPushButton, QSplitter, QTableWidget,
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
+                             QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                             QPushButton, QSlider, QSplitter, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
 from lib.dj import beatport as BP
@@ -42,7 +42,7 @@ class SearchWorker(QThread):
             errors = []
             for q, f in self.queries:
                 try:
-                    for t in self.client.search(q, per_page=60, **f):
+                    for t in self._fetch(q, f):
                         r = BP.beatport_row(t)
                         if r["bp_id"] not in seen:
                             seen.add(r["bp_id"])
@@ -51,9 +51,38 @@ class SearchWorker(QThread):
                     errors.append(str(e))
             if not rows and errors:
                 raise RuntimeError(errors[0])
-            self.done.emit(rows)
+            # Fit scoring runs on the GUI thread per row (vs the set AND
+            # the whole library) - cap the merged pool so a 4-chart sweep
+            # can't stall the window.
+            self.done.emit(rows[:500])
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+    def _fetch(self, q, f):
+        if q is not None:
+            return self.client.search(q, per_page=60, **f)
+        # Genre mode: FULL-CATALOG genre search - empty q + genre_id +
+        # bpm window is server-side filtered and paginated (verified live
+        # 2026-07-20, pages disjoint). Two pages = up to 200 in-tempo
+        # tracks per genre seed, vs the top-100 chart whose tempo/key/
+        # owned filtering left "a very small number of songs". The chart
+        # stays as the fallback.
+        rows = []
+        try:
+            for page in (1, 2):
+                got = self.client.search("", per_page=100, page=page, **f)
+                rows.extend(got)
+                if len(got) < 100:
+                    break
+        except Exception:
+            rows = []
+        if rows:
+            return rows
+        f = dict(f)
+        gid = f.pop("genre_id")
+        lo, hi = f.pop("bpm_low", 0), f.pop("bpm_high", 999)
+        return [t for t in self.client.top(gid)
+                if lo <= float(t.get("bpm") or 0) <= hi]
 
 
 class LoginWorker(QThread):
@@ -68,6 +97,21 @@ class LoginWorker(QThread):
         try:
             acct = BP.password_login(self.auth, self.username, self.password)
             self.ok.emit(acct.get("username") or self.username)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
+class GenresWorker(QThread):
+    done = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+
+    def run(self):
+        try:
+            self.done.emit(self.client.genres())
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
 
@@ -114,6 +158,12 @@ class DiscoverTab(QWidget):
         self.rows = []
         self._fit = {}                 # row id -> (fit_vs_track, neighbours)
         self._search = self._preview = self._login_worker = None
+        self._genres_worker = None
+        self._genre_ids = {}           # lower-cased genre name -> beatport id
+        self._gap_pair = None          # (a, b) TrackInfos: bridge-fit mode
+        self._variety_cap = None       # max results per artist (discovery)
+        self._owned_idx = None         # title-root -> artist tokens (lazy)
+        self._owned_idx_n = -1         # library size the index was built at
         self.player = TrackPlayer()
 
         v = QVBoxLayout(self)
@@ -122,9 +172,18 @@ class DiscoverTab(QWidget):
         top = QHBoxLayout()
         self.query = QLineEdit()
         self.query.setPlaceholderText("Search Beatport: artist, track, "
-                                      "label, genre...")
+                                      "label... (leave empty + pick a genre "
+                                      "for its top 100)")
         self.query.returnPressed.connect(self.search)
         top.addWidget(self.query, 1)
+        top.addWidget(QLabel("Genre"))
+        self.genre_combo = QComboBox()
+        self.genre_combo.addItem("any genre", None)
+        self.genre_combo.setMinimumWidth(170)
+        self.genre_combo.setToolTip(
+            "Filter results to a real Beatport genre. With an empty query, "
+            "shows the genre's top-100 chart instead of a text search.")
+        top.addWidget(self.genre_combo)
         top.addWidget(QLabel("BPM"))
         self.bpm_lo = QLineEdit(placeholderText="min")
         self.bpm_lo.setFixedWidth(48)
@@ -161,6 +220,14 @@ class DiscoverTab(QWidget):
                                  "only).")
         self.harmonic.stateChanged.connect(self._rerender)
         row2.addWidget(self.harmonic)
+        self.hide_owned = QCheckBox("hide owned")
+        self.hide_owned.setChecked(True)
+        self.hide_owned.setToolTip("Hide tracks that are already in your "
+                                   "library (matched by song title root + "
+                                   "artist) - discovery should show what "
+                                   "you DON'T have.")
+        self.hide_owned.stateChanged.connect(self._rerender)
+        row2.addWidget(self.hide_owned)
         self.sort_fit = QCheckBox("sort by fit")
         self.sort_fit.setChecked(True)
         self.sort_fit.stateChanged.connect(self._rerender)
@@ -192,17 +259,39 @@ class DiscoverTab(QWidget):
         self.detail.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.detail.setTextFormat(Qt.TextFormat.RichText)
         dv.addWidget(self.detail, 1)
-        # Preview transport.
+        # Preview transport: ⏮/⏭ hop through the RESULT ROWS (crate-dig
+        # flow: hear one, hop to the next), slider scrubs the 2-min
+        # preview clip live while dragging.
         prow = QHBoxLayout()
+        pb_prev = QPushButton("⏮")
+        pb_prev.setFixedWidth(32)
+        pb_prev.setToolTip("Preview the previous result")
+        pb_prev.clicked.connect(lambda: self._step_preview(-1))
+        prow.addWidget(pb_prev)
         self.play_btn = QPushButton("▶ Preview")
         self.play_btn.clicked.connect(self.preview)
         prow.addWidget(self.play_btn)
+        pb_next = QPushButton("⏭")
+        pb_next.setFixedWidth(32)
+        pb_next.setToolTip("Preview the next result")
+        pb_next.clicked.connect(lambda: self._step_preview(1))
+        prow.addWidget(pb_next)
         stop = QPushButton("■")
         stop.setFixedWidth(32)
         stop.clicked.connect(self.stop_preview)
         prow.addWidget(stop)
-        self.prev_lbl = QLabel("")
-        prow.addWidget(self.prev_lbl, 1)
+        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setMaximum(1000)
+        self.seek_slider.setToolTip("Scrub the preview clip (seeks live "
+                                    "while dragging)")
+        self._seek_drag = False
+        self.seek_slider.sliderPressed.connect(
+            lambda: setattr(self, "_seek_drag", True))
+        self.seek_slider.sliderMoved.connect(self._seek_frac)
+        self.seek_slider.sliderReleased.connect(self._seek_released)
+        prow.addWidget(self.seek_slider, 1)
+        self.prev_lbl = QLabel("-:-- / -:--")
+        prow.addWidget(self.prev_lbl)
         dv.addLayout(prow)
         # Actions.
         arow = QHBoxLayout()
@@ -293,8 +382,10 @@ class DiscoverTab(QWidget):
     def _refresh_auth(self):
         signed = self.client.available()
         self.signin_row.setVisible(not signed)
-        for w in (self.query, self.bpm_lo, self.bpm_hi):
+        for w in (self.query, self.genre_combo, self.bpm_lo, self.bpm_hi):
             w.setEnabled(signed)
+        if signed and not self._genre_ids:
+            self._load_genres()
         if not signed:
             self.status.setText(
                 "Enter your Beatport username and password to sign in "
@@ -304,6 +395,31 @@ class DiscoverTab(QWidget):
         else:
             self.status.setText("Signed in. Search, or use 'For my set' to "
                                 "find tracks that follow your current set.")
+
+    # -- genres -------------------------------------------------------------
+    def _load_genres(self):
+        if self._genres_worker and self._genres_worker.isRunning():
+            return
+        self._genres_worker = GenresWorker(self.client)
+        self._genres_worker.done.connect(self._genres_loaded)
+        self._genres_worker.failed.connect(self._search_failed)
+        self._genres_worker.start()
+
+    def _genres_loaded(self, genres):
+        keep = self.genre_combo.currentText()
+        self.genre_combo.blockSignals(True)
+        self.genre_combo.clear()
+        self.genre_combo.addItem("any genre", None)
+        for g in sorted(genres, key=lambda g: g.get("name", "")):
+            if g.get("id") and g.get("name"):
+                self.genre_combo.addItem(g["name"], g["id"])
+                self._genre_ids[g["name"].lower()] = g["id"]
+        i = self.genre_combo.findText(keep)
+        self.genre_combo.setCurrentIndex(max(i, 0))
+        self.genre_combo.blockSignals(False)
+
+    def _genre_id(self, name):
+        return self._genre_ids.get((name or "").lower())
 
     # -- helpers ------------------------------------------------------------
     def _cur_out_track(self):
@@ -321,15 +437,47 @@ class DiscoverTab(QWidget):
         self.status.setText(note)
         self._search = SearchWorker(self.client, queries)
         self._search.done.connect(self._results)
-        self._search.failed.connect(
-            lambda m: self.status.setText("search failed: " + m))
+        self._search.failed.connect(self._search_failed)
         self._search.start()
 
+    def _search_failed(self, msg):
+        low = msg.lower()
+        if ("unauthorized" in low or "token expired" in low
+                or "not authenticated" in low):
+            self._session_expired()
+        else:
+            self.status.setText("search failed: " + msg)
+
+    def _session_expired(self):
+        """The stored token is dead and refresh failed - drop it so the
+        login row reappears instead of a dead-end error."""
+        self.client.auth.clear()
+        self._refresh_auth()
+        self.status.setText(
+            "Your Beatport session expired and couldn't be refreshed. "
+            "Log in again below (same username/password as beatport.com), "
+            "then re-run the search.")
+
     def search(self):
+        self._gap_pair = None
+        self._variety_cap = None      # manual search: show what matches
         q = self.query.text().strip()
-        if not q:
-            return
-        self._run_search([(q, self._bpm_filters())], "searching Beatport...")
+        gid = self.genre_combo.currentData()
+        f = self._bpm_filters()
+        if gid:
+            f["genre_id"] = gid
+        if q:
+            self._run_search([(q, f)], "searching Beatport...")
+        elif gid:
+            self._run_search(
+                [(None, f)],
+                f"browsing {self.genre_combo.currentText()}"
+                + (" in your BPM window" if ("bpm_low" in f
+                                             or "bpm_high" in f) else "")
+                + "...")
+        else:
+            self.status.setText("type a search, or pick a genre for its "
+                                "top-100 chart.")
 
     def _bpm_filters(self):
         f = {}
@@ -346,7 +494,14 @@ class DiscoverTab(QWidget):
         return ({"bpm_low": int(bpm * 0.92), "bpm_high": int(bpm * 1.08)}
                 if bpm else {})
 
+    def _last_set_tracks(self, n=3):
+        entries = getattr(self.planner.set_tab, "entries", []) or []
+        by_id = {t.id: t for t in self.planner.library}
+        return [by_id[e["track_id"]] for e in entries[-n:]
+                if e["track_id"] in by_id]
+
     def discover_for_set(self):
+        self._gap_pair = None
         t = self._cur_out_track()
         if t is None:
             self.status.setText("your set is empty - add a track first, then "
@@ -355,26 +510,117 @@ class DiscoverTab(QWidget):
         # Cast a wider net: one query per genre we know for the anchor (up to
         # 3), each tempo-boxed to +/-8%, merged. Then auto-enable the
         # harmonic + fit sort so only in-key, mixable tracks surface, best
-        # first. Falls back to artist when the track isn't enriched.
-        genres = (getattr(t, "genres", None) or [])[:3]
-        seeds = genres or [t.artist or t.title]
+        # first (styles, not names), then narrows: GENRE CHARTS fuzzy-
+        # mapped from the last 3 set tracks' genres (MusicBrainz names
+        # like 'downtempo' rarely EXACTLY match Beatport charts like
+        # 'Organic House / Downtempo' - the old exact mapping failed and
+        # everything degraded to artist text searches; user-reported as
+        # 'mostly songs by the same authors'), then the anchor's LABEL
+        # (labels are style-tight in electronic music), and the artist as
+        # ONE query, last.
         f = self._tempo_filter(t.bpm)
-        queries = [(g, f) for g in seeds]
-        self.query.setText(seeds[0])
+        names, gids = [], []
+        for tr in (self._last_set_tracks(3) or [t]):
+            for g in self._gap_genre_names(tr):
+                if g.lower() not in {n.lower() for n in names}:
+                    names.append(g)
+        for nm in names:
+            for gid in self._genre_ids_fuzzy(nm):
+                if gid not in gids:
+                    gids.append(gid)
+        queries = [(None, {**f, "genre_id": g}) for g in gids[:4]]
+        label = ((getattr(t, "enrichment", None) or {}).get("label")
+                 or "").strip()
+        if label:
+            queries.append((label, dict(f)))
+        if t.artist:
+            queries.append((t.artist, dict(f)))
+        if not queries:
+            queries = [(g, dict(f)) for g in names[:2]] \
+                or [(t.title, dict(f))]
+        self._variety_cap = 2            # discovery = breadth, not one name
+        self.query.setText("")
         self.harmonic.setChecked(True)
         self.sort_fit.setChecked(True)
         self._run_search(
-            queries, f"finding in-key, tempo-matched tracks to follow "
-            f"'{t.title[:26]}' ({t.bpm:.0f} bpm, {t.camelot})...")
+            queries, f"following '{t.title[:24]}' ({t.bpm:.0f} bpm, "
+            f"{t.camelot}): {len(gids[:4])} genre charts"
+            + (" + label" if label else "") + " + artist...")
 
     def more_like_selected(self):
+        self._gap_pair = None
         r = self._selected_row()
         if not r:
             self.status.setText("select a result first.")
             return
-        q = r.get("genre") or r["artist"]
-        self._run_search([(q, self._tempo_filter(r["bpm"]))],
-                         f"more like '{r['title'][:30]}'...")
+        f = self._tempo_filter(r["bpm"])
+        gids = self._genre_ids_fuzzy(r.get("genre"))
+        queries = [(None, {**f, "genre_id": g}) for g in gids[:2]]
+        if r.get("artist"):
+            queries.append((r["artist"], dict(f)))
+        if not queries:
+            queries = [(r.get("genre") or r["title"], f)]
+        self._variety_cap = 3
+        self._run_search(queries, f"more like '{r['title'][:30]}'...")
+
+    # -- gap shopping (Set tab hands us a flagged seam) ----------------------
+    def shop_gap(self, a, b, label):
+        """Shop Beatport for a CONNECTOR between two set neighbours whose
+        seam the compiler flagged: genre charts drawn from both tracks'
+        genres, BPM boxed to what is tempo-reachable from BOTH sides, and
+        results fit-ranked as bridges (fit_between - both directions must
+        work)."""
+        if not self.client.available():
+            self.status.setText("sign in to Beatport first (below).")
+            return
+        self._gap_pair = (a, b)
+        self._variety_cap = 2
+        self.fit_only.setChecked(False)
+        self.harmonic.setChecked(False)
+        self.sort_fit.setChecked(True)
+        lo, hi = BP.connector_bpm_window(a, b)
+        f = {"bpm_low": int(lo), "bpm_high": int(hi + 0.999)}
+        gids = []
+        for name in self._gap_genre_names(a) | self._gap_genre_names(b):
+            for gid in self._genre_ids_fuzzy(name):
+                if gid not in gids:
+                    gids.append(gid)
+        queries = [(None, {**f, "genre_id": g}) for g in gids[:4]]
+        if not queries:
+            # No genre mapping: text-search both artists in the BPM box.
+            queries = [(q, dict(f))
+                       for q in {a.artist, b.artist} if q]
+        if not queries:
+            self.status.setText("gap shop: no genre or artist to search by.")
+            self._gap_pair = None
+            return
+        self.query.setText("")
+        self._run_search(
+            queries, f"shopping the gap {label}: connectors "
+            f"{int(lo)}-{int(hi)} bpm, fit-ranked as bridges...")
+
+    @staticmethod
+    def _gap_genre_names(t):
+        names = {g.strip() for g in getattr(t, "genres", []) or []
+                 if g and g.strip()}
+        fg = getattr(t, "file_genre", "") or ""
+        for part in fg.replace("/", ",").replace(";", ",").split(","):
+            if part.strip():
+                names.add(part.strip())
+        return names
+
+    def _genre_ids_fuzzy(self, name):
+        """Beatport genre ids for a free-text genre name: exact match
+        first, else substring containment either way ('house' hits a few
+        charts - shortest names win, callers cap the total)."""
+        low = (name or "").lower().strip()
+        if not low:
+            return []
+        if low in self._genre_ids:
+            return [self._genre_ids[low]]
+        hits = [(len(k), gid) for k, gid in self._genre_ids.items()
+                if low in k or k in low]
+        return [gid for _, gid in sorted(hits)[:2]]
 
     # -- results rendering --------------------------------------------------
     def _results(self, rows):
@@ -386,7 +632,13 @@ class DiscoverTab(QWidget):
             if not r["camelot"]:
                 continue
             ghost = BP.ghost_trackinfo(r)
-            ft = BP.fit_vs_track(cur, ghost) if cur is not None else None
+            if self._gap_pair is not None:
+                # Bridge mode: rank as a CONNECTOR between the two flagged
+                # set neighbours, not against the set's last track.
+                ft = BP.fit_between(self._gap_pair[0], self._gap_pair[1],
+                                    ghost)
+            else:
+                ft = BP.fit_vs_track(cur, ghost) if cur is not None else None
             nb = BP.fit_vs_library(lib, ghost)["mixable_neighbours"] \
                 if lib else 0
             self._fit[r["id"]] = (ft, nb)
@@ -401,6 +653,30 @@ class DiscoverTab(QWidget):
             return (0, nb)
         return (2 + _VERDICT_RANK.get(ft["verdict"], 0), nb)
 
+    def _owned(self, r):
+        """Already in the library? Matched by song-identity (title root)
+        plus loose artist-token overlap, so 'Track (Extended Mix)' on
+        Beatport matches the library's 'Track (Original Mix)'."""
+        from lib.dj.brain import _title_root
+        lib = self.planner.library
+        if self._owned_idx is None or self._owned_idx_n != len(lib):
+            idx = {}
+            for t in lib:
+                root = _title_root(t.title) or (t.title or "").lower()
+                idx.setdefault(root, set()).update(
+                    w for w in (t.artist or "").lower().replace(",", " ")
+                    .split() if len(w) > 2)
+            self._owned_idx = idx
+            self._owned_idx_n = len(lib)
+        root = _title_root(r.get("title") or "") \
+            or (r.get("title") or "").lower()
+        toks = self._owned_idx.get(root)
+        if toks is None:
+            return False
+        rt = {w for w in (r.get("artist") or "").lower().replace(",", " ")
+              .split() if len(w) > 2}
+        return not toks or not rt or bool(toks & rt)
+
     def _rerender(self):
         rows = list(self.rows)
         cur = self._cur_out_track()
@@ -412,8 +688,21 @@ class DiscoverTab(QWidget):
             rows = [r for r in rows
                     if (self._fit.get(r["id"], (None,))[0] or {}
                         ).get("key_fit", 0) >= 0.55]
+        if self.hide_owned.isChecked():
+            rows = [r for r in rows if not self._owned(r)]
         if self.sort_fit.isChecked():
             rows.sort(key=self._fit_key, reverse=True)
+        if self._variety_cap:
+            # Discovery modes: breadth over one prolific name - keep only
+            # the best N per artist (rows are already fit-sorted).
+            seen, capped = {}, []
+            for r in rows:
+                k = (r.get("artist") or "").lower()
+                if seen.get(k, 0) >= self._variety_cap:
+                    continue
+                seen[k] = seen.get(k, 0) + 1
+                capped.append(r)
+            rows = capped
         self._view = rows
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
@@ -510,9 +799,52 @@ class DiscoverTab(QWidget):
     def stop_preview(self):
         self.player.pause()
 
+    def _step_preview(self, d):
+        """Hop the selection ±1 result row and preview it - rapid
+        crate-digging without touching the table."""
+        n = self.table.rowCount()
+        if not n:
+            return
+        row = self.table.currentRow()
+        row = (row + d) % n if row >= 0 else 0
+        self.table.selectRow(row)
+        if self._preview and self._preview.isRunning():
+            self.status.setText("still loading the previous preview - "
+                                "press again in a moment")
+            return
+        self.preview()
+
+    def _preview_dur(self):
+        p = self.player
+        return (len(p.samples) / 44100.0
+                if p.samples is not None and len(p.samples) else 0.0)
+
+    def _seek_frac(self, v):
+        d = self._preview_dur()
+        if d > 0:
+            self.player.seek(v / 1000.0 * d)
+
+    def _seek_released(self):
+        self._seek_drag = False
+        self._seek_frac(self.seek_slider.value())
+
+    @staticmethod
+    def _mmss(t):
+        return f"{int(t // 60)}:{int(t % 60):02d}"
+
     def _preview_tick(self):
-        if self.player.playing:
-            self.prev_lbl.setText(f"{self.player.time_s():.0f}s")
+        d = self._preview_dur()
+        if d <= 0:
+            self.prev_lbl.setText("-:-- / -:--")
+            if not self._seek_drag:
+                self.seek_slider.setValue(0)
+            return
+        t = self.player.time_s()
+        self.prev_lbl.setText(f"{self._mmss(t)} / {self._mmss(d)}")
+        if not self._seek_drag:
+            self.seek_slider.blockSignals(True)
+            self.seek_slider.setValue(int(t / d * 1000))
+            self.seek_slider.blockSignals(False)
 
     # -- wishlist -----------------------------------------------------------
     def add_wishlist(self):

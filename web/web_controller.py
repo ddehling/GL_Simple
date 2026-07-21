@@ -1039,7 +1039,7 @@ class WebController:
                 self._values_cache = None
 
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
-                      'nudge', 'next_id', 'setlist', 'setlist_pool',
+                      'nudge', 'pulse', 'next_id', 'setlist', 'setlist_pool',
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
                       'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort'}
 
@@ -1056,7 +1056,7 @@ class WebController:
             if action not in DJ_ACTIONS:
                 return
             arg = data.get('value')
-            if action == 'nudge':
+            if action in ('nudge', 'pulse'):
                 try:
                     arg = max(-0.4, min(0.4, float(arg)))
                 except (TypeError, ValueError):

@@ -242,7 +242,8 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             # so drawing/click/playhead all agree with the audio.
             blend_wall = plan["beats"] * t.period_s / a_r \
                 if plan["style"] in ("long_blend", "bass_swap",
-                                     "filter_sweep", "loop_roll_exit") \
+                                     "filter_sweep", "loop_roll_exit",
+                                     "stem_drum_swap", "acapella_out") \
                 else 0.0
             play -= blend_wall * (a_r - 1.0)  # blend runs at meeting tempo
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]

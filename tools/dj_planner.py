@@ -28,16 +28,89 @@ import numpy as np
 from PyQt6.QtCore import (QAbstractItemModel, Qt, QAbstractTableModel, QModelIndex, QRect,
                           QSortFilterProxyModel, QThread, QTimer, QProcess,
                           pyqtSignal)
-from PyQt6.QtGui import QColor, QPalette, QAction, QCursor
+from PyQt6.QtGui import QColor, QPalette, QAction, QCursor, QFont
+
+
+def _mono_font():
+    """Monospace font for column-aligned list rows."""
+    f = QFont("Consolas")
+    f.setStyleHint(QFont.StyleHint.Monospace)
+    return f
+
+
+def _clip(s, w):
+    """Fixed-width column: truncate with an ellipsis, pad to w."""
+    s = s or ""
+    return (s[:w - 1] + "…") if len(s) > w else s.ljust(w)
+
+
+def _genre_of(t):
+    """One display genre: first MusicBrainz genre, else the file tag."""
+    gs = getattr(t, "genres", None) or []
+    if gs:
+        return gs[0]
+    fg = (getattr(t, "file_genre", "") or "").replace("/", ",")
+    return fg.split(",")[0].strip()
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
     QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
     QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit, QSlider, QMenu)
+    QPlainTextEdit, QSlider, QMenu, QCheckBox)
 
 from lib.dj import resolve_music_dir
 from lib.dj.db import LibraryDB
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _wsl_path(p):
+    """C:\\foo\\bar -> /mnt/c/foo/bar (how WSL mounts Windows drives)."""
+    p = os.path.abspath(p)
+    return "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
+
+
+def _structure_mode():
+    """'native' when allin1 imports here, 'wsl' when only WSL can run it
+    (NATTEN publishes no Windows wheels - see requirements-dj-structure.txt),
+    else None."""
+    import shutil
+    from lib.dj import structure_ml
+    if structure_ml.available():
+        return "native"
+    if shutil.which("wsl.exe"):
+        return "wsl"
+    return None
+
+
+def _structure_batch_paths(music_dir):
+    return (os.path.join(music_dir, ".structure_batch.json"),
+            os.path.join(music_dir, ".structure_results.jsonl"))
+
+
+def _structure_wsl_command(music_dir, db):
+    """(program, args) for a SQLITE-FREE batch run through WSL, or
+    (None, reason). The WSL side must never open the library DB: the
+    planner holds it in WAL mode on the Windows side, and WAL's shared
+    memory can't span /mnt/c (measured: 'disk I/O error'). So we export
+    the todo list here, WSL appends JSONL results, and
+    _structure_import_results() folds them back into the DB we own.
+    Env path overridable via $DJ_WSL_ALLIN1_PY."""
+    rows = [r for r in db.all_tracks()
+            if not r.get("missing") and not r.get("error")
+            and not r.get("structure")]
+    if not rows:
+        return None, "structure: everything already labeled"
+    tl, rp = _structure_batch_paths(music_dir)
+    batch = [{"id": r["id"], "title": (r.get("title") or r["path"])[:60],
+              "path": _wsl_path(db.abs(r["path"]))} for r in rows]
+    with open(tl, "w", encoding="utf-8") as f:
+        json.dump(batch, f)
+    py = os.environ.get("DJ_WSL_ALLIN1_PY", "$HOME/allin1/bin/python")
+    script = os.path.join(_REPO_ROOT, "tools", "dj_structure.py")
+    cmd = (f'{py} "{_wsl_path(script)}" --tracklist "{_wsl_path(tl)}" '
+           f'--results "{_wsl_path(rp)}"')
+    return ("wsl.exe", ["-e", "bash", "-lc", cmd]), None
 from lib.dj.brain import Brain, load_library
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
@@ -355,50 +428,51 @@ class LibraryTab(QWidget):
         self._proc = None
         self._enrich = None
         self._mood_proc = None
+        self._structure_proc = None
+        self._stems_proc = None
+        # One-button pipeline state (Analyze all): remaining stages, the
+        # stage subprocess, and the end-of-run report.
+        self._pipe = []
+        self._pipe_proc = None
+        self._pipe_total = 0
+        self._pipe_prefix = ""
+        self._pipe_stage_name = ""
+        self._pipe_skipped = []
+        self._pipe_failed = []
         v = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        self.scan_btn = QPushButton("Scan library")
-        self.scan_btn.setToolTip("Analyze new/changed tracks and any whose "
-                                 "analysis is older than the current feature "
-                                 "set (incremental).")
-        self.scan_btn.clicked.connect(lambda: self.run_scan(force=False))
-        top.addWidget(self.scan_btn)
-        self.rescan_btn = QPushButton("Rescan all")
-        self.rescan_btn.setToolTip("Force a full re-analysis of EVERY track "
-                                   "(ignores the up-to-date check). Use after "
-                                   "a big library move or to be certain every "
-                                   "track has the latest features.")
-        self.rescan_btn.clicked.connect(lambda: self.run_scan(force=True))
-        top.addWidget(self.rescan_btn)
-        # Refine grids = dj_scan --refine-grids, previously CLI-only. Tracks
-        # promoted past bpm_conf 0.70 regain the precision transition styles.
-        self.refine_btn = QPushButton("Refine grids")
-        self.refine_btn.setToolTip(
-            "Re-run beat-grid analysis on unchanged tracks whose grid "
-            "confidence sits below 0.75. Promoting a track past 0.70 lets "
-            "the DJ use the precision transition styles (cuts, double "
-            "drops, loop builds) on it instead of falling back to fades.")
-        self.refine_btn.clicked.connect(lambda: self.run_scan(refine=True))
-        top.addWidget(self.refine_btn)
-        # Enrich = pull genre/year/era/label from MusicBrainz (in-process).
-        self.enrich_btn = QPushButton("Enrich (MusicBrainz)")
-        self.enrich_btn.setToolTip(
-            "Fetch genre, release year/era and label from MusicBrainz for "
-            "every track that lacks it. Genres become tags that steer "
-            "selection and the copilot. ~1 track/sec; background, resumable.")
-        self.enrich_btn.clicked.connect(self.run_enrich)
-        top.addWidget(self.enrich_btn)
-        # Mood (ML) = score valence/arousal/mood tags with Music2Emo (GPU pass).
-        self.mood_btn = QPushButton("Mood (ML)")
-        self.mood_btn.setToolTip(
-            "Run the Music2Emo model over every un-scored track to get real "
-            "valence/arousal and mood tags (dark, party, melancholic, epic...). "
-            "Upgrades danceable/dark/uplifting tags and valence steering from "
-            "heuristic to ML. Needs a Music2Emotion clone; ~3-5s/track on GPU, "
-            "background and resumable.")
-        self.mood_btn.clicked.connect(self.run_mood)
-        top.addWidget(self.mood_btn)
+        # THE one-button path: every pass, in order, each skipping work
+        # already done - so this is cheap to re-run any time. The
+        # individual passes live behind the "Passes" toggle (expert row).
+        self.analyze_btn = QPushButton("Analyze all")
+        self.analyze_btn.setToolTip(
+            "Run the whole analysis pipeline in order: scan (+ vocal pass "
+            "for new tracks), chroma backfill, stems (if checked - runs "
+            "early so the vocal pass can reuse the separation), fine "
+            "vocal-curve upgrade, MusicBrainz enrichment, ML mood, ML "
+            "structure. Every stage skips tracks that are already done, "
+            "so re-running costs seconds when the library hasn't changed. "
+            "Stages whose optional deps aren't installed are skipped and "
+            "reported at the end. This is the everyday button; individual "
+            "passes are under the gear.")
+        self.analyze_btn.clicked.connect(self.run_analyze_all)
+        top.addWidget(self.analyze_btn)
+        self.stems_chk = QCheckBox("+ stems")
+        self.stems_chk.setToolTip(
+            "Include the stem render pass in 'Analyze all' (~20 MB of disk "
+            "per track under .stems/; unlocks the stem transition styles). "
+            "Off by default because of the disk cost.")
+        top.addWidget(self.stems_chk)
+        self.passes_toggle = QPushButton("⚙ Passes")
+        self.passes_toggle.setCheckable(True)
+        self.passes_toggle.setToolTip(
+            "Show the individual analysis passes - for re-running one "
+            "stage alone or forcing re-analysis. 'Analyze all' runs "
+            "everything in order and skips finished work.")
+        self.passes_toggle.toggled.connect(
+            lambda on: self.passes_row.setVisible(on))
+        top.addWidget(self.passes_toggle)
         self.scan_lbl = QLabel("")
         top.addWidget(self.scan_lbl, 1)
         self.search = QLineEdit(
@@ -418,6 +492,84 @@ class LibraryTab(QWidget):
         self.tag_box.currentTextChanged.connect(self._tag_filter)
         top.addWidget(self.tag_box, 1)
         v.addLayout(top)
+
+        # -- expert row: every pass individually (hidden behind ⚙ Passes) --
+        self.passes_row = QWidget()
+        pr = QHBoxLayout(self.passes_row)
+        pr.setContentsMargins(0, 0, 0, 0)
+        self.scan_btn = QPushButton("Scan library")
+        self.scan_btn.setToolTip("Analyze new/changed tracks and any whose "
+                                 "analysis is older than the current feature "
+                                 "set (incremental).")
+        self.scan_btn.clicked.connect(lambda: self.run_scan(force=False))
+        pr.addWidget(self.scan_btn)
+        self.rescan_btn = QPushButton("Rescan all")
+        self.rescan_btn.setToolTip("Force a full re-analysis of EVERY track "
+                                   "(ignores the up-to-date check). Use after "
+                                   "a big library move or to be certain every "
+                                   "track has the latest features.")
+        self.rescan_btn.clicked.connect(lambda: self.run_scan(force=True))
+        pr.addWidget(self.rescan_btn)
+        self.refine_btn = QPushButton("Refine grids")
+        self.refine_btn.setToolTip(
+            "Re-run beat-grid analysis on unchanged tracks whose grid "
+            "confidence sits below 0.75 (one attempt per analysis version; "
+            "stubbornly low tracks aren't re-chewed every press). Promoting "
+            "past 0.70 unlocks the precision transition styles.")
+        self.refine_btn.clicked.connect(lambda: self.run_scan(refine=True))
+        pr.addWidget(self.refine_btn)
+        self.chroma_btn = QPushButton("Chroma")
+        self.chroma_btn.setToolTip(
+            "Backfill the 12-bin harmonic fingerprint for tracks that "
+            "lack it (decode + STFT only - fast, no GPU). New scans "
+            "compute it inline; this exists for old libraries.")
+        self.chroma_btn.clicked.connect(self.run_chroma)
+        pr.addWidget(self.chroma_btn)
+        self.revocals_btn = QPushButton("Vocal curves")
+        self.revocals_btn.setToolTip(
+            "Re-measure tracks whose vocal curve is still at the old "
+            "coarse 24s resolution (demucs, GPU). Fine curves let seam "
+            "planning dodge individual vocal lines.")
+        self.revocals_btn.clicked.connect(self.run_revocals)
+        pr.addWidget(self.revocals_btn)
+        self.enrich_btn = QPushButton("Enrich (MusicBrainz)")
+        self.enrich_btn.setToolTip(
+            "Fetch genre, release year/era and label from MusicBrainz for "
+            "every track that lacks it. Genres become tags that steer "
+            "selection and the copilot. ~1 track/sec; background, resumable.")
+        self.enrich_btn.clicked.connect(self.run_enrich)
+        pr.addWidget(self.enrich_btn)
+        self.mood_btn = QPushButton("Mood (ML)")
+        self.mood_btn.setToolTip(
+            "Run the Music2Emo model over every un-scored track to get real "
+            "valence/arousal and mood tags (dark, party, melancholic, epic...). "
+            "Upgrades danceable/dark/uplifting tags and valence steering from "
+            "heuristic to ML. Needs a Music2Emotion clone; ~3-5s/track on GPU, "
+            "background and resumable.")
+        self.mood_btn.clicked.connect(self.run_mood)
+        pr.addWidget(self.mood_btn)
+        self.structure_btn = QPushButton("Structure (ML)")
+        self.structure_btn.setToolTip(
+            "Run the allin1 structure model over every unlabeled track to "
+            "get chorus/verse/bridge/outro segment labels. Seam planning "
+            "then exits on real outros and never enters a track mid-chorus. "
+            "Runs natively or through WSL (requirements-dj-structure.txt); "
+            "a few s/track on GPU, background and resumable.")
+        self.structure_btn.clicked.connect(self.run_structure)
+        pr.addWidget(self.structure_btn)
+        self.stems_btn = QPushButton("Stems (render)")
+        self.stems_btn.setToolTip(
+            "Pre-separate every track into drums/bass/other/vocals stems "
+            "(~20 MB/track under .stems/). Unlocks the stem_drum_swap and "
+            "acapella_out transition styles - drums-only entries and vocal "
+            "tails over the incoming instrumental. Needs torch + demucs "
+            "(requirements-dj-vocals.txt); ~10-30s/track on GPU, background "
+            "and resumable.")
+        self.stems_btn.clicked.connect(self.run_stems)
+        pr.addWidget(self.stems_btn)
+        pr.addStretch(1)
+        self.passes_row.setVisible(False)
+        v.addWidget(self.passes_row)
 
         # Quick-audition transport for the library list.
         self.lib_player = TrackPlayer()
@@ -640,7 +792,7 @@ class LibraryTab(QWidget):
                         self.table.scrollTo(pidx)
                     return
 
-    def _play_track(self, t):
+    def _play_track(self, t, start_s=0.0):
         from tools.djplanner.player import TrackPlayer  # noqa: F401
         self.planner.claim_playback("library")
         self._select_playing_in_list(t)
@@ -662,12 +814,15 @@ class LibraryTab(QWidget):
                     self.done.emit(str(e))
         self._lib_decoder = _D(self.planner.db, t)
 
-        def _go(samples, tr=t):
+        def _go(samples, tr=t, s0=start_s):
             if isinstance(samples, str):
                 self.play_lbl.setText(f"decode failed: {samples[:60]}")
                 return
             self.planner.claim_playback("library")
             self.lib_player.load(samples)
+            if s0 > 0:
+                dur = len(samples) / 44100.0
+                self.lib_player.seek(min(s0, max(dur - 10.0, 0.0)))
             self.lib_player.play()
             self.play_lbl.setText(f"playing  {tr.title[:44]}")
         self._lib_decoder.done.connect(_go)
@@ -952,6 +1107,388 @@ class LibraryTab(QWidget):
             self.scan_lbl.setText("mood pass complete - reopen the planner "
                                   "to see the new tags (low memory)")
 
+    # -- structure (allin1 ML, subprocess; native or via WSL) ----------------
+    def _structure_import_results(self):
+        """Fold a WSL batch's JSONL results into the DB (which only the
+        Windows side may open - see _structure_wsl_command). Safe to call
+        any time; imports leftovers from interrupted runs too."""
+        tl, rp = _structure_batch_paths(self.planner.music_dir)
+        n = 0
+        if os.path.isfile(rp):
+            with open(rp, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        d = json.loads(line)
+                        self.planner.db.set_structure(int(d["id"]),
+                                                      d["structure"])
+                        n += 1
+                    except (ValueError, KeyError, TypeError):
+                        continue
+            os.remove(rp)
+        try:
+            os.remove(tl)
+        except OSError:
+            pass
+        return n
+
+    def run_structure(self):
+        if self._structure_proc is not None:             # toggles to stop
+            self._structure_proc.kill()
+            self.structure_btn.setText("stopping...")
+            return
+        mode = _structure_mode()
+        if mode is None:
+            self.scan_lbl.setText(
+                "structure model unavailable - no native allin1 AND no "
+                "WSL found; see requirements-dj-structure.txt")
+            return
+        self._structure_wsl = mode == "wsl"
+        if self._structure_wsl:
+            n = self._structure_import_results()   # interrupted-run leftovers
+            cmd, why = _structure_wsl_command(self.planner.music_dir,
+                                              self.planner.db)
+            if cmd is None:
+                self.scan_lbl.setText(why + (f" ({n} imported)" if n else ""))
+                if n:
+                    self.planner.reload_library()
+                return
+            program, args = cmd
+        else:
+            script = os.path.join(_REPO_ROOT, "tools", "dj_structure.py")
+            program, args = sys.executable, [script, "--dir",
+                                             self.planner.music_dir]
+        self._structure_proc = QProcess(self)
+        self._structure_proc.setProcessChannelMode(
+            QProcess.ProcessChannelMode.MergedChannels)
+        self._structure_proc.readyReadStandardOutput.connect(
+            self._structure_stdout)
+        self._structure_proc.finished.connect(self._structure_done)
+        self._structure_proc.start(program, args)
+        self.structure_btn.setText("Stop structure")
+        self.scan_lbl.setText(f"structure pass ({mode}): loading model...")
+
+    def _structure_stdout(self):
+        if self._structure_proc is None:
+            return
+        data = bytes(self._structure_proc.readAllStandardOutput()).decode(
+            "utf-8", "replace")
+        for line in data.splitlines():
+            if not line.startswith("PROGRESS "):
+                continue
+            parts = line.split(" ", 5)
+            if len(parts) < 6:
+                continue
+            done, total, matched, missed, cur = parts[1:6]
+            self.scan_lbl.setText(
+                f"structure {done}/{total}  ({matched} labeled, "
+                f"{missed} failed)  {cur[:40]}")
+            # Same rule as the mood pass: NO mid-scan reload_library()
+            # (torch subprocess + full library re-hydration = OOM); the
+            # pass commits per track, reload once on completion.
+
+    def _structure_done(self, code=0, *a):
+        self._structure_proc = None
+        self.structure_btn.setText("Structure (ML)")
+        n = self._structure_import_results() \
+            if getattr(self, "_structure_wsl", False) else 0
+        if code not in (0, None):
+            # Partial results are already imported (resumable) - report
+            # the failure honestly instead of a false "complete".
+            self.scan_lbl.setText(
+                f"structure pass failed (exit {code})"
+                + (f" - {n} results imported first" if n else "")
+                + " - is the allin1 env installed? See "
+                "requirements-dj-structure.txt (WSL: ~/allin1, or set "
+                "$DJ_WSL_ALLIN1_PY)")
+            if n:
+                try:
+                    self.planner.reload_library()
+                except MemoryError:
+                    pass
+            return
+        self.scan_lbl.setText("structure pass complete"
+                              + (f" - {n} imported" if n else ""))
+        try:
+            self.planner.reload_library()
+        except MemoryError:
+            self.scan_lbl.setText("structure pass complete - reopen the "
+                                  "planner to see the labels (low memory)")
+
+    # -- stems (htdemucs render, subprocess) ---------------------------------
+    def run_stems(self):
+        if self._stems_proc is not None:                 # toggles to stop
+            self._stems_proc.kill()
+            self.stems_btn.setText("stopping...")
+            return
+        from lib.dj import vocals
+        if not vocals.available():
+            self.scan_lbl.setText(
+                "stem renderer unavailable - pip install -r "
+                "requirements-dj-vocals.txt (torch + demucs)")
+            return
+        script = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tools", "dj_stems.py")
+        self._stems_proc = QProcess(self)
+        self._stems_proc.setProcessChannelMode(
+            QProcess.ProcessChannelMode.MergedChannels)
+        self._stems_proc.readyReadStandardOutput.connect(self._stems_stdout)
+        self._stems_proc.finished.connect(self._stems_done)
+        self._stems_proc.start(sys.executable,
+                               [script, "--dir", self.planner.music_dir])
+        self.stems_btn.setText("Stop stems")
+        self.scan_lbl.setText("stem render: loading model...")
+
+    def _stems_stdout(self):
+        if self._stems_proc is None:
+            return
+        data = bytes(self._stems_proc.readAllStandardOutput()).decode(
+            "utf-8", "replace")
+        for line in data.splitlines():
+            if not line.startswith("PROGRESS "):
+                continue
+            parts = line.split(" ", 5)
+            if len(parts) < 6:
+                continue
+            done, total, matched, missed, cur = parts[1:6]
+            self.scan_lbl.setText(
+                f"stems {done}/{total}  ({matched} rendered, "
+                f"{missed} failed)  {cur[:40]}")
+            # Same rule as mood/structure: no mid-pass reload (OOM).
+
+    def _stems_done(self, *a):
+        self._stems_proc = None
+        self.stems_btn.setText("Stems (render)")
+        self.scan_lbl.setText("stem render complete")
+        try:
+            self.planner.reload_library()
+        except MemoryError:
+            self.scan_lbl.setText("stem render complete - reopen the "
+                                  "planner (low memory)")
+
+    # -- one-button pipeline (Analyze all) -----------------------------------
+    def run_analyze_all(self):
+        if self._pipe or self._pipe_proc is not None:    # toggles to stop
+            self._pipe = []
+            if self._pipe_proc is not None:
+                self._pipe_proc.kill()
+                self._pipe_proc = None
+            if self._enrich is not None and self._enrich.isRunning():
+                self._enrich.stop()
+            self._scan_timer.stop()
+            self._pipe_total = 0          # tells stragglers the run is dead
+            self.analyze_btn.setText("Analyze all")
+            self._pipe_buttons(True)
+            self.scan_lbl.setText("analysis pipeline stopped")
+            return
+        if (any(p is not None for p in (self._proc, self._mood_proc,
+                                        self._structure_proc,
+                                        self._stems_proc))
+                or (self._enrich is not None and self._enrich.isRunning())):
+            self.scan_lbl.setText("another pass is running - wait for it "
+                                  "(or stop it) first")
+            return
+        from lib.dj import vocals, mood_ml
+        tools_dir = os.path.dirname(os.path.abspath(__file__))
+        mdir = self.planner.music_dir
+
+        def tool(n):
+            return os.path.join(tools_dir, n)
+        voc_ok = vocals.available()
+        # NO --refine-grids here: tracks whose grid confidence stays low
+        # after refinement would re-queue a full re-analysis on EVERY
+        # pipeline run (~minutes each time). The dedicated "Refine grids"
+        # button remains the deliberate way to chew that tail.
+        stages = [
+            {"name": "scan", "scanfile": True,
+             "args": [tool("dj_scan.py"), "--dir", mdir]},
+            {"name": "chroma",
+             "args": [tool("dj_chroma.py"), "--dir", mdir]},
+        ]
+        if self.stems_chk.isChecked():
+            # Stems BEFORE vocal curves: with stems on disk, the vocal
+            # pass derives its curve from the vocals stem - no second
+            # separation of the same track.
+            stages.append({"name": "stems", "skip": None if voc_ok
+                           else "torch/demucs not installed",
+                           "args": [tool("dj_stems.py"), "--dir", mdir]})
+        stages += [
+            {"name": "vocal curves", "skip": None if voc_ok
+             else "torch/demucs not installed",
+             "args": [tool("dj_scan.py"), "--dir", mdir, "--revocals"]},
+            {"name": "enrich", "enrich": True},
+            {"name": "mood", "skip": None if mood_ml.available()
+             else "Music2Emotion model/torch missing",
+             "args": [tool("dj_mood.py"), "--dir", mdir]},
+        ]
+        # Structure resolves native-or-WSL at STAGE time (the WSL batch
+        # export must see the DB state after earlier stages ran).
+        stages.append({"name": "structure", "structure": True,
+                       "skip": None if _structure_mode() is not None
+                       else "no native allin1 and no WSL"})
+        self._pipe = stages
+        self._pipe_total = len(stages)
+        self._pipe_skipped = []
+        self._pipe_failed = []
+        self.analyze_btn.setText("Stop analyze")
+        self._pipe_buttons(False)
+        self._pipe_next()
+
+    def _pipe_buttons(self, on):
+        for b in (self.scan_btn, self.rescan_btn, self.refine_btn,
+                  self.chroma_btn, self.revocals_btn,
+                  self.enrich_btn, self.mood_btn, self.structure_btn,
+                  self.stems_btn):
+            b.setEnabled(on)
+
+    def _run_single_stage(self, stage):
+        """Run ONE pass through the pipeline runner - progress parsing,
+        button state, and the completion reload all come for free."""
+        if self._pipe or self._pipe_proc is not None:
+            self.scan_lbl.setText("the pipeline is already running")
+            return
+        if (any(p is not None for p in (self._proc, self._mood_proc,
+                                        self._structure_proc,
+                                        self._stems_proc))
+                or (self._enrich is not None and self._enrich.isRunning())):
+            self.scan_lbl.setText("another pass is running - wait for it "
+                                  "(or stop it) first")
+            return
+        self._pipe = [stage]
+        self._pipe_total = 1
+        self._pipe_skipped = []
+        self._pipe_failed = []
+        self.analyze_btn.setText("Stop analyze")
+        self._pipe_buttons(False)
+        self._pipe_next()
+
+    def run_chroma(self):
+        self._run_single_stage(
+            {"name": "chroma",
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj_chroma.py"),
+                      "--dir", self.planner.music_dir]})
+
+    def run_revocals(self):
+        from lib.dj import vocals
+        if not vocals.available():
+            self.scan_lbl.setText("torch/demucs not installed "
+                                  "(requirements-dj-vocals.txt)")
+            return
+        self._run_single_stage(
+            {"name": "vocal curves",
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj_scan.py"),
+                      "--dir", self.planner.music_dir, "--revocals"]})
+
+    def _pipe_next(self):
+        self._scan_timer.stop()
+        if not self._pipe:                               # pipeline done
+            self.analyze_btn.setText("Analyze all")
+            self._pipe_buttons(True)
+            notes = []
+            if self._pipe_skipped:
+                notes.append("skipped: " + ", ".join(self._pipe_skipped))
+            if self._pipe_failed:
+                notes.append("FAILED: " + ", ".join(self._pipe_failed))
+            self.scan_lbl.setText(
+                "analysis pipeline complete"
+                + (f"  ({'; '.join(notes)})" if notes else ""))
+            try:
+                self.planner.reload_library()
+            except MemoryError:
+                self.scan_lbl.setText("pipeline complete - reopen the "
+                                      "planner (low memory)")
+            return
+        st = self._pipe.pop(0)
+        self._pipe_stage_name = st["name"]
+        k = self._pipe_total - len(self._pipe)
+        self._pipe_prefix = f"[{k}/{self._pipe_total}] {st['name']}"
+        if st.get("skip"):
+            self._pipe_skipped.append(f"{st['name']} ({st['skip']})")
+            self._pipe_next()
+            return
+        self.scan_lbl.setText(self._pipe_prefix + ": starting...")
+        if st.get("structure"):
+            # Resolve native-vs-WSL now; WSL uses the sqlite-free batch
+            # handoff (import happens in _pipe_proc_done).
+            mode = _structure_mode()
+            self._pipe_structure_import = False
+            if mode == "native":
+                st["program"] = sys.executable
+                st["args"] = [os.path.join(_REPO_ROOT, "tools",
+                                           "dj_structure.py"),
+                              "--dir", self.planner.music_dir]
+            elif mode == "wsl":
+                self._structure_import_results()
+                cmd, _why = _structure_wsl_command(self.planner.music_dir,
+                                                   self.planner.db)
+                if cmd is None:
+                    self._pipe_next()          # nothing to label
+                    return
+                st["program"], st["args"] = cmd
+                self._pipe_structure_import = True
+            else:
+                self._pipe_skipped.append("structure (became unavailable)")
+                self._pipe_next()
+                return
+        if st.get("enrich"):
+            # In-process worker (MusicBrainz is rate-limited, not heavy).
+            self._enrich = EnrichWorker(self.planner.music_dir)
+            self._enrich.progress.connect(self._pipe_enrich_progress)
+            self._enrich.finished_run.connect(self._pipe_enrich_done)
+            self._enrich.start()
+            return
+        if st.get("scanfile"):
+            # The scanner reports via the progress JSON, not PROGRESS
+            # lines - reuse the existing poller (it also live-populates
+            # the table, which is safe for the CPU scan stage).
+            self._last_done = -1
+            self._scan_timer.start(1500)
+        self._pipe_proc = QProcess(self)
+        self._pipe_proc.setProcessChannelMode(
+            QProcess.ProcessChannelMode.MergedChannels)
+        self._pipe_proc.readyReadStandardOutput.connect(self._pipe_stdout)
+        self._pipe_proc.finished.connect(self._pipe_proc_done)
+        self._pipe_proc.start(st.get("program", sys.executable), st["args"])
+
+    def _pipe_stdout(self):
+        if self._pipe_proc is None:
+            return
+        data = bytes(self._pipe_proc.readAllStandardOutput()).decode(
+            "utf-8", "replace")
+        for line in data.splitlines():
+            if not line.startswith("PROGRESS "):
+                continue
+            parts = line.split(" ", 5)
+            if len(parts) < 6:
+                continue
+            done, total, matched, missed, cur = parts[1:6]
+            self.scan_lbl.setText(
+                f"{self._pipe_prefix} {done}/{total}  ({matched} ok, "
+                f"{missed} failed)  {cur[:36]}")
+            # No mid-pass reload here - the GPU stages hold big models
+            # (same OOM rule as the individual mood/structure buttons).
+
+    def _pipe_proc_done(self, code, *a):
+        self._pipe_proc = None
+        if getattr(self, "_pipe_structure_import", False):
+            self._pipe_structure_import = False
+            self._structure_import_results()   # partial imports too
+        if code == 2:        # the tools' "deps unavailable" exit
+            self._pipe_skipped.append(f"{self._pipe_stage_name} "
+                                      "(deps unavailable)")
+        elif code != 0:
+            self._pipe_failed.append(f"{self._pipe_stage_name} "
+                                     f"(exit {code})")
+        self._pipe_next()
+
+    def _pipe_enrich_progress(self, done, total, matched, missed, cur):
+        self.scan_lbl.setText(
+            f"{self._pipe_prefix} {done}/{total}  ({matched} matched, "
+            f"{missed} missed)  {cur}")
+
+    def _pipe_enrich_done(self, *a):
+        if self._pipe_total:      # 0 = the pipeline was stopped mid-enrich
+            self._pipe_next()
+
 
 # ==========================================================================
 # Analysis tab
@@ -1163,6 +1700,222 @@ class CompileWorker(QThread):
             self.done.emit({"error": f"{type(e).__name__}: {e}"})
 
 
+def _suggest_next_tracks(library, entries, theme, compiled, pair_memory,
+                         target_s=3600.0, n=7, anchor_idx=None):
+    """Top-n candidates to FOLLOW the current set: scored with the live
+    brain against the LAST track (seam quality, key/chroma, tempo reach,
+    mood/genre coherence, pair memory) at the arc position the NEXT track
+    would occupy, with an artist-variety lean against the last few
+    entries. Empty set -> opener candidates (energy fit to the arc's
+    start inside the theme's tempo window). Runs on a worker thread -
+    touches only the snapshots it was handed.
+
+    ARC ANCHOR: progress toward the TARGET set length (the tab's minutes
+    spinner), NOT position within the current entries - the last slot's
+    offset over the current total is ~1.0 by construction, which scored
+    every suggestion at the arc's END and offered closers all night
+    (user-reported). A 3-track set of a planned 60 minutes is ~15% in,
+    and the suggestions should sound like it.
+
+    anchor_idx: follow the SELECTED slot instead of the set's last track
+    (mid-set repair: 'what should come after slot 3?'). Arc position and
+    the artist-variety window move to that slot; exclusions still cover
+    the whole set."""
+    from lib.dj.brain import Brain
+    by_id = {t.id: t for t in library}
+    set_ids = [e["track_id"] for e in entries]
+    used = set(set_ids)
+    if anchor_idx is None or not (0 <= anchor_idx < len(set_ids)):
+        anchor_idx = len(set_ids) - 1
+    last = by_id.get(set_ids[anchor_idx]) if set_ids else None
+    brain = Brain(library, theme)
+    brain.pair_memory = dict(pair_memory or {})
+    if last is None:
+        import math
+        arc0 = theme.arc_target(0.0)
+        lo, hi = theme.bpm_range
+        cands = [t for t in library
+                 if any(lo * 0.95 <= t.bpm * m <= hi * 1.05
+                        for m in (1.0, 2.0, 0.5))]
+        cands.sort(key=lambda t: abs(t.energy_proxy() - arc0))
+        return [{"id": t.id, "title": t.title, "artist": t.artist,
+                 "genre": _genre_of(t),
+                 "bpm": t.bpm, "camelot": t.camelot, "fit": None,
+                 "why": "opener", "beat": None, "key": None,
+                 "theme": round(math.exp(
+                     -((t.energy_proxy() - arc0) / 0.21) ** 2), 3),
+                 "energy": round(t.energy_proxy(), 2),
+                 "arc": round(arc0, 2)} for t in cands[:n]]
+    brain.veto_ids.update(used)              # never suggest set members
+    # Where would the track AFTER the anchor slot sit in the intended
+    # night? Running length up to (and including) the anchor, plus half
+    # a typical play, over the target length.
+    est_play = 0.5 * (theme.min_play_s + theme.max_play_s)
+    slots = (compiled or {}).get("slots") or []
+    if anchor_idx < len(slots):
+        s = slots[anchor_idx]
+        total = s["start_offset_s"] + (s.get("play_s") or est_play)
+    elif slots:
+        total = (compiled or {}).get("total_s", 0.0)
+    else:
+        total = (anchor_idx + 1) * est_play
+    progress = min((total + 0.5 * est_play) / max(target_s, 60.0), 1.0)
+    arc = theme.arc_target(progress)
+    recent_artists = {(by_id[i].artist or "").lower()
+                      for i in set_ids[max(0, anchor_idx - 2):anchor_idx + 1]
+                      if i in by_id and by_id[i].artist}
+    import math
+    import re as _re
+    from lib.dj import stretch_engine_name
+    from lib.dj.brain import (_title_root, camelot_compat,
+                              chroma_key_compat)
+    vari = stretch_engine_name() == "vari"
+    scored = []
+    for t in library:
+        if t.id in used:
+            continue
+        if brain.rate_for(last.bpm, t)[0] is None:   # cheap tempo gate
+            continue
+        s, meta = brain.score(last, t, arc, last.bpm)
+        if s <= 0 or meta is None:
+            continue
+        if (t.artist or "").lower() in recent_artists:
+            s *= 0.45                        # variety over artist streaks
+        scored.append((s, t, meta))
+    scored.sort(key=lambda x: -x[0])
+
+    def components(t, meta):
+        """The three per-dimension qualities shown in the panel, computed
+        the same way score() weighs them."""
+        rate = meta.get("rate") or 1.0
+        beat = math.exp(-((abs(math.log(rate))) / 0.045) ** 2)
+        pair = meta.get("pair")
+        if pair and not pair.get("beaty", True):
+            beat *= 0.5                  # one side beatless: it'd be a fade
+        key = camelot_compat(last.camelot, t.camelot)
+        semis = (12.0 * math.log(max(rate, 1e-6)) / math.log(2.0)
+                 if vari else float(meta.get("pitch_st") or 0))
+        sc = chroma_key_compat(getattr(last, "chroma", None),
+                               getattr(t, "chroma", None), semis)
+        if sc is not None:
+            key = 0.45 * key + 0.55 * sc
+        e = brain._arc_energy(t)
+        s_en = math.exp(-((e - arc) / 0.21) ** 2)
+        mood = sum(theme.mood_weights.get(m, 0.0) * f
+                   for m, f in (t.mood_hist or {}).items())
+        theme_q = 0.6 * s_en + 0.4 * min(1.0, mood / 0.35)
+        return {"beat": round(beat, 3), "key": round(key, 3),
+                "theme": round(theme_q, 3),
+                "stretch_pct": round((rate - 1.0) * 100.0, 1),
+                "energy": round(e, 2), "arc": round(arc, 2)}
+
+    def _flat(title):
+        return _re.sub(r"[^a-z0-9]+", "", (title or "").lower())
+
+    def _sig(t):
+        return (_flat(t.title), int((t.duration_s or 0.0) // 8),
+                ((t.row or {}).get("content_hash") or "").strip())
+
+    # One suggestion per SONG, and never a song the SET already contains
+    # in ANY copy/version: identity is title root + content hash + the
+    # mangled-tag re-rip check ('02_Alex - Youth (feat_ ...)': same ~8s
+    # duration bucket AND one flattened title containing the other).
+    # Seeding the seen-sets from the set's own tracks makes set members
+    # and their twins unsuggestable, not just their exact track ids.
+    set_tracks = [by_id[i] for i in used if i in by_id]
+    seen_roots = {(_title_root(t.title) or t.title.lower())
+                  for t in set_tracks}
+    seen_hashes = {h for _, _, h in map(_sig, set_tracks) if h}
+    kept = [(f, b) for f, b, _ in map(_sig, set_tracks) if f]
+    n_viable = max(len(scored), 1)
+    out = []
+    for rank, (s, t, meta) in enumerate(scored):
+        root = _title_root(t.title) or t.title.lower()
+        if root in seen_roots:
+            continue
+        flat, dur_b, chash = _sig(t)
+        if chash and chash in seen_hashes:
+            continue
+        if any(abs(dur_b - kb) <= 1 and flat and kf
+               and (flat in kf or kf in flat)
+               for kf, kb in kept):
+            continue
+        seen_roots.add(root)
+        if chash:
+            seen_hashes.add(chash)
+        kept.append((flat, dur_b))
+        out.append({"id": t.id, "title": t.title, "artist": t.artist,
+                    "genre": _genre_of(t),
+                    "bpm": t.bpm, "camelot": t.camelot, "fit": round(s, 3),
+                    # Where this candidate ranks among EVERYTHING viable -
+                    # the fit's raw scale is a many-factor product (ceiling
+                    # ~0.4) and reads misleadingly low on its own.
+                    "top_pct": max(1, round(100 * (rank + 1) / n_viable)),
+                    "n_viable": n_viable,
+                    "rate": round((meta.get("rate") or 1.0), 3),
+                    **components(t, meta)})
+        if len(out) >= n:
+            break
+
+    # SECOND TIER: fade-reachable. The beat tier can only draw from the
+    # ±8% tempo neighbourhood of the last track (63% of an eclectic
+    # library is out of reach at any moment) - but the live DJ has a
+    # deliberate entrance for exactly those: the dipped long_fade, where
+    # beat and key don't overlap enough to matter. Score those on what a
+    # fade DOES carry across: energy-vs-arc, theme mood, genre
+    # continuity. Still inside the theme's tempo identity, still
+    # variety-leaned, same song-dedup.
+    lo, hi = theme.bpm_range
+    fade_scored = []
+    for t in library:
+        if t.id in used:
+            continue
+        if brain.rate_for(last.bpm, t)[0] is not None:
+            continue                          # that's the beat tier's job
+        if not any(lo * 0.93 <= t.bpm * m <= hi * 1.07
+                   for m in (1.0, 2.0, 0.5)):
+            continue
+        s_en = math.exp(-((brain._arc_energy(t) - arc) / 0.21) ** 2)
+        mood = sum(theme.mood_weights.get(m, 0.0) * f
+                   for m, f in (t.mood_hist or {}).items())
+        s_mood = 0.25 + mood
+        inter = len(t.genre_set & last.genre_set)
+        base = min(len(t.genre_set), len(last.genre_set))
+        s_coh = 0.84 + 0.16 * (inter / base if base else 0.0)
+        s = s_en * s_mood * s_coh
+        if (t.artist or "").lower() in recent_artists:
+            s *= 0.45
+        theme_q = 0.6 * s_en + 0.4 * min(1.0, mood / 0.35)
+        fade_scored.append((s, t, s_en, theme_q))
+    fade_scored.sort(key=lambda x: -x[0])
+    n_fade = max(len(fade_scored), 1)
+    for rank, (s, t, s_en, theme_q) in enumerate(fade_scored):
+        if len(out) >= n + 3:
+            break
+        root = _title_root(t.title) or t.title.lower()
+        if root in seen_roots:
+            continue
+        flat, dur_b, chash = _sig(t)
+        if chash and chash in seen_hashes:
+            continue
+        if any(abs(dur_b - kb) <= 1 and flat and kf
+               and (flat in kf or kf in flat) for kf, kb in kept):
+            continue
+        seen_roots.add(root)
+        if chash:
+            seen_hashes.add(chash)
+        kept.append((flat, dur_b))
+        out.append({"id": t.id, "title": t.title, "artist": t.artist,
+                    "genre": _genre_of(t), "tier": "fade",
+                    "bpm": t.bpm, "camelot": t.camelot, "fit": round(s, 3),
+                    "top_pct": max(1, round(100 * (rank + 1) / n_fade)),
+                    "n_viable": n_fade,
+                    "beat": None, "key": None, "theme": round(theme_q, 3),
+                    "energy": round(t.energy_proxy(), 2),
+                    "arc": round(arc, 2)})
+    return out
+
+
 class PlanOpWorker(QThread):
     """One long planning operation (suggest / optimize / autofill / shape /
     slot alternatives / bridge) off the GUI thread: the beam searches walk
@@ -1269,6 +2022,13 @@ class SetTab(QWidget):
         prow.addWidget(QLabel("Target:"))
         self.minutes_spin = QSpinBox(minimum=10, maximum=600, value=60)
         self.minutes_spin.setSuffix(" min")
+        self.minutes_spin.setToolTip(
+            "Target set length: used by Suggest/Auto-fill AND as the arc "
+            "anchor for the next-track suggestions (a 3-track set of a "
+            "60-min plan is ~15% in, and suggestions score accordingly).")
+        # The target length IS the suggestions' arc anchor AND the arc
+        # strip's timeline - re-rank and re-draw on change.
+        self.minutes_spin.valueChanged.connect(self._target_changed)
         prow.addWidget(self.minutes_spin)
         left.addLayout(prow)
         prow2 = QHBoxLayout()
@@ -1313,6 +2073,13 @@ class SetTab(QWidget):
         left.addWidget(QLabel("Set (drag to reorder, double-click = anchor,"
                               " Del = remove, right-click = repair)"))
         self.set_list = QListWidget()
+        self.set_list.setFont(_mono_font())   # column-aligned rows
+        # Selecting a slot re-anchors the suggestion panel to it
+        # ("what should come after THIS one") - debounced. getattr guard:
+        # the timer is created later in __init__.
+        self.set_list.currentRowChanged.connect(
+            lambda _r: (getattr(self, "_suggest_timer", None)
+                        and self._suggest_timer.start(400)))
         self.set_list.setDragDropMode(
             QAbstractItemView.DragDropMode.InternalMove)
         self.set_list.model().rowsMoved.connect(self._reordered)
@@ -1367,6 +2134,14 @@ class SetTab(QWidget):
         st = QPushButton("■ Stop")
         st.clicked.connect(lambda: self.planner.stop_all_playback())
         brow.addWidget(st)
+        shop = QPushButton("🛒 Shop gaps")
+        shop.setToolTip(
+            "Turn the compiled plan's flagged seams (key clash, weak seam, "
+            "energy hole, big stretch) into Beatport connector searches: "
+            "pick a gap, the Discover tab shops genre charts inside the "
+            "BPM window reachable from BOTH sides, ranked as bridges.")
+        shop.clicked.connect(self._shop_gaps)
+        brow.addWidget(shop)
         brow.addStretch(1)
         right.addLayout(brow)
         # Play the whole compiled set WITHOUT leaving the Set tab - drives the
@@ -1396,6 +2171,71 @@ class SetTab(QWidget):
         pbrow.addWidget(pseam)
         pbrow.addStretch(1)
         right.addLayout(pbrow)
+
+        # -- next-track suggestions: what should FOLLOW this set --------------
+        self.suggest_hdr = QLabel("Suggested next:")
+        right.addWidget(self.suggest_hdr)
+        self.suggest_list = QListWidget()
+        self.suggest_list.setFont(_mono_font())   # column-aligned rows
+        self.suggest_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.suggest_list.setMaximumHeight(150)
+        self.suggest_list.setToolTip(
+            "Top candidates to follow the set's last track, scored with "
+            "the live brain (seam quality, key, tempo, mood/genre, pair "
+            "memory) at the arc position the set has reached, with an "
+            "artist-variety lean. Double-click to preview; multi-select "
+            "and '+ Add' to append. Refreshes as the set changes.")
+        self.suggest_list.itemDoubleClicked.connect(self._suggest_play)
+        right.addWidget(self.suggest_list)
+        sgrow = QHBoxLayout()
+        sg_play = QPushButton("▶ Play")
+        sg_play.clicked.connect(self._suggest_play)
+        sgrow.addWidget(sg_play)
+        sg_stop = QPushButton("■")
+        sg_stop.setFixedWidth(32)
+        sg_stop.clicked.connect(lambda: self.planner.stop_all_playback())
+        sgrow.addWidget(sg_stop)
+        sg_add = QPushButton("+ Add to set")
+        sg_add.clicked.connect(self._suggest_add)
+        sgrow.addWidget(sg_add)
+        sg_ref = QPushButton("↻")
+        sg_ref.setFixedWidth(32)
+        sg_ref.setToolTip("Refresh suggestions now")
+        sg_ref.clicked.connect(lambda: self._suggest_timer.start(0))
+        sgrow.addWidget(sg_ref)
+        # Scrub transport: previews start at the track's MIX-IN point
+        # (where it would actually enter the set); drag to scrub live.
+        sg_b15 = QPushButton("« 15")
+        sg_b15.setFixedWidth(44)
+        sg_b15.clicked.connect(lambda: self._sg_seek_rel(-15.0))
+        sgrow.addWidget(sg_b15)
+        self.sg_seek = QSlider(Qt.Orientation.Horizontal)
+        self.sg_seek.setMaximum(1000)
+        self.sg_seek.setToolTip("Scrub the previewed suggestion (seeks "
+                                "live while dragging)")
+        self._sg_drag = False
+        self.sg_seek.sliderPressed.connect(
+            lambda: setattr(self, "_sg_drag", True))
+        self.sg_seek.sliderMoved.connect(self._sg_scrub)
+        self.sg_seek.sliderReleased.connect(self._sg_released)
+        sgrow.addWidget(self.sg_seek, 1)
+        sg_f15 = QPushButton("15 »")
+        sg_f15.setFixedWidth(44)
+        sg_f15.clicked.connect(lambda: self._sg_seek_rel(15.0))
+        sgrow.addWidget(sg_f15)
+        self.sg_time = QLabel("-:-- / -:--")
+        sgrow.addWidget(self.sg_time)
+        right.addLayout(sgrow)
+        self._sg_tick = QTimer(self)
+        self._sg_tick.timeout.connect(self._sg_tick_update)
+        self._sg_tick.start(250)
+        self._suggest_worker = None
+        self._suggest_gen = 0
+        self._suggest_timer = QTimer(self)
+        self._suggest_timer.setSingleShot(True)
+        self._suggest_timer.timeout.connect(self._suggest_start)
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         right.addWidget(self.status)
@@ -1410,30 +2250,268 @@ class SetTab(QWidget):
     def theme(self):
         return get_theme(self.theme_combo.currentText())
 
-    def add_tracks(self, tracks):
-        for t in tracks:
-            self.entries.append({"track_id": t.id, "pin_type": "suggestion",
-                                 "target_offset_min": None,
-                                 "style_override": None,
-                                 "target_play_s": None})
+    def add_tracks(self, tracks, at=None):
+        """Append tracks, or insert them at index `at` (in order)."""
+        new = [{"track_id": t.id, "pin_type": "suggestion",
+                "target_offset_min": None,
+                "style_override": None,
+                "target_play_s": None} for t in tracks]
+        if at is None or not (0 <= at <= len(self.entries)):
+            self.entries.extend(new)
+        else:
+            self.entries[at:at] = new
         self._rebuild()
         self.recompile()
+
+    def _target_changed(self, _v):
+        """Target-length spinner moved: re-anchor suggestions and rescale
+        the arc strip's timeline."""
+        self._suggest_timer.start(600)
+        if self.compiled:
+            self._update_strip(self.compiled)
+
+    # -- next-track suggestions ------------------------------------------
+    def _suggest_anchor_idx(self):
+        """Selected slot index, or None (= follow the set's last track)."""
+        row = self.set_list.currentRow()
+        return row if 0 <= row < len(self.entries) else None
+
+    def _suggest_start(self):
+        if self._suggest_worker is not None \
+                and self._suggest_worker.isRunning():
+            self._suggest_timer.start(400)       # retry after the current
+            return
+        self._suggest_gen += 1
+        gen = self._suggest_gen
+        entries = list(self.entries)
+        library = list(self.planner.library)
+        theme = self.theme()
+        compiled = self.compiled
+        pair_mem = dict(getattr(self.planner, "pair_memory", {}) or {})
+
+        target_s = float(self.minutes_spin.value()) * 60.0
+        anchor = self._suggest_anchor_idx()
+        # Header says WHAT the suggestions follow - selection or set end.
+        by_id = {t.id: t for t in library}
+        aidx = anchor if anchor is not None else len(entries) - 1
+        at = (by_id.get(entries[aidx]["track_id"])
+              if 0 <= aidx < len(entries) else None)
+        if at is None:
+            self.suggest_hdr.setText("Suggested next (openers):")
+        elif anchor is not None and anchor < len(entries) - 1:
+            self.suggest_hdr.setText(
+                f"Suggested next (follows SELECTED slot {anchor + 1}: "
+                f"{at.title[:30]}):")
+        else:
+            self.suggest_hdr.setText(
+                f"Suggested next (follows the last track: "
+                f"{at.title[:30]}):")
+
+        def fn():
+            return _suggest_next_tracks(library, entries, theme, compiled,
+                                        pair_mem, target_s=target_s,
+                                        anchor_idx=anchor)
+
+        def done(res):
+            if gen != self._suggest_gen:
+                return                           # stale: set changed since
+            self._suggest_apply(res)
+        w = PlanOpWorker(fn)
+        w.done.connect(done)
+        self._suggest_worker = w
+        w.start()
+
+    @staticmethod
+    def _q_bar(x):
+        """0..1 quality -> a one-char bar (▁ weak .. █ excellent)."""
+        if x is None:
+            return "·"
+        return "▁▂▃▅▆█"[min(5, int(max(0.0, min(1.0, x)) * 5.999))]
+
+    def _suggest_apply(self, res):
+        if isinstance(res, dict) and "error" in res:
+            return                               # keep the old list
+        self.suggest_list.clear()
+        fade_header_done = False
+        for r in res:
+            if r.get("tier") == "fade" and not fade_header_done:
+                hdr = QListWidgetItem(
+                    "── fade-reachable (outside beat-match range; enters "
+                    "via a deliberate fade) ──", self.suggest_list)
+                hdr.setFlags(Qt.ItemFlag.NoItemFlags)
+                hdr.setForeground(QColor(140, 140, 155))
+                fade_header_done = True
+            if r.get("fit") is not None:
+                note = f"{r['fit']:.2f} ·top {r.get('top_pct', 0):d}%"
+            else:
+                note = r.get("why", "")
+            quality = (f"B{self._q_bar(r.get('beat'))}"
+                       f"H{self._q_bar(r.get('key'))}"
+                       f"T{self._q_bar(r.get('theme'))}")
+            it = QListWidgetItem(
+                f"{_clip(r['title'], 30)} {_clip(r['artist'], 18)} "
+                f"{_clip(r.get('genre', ''), 14)} "
+                f"{r['bpm']:3.0f} {r['camelot']:>3s}  {quality}  {note}",
+                self.suggest_list)
+            it.setData(Qt.ItemDataRole.UserRole, r["id"])
+            if r.get("tier") == "fade":
+                it.setForeground(QColor(165, 170, 185))
+            tip = []
+            if r.get("tier") == "fade":
+                tip.append(f"FADE-REACHABLE: outside ±8% tempo reach of "
+                           f"the last track - would enter via the dipped "
+                           f"fade, so beat/key don't apply. Rank: top "
+                           f"{r.get('top_pct', 0)}% of {r.get('n_viable')} "
+                           f"fade candidates (energy/mood/genre fit).")
+            elif r.get("n_viable"):
+                tip.append(f"Rank: top {r.get('top_pct', 0)}% of "
+                           f"{r['n_viable']} beat-matchable candidates "
+                           f"(fit is a many-factor product; ~0.4 is the "
+                           f"practical ceiling)")
+            if r.get("beat") is not None:
+                tip.append(f"Beat: {r['beat']:.2f}  "
+                           f"(stretch {r.get('stretch_pct', 0):+.1f}%)")
+            if r.get("key") is not None:
+                tip.append(f"Harmonics: {r['key']:.2f}  "
+                           f"(vs last track's key, chroma-refined at the "
+                           f"planned rate)")
+            if r.get("theme") is not None:
+                tip.append(f"Theme: {r['theme']:.2f}  "
+                           f"(energy {r.get('energy', 0):.2f} vs arc "
+                           f"target {r.get('arc', 0):.2f} + mood match)")
+            it.setToolTip("\n".join(tip))
+
+    def _suggest_selected_tracks(self):
+        ids = [it.data(Qt.ItemDataRole.UserRole)
+               for it in self.suggest_list.selectedItems()]
+        by_id = {t.id: t for t in self.planner.library}
+        return [by_id[i] for i in ids if i in by_id]
+
+    def _suggest_play(self, *a):
+        tracks = self._suggest_selected_tracks()
+        if not tracks:
+            return
+        t = tracks[0]
+        # Start where the track would actually ENTER the set - its first
+        # mix-in point - not the cold intro. Scrub from there.
+        start = t.mix_ins[0]["time_s"] if t.mix_ins else 0.0
+        # Reuse the library tab's whole decode/transport pipeline.
+        self.planner.library_tab._play_track(t, start_s=start)
+
+    # -- suggestion scrub transport (drives the shared library player) ----
+    def _sg_player(self):
+        return self.planner.library_tab.lib_player
+
+    def _sg_dur(self):
+        p = self._sg_player()
+        return (len(p.samples) / 44100.0
+                if p.samples is not None and len(p.samples) else 0.0)
+
+    def _sg_scrub(self, v):
+        d = self._sg_dur()
+        if d > 0:
+            self._sg_player().seek(v / 1000.0 * d)
+
+    def _sg_released(self):
+        self._sg_drag = False
+        self._sg_scrub(self.sg_seek.value())
+
+    def _sg_seek_rel(self, dt):
+        p = self._sg_player()
+        if p.samples is not None:
+            p.seek(max(0.0, min(p.time_s() + dt, self._sg_dur() - 1.0)))
+
+    @staticmethod
+    def _sg_mmss(t):
+        return f"{int(t // 60)}:{int(t % 60):02d}"
+
+    def _sg_tick_update(self):
+        d = self._sg_dur()
+        if d <= 0:
+            self.sg_time.setText("-:-- / -:--")
+            if not self._sg_drag:
+                self.sg_seek.setValue(0)
+            return
+        t = self._sg_player().time_s()
+        self.sg_time.setText(f"{self._sg_mmss(t)} / {self._sg_mmss(d)}")
+        if not self._sg_drag:
+            self.sg_seek.blockSignals(True)
+            self.sg_seek.setValue(int(t / d * 1000))
+            self.sg_seek.blockSignals(False)
+
+    def _suggest_add(self):
+        tracks = self._suggest_selected_tracks()
+        if not tracks:
+            self.status.setText("select suggestion(s) to add first")
+            return
+        # Follow the anchoring: a mid-set selection means "insert AFTER
+        # that slot", not "append at the end".
+        anchor = self._suggest_anchor_idx()
+        at = anchor + 1 if (anchor is not None
+                            and anchor < len(self.entries) - 1) else None
+        self.add_tracks(tracks, at=at)  # rebuild+recompile -> auto-refresh
 
     def _entry_label(self, e):
         t = next((x for x in (self.planner.library_all or self.planner.library)
                   if x.id == e["track_id"]), None)
         name = t.title if t else f"track {e['track_id']}"
-        tag = "⚓ " if e["pin_type"] == "anchor" else "• "
-        pin = (f"  @{e['target_offset_min']:.0f}min"
+        tag = "⚓" if e["pin_type"] == "anchor" else "•"
+        pin = (f" @{e['target_offset_min']:.0f}min"
                if e.get("target_offset_min") else "")
-        bpm = (f"  ({t.bpm:.0f} {t.camelot}  "
-               f"{energy_glyph(t.energy_proxy())})" if t else "")
-        return tag + name + bpm + pin
+        if t is None:
+            return f"{tag} {name}{pin}"
+        info = (f"{t.bpm:3.0f} {t.camelot:>3s} "
+                f"{energy_glyph(t.energy_proxy())}")
+        return (f"{tag} {_clip(name, 30)} {_clip(t.artist, 18)} "
+                f"{_clip(_genre_of(t), 14)} {info}{pin}")
 
     def _rebuild(self):
         self.set_list.clear()
         for e in self.entries:
             QListWidgetItem(self._entry_label(e), self.set_list)
+
+    def _color_set_list(self, result):
+        """Color each set entry by its INBOUND transition (how the set
+        arrives AT this track): green = clean seam (or the opener),
+        orange = compiler-warned, red = energy hole in the blend,
+        grey = enters via a fade. Same palette as the compiled plan."""
+        GOOD = QColor(120, 200, 140)
+        WARN = QColor(255, 170, 100)
+        BAD = QColor(230, 110, 110)
+        FADE = QColor(160, 160, 170)
+        slots = result.get("slots") or []
+        # Compile drops unknown/do-not-use ids, so slot k may not be
+        # entry k - align by walking track_ids in order.
+        e_idx, rows = 0, []
+        for s in slots:
+            while e_idx < len(self.entries) and \
+                    self.entries[e_idx]["track_id"] != s["track"].id:
+                e_idx += 1
+            if e_idx >= len(self.entries):
+                break
+            rows.append(e_idx)
+            e_idx += 1
+        for k, s in enumerate(slots):
+            if k >= len(rows):
+                break
+            item = self.set_list.item(rows[k])
+            if item is None:
+                continue
+            if k == 0:
+                item.setForeground(GOOD)
+                continue
+            prev = slots[k - 1]                  # the seam INTO this track
+            si = prev.get("seam_info") or {}
+            style = (prev.get("transition") or {}).get("style")
+            if si.get("floor") is not None and si["floor"] < 0.15:
+                col = BAD
+            elif prev.get("warnings"):
+                col = WARN
+            elif si.get("fade") or style == "long_fade":
+                col = FADE
+            else:
+                col = GOOD
+            item.setForeground(col)
 
     def _reordered(self, *a):
         order = [self.set_list.item(i).text()
@@ -1752,6 +2830,8 @@ class SetTab(QWidget):
             self.status.setText("compile error: " + result["error"])
             return
         self.compiled = result
+        self._suggest_timer.start(400)   # set changed -> refresh suggestions
+        self._color_set_list(result)
         self.plan_list.clear()
         for i, s in enumerate(result["slots"]):
             t = s["track"]
@@ -1804,7 +2884,9 @@ class SetTab(QWidget):
                  for s in result["slots"]]
         arc = [(i / 24.0, max(0.0, min(1.0, theme.arc_target(i / 24.0))))
                for i in range(25)]
-        self.arc_strip.set_data(strip, arc)
+        self.arc_strip.set_data(strip, arc,
+                                target_s=float(self.minutes_spin.value())
+                                * 60.0)
 
     def _report_card(self, result):
         """One line the whole set can be judged by."""
@@ -1904,6 +2986,55 @@ class SetTab(QWidget):
         self._run_plan_op("scoring alternatives",
                           lambda: self._slot_alternatives(i),
                           lambda alts: self._show_alternatives(i, alts))
+
+    def _shop_gaps(self):
+        """Weak seams -> a Beatport shopping trip. Every seam the compiler
+        flagged becomes a pickable gap; the chosen one runs a connector
+        search in the Discover tab (genre charts + both-sides BPM window +
+        bridge-fit ranking). The honest answer to 'my library can't make
+        this set work'."""
+        dt = self.planner.discover_tab
+        if dt is None:
+            self.status.setText("Discover tab unavailable (Beatport module "
+                                "didn't load)")
+            return
+        if not self.compiled or not self.compiled.get("slots"):
+            self.status.setText("compile a set first")
+            return
+        slots = self.compiled["slots"]
+        gaps = []
+        for i, s in enumerate(slots[:-1]):
+            if not s.get("transition"):
+                continue
+            si = s.get("seam_info") or {}
+            reasons = list(s.get("warnings") or [])
+            if si.get("key_fit", 1.0) < 0.55 and not any(
+                    w.startswith("key clash") for w in reasons):
+                reasons.append(f"key fit {si['key_fit']}")
+            if si.get("floor") is not None and si["floor"] < 0.15:
+                reasons.append(f"energy hole {si['floor']}")
+            if reasons:
+                gaps.append((i, s["track"], slots[i + 1]["track"],
+                             "; ".join(reasons)))
+        if not gaps:
+            self.status.setText("no flagged seams - nothing to shop")
+            return
+        menu = QMenu(self)
+        for i, a, b, why in gaps[:12]:
+            act = menu.addAction(f"{i + 1}. {a.title[:24]} → {b.title[:24]}"
+                                 f"   ({why[:52]})")
+            act.setData((a.id, b.id))
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        aid, bid = chosen.data()
+        by_id = {t.id: t for t in self.planner.library}
+        a, b = by_id.get(aid), by_id.get(bid)
+        if a is None or b is None:
+            self.status.setText("set changed - recompile and retry")
+            return
+        dt.shop_gap(a, b, f"{a.title[:20]} → {b.title[:20]}")
+        self.planner.tabs.setCurrentWidget(dt)
 
     def _show_alternatives(self, i, alts):
         if not alts:
@@ -2284,7 +3415,9 @@ class Planner(QMainWindow):
         # compiled plan stale - tags steer selection and user cues
         # OVERRIDE seam points, so the Set/Mix tabs must recompile.
         if self.set_tab.entries:
-            self.set_tab.recompile()
+            self.set_tab.recompile()     # _compiled refreshes suggestions
+        else:
+            self.set_tab._suggest_timer.start(600)   # opener suggestions
 
     def _open_analysis(self, track):
         self.tabs.setCurrentWidget(self.analysis_tab)
@@ -2302,6 +3435,14 @@ class Planner(QMainWindow):
         if self.library_tab._mood_proc is not None:
             self.library_tab._mood_proc.kill()
             self.library_tab._mood_proc.waitForFinished(2000)
+        for proc in (self.library_tab._structure_proc,
+                     self.library_tab._stems_proc,
+                     self.library_tab._pipe_proc):
+            if proc is not None:
+                proc.kill()
+                proc.waitForFinished(2000)
+        self.library_tab._pipe = []
+        self.library_tab._pipe_total = 0
         if self.set_tab._op is not None and self.set_tab._op.isRunning():
             self.set_tab._op.wait(3000)      # a beam search can't be killed
         if self.discover_tab is not None:

@@ -30,11 +30,13 @@ class ArcStrip(QWidget):
         self.setMinimumHeight(92)
         self.slots = []      # [{off, play, energy, bpm, anchor, seam, warn}]
         self.arc = []        # [(time_frac 0..1, target 0..1)]
+        self.target_s = 0.0  # intended set length; 0 = scale to content
         self._hit = []       # [(x0, x1, index)] from the last paint
 
-    def set_data(self, slots, arc):
+    def set_data(self, slots, arc, target_s=0.0):
         self.slots = list(slots or [])
         self.arc = list(arc or [])
+        self.target_s = float(target_s or 0.0)
         self.update()
 
     def mousePressEvent(self, ev):
@@ -59,10 +61,30 @@ class ArcStrip(QWidget):
         pad = 8
         top, bot = 16.0, h - 16.0
         span = bot - top
-        total = max(self.slots[-1]["off"] + self.slots[-1]["play"], 1.0)
+        content = max(self.slots[-1]["off"] + self.slots[-1]["play"], 1.0)
+        # The x-axis is the INTENDED night, not the songs so far: a
+        # half-built set occupies the left of the target timeline and the
+        # theme curve spans the whole thing, so the shape you see is the
+        # shape the arc anchoring actually scores against. Content longer
+        # than the target extends the axis honestly.
+        total = max(content, self.target_s or 0.0)
 
         def tx(t_s):
             return pad + (t_s / total) * (w - 2 * pad)
+
+        # Unfilled remainder of the target: shaded, with an end-of-content
+        # tick so the build edge is obvious.
+        if total > content + 1.0:
+            xc = tx(content)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 10))
+            p.drawRect(QRectF(xc, top, (w - pad) - xc, bot - top))
+            p.setPen(QPen(QColor(200, 200, 210, 90), 1,
+                          Qt.PenStyle.DotLine))
+            p.drawLine(int(xc), int(top), int(xc), int(bot))
+            cm = int(content // 60)
+            p.setPen(TXT)
+            p.drawText(int(xc) + 3, int(top) + 10, f"{cm}:00")
 
         # Theme arc target: the shape the night is SUPPOSED to follow.
         if len(self.arc) >= 2:

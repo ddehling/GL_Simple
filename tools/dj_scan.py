@@ -63,6 +63,31 @@ def cmd_scan(args):
     return 0
 
 
+def cmd_revocals(args):
+    from lib.dj.db import LibraryDB
+    from lib.dj.scan import vocal_pass
+    root = resolve_music_dir(args.dir)
+    db = LibraryDB(root)
+    print(f"Refining vocal curves in {root}", flush=True)
+
+    def cb(d, t, n):
+        _bar(d, t, n)
+        # Machine-parseable line for the planner pipeline label (same
+        # shape as the mood/structure/stems passes emit).
+        print(f"\nPROGRESS {d} {t} {d} 0 {n[:40]}", flush=True)
+
+    v = vocal_pass(db, progress_cb=cb, refine=True)
+    print()
+    if v.get("status") == "unavailable":
+        print("torch/demucs not installed "
+              "(pip install -r requirements-dj-vocals.txt)")
+        return 1
+    print(f"measured {v.get('measured', 0)} tracks"
+          + (f", {v['errors']} errors" if v.get("errors") else ""))
+    db.close()
+    return 0
+
+
 def cmd_track(args):
     from lib.dj.features import analyze_file
     path = args.track
@@ -116,11 +141,17 @@ def main():
     ap.add_argument("--refine-grids", action="store_true",
                     help="also re-analyze unchanged tracks with bpm_conf"
                          " < 0.75 (vote-weighted grid confidence)")
+    ap.add_argument("--revocals", action="store_true",
+                    help="ONLY re-run the ML vocal pass, upgrading tracks "
+                         "measured at the old coarse 24s hop to the fine "
+                         "8s vocal curve (no audio re-analysis)")
     args = ap.parse_args()
     if args.track:
         return cmd_track(args)
     if args.list:
         return cmd_list(args)
+    if args.revocals:
+        return cmd_revocals(args)
     return cmd_scan(args)
 
 

@@ -28,7 +28,13 @@ import numpy as np
 
 RATE = 44100
 WIN_S = 8.0                 # analysis window fed to the model
-HOP_S = 24.0                # one window every 24 s (~33% coverage)
+HOP_S = 8.0                 # contiguous coverage (was 24 s / ~33%): the
+                            # fine curve axes["vc"] now resolves individual
+                            # vocal phrases, which seam planning uses to
+                            # place swaps in the GAPS between vocal lines
+                            # and to gate stem styles. Cost only rises on
+                            # tracks that pass the 6-window screen - pure
+                            # instrumentals still short-circuit.
 BATCH = 1                   # windows per model call. KEEP AT 1: batching
                             # multiplies htdemucs' transformer memory per
                             # segment - BATCH=4 hard-crashed the process
@@ -114,18 +120,65 @@ class VocalAnalyzer:
                     shares[k] = v / u
         return np.array(times), np.array(shares, dtype=np.float64)
 
+    def share_curve_full(self, samples):
+        """Contiguous (times, shares) from ONE full-track separation.
+
+        The per-window path pays ~45 apply_model calls per track (BATCH=1
+        is a hard constraint - see the header - so windows can't batch
+        their way out of the per-call overhead). One call over the whole
+        track does the same work through demucs' own internal chunking,
+        measurably faster on GPU. Falls back to the windowed path for
+        very long tracks (the full stem tensor is 4x2xN float32 in RAM -
+        a 12-min cap keeps it under ~1 GB)."""
+        if len(samples) / RATE > 720.0:
+            return self.share_curve(samples)
+        torch = self._torch
+        from demucs.apply import apply_model
+        audio = torch.from_numpy(samples).unsqueeze(0) \
+            .repeat(2, 1).unsqueeze(0)               # (1, 2, n)
+        std = float(audio.std()) + 1e-8
+        with torch.no_grad():
+            out = apply_model(self._model, audio / std,
+                              device=self._device, shifts=0, split=True,
+                              overlap=0.1, progress=False)[0].cpu()
+        voc = out[self._vidx].mean(dim=0).numpy()    # normalized units
+        del out
+        mix_n = samples / std                        # same units as voc
+        win = int(WIN_S * RATE)
+        hop = int(HOP_S * RATE)
+        starts = list(range(0, max(len(samples) - win, 1), hop))
+        last_end = (starts[-1] + win) if starts else 0
+        if len(samples) - last_end > hop * 0.5 and len(samples) > win:
+            starts.append(len(samples) - win)
+        times, shares = [], []
+        for a in starts:
+            r = float(np.sqrt(np.mean(samples[a:a + win] ** 2)))
+            times.append((a + win / 2) / RATE)
+            if r < QUIET_RMS:
+                shares.append(0.0)
+                continue
+            u = float(np.mean(mix_n[a:a + win] ** 2)) + 1e-12
+            v = float(np.mean(voc[a:a + win] ** 2))
+            shares.append(v / u)
+        return np.array(times), np.array(shares, dtype=np.float64)
+
     def update_track(self, db, track_id, samples):
         """Write real vocalness into this track's sections + axes.
 
         Returns the track's vocal duration fraction (axes['vocal']).
 
-        TWO-STAGE for scan speed: a 6-window screen spread across the
-        track first - when every screen window is essentially vocal-free
-        (most club tracks!), the track is marked instrumental without the
-        full pass. Full coverage only runs when the screen hears
-        something. Cuts average per-track cost ~3x on a real library."""
+        Path order, cheapest first:
+        1. PRE-RENDERED STEMS on disk (dj_stems.py already separated this
+           track once) -> derive the curve from the vocals stem, no model
+           call at all.
+        2. 6-window screen; every window essentially vocal-free (most
+           club tracks!) -> instrumental, no full pass.
+        3. share_curve_full: ONE whole-track separation."""
         win = int(WIN_S * RATE)
-        if len(samples) > 3 * win:
+        got = curve_from_stems(db, track_id, samples)
+        if got is not None:
+            times, shares = got
+        elif len(samples) > 3 * win:
             fr = np.linspace(0.08, 0.9, 6)
             screen = [int(f * (len(samples) - win)) for f in fr]
             _, s_shares = self.share_curve(samples, starts=screen)
@@ -133,9 +186,9 @@ class VocalAnalyzer:
                 times = np.array([(a + win / 2) / RATE for a in screen])
                 shares = np.zeros(len(screen))
             else:
-                times, shares = self.share_curve(samples)
+                times, shares = self.share_curve_full(samples)
         else:
-            times, shares = self.share_curve(samples)
+            times, shares = self.share_curve_full(samples)
         if not len(times):
             return None
         vocalness = np.minimum(shares * SHARE_SCALE, 1.0)
@@ -165,15 +218,55 @@ class VocalAnalyzer:
         axes = json.loads(row["axes"]) if row and row["axes"] else {}
         axes["vocal"] = frac
         axes["vocal_src"] = "demucs"
-        # Compact fine curve for PHRASE-LEVEL mixing decisions (time the
-        # bass swap into the gap between vocal lines, not just into a
-        # low-vocal section). ~20-40 points; sections keep the means.
+        # Fine curve for PHRASE-LEVEL mixing decisions (time the bass swap
+        # into the gap between vocal lines, not just into a low-vocal
+        # section). vc_hop records the resolution so a refine pass can
+        # find tracks measured at the old coarse 24 s hop.
         axes["vc"] = [[round(float(t), 1), round(float(v), 2)]
                       for t, v in zip(times, vocalness)]
+        axes["vc_hop"] = HOP_S
         db.conn.execute("UPDATE tracks SET axes = ? WHERE id = ?",
                         (json.dumps(axes), track_id))
         db.conn.commit()
         return frac
+
+
+def curve_from_stems(db, track_id, samples):
+    """(times, shares) derived from PRE-RENDERED stems on disk - the
+    separation already happened once (tools/dj_stems.py), so the vocal
+    share is a pure numpy ratio, no torch/model/GPU involved. None when
+    stems are absent or unreadable (callers fall through to the model).
+    The stems' lossy encode adds a ~2000-sample codec delay vs the mix -
+    irrelevant at 8-second windows."""
+    try:
+        from lib.dj.stems import stem_paths
+        paths = stem_paths(db.music_root, track_id)
+        if not paths:
+            return None
+        from lib.dj.features import decode_file
+        voc = decode_file(paths["vocals"])
+    except Exception:
+        return None
+    win = int(WIN_S * RATE)
+    hop = int(HOP_S * RATE)
+    n = min(len(voc), len(samples))
+    if n < win:
+        return None
+    starts = list(range(0, n - win + 1, hop))
+    if not starts:
+        return None
+    if n - (starts[-1] + win) > hop * 0.5:
+        starts.append(n - win)
+    times, shares = [], []
+    for a in starts:
+        r = float(np.sqrt(np.mean(samples[a:a + win] ** 2)))
+        times.append((a + win / 2) / RATE)
+        if r < QUIET_RMS:
+            shares.append(0.0)
+        else:
+            v = float(np.mean(voc[a:a + win] ** 2))
+            shares.append(v / (r * r))
+    return np.array(times), np.array(shares, dtype=np.float64)
 
 
 def vocal_tags(axes, user_tags=()):

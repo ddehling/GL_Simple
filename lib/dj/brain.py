@@ -22,7 +22,8 @@ from lib.dj.themes import adapt_theme
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
-          "bassline_layer", "double_drop", "loop_build", "long_fade")
+          "bassline_layer", "double_drop", "loop_build", "long_fade",
+          "stem_drum_swap", "acapella_out")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 # Rate-gradient speeds. Both were tuned in the WSOLA era when a tempo ramp
 # had NO pitch consequence; with the varispeed engine every gradient IS a
@@ -64,6 +65,16 @@ class TrackInfo:
         self.rhythm_density = row.get("rhythm_density") or 0.0
         self.spectral = row.get("spectral") or {}
         self.key_mode = row.get("key_mode")
+        # 12-bin A-origin pitch-class profile (DB v12) - the continuous
+        # harmonic fingerprint chroma_key_compat rotates by the planned
+        # playback rate's true pitch shift. None until backfilled/rescanned.
+        ch = row.get("chroma")
+        self.chroma = ch if isinstance(ch, list) and len(ch) == 12 else None
+        # ML structure segments (DB v12, allin1 pass): [[start_s, end_s,
+        # label], ...] with labels intro/verse/chorus/bridge/inst/solo/
+        # break/outro. Empty until the structure pass has run.
+        st = row.get("structure") or {}
+        self.ml_segments = st.get("segments") or []
         # Character (danceability/valence) is library-ranked in load_library;
         # None until then (ghosts/tests fall back to raw via character.py).
         self.danceability = None
@@ -104,6 +115,9 @@ class TrackInfo:
         # 'do not use' flag (DB v11). Kept on the object so the library
         # browser can show + toggle it; callers that auto-select filter it out.
         self.excluded = bool(row.get("excluded"))
+        # Pre-rendered stems on disk (tools/dj_stems.py)? Stamped by
+        # load_library (needs the music root); gates the stem styles.
+        self.has_stems = False
         self.cues = list(cues or [])
         self.mix_ins = [p for p in mix_points if p["kind"] == "in"]
         self.mix_outs = [p for p in mix_points if p["kind"] == "out"]
@@ -161,6 +175,13 @@ class TrackInfo:
             if s["start_s"] <= t < s["end_s"]:
                 return s
         return self.sections[-1] if self.sections else None
+
+    def ml_segment_at(self, t):
+        """ML structure label at time t ('' when the pass hasn't run)."""
+        for s, e, label in self.ml_segments:
+            if s <= t < e:
+                return label
+        return ""
 
     def nearest_downbeat(self, t):
         """Downbeat time closest to t (from the main grid segment)."""
@@ -280,6 +301,16 @@ def load_library(db):
     # lib/dj/character.py). Adds mood/danceability the scanner never exposed.
     from lib.dj.character import rank_library
     rank_library(out)
+    # STEMS ON DISK: one isdir/isfile sweep per load; gates the stem
+    # transition styles (stem_drum_swap / acapella_out).
+    try:
+        from lib.dj.stems import has_stems
+        root = getattr(db, "music_root", None)
+        if root:
+            for t in out:
+                t.has_stems = has_stems(root, t.id)
+    except Exception:
+        pass
     return out
 
 
@@ -298,8 +329,11 @@ def camelot_compat(c1, c2):
     dn = min((n1 - n2) % 12, (n2 - n1) % 12)
     if dn == 0:
         return 1.0 if m1 == m2 else 0.92    # same / relative major-minor
-    if dn == 1 and m1 == m2:
-        return 0.9                          # neighbour on the wheel
+    if dn == 1:
+        # Neighbour on the wheel; the diagonal (letter switch, e.g. 8A->9B)
+        # shares the same 6-of-7 notes but relates the tonal centers more
+        # loosely, so it prices between neighbour and the dn=2 tier.
+        return 0.9 if m1 == m2 else 0.7
     if dn == 2 and m1 == m2:
         return 0.55
     return 0.3
@@ -312,6 +346,60 @@ def _shift_camelot(cam, semitones):
     except (ValueError, IndexError):
         return cam
     return f"{((num - 1 + 7 * semitones) % 12) + 1}{letter}"
+
+
+def _rot_chroma(p, semitones):
+    """Rotate a 12-bin profile by a possibly-FRACTIONAL semitone shift
+    (pitch up by s moves energy from bin i to bin i+s; fractional parts
+    interpolate between adjacent bins)."""
+    k = math.floor(semitones)
+    f = semitones - k
+    out = [0.0] * 12
+    for i in range(12):
+        v = p[i]
+        out[(i + k) % 12] += v * (1.0 - f)
+        out[(i + k + 1) % 12] += v * f
+    return out
+
+
+# Pearson-r -> score map, calibrated on Krumhansl-Schmuckler key
+# templates so clean profiles reproduce the camelot_compat tiers:
+# measured r on templates - same 1.0, relative 0.65, fifth 0.34,
+# diagonals 0.24/0.54, two-steps -0.16, semitone -0.39, tritone -0.67.
+# Piecewise-linear through those anchors: relative maps to 0.92, fifth
+# 0.85, diagonals ~0.78-0.89, two-steps 0.55, semitone-and-worse 0.3 -
+# and real (messier) profiles + fractional varispeed detunes land on the
+# continuum in between instead of falling off an integer cliff.
+_CHROMA_MAP = ((-0.35, 0.3), (-0.15, 0.55), (0.35, 0.85), (1.0, 1.0))
+
+
+def chroma_key_compat(pa, pb, semitones=0.0):
+    """Continuous harmonic compatibility of two 12-bin A-origin chroma
+    profiles, with pb rotated by the TRUE sounded pitch offset between the
+    decks in semitones (fractional under varispeed: 12*log2(rate); the
+    keylock transpose's pitch_st otherwise). Pearson correlation of the
+    profiles mapped onto camelot_compat's 0.3..1.0 scale. Returns None
+    when either profile is missing/degenerate - callers keep the Camelot
+    tier in that case."""
+    if not pa or not pb or len(pa) != 12 or len(pb) != 12:
+        return None
+    if abs(semitones) > 1e-9:
+        pb = _rot_chroma(pb, semitones)
+    ma = sum(pa) / 12.0
+    mb = sum(pb) / 12.0
+    va = [x - ma for x in pa]
+    vb = [x - mb for x in pb]
+    na = math.sqrt(sum(x * x for x in va))
+    nb = math.sqrt(sum(x * x for x in vb))
+    if na < 1e-9 or nb < 1e-9:
+        return None                     # flat profile: no harmonic identity
+    r = sum(x * y for x, y in zip(va, vb)) / (na * nb)
+    if r <= _CHROMA_MAP[0][0]:
+        return _CHROMA_MAP[0][1]
+    for (r0, s0), (r1, s1) in zip(_CHROMA_MAP, _CHROMA_MAP[1:]):
+        if r <= r1:
+            return s0 + (s1 - s0) * (r - r0) / (r1 - r0)
+    return _CHROMA_MAP[-1][1]
 
 
 # --------------------------------------------------------------------------
@@ -350,6 +438,12 @@ class Brain:
         # Independent of pool_ids (setlist) and flavor (soft lean), so all
         # three compose (steer WITHIN a pool, within the required tags).
         self.require_tags = set()
+        # STYLE PACING: the last few chosen transition styles (anti-streak -
+        # the same style twice in a row is halved, three times zeroed), and
+        # the clock of the last engineered MOMENT (spectacle-tier seam at an
+        # arc peak; cooldown keeps them landmarks, not wallpaper).
+        self.recent_styles = []
+        self.last_moment_t = 0.0
         # CONTENT IDENTITY: the real library holds dozens of byte-identical
         # copies under different track ids (plus re-rips). For recency and
         # queue purposes a copy IS the song - per-id memory let 'the same
@@ -720,6 +814,24 @@ class Brain:
                     s_key = 0.62
                     pitch_st = st
                     break
+        # CHROMA REFINEMENT: when both harmonic fingerprints exist, compare
+        # them at the TRUE sounded pitch offset. Under varispeed the blend's
+        # relative detune is 12*log2(rate) regardless of how the dual-deck
+        # split shares it (rate_b/a_rate = rate); under keylock, tempo is
+        # pitch-neutral so only the rescue transpose shifts anything. This
+        # catches what integer Camelot can't: fractional detune, mislabeled
+        # keys, and modal color the label doesn't carry. Averaged with the
+        # Camelot tier, not replacing it - the label still anchors clean
+        # cases, the measurement corrects the messy ones.
+        cur_chroma = getattr(current, "chroma", None)
+        if cur_chroma and cand.chroma:
+            if stretch_engine_name() == "vari":
+                semis = 12.0 * math.log(rate) / math.log(2.0)
+            else:
+                semis = float(pitch_st)
+            sc = chroma_key_compat(cur_chroma, cand.chroma, semis)
+            if sc is not None:
+                s_key = 0.45 * s_key + 0.55 * sc
         # Sigma 0.21 (was 0.3): the arc is chased on a library-PERCENTILE
         # scale, so a tight pull can't strand selection - material exists
         # near any target. At 0.3 a candidate 0.3 off-target still scored
@@ -1077,22 +1189,49 @@ class Brain:
         # melodic-house mixing: bring the new track's INTRO (drums, no lead)
         # in over the old track's OUTRO/breakdown, so two lead melodies never
         # play at once. Kind drives this; busyness/vocalness refine it.
-        def out_fit(sec):
+        # ML structure labels (allin1, tracks.structure) refine the
+        # internal kinds when present: the SSM sectionizer can't tell a
+        # chorus from a groove, so without them a seam could exit A mid-hook
+        # or drop B's entry into the middle of its chorus. Averaged with
+        # the internal base - either source alone can be wrong.
+        ml_out = {"outro": 1.0, "end": 1.0, "break": 0.9, "bridge": 0.75,
+                  "inst": 0.7, "solo": 0.6, "verse": 0.5, "start": 0.5,
+                  "chorus": 0.35, "intro": 0.4}
+        ml_in = {"intro": 1.0, "start": 1.0, "break": 0.8, "inst": 0.75,
+                 "verse": 0.6, "bridge": 0.6, "solo": 0.5, "chorus": 0.45,
+                 "outro": 0.2, "end": 0.2}
+
+        def out_fit(sec, voc, ml):
             k = sec.get("kind", "groove")
             base = {"outro": 1.0, "breakdown": 0.85, "groove": 0.6,
                     "build": 0.3, "intro": 0.4}.get(k, 0.5)
-            return base * (1.0 - 0.5 * (sec.get("vocalness") or 0.0))
+            if ml:
+                base = 0.5 * base + 0.5 * ml_out.get(ml, 0.5)
+            return base * (1.0 - 0.5 * voc)
 
-        def in_fit(sec):
+        def in_fit(sec, voc, ml):
             k = sec.get("kind", "groove")
             base = {"intro": 1.0, "breakdown": 0.8, "groove": 0.55,
                     "build": 0.6, "outro": 0.2}.get(k, 0.5)
-            return base * (1.0 - 0.6 * (sec.get("vocalness") or 0.0))
+            if ml:
+                base = 0.5 * base + 0.5 * ml_in.get(ml, 0.5)
+            return base * (1.0 - 0.6 * voc)
 
         best = None
         for o in outs[:8]:
             sec_a = cur.section_at(min(o["time_s"] + 1.0,
                                        cur.duration_s - 1.0))
+            # POINT-ACCURATE vocals: the seam only overlaps A's last ~24s
+            # before out_s and B's first ~24s after in_s. The per-section
+            # MEAN dilutes a hook that sits exactly there (and credits one
+            # that doesn't); the fine demucs curve, walked across the
+            # actual overlap window, judges what will really sound.
+            voc_a = max(sec_a.get("vocalness") or 0.0,
+                        self._vocal_span_max(cur, o["time_s"] - 24.0,
+                                             o["time_s"])) \
+                if sec_a is not None else 0.0
+            ml_a = cur.ml_segment_at(min(o["time_s"] + 1.0,
+                                         cur.duration_s - 1.0))
             for i in cand.mix_ins[:8]:
                 sec_b = cand.section_at(min(i["time_s"] + 1.0,
                                             cand.duration_s - 1.0))
@@ -1100,9 +1239,13 @@ class Brain:
                     continue
                 busy_a = sec_a.get("busyness") or 0.0
                 busy_b = sec_b.get("busyness") or 0.0
-                voc_a = sec_a.get("vocalness") or 0.0
-                voc_b = sec_b.get("vocalness") or 0.0
-                fit = out_fit(sec_a) * in_fit(sec_b)     # intro-over-outro
+                voc_b = max(sec_b.get("vocalness") or 0.0,
+                            self._vocal_span_max(cand, i["time_s"],
+                                                 i["time_s"] + 24.0))
+                ml_b = cand.ml_segment_at(min(i["time_s"] + 1.0,
+                                              cand.duration_s - 1.0))
+                fit = out_fit(sec_a, voc_a, ml_a) \
+                    * in_fit(sec_b, voc_b, ml_b)
                 # Prefer mixing the incoming in EARLIER (nearer its groove
                 # start) over a deep point, but only a gentle lean - the
                 # mix-in must still land where the track has energy, or the
@@ -1211,8 +1354,11 @@ class Brain:
         return best[1] if best else None
 
     # -- transition planning -----------------------------------------------------
-    def plan_transition(self, cur, cand, meta, after_s=None):
-        """Resolve style + timing. Returns a plan dict (see build_events)."""
+    def plan_transition(self, cur, cand, meta, after_s=None, arc=None):
+        """Resolve style + timing. Returns a plan dict (see build_events).
+        `arc` (0..1, optional) couples style choice to the night's energy
+        position - valleys breathe, the climb commits, the peak spends the
+        spectacle tier."""
         pair = meta.get("pair") if meta else None
         if pair is None or (after_s is not None
                             and pair["out_s"] < after_s):
@@ -1231,6 +1377,52 @@ class Brain:
         weights = {k: w * self.style_fb.get(k, 1.0)
                    * self.style_memory.get(k, 1.0)
                    for k, w in self.theme.style_weights.items()}
+        # Stem styles: accent-tier defaults when the theme dict predates
+        # them (hard-gated on rendered stems below, so a default here is
+        # inert without tools/dj_stems.py output on disk).
+        for k, dflt in (("stem_drum_swap", 0.3), ("acapella_out", 0.2)):
+            if k not in weights:
+                weights[k] = (dflt * self.style_fb.get(k, 1.0)
+                              * self.style_memory.get(k, 1.0))
+        # ANTI-STREAK: one weighted dice roll per seam is blind to what it
+        # rolled last time - nights ran long_blend x4 by pure chance and
+        # read as monotone. Same style as last seam: halved; as the last
+        # TWO: off the menu this round.
+        if self.recent_styles:
+            last = self.recent_styles[-1]
+            if last in weights:
+                weights[last] *= 0.5
+                if len(self.recent_styles) >= 2 \
+                        and self.recent_styles[-2] == last:
+                    weights[last] = 0.0
+        # ARC-COUPLED PACING: valleys lean into the long workhorse blends,
+        # the climb favors decisive single-swaps, the peak unlocks the
+        # punchy tier. Dynamics get SHAPE instead of uniform dice noise.
+        _punchy = ("cut_at_drop", "double_drop", "loop_build",
+                   "loop_roll_exit", "echo_out", "bassline_layer",
+                   "stem_drum_swap")
+        moment = False
+        if arc is not None:
+            if arc < 0.35:
+                weights["long_blend"] = weights.get("long_blend", 0) * 1.6
+                weights["filter_sweep"] = weights.get("filter_sweep", 0) * 1.2
+                for k in _punchy:
+                    weights[k] = weights.get(k, 0) * 0.45
+            elif arc > 0.7:
+                for k in _punchy:
+                    weights[k] = weights.get(k, 0) * 1.8
+                weights["long_blend"] = weights.get("long_blend", 0) * 0.6
+            else:
+                weights["bass_swap"] = weights.get("bass_swap", 0) * 1.25
+            # ENGINEERED MOMENT: at a genuine peak, once per cooldown, the
+            # spectacle styles get a decisive boost - the night gets 2-3
+            # landmarks people remember instead of leaving its rarest
+            # techniques to dice. Stamped only if one actually wins.
+            if arc >= 0.82 and time.time() - self.last_moment_t > 2400.0:
+                moment = True
+                for k in ("double_drop", "cut_at_drop", "stem_drum_swap",
+                          "acapella_out"):
+                    weights[k] = weights.get(k, 0) * 4.0
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
         # A tempo-clash pair (user-ordered set beyond the stretch range,
         # rate fell back to 1.0) can NEVER beat-match - a "blend" there is
@@ -1240,7 +1432,8 @@ class Brain:
         if (meta or {}).get("a_rate", 1.0) not in (1.0, None)                 and not low_conf and pair.get("beaty", True):
             # dual-bend ramp is implemented in the blend path only
             for k in list(weights):
-                if k not in ("long_blend", "bass_swap", "filter_sweep"):
+                if k not in ("long_blend", "bass_swap", "filter_sweep",
+                             "stem_drum_swap", "acapella_out"):
                     weights[k] = 0.0
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
@@ -1300,6 +1493,30 @@ class Brain:
             # then B cuts in on the drop. Needs a drop in A to build toward.
             if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
                 weights["loop_build"] = 0.0
+            # STEM STYLES need pre-rendered stems on disk (dj_stems.py).
+            if not (getattr(cur, "has_stems", False)
+                    and getattr(cand, "has_stems", False)):
+                weights["stem_drum_swap"] = 0.0
+            if not getattr(cur, "has_stems", False):
+                weights["acapella_out"] = 0.0
+            elif weights.get("acapella_out", 0.0) > 0.0:
+                # acapella_out's premise: A actually SINGS around its exit
+                # (the tail IS its vocal riding B's instrumental), B stays
+                # vocal-free under it, and the keys sit close - an exposed
+                # voice over an off-key bed is the worst clash there is.
+                tail_v = self._vocal_span_max(
+                    cur, pair["out_s"] - 16.0, pair["out_s"] + 16.0)
+                b_under = self._vocal_span_max(
+                    cand, pair["in_s"] + 20.0, pair["in_s"] + 60.0)
+                kf = camelot_compat(cur.camelot, cand.camelot)
+                sc = chroma_key_compat(
+                    getattr(cur, "chroma", None), cand.chroma,
+                    12.0 * math.log(max(rate, 1e-6)) / math.log(2.0)
+                    if stretch_engine_name() == "vari" else float(pst))
+                if sc is not None:
+                    kf = sc
+                if tail_v < 0.35 or b_under > 0.5 or kf < 0.8:
+                    weights["acapella_out"] = 0.0
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
@@ -1321,6 +1538,12 @@ class Brain:
             if both_pt or both_sec:
                 style = "long_fade"
 
+        # Pacing memory (anti-streak reads this next seam) + moment stamp.
+        self.recent_styles = (self.recent_styles + [style])[-4:]
+        if moment and style in ("double_drop", "cut_at_drop",
+                                "stem_drum_swap", "acapella_out"):
+            self.last_moment_t = time.time()
+
         # House blends BREATHE, and real mixes cluster transition lengths
         # at MULTIPLES OF 32 BEATS (ISMIR20, 1557 mixes) - 64 for the
         # workhorse blend, 32 for the decisive ones. Short punchy exits
@@ -1329,7 +1552,8 @@ class Brain:
         beats = {"long_blend": 64, "bass_swap": 32, "cut_at_drop": 16,
                  "loop_roll_exit": 32, "bassline_layer": 16,
                  "double_drop": 16, "loop_build": 16, "long_fade": 0,
-                 "filter_sweep": 32, "echo_out": 8}[style]
+                 "filter_sweep": 32, "echo_out": 8,
+                 "stem_drum_swap": 32, "acapella_out": 32}[style]
         if style == "long_blend":
             # LENGTH VARIETY: the workhorse mostly runs 64 beats; about a
             # third of the time it stretches to a 96-beat marathon (still a
@@ -1381,7 +1605,8 @@ class Brain:
         # glides home from HALF the distance. Blend-family styles only: they
         # are the ones whose event builder implements the outgoing ramp.
         if (stretch_engine_name() == "vari"
-                and style in ("long_blend", "bass_swap", "filter_sweep")
+                and style in ("long_blend", "bass_swap", "filter_sweep",
+                              "stem_drum_swap", "acapella_out")
                 and plan["a_rate"] in (1.0, None) and not pst
                 and abs(math.log(max(plan["rate"], 1e-6))) > 0.010):
             plan["rate"] = math.sqrt(plan["rate"])
@@ -1399,7 +1624,20 @@ class Brain:
             plan["loop_start_s"] = cur.nearest_downbeat(loop["start_s"])
             plan["loop_beats"] = beats_len
             plan["layer_beats"] = 16          # bars both tracks play together
+        if style == "acapella_out":
+            plan["tail_beats"] = 16       # A's exposed vocal rides B this long
         return plan
+
+    @classmethod
+    def _vocal_span_max(cls, track, t0, t1, step_s=6.0):
+        """Peak vocal presence inside [t0, t1] of a track's timeline,
+        sampled from the fine demucs curve. The clash question is 'is
+        there a vocal line ANYWHERE in this window', so max, not mean."""
+        t0 = max(0.0, min(t0, track.duration_s))
+        t1 = max(t0, min(t1, track.duration_s))
+        n = max(2, int((t1 - t0) / step_s) + 1)
+        return max(cls._vocal_at(track, t0 + (t1 - t0) * k / (n - 1))
+                   for k in range(n))
 
     @staticmethod
     def _vocal_at(track, t):
@@ -1884,17 +2122,29 @@ class Brain:
         # blend widens to 6 - by then the highs have already migrated, so
         # the swap is the SECOND move, not the whole transition.
         swap_beats = 6 if long_stage else 4
+        # STEM_DRUM_SWAP enters on the DRUMS STEM alone: the stems already
+        # strip B's bassline/melody/vocals, so the EQ carve would only
+        # gut the drums themselves. Low sits at 0.55 (two beat-locked
+        # kicks reinforce; full double-sub would pump the limiter).
+        stem_entry = style == "stem_drum_swap"
+        b_low0 = 0.55 if stem_entry else 0.0
+        if stem_entry:
+            b_mid0, b_high0 = 1.0, 1.0
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
             # Incoming: bass cut, mids shelved, highs carved - drums + air.
-            {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
+            {"at": S0, "cmd": "eq", "deck": incoming, "low": b_low0,
              "mid": b_mid0, "high": b_high0, "ramp_s": 0.01},
             {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
             {"at": S0, "cmd": "start", "deck": incoming},
             {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
         ]
+        if stem_entry:
+            ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
+                       "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
+                                 "vocals": 0.0}, "ramp_s": 0.01})
         if long_stage:
             span_s = (end - S0) / RATE
             # Stage 1 - BEATS TOGETHER: B rises to near-full presence over
@@ -1929,17 +2179,55 @@ class Brain:
             # take 8 beats; on-key opens stay at 4 (they cross A's mids).
             {"at": mid_open_at, "cmd": "eq", "deck": incoming, "mid": 1.0,
              "ramp_s": (4 if key_ok else 8) * beat_out},
-            # Outgoing leaves over the rest of the blend (bass already gone).
-            # TWO-STAGE fade ~ equal-power: a single linear ramp loses most
-            # of its dB in its final second (measured 6.6 dB mix steps at
-            # the fade tail once the swap moved mid-blend); dropping to
-            # -9 dB first means the terminal collapse happens with A
-            # already buried under B.
-            {"at": mid, "cmd": "gain", "deck": active, "value": 0.35,
-             "ramp_s": 0.6 * half_exit},
-            {"at": mid + int(0.6 * half_exit * RATE), "cmd": "gain",
-             "deck": active, "value": 0.0, "ramp_s": 0.4 * half_exit},
         ]
+        if stem_entry:
+            # The swap opens B's full stem set with its bass/EQ arrival,
+            # and A collapses to its DRUMS stem - what survives A's EQ
+            # (low cut, mid shelf) is pure percussion riding over B: the
+            # classic percussion tail, then the normal fade takes it out.
+            ev += [
+                {"at": mid, "cmd": "stem_gains", "deck": incoming,
+                 "gains": {"drums": 1.0, "bass": 1.0, "other": 1.0,
+                           "vocals": 1.0}, "ramp_s": swap_beats * beat_out},
+                {"at": mid, "cmd": "stem_gains", "deck": active,
+                 "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
+                           "vocals": 0.0}, "ramp_s": swap_beats * beat_out},
+            ]
+        if style == "acapella_out":
+            # A's exit is NOT a fade-to-nothing: at the blend boundary A
+            # collapses to its VOCAL stem and rides B's full instrumental
+            # for tail_beats - the acapella tail. Gated upstream on A
+            # actually singing there, B staying instrumental under it,
+            # and tight key fit. The voice sits at 0.8 gain with mids
+            # open; drums/bass/other are gone via stems, so no EQ fight.
+            tail_beats = plan.get("tail_beats", 16)
+            tail_end = end + int(tail_beats * beat_out * RATE)
+            ev += [
+                {"at": mid, "cmd": "gain", "deck": active, "value": 0.5,
+                 "ramp_s": 0.6 * half_exit},
+                {"at": end, "cmd": "stem_gains", "deck": active,
+                 "gains": {"vocals": 1.0, "drums": 0.0, "bass": 0.0,
+                           "other": 0.12}, "ramp_s": 2 * beat_out},
+                {"at": end, "cmd": "eq", "deck": active, "low": 0.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 2 * beat_out},
+                {"at": end, "cmd": "gain", "deck": active, "value": 0.8,
+                 "ramp_s": 2 * beat_out},
+                {"at": tail_end, "cmd": "gain", "deck": active,
+                 "value": 0.0, "ramp_s": 8 * beat_out},
+            ]
+        else:
+            ev += [
+                # Outgoing leaves over the rest of the blend (bass already
+                # gone). TWO-STAGE fade ~ equal-power: a single linear ramp
+                # loses most of its dB in its final second (measured 6.6 dB
+                # mix steps at the fade tail once the swap moved mid-blend);
+                # dropping to -9 dB first means the terminal collapse
+                # happens with A already buried under B.
+                {"at": mid, "cmd": "gain", "deck": active, "value": 0.35,
+                 "ramp_s": 0.6 * half_exit},
+                {"at": mid + int(0.6 * half_exit * RATE), "cmd": "gain",
+                 "deck": active, "value": 0.0, "ramp_s": 0.4 * half_exit},
+            ]
         # Glue the overlap: duck B a few dB on A's kicks until the swap.
         ev += [{"at": S0, "cmd": "duck", "on": True, "depth": 0.18},
                {"at": mid, "cmd": "duck", "on": False}]
@@ -1967,6 +2255,9 @@ class Brain:
                  "end_s": ls + 4 * cur.period_s},
             ]
         stop_at = end + int(4 * beat_out * RATE)
+        if style == "acapella_out":       # the vocal tail plays past `end`
+            stop_at = end + int((plan.get("tail_beats", 16) + 12)
+                                * beat_out * RATE)
         ev += [{"at": stop_at, "cmd": "stop", "deck": active},
                {"at": stop_at, "cmd": "end_sync"},
                {"at": stop_at, "cmd": "clear_loop", "deck": active}]

@@ -13,7 +13,9 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 11              # v11: tracks.excluded (do-not-use flag)
+SCHEMA_VERSION = 12              # v12: tracks.chroma (12-bin key profile) +
+                                 #      tracks.structure (ML section labels)
+                                 # (v11: tracks.excluded / do-not-use flag)
                                  # (v10: tracks.mood_ml / Music2Emo)
                                  # (v9: tracks.enrichment / MusicBrainz)
                                  # (v8: setlist_entries.target_play_s)
@@ -46,6 +48,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     mood_ml TEXT,                       -- JSON v10 Music2Emo {valence,arousal,moods}
     file_genre TEXT,                    -- v10 embedded genre tag (free, from container)
     excluded INTEGER NOT NULL DEFAULT 0, -- v11 do-not-use: hidden from all selection
+    chroma TEXT,                        -- v12 JSON 12-bin A-origin pitch-class profile
+    structure TEXT,                     -- v12 JSON ML segments {segments:[[s,e,label]..]}
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -130,13 +134,17 @@ CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, po
 
 _JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
               "spectral", "live_check", "axes", "auto_tags", "enrichment",
-              "mood_ml")
-# JSON columns the SCANNER owns and writes. enrichment (MusicBrainz) and
-# mood_ml (Music2Emo) come from SEPARATE passes and must NEVER be touched by
-# upsert_track - a re-scan's analysis dict lacks them, so writing them would
-# NULL them out (wiped genres + ML mood on every re-scan).
+              "mood_ml", "chroma", "structure")
+# JSON columns the SCANNER owns and writes. enrichment (MusicBrainz),
+# mood_ml (Music2Emo) and structure (allin1 segments) come from SEPARATE
+# passes and must NEVER be touched by upsert_track - a re-scan's analysis
+# dict lacks them, so writing them would NULL them out (wiped genres + ML
+# mood on every re-scan). chroma IS scanner-owned (analyze_samples emits it)
+# but a rescan result that lacks it (error record) must not wipe a backfill,
+# so upsert skips None values for it via _KEEP_IF_NONE.
 _SCAN_JSON_COLS = tuple(c for c in _JSON_COLS
-                        if c not in ("enrichment", "mood_ml"))
+                        if c not in ("enrichment", "mood_ml", "structure"))
+_KEEP_IF_NONE = ("chroma",)
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -201,6 +209,12 @@ class LibraryDB:
                 self.conn.execute(
                     "ALTER TABLE tracks ADD COLUMN excluded INTEGER "
                     "NOT NULL DEFAULT 0")
+            if "chroma" not in have:                          # v12
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN chroma TEXT")
+            if "structure" not in have:                       # v12
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN structure TEXT")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -255,7 +269,9 @@ class LibraryDB:
             "analyzed_at": time.time(),
             "error": a.get("error"), "missing": 0,
         }
-        for col in _SCAN_JSON_COLS:     # NOT enrichment/mood_ml (separate passes)
+        for col in _SCAN_JSON_COLS:  # NOT enrichment/mood_ml/structure (passes)
+            if a.get(col) is None and col in _KEEP_IF_NONE:
+                continue                 # absent value must not wipe a backfill
             vals[col] = json.dumps(a[col]) if a.get(col) is not None else None
         cols = ", ".join(vals)
         marks = ", ".join("?" for _ in vals)
@@ -334,6 +350,35 @@ class LibraryDB:
         if row and row["mood_ml"]:
             try:
                 return json.loads(row["mood_ml"])
+            except ValueError:
+                return None
+        return None
+
+    def set_chroma(self, track_id, profile):
+        """Store a track's 12-bin A-origin pitch-class profile (JSON list).
+        Written by the chroma backfill tool; new scans write it inline via
+        upsert_track (analyze_samples emits it since v12)."""
+        self.conn.execute("UPDATE tracks SET chroma = ? WHERE id = ?",
+                          (json.dumps(profile) if profile is not None
+                           else None, track_id))
+        self.conn.commit()
+
+    def set_structure(self, track_id, blob):
+        """Store a track's ML structure blob (JSON):
+        {segments: [[start_s, end_s, label], ...], source: 'allin1'}.
+        Separate pass, mirrors set_mood_ml."""
+        self.conn.execute("UPDATE tracks SET structure = ? WHERE id = ?",
+                          (json.dumps(blob) if blob is not None else None,
+                           track_id))
+        self.conn.commit()
+
+    def structure_for(self, track_id):
+        row = self.conn.execute(
+            "SELECT structure FROM tracks WHERE id = ?",
+            (track_id,)).fetchone()
+        if row and row["structure"]:
+            try:
+                return json.loads(row["structure"])
             except ValueError:
                 return None
         return None
