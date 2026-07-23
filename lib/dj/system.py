@@ -24,6 +24,7 @@ import numpy as np
 
 from lib.dj.brain import GLIDE_PER_S, Brain, load_library, TrackInfo
 from lib.dj.db import LibraryDB
+from lib.dj.rhythm import seam_chips
 from lib.dj.submix import DJSubmix
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 
@@ -666,6 +667,14 @@ class DJSystem:
             "current": self._track_brief(cur),
             "next": self._track_brief(nxt),
             "style": self.plan["style"] if self.plan else None,
+            # Word-first groove chips for the armed seam ("kick clash",
+            # "swung vs straight", "half-time"...) - the operator's WHY
+            # before it happens, and an informed ABORT MIX.
+            "seam_chips": (seam_chips(self.plan,
+                                      {"rhythm": self.plan.get("rhythm"),
+                                       "mult": (self.plan.get("rhythm")
+                                                or {}).get("mult")})
+                           if self.plan else []),
             "last_seam": self._last_seam,
             "abortable": (self.state == "armed" and self.plan is not None
                           and self.plan.get("no_return_at") is not None
@@ -1309,9 +1318,17 @@ class DJSystem:
         self.swap_at = swap_at
         self.blend_at = blend_at
         self.state = "armed"
+        rt = plan.get("rhythm") or {}
         self._seam_metrics = {"style": plan["style"], "max_err": 0.0,
                               "err_n": 0, "hole_s": 0.0, "low_since": None,
-                              "urgent": self._urgent_exit}
+                              "urgent": self._urgent_exit,
+                              # Predicted groove terms ride along so the
+                              # self-assessment can log prediction vs
+                              # measurement (the calibration loop).
+                              "predicted": {k: rt.get(k) for k in
+                                            ("score", "kick_agreement",
+                                             "swing_delta", "flam_ms",
+                                             "conf")} if rt else None}
         self._urgent_exit = False
         self._log({"event": "armed", "style": plan["style"],
                    "next": self.next_track.title,
@@ -1721,8 +1738,12 @@ class DJSystem:
                            "hole_s": round(m.get("hole_s", 0.0), 2),
                            "resnaps": m.get("resnaps", 0),
                            "b": self.current.title}
+        # Prediction vs measurement: over nights this log answers "does
+        # kick_agreement<0.35 actually predict measured flams?" - the data
+        # that will eventually tune the composite weights.
         self._log({"event": "seam_quality", **self._last_seam,
-                   "a": old.title, "urgent": m.get("urgent", False)})
+                   "a": old.title, "urgent": m.get("urgent", False),
+                   "predicted_rhythm": m.get("predicted")})
         if verdict == "clean":
             return
         if m.get("urgent"):

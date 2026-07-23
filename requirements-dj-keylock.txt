@@ -1,0 +1,10 @@
+# Optional: Rubber Band R3 keylock engine for the DJ decks
+# (DJ_STRETCH_ENGINE=rubberband). Prebuilt wheels exist for Windows,
+# Linux x86_64 and macOS (cp38-cp311 + cp312 abi3, so 3.12+ included);
+# other platforms build from source (needs cmake + a C++ compiler).
+# Without it the engine name resolves back to varispeed automatically.
+#
+#   pip install -r requirements-dj-keylock.txt
+#
+# Rubber Band itself is GPL (or commercial) - fine for personal use.
+pylibrb>=0.1.2

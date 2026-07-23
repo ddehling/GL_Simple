@@ -19,6 +19,7 @@ Four tabs:
 Usage: python tools/dj_planner.py [--dir <music_dir>]
 """
 import json
+import math
 import os
 import sys
 
@@ -26,8 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 from PyQt6.QtCore import (QAbstractItemModel, Qt, QAbstractTableModel, QModelIndex, QRect,
-                          QSortFilterProxyModel, QThread, QTimer, QProcess,
-                          pyqtSignal)
+                          QSize, QSortFilterProxyModel, QThread, QTimer,
+                          QProcess, pyqtSignal)
 from PyQt6.QtGui import QColor, QPalette, QAction, QCursor, QFont
 
 
@@ -56,7 +57,8 @@ from PyQt6.QtWidgets import (
     QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
     QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
     QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit, QSlider, QMenu, QCheckBox)
+    QPlainTextEdit, QSlider, QMenu, QCheckBox, QTreeWidget,
+    QTreeWidgetItem, QHeaderView)
 
 from lib.dj import resolve_music_dir
 from lib.dj.db import LibraryDB
@@ -112,9 +114,11 @@ def _structure_wsl_command(music_dir, db):
            f'--results "{_wsl_path(rp)}"')
     return ("wsl.exe", ["-e", "bash", "-lc", cmd]), None
 from lib.dj.brain import Brain, load_library
+from lib.dj.rhythm import seam_chips
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
 from tools.djplanner.arcstrip import ArcStrip
+from tools.djplanner.seaminspector import SeamInspector
 from tools.djplanner.waveform import WaveformView
 from tools.djplanner.mixview import MixTimeline
 from tools.djplanner.deckmon import DeckMonitor
@@ -127,7 +131,7 @@ SECTION_COLORS = {
     "breakdown": QColor(90, 70, 130),
 }
 COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "tags",
-        "structure"]
+        "rhythm", "structure"]
 
 
 def track_genre(t):
@@ -143,6 +147,164 @@ def energy_glyph(e):
     """Compact energy readout: number + a little bar, sorts as text too."""
     e = max(0.0, min(1.0, float(e or 0.0)))
     return f"{e:.2f} " + chr(9601 + int(e * 7 + 0.5))   # 0.00▁ .. 1.00█
+
+
+def seam_tooltip(a, b, plan, si):
+    """The seam EXPLAINER: verdict first, then every factor judged against
+    the engine's real thresholds (the same numbers selection and style
+    gating use), then what to do about problems. Shared by the set-list
+    rows, the compiled plan's ↳ seam lines and the arc strip - one
+    vocabulary for 'is this a good mix'."""
+    p = plan or {}
+    si = si or {}
+    rt = si.get("rhythm") or {}
+    style = p.get("style", "?")
+    fade = bool(si.get("fade") or style == "long_fade")
+    rate = p.get("rate") or 1.0
+    stretch = abs(rate - 1.0) * 100.0
+    issues, cautions = [], []
+
+    # -- judge each factor -------------------------------------------------
+    key = si.get("key_fit")
+    if key is not None and not fade:
+        if key < 0.5:
+            issues.append("key clash")
+        elif key < 0.62:
+            cautions.append("key")
+    if not fade:
+        if stretch > 5.5:
+            issues.append("stretch past the wall")
+        elif stretch > 4.0:
+            cautions.append("stretch")
+    floor = si.get("floor")
+    if floor is not None and floor < 0.15 and not fade:
+        issues.append("dead air in the overlap")
+    if rt and not fade and rt.get("conf", 1.0) >= 0.5:
+        if rt.get("meter_clash"):
+            issues.append("meter clash")
+        if rt.get("kick_agreement", 1.0) < 0.35:
+            (issues if style in ("long_blend", "bassline_layer",
+                                 "double_drop", "loop_build")
+             else cautions).append("kick patterns")
+        if rt.get("swing_delta", 0.0) > 0.055:
+            cautions.append("swing")
+        fl = rt.get("flam_ms")
+        if fl is not None and 15.0 <= fl <= 80.0:
+            cautions.append("flam")
+
+    lines = [f"{a.title}  →  {b.title}",
+             f"style: {style}"
+             + (f"  ·  {p['beats']} beats overlap"
+                if p.get("beats") and not fade else "")]
+    if fade:
+        lines.append(
+            "DELIBERATE FADE - this pair is outside beat-match physics "
+            "(tempo/grid/meter/vocals), so the engine dips one out and "
+            "brings the other in clean. Judge it on energy and mood "
+            "continuity, not beat terms.")
+    elif issues:
+        lines.append("ROUGH SEAM - expect audible problems: "
+                     + ", ".join(issues)
+                     + (".  Also watch: " + ", ".join(cautions)
+                        if cautions else "."))
+    elif cautions:
+        lines.append("WORKABLE - cautions: " + ", ".join(cautions)
+                     + ". The style choice below already works around "
+                       "what it can.")
+    else:
+        lines.append("CLEAN - beat-matched and compatible on every "
+                     "measured axis.")
+
+    # -- the factors, with the numbers that make them good or bad ----------
+    if not fade:
+        mult = si.get("mult", rt.get("mult") or 1.0)
+        mtxt = {2.0: "B heard double-time", 0.5: "B heard half-time",
+                0.75: "3:4 polymeter read", 1.5: "3:2 polymeter read"} \
+            .get(mult)
+        sp = (rate - 1) * 100
+        sp = 0.0 if abs(sp) < 0.05 else sp       # no '-0.0%'
+        lines.append(
+            f"tempo: stretch {sp:+.1f}%"
+            + (f" ({mtxt})" if mtxt else "")
+            + "  [under 4% invisible · 4-5.5% audible feel · past 5.5% "
+              "the groove drags]")
+        if key is not None:
+            lines.append(
+                f"key: {key:.2f}"
+                + ("  - melodies share their notes, blend sings"
+                   if key >= 0.8 else
+                   "  - workable, keep the overlap's melodies apart (EQ)"
+                   if key >= 0.55 else
+                   "  - CLASH: two melodies will fight; EQ one side out, "
+                   "keep the blend short, or fade")
+                + "  [0.8+ great · 0.55 workable · under 0.5 clash]")
+        if rt:
+            ka = rt.get("kick_agreement", 0.0)
+            sw_d = rt.get("swing_delta", 0.0)
+            g = rt.get("score", 0.0)
+            gl = (f"groove: {g:.2f}  - kick agreement {ka:.2f}"
+                  + (", swung-vs-straight clash" if sw_d > 0.055 else "")
+                  + (f", closest hits {rt['flam_ms']:.0f}ms"
+                     if rt.get("flam_ms") is not None
+                     and 15 <= rt["flam_ms"] <= 80 else ""))
+            gl += ("  [0.6+ locks together · under 0.45 blends are cut to "
+                   "32 beats · kick agreement under 0.35 bans open-bass "
+                   "styles]")
+            lines.append(gl)
+            if rt.get("regions"):
+                lines.append(f"   compared {rt['regions']} (A's exit "
+                             f"pattern vs B's intro pattern)")
+            if rt.get("conf", 1.0) < 0.5:
+                lines.append("   ? groove terms are GUESSES here - one "
+                             "side's beat grid is low-confidence")
+        if floor is not None:
+            lines.append(
+                f"overlap energy floor: {floor:.2f}"
+                + ("  - near-SILENT stretch inside the blend (dead air on "
+                   "the floor)" if floor < 0.15 else
+                   "  - a dip; acceptable" if floor < 0.25 else
+                   "  - overlap stays full")
+                + "  [under 0.15 = dead air]")
+        d_off = si.get("d_off")
+        if d_off is not None and d_off > 0.035:
+            lines.append(
+                f"groove offset Δ{d_off * 1000:.0f}ms - the basslines sit "
+                "differently against their grids; the punchy short styles "
+                "are gated off for this pair (they'd flam) - long blends "
+                "ride it out  [35ms is the gate]")
+        conf = min(a.bpm_conf or 0.0, b.bpm_conf or 0.0)
+        if conf < 0.7:
+            lines.append(
+                f"grid confidence {conf:.2f} - precision styles "
+                "(cut/drop/echo) need 0.7+; below 0.5 everything fades. "
+                "'Refine grids' in the Library tab can promote tracks.")
+    pm = si.get("pair_mem")
+    if pm is not None:
+        lines.append("history: ★ this exact pair mixed well before"
+                     if pm > 1.0 else
+                     "history: ✖ this exact pair went rough before "
+                     "(measured or thumbed down)")
+    if issues and not fade:
+        lines.append("fix: right-click the slot for alternatives or a "
+                     "bridge track; drag to reorder; or double-click to "
+                     "anchor what must stay.")
+    return "\n".join(lines)
+
+
+def groove_glyph(t):
+    """Compact groove readout for mono-font list rows: feel + density bar.
+    'str▃' = straight sparse, 'shf█' = shuffling busy, '3/4!' = confident
+    waltz, ' ·  ' = no rhythm signature yet."""
+    sig = getattr(t, "rhythm_sig", None)
+    if not sig:
+        return " ·  "
+    if sig.get("meter") == 3 and sig.get("meter_conf", 0.0) >= 0.4:
+        return "3/4!"
+    sw = sig.get("swing", 0.5)
+    feel = ("str" if sw < 0.54 else "swg" if sw < 0.62 else "shf") \
+        if sig.get("swing_conf", 0.0) > 0.3 else "str"
+    d = max(0.0, min(1.0, float(sig.get("density") or 0.0)))
+    return feel + chr(9601 + int(d * 7 + 0.5))
 FOLDER_ROLE = Qt.ItemDataRole.UserRole + 1     # folder row -> [TrackInfo]
 
 
@@ -259,6 +421,17 @@ class LibraryTreeModel(QAbstractItemModel):
                 return track_genre(t)
             if c == 7:
                 return " ".join(t.all_tags)
+        if role == Qt.ItemDataRole.ToolTipRole and c == 8:
+            sig = getattr(t, "rhythm_sig", None)
+            if not sig:
+                return ("no rhythm signature yet - run the Rhythm pass "
+                        "(Library tab, ⚙ Passes)")
+            sw = sig.get("swing", 0.5)
+            feel = ("straight" if sw < 0.54 else
+                    "swung" if sw < 0.62 else "shuffle")
+            return (f"groove: {feel} (swing {sw:.2f}), "
+                    f"density {sig.get('density', 0.0):.2f}, "
+                    f"measured from {'drum stem' if sig.get('source') == 'stem' else 'full mix'}")
         if role == Qt.ItemDataRole.UserRole:
             return t
         return None
@@ -313,6 +486,13 @@ class LibraryProxy(QSortFilterProxyModel):
                 return (ta.duration_s or 0.0) < (tb.duration_s or 0.0)
             if c == 5:
                 return ta.energy_proxy() < tb.energy_proxy()
+            if c == 8:
+                # rhythm column sorts by pattern density (busy breaks
+                # cluster together, sparse 4x4 grooves together)
+                def dens(t):
+                    sig = getattr(t, "rhythm_sig", None)
+                    return sig.get("density", 0.0) if sig else -1.0
+                return dens(ta) < dens(tb)
             ka = (m.data(left, Qt.ItemDataRole.DisplayRole) or "").lower()
             kb = (m.data(right, Qt.ItemDataRole.DisplayRole) or "").lower()
             return ka < kb
@@ -340,6 +520,193 @@ class LibraryProxy(QSortFilterProxyModel):
                     and self.text in m.folder_name(f_row).lower():
                 return True
         return self._track_matches(m, f_row, row)
+
+
+class RhythmDelegate(QStyledItemDelegate):
+    """Library 'rhythm' cell: the kick pattern at a glance. Low-band 16th
+    steps as bars (2 bars of pattern), percussion (max of mid/high) as dim
+    ticks along the top, a swing dot when the groove is measurably swung.
+    Sorts by density (see LibraryProxy.lessThan); numbers live in the
+    tooltip."""
+
+    def paint(self, p, option, index):
+        t = index.model().data(index, Qt.ItemDataRole.UserRole)
+        if t is None:
+            return
+        if option.state & QStyle.StateFlag.State_Selected:
+            p.fillRect(option.rect, option.palette.highlight())
+        sig = getattr(t, "rhythm_sig", None)
+        if not sig:
+            return
+        r = option.rect.adjusted(2, 3, -14, -3)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        low, mid, high = sig["low"], sig["mid"], sig["high"]
+        n = len(low)
+        sw = r.width() / n
+        top_h = r.height() * 0.3
+        for i in range(n):
+            perc = max(float(mid[i]), float(high[i]))
+            if perc > 0.3:
+                p.fillRect(QRect(int(r.x() + i * sw), r.y(),
+                                 max(int(sw) - 1, 1),
+                                 max(int(top_h * perc), 1)),
+                           QColor(170, 170, 180, 120))
+            v = float(low[i])
+            if v > 0.1:
+                h = max(int((r.height() - top_h) * v), 2)
+                p.fillRect(QRect(int(r.x() + i * sw),
+                                 r.y() + r.height() - h,
+                                 max(int(sw) - 1, 1), h),
+                           QColor(90, 150, 220, 90 + int(160 * min(v, 1.0))))
+        swing = sig.get("swing", 0.5)
+        if sig.get("swing_conf", 0.0) > 0.3 and swing > 0.56:
+            p.setPen(QColor(230, 180, 90))
+            p.drawText(option.rect.adjusted(0, 0, -2, 0),
+                       Qt.AlignmentFlag.AlignRight
+                       | Qt.AlignmentFlag.AlignVCenter, "s")
+        p.restore()
+
+
+def _rhythm_row_payload(t, prev=None, rt=None):
+    """Set-row rhythm strip payload: the incoming track's step pattern AS
+    HEARD at the seam (in-region view, resampled+rotated to the previous
+    track's step frame by the scorer's chosen alignment), each 16th
+    classified against the previous track's exit pattern:
+        1 = hits coincide (locks)    0 = neutral
+       -1 = clash (this track slams where the last one is empty)
+       -2 = hole (the last track slams here, this one is silent)
+    prev/rt None -> plain pattern, no classification (opener, fade, or
+    unmeasured seam)."""
+    from lib.dj.rhythm import aligned_pattern, region_view
+    sig = getattr(t, "rhythm_sig", None)
+    if sig is None:
+        return None
+    vb = region_view(sig, "in")
+    mult = (rt or {}).get("mult") or 1.0
+    rot = (rt or {}).get("rot") or 0
+    bl = aligned_pattern(vb, "low", mult, rot)
+    perc = np.maximum(aligned_pattern(vb, "mid", mult, rot),
+                      aligned_pattern(vb, "high", mult, rot))
+    n = len(bl)
+    cls = [0] * n
+    prev_sig = getattr(prev, "rhythm_sig", None) if prev is not None else None
+    if prev_sig is not None and rt is not None:
+        al = region_view(prev_sig, "out")["low"]
+        for i in range(min(n, len(al))):
+            b, a = float(bl[i]), float(al[i])
+            if b > 0.55 and a < 0.2:
+                cls[i] = -1
+            elif b > 0.35 and a > 0.35:
+                cls[i] = 1
+            elif a > 0.55 and b < 0.1:
+                cls[i] = -2
+    return {"low": [float(x) for x in bl],
+            "perc": [float(x) for x in perc], "cls": cls}
+
+
+class SetRowDelegate(QStyledItemDelegate):
+    """The set table's RHYTHM column: the incoming track's step pattern
+    colored by HOW IT MIXES with the preceding song at the compiled seam:
+    green = kicks coincide, red = clash (a kick where the last track has
+    none), red baseline tick = hole (the last track kicks, this one is
+    silent), blue = neutral / no seam context. Strip only - the other
+    columns are ordinary text with user-adjustable header widths."""
+
+    def sizeHint(self, option, index):
+        s = super().sizeHint(option, index)
+        return QSize(280, max(s.height(), 24))
+
+    def paint(self, p, option, index):
+        if option.state & QStyle.StateFlag.State_Selected:
+            p.fillRect(option.rect, option.palette.highlight())
+        pay = index.data(SetTab.RHY_ROLE)
+        if not pay:
+            return
+        rr = option.rect.adjusted(3, 3, -3, -3)
+        low, perc, cls = pay["low"], pay["perc"], pay["cls"]
+        n = max(len(low), 1)
+        sw = rr.width() / n
+        top_h = rr.height() * 0.3
+        NEUT = QColor(90, 150, 220)
+        CLASH = QColor(235, 100, 100)
+        MATCH = QColor(110, 205, 145)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(len(low)):
+            x = int(rr.x() + i * sw)
+            wpx = max(int(sw) - 1, 1)
+            pv = float(perc[i])
+            if pv > 0.3:
+                p.fillRect(QRect(x, rr.y(), wpx, max(int(top_h * pv), 1)),
+                           QColor(170, 170, 180, 110))
+            v = float(low[i])
+            c = cls[i]
+            if v > 0.1:
+                h = max(int((rr.height() - top_h) * v), 2)
+                col = QColor(CLASH if c == -1 else
+                             MATCH if c == 1 else NEUT)
+                col.setAlpha(100 + int(155 * min(v, 1.0)))
+                p.fillRect(QRect(x, rr.y() + rr.height() - h, wpx, h), col)
+            elif c == -2:
+                p.fillRect(QRect(x, rr.y() + rr.height() - 2, wpx, 2),
+                           QColor(235, 100, 100, 170))
+        p.restore()
+
+
+class SetListView(QTreeWidget):
+    """The set as a flat table with USER-ADJUSTABLE columns (drag the
+    header edges): track columns, the inbound-seam estimate, and the
+    rhythm strip (last column, stretches to whatever width is left - drag
+    the others smaller to grow it). Rows drag-reorder as whole entries;
+    dropping INTO a row is disabled (a set has no nesting)."""
+    HEADERS = ["", "title", "artist", "genre", "bpm", "key", "energy",
+               "groove", "seam", "rhythm"]
+    RHY_COL = 9
+    SEAM_COL = 8
+    reordered = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(len(self.HEADERS))
+        self.setHeaderLabels(self.HEADERS)
+        self.setRootIsDecorated(False)
+        self.setIndentation(0)
+        self.setUniformRowHeights(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        hdr = self.header()
+        hdr.setStretchLastSection(True)          # rhythm takes the rest
+        for i, w in enumerate((26, 230, 120, 96, 44, 40, 64, 52, 64)):
+            self.setColumnWidth(i, w)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+    # QListWidget-flavored helpers so the SetTab call sites stay readable.
+    def item(self, i):
+        return self.topLevelItem(i)
+
+    def count(self):
+        return self.topLevelItemCount()
+
+    def row(self, it):
+        return self.indexOfTopLevelItem(it)
+
+    def currentRow(self):
+        it = self.currentItem()
+        return self.indexOfTopLevelItem(it) if it is not None else -1
+
+    def setCurrentRow(self, i):
+        it = self.topLevelItem(i)
+        if it is not None:
+            self.setCurrentItem(it)
+
+    def dropEvent(self, ev):
+        # InternalMove on a QTreeWidget doesn't reliably fire rowsMoved
+        # (drops decompose into remove+insert) - signal AFTER the drop
+        # lands so the tab rebuilds entries from the item order.
+        super().dropEvent(ev)
+        self.reordered.emit()
 
 
 class StripDelegate(QStyledItemDelegate):
@@ -525,6 +892,15 @@ class LibraryTab(QWidget):
             "compute it inline; this exists for old libraries.")
         self.chroma_btn.clicked.connect(self.run_chroma)
         pr.addWidget(self.chroma_btn)
+        self.rhythm_btn = QPushButton("Rhythm")
+        self.rhythm_btn.setToolTip(
+            "Backfill the beat-sync rhythm signature (kick/snare/hat step "
+            "patterns, swing, density) for tracks that lack it, and upgrade "
+            "mix-derived signatures to drum-stem-derived ones where stems "
+            "exist. Decode + fold only - fast, no GPU. Powers the seam "
+            "rhythm chips, the seam inspector and groove-aware selection.")
+        self.rhythm_btn.clicked.connect(self.run_rhythm)
+        pr.addWidget(self.rhythm_btn)
         self.revocals_btn = QPushButton("Vocal curves")
         self.revocals_btn.setToolTip(
             "Re-measure tracks whose vocal curve is still at the old "
@@ -633,8 +1009,14 @@ class LibraryTab(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setItemDelegateForColumn(8, StripDelegate())
-        for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 150, 260)):
+        # Delegates MUST be parented (or referenced): the view does NOT
+        # take ownership, and an unparented temporary gets GC'd - Qt then
+        # calls a dead object and the whole planner dies with an access
+        # violation at first paint (bisected 2026-07-21; one lone
+        # temporary delegate had only survived here by GC luck).
+        self.table.setItemDelegateForColumn(8, RhythmDelegate(self.table))
+        self.table.setItemDelegateForColumn(9, StripDelegate(self.table))
+        for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 150, 110, 260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
@@ -1312,6 +1694,10 @@ class LibraryTab(QWidget):
                            else "torch/demucs not installed",
                            "args": [tool("dj_stems.py"), "--dir", mdir]})
         stages += [
+            # Rhythm AFTER stems: with drum stems on disk the signature is
+            # measured from the clean rhythm section instead of the mix.
+            {"name": "rhythm",
+             "args": [tool("dj_rhythm.py"), "--dir", mdir]},
             {"name": "vocal curves", "skip": None if voc_ok
              else "torch/demucs not installed",
              "args": [tool("dj_scan.py"), "--dir", mdir, "--revocals"]},
@@ -1335,7 +1721,7 @@ class LibraryTab(QWidget):
 
     def _pipe_buttons(self, on):
         for b in (self.scan_btn, self.rescan_btn, self.refine_btn,
-                  self.chroma_btn, self.revocals_btn,
+                  self.chroma_btn, self.rhythm_btn, self.revocals_btn,
                   self.enrich_btn, self.mood_btn, self.structure_btn,
                   self.stems_btn):
             b.setEnabled(on)
@@ -1365,6 +1751,12 @@ class LibraryTab(QWidget):
         self._run_single_stage(
             {"name": "chroma",
              "args": [os.path.join(_REPO_ROOT, "tools", "dj_chroma.py"),
+                      "--dir", self.planner.music_dir]})
+
+    def run_rhythm(self):
+        self._run_single_stage(
+            {"name": "rhythm",
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj_rhythm.py"),
                       "--dir", self.planner.music_dir]})
 
     def run_revocals(self):
@@ -1769,6 +2161,8 @@ def _suggest_next_tracks(library, entries, theme, compiled, pair_memory,
     from lib.dj import stretch_engine_name
     from lib.dj.brain import (_title_root, camelot_compat,
                               chroma_key_compat)
+    from lib.dj.rhythm import seam_rhythm as _seam_rhythm
+    from lib.dj.rhythm import seam_chips as _seam_chips
     vari = stretch_engine_name() == "vari"
     scored = []
     for t in library:
@@ -1804,8 +2198,15 @@ def _suggest_next_tracks(library, entries, theme, compiled, pair_memory,
         mood = sum(theme.mood_weights.get(m, 0.0) * f
                    for m, f in (t.mood_hist or {}).items())
         theme_q = 0.6 * s_en + 0.4 * min(1.0, mood / 0.35)
+        # Groove compatibility vs the last track (region-aware; None when
+        # either side has no rhythm signature). rate=None in the chips
+        # call: the stretch is its own column here.
+        rt = _seam_rhythm(last, t, rate)
         return {"beat": round(beat, 3), "key": round(key, 3),
                 "theme": round(theme_q, 3),
+                "groove": round(rt["score"], 3) if rt else None,
+                "groove_chips": _seam_chips({"rate": None}, {"rhythm": rt})
+                if rt else [],
                 "stretch_pct": round((rate - 1.0) * 100.0, 1),
                 "energy": round(e, 2), "arc": round(arc, 2)}
 
@@ -1890,7 +2291,7 @@ def _suggest_next_tracks(library, entries, theme, compiled, pair_memory,
     fade_scored.sort(key=lambda x: -x[0])
     n_fade = max(len(fade_scored), 1)
     for rank, (s, t, s_en, theme_q) in enumerate(fade_scored):
-        if len(out) >= n + 3:
+        if len(out) >= n + 7:
             break
         root = _title_root(t.title) or t.title.lower()
         if root in seen_roots:
@@ -1955,7 +2356,12 @@ class AuditionWorker(QThread):
             engine = AudioEngine()
             sub = DJSubmix()
             engine.attach_track("dj", sub)
-            pre = 12.0
+            # Pre-roll must cover the WHOLE planned blend: at 12s fixed, a
+            # 32-64 beat blend's start clamped to "now" and the geometry
+            # compressed - every long seam auditioned squeezed and slammy
+            # (the live night never does this; it arms far ahead).
+            pre = max(12.0, plan.get("beats", 32) * 60.0
+                      / max(a.bpm, 60.0) + 6.0)
             cue_a = a.nearest_downbeat(max(0.0, plan["out_s"] - pre))
             sub.post_many([
                 {"cmd": "load", "deck": "a", "samples": sa, "grid": a.grid,
@@ -2072,18 +2478,21 @@ class SetTab(QWidget):
         left.addWidget(self.arc_strip)
         left.addWidget(QLabel("Set (drag to reorder, double-click = anchor,"
                               " Del = remove, right-click = repair)"))
-        self.set_list = QListWidget()
-        self.set_list.setFont(_mono_font())   # column-aligned rows
+        self.set_list = SetListView()
+        # Rhythm-strip column delegate. PARENTED - an unparented delegate
+        # gets GC'd and dies natively at first paint (see RhythmDelegate
+        # registration above).
+        self.set_list.setItemDelegateForColumn(
+            SetListView.RHY_COL, SetRowDelegate(self.set_list))
         # Selecting a slot re-anchors the suggestion panel to it
         # ("what should come after THIS one") - debounced. getattr guard:
         # the timer is created later in __init__.
-        self.set_list.currentRowChanged.connect(
-            lambda _r: (getattr(self, "_suggest_timer", None)
+        self.set_list.currentItemChanged.connect(
+            lambda *_: (getattr(self, "_suggest_timer", None)
                         and self._suggest_timer.start(400)))
-        self.set_list.setDragDropMode(
-            QAbstractItemView.DragDropMode.InternalMove)
-        self.set_list.model().rowsMoved.connect(self._reordered)
-        self.set_list.itemDoubleClicked.connect(self._toggle_anchor)
+        self.set_list.reordered.connect(self._reordered)
+        self.set_list.itemDoubleClicked.connect(
+            lambda item, _col: self._toggle_anchor(item))
         rm = QAction("remove", self)
         rm.setShortcut("Delete")
         rm.triggered.connect(self._remove_entry)
@@ -2121,12 +2530,19 @@ class SetTab(QWidget):
         arow.addWidget(pb)
         arow.addStretch(1)
         left.addLayout(arow)
-        h.addLayout(left, 1)
+        h.addLayout(left, 3)   # wider than the plan pane: the set rows now
+                               # carry the rhythm strip on the right
 
         right = QVBoxLayout()
         right.addWidget(QLabel("Compiled plan (select a ↳ seam, audition):"))
         self.plan_list = QListWidget()
         right.addWidget(self.plan_list, 1)
+        # SEAM INSPECTOR: selecting a ↳ seam draws the two rhythm grids
+        # aligned at the planned read - the visual answer to "why is this
+        # seam flagged" (and the trust-builder for the chips).
+        self.seam_inspector = SeamInspector()
+        right.addWidget(self.seam_inspector)
+        self.plan_list.currentRowChanged.connect(self._seam_selected)
         brow = QHBoxLayout()
         self.audition_btn = QPushButton("▶ Audition seam")
         self.audition_btn.clicked.connect(self.audition)
@@ -2134,6 +2550,52 @@ class SetTab(QWidget):
         st = QPushButton("■ Stop")
         st.clicked.connect(lambda: self.planner.stop_all_playback())
         brow.addWidget(st)
+        # RATE the seam you just auditioned: writes the same cross-night
+        # seam_feedback the live thumbs use (user weight 1.0; the DJ's own
+        # measurements weigh 0.5), so one press teaches pair memory, the
+        # feature-class memory (key x offset x grid-conf x groove bucket)
+        # AND per-style taste - live selection and every planner op read
+        # all three. Enabled once an audition has actually played.
+        self._last_aud = None
+        self.rate_up_btn = QPushButton("👍")
+        self.rate_up_btn.setToolTip(
+            "This seam sounded good - remember it. Boosts this exact pair "
+            "(cross-night), its feature class, and this transition style "
+            "in both the live DJ and the planner's scoring.")
+        self.rate_up_btn.clicked.connect(lambda: self._rate_seam(True))
+        self.rate_up_btn.setEnabled(False)
+        brow.addWidget(self.rate_up_btn)
+        self.rate_dn_btn = QPushButton("👎")
+        self.rate_dn_btn.setToolTip(
+            "This seam sounded rough - remember that. Leans selection away "
+            "from this pair, its feature class, and this style. One press "
+            "outweighs two of the DJ's own automatic assessments.")
+        self.rate_dn_btn.clicked.connect(lambda: self._rate_seam(False))
+        self.rate_dn_btn.setEnabled(False)
+        brow.addWidget(self.rate_dn_btn)
+        # TEMPO ENGINE picker - the no-env-vars way to A/B varispeed vs
+        # keylock: pick, recompile, audition the same seam again.
+        brow.addSpacing(12)
+        brow.addWidget(QLabel("Engine:"))
+        self.engine_box = QComboBox()
+        self.engine_box.addItems(["vari", "rubberband", "rubberband-crisp",
+                                  "wsola", "pv"])
+        from lib.dj import stretch_engine_name
+        self.engine_box.setCurrentText(stretch_engine_name())
+        self.engine_box.setToolTip(
+            "Tempo engine for auditions and plans:\n"
+            "rubberband - keylock via Rubber Band R3 (DEFAULT; needs "
+            "pip install -r requirements-dj-keylock.txt): constant pitch, "
+            "warble-free, enables the ±1-semitone key rescue.\n"
+            "vari - turntable mode: pitch rides tempo, zero stretch "
+            "artifacts; tempo bends split across both decks.\n"
+            "rubberband-crisp - Rubber Band R2: sharper attacks, less "
+            "CPU, but audible warble on sustained tones.\n"
+            "wsola / pv - home-grown keylock engines (A/B by ear).\n"
+            "Applies to this planner session; set dj.stretch_engine in "
+            "config.yaml to make the live show use it too.")
+        self.engine_box.currentTextChanged.connect(self._engine_changed)
+        brow.addWidget(self.engine_box)
         shop = QPushButton("🛒 Shop gaps")
         shop.setToolTip(
             "Turn the compiled plan's flagged seams (key clash, weak seam, "
@@ -2184,7 +2646,9 @@ class SetTab(QWidget):
             "Top candidates to follow the set's last track, scored with "
             "the live brain (seam quality, key, tempo, mood/genre, pair "
             "memory) at the arc position the set has reached, with an "
-            "artist-variety lean. Double-click to preview; multi-select "
+            "artist-variety lean. Columns: B beat-match, H harmonics, "
+            "G groove (kick/swing/flam compatibility), T theme fit. "
+            "Double-click to preview; multi-select "
             "and '+ Add' to append. Refreshes as the set changes.")
         self.suggest_list.itemDoubleClicked.connect(self._suggest_play)
         right.addWidget(self.suggest_list)
@@ -2244,7 +2708,7 @@ class SetTab(QWidget):
         self.copilot_panel = CopilotPanel(planner, self)
         self.copilot_panel.entriesApplied.connect(self._copilot_applied)
         right.addWidget(self.copilot_panel, 1)
-        h.addLayout(right, 1)
+        h.addLayout(right, 2)
 
     # -- entries ------------------------------------------------------------
     def theme(self):
@@ -2347,6 +2811,7 @@ class SetTab(QWidget):
                 note = r.get("why", "")
             quality = (f"B{self._q_bar(r.get('beat'))}"
                        f"H{self._q_bar(r.get('key'))}"
+                       f"G{self._q_bar(r.get('groove'))}"
                        f"T{self._q_bar(r.get('theme'))}")
             it = QListWidgetItem(
                 f"{_clip(r['title'], 30)} {_clip(r['artist'], 18)} "
@@ -2369,16 +2834,38 @@ class SetTab(QWidget):
                            f"(fit is a many-factor product; ~0.4 is the "
                            f"practical ceiling)")
             if r.get("beat") is not None:
+                sp = abs(r.get("stretch_pct") or 0.0)
                 tip.append(f"Beat: {r['beat']:.2f}  "
-                           f"(stretch {r.get('stretch_pct', 0):+.1f}%)")
+                           f"(stretch {r.get('stretch_pct', 0):+.1f}% - "
+                           + ("invisible" if sp <= 4.0 else
+                              "audible feel change" if sp <= 5.5 else
+                              "past the wall, groove will drag")
+                           + ")")
             if r.get("key") is not None:
-                tip.append(f"Harmonics: {r['key']:.2f}  "
-                           f"(vs last track's key, chroma-refined at the "
-                           f"planned rate)")
+                tip.append(f"Harmonics: {r['key']:.2f}  - "
+                           + ("melodies will sing together"
+                              if r["key"] >= 0.8 else
+                              "workable; keep overlapping melodies apart"
+                              if r["key"] >= 0.55 else
+                              "CLASH - two fighting melodies unless one "
+                              "side is EQ'd out")
+                           + "  [0.8+ great · 0.55 workable · <0.5 clash]")
+            if r.get("groove") is not None:
+                g = r["groove"]
+                tip.append(f"Groove: {g:.2f}  - "
+                           + ("grooves lock together" if g >= 0.6 else
+                              "half-agrees; the blend will be kept short"
+                              if g >= 0.45 else
+                              "grooves fight - expect a one-low-bed style "
+                              "or a short decisive swap")
+                           + (f"  ({', '.join(r['groove_chips'])})"
+                              if r.get("groove_chips") else "")
+                           + "  [0.6+ locks · <0.45 short blends only]")
             if r.get("theme") is not None:
                 tip.append(f"Theme: {r['theme']:.2f}  "
                            f"(energy {r.get('energy', 0):.2f} vs arc "
-                           f"target {r.get('arc', 0):.2f} + mood match)")
+                           f"target {r.get('arc', 0):.2f} + mood match - "
+                           f"how well it serves the NIGHT, not the seam)")
             it.setToolTip("\n".join(tip))
 
     def _suggest_selected_tracks(self):
@@ -2451,30 +2938,75 @@ class SetTab(QWidget):
                             and anchor < len(self.entries) - 1) else None
         self.add_tracks(tracks, at=at)  # rebuild+recompile -> auto-refresh
 
-    def _entry_label(self, e):
-        t = next((x for x in (self.planner.library_all or self.planner.library)
-                  if x.id == e["track_id"]), None)
-        name = t.title if t else f"track {e['track_id']}"
-        tag = "⚓" if e["pin_type"] == "anchor" else "•"
-        pin = (f" @{e['target_offset_min']:.0f}min"
-               if e.get("target_offset_min") else "")
-        if t is None:
-            return f"{tag} {name}{pin}"
-        info = (f"{t.bpm:3.0f} {t.camelot:>3s} "
-                f"{energy_glyph(t.energy_proxy())}")
-        return (f"{tag} {_clip(name, 30)} {_clip(t.artist, 18)} "
-                f"{_clip(_genre_of(t), 14)} {info}{pin}")
+    # Set-table item roles: the entry dict rides column 0 (reorder reads
+    # THIS, never display text); the rhythm-strip payload rides the
+    # rhythm column itself (its delegate reads index.data directly).
+    ENTRY_ROLE = Qt.ItemDataRole.UserRole
+    RHY_ROLE = Qt.ItemDataRole.UserRole + 2
+
+    def _entry_track(self, e):
+        return next((x for x in (self.planner.library_all
+                                 or self.planner.library)
+                     if x.id == e["track_id"]), None)
 
     def _rebuild(self):
         self.set_list.clear()
         for e in self.entries:
-            QListWidgetItem(self._entry_label(e), self.set_list)
+            t = self._entry_track(e)
+            tag = "⚓" if e["pin_type"] == "anchor" else "•"
+            if e.get("target_offset_min"):
+                tag += f"@{e['target_offset_min']:.0f}m"
+            if t is None:
+                cols = [tag, f"track {e['track_id']}", "", "", "", "",
+                        "", "", "", ""]
+            else:
+                cols = [tag, t.title, t.artist, _genre_of(t),
+                        f"{t.bpm:.0f}", t.camelot,
+                        energy_glyph(t.energy_proxy()), groove_glyph(t),
+                        "", ""]
+            it = QTreeWidgetItem(cols)
+            # Rows drag as WHOLE entries; never droppable INTO (no nesting)
+            it.setFlags(Qt.ItemFlag.ItemIsSelectable
+                        | Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsDragEnabled)
+            it.setData(0, self.ENTRY_ROLE, e)
+            # Plain pattern until the compiler colors it against its
+            # predecessor.
+            it.setData(SetListView.RHY_COL, self.RHY_ROLE,
+                       _rhythm_row_payload(t) if t is not None else None)
+            self.set_list.addTopLevelItem(it)
+
+    @staticmethod
+    def _seam_estimate(si, p):
+        """One 0..1 'how well will these two work together' number for the
+        set list, blending the seam's physics: section-pair quality, key
+        fit, groove compatibility, stretch cost, blend floor. DISPLAY
+        blend only - selection/compile use the brain's full score; this
+        exists so adjacency quality is readable per row at a glance."""
+        si = si or {}
+        p = p or {}
+        key = si.get("key_fit", 0.6)
+        rt = si.get("rhythm") or {}
+        groove = rt.get("score", 0.75)       # unmeasured -> mildly neutral
+        # pair_score's practical ceiling is ~0.6 on real material - rescale
+        # so a genuinely good seam reads near the top of the bar.
+        pairq = min(1.0, (p.get("pair_score") or 0.3) / 0.6)
+        rate = p.get("rate") or 1.0
+        stretch = math.exp(-((abs(math.log(max(rate, 1e-6)))) / 0.045) ** 2)
+        est = 0.30 * pairq + 0.25 * groove + 0.25 * key + 0.20 * stretch
+        floor = si.get("floor")
+        if floor is not None and floor < 0.15:
+            est *= 0.6                       # dead air in the overlap
+        return max(0.0, min(1.0, est))
 
     def _color_set_list(self, result):
         """Color each set entry by its INBOUND transition (how the set
         arrives AT this track): green = clean seam (or the opener),
         orange = compiler-warned, red = energy hole in the blend,
-        grey = enters via a fade. Same palette as the compiled plan."""
+        grey = enters via a fade. Same palette as the compiled plan.
+        Also appends the inbound seam ESTIMATE (bar + number) to the row
+        and puts the chips/warnings in its tooltip - adjacency quality
+        readable in the set list itself, not only in the compiled plan."""
         GOOD = QColor(120, 200, 140)
         WARN = QColor(255, 170, 100)
         BAD = QColor(230, 110, 110)
@@ -2491,6 +3023,14 @@ class SetTab(QWidget):
                 break
             rows.append(e_idx)
             e_idx += 1
+        ncol = len(SetListView.HEADERS)
+
+        def paint_row(item, col, seam_text, tip):
+            for c in range(ncol):
+                item.setForeground(c, col)
+                item.setToolTip(c, tip)
+            item.setText(SetListView.SEAM_COL, seam_text)
+
         for k, s in enumerate(slots):
             if k >= len(rows):
                 break
@@ -2498,26 +3038,52 @@ class SetTab(QWidget):
             if item is None:
                 continue
             if k == 0:
-                item.setForeground(GOOD)
+                paint_row(item, GOOD, "", "opener - no inbound seam")
                 continue
             prev = slots[k - 1]                  # the seam INTO this track
             si = prev.get("seam_info") or {}
-            style = (prev.get("transition") or {}).get("style")
+            p = prev.get("transition") or {}
+            style = p.get("style")
+            fade = bool(si.get("fade") or style == "long_fade")
             if si.get("floor") is not None and si["floor"] < 0.15:
                 col = BAD
+            elif fade:
+                # A fade opts out of beat/key physics - tempo-clash and
+                # key-clash warnings just restate WHY it's a fade.
+                col = FADE
             elif prev.get("warnings"):
                 col = WARN
-            elif si.get("fade") or style == "long_fade":
-                col = FADE
             else:
                 col = GOOD
-            item.setForeground(col)
+            # Inbound adjacency estimate in the 'seam' column + the words
+            # behind it in the tooltip (fades show as 'fade' - the
+            # estimate would just restate why it's a fade).
+            if fade:
+                seam_text = "fade"
+            else:
+                est = self._seam_estimate(si, p)
+                seam_text = f"{self._q_bar(est)}{est:.2f}"
+            tip = seam_tooltip(prev["track"], s["track"], p, si)
+            extra = list(prev.get("warnings") or [])
+            if extra:
+                tip += "\ncompiler notes: " + "; ".join(extra)
+            paint_row(item, col, seam_text, tip)
+            # Rhythm strip vs the PRECEDING song: clash-color the steps at
+            # the compiled seam alignment; fades keep the plain pattern
+            # (beat physics don't apply there).
+            rt = si.get("rhythm")
+            item.setData(
+                SetListView.RHY_COL, self.RHY_ROLE,
+                _rhythm_row_payload(s["track"], prev["track"], rt)
+                if rt and not fade else _rhythm_row_payload(s["track"]))
 
     def _reordered(self, *a):
-        order = [self.set_list.item(i).text()
-                 for i in range(self.set_list.count())]
-        labels = {self._entry_label(e): e for e in self.entries}
-        self.entries = [labels[t] for t in order if t in labels]
+        # Entries ride the items via ENTRY_ROLE (column 0) - never map
+        # back through display text.
+        self.entries = [e for e in
+                        (self.set_list.item(i).data(0, self.ENTRY_ROLE)
+                         for i in range(self.set_list.count()))
+                        if e is not None]
         self.recompile()
 
     def _toggle_anchor(self, item):
@@ -2829,6 +3395,20 @@ class SetTab(QWidget):
         if "error" in result:
             self.status.setText("compile error: " + result["error"])
             return
+        # A recompile rebuilds the plan list, which used to DROP the
+        # selected seam line - the highlight vanished and the inspector
+        # blanked, which read as "my seam turned grey" (user-reported
+        # right after rating a seam, since rating recompiles). Capture the
+        # selected seam's track-id pair before clearing and re-select the
+        # matching seam after (identity survives reorders, not just
+        # index).
+        sel_pair = None
+        cur = self.plan_list.currentItem()
+        if cur is not None and self.compiled:
+            ci = cur.data(Qt.ItemDataRole.UserRole)
+            old = self.compiled.get("slots") or []
+            if ci is not None and 0 <= ci < len(old) - 1:
+                sel_pair = (old[ci]["track"].id, old[ci + 1]["track"].id)
         self.compiled = result
         self._suggest_timer.start(400)   # set changed -> refresh suggestions
         self._color_set_list(result)
@@ -2851,6 +3431,11 @@ class SetTab(QWidget):
                     badges.append(f"floor {si['floor']:.2f}")
                 if (si.get("d_off") or 0) > 0.035:
                     badges.append(f"Δgroove {si['d_off'] * 1000:.0f}ms")
+                # Rhythm chips (word-first, worst term only, '?' = shaky
+                # grid). A fade opts out of beat physics - the chips would
+                # just restate why it's a fade.
+                if not si.get("fade"):
+                    badges.extend(seam_chips(p, si))
                 pm = si.get("pair_mem")
                 if pm:
                     badges.append("★ mixed well before" if pm > 1.0
@@ -2863,25 +3448,88 @@ class SetTab(QWidget):
                     + ("".join(", " + b for b in badges)) + ") "
                     f"→ {nxt.title}{warn}", self.plan_list)
                 item.setData(Qt.ItemDataRole.UserRole, i)
+                item.setToolTip(seam_tooltip(t, nxt, p, si))
                 if si.get("floor") is not None and si["floor"] < 0.15:
                     item.setForeground(QColor(230, 110, 110))
-                elif s["warnings"]:
-                    item.setForeground(QColor(255, 170, 100))
                 elif si.get("fade"):
                     item.setForeground(QColor(160, 160, 170))
+                elif s["warnings"]:
+                    item.setForeground(QColor(255, 170, 100))
+        # Re-select the same seam (by track-id pair) so the highlight and
+        # the seam inspector survive the rebuild.
+        if sel_pair:
+            slots = result["slots"]
+            for r in range(self.plan_list.count()):
+                it = self.plan_list.item(r)
+                ci = it.data(Qt.ItemDataRole.UserRole)
+                if ci is not None and ci + 1 < len(slots) and \
+                        (slots[ci]["track"].id,
+                         slots[ci + 1]["track"].id) == sel_pair:
+                    self.plan_list.setCurrentRow(r)
+                    break
         self._update_strip(result)
         self.status.setText(self._report_card(result))
         self.planCompiled.emit(result)
 
+    def _engine_changed(self, name):
+        """Switch the tempo engine for this planner session: auditions,
+        previews and plans all read it dynamically. Recompiles because
+        planning SEMANTICS follow the engine (varispeed splits tempo
+        bends across decks; keylock enables the key-shift rescue)."""
+        import os as _os
+        from lib.dj import stretch_engine_name
+        if name.startswith("rubberband"):
+            _os.environ["DJ_STRETCH_ENGINE"] = "rubberband"
+            _os.environ["DJ_RB_ENGINE"] = \
+                "faster" if name.endswith("crisp") else "finer"
+        else:
+            _os.environ["DJ_STRETCH_ENGINE"] = name
+        resolved = stretch_engine_name()
+        if resolved == "rubberband":
+            resolved = name              # variant is ours to report
+        if resolved != name:
+            self.status.setText(
+                f"{name} unavailable - pip install -r "
+                f"requirements-dj-keylock.txt (using {resolved})")
+        else:
+            self.status.setText(
+                f"tempo engine: {name} - re-audition a seam to hear it; "
+                f"set dj.stretch_engine in config.yaml for the live show")
+        self.recompile()
+
+    def _seam_selected(self, _row=None):
+        """Feed the seam inspector from the selected ↳ seam line; any other
+        row (or a stale index after an edit) clears it."""
+        item = self.plan_list.currentItem()
+        idx = item.data(Qt.ItemDataRole.UserRole) if item else None
+        slots = (self.compiled or {}).get("slots") or []
+        if idx is None or not (0 <= idx < len(slots) - 1):
+            self.seam_inspector.clear()
+            return
+        s = slots[idx]
+        self.seam_inspector.set_seam(s["track"], slots[idx + 1]["track"],
+                                     s.get("transition"),
+                                     s.get("seam_info"))
+
     def _update_strip(self, result):
         theme = self.theme()
-        strip = [{"off": s["start_offset_s"], "play": s["play_s"],
-                  "energy": s["track"].energy_proxy(),
-                  "bpm": s["track"].bpm,
-                  "anchor": s["entry"].get("pin_type") == "anchor",
-                  "seam": s.get("seam_info"),
-                  "warn": bool(s["warnings"])}
-                 for s in result["slots"]]
+        slots = result["slots"]
+        strip = []
+        for i, s in enumerate(slots):
+            d = {"off": s["start_offset_s"], "play": s["play_s"],
+                 "energy": s["track"].energy_proxy(),
+                 "bpm": s["track"].bpm,
+                 "anchor": s["entry"].get("pin_type") == "anchor",
+                 "seam": s.get("seam_info"),
+                 "title": s["track"].title,
+                 "chips": seam_chips(s.get("transition"),
+                                     s.get("seam_info")),
+                 "warn": bool(s["warnings"]),
+                 "warnings": list(s["warnings"])}
+            if i + 1 < len(slots) and s.get("transition"):
+                d["tip"] = seam_tooltip(s["track"], slots[i + 1]["track"],
+                                        s["transition"], s.get("seam_info"))
+            strip.append(d)
         arc = [(i / 24.0, max(0.0, min(1.0, theme.arc_target(i / 24.0))))
                for i in range(25)]
         self.arc_strip.set_data(strip, arc,
@@ -3112,6 +3760,12 @@ class SetTab(QWidget):
             return
         slots = self.compiled["slots"]
         self.audition_btn.setEnabled(False)
+        # Remember WHAT is being auditioned so a thumb afterwards charges
+        # the right pair+style (the list may recompile while audio plays).
+        self._last_aud = {"a": slots[i]["track"], "b": slots[i + 1]["track"],
+                          "style": (slots[i]["transition"] or {}).get("style")}
+        self.rate_up_btn.setEnabled(False)
+        self.rate_dn_btn.setEnabled(False)
         self._aud = AuditionWorker(self.planner.db, slots[i]["track"],
                                    slots[i + 1]["track"],
                                    slots[i]["transition"])
@@ -3128,6 +3782,36 @@ class SetTab(QWidget):
         self.planner.claim_playback("seam")
         self.seam_player.load(result)
         self.seam_player.play()
+        self.rate_up_btn.setEnabled(True)
+        self.rate_dn_btn.setEnabled(True)
+
+    def _rate_seam(self, up):
+        """Store a user thumb for the last-auditioned seam and fold it
+        into the session immediately: pair/class/style memory reload and
+        the plan recompiles, so the ★/✖ badge and scoring shift right
+        away instead of on the next launch."""
+        la = self._last_aud
+        if not la:
+            self.status.setText("audition a seam first, then rate it")
+            return
+        try:
+            self.planner.db.add_seam_feedback(
+                la["a"].id, la["b"].id, la["style"], up, source="user")
+        except Exception as e:
+            self.status.setText(f"could not store rating: {e}")
+            return
+        try:
+            _b = Brain([], get_theme("groove"))
+            _b.load_pair_memory(self.planner.db)
+            self.planner.pair_memory = _b.pair_memory
+        except Exception:
+            pass
+        self.status.setText(
+            f"{'👍 good' if up else '👎 rough'} seam remembered: "
+            f"{la['a'].title[:22]} → {la['b'].title[:22]} "
+            f"({la['style'] or 'seam'}) - steers this pair, its class, "
+            f"and the style from now on")
+        self.recompile()
 
 
 # ==========================================================================

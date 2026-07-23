@@ -13,8 +13,9 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 12              # v12: tracks.chroma (12-bin key profile) +
-                                 #      tracks.structure (ML section labels)
+SCHEMA_VERSION = 13              # v13: tracks.rhythm (beat-synchronous
+                                 #      rhythm signature - lib/dj/rhythm.py)
+                                 # (v12: tracks.chroma + tracks.structure)
                                  # (v11: tracks.excluded / do-not-use flag)
                                  # (v10: tracks.mood_ml / Music2Emo)
                                  # (v9: tracks.enrichment / MusicBrainz)
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     excluded INTEGER NOT NULL DEFAULT 0, -- v11 do-not-use: hidden from all selection
     chroma TEXT,                        -- v12 JSON 12-bin A-origin pitch-class profile
     structure TEXT,                     -- v12 JSON ML segments {segments:[[s,e,label]..]}
+    rhythm TEXT,                        -- v13 JSON beat-sync rhythm signature
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -134,17 +136,19 @@ CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, po
 
 _JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
               "spectral", "live_check", "axes", "auto_tags", "enrichment",
-              "mood_ml", "chroma", "structure")
+              "mood_ml", "chroma", "structure", "rhythm")
 # JSON columns the SCANNER owns and writes. enrichment (MusicBrainz),
 # mood_ml (Music2Emo) and structure (allin1 segments) come from SEPARATE
 # passes and must NEVER be touched by upsert_track - a re-scan's analysis
 # dict lacks them, so writing them would NULL them out (wiped genres + ML
-# mood on every re-scan). chroma IS scanner-owned (analyze_samples emits it)
-# but a rescan result that lacks it (error record) must not wipe a backfill,
-# so upsert skips None values for it via _KEEP_IF_NONE.
+# mood on every re-scan). chroma and rhythm ARE scanner-owned
+# (analyze_samples emits both) but a rescan result that lacks one (error
+# record) must not wipe a backfill, so upsert skips None values for them
+# via _KEEP_IF_NONE. (A real rescan legitimately rewrites rhythm with the
+# mix-derived version; the rhythm backfill re-upgrades to stem-derived.)
 _SCAN_JSON_COLS = tuple(c for c in _JSON_COLS
                         if c not in ("enrichment", "mood_ml", "structure"))
-_KEEP_IF_NONE = ("chroma",)
+_KEEP_IF_NONE = ("chroma", "rhythm")
 
 _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
                  "energy", "bass_share", "mid_share", "high_share",
@@ -215,6 +219,9 @@ class LibraryDB:
             if "structure" not in have:                       # v12
                 self.conn.execute(
                     "ALTER TABLE tracks ADD COLUMN structure TEXT")
+            if "rhythm" not in have:                          # v13
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN rhythm TEXT")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -368,6 +375,15 @@ class LibraryDB:
         {segments: [[start_s, end_s, label], ...], source: 'allin1'}.
         Separate pass, mirrors set_mood_ml."""
         self.conn.execute("UPDATE tracks SET structure = ? WHERE id = ?",
+                          (json.dumps(blob) if blob is not None else None,
+                           track_id))
+        self.conn.commit()
+
+    def set_rhythm(self, track_id, blob):
+        """Store a track's beat-sync rhythm signature (JSON, lib/dj/rhythm).
+        Written by the rhythm backfill tool (stem-derived when stems exist);
+        new scans write a mix-derived one inline via upsert_track."""
+        self.conn.execute("UPDATE tracks SET rhythm = ? WHERE id = ?",
                           (json.dumps(blob) if blob is not None else None,
                            track_id))
         self.conn.commit()

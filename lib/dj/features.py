@@ -1180,6 +1180,32 @@ def live_crosscheck(bands, grid_bpm):
 # Top level
 # --------------------------------------------------------------------------
 
+def _rhythm_or_none(bands, grid, downbeat, mix_points=None):
+    """Mix-derived rhythm signature (DB v13). Never fails an analysis: a
+    track the fold can't handle just ships without one (the seam terms are
+    evidence-gated). The stem-derived upgrade lives in tools/dj_rhythm.py.
+    The primary mix in/out points anchor the v2 REGION patterns."""
+    try:
+        from lib.dj.rhythm import rhythm_signature
+        return rhythm_signature(bands, grid, downbeat, fps=FPS, source="mix",
+                                latency_s=ONSET_LATENCY_S,
+                                mix_in_s=primary_mix_point(mix_points, "in"),
+                                mix_out_s=primary_mix_point(mix_points,
+                                                            "out"))
+    except Exception:
+        return None
+
+
+def primary_mix_point(mix_points, kind):
+    """Best-scoring mix point of one kind, or None. Shared by the inline
+    rhythm signature and the backfill tool so both anchor the same region
+    windows."""
+    pts = [p for p in (mix_points or []) if p.get("kind") == kind]
+    if not pts:
+        return None
+    return max(pts, key=lambda p: p.get("score") or 0.0)["time_s"]
+
+
 def analyze_samples(samples, deep=True):
     """Full analysis of mono float32 44.1k samples -> plain-JSON-able dict."""
     duration_s = len(samples) / RATE
@@ -1216,6 +1242,7 @@ def analyze_samples(samples, deep=True):
         "camelot": camelot, "key_conf": round(key_conf, 3),
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",
         "chroma": chroma_profile(chroma, frame_energy),
+        "rhythm": _rhythm_or_none(bands, grid, downbeat, mix_points),
         "loudness_gain_db": round(estimate_loudness_gain(samples), 2),
         "kick_offset_s": measure_kick_offset(samples, grid),
         "energy_curve": energy_curve_2hz(bands),

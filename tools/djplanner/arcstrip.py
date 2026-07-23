@@ -7,9 +7,9 @@ boundary - green = clean beat-matched seam, orange = warned, red = fade.
 Clicking a bar selects that entry in the set list, so a dip you can SEE
 becomes a slot you can fix.
 """
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal, QRectF
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QToolTip, QWidget
 
 BG = QColor(20, 20, 25)
 BAR = QColor(45, 75, 105)
@@ -28,10 +28,12 @@ class ArcStrip(QWidget):
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(92)
-        self.slots = []      # [{off, play, energy, bpm, anchor, seam, warn}]
+        self.slots = []      # [{off, play, energy, bpm, anchor, seam, warn,
+                             #   title?, chips?, warnings?}]
         self.arc = []        # [(time_frac 0..1, target 0..1)]
         self.target_s = 0.0  # intended set length; 0 = scale to content
         self._hit = []       # [(x0, x1, index)] from the last paint
+        self._seam_hit = []  # [(x, index)] seam tick centers, last paint
 
     def set_data(self, slots, arc, target_s=0.0):
         self.slots = list(slots or [])
@@ -46,12 +48,48 @@ class ArcStrip(QWidget):
                 self.slotClicked.emit(i)
                 return
 
+    def event(self, ev):
+        # Hover tooltips: near a seam tick -> that seam's chips/warnings
+        # (the weakest-term words, same vocabulary as the plan list); over
+        # a bar -> the track. The whole set's rhythm health is scannable
+        # without reading the compiled text.
+        if ev.type() == QEvent.Type.ToolTip:
+            x = ev.pos().x()
+            for sx, i in self._seam_hit:
+                if abs(x - sx) <= 5:
+                    s = self.slots[i]
+                    # Full seam explainer when the planner provided one
+                    # (verdict + judged factors); chips fallback otherwise.
+                    tip = s.get("tip")
+                    if not tip:
+                        lines = [f"seam: {s.get('title', '?')} → " +
+                                 self.slots[i + 1].get("title", "?")]
+                        lines += s.get("chips") or []
+                        lines += s.get("warnings") or []
+                        if len(lines) == 1:
+                            lines.append("clean")
+                        tip = "\n".join(lines)
+                    QToolTip.showText(ev.globalPos(), tip, self)
+                    return True
+            for x0, x1, i in self._hit:
+                if x0 <= x <= x1:
+                    s = self.slots[i]
+                    QToolTip.showText(
+                        ev.globalPos(),
+                        f"{s.get('title', '')}\n{s['bpm']:.0f} bpm,"
+                        f" energy {s['energy']:.2f}", self)
+                    return True
+            QToolTip.hideText()
+            return True
+        return super().event(ev)
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, BG)
         self._hit = []
+        self._seam_hit = []
         if not self.slots:
             p.setPen(TXT)
             p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
@@ -121,6 +159,7 @@ class ArcStrip(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(c)
                 p.drawRect(QRectF(x1 - 2.5, top - 8, 5, 6))
+                self._seam_hit.append((x1, i))
         p.setPen(QPen(BPM, 1))
         for a, b in zip(bpm_pts, bpm_pts[1:]):
             p.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))

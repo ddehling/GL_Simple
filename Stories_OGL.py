@@ -72,8 +72,13 @@ def load_config(project_override: str | None = None):
         # Autonomous DJ. enabled=True makes the DJ AVAILABLE (web tab +
         # start button); it never auto-plays on boot. music_dir empty =
         # <repo_parent>/music (the library travels parallel to the repo).
+        # stretch_engine: rubberband (default when pylibrb is installed -
+        # pip install -r requirements-dj-keylock.txt; falls back to vari
+        # otherwise) | rubberband-crisp | vari | wsola | pv. Applied at
+        # startup via DJ_STRETCH_ENGINE.
         "dj": {"enabled": True, "music_dir": "", "theme": "groove",
-               "night_hours": 6.0, "stretch_max": 1.08, "record": False},
+               "night_hours": 6.0, "stretch_max": 1.08, "record": False,
+               "stretch_engine": ""},
         "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
             {"ip": "192.168.68.141", "columns": 32, "column_offset": 32},
@@ -372,6 +377,19 @@ class EnvironmentalSystem:
         # "start" action so boot cost is zero when unused; config only
         # gates AVAILABILITY. See _apply_dj_controls for the 5 Hz bridge.
         self.dj_cfg = cfg.get("dj", {"enabled": False})
+        # Tempo-engine choice from config.yaml (dj.stretch_engine) - the
+        # no-env-vars way to pick vari/rubberband/rubberband-crisp/wsola/
+        # pv. An explicit DJ_STRETCH_ENGINE in the environment still wins.
+        eng = str(self.dj_cfg.get("stretch_engine", "") or "")
+        eng = eng.strip().lower()
+        if eng and "DJ_STRETCH_ENGINE" not in os.environ:
+            if eng.startswith("rubberband") or eng == "rb":
+                os.environ["DJ_STRETCH_ENGINE"] = "rubberband"
+                os.environ.setdefault(
+                    "DJ_RB_ENGINE",
+                    "faster" if eng.endswith("crisp") else "finer")
+            else:
+                os.environ["DJ_STRETCH_ENGINE"] = eng
         self._dj = None
         self._dj_prev_source = None            # analyzer source to restore
         self._dj_pending_setlist = None        # armed while idle, load on start

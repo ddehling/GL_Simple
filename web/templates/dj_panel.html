@@ -587,6 +587,12 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 badges.push(`<span class="badge tech">${dj.style.replace(/_/g," ")}`
                     + (dj.blend_in_s != null ? ` in ${Math.round(dj.blend_in_s)}s` : "")
                     + `</span>`);
+            // Groove chips for the armed seam - the WHY before it plays
+            // ("kick clash", "swung vs straight", "half-time"...); an
+            // informed abort beats a reflex one.
+            for (const c of (dj.seam_chips || []))
+                badges.push(`<span class="badge" style="border-color:#c96` +
+                            `;color:#e8a87c">${c}</span>`);
             badges.push(`<span class="badge">theme: ${dj.theme}</span>`);
             badges.push(`<span class="badge">${dj.state}</span>`);
             $("dj-badges").innerHTML = badges.join("");
@@ -598,7 +604,8 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 $("dj-next").textContent = dj.next.title;
                 $("dj-next-sub").textContent =
                     [dj.next.artist, dj.next.bpm ? Math.round(dj.next.bpm)+" bpm":null,
-                     dj.next.camelot, dj.style ? "via "+dj.style.replace(/_/g," "):null]
+                     dj.next.camelot, dj.style ? "via "+dj.style.replace(/_/g," "):null,
+                     ...(dj.seam_chips || [])]
                     .filter(Boolean).join("  ·  ");
             } else show($("dj-next-box"), false);
 

@@ -17,6 +17,8 @@ import re
 import time
 
 from lib.dj import stretch_engine_name
+from lib.dj.rhythm import (prep_signature, rhythm_terms, seam_rhythm,
+                           tempo_mult_for)
 from lib.dj.themes import adapt_theme
 
 RATE = 44100
@@ -29,10 +31,13 @@ STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 # had NO pitch consequence; with the varispeed engine every gradient IS a
 # pitch glide, and glides (not static offsets) are what ears catch (user:
 # 'noticeable tonal shifts due to the speed shift gradients'). 0.0008/s =
-# 1.4 cents/s and 0.0015/s = 2.6 cents/s - both under the slow-drift
-# noticing threshold on tonal material; the old 0.004 A-ramp was ~7 cents/s.
+# 1.4 cents/s - under the slow-drift noticing threshold on tonal material.
+# 2026-07-22: A-ramp slowed 0.0015 -> 0.0008 (user: traditional practice;
+# both ends of a seam now glide at the same proven-inaudible rate). The
+# compiler's exit-skew clock model (setlist.compile_plan) shares THIS
+# constant - a divergent hardcoded rate there drifted slot boundaries.
 GLIDE_PER_S = 0.0008             # post-transition rate->1.0 glide speed
-ARATE_RAMP_PER_S = 0.0015        # outgoing deck's pre-blend meet-tempo ramp
+ARATE_RAMP_PER_S = 0.0008        # outgoing deck's pre-blend meet-tempo ramp
 
 
 # --------------------------------------------------------------------------
@@ -75,6 +80,11 @@ class TrackInfo:
         # break/outro. Empty until the structure pass has run.
         st = row.get("structure") or {}
         self.ml_segments = st.get("segments") or []
+        # Beat-sync rhythm signature (DB v13): step patterns + swing +
+        # density, numpy-hydrated once here (seam scoring touches it per
+        # candidate). None until scanned/backfilled - every consumer is
+        # evidence-gated on that.
+        self.rhythm_sig = prep_signature(row.get("rhythm"))
         # Character (danceability/valence) is library-ranked in load_library;
         # None until then (ghosts/tests fall back to raw via character.py).
         self.danceability = None
@@ -496,6 +506,7 @@ class Brain:
         self.pair_memory = {}           # (a_id,b_id) -> cross-night multiplier
         self.class_memory = {}          # (key,off,conf) bucket -> multiplier
         self.style_memory = {}          # style -> cross-night multiplier
+        self._rhythm_cache = {}         # (a_id,b_id,mult) -> rhythm score
 
     @staticmethod
     def _pair_class(a, b):
@@ -511,7 +522,19 @@ class Brain:
                                               else "wide")
         conf = "precise" if min(a.bpm_conf or 0.0,
                                 b.bpm_conf or 0.0) >= 0.7 else "loose"
-        return (key, off, conf)
+        # Groove bucket from the rhythm signatures - cheap scalars only
+        # (this runs per candidate per pick), the full pattern math stays
+        # in _rhythm_fit. Lets one measured swing-clash train-wreck teach
+        # the brain about the whole class of swung-vs-straight pairings.
+        sa = getattr(a, "rhythm_sig", None)
+        sb = getattr(b, "rhythm_sig", None)
+        if sa is None or sb is None:
+            groove = "unmeasured"
+        else:
+            sd = abs(sa.get("swing", 0.5) - sb.get("swing", 0.5)) \
+                * min(sa.get("swing_conf", 0.0), sb.get("swing_conf", 0.0))
+            groove = "swingclash" if sd > 0.055 else "swingok"
+        return (key, off, conf, groove)
 
     def load_pair_memory(self, db, days=90.0):
         """CROSS-NIGHT TASTE: thumbs on seams and bail-out skips persist
@@ -740,10 +763,15 @@ class Brain:
     def rate_for_dual(self, out_bpm, cand):
         """MEET-IN-THE-MIDDLE: when no single-deck stretch reaches, bend
         BOTH decks toward a meeting tempo (geometric mean, clamped inside
-        each deck's stretch range) - doubles the reachable tempo gap
-        (~17%, more with half/double reads). Returns (rate_b, eff_bpm,
+        each deck's stretch range) - extends the reachable tempo gap to
+        ~12% (more with half/double reads). Returns (rate_b, eff_bpm,
         a_rate) or (None, 0, 1.0). a_rate is the OUTGOING deck's ramp
-        target before the blend; the incoming glides home after."""
+        target before the blend; the incoming glides home after.
+
+        Per-deck cap 6% (2026-07-22, was 8.1%): riding a whole blend 8%
+        off natural tempo audibly drags the groove - traditional practice
+        cuts or fades a gap that wide instead of stretching through it.
+        Beyond the cap the seam falls to a deliberate long_fade."""
         best = None
         for mult in (1.0, 2.0, 0.5):
             eff = cand.bpm * mult
@@ -757,12 +785,31 @@ class Brain:
             if not (self.stretch_min <= ra <= self.stretch_max
                     and self.stretch_min <= rb <= self.stretch_max):
                 continue
-            if abs(m / out_bpm - 1.0) > 0.081 or abs(m / eff - 1.0) > 0.081:
+            if abs(m / out_bpm - 1.0) > 0.06 or abs(m / eff - 1.0) > 0.06:
                 continue
             cost = abs(math.log(ra)) + abs(math.log(rb))
             if best is None or cost < best[3]:
                 best = (rb, eff, ra, cost)
         return (best[0], best[1], best[2]) if best else (None, 0.0, 1.0)
+
+    def _rhythm_fit(self, current, cand, rate):
+        """Bounded groove-compatibility lean 0.78..1.0 from the stored
+        rhythm signatures (lib/dj/rhythm). Evidence-gated: either side
+        without a signature is neutral 1.0. Cached per (pair, tempo-read) -
+        selection scores every candidate on every horizon rebuild."""
+        sa = getattr(current, "rhythm_sig", None)
+        sb = getattr(cand, "rhythm_sig", None)
+        if sa is None or sb is None:
+            return 1.0
+        mult = tempo_mult_for(current.bpm, cand.bpm, rate)
+        key = (current.id, cand.id, mult)
+        v = self._rhythm_cache.get(key)
+        if v is None:
+            rt = rhythm_terms(sa, sb, mult=mult,
+                              period_s=60.0 / max(current.bpm, 1.0))
+            v = rt["score"] if rt else 1.0
+            self._rhythm_cache[key] = v
+        return 0.78 + 0.22 * v
 
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
@@ -911,8 +958,11 @@ class Brain:
             # is bass PLACEMENT (median 0.35 beats on the real library),
             # not grid skew - shifting grids to align it pulled the real
             # kicks apart (user-heard double beats, 2026-07-13, reverted).
+            # Sigma 38ms (was 45): a 31ms gap audibly double-beat a long
+            # blend - selection should lose more ground to clean pairs in
+            # the 25-40ms band.
             d_off = abs(current.kick_offset_s - cand.kick_offset_s)
-            s_style *= 0.55 + 0.45 * math.exp(-((d_off / 0.045) ** 2))
+            s_style *= 0.55 + 0.45 * math.exp(-((d_off / 0.038) ** 2))
         # VARIETY: two near-identical-sounding tracks back to back is the
         # classic auto-DJ tell. Penalize spectral+character similarity to
         # the current track (never to zero - a coherent run is fine, a
@@ -929,8 +979,14 @@ class Brain:
         if current is not None and self.class_memory:
             s_class = self.class_memory.get(
                 self._pair_class(current, cand), 1.0)
+        # GROOVE COMPATIBILITY (DB v13 rhythm signatures): kick-pattern
+        # agreement + swing clash + flam risk at the planned read. Soft and
+        # evidence-gated like s_cohere - unscanned tracks stay neutral, and
+        # EQ discipline survives most kick clashes, so this leans (0.78x
+        # floor), never vetoes.
+        s_rhythm = self._rhythm_fit(current, cand, rate)
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
-                 * s_valence * s_dance * s_cohere * s_class
+                 * s_valence * s_dance * s_cohere * s_class * s_rhythm
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self._flavor_score(cand)
@@ -1370,6 +1426,11 @@ class Brain:
                     "out_hint": "blend", "in_hint": "blend", "score": 0.1}
         rate = meta["rate"] if meta else 1.0
         pst = (meta or {}).get("pitch_st", 0)
+        # Groove terms for THIS seam (region-aware, evidence-gated None).
+        # Steers the style menu below and rides the plan so the live seam
+        # self-assessment can compare prediction against measurement.
+        rt = seam_rhythm(cur, cand, rate)
+        rt_sure = rt is not None and rt.get("conf", 0.0) >= 0.5
 
         # Style menu, gated by analysis confidence. Weighted by tonight's
         # thumbs (style_fb) AND cross-night learned style taste
@@ -1454,14 +1515,50 @@ class Brain:
             # Short-dual styles are exposed to raw GROOVE-OFFSET flam: the
             # PLL is grid-primary, so two tracks whose basslines sit
             # differently against their own grids flam by the OFFSET
-            # DIFFERENCE for the whole (short) overlap - measured 170ms
-            # deltas on confident grids. Long blends ride it out; the
-            # punchy styles can't. (Sync-side compensation was tried and
+            # DIFFERENCE for the whole overlap - measured 170ms deltas on
+            # confident grids. (Sync-side compensation was tried and
             # REVERTED - the offset is bass placement, not grid skew.)
-            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.035:
+            # Gate 28ms (was 35): a 31ms offset rode a long blend as an
+            # audible double beat (user-heard, 'Shahoor's Palace' ->
+            # 'State the Obvious', 2026-07-22) - percussive flam turns
+            # audible ~25ms. loop_roll_exit joined the list: the roll
+            # repeats material, which showcases the flam.
+            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028:
                 for k in ("cut_at_drop", "double_drop", "echo_out",
-                          "bassline_layer", "loop_build"):
+                          "bassline_layer", "loop_build", "loop_roll_exit"):
                     weights[k] = 0.0
+            # GROOVE-AWARE STYLE STEERING (rhythm signatures, trusted
+            # grids only). Selection already leaned away from these pairs;
+            # when one plays anyway (setlist order, thin pool), pick the
+            # technique that hides the clash instead of exposing it.
+            if rt_sure:
+                if rt["kick_agreement"] < 0.35:
+                    # Contradicting kick patterns: never run both lows
+                    # open. The one-low-bed styles carry the seam.
+                    for k in ("long_blend", "bassline_layer",
+                              "double_drop", "loop_build"):
+                        weights[k] = weights.get(k, 0.0) * 0.15
+                    for k in ("bass_swap", "stem_drum_swap",
+                              "cut_at_drop"):
+                        weights[k] = weights.get(k, 0.0) * 1.5
+                if rt["swing_delta"] > 0.055:
+                    # Swung vs straight flams every offbeat for the whole
+                    # overlap; only removing one percussion bed fixes it.
+                    # stem_drum_swap does exactly that; otherwise keep the
+                    # overlap short and decisive.
+                    for k in ("long_blend", "filter_sweep",
+                              "loop_roll_exit", "bassline_layer"):
+                        weights[k] = weights.get(k, 0.0) * 0.3
+                    weights["stem_drum_swap"] = \
+                        weights.get("stem_drum_swap", 0.0) * 2.0
+                fl = rt.get("flam_ms")
+                if fl is not None and 15.0 <= fl <= 80.0:
+                    # Machine-gun near-misses: the short punchy styles
+                    # expose them raw (same reasoning as the groove-offset
+                    # gate above, measured one level finer).
+                    for k in ("cut_at_drop", "double_drop", "echo_out",
+                              "bassline_layer", "loop_build"):
+                        weights[k] = weights.get(k, 0.0) * 0.3
             # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
             # mix-ins qualifies, not just the best-scoring pair's (gating on
             # pair["in_hint"] starved the style to literally zero uses
@@ -1538,6 +1635,12 @@ class Brain:
             if both_pt or both_sec:
                 style = "long_fade"
 
+        # METER CLASH: a confidently-3/4 track against a 4/4 one cannot
+        # beat-match musically whatever the style - every bar line drifts.
+        # Deliberate fade, same rule as a tempo clash.
+        if style != "long_fade" and rt_sure and rt.get("meter_clash"):
+            style = "long_fade"
+
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
         self.recent_styles = (self.recent_styles + [style])[-4:]
         if moment and style in ("double_drop", "cut_at_drop",
@@ -1560,13 +1663,25 @@ class Brain:
             # 32-multiple). One fixed length for every blend read as
             # uniform pacing (user: "there should be some variety").
             beats = 64 if self.rng.random() < 0.65 else 96
+        # GROOVE-COUPLED LENGTH: when the grooves only half-agree, a 32-beat
+        # blend is fine where a 64-beat one grates - don't ride a known
+        # clash through two extra phrases. Groove-OFFSET counts too: the
+        # EQ staging hides the second BASSLINE, not the second set of
+        # percussion transients, so a >25ms placement gap flams the whole
+        # dual - keep the exposure to one phrase.
+        d_off_p = abs(cur.kick_offset_s - cand.kick_offset_s)
+        if beats > 32 and style in ("long_blend", "bass_swap",
+                                    "filter_sweep") \
+                and ((rt is not None and rt.get("score", 1.0) < 0.45)
+                     or d_off_p > 0.025):
+            beats = 32
         if style == "loop_build":
             # Exit ON A's drop; the stutter build fills the bars before it.
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
             out_s = cur.nearest_downbeat(a_drop)
             in_s = cand.nearest_downbeat(pair["in_s"])
             return {"style": style, "rate": rate, "out_s": out_s,
-                    "in_s": in_s, "beats": beats,
+                    "in_s": in_s, "beats": beats, "rhythm": rt,
                     "pair_score": pair["score"], "cand_id": cand.id,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
         if style == "double_drop":
@@ -1577,7 +1692,7 @@ class Brain:
             out_s = cur.nearest_downbeat(a_drop)
             in_s = cand.nearest_downbeat(b_drop)
             plan = {"style": style, "rate": rate, "out_s": out_s,
-                    "in_s": in_s, "beats": beats,
+                    "in_s": in_s, "beats": beats, "rhythm": rt,
                     "pair_score": pair["score"], "cand_id": cand.id,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
             return plan
@@ -1595,7 +1710,7 @@ class Brain:
             if pd is not None:
                 in_s = cand.nearest_downbeat(pd["time_s"])
         plan = {"style": style, "rate": rate,
-                "out_s": out_s, "in_s": in_s, "beats": beats,
+                "out_s": out_s, "in_s": in_s, "beats": beats, "rhythm": rt,
                 "pair_score": pair["score"], "cand_id": cand.id,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
         # VARISPEED MEET-IN-THE-MIDDLE: with the varispeed engine pitch rides
@@ -2042,6 +2157,15 @@ class Brain:
             S0 = max(end - int(nb * beat_out * RATE), now_guard)
         mid = (S0 + end) // 2
         half = (end - S0) / RATE / 2.0
+        long_stage = style == "long_blend"
+        # EXIT RESERVATION: how much of the blend the swap can NEVER eat.
+        # A's whole audible exit lives between the swap and the blend end,
+        # and late-arriving bass in B (intro entries) plus the vocal-phrase
+        # scan routinely pin the swap at this ceiling - at 8 beats the
+        # two-stage exit dropped -9 dB in ~2s and the workhorse blend
+        # "slammed down" (user-heard, 2026-07-22). The staged long blend
+        # reserves a quarter of its span; the decisive styles keep 8.
+        exit_res = 16 if long_stage else 8
         # Never swap the bass into a BASSLESS stretch of B: cutting A's low
         # while B enters on intro atmosphere collapses the mix floor ~8 dB
         # (measured). Time the swap to where B's content actually carries
@@ -2061,17 +2185,17 @@ class Brain:
             # A spent the whole blend as a bassless ghost and the two songs
             # audibly coexisted for seconds (user: 'blending seems real
             # short'; measured median swap at 8% of the blend). Keep the swap
-            # no earlier than halfway, no later than 8 beats before the end
-            # (the exit fade must survive as a real fade, not a 1s cut).
+            # no earlier than halfway, no later than exit_res beats before
+            # the end (the exit fade must survive as a real fade, not a cut).
             mid = min(max(mid, S0 + int(k * beat_out * RATE),
                           S0 + int(4 * beat_out * RATE)),
-                      max(end - int(8 * beat_out * RATE), S0 + 1))
+                      max(end - int(exit_res * beat_out * RATE), S0 + 1))
         # VOCAL-PHRASE AWARENESS: the swap is the loudest EQ moment of the
         # blend - never land it on a sung line. Scan 4-beat slots from the
         # bass-ready point; take the first where BOTH decks are vocal-free
         # (fine demucs curve when stored, section means otherwise).
         lo_c = mid
-        hi_c = max(end - int(8 * beat_out * RATE), lo_c + 1)
+        hi_c = max(end - int(exit_res * beat_out * RATE), lo_c + 1)
         c = lo_c
         step = int(4 * beat_out * RATE)
         while c <= hi_c and step > 0:
@@ -2082,7 +2206,7 @@ class Brain:
                 break
             c += step
         # A's exit fade spans swap -> blend end however late the swap lands.
-        half_exit = max((end - mid) / RATE, 2 * beat_out)
+        half_exit = max((end - mid) / RATE, 4 * beat_out)
         plan["no_return_at"] = mid               # the bass/mid handover
         # ONE MELODY AT A TIME - the mid-range twin of the one-bassline
         # rule. Both tracks' melodic content lives in the mids; letting
@@ -2102,8 +2226,8 @@ class Brain:
         # to the ~4-beat swap crossfade - the whole song identity flipped
         # in ~2s and every blend read fast (user). bass_swap/filter_sweep
         # keep the decisive single-swap geometry - that contrast IS the
-        # style variety.
-        long_stage = style == "long_blend"
+        # style variety. (long_stage defined above the swap clamp - the
+        # exit reservation depends on it.)
         if long_stage:
             b_high0 = min(b_high0, 0.5)     # enter carved; highs migrate later
             # B rides the long dual at near-FULL gain (that's the point),
@@ -2130,6 +2254,24 @@ class Brain:
         b_low0 = 0.55 if stem_entry else 0.0
         if stem_entry:
             b_mid0, b_high0 = 1.0, 1.0
+        # QUIET-INTRO ENTRY TRIM: loudness comp (gain_db) levels whole
+        # TRACKS, but the blend plays B's entry REGION against A's outro -
+        # an atmospheric intro at full fader still sits ~10 dB under A's
+        # final groove (measured: 'The Way' -> 'Ouahe', an 11s -12 dB hole
+        # through the handover). Ride the incoming channel HOT by up to
+        # +3 dB while its intro carries the blend - the DJ's gain-knob
+        # move, automated - releasing to nominal as its own body arrives.
+        b_trim = 1.0
+        curve = (cand.row or {}).get("energy_curve") or []
+        if curve:
+            i0 = int(plan["in_s"] * 2)
+            i1 = min(int((plan["in_s"] + (end - S0) / RATE * rate_b) * 2)
+                     + 1, len(curve))
+            if 0 <= i0 < i1:
+                intro = sum(curve[i0:i1]) / (i1 - i0)
+                med = sorted(curve)[len(curve) // 2]
+                if intro > 0.05 and med > intro:
+                    b_trim = min(med / intro, 1.41)       # cap +3 dB
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
@@ -2152,9 +2294,9 @@ class Brain:
             # one bassline / one melody), instead of still creeping up
             # when the swap arrives.
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
-                       "value": 0.92, "ramp_s": 0.35 * span_s})
+                       "value": 0.92 * b_trim, "ramp_s": 0.35 * span_s})
             ev.append({"at": mid, "cmd": "gain", "deck": incoming,
-                       "value": 1.0, "ramp_s": 4 * beat_out})
+                       "value": b_trim, "ramp_s": 4 * beat_out})
             # Stage 2 - THE SUBTLE HIGH SWAP: hats/air hand over across 12
             # beats, ending before the earliest possible swap (the EQ ramp
             # clock is shared per deck - overlapping ramps stretch each
@@ -2164,9 +2306,19 @@ class Brain:
                        "high": 1.0, "ramp_s": 12 * beat_out})
             ev.append({"at": hi_at, "cmd": "eq", "deck": active,
                        "high": 0.35, "ramp_s": 12 * beat_out})
+            # Stage 2.5 - A starts LEANING OUT before the swap: a gentle
+            # glide to 0.85 from mid-blend, so however late the swap lands
+            # the handover reads as one continuous slope instead of full-
+            # presence-then-cliff (B is already riding at 0.92 with highs
+            # migrating - the room never thins).
+            pre = S0 + int(0.5 * (end - S0))
+            if pre < mid:
+                ev.append({"at": pre, "cmd": "gain", "deck": active,
+                           "value": 0.85,
+                           "ramp_s": max((mid - pre) / RATE, 2 * beat_out)})
         else:
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
-                       "value": 1.0, "ramp_s": half})
+                       "value": b_trim, "ramp_s": half})
         ev += [
             # Stage 3 - the swap downbeat: low AND mid hand over.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
@@ -2228,8 +2380,19 @@ class Brain:
                 {"at": mid + int(0.6 * half_exit * RATE), "cmd": "gain",
                  "deck": active, "value": 0.0, "ramp_s": 0.4 * half_exit},
             ]
+        # Release the quiet-intro trim once B's own body carries the room.
+        if b_trim > 1.02:
+            ev.append({"at": end, "cmd": "gain", "deck": incoming,
+                       "value": 1.0, "ramp_s": 16 * beat_out})
         # Glue the overlap: duck B a few dB on A's kicks until the swap.
-        ev += [{"at": S0, "cmd": "duck", "on": True, "depth": 0.18},
+        # DEEPER when the groove offsets differ: B's hits land 20-30ms off
+        # A's, and pushing them down on A's kicks masks the flam the EQ
+        # staging can't touch (percussion transients live in the open
+        # mids/highs).
+        d_off_ev = abs(cur.kick_offset_s - cand.kick_offset_s)
+        duck_depth = 0.18 if d_off_ev <= 0.02 else \
+            min(0.32, 0.18 + 5.0 * (d_off_ev - 0.02))
+        ev += [{"at": S0, "cmd": "duck", "on": True, "depth": duck_depth},
                {"at": mid, "cmd": "duck", "on": False}]
         if style == "filter_sweep":
             # A leaves through a rising resonant high-pass instead of a

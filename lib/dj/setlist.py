@@ -19,6 +19,13 @@ import math
 import time
 
 from lib.dj.brain import Brain, camelot_compat
+from lib.dj.rhythm import seam_rhythm, tempo_mult_for
+
+# Styles whose blend runs BOTH tracks' low end open at some point - the
+# ones a kick-pattern clash actually bites. bass_swap/stem_drum_swap keep
+# one low bed at a time; cut_at_drop never overlaps; fades opt out.
+_LOW_OPEN_STYLES = ("long_blend", "loop_roll_exit", "double_drop",
+                    "loop_build", "bassline_layer")
 
 
 def _make_edge(brain):
@@ -147,7 +154,7 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
     # Aim each track to play a sensible stretch before mixing out, so the
     # set doesn't lurch through 30-second snippets.
     target_play = min(max(theme.min_play_s, 150.0), 300.0)
-    from lib.dj.brain import GLIDE_PER_S
+    from lib.dj.brain import ARATE_RAMP_PER_S, GLIDE_PER_S
     for i, (t, e) in enumerate(tracks):
         slot = {"track": t, "entry": e, "start_offset_s": offset,
                 "in_s": entry_in_s,              # AT-SEAM source position
@@ -227,12 +234,43 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
                     t, plan["out_s"], nxt, plan["in_s"]), 2),
                 "fade": plan["style"] == "long_fade",
                 "pair_mem": brain.pair_memory.get((t.id, nxt.id)),
+                # Tempo-multiple this seam reads B at (2.0 = B heard
+                # double-time, 0.5 = half-time). Chip-worthy info even
+                # when neither track has a rhythm signature.
+                "mult": tempo_mult_for(t.bpm, nxt.bpm, plan["rate"]),
             }
+            # RHYTHM TERMS (DB v13 signatures): the decomposed groove
+            # compatibility behind the seam chips - kick agreement, swing
+            # clash, flam risk, meter, tempo-multiple read. Stamped into
+            # the plan by plan_transition (region-aware out-vs-in compare);
+            # None when either side lacks a signature (evidence-gated
+            # everywhere downstream).
+            rt = plan.get("rhythm") or seam_rhythm(t, nxt, plan["rate"])
+            if rt is not None:
+                slot["seam_info"]["rhythm"] = rt
+                # Warnings only when the estimate is trustworthy AND the
+                # clash is audible in this style; a fade opts out of beat
+                # physics (same rule the seam coloring applies).
+                if rt["conf"] >= 0.5 and not slot["seam_info"]["fade"]:
+                    if rt.get("meter_clash"):
+                        slot["warnings"].append(
+                            f"meter clash {rt.get('meter_a', 4)}/4 vs "
+                            f"{rt.get('meter_b', 4)}/4")
+                    if rt["swing_delta"] > 0.055:
+                        slot["warnings"].append(
+                            "swing clash (swung vs straight groove)")
+                    if rt["kick_agreement"] < 0.35 \
+                            and plan["style"] in _LOW_OPEN_STYLES:
+                        slot["warnings"].append("kick pattern clash")
             # Dual-bend exit ramp: while THIS deck ramps to the meeting
             # tempo it also consumes ramp*(a-1)/2 extra source vs wall.
+            # SHARES the event builder's ramp-rate constant - a stale
+            # hardcoded 0.004 here (the pre-2026-07 ramp speed) modeled
+            # the ramp ~5x shorter than the audio actually plays it, and
+            # the skew error drifted every dual-bend slot boundary.
             a_r = plan.get("a_rate", 1.0) or 1.0
-            exit_skew = (abs(a_r - 1.0) / 0.004) * (a_r - 1.0) / 2.0 \
-                if abs(a_r - 1.0) > 1e-4 else 0.0
+            exit_skew = (abs(a_r - 1.0) / ARATE_RAMP_PER_S) \
+                * (a_r - 1.0) / 2.0 if abs(a_r - 1.0) > 1e-4 else 0.0
             # ...and the blend itself runs at a_rate: source consumed over
             # the blend = blend_wall*a_rate, wall = blend_wall.
             play = max(plan["out_s"] - in_s - skew - exit_skew, 40.0)

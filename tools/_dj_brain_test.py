@@ -320,8 +320,14 @@ def e2e_test(keep_wav):
                     n_handovers += 1
                 prev_cur = cur_id
             if st["state"] == "armed" and prev_state != "armed":
-                armed_styles.append(st["style"])
-                if skip_t is not None and skip_reacted is None:
+                # The arm right after the skip is an URGENT replan - it
+                # exits from wherever the track happens to be, and a
+                # deliberate recede-fade there is correct behavior (the
+                # live system excuses urgent seams the same way in pair
+                # memory). Mark it so the beat-matched check skips it.
+                urgent = (skip_t is not None and skip_reacted is None)
+                armed_styles.append((st["style"], urgent))
+                if urgent:
                     skip_reacted = t_now - skip_t
             prev_state = st["state"]
             tel = st["deck_telemetry"]
@@ -343,8 +349,8 @@ def e2e_test(keep_wav):
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
                         "cut_at_drop", "bassline_layer", "double_drop",
                         "loop_build", "filter_sweep", "echo_out")
-                  for s in armed_styles),
-              f"styles: {armed_styles}")
+                  for s, urgent in armed_styles if not urgent),
+              f"styles: {[(s + ' (urgent)' if u else s) for s, u in armed_styles]}")
         check("deck rates always clamped", rate_violations == 0,
               f"{rate_violations} telemetry samples outside 0.90..1.10")
         check("skip honored", skip_t is not None and skip_reacted is not None

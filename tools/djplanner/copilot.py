@@ -422,6 +422,18 @@ low, the seam is beatless, or two sung passages would overlap.
 - The compiled plan flags per seam: fade risk, blend floor (near-silent \
 stretch in the overlap = dead air), groove-offset delta (>35ms flams the \
 punchy styles), and cross-night pair memory (mixed well / rough before).
+- Seams also carry RHYTHM terms (when tracks have rhythm signatures): \
+kick_agreement (low = kick patterns contradict, bad for open-bass blends), \
+swing_delta (swung vs straight grooves flam on every offbeat - nothing \
+fixes it), flam_ms (hits 20-80ms apart machine-gun), mult (2.0/0.5 = \
+double/half-time read), conf (low = shaky grids, treat terms as guesses), \
+regions (out/in = A's exit pattern was compared against B's intro pattern, \
+the material the blend actually overlaps), meter (present only on a \
+3/4-vs-4/4 clash - such a seam always fades). The "chips" list is the \
+human-readable summary - use those words when explaining a seam. The \
+planner already steers STYLE around these (kick clash -> one-low-bed \
+styles, swing clash -> stem_drum_swap or short overlaps), so a warned seam \
+with a sensible style choice may still play fine.
 
 HOW TO BUILD (this is the fix for "it just gives random songs"):
 - ANY specific request - a genre, a mood, a tempo band, "deep", "peak", \
@@ -519,6 +531,16 @@ real energy trend, fade share), then what you'd do next.""" + (
             raise ValueError(f"track {args['track_id']} not in library")
         from lib.dj.features import drop_moments
         row = self._row(t)
+        sig = getattr(t, "rhythm_sig", None)
+        if sig:
+            row["groove"] = {
+                "swing": sig.get("swing"),
+                "feel": ("straight" if sig.get("swing", 0.5) < 0.54
+                         else "swung" if sig.get("swing", 0.5) < 0.62
+                         else "shuffle"),
+                "density": sig.get("density"),
+                "measured_from": sig.get("source"),
+            }
         row.update({
             "bpm_conf": round(t.bpm_conf, 2),
             "kick_offset_ms": round(t.kick_offset_s * 1000),
@@ -559,6 +581,20 @@ real energy trend, fade share), then what you'd do next.""" + (
                        ("fade", "floor", "d_off", "key_fit", "pair_mem")
                        if si.get(k) is not None},
                 }
+                rt = si.get("rhythm")
+                if rt:
+                    rd = {k: rt[k] for k in
+                          ("score", "kick_agreement", "swing_delta",
+                           "flam_ms", "mult", "conf", "regions")
+                          if rt.get(k) is not None}
+                    if rt.get("meter_clash"):
+                        rd["meter"] = (f"{rt.get('meter_a', 4)}/4 vs "
+                                       f"{rt.get('meter_b', 4)}/4")
+                    row["seam_to_next"]["rhythm"] = rd
+                from lib.dj.rhythm import seam_chips
+                chips = seam_chips(p, si)
+                if chips:
+                    row["seam_to_next"]["chips"] = chips
             if s["warnings"]:
                 row["warnings"] = s["warnings"]
             slots.append(row)

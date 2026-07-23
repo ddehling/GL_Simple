@@ -22,14 +22,31 @@ from lib.dj.varispeed import VarispeedStretcher
 # Tempo engine (env DJ_STRETCH_ENGINE, see lib.dj.stretch_engine_name).
 # 'vari' (default): turntable mode - pitch rides tempo, zero stretch
 # artifacts; the brain meets both decks in the middle so each song shifts
-# half as far. 'wsola'/'pv': keylock engines (constant pitch, each with its
-# own artifact tradeoff) for A/B by ear.
+# half as far. 'wsola'/'pv': home-grown keylock engines (constant pitch,
+# each with its own artifact tradeoff). 'rubberband'/'rb': Rubber Band R3
+# keylock (the Mixxx-grade library; optional dep pylibrb, see
+# requirements-dj-keylock.txt), lazily imported with a varispeed fallback
+# so a missing wheel degrades gracefully instead of killing the night.
 _ENGINES = {"pv": PhaseVocoderStretcher, "wsola": WSOLAStretcher,
             "vari": VarispeedStretcher}
+_warned_rb = False
 
 
 def _stretch_engine():
-    return _ENGINES.get(stretch_engine_name(), VarispeedStretcher)
+    name = stretch_engine_name()
+    if name in ("rubberband", "rb"):
+        try:
+            from lib.dj.rb_stretch import RubberBandDeckStretcher
+            return RubberBandDeckStretcher
+        except Exception as e:
+            global _warned_rb
+            if not _warned_rb:
+                _warned_rb = True
+                print(f"[DJ] rubberband engine unavailable "
+                      f"({type(e).__name__}: {e}) - pip install pylibrb; "
+                      f"falling back to varispeed")
+            return VarispeedStretcher
+    return _ENGINES.get(name, VarispeedStretcher)
 
 RATE = 44100
 LOOP_XFADE = 128                 # frames, equal-power seam blend

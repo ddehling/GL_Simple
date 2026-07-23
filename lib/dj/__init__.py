@@ -31,12 +31,35 @@ def resolve_music_dir(configured=""):
     return default_music_dir()
 
 
+_rb_available = None
+
+
 def stretch_engine_name():
-    """Selected time-stretch engine (env DJ_STRETCH_ENGINE):
-    'vari'  - varispeed/turntable mode (DEFAULT): pitch rides tempo like a
-              pitch fader; zero time-stretch artifacts. The brain splits each
+    """Selected time-stretch engine (env DJ_STRETCH_ENGINE, or config.yaml
+    dj.stretch_engine which Stories_OGL maps onto the env at boot):
+    'rubberband' / 'rb' - keylock via Rubber Band R3 (DEFAULT 2026-07-22,
+              user-picked by ear over varispeed; optional dep pylibrb,
+              wheels for Windows/Linux x86_64/macOS). Constant pitch,
+              warble-free, enables the ±1-semitone key rescue. Resolves
+              to 'vari' when the module is missing so the BRAIN's
+              planning semantics (transpose rescue, dual-deck bend split)
+              always match what the decks actually run - a Pi without
+              the wheel just plays turntable-style.
+    'vari'  - varispeed/turntable mode: pitch rides tempo like a pitch
+              fader; zero time-stretch artifacts. The brain splits each
               tempo match across BOTH decks so each song shifts half as far.
     'wsola' - keylock via WSOLA (constant pitch, slight warble under stretch)
     'pv'    - keylock via phase vocoder (less warble, weaker seams)
-    Read dynamically (not cached) so tests can flip engines per-process."""
-    return os.environ.get("DJ_STRETCH_ENGINE", "vari").lower()
+    Env read dynamically (not cached) so tests can flip engines
+    per-process; only the pylibrb availability probe is cached."""
+    name = os.environ.get("DJ_STRETCH_ENGINE", "rubberband").lower()
+    if name in ("rubberband", "rb"):
+        global _rb_available
+        if _rb_available is None:
+            try:
+                import pylibrb                            # noqa: F401
+                _rb_available = True
+            except Exception:
+                _rb_available = False
+        return "rubberband" if _rb_available else "vari"
+    return name
