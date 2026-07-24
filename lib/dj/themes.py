@@ -193,5 +193,17 @@ BUILTIN_THEMES = {t.name: t for t in [
 ]}
 
 
+# CURATED WEB PICKER (2026-07-24): 27 simulated nights measured the nine
+# themes collapsing to ~5 distinct behaviors on the real library
+# (hard_drive = 53% the same tracks as peak_heavy; chill_evening/
+# wind_down/gentle_organic a 26-32% overlap triangle; hypnotic_deep 30%
+# on groove - see tools scratch theme_overlap runs). The full table stays
+# defined so planner setlists and old references keep working; the phone
+# picker offers only the behaviors that measure distinct. The 'hypnotic'
+# flavor chip covers hypnotic_deep's remaining identity.
+PICKER_THEMES = ["chill_evening", "groove", "peak_heavy",
+                 "vocal_journey", "all_night"]
+
+
 def get_theme(name):
     return BUILTIN_THEMES.get(name, BUILTIN_THEMES["groove"])

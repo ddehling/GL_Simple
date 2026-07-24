@@ -26,7 +26,7 @@ from lib.dj.brain import GLIDE_PER_S, Brain, load_library, TrackInfo
 from lib.dj.db import LibraryDB
 from lib.dj.rhythm import seam_chips
 from lib.dj.submix import DJSubmix
-from lib.dj.themes import BUILTIN_THEMES, get_theme
+from lib.dj.themes import BUILTIN_THEMES, PICKER_THEMES, get_theme
 
 RATE = 44100
 PLAN_LEAD_S = 60.0               # start choosing next this early. Must
@@ -42,6 +42,14 @@ WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
 WD_LOOP_S = 15.0                 # ...and buys time with a safety loop here
 
 
+def _persona_menu():
+    """[(name, tagline)] for the web picker - the real characters only
+    (auto/off are picker-level modes, and neutral IS off)."""
+    from lib.dj.persona import PERSONAS
+    return [(p.name, p.tagline) for p in PERSONAS.values()
+            if p.name != "neutral"]
+
+
 def _intro_start(track):
     """Where a track should START playing from: the first beat of its intro
     (or just its first downbeat), never a deep mix-in point."""
@@ -55,13 +63,17 @@ class DJSystem:
     def __init__(self, music_root, engine=None, theme="groove",
                  night_hours=6.0, autopilot=True, seed=None,
                  stretch_max=1.08, log_dir=None, threaded=True,
-                 record=False):
+                 record=False, persona="auto"):
         self.music_root = music_root
         self.engine = engine
         self.night_hours = night_hours
         self.autopilot = autopilot
         self.threaded = threaded
         self._theme_name = theme
+        # Persona MODE: "auto" (date-seeded nightly rotation), a persona
+        # name, or "off"/None (neutral). Resolved onto brain.persona at
+        # start() and live via set_persona().
+        self._persona_mode = persona or "auto"
         self._seed = seed
         self._stretch_max = stretch_max
         repo = os.path.dirname(os.path.dirname(
@@ -133,6 +145,10 @@ class DJSystem:
             return False
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
+        self.brain.persona = self._resolve_persona(self._persona_mode)
+        if self.brain.persona.name != "neutral":
+            print(f"[DJ] tonight: {self.brain.persona.name} - "
+                  f"{self.brain.persona.tagline}")
         self._by_id = {t.id: t for t in lib}
         # LIVE-ENERGY SCALE: drive x curve is compressed on a real
         # library (this one: raw spans ~0.22..0.8) - published as-is the
@@ -313,6 +329,25 @@ class DJSystem:
             time.sleep(0.4)
 
     # -- control surface ---------------------------------------------------------
+    @staticmethod
+    def _resolve_persona(mode):
+        """Persona for the given MODE: "auto" = date-seeded rotation that
+        avoids yesterday's base pick (stateless - yesterday is recomputed,
+        not stored), "off"/None/"" = neutral, else the named persona
+        (unknown names fall back to neutral rather than crash a start)."""
+        from lib.dj.persona import PERSONAS, for_night
+        if mode == "auto":
+            import datetime as _dt
+            y = for_night(_dt.date.today() - _dt.timedelta(days=1))
+            return for_night(avoid=y.name)
+        if mode in (None, "", "off"):
+            return PERSONAS["neutral"]
+        return PERSONAS.get(mode, PERSONAS["neutral"])
+
+    def set_persona(self, mode):
+        with self._lock:
+            self._pending.append(("persona", mode))
+
     def set_theme(self, name):
         with self._lock:
             self._pending.append(("theme", name))
@@ -630,7 +665,17 @@ class DJSystem:
             countdown = max(0.0, (self.blend_at - self.submix.clock) / RATE)
         return {
             "state": self.state, "theme": self._theme_name,
-            "themes": sorted(BUILTIN_THEMES),
+            # Curated picker; a live off-list theme (config/planner) still
+            # shows its own lit button rather than vanishing.
+            "themes": PICKER_THEMES + (
+                [self._theme_name]
+                if self._theme_name not in PICKER_THEMES
+                and self._theme_name in BUILTIN_THEMES else []),
+            "persona": (self.brain.persona.name if self.brain else None),
+            "persona_mode": self._persona_mode,
+            "persona_tagline": (self.brain.persona.tagline
+                                if self.brain else ""),
+            "personas": _persona_menu(),
             "flavor": dict(self.brain.flavor) if self.brain else {},
             "require_tags": (sorted(self.brain.require_tags)
                              if self.brain else []),
@@ -781,6 +826,19 @@ class DJSystem:
                 if self.state == "playing":
                     self.next_track = None       # soft replan
                     self.plan = None
+            elif kind == "persona":
+                self._persona_mode = str(val or "auto")
+                self.brain.persona = self._resolve_persona(self._persona_mode)
+                self._log({"event": "persona",
+                           "mode": self._persona_mode,
+                           "persona": self.brain.persona.name})
+                # Selection leans changed - the next pick should reflect
+                # the new character. Armed transitions are left alone.
+                if self.state == "playing":
+                    self.next_track = None
+                    self.plan = None
+                    self._horizon = []
+                    self._horizon_key = None
             elif kind == "flavor":
                 # Live music-type steering: soft tag leans + axis pulls, PLUS a
                 # HARD tag filter (require_tags) - only tracks carrying a
@@ -1840,7 +1898,10 @@ class DJSystem:
         heat = self.arc_target()
         frac = min(1.0, self.brain.rng.random() * (1.0 - 0.55 * heat)
                    + 0.25 * (1.0 - heat))
-        self._exit_played = theme.min_play_s + frac * span
+        # PERSONA pacing: monk lets records breathe ~1.3x, showman rotates
+        # ~0.8x. Neutral is exactly the legacy draw.
+        self._exit_played = (theme.min_play_s + frac * span) \
+            * getattr(self.brain.persona, "play_len_x", 1.0)
 
     def _predecode(self, track):
         """Start decoding `track` on a background daemon thread so the whole

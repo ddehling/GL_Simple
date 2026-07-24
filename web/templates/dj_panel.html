@@ -3,6 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Add-to-home-screen runs full screen like an app (a show control
+         surface wants every vertical pixel). -->
+    <meta name="theme-color" content="#1e3c72">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style"
+          content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Lucifera DJ">
     <title>Lucifera DJ</title>
     <link rel="stylesheet" href="/static/css/common.css">
     <link rel="stylesheet" href="/static/css/control_panel.css">
@@ -72,6 +80,58 @@
             background: #333; border: 1px solid #555; }
         .badge.tech { background: #1a2a4a; border-color: #36a; color: #8bf; }
         .hidden { display: none; }
+
+        /* Arc canvas: inert to touch until explicitly armed (thumb-
+           scrolling over "The Night" was planting waypoints). pan-y lets
+           an unarmed touch scroll the page straight through the canvas;
+           mouse drags are unaffected either way. */
+        #dj-arc-canvas { touch-action: pan-y; }
+        #dj-arc-canvas.editing { touch-action: none;
+            box-shadow: 0 0 0 2px #4bd6; }
+
+        /* ---------- phone optimizations (page-scoped) ---------- */
+        /* Pull-to-refresh mid-set reloads the control surface at the worst
+           possible moment - suppress the gesture on this page. */
+        html, body { overscroll-behavior-y: contain; }
+        .btn, .theme-btn, select { touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent; }
+        input[type=range] { accent-color: #4bd; min-height: 34px;
+            touch-action: manipulation; }
+        /* Foldable secondary cards: tap the header to collapse (persisted).
+           Now Playing is deliberately NOT foldable - ABORT lives there. */
+        .section-panel.foldable .section-header { cursor: pointer;
+            user-select: none; -webkit-user-select: none; }
+        .section-panel.foldable .section-header h3::after {
+            content: " ▾"; opacity: 0.45; font-size: 0.8em; }
+        .section-panel.foldable.folded .section-header h3::after {
+            content: " ▸"; }
+        .section-panel.foldable.folded > :not(.section-header) {
+            display: none; }
+        .section-panel.foldable.folded { padding-bottom: 6px; }
+        .section-panel.foldable.folded .section-header { margin-bottom: 0; }
+        @media (max-width: 640px) {
+            body { padding: 8px; }
+            header { margin-bottom: 10px; }
+            h1 { font-size: 1.35em; margin-bottom: 4px; text-shadow: none; }
+            .section-panel { padding: 12px; margin-bottom: 10px; }
+            .section-header { margin-bottom: 10px; }
+            /* Thumb-sized targets. */
+            .btn { min-height: 46px; }
+            .theme-btn { min-height: 42px; }
+            .setrow select { min-height: 44px; }
+            /* iOS auto-zooms any focused control with font-size < 16px -
+               pin form controls so tapping a select doesn't zoom the page. */
+            select, input, button { font-size: 16px; }
+            /* Live transport stays under the thumb while scrolled. */
+            #dj-transport { position: sticky; top: 0; z-index: 20;
+                background: rgba(18, 26, 44, 0.93);
+                backdrop-filter: blur(6px);
+                -webkit-backdrop-filter: blur(6px);
+                margin: 0 -8px 10px -8px; padding: 8px;
+                border-radius: 0 0 10px 10px; }
+            .deck { font-size: 0.75em; padding: 5px 6px; }
+            .bias-labels { font-size: 0.8em; }
+        }
     </style>
 </head>
 <body>
@@ -178,12 +238,15 @@
             <div class="section-header"><h3>The Night</h3></div>
             <canvas id="dj-arc-canvas" height="110"
                     style="width:100%;display:block;border-radius:8px;
-                           background:#15151c;touch-action:none"></canvas>
+                           background:#15151c"></canvas>
             <div id="dj-queue" style="font-size:0.8em;margin:4px 0"></div>
-            <div class="bias-labels"><span>drag to steer energy</span>
+            <div class="bias-labels"><span id="dj-arc-hint">drag to steer
+                    energy</span>
                 <span id="dj-cycle-lbl"></span>
-                <span><a href="#" id="dj-arc-reset"
-                     style="color:#8cf">reset arc</a></span></div>
+                <span><a href="#" id="dj-arc-edit" style="color:#8cf;
+                     display:inline-block;padding:6px 8px">✎ shape</a>
+                    <a href="#" id="dj-arc-reset" style="color:#8cf;
+                     display:inline-block;padding:6px 8px">reset</a></span></div>
             <div class="kv"><span class="k">Energy target</span>
                 <span id="dj-heat">--</span></div>
             <div class="kv"><span class="k">Set position</span>
@@ -202,6 +265,14 @@
             <div class="section-header"><h3 id="dj-steer-h">Prepare</h3></div>
             <div class="now-sub">Theme</div>
             <div class="theme-row" id="dj-themes"></div>
+            <div class="now-sub" style="margin-top:12px">Persona
+                <span style="opacity:.5;font-size:11px">
+                    (how the DJ plays tonight)</span></div>
+            <div class="setrow">
+                <select id="dj-persona"></select>
+            </div>
+            <div class="now-sub" id="dj-persona-line"
+                 style="margin-top:3px;min-height:14px;color:#8cf"></div>
             <div class="now-sub" style="margin-top:12px">Setlist</div>
             <div class="setrow">
                 <select id="dj-setlist">
@@ -235,6 +306,29 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                     (tap: only this → avoid → off)</span></div>
             <div class="theme-row" id="dj-flavor"></div>
             <div class="now-sub" id="dj-libinfo" style="margin-top:10px"></div>
+        </div>
+
+        <!-- Timed set switch: arm a countdown that changes the pattern set
+             when it hits zero. Server-owned, so it survives page reloads
+             and every phone sees the same countdown. -->
+        <div class="section-panel" id="dj-timer-card">
+            <div class="section-header"><h3>Timed Set Switch</h3></div>
+            <div class="setrow">
+                <select id="dj-timer-hours">
+                    <option value="0">Off</option>
+                    <option value="1">1 hour</option>
+                    <option value="2">2 hours</option>
+                    <option value="3">3 hours</option>
+                    <option value="4">4 hours</option>
+                    <option value="5">5 hours</option>
+                    <option value="6">6 hours</option>
+                </select>
+                <select id="dj-timer-target"></select>
+            </div>
+            <div class="kv" style="margin-top:8px">
+                <span class="k">Countdown</span>
+                <span id="dj-timer-count" style="font-weight:bold">off</span>
+            </div>
         </div>
     </div>
 
@@ -432,10 +526,81 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             Math.floor(Math.max(0, s) / 60) + ":" +
             String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0");
         const show = (el, on) => el.classList.toggle("hidden", !on);
+        // Set innerHTML only when the content actually changed - the 5 Hz
+        // snapshot otherwise rebuilds identical DOM all night (phone
+        // battery, and mid-tap element churn).
+        const setHtml = (el, html) => {
+            if (el.dataset.htmlKey !== html) {
+                el.dataset.htmlKey = html;
+                el.innerHTML = html;
+            }
+        };
+
+        // Foldable secondary cards (tap header, persisted per phone).
+        // Now Playing stays always-open: ABORT lives there.
+        for (const id of ["dj-nightcard", "dj-tonight", "dj-steer",
+                          "dj-timer-card"]) {
+            const p = $(id);
+            const h = p && p.querySelector(".section-header");
+            if (!h) continue;
+            p.classList.add("foldable");
+            if (localStorage.getItem("djfold:" + id) === "1")
+                p.classList.add("folded");
+            h.onclick = () => {
+                const folded = p.classList.toggle("folded");
+                localStorage.setItem("djfold:" + id, folded ? "1" : "0");
+            };
+        }
+
+        // ---------- timed set switch ----------
+        const timerHours = $("dj-timer-hours");
+        const timerTarget = $("dj-timer-target");
+        const fmtHMS = (s) => {
+            s = Math.max(0, Math.round(s));
+            return Math.floor(s / 3600) + ":" +
+                String(Math.floor((s % 3600) / 60)).padStart(2, "0") + ":" +
+                String(s % 60).padStart(2, "0");
+        };
+        let timerTouched = 0;   // suppress snapshot echo right after a change
+        function sendTimer() {
+            timerTouched = Date.now();
+            socket.emit("set_switch_timer", {
+                hours: parseInt(timerHours.value, 10),
+                target: timerTarget.value});
+        }
+        timerHours.onchange = sendTimer;
+        // Retargeting only matters while a countdown is armed; picking a
+        // target with the timer Off is just staging the dropdown.
+        timerTarget.onchange = () => {
+            if (parseInt(timerHours.value, 10) > 0) sendTimer();
+        };
+        function fillTimerTargets(sets) {
+            const key = (sets || []).join("|");
+            if (timerTarget.dataset.have === key) return;
+            timerTarget.dataset.have = key;
+            const keep = timerTarget.value;
+            timerTarget.innerHTML = (sets || []).map((n) =>
+                `<option value="${n}">${n}</option>`).join("");
+            if (keep && (sets || []).includes(keep)) timerTarget.value = keep;
+        }
+        function updateTimerCard(s) {
+            fillTimerTargets(s.available_sets);
+            const st = s.set_timer;
+            // Don't yank a dropdown the operator has open on this phone,
+            // or one they changed in the last moment (snapshot echo lag).
+            const settled = Date.now() - timerTouched > 1500;
+            if (settled && document.activeElement !== timerHours)
+                timerHours.value = st ? String(st.hours) : "0";
+            if (settled && st && document.activeElement !== timerTarget)
+                timerTarget.value = st.target;
+            $("dj-timer-count").textContent = st
+                ? `→ ${st.target} in ${fmtHMS(st.remaining_s)}` : "off";
+            $("dj-timer-count").style.color = st ? "#9f9" : "";
+        }
 
         function renderDecks(decks) {
-            if (!decks || !decks.length) { $("dj-decks").innerHTML = ""; return; }
-            $("dj-decks").innerHTML = decks.map((d) => {
+            if (!decks || !decks.length) { setHtml($("dj-decks"), ""); return; }
+            setHtml($("dj-decks"), decks.map((d) => {
                 const eq = (d.eq || [1, 1, 1]).map((v, i) =>
                     `<div class="b" style="height:${Math.round(6 + 16 * Math.min(v, 1))}px;background:${EQC[i]}"></div>`
                 ).join("");
@@ -452,7 +617,38 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                     <span style="opacity:.9"> ${bpm}${bend}${sync}${dsp}</span><br>
                     <span>${(d.title || "?").slice(0, 22)}</span>
                     <div class="eqbars">${eq}</div></div>`;
-            }).join("");
+            }).join(""));
+        }
+
+        // ---------- persona picker ----------
+        const personaSel = $("dj-persona");
+        let personaTouched = 0;
+        personaSel.onchange = () => {
+            personaTouched = Date.now();
+            emit("persona", personaSel.value);
+        };
+        function fillPersonas(pairs) {
+            const key = (pairs || []).map((p) => p[0]).join("|");
+            if (personaSel.dataset.have === key) return;
+            personaSel.dataset.have = key;
+            personaSel.innerHTML =
+                '<option value="auto">auto — rotates nightly</option>'
+                + '<option value="off">off — no persona</option>'
+                + (pairs || []).map(([n, tag]) =>
+                    `<option value="${n}" title="${tag}">`
+                    + `${n.replace(/_/g, " ")}</option>`).join("");
+        }
+        function updatePersona(dj) {
+            fillPersonas(dj.personas);
+            if (Date.now() - personaTouched > 1500
+                    && document.activeElement !== personaSel)
+                personaSel.value = dj.persona_mode || "auto";
+            // The resolved character only exists once the night started.
+            $("dj-persona-line").textContent =
+                (dj.active && dj.persona && dj.persona !== "neutral")
+                ? `tonight: ${dj.persona.replace(/_/g, " ")} — `
+                  + (dj.persona_tagline || "")
+                : "";
         }
 
         function fillSetlists(names, current) {
@@ -475,6 +671,12 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             const dj = s.dj ? Object.assign({}, lastFullDj || {}, s.dj)
                             : s.dj;
             if (dj) lastFullDj = dj;
+            // Screen off / other tab: keep merging deltas (above) but skip
+            // all rendering - the next visible update repaints in <=200ms.
+            if (document.hidden) return;
+            // Timer card runs off top-level snapshot fields - keep it live
+            // even when the DJ subsystem itself is unavailable.
+            updateTimerCard(s);
             const banner = $("dj-banner");
 
             if (!dj) {
@@ -509,7 +711,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             } else if (on) {
                 banner.className = "dj-banner on";
                 banner.textContent = "DJ live — driving the soundtrack"
-                    + (dj.setlist ? ` · setlist “${dj.setlist}” · ${dj.setlist_mode === "pool" ? "steer pool" : "in order"} (${dj.setlist_remaining} left)` : " · free play");
+                    + (dj.setlist ? ` · setlist “${dj.setlist}” · ${dj.setlist_mode === "pool" ? "steer pool" : "in order"} (${dj.setlist_remaining} left)` : " · free play")
+                    + (dj.persona && dj.persona !== "neutral"
+                       ? ` · tonight: ${dj.persona.replace(/_/g, " ")}` : "");
             } else {
                 banner.className = "dj-banner";
                 banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
@@ -550,7 +754,8 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 : "";
 
             // STEERING SURFACE - built idle AND live, so the night can
-            // be shaped before START: theme, flavor chips, arc canvas.
+            // be shaped before START: theme, persona, flavor chips, arc.
+            updatePersona(dj);
             if (dj.themes) buildThemes(dj.themes);
             if (dj.tags) buildFlavor(dj.tags, dj.genre_tags);
             restoreFlavor(dj.flavor, dj.require_tags);
@@ -595,7 +800,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                             `;color:#e8a87c">${c}</span>`);
             badges.push(`<span class="badge">theme: ${dj.theme}</span>`);
             badges.push(`<span class="badge">${dj.state}</span>`);
-            $("dj-badges").innerHTML = badges.join("");
+            setHtml($("dj-badges"), badges.join(""));
             show($("dj-abort"), !!dj.abortable);
             renderDecks(dj.decks);
 
@@ -612,11 +817,11 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             drawStrip(dj);
             $("dj-count").textContent = dj.blend_in_s != null
                 ? `- ${dj.style ? dj.style.replace(/_/g, " ") : "mix"} in ${Math.max(0, Math.round(dj.blend_in_s))}s` : "";
-            $("dj-queue").innerHTML = (dj.horizon || []).map((h, i) =>
+            setHtml($("dj-queue"), (dj.horizon || []).map((h, i) =>
                 `<div style="padding:1px 0"><b>${i + 1}.</b> ` +
                 `${(h.title || "?").slice(0, 30)} ` +
                 `<span style="opacity:.6">${h.why || ""}</span></div>`
-            ).join("");
+            ).join(""));
             if (dj.level != null)
                 $("dj-level").style.width =
                     Math.min(100, dj.level * 100) + "%";
@@ -696,12 +901,39 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         }
         (() => {
             const cv = $("dj-arc-canvas");
+            // TOUCH ARMS FIRST: a thumb-scroll across the card must never
+            // edit the arc. Unarmed touches fall through to page scroll
+            // (touch-action: pan-y); mouse edits work without arming.
+            let arcEdit = false, arcEditTimer = null;
+            const armArc = (on) => {
+                arcEdit = on;
+                cv.classList.toggle("editing", on);
+                $("dj-arc-edit").textContent = on ? "✓ done" : "✎ shape";
+                $("dj-arc-edit").style.fontWeight = on ? "bold" : "";
+                $("dj-arc-hint").textContent = on
+                    ? "shaping — drag waypoints, scroll is paused"
+                    : (navigator.maxTouchPoints > 0
+                       ? "tap ✎ shape to edit the arc"
+                       : "drag to steer energy");
+                clearTimeout(arcEditTimer);
+                if (on)              // forget-me protection at a live show
+                    arcEditTimer = setTimeout(() => armArc(false), 30000);
+            };
+            $("dj-arc-edit").onclick = (ev) => {
+                ev.preventDefault();
+                armArc(!arcEdit);
+            };
+            if (navigator.maxTouchPoints > 0) armArc(false);   // init hint
             cv.addEventListener("pointerdown", (ev) => {
                 if (!lastDj) return;
+                if (ev.pointerType === "touch" && !arcEdit) return;
+                if (arcEdit) armArc(true);           // reset the idle timer
                 cv.setPointerCapture(ev.pointerId);
                 localWp = (localWp || lastDj.arc_waypoints || []).map(w => [...w]);
                 const [p, e] = cvPos(cv, ev);
-                let idx = localWp.findIndex(([wp]) => Math.abs(wp - p) < 0.05);
+                // Fatter grab radius for fingers than for a mouse cursor.
+                const tol = ev.pointerType === "touch" ? 0.08 : 0.05;
+                let idx = localWp.findIndex(([wp]) => Math.abs(wp - p) < tol);
                 if (idx < 0 && localWp.length < 6) {
                     localWp.push([p, e]);
                     localWp.sort((a, b) => a[0] - b[0]);

@@ -100,6 +100,10 @@ class TrackInfo:
         self.sections = sections
         self.loops = loops
         self.axes = row.get("axes") or {}
+        # Library-percentile overlay for the axes whose RAW values saturate
+        # (hypnotic/hardness/energy) - filled by load_library; empty on
+        # tracks built outside a library context (beatport previews).
+        self.axes_rank = {}
         self.auto_tags = row.get("auto_tags") or []
         self.user_tags = list(user_tags or [])
         # MusicBrainz enrichment (genre/year/era), when present. Merged into
@@ -307,6 +311,31 @@ def load_library(db):
         for t in out:
             t.energy_rank = bisect.bisect_left(raws, t._raw_energy()) / denom
             t.drive_rank = bisect.bisect_left(drvs, t._raw_drive()) / denom
+        # FLAVOR-AXIS RANKING: hypnotic/hardness are stored RAW and
+        # saturate on a real library (measured 2026-07-24: hardness mean
+        # ~0.98, hypnotic ~0.88 across every theme's pool), which made
+        # every axis_target on them a dead lever - gentle_organic's
+        # hardness-0.2 target had nothing below ~0.9 to find, and
+        # hypnotic_deep matched the whole library. Same cure energy got:
+        # percentile-rank across THIS library, so a 0.95 target means
+        # "top of this collection". Ranked values live in axes_rank;
+        # vocal and speed stay raw (they carry absolute meaning: demucs
+        # duration fraction / a fixed bpm mapping). "energy" rides the
+        # existing energy_rank so axis_targets on it rank too.
+        # MID-RANK on ties: raw hardness CLIPS at 1.0 (~90% of this library
+        # is tied there) and bisect_left hands the whole tied blob the
+        # first-occurrence rank (~0.1) - a statistical lie that inverted
+        # hard/gentle targets. Ties belong mid-distribution; a degenerate
+        # axis then honestly reads "everyone ~0.55", not "everyone soft".
+        for axis in ("hypnotic", "hardness"):
+            vals = sorted((t.axes.get(axis) or 0.5) for t in out)
+            for t in out:
+                v = t.axes.get(axis) or 0.5
+                t.axes_rank[axis] = (bisect.bisect_left(vals, v)
+                                     + bisect.bisect_right(vals, v) - 1) \
+                    / 2.0 / denom
+        for t in out:
+            t.axes_rank["energy"] = t.energy_rank
     # DERIVED CHARACTER: danceability + valence, library-ranked (see
     # lib/dj/character.py). Adds mood/danceability the scanner never exposed.
     from lib.dj.character import rank_library
@@ -481,6 +510,11 @@ class Brain:
                   f" -> {self.theme.bpm_range[0]:.0f}-"
                   f"{self.theme.bpm_range[1]:.0f} bpm")
         self.rng = random.Random(seed)
+        # PERSONA: the night's mixing temperament (lib/dj/persona). Neutral
+        # is all-identity - every persona read below must reduce to exactly
+        # the pre-persona arithmetic at the defaults.
+        from lib.dj.persona import NEUTRAL
+        self.persona = NEUTRAL
         self.stretch_max = min(stretch_max, STRETCH_MAX)
         self.stretch_min = max(2.0 - self.stretch_max, STRETCH_MIN)
         self.recent = []                # (wall_time, track_id, artist)
@@ -677,7 +711,9 @@ class Brain:
             if tag in tags:
                 s *= 1.0 - 0.75 * w
         for axis, target in axes_t.items():
-            v = cand.axes.get(axis)
+            # Ranked value when the library overlay has one (hypnotic/
+            # hardness/energy saturate raw - see load_library), raw else.
+            v = cand.axes_rank.get(axis, cand.axes.get(axis))
             if v is None:
                 continue
             s *= math.exp(-((float(v) - float(target)) / 0.35) ** 2) \
@@ -835,7 +871,9 @@ class Brain:
         if rate is None:
             return 0.0, None
         lo, hi = self.theme.bpm_range
-        wide = 1.12 if relax else 1.0
+        # bpm_widen is persona TASTE (crate-digger blur at the edges), not
+        # safety - the stretch wall and rate gates below are untouched.
+        wide = (1.12 if relax else 1.0) * self.persona.bpm_widen
         if not (lo * 0.93 / wide <= eff_bpm <= hi * 1.07 * wide):
             return 0.0, None
         s_rate = math.exp(-((abs(math.log(rate))) / 0.045) ** 2)
@@ -879,6 +917,13 @@ class Brain:
             sc = chroma_key_compat(cur_chroma, cand.chroma, semis)
             if sc is not None:
                 s_key = 0.45 * s_key + 0.55 * sc
+        # PERSONA key strictness: an exponent, so a perfect key stays 1.0
+        # for everyone and only the gray zone moves - the purist punishes a
+        # 0.6-tier key hard, the crate-digger barely notices it. Applied
+        # after the chroma refinement AND the rescue tier, so a strict
+        # persona also uses transposition rescues more sparingly.
+        if self.persona.key_strictness != 1.0:
+            s_key = s_key ** self.persona.key_strictness
         # Sigma 0.21 (was 0.3): the arc is chased on a library-PERCENTILE
         # scale, so a tight pull can't strand selection - material exists
         # near any target. At 0.3 a candidate 0.3 off-target still scored
@@ -962,7 +1007,13 @@ class Brain:
             # blend - selection should lose more ground to clean pairs in
             # the 25-40ms band.
             d_off = abs(current.kick_offset_s - cand.kick_offset_s)
-            s_style *= 0.55 + 0.45 * math.exp(-((d_off / 0.038) ** 2))
+            lean = 0.55 + 0.45 * math.exp(-((d_off / 0.038) ** 2))
+            # PERSONA groove tolerance divides the PENALTY, not the score -
+            # a tolerant persona shrugs at half-matched grooves (the style
+            # gates still protect the seam); 1.0 is exact legacy behavior.
+            if self.persona.groove_tolerance != 1.0:
+                lean = 1.0 - (1.0 - lean) / self.persona.groove_tolerance
+            s_style *= lean
         # VARIETY: two near-identical-sounding tracks back to back is the
         # classic auto-DJ tell. Penalize spectral+character similarity to
         # the current track (never to zero - a coherent run is fine, a
@@ -985,14 +1036,28 @@ class Brain:
         # EQ discipline survives most kick clashes, so this leans (0.78x
         # floor), never vetoes.
         s_rhythm = self._rhythm_fit(current, cand, rate)
+        if self.persona.groove_tolerance != 1.0:
+            s_rhythm = 1.0 - (1.0 - s_rhythm) / self.persona.groove_tolerance
+        # PERSONA vocal pull: a soft lean toward (storyteller) or away from
+        # (monk) singers, on the library-ranked vocal axis. +-0.35 at the
+        # extremes - the same order as the theme's own axis leans, so the
+        # operator's chips and the theme always outrank it.
+        s_pers = 1.0
+        if self.persona.vocal_pull:
+            v = cand.axes.get("vocal", 0.5)
+            s_pers = 1.0 + 0.35 * self.persona.vocal_pull \
+                * (2.0 * (v if v is not None else 0.5) - 1.0)
+        # PERSONA exploration widens the selection dice (neutral 0.9..1.1).
+        dice_w = 0.1 * self.persona.explore
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
                  * s_valence * s_dance * s_cohere * s_class * s_rhythm
+                 * s_pers
                  * self._recency_penalty(cand, now)
                  * self._skip_penalty(cand) * s_pair
                  * self._flavor_score(cand)
                  * self.pair_memory.get(
                      (getattr(current, "id", None), cand.id), 1.0)
-                 * self.rng.uniform(0.9, 1.1))
+                 * self.rng.uniform(1.0 - dice_w, 1.0 + dice_w))
         # STRETCH WALL: beyond ~5.5% the time-stretch is audible as feel
         # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
         # a dry pool may still cross it rather than strand the set.
@@ -1043,8 +1108,10 @@ class Brain:
              + abs(a.spectral.get("mid_share", .33) - b.spectral.get("mid_share", .33))
              + abs(a.spectral.get("high_share", .25) - b.spectral.get("high_share", .25))
              + 0.5 * abs(a.energy_proxy() - b.energy_proxy())
-             + 0.5 * abs((a.axes.get("hypnotic", .5) or .5)
-                         - (b.axes.get("hypnotic", .5) or .5)))
+             + 0.5 * abs(a.axes_rank.get("hypnotic",
+                                         a.axes.get("hypnotic", .5) or .5)
+                         - b.axes_rank.get("hypnotic",
+                                           b.axes.get("hypnotic", .5) or .5)))
         return max(0.0, 1.0 - d * 2.0)
 
     def _skip_penalty(self, cand):
@@ -1143,7 +1210,9 @@ class Brain:
         # same tracks in the same order every single night.
         finalists.sort(key=lambda x: -x[0])
         top = finalists[:3]
-        weights = [t[0] ** 3 for t in top]
+        # PERSONA exploration flattens (crate-digger) or sharpens (monk)
+        # the finalist sampling; neutral keeps the tuned cubed weights.
+        weights = [t[0] ** (3.0 / self.persona.explore) for t in top]
         pick = self.rng.choices(top, weights=weights, k=1)[0]
         return pick[1], pick[2]
 
@@ -1438,6 +1507,19 @@ class Brain:
         weights = {k: w * self.style_fb.get(k, 1.0)
                    * self.style_memory.get(k, 1.0)
                    for k, w in self.theme.style_weights.items()}
+        # PERSONA: signature-move bias + the theatricality scale on the
+        # whole punchy accent tier. Menu weighting only - every confidence/
+        # flam/vocal gate below still zeroes what it zeroes for everyone.
+        pers = self.persona
+        if pers.style_bias or pers.theatrics != 1.0:
+            _accent = ("cut_at_drop", "double_drop", "loop_build",
+                       "loop_roll_exit", "echo_out", "bassline_layer",
+                       "stem_drum_swap")
+            for k in list(weights):
+                w = weights[k] * pers.style_bias.get(k, 1.0)
+                if k in _accent:
+                    w *= pers.theatrics
+                weights[k] = w
         # Stem styles: accent-tier defaults when the theme dict predates
         # them (hard-gated on rendered stems below, so a default here is
         # inert without tools/dj_stems.py output on disk).
@@ -1479,7 +1561,8 @@ class Brain:
             # spectacle styles get a decisive boost - the night gets 2-3
             # landmarks people remember instead of leaving its rarest
             # techniques to dice. Stamped only if one actually wins.
-            if arc >= 0.82 and time.time() - self.last_moment_t > 2400.0:
+            if arc >= 0.82 and time.time() - self.last_moment_t \
+                    > 2400.0 * self.persona.moment_cooldown_x:
                 moment = True
                 for k in ("double_drop", "cut_at_drop", "stem_drum_swap",
                           "acapella_out"):
@@ -1658,11 +1741,15 @@ class Brain:
                  "filter_sweep": 32, "echo_out": 8,
                  "stem_drum_swap": 32, "acapella_out": 32}[style]
         if style == "long_blend":
-            # LENGTH VARIETY: the workhorse mostly runs 64 beats; about a
-            # third of the time it stretches to a 96-beat marathon (still a
+            # LENGTH VARIETY: the workhorse mostly runs 64 beats; some of
+            # the time it stretches to a 96-beat marathon (still a
             # 32-multiple). One fixed length for every blend read as
             # uniform pacing (user: "there should be some variety").
-            beats = 64 if self.rng.random() < 0.65 else 96
+            # PERSONA patience owns the marathon odds (neutral 0.35, and
+            # the draw maps exactly like the legacy `< 0.65 -> 64` so a
+            # neutral night is seed-for-seed identical to pre-persona).
+            beats = 64 if self.rng.random() < (1.0 - self.persona.p96) \
+                else 96
         # GROOVE-COUPLED LENGTH: when the grooves only half-agree, a 32-beat
         # blend is fine where a 64-beat one grates - don't ride a known
         # clash through two extra phrases. Groove-OFFSET counts too: the

@@ -47,10 +47,18 @@ def main():
     engine = AudioEngine()
     dj = DJSystem(MUSIC, engine=engine, threaded=False, seed=13)
     assert dj.start(), dj.last_error
+    # Soak a PERSONA night: same engine, same judges - the persona layer
+    # must hold up to every check the neutral night does.
+    if "--persona" in sys.argv:
+        from lib.dj.persona import PERSONAS
+        name = sys.argv[sys.argv.index("--persona") + 1]
+        dj.brain.persona = PERSONAS[name]
+        print(f"  persona: {name}")
     gen = engine._mixer()
     next(gen)
 
     rms_10s = []                 # loudness trajectory
+    rms_ctx = []                 # (sim_t, title, deckA, deckB) per window
     grid_lags = []               # (sim_t, ms) during SETTLED overlaps
     dual_run = 0.0               # continuous dual-audible seconds
     plays = []                   # (sim_t, track_id)
@@ -70,6 +78,22 @@ def main():
         acc = np.concatenate([acc, mono]) if len(acc) < 10 * RATE else acc
         if len(acc) >= 10 * RATE:
             rms_10s.append(float(np.sqrt((acc[:10 * RATE] ** 2).mean())))
+            # Context per window so a quiet-floor failure is diagnosable:
+            # a musical dip shows crossing gains on playing decks; a real
+            # dropout shows dead decks.
+            tel = dj.submix.telemetry or {}
+            da = (tel.get("decks") or {}).get("a", {})
+            db_ = (tel.get("decks") or {}).get("b", {})
+            live = ((da.get('playing') and da.get('gain', 0) > 0.5)
+                    or (db_.get('playing') and db_.get('gain', 0) > 0.5))
+            rms_ctx.append((
+                dj.submix.clock / RATE,
+                (dj.current.title if dj.current else "?"),
+                f"a:{'P' if da.get('playing') else '-'}"
+                f"@{da.get('gain', 0):.2f}",
+                f"b:{'P' if db_.get('playing') else '-'}"
+                f"@{db_.get('gain', 0):.2f}",
+                bool(live)))
             acc = acc[:0]
         if i % 16 == 0:
             try:
@@ -145,9 +169,27 @@ def main():
     # Quiet MUSIC is legitimate (deep breakdowns sit ~-20 dB); a real
     # dropout is near-silence. Gate at -26 dB relative with an absolute
     # floor so true gaps still fail loudly.
-    check("no dead air after the opening",
-          float(r.min()) > max(0.05 * med, 0.003),
-          f"min 10s RMS {r.min():.4f} vs median {med:.4f}")
+    # Quiet MUSIC is legitimate at any depth WHILE A DECK IS LIVE (deep
+    # intros on quiet-taste persona nights measured -27 dB relative with a
+    # deck at full gain). A real dropout is the relative floor WITHOUT a
+    # live deck, or near-absolute silence regardless (a corrupt decode
+    # playing zeros must still fail).
+    viol = [i for i in range(3, len(rms_10s))
+            if rms_10s[i] <= 0.003
+            or (rms_10s[i] <= 0.05 * med
+                and i < len(rms_ctx) and not rms_ctx[i][4])]
+    check("no dead air after the opening", not viol,
+          f"min 10s RMS {r.min():.4f} vs median {med:.4f}"
+          + (f"; {len(viol)} dead windows" if viol else
+             " (quiet floors all had a live deck)"))
+    # The 3 quietest windows with deck context, always - a borderline
+    # floor should be judged on WHAT it was, not just how quiet.
+    if rms_ctx:
+        worst = np.argsort(np.array(rms_10s))[:3]
+        for i in worst:
+            t, title, a, b, _live = rms_ctx[i]
+            print(f"    quiet window @{t / 60:5.1f}min rms={rms_10s[i]:.4f} "
+                  f"[{a} {b}] {title[:40]}")
 
     # Beat lock in every overlap, all night (settled samples only).
     lag_vals = [l for _, l in grid_lags]

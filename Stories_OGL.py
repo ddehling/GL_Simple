@@ -2345,6 +2345,12 @@ class EnvironmentalSystem:
                     self.dj_cfg['theme'] = str(arg)
                     if self._dj is not None and self._dj.active:
                         self._dj.set_theme(str(arg))
+                elif action == 'persona':
+                    # Works idle (arms the start persona) or live (the
+                    # night changes character on the next pick).
+                    self.dj_cfg['persona'] = str(arg)
+                    if self._dj is not None and self._dj.active:
+                        self._dj.set_persona(str(arg))
                 elif action in ('setlist', 'setlist_pool'):
                     # Idle: arm the setlist to load on start. Live: load now.
                     # 'setlist' plays the list in order; 'setlist_pool'
@@ -2413,8 +2419,13 @@ class EnvironmentalSystem:
             for k, v in self._dj.outstate_keys().items():
                 self.scheduler.state[k] = v
         else:
+            from lib.dj.persona import PERSONAS
             info = {"available": True, "active": False, "state": "idle",
                     "theme": self.dj_cfg.get("theme", "groove"),
+                    "persona_mode": self.dj_cfg.get("persona", "auto"),
+                    "personas": [(p.name, p.tagline)
+                                 for p in PERSONAS.values()
+                                 if p.name != "neutral"],
                     "autopilot": True, "energy_nudge": 0.0,
                     "arc_phase": 0.0, "arc_heat": 0.5,
                     "setlist": (self._dj_pending_setlist[0]
@@ -2580,7 +2591,8 @@ class EnvironmentalSystem:
             theme=self.dj_cfg.get("theme", "groove"),
             night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
             stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)),
-            record=bool(self.dj_cfg.get("record", False)))
+            record=bool(self.dj_cfg.get("record", False)),
+            persona=str(self.dj_cfg.get("persona", "auto")))
         # Armed idle steering queues BEFORE start(): start() spawns the
         # step thread, and its very first step picks the OPENING track -
         # queuing after it raced that pick (user-heard: a pool night

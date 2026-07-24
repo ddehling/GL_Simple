@@ -166,6 +166,10 @@ class WebController:
         # Weather parameter overrides — direct value overrides (param_name -> value)
         self.web_param_overrides = {}
 
+        # Timed set switch (DJ panel): {'hours', 'target', 'end'} while a
+        # countdown is armed, None when off. Fired by the emitter loop.
+        self._set_switch_timer = None
+
         # Preview frame streaming
         # Preview clients are tracked via Socket.IO 'preview' room
         self._geometry_json = None  # cached provider.to_json()
@@ -1041,7 +1045,8 @@ class WebController:
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
                       'nudge', 'pulse', 'next_id', 'setlist', 'setlist_pool',
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
-                      'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort'}
+                      'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort',
+                      'persona'}
 
         @self.socketio.on('dj_action')
         def handle_dj_action(data):
@@ -1066,7 +1071,7 @@ class WebController:
                     arg = int(arg)
                 except (TypeError, ValueError):
                     return
-            elif action in ('theme', 'setlist', 'setlist_pool'):
+            elif action in ('theme', 'setlist', 'setlist_pool', 'persona'):
                 if not isinstance(arg, str) or len(arg) > 80:
                     return
             elif action == 'autopilot':
@@ -1163,6 +1168,35 @@ class WebController:
                         self.control_dict['request_weather_set'] = new_set
                     self._values_cache = None
 
+        @self.socketio.on('set_switch_timer')
+        def handle_set_switch_timer(data):
+            """Arm / retarget / cancel the timed weather-set switch.
+
+            {hours: 0..6, target: set_name}. hours == 0 cancels. A changed
+            hour count restarts the countdown; a changed target while the
+            same hour count is armed retargets without restarting.
+            """
+            data = data or {}
+            try:
+                hours = int(data.get('hours', 0))
+            except (TypeError, ValueError):
+                return
+            target = data.get('target')
+            with self._dict_lock:
+                if hours <= 0:
+                    self._set_switch_timer = None
+                    return
+                available = self.control_dict.get('available_sets', [])
+                if hours > 6 or target not in available:
+                    return
+                t = self._set_switch_timer
+                if t and t['hours'] == hours:
+                    t['target'] = target
+                else:
+                    self._set_switch_timer = {
+                        'hours': hours, 'target': target,
+                        'end': time.time() + hours * 3600}
+
         @self.socketio.on('change_audio_source')
         def handle_change_audio_source(data):
             src = data.get('source')
@@ -1241,6 +1275,19 @@ class WebController:
             while self._emitter_running:
                 now = time.time()
 
+                # Timed set switch: fire when the countdown reaches zero.
+                with self._dict_lock:
+                    t = self._set_switch_timer
+                    if t and now >= t['end']:
+                        self._set_switch_timer = None
+                        if t['target'] in self.control_dict.get(
+                                'available_sets', []):
+                            self.control_dict['request_weather_set'] = \
+                                t['target']
+                            self._values_cache = None
+                            print(f"[WebController] Set-switch timer fired: "
+                                  f"-> {t['target']}")
+
                 # Push state updates at 5 Hz
                 if now - last_state_push >= state_interval:
                     last_state_push = now
@@ -1267,6 +1314,14 @@ class WebController:
                                     "ttls": self.control_dict.get('club_ttls', {}),
                                 },
                                 "dj": self.control_dict.get('dj_info'),
+                                "available_sets": list(
+                                    self.control_dict.get('available_sets', [])),
+                                "set_timer": (
+                                    {"hours": self._set_switch_timer['hours'],
+                                     "target": self._set_switch_timer['target'],
+                                     "remaining_s": max(
+                                         0.0, self._set_switch_timer['end'] - now)}
+                                    if self._set_switch_timer else None),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
                                 "ambient_sound": self.control_dict.get('ambient_sound'),
@@ -1375,15 +1430,24 @@ class WebController:
         # Do this in background thread - it can be slow
         def register_async():
             try:
-                # Use bind_ip if configured, otherwise auto-detect
+                # Use bind_ip if configured, otherwise auto-detect via the
+                # default route (gethostbyname can return a virtual adapter's
+                # IP — WSL/VirtualBox — on multi-homed machines)
                 if self.bind_ip:
                     local_ip = self.bind_ip
                 else:
-                    hostname = socket.gethostname()
                     try:
-                        local_ip = socket.gethostbyname(hostname)
-                    except:
-                        local_ip = '127.0.0.1'
+                        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        try:
+                            probe.connect(("8.8.8.8", 80))  # no packet sent
+                            local_ip = probe.getsockname()[0]
+                        finally:
+                            probe.close()
+                    except OSError:
+                        try:
+                            local_ip = socket.gethostbyname(socket.gethostname())
+                        except Exception:
+                            local_ip = '127.0.0.1'
 
                 # Create service info
                 service_type = "_http._tcp.local."
