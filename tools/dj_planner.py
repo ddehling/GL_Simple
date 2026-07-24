@@ -130,8 +130,8 @@ SECTION_COLORS = {
     "groove": QColor(60, 120, 90), "build": QColor(190, 150, 60),
     "breakdown": QColor(90, 70, 130),
 }
-COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "tags",
-        "rhythm", "structure"]
+COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "type",
+        "tags", "rhythm", "structure"]
 
 
 def track_genre(t):
@@ -420,8 +420,10 @@ class LibraryTreeModel(QAbstractItemModel):
             if c == 6:
                 return track_genre(t)
             if c == 7:
+                return os.path.splitext(t.path)[1].lstrip(".").lower()
+            if c == 8:
                 return " ".join(t.all_tags)
-        if role == Qt.ItemDataRole.ToolTipRole and c == 8:
+        if role == Qt.ItemDataRole.ToolTipRole and c == 9:
             sig = getattr(t, "rhythm_sig", None)
             if not sig:
                 return ("no rhythm signature yet - run the Rhythm pass "
@@ -446,6 +448,7 @@ class LibraryProxy(QSortFilterProxyModel):
         self.text = ""
         self.folder = None           # None = all folders
         self.tag = None              # None = all tags
+        self.hide_excluded = False   # hide 🚫 do-not-use tracks
         self.flat = False            # flat list: folder filter applies to
                                      # each track's REAL directory
 
@@ -461,16 +464,26 @@ class LibraryProxy(QSortFilterProxyModel):
         self.tag = tag
         self.invalidateFilter()
 
+    def set_hide_excluded(self, flag):
+        self.hide_excluded = bool(flag)
+        self.invalidateFilter()
+
     def _track_matches(self, m, f_row, t_row):
         fd = m.folders[f_row]
         t = fd["tracks"][t_row]
+        if self.hide_excluded and getattr(t, "excluded", False):
+            return False
         if self.flat and self.folder is not None \
                 and track_folder(t) != self.folder:
             return False
         if self.tag is not None and self.tag not in t.all_tags:
             return False
         hay = f"{t.title} {t.artist} {' '.join(t.all_tags)}".lower()
-        return self.text in hay
+        if self.text in hay:
+            return True
+        # Tree mode surfaces whole folders whose NAME matches the search.
+        return (not self.flat and self.tag is None and bool(self.text)
+                and self.text in fd["name"].lower())
 
     def lessThan(self, left, right):
         # Numeric columns sort numerically (bpm/dur/energy) - string
@@ -486,7 +499,7 @@ class LibraryProxy(QSortFilterProxyModel):
                 return (ta.duration_s or 0.0) < (tb.duration_s or 0.0)
             if c == 5:
                 return ta.energy_proxy() < tb.energy_proxy()
-            if c == 8:
+            if c == 9:
                 # rhythm column sorts by pattern density (busy breaks
                 # cluster together, sparse 4x4 grooves together)
                 def dens(t):
@@ -506,19 +519,15 @@ class LibraryProxy(QSortFilterProxyModel):
             name = m.folder_name(row)
             if self.folder is not None and name != self.folder:
                 return False
-            if self.tag is None and (not self.text
-                                     or self.text in name.lower()):
+            if self.tag is None and not self.hide_excluded \
+                    and (not self.text or self.text in name.lower()):
                 return True
             return any(self._track_matches(m, row, r)
                        for r in range(len(m.folders[row]["tracks"])))
         f_row = parent.row()
-        if not self.flat:
-            if self.folder is not None \
-                    and m.folder_name(f_row) != self.folder:
-                return False
-            if self.tag is None and self.text \
-                    and self.text in m.folder_name(f_row).lower():
-                return True
+        if not self.flat and self.folder is not None \
+                and m.folder_name(f_row) != self.folder:
+            return False
         return self._track_matches(m, f_row, row)
 
 
@@ -858,6 +867,13 @@ class LibraryTab(QWidget):
         self.tag_box.addItem("all tags")
         self.tag_box.currentTextChanged.connect(self._tag_filter)
         top.addWidget(self.tag_box, 1)
+        self.hide_excl_chk = QCheckBox("Hide 🚫")
+        self.hide_excl_chk.setToolTip(
+            "Hide do-not-use tracks from the list. They stay in the "
+            "library and keep their flag; untick to see them again.")
+        self.hide_excl_chk.toggled.connect(
+            lambda on: self.proxy.set_hide_excluded(on))
+        top.addWidget(self.hide_excl_chk)
         v.addLayout(top)
 
         # -- expert row: every pass individually (hidden behind ⚙ Passes) --
@@ -1014,9 +1030,10 @@ class LibraryTab(QWidget):
         # calls a dead object and the whole planner dies with an access
         # violation at first paint (bisected 2026-07-21; one lone
         # temporary delegate had only survived here by GC luck).
-        self.table.setItemDelegateForColumn(8, RhythmDelegate(self.table))
-        self.table.setItemDelegateForColumn(9, StripDelegate(self.table))
-        for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 150, 110, 260)):
+        self.table.setItemDelegateForColumn(9, RhythmDelegate(self.table))
+        self.table.setItemDelegateForColumn(10, StripDelegate(self.table))
+        for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 46, 150, 110,
+                               260)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
