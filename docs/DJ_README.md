@@ -23,13 +23,17 @@ python tools/dj_player.py --live --theme groove
 
 # Plan a set for tonight (native desktop app; audition every seam):
 python tools/dj_planner.py
+
+# Read back what the DJ actually did last night:
+python tools/dj_review.py --all
 ```
 
 ## Pieces
 
 | Piece | What it does |
 |---|---|
-| `tools/dj_scan.py` | Incremental scanner → `music/dj_library.sqlite3` (BPM + ms-accurate beat grid, downbeats, Camelot key, structure sections with busyness/vocalness, loops, mix points, loudness, live-pipeline cross-check) |
+| `tools/dj_scan.py` | Incremental scanner → `music/dj_library.sqlite3` (BPM + ms-accurate beat grid, downbeats, Camelot key, structure sections with busyness/vocalness, loops, mix points, loudness, live-pipeline cross-check). Finishes with a **beat-grid health line** — the loose-grid tail is the ceiling on everything the DJ can do, so it is now stated out loud (`--refine-grids` is the fix). `--retag` re-derives the library-relative auto tags from stored analysis in seconds, no audio decode |
+| `tools/dj_review.py` | **Reads the DJ's own night logs** (`logs/dj_*.jsonl`) — night summary, style/verdict report, `--terms` selection-term validation against what each seam measured, `--gates` why a technique never reached the dice, `--skips` what the operator kept rejecting. The system self-assessed 560 seams before anything read them; this is the loop closing |
 | `lib/dj/` | `features` analysis · `db` library · `rb_stretch` **Rubber Band R3 keylock — the DEFAULT tempo engine** (2026-07-22, picked by ear: constant pitch, warble-free, enables the ±1-semitone key rescue; needs `pip install -r requirements-dj-keylock.txt`, otherwise the engine resolves to varispeed automatically) · `varispeed` turntable tempo engine (pitch rides tempo, zero stretch artifacts; the brain bends BOTH decks to a meeting tempo so each song shifts half as far — under a fifth of a semitone on a typical seam) · `stretch` WSOLA keylock / `pv_stretch` phase-vocoder keylock / `rb_stretch` **Rubber Band keylock** (the Mixxx-grade library via `pylibrb` — wheels for Windows/Linux x86_64/macOS, `pip install -r requirements-dj-keylock.txt`; R2 "faster" engine by default — measured onset-preserving at every DJ rate at ~2% CPU, R3 via `DJ_RB_ENGINE=finer` trades attack crispness for tonal smoothness; falls back to varispeed with a warning when the wheel is missing, and the brain's planning semantics follow the *resolved* engine so transpose-rescue/dual-bend decisions always match the decks) (keylock opt-in via `DJ_STRETCH_ENGINE=wsola\|pv\|rubberband`) · `eq` LR4 3-band · `deck`/`submix` playback (ONE engine track, sample-accurate automation, sync PLL) · `brain` selection + transition planning · `themes` arcs · `setlist` compiler · `system` conductor |
 | `tools/dj_player.py` | Standalone: `--live`, `--wav out.wav --minutes N`, `--audition A B` (render one seam), `--file X --rate r`, `--setlist NAME` |
 | MusicBrainz enrichment | Built into the planner's **Library tab** — the "Enrich (MusicBrainz)" button pulls genre, release year/era, label and canonical identity (free, live, no key) for every track that lacks it, in a background thread with live progress; genres + decade fold into `TrackInfo.all_tags` and appear in the tag browser as they land, steering selection, flavor, and the Set Copilot. Stored per track (DB v9), incremental + resumable, ~1 track/sec. (Spotify audio-features and AcousticBrainz APIs are both dead as of 2024/2022 — MusicBrainz is the durable open source; local acoustic descriptors are the **Mood (ML)** pass below.) `tools/dj_enrich.py` remains as an optional CLI (`--limit/--force/--stats`) but the GUI needs no scripts. |
@@ -126,7 +130,19 @@ dj:
   (ignoring tempo gates if it must), buys time with a safety loop over
   the last phrase, and hands off with a clock-domain fade.
 - Audit everything before the night: planner seam audition, or
-  `dj_player --audition "trackA" "trackB"`.
+  `dj_player --audition "trackA" "trackB"`. Audit the night AFTER it with
+  `python tools/dj_review.py --all`.
+- THEMES ARE MEASURED, not asserted. `tools/_dj_theme_sim.py` runs the real
+  brain for N nights per theme and prints the pairwise track-set overlap
+  plus a dead-flavor-lever audit (a prefer/avoid tag that doesn't exist
+  inside that theme's own tempo window is a theme silently having no
+  opinion — it has happened twice). Run it after touching `themes.py`.
+  Current worst non-`all_night` pair: 0.20 Jaccard, down from 0.45.
+- The character AXES the themes steer on are library percentiles
+  (`TrackInfo.axes_rank`), not raw analyzer output. Raw `hardness` clipped
+  at 1.0 with 81% of a real library tied there, which made every
+  hardness target resolve to the same number; `features.hardness_raw` is
+  deliberately unbounded because it is only ever consumed through a rank.
 
 ## Tests (all self-checking, `ALL PASS` gates)
 
@@ -142,8 +158,21 @@ flag DB v11 + boundary filter + save-set invariant) · `_dj_rhythm_test`
 (rhythm signatures DB v13: synthetic known patterns → extraction, swing,
 pairwise clash/flam terms, tempo-multiple recovery, chips vocabulary).
 
+Sims (not pass/fail — they print distributions you read):
+`_dj_persona_sim` (are the personas audibly different DJs?) ·
+`_dj_theme_sim` (do the themes reach different music?).
+
 ## Gotchas (hard-won)
 
+- ONE NaN POISONS A WHOLE PERCENTILE. `np.percentile` over a list holding a
+  single NaN returns NaN, every `value >= NaN` is False, and the tag
+  vanishes library-wide. Ten near-silent tracks with a NaN energy axis
+  erased the `driving` and `mellow` tags from all 649 tracks while the
+  themes went on asking for them. `features._finite` is the guard; run
+  `dj_scan.py --retag` after any tagging-rule change.
+- A percentile rank over a heavily TIED axis is a lie in a different way:
+  mid-ranking the ties is honest ("everyone ~0.55") but it means the axis
+  steers nothing. Fix the axis, don't fix the rank.
 - The live `BeatDetector` quantizes BPM to integer 40 fps lags (±2.5%);
   measure tempo precision with `features.estimate_beat_grid`, never the
   live detector.

@@ -314,20 +314,27 @@ def _recalibrate_tags(db):
         db.conn.commit()
         return
     axes = {r["id"]: _json.loads(r["axes"]) for r in rows}
-    # The stored hardness axis clips at 1.0 and saturates on club music -
-    # rebuild an UNCLIPPED score from stored ingredients so percentiles
-    # actually discriminate.
+    # Hardness is stored UNCLIPPED (features.hardness_raw) precisely so
+    # these percentiles discriminate; recompute from stored ingredients
+    # anyway so libraries scanned before that change - where the column
+    # holds the old 0..1-clipped value with 81% of tracks tied at 1.0 -
+    # get honest hard/gentle tags without a full rescan.
+    from lib.dj.features import hardness_raw as _hardness_raw
     hard_raw = {}
     for r in rows:
         spec = _json.loads(r["spectral"] or "{}")
         mood = _json.loads(r["mood_hist"] or "{}")
-        hard_raw[r["id"]] = (2.5 * spec.get("bass_share", 0.33)
-                             + 0.8 * mood.get("peak", 0.0)
-                             + 0.25 * min((r["rhythm_density"] or 0) / 3.0,
-                                          1.5)
-                             + 0.4 * axes[r["id"]].get("speed", 0.5))
+        hard_raw[r["id"]] = _hardness_raw(spec, mood, r["rhythm_density"],
+                                          axes[r["id"]].get("speed", 0.5))
+    # ONE NaN POISONS THE WHOLE PERCENTILE: np.percentile over a list with
+    # a single NaN returns NaN, every `value >= NaN` comparison is False,
+    # and the tag vanishes library-wide. Ten near-silent tracks carrying a
+    # NaN energy axis is exactly why "driving"/"mellow" appeared on ZERO of
+    # 649 tracks (measured 2026-07-24) while hard/gentle - whose ingredient
+    # happens not to go NaN - tagged normally. Sanitize before percentiling.
+    from lib.dj.features import _finite
     def pct(vals, q):
-        return float(_np.percentile(list(vals), q))
+        return float(_np.percentile([_finite(v) for v in vals], q))
     hi_hard = pct(hard_raw.values(), 72)
     lo_hard = pct(hard_raw.values(), 28)
     hi_en = pct((a.get("energy", 0.5) for a in axes.values()), 72)
@@ -385,11 +392,11 @@ def _recalibrate_tags(db):
             tags.append("hard")
         elif hard_raw[r["id"]] < lo_hard:
             tags.append("gentle")
-        if a.get("energy", 0.5) >= hi_en:
+        if _finite(a.get("energy", 0.5)) >= hi_en:
             tags.append("driving")
-        elif a.get("energy", 0.5) <= lo_en:
+        elif _finite(a.get("energy", 0.5)) <= lo_en:
             tags.append("mellow")
-        if a.get("hypnotic", 0.5) >= hi_hyp:
+        if _finite(a.get("hypnotic", 0.5)) >= hi_hyp:
             tags.append("hypnotic")
         if mood.get("peak", 0.0) > 0.25:
             tags.append("peaky")

@@ -186,6 +186,21 @@ class DJSystem:
                 print(f"[DJ] pair memory: {n} remembered seams")
         except Exception as e:
             print(f"[DJ] pair memory skipped: {e}")
+        # LOOSE-GRID TAIL: the ceiling on tonight's repertoire, stated up
+        # front. A track under bpm_conf 0.5 can never be beat-matched, so
+        # every pair touching one is a fade - the single biggest driver of
+        # the fade share, and previously invisible until the night sounded
+        # flat. Only mentioned when it is actually shaping the night.
+        try:
+            lib = self.brain.library
+            loose = sum(1 for t in lib if (t.bpm_conf or 0.0) < 0.5)
+            if lib and loose > 0.12 * len(lib):
+                f = loose / len(lib)
+                print(f"[DJ] {loose}/{len(lib)} tracks have loose grids "
+                      f"(<0.50) - ~{100*(1-(1-f)**2):.0f}% of pairs can only "
+                      "fade. Run: python tools/dj_scan.py --refine-grids")
+        except Exception:
+            pass
         self._refresh_setlist_names()
         self._refresh_tags()
         if self.engine is not None:
@@ -1388,13 +1403,28 @@ class DJSystem:
                                              "swing_delta", "flam_ms",
                                              "conf")} if rt else None}
         self._urgent_exit = False
+        # THE CALIBRATION JOIN: the selection term breakdown and the style
+        # gate record ride into the log next to the seam this plan produced,
+        # so tools/dj_review.py can put every tuned constant beside what the
+        # seam actually MEASURED. Without these the log recorded outcomes
+        # with no inputs, and 560 real seams taught nothing.
+        diag = plan.get("diag") or {}
         self._log({"event": "armed", "style": plan["style"],
                    "next": self.next_track.title,
                    "rate": round(plan["rate"], 4),
                    "out_s": round(plan["out_s"], 2),
                    "in_s": round(plan["in_s"], 2),
                    "pair_score": plan["pair_score"],
-                   "blend_in_s": round((blend_at - self.submix.clock) / RATE, 1)})
+                   "blend_in_s": round((blend_at - self.submix.clock) / RATE, 1),
+                   "terms": {k: round(float(v), 4) for k, v in
+                             ((self._next_meta or {}).get("terms")
+                              or {}).items()},
+                   "gated": diag.get("gated") or {},
+                   "menu": diag.get("menu") or {},
+                   "fade_reason": diag.get("fade_reason"),
+                   "arc": round(self.arc_progress(), 3),
+                   "theme": self.brain.theme.name,
+                   "persona": self.brain.persona.name})
 
     def _note_pool_played(self, track):
         pool = self.brain.pool_ids

@@ -60,6 +60,87 @@ def cmd_scan(args):
     c = s["db_counts"]
     print(f"library now: {c['total']} tracks ({c['errors']} errored, "
           f"{c['missing']} missing)")
+    _grid_health(root)
+    return 0
+
+
+def _grid_health(root):
+    """Report the LOOSE-GRID TAIL, because it silently sets the ceiling on
+    everything the DJ can do and nothing used to say so.
+
+    A track under bpm_conf 0.5 forces long_fade on BOTH its seams - it can
+    never be beat-matched - and one under 0.7 takes the whole precision
+    style tier off the menu for every pair it touches. On the real library
+    that was 200 of 680 tracks (29%) and 253 (37%) respectively, which is
+    the actual reason 18% of logged seams were fades. `--refine-grids`
+    re-runs exactly these and promotes the ones that were only unlucky."""
+    from lib.dj.db import LibraryDB
+    db = LibraryDB(root)
+    try:
+        row = db.conn.execute(
+            "SELECT COUNT(*) n,"
+            " SUM(CASE WHEN bpm_conf < 0.5 THEN 1 ELSE 0 END) loose,"
+            " SUM(CASE WHEN bpm_conf < 0.7 THEN 1 ELSE 0 END) soft"
+            " FROM tracks WHERE error IS NULL AND bpm_conf IS NOT NULL"
+        ).fetchone()
+    finally:
+        db.close()
+    n = row["n"] or 0
+    if not n:
+        return
+    loose, soft = row["loose"] or 0, row["soft"] or 0
+    print(f"beat grids : {n - soft} confident | {soft - loose} soft "
+          f"(<0.70, no precision styles) | {loose} loose "
+          f"(<0.50, fade-only)")
+    if loose > n * 0.12:
+        # Pair math: with a fraction f of the library fade-only, the odds
+        # that a random pair touches one is 1-(1-f)^2 - it compounds fast.
+        f = loose / n
+        print(f"  -> {100*f:.0f}% fade-only means ~{100*(1-(1-f)**2):.0f}% of "
+              "PAIRS can never beat-match.")
+        print("     `python tools/dj_scan.py --refine-grids` re-runs them.")
+
+
+def cmd_retag(args):
+    """Re-derive the library-relative auto tags from data already stored.
+
+    No audio is touched - scan._recalibrate_tags just re-runs the
+    percentile thresholds over the analysis in the DB, so this is seconds
+    even on a big library. Worth running on its own whenever the tagging
+    rules change: the 2026-07-24 NaN fix, for instance, restored the
+    'driving' and 'mellow' tags that ten poisoned energy axes had silently
+    erased from EVERY track, and themes that lean on those words stay inert
+    until the stored tags catch up.
+
+    Only `auto_tags` is rewritten. User tags are a separate table and are
+    never touched."""
+    from lib.dj.db import LibraryDB
+    from lib.dj.scan import _recalibrate_tags
+    import json as _json
+    from collections import Counter
+    root = resolve_music_dir(args.dir)
+    db = LibraryDB(root)
+    before = Counter()
+    for r in db.conn.execute("SELECT auto_tags FROM tracks"):
+        for t in _json.loads(r["auto_tags"] or "[]"):
+            before[t] += 1
+    print(f"Re-deriving auto tags in {root}", flush=True)
+    _recalibrate_tags(db)
+    after = Counter()
+    n = 0
+    for r in db.conn.execute("SELECT auto_tags FROM tracks"):
+        n += 1
+        for t in _json.loads(r["auto_tags"] or "[]"):
+            after[t] += 1
+    db.close()
+    changed = [(t, before.get(t, 0), after.get(t, 0))
+               for t in sorted(set(before) | set(after))
+               if before.get(t, 0) != after.get(t, 0)]
+    print(f"{n} tracks | {len(after)} distinct tags | "
+          f"{len(changed)} tags changed count")
+    for t, b, a in sorted(changed, key=lambda r: -abs(r[2] - r[1]))[:20]:
+        mark = "  NEW" if not b else ("  GONE" if not a else "")
+        print(f"  {t:16} {b:4d} -> {a:4d}{mark}")
     return 0
 
 
@@ -141,6 +222,10 @@ def main():
     ap.add_argument("--refine-grids", action="store_true",
                     help="also re-analyze unchanged tracks with bpm_conf"
                          " < 0.75 (vote-weighted grid confidence)")
+    ap.add_argument("--retag", action="store_true",
+                    help="ONLY re-derive the library-relative auto tags "
+                         "from stored analysis (seconds, no audio decode) - "
+                         "run after the tagging rules change")
     ap.add_argument("--revocals", action="store_true",
                     help="ONLY re-run the ML vocal pass, upgrading tracks "
                          "measured at the old coarse 24s hop to the fine "
@@ -150,6 +235,8 @@ def main():
         return cmd_track(args)
     if args.list:
         return cmd_list(args)
+    if args.retag:
+        return cmd_retag(args)
     if args.revocals:
         return cmd_revocals(args)
     return cmd_scan(args)
