@@ -300,6 +300,19 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
+# Optional: Rubber Band keylock for the DJ decks (dj.stretch_engine's
+# default). Prebuilt Windows wheel, but kept out of requirements.txt
+# because Rubber Band is GPL. WITHOUT it the engine silently resolves to
+# varispeed and every DJ transition bends pitch with the tempo.
+Write-Host "      Setting up DJ keylock / Rubber Band (optional)..."
+& pip install -r requirements-dj-keylock.txt
+& python -c "import pylibrb" 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "      [DJ] keylock available (Rubber Band)" -ForegroundColor Green
+} else {
+    Write-Host "      [DJ] keylock unavailable - DJ falls back to varispeed" -ForegroundColor Yellow
+}
+
 # ---------------------------------------------------------------------
 # 9. Launch
 # ---------------------------------------------------------------------

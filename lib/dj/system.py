@@ -17,6 +17,7 @@ Public control surface (thread-safe, called from UI/main threads):
 """
 import json
 import os
+import sys
 import threading
 import time
 
@@ -121,6 +122,7 @@ class DJSystem:
         self._decoding = set()
         self._decoded_stems = {}     # track_id -> {stem: float16 array}
         self._grid_fix = {}          # track_id -> verified-tempo correction
+        self._tempo_pool = None      # worker process for _verify_tempo
         self._decode_lock = threading.Lock()
         self._pending = []           # queued control requests
         self._lock = threading.Lock()
@@ -305,6 +307,16 @@ class DJSystem:
             except Exception:
                 pass
         self._log({"event": "stop"})
+        if self._tempo_pool is not None:
+            try:
+                self._tempo_pool.stdin.close()      # EOF -> worker exits
+                self._tempo_pool.wait(timeout=2.0)
+            except Exception:
+                try:
+                    self._tempo_pool.kill()
+                except Exception:
+                    pass
+            self._tempo_pool = None
 
     @property
     def active(self):
@@ -513,6 +525,31 @@ class DJSystem:
                                      0.6 * (target - self._played_energy_ema)))
         return max(0.0, min(1.0, target))
 
+    def _render_lead(self):
+        """Frames the renderer is ahead of the speakers (render-ahead ring).
+        0 when there is no engine or no ring (offline renders, tests)."""
+        eng = self.engine
+        if eng is None:
+            return 0
+        try:
+            return eng.render_lead_frames()
+        except AttributeError:
+            return 0
+
+    def _vis_tel(self):
+        """Telemetry as HEARD - for anything driving visuals."""
+        return self.submix.telemetry_delayed(self._render_lead()) or {}
+
+    def _vis_clock(self):
+        """Submix clock as HEARD - for countdowns the visuals stage on."""
+        return self.submix.clock - self._render_lead()
+
+    def _vis_pos_s(self):
+        """Active deck playhead as HEARD (cf. _pos_s, which is render-time
+        and is what the planner/automation must keep using)."""
+        d = (self._vis_tel().get("decks") or {}).get(self.active_deck)
+        return d["time_s"] if d and d.get("ready") else None
+
     def live_energy(self):
         """Ground-truth energy of what's playing RIGHT NOW, 0..1.
 
@@ -527,7 +564,7 @@ class DJSystem:
         nothing useful is playing (caller falls back to the measured
         signal).
         """
-        tel = self.submix.telemetry or {}
+        tel = self._vis_tel()
         by_id = getattr(self, "_by_id", None) or {}
         num = den = 0.0
         for d in (tel.get("decks") or {}).values():
@@ -561,7 +598,7 @@ class DJSystem:
         stored grid at the live playhead - sample-tight where the DSP
         detector on the mix is laggy/quantized. Cheap enough to call per
         render frame. None when nothing usable is playing."""
-        tel = self.submix.telemetry or {}
+        tel = self._vis_tel()
         d = (tel.get("decks") or {}).get(self.active_deck)
         t = self.current
         if not d or t is None or not d.get("playing") or not d.get("ready"):
@@ -603,21 +640,27 @@ class DJSystem:
     def outstate_keys(self):
         """Published into outstate each tick - the visuals' coupling."""
         eta = None
-        if self.blend_at is not None and self.submix.clock < self.blend_at:
-            eta = (self.blend_at - self.submix.clock) / RATE
+        # HEARD-TIME countdowns. submix.clock is the RENDER head, which the
+        # render-ahead ring puts ~400ms in front of the speakers; staging a
+        # visual move on it fires the move most of a beat early. Everything
+        # the club director keys off must count down to when the audio is
+        # actually heard.
+        vclock = self._vis_clock()
+        if self.blend_at is not None and vclock < self.blend_at:
+            eta = (self.blend_at - vclock) / RATE
         # TRANSITION CHOREOGRAPHY: the visuals know the future. blend_eta
         # counts down to the overlap starting; swap_eta to the decisive
         # bass/melody handover - the club director stages moves on these
         # exact beats (no human DJ + VJ pair can do this).
         swap_eta = None
         if self.state == "armed" and self.swap_at is not None \
-                and self.submix.clock < self.swap_at:
-            swap_eta = (self.swap_at - self.submix.clock) / RATE
+                and vclock < self.swap_at:
+            swap_eta = (self.swap_at - vclock) / RATE
         # A pending operator MOMENT pre-arms the visuals the same way an
         # approaching seam does.
         m_clk = getattr(self, "_moment_clock", 0)
-        if m_clk > self.submix.clock:
-            m_eta = (m_clk - self.submix.clock) / RATE
+        if m_clk > vclock:
+            m_eta = (m_clk - vclock) / RATE
             eta = m_eta if eta is None else min(eta, m_eta)
         # GROUND-TRUTH MUSICAL DROPS: the DB knows every drop section of
         # every track. The DSP drop detector needs a QUIET episode to arm
@@ -626,7 +669,7 @@ class DJSystem:
         # (user-heard). Publish the next drop's ETA for visual pre-arm
         # and stamp the moment the playhead crosses one.
         drop_eta = None
-        pos = self._pos_s()
+        pos = self._vis_pos_s()
         if self.current is not None and pos is not None:
             cid, moments = getattr(self, "_drops_cache", (None, []))
             if cid != self.current.id:
@@ -1985,6 +2028,70 @@ class DJSystem:
         return [{"at": blend_at, "cmd": "fx_play", "samples": bed,
                  "gain": 1.0}]
 
+    def _verify_in_worker(self, mono):
+        """Run the beat-grid measurement in the lib.dj.tempo_worker child.
+
+        One long-lived subprocess, started on first use and kept for the
+        night (a cold interpreter would otherwise land on every seam).
+        Blocking here is free and is the whole point: this runs on the
+        decode background thread, and waiting on a pipe RELEASES the GIL
+        so the audio callback keeps its deadline.
+
+        Deliberately NOT multiprocessing - see lib/dj/tempo_worker.py for
+        why (spawn/forkserver both re-import the parent's __main__, i.e.
+        all of Stories_OGL, inside the helper).
+
+        Any failure falls back to computing in-process: a rare dropout
+        beats losing the tempo check that keeps seams from flamming.
+        """
+        import pickle
+        import struct
+        hdr = struct.Struct("<Q")
+        try:
+            proc = self._tempo_pool
+            if proc is None or proc.poll() is not None:
+                import subprocess
+                repo = os.path.dirname(os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))))
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "lib.dj.tempo_worker"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    cwd=repo)
+                self._tempo_pool = proc
+            blob = pickle.dumps(np.ascontiguousarray(mono),
+                                protocol=pickle.HIGHEST_PROTOCOL)
+            proc.stdin.write(hdr.pack(len(blob)))
+            proc.stdin.write(blob)
+            proc.stdin.flush()
+            head = proc.stdout.read(hdr.size)
+            if not head or len(head) < hdr.size:
+                raise RuntimeError("tempo worker closed the pipe")
+            (n,) = hdr.unpack(head)
+            payload = b""
+            while len(payload) < n:
+                part = proc.stdout.read(n - len(payload))
+                if not part:
+                    raise RuntimeError("tempo worker truncated its reply")
+                payload += part
+            res = pickle.loads(payload)
+            if isinstance(res, tuple) and len(res) == 2 and res[0] == "error":
+                raise RuntimeError(res[1])
+            return res
+        except Exception as e:
+            print(f"[DJ] tempo verify worker unavailable ({type(e).__name__}"
+                  f": {e}); measuring in-process")
+            try:
+                if self._tempo_pool is not None:
+                    self._tempo_pool.kill()
+            except Exception:
+                pass
+            self._tempo_pool = None
+            try:
+                from lib.dj.features import verify_tempo_window
+                return verify_tempo_window(mono)
+            except Exception:
+                return None
+
     def _verify_tempo(self, track, samples):
         """TRUST BUT VERIFY the stored tempo against the ACTUAL audio.
 
@@ -1997,8 +2104,10 @@ class DJSystem:
         rescale the planned rate. Local tempo on a groove window is a far
         easier measurement than the scanner's whole-track problem (no
         intros, no tempo ramps), so a confident local read outranks the
-        stored value. Runs on the decode background thread - zero cost to
-        the audio path."""
+        stored value. Dispatched from the decode background thread to a
+        WORKER PROCESS (see _verify_in_worker) - it is ~1s of solid CPU
+        landing seconds before a seam, and in-process it held the GIL long
+        enough to starve the audio callback and drop the transition."""
         try:
             if samples is None or track.bpm <= 0:
                 return
@@ -2018,38 +2127,17 @@ class DJSystem:
             a0, b0 = int(t0 * RATE), int((t0 + span) * RATE)
             mono = (samples[a0:b0].mean(axis=1) if samples.ndim == 2
                     else samples[a0:b0]).astype(np.float32)
-            from lib.dj.features import (frame_track, _onset_channels,
-                                         estimate_beat_grid, HOP, CHUNK)
-            # GIL-FRIENDLY framing: one 80s frame_track call holds the
-            # GIL in ~190ms batches (measured 1.15s total) - enough to
-            # underrun the Python audio callback. Chunk into 4s pieces
-            # (~60ms holds) with real sleeps between, each chunk padded
-            # 1s and trimmed so the causal band smoothing is warmed up -
-            # the concatenated frames are IDENTICAL to the single call
-            # (no boundary onsets to bias the tempo vote).
-            F, PAD = 160, 40                 # frames per chunk / warm-up
-            n_total = max(0, (len(mono) - CHUNK) // HOP + 1)
-            fb, fc = [], []
-            k = 0
-            while k < n_total:
-                nf = min(F, n_total - k)
-                pre = min(PAD, k)
-                a = (k - pre) * HOP
-                b = a + (pre + nf - 1) * HOP + CHUNK
-                if b > len(mono):
-                    break
-                bb, cc = frame_track(np.ascontiguousarray(mono[a:b]))
-                fb.append(bb[pre:])
-                fc.append(cc[pre:])
-                k += nf
-                time.sleep(0.015)            # air for the audio callback
-            if not fb:
+            # OFF THE GIL ENTIRELY. This measurement is ~1s of solid CPU,
+            # and it lands in the seconds before a seam (predecode time).
+            # In-process - even chunked with sleeps - it starved the audio
+            # callback: measured 123-323ms of callback block with this
+            # function overlapping, i.e. an audible dropout right at the
+            # transition. A worker PROCESS has its own GIL, so the parent
+            # pays only the pickle of the window.
+            res = self._verify_in_worker(mono)
+            if res is None:
                 return
-            bands = np.concatenate(fb)
-            onset_broad, _ob, onset_perc, _nov = _onset_channels(bands)
-            time.sleep(0.02)
-            grid, bpm, conf, _beats = estimate_beat_grid(
-                onset_broad + 0.5 * onset_perc)
+            grid, bpm, conf = res
             if not grid or conf < 0.5 or bpm <= 0:
                 return
             # Fold the measurement into the stored value's octave (a
@@ -2124,7 +2212,12 @@ class DJSystem:
             for i in range(0, n, step):
                 out[i:i + step] = np.frombuffer(
                     src[i:i + step], dtype=np.float32)
-                time.sleep(0)                    # yield to the audio callback
+                # sleep(0) only offers to yield - CPython can hand the GIL
+                # straight back to this thread, so the audio callback never
+                # gets in. A real (tiny) sleep forces the release. ~25
+                # chunks on a 5-min track = ~12ms added to a background
+                # decode that has ~20s of lead.
+                time.sleep(0.0005)               # yield to the audio callback
             return out.reshape(-1, 2)
         except Exception:
             from lib.dj.features import decode_file_stereo

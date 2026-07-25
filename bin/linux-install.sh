@@ -406,6 +406,23 @@ if ! python -c "import sounddevice" 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------
+# Optional: Rubber Band keylock for the DJ decks (dj.stretch_engine's
+# default). Prebuilt wheel on Linux x86_64, so this is a plain pip install;
+# non-fatal because other arches (Pi) would have to build from source.
+# WITHOUT it the engine silently resolves to varispeed and every DJ
+# transition bends pitch with the tempo — kept out of requirements.txt
+# only because Rubber Band is GPL. See requirements-dj-keylock.txt.
+# ---------------------------------------------------------------------
+echo "      Setting up DJ keylock / Rubber Band (optional)..."
+python -m pip install -r requirements-dj-keylock.txt \
+    || echo "      [DJ] pylibrb install failed; the DJ will run varispeed (pitch rides tempo)"
+if python -c "import pylibrb" 2>/dev/null; then
+    echo "      [DJ] keylock available (Rubber Band)"
+else
+    echo "      [DJ] keylock unavailable — DJ falls back to varispeed"
+fi
+
+# ---------------------------------------------------------------------
 # Optional: Bluetooth audio sink ("lucifera") — lets a phone stream audio
 # in over Bluetooth A2DP as a live input source. Linux only; non-fatal if
 # any part fails (the app degrades to "Bluetooth unavailable" in the UI).

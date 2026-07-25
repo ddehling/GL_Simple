@@ -32,6 +32,8 @@ def resolve_music_dir(configured=""):
 
 
 _rb_available = None
+_rb_warned = False
+_rb_reason = ["not installed"]
 
 
 def stretch_engine_name():
@@ -54,12 +56,24 @@ def stretch_engine_name():
     per-process; only the pylibrb availability probe is cached."""
     name = os.environ.get("DJ_STRETCH_ENGINE", "rubberband").lower()
     if name in ("rubberband", "rb"):
-        global _rb_available
+        global _rb_available, _rb_warned
         if _rb_available is None:
             try:
                 import pylibrb                            # noqa: F401
                 _rb_available = True
-            except Exception:
+            except Exception as e:
                 _rb_available = False
+                _rb_reason[0] = f"{type(e).__name__}: {e}"
+        if not _rb_available and not _rb_warned:
+            # ANNOUNCE the downgrade exactly once. This resolution happens
+            # BEFORE deck._stretch_engine sees the name, so that function's
+            # own warning branch is unreachable - without this the whole
+            # night silently plays turntable-style (pitch riding tempo on
+            # every seam) with nothing in the log to say why.
+            _rb_warned = True
+            print(f"[DJ] keylock unavailable ({_rb_reason[0]}) - falling "
+                  f"back to varispeed; pitch will ride tempo on every "
+                  f"transition. Fix: pip install -r "
+                  f"requirements-dj-keylock.txt")
         return "rubberband" if _rb_available else "vari"
     return name

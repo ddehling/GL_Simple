@@ -188,6 +188,28 @@ _CHROMA_PCS = (np.round(12.0 * np.log2(np.maximum(_FREQ_BINS[_CHROMA_MASK], 1.0)
                                        / 440.0)) % 12).astype(np.int64)
 
 
+def verify_tempo_window(mono):
+    """Beat-grid read of ONE groove window - the whole CPU burst behind
+    DJSystem._verify_tempo, packaged so it can run in a worker PROCESS.
+
+    Lives here rather than in system.py so a spawned child imports only the
+    analysis module (no audio engine, no brain, no sqlite). In-process this
+    holds the GIL for ~1s, which is long enough to starve the audio callback
+    and drop a seam; in its own process it costs the parent nothing but the
+    pickle of `mono` (~11MB for a 64s window).
+
+    `mono` is float32 mono at RATE. Returns (grid, bpm, conf) or None.
+    """
+    if mono is None or len(mono) < CHUNK:
+        return None
+    bands, _chroma = frame_track(np.ascontiguousarray(mono))
+    onset_broad, _ob, onset_perc, _nov = _onset_channels(bands)
+    grid, bpm, conf, _beats = estimate_beat_grid(onset_broad + 0.5 * onset_perc)
+    if not grid or bpm <= 0:
+        return None
+    return grid, float(bpm), float(conf)
+
+
 def frame_track(samples):
     """Per-frame features at 40 fps: smoothed band powers [T,32] (identical
     to the live analyzer's raw_bands) and A-origin chroma [T,12]."""

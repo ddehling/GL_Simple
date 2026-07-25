@@ -21,6 +21,7 @@ NOT-YET-FIRED event of that transaction - the abort path for an armed
 transition (already-fired events are the caller's to unwind).
 """
 import os
+from collections import deque
 from queue import SimpleQueue
 
 import numpy as np
@@ -29,6 +30,7 @@ from lib.dj.deck import Deck
 
 RATE = 44100
 SUB_BLOCK = 256
+TEL_HIST_FRAMES = RATE * 2       # 2s of telemetry history for the visuals
 # Loop: position error e, rate trim u, de/dt = -u + bias. With u = Kp*e +
 # Ki*int(e): e'' = -Kp e' - Ki e, damping zeta = Kp / (2 sqrt(Ki)). These
 # values give zeta ~0.8 (no ringing) with Kp = beat/TC ~0.25 (tau ~4s,
@@ -70,6 +72,7 @@ class DJSubmix:
         self._cal_last = None    # clock of the last pre-audible resnap
         self._cal_applied = 0.0  # cumulative base-rate correction (frac)
         self.telemetry = {}      # replaced wholesale each read()
+        self._tel_hist = deque() # (clock, snapshot) for telemetry_delayed
 
     # -- control-thread API ----------------------------------------------------
     def post(self, event):
@@ -451,7 +454,38 @@ class DJSubmix:
         # Block RMS for the seam self-assessment (dead-air / hole detection).
         snap["rms"] = float(np.sqrt(np.mean(out ** 2))) if len(out) else 0.0
         self.telemetry = snap
+        # Keep a short history so the VISUALS can read the state that is
+        # being HEARD rather than the one being rendered. read() runs on the
+        # render-ahead thread (lib/audio_engine.py), which works ahead of
+        # the speakers by the ring depth; without this the club would beat-
+        # flash and stage transition moves a beat early. Control/planning
+        # code keeps using `telemetry` (render time) - events are scheduled
+        # on the render clock and must stay there.
+        self._tel_hist.append((self.clock, snap))
+        while len(self._tel_hist) > 2 and \
+                self.clock - self._tel_hist[0][0] > TEL_HIST_FRAMES:
+            self._tel_hist.popleft()
         return out
+
+    def telemetry_delayed(self, frames):
+        """Telemetry as of `frames` before the render head - i.e. what the
+        room is hearing now. Falls back to the newest snapshot when the
+        history does not reach that far back (startup, or no delay)."""
+        if frames <= 0 or not self._tel_hist:
+            return self.telemetry
+        target = self.clock - frames
+        # NEAREST snapshot, not the last one at-or-before `target`: history
+        # is one entry per render block (~46ms), so "last before" is late by
+        # up to a full block every time. Nearest turns that systematic lag
+        # into a +/- half-block error centred on zero.
+        best, best_err = None, None
+        for clk, snap in self._tel_hist:
+            err = abs(clk - target)
+            if best_err is None or err < best_err:
+                best, best_err = snap, err
+            elif clk > target:
+                break                        # history is ordered; past it
+        return best if best is not None else self.telemetry
 
     def _snapshot(self):
         decks = {}

@@ -11,6 +11,8 @@ no locks needed anywhere.
 
 import itertools
 import queue
+import sys
+import threading
 import time
 import numpy as np
 import miniaudio
@@ -20,6 +22,24 @@ SAMPLE_RATE   = 44100
 CHANNELS      = 2
 FORMAT        = miniaudio.SampleFormat.FLOAT32
 CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
+
+# RENDER-AHEAD RING. The device callback used to RENDER the mix inline, so
+# it had to finish a whole buffer within one buffer-duration or the DAC ran
+# dry - and it is Python, so it also had to win the GIL against the render
+# loop, the web preview and the DMX threads to get started at all. Measured
+# in the show on a 4-core N150: 6.3% of blocks starved, up to 191ms of that
+# spent purely waiting to be scheduled.
+#
+# Now a producer thread renders ahead into this ring and the callback only
+# copies bytes out of it, so a late producer eats into slack instead of
+# punching a hole in the output. The cost is latency: a control action
+# (skip, cue, a scheduled DJ event) is heard RING_TARGET_MS later than
+# before, on top of the device's own buffer.
+RING_TARGET_MS   = 400        # how far ahead we render = the jitter we absorb
+RING_CAPACITY_MS = 700        # ring size; > target so the producer has room
+RENDER_BLOCK     = 2048       # frames per producer pass (~46ms)
+RING_TARGET   = SAMPLE_RATE * RING_TARGET_MS // 1000
+RING_CAPACITY = SAMPLE_RATE * RING_CAPACITY_MS // 1000
 
 
 class _MemTrack:
@@ -317,6 +337,53 @@ class AudioEngine:
         # thread. Lets the audio analyzer react to the show's OWN output (the
         # "internal" source) without a device. None = no tap (zero cost).
         self._monitor_tap = None
+        # Audio-callback deadline telemetry (see _mixer). Read via
+        # callback_stats() to check whether this machine can actually
+        # render the current mix in realtime.
+        self._cb_count = 0
+        self._cb_starved = 0
+        self._cb_short_frames = 0
+        self._cb_min_depth = RING_CAPACITY
+        self._cb_last_warn = 0.0
+        # Render-ahead ring (see RING_TARGET_MS). Written by the producer
+        # thread, read by the device callback; _ring_w / _ring_r are
+        # monotonic frame counts, so depth is just w - r.
+        self._ring = None
+        self._ring_w = 0
+        self._ring_r = 0
+        self._ring_lock = threading.Lock()
+        self._ring_stop = threading.Event()
+        self._producer = None
+
+    def callback_stats(self):
+        """Render-ahead health since start:
+        {callbacks, starved, short_frames, min_depth_ms}.
+        `starved` counts callbacks the ring could not fill completely -
+        i.e. real holes in the output. `min_depth_ms` is how close the ring
+        ever came to running dry; if it stays well above zero the producer
+        is keeping up comfortably."""
+        return {"callbacks": self._cb_count,
+                "starved": self._cb_starved,
+                "short_frames": self._cb_short_frames,
+                "min_depth_ms": self._cb_min_depth * 1000.0 / SAMPLE_RATE}
+
+    def render_lead_frames(self):
+        """How far AHEAD of the speakers the renderer currently is, in
+        frames - i.e. how much finished audio is sitting in the ring.
+
+        Anything that drives visuals from render-time state (the DJ's deck
+        telemetry, its transition/drop ETAs) must subtract this, or it fires
+        a beat early. The monitor tap does NOT need it: that already runs on
+        the consumer side.
+
+        Deliberately excludes the device's own buffer. That lead existed
+        before the ring and the visuals were tuned against it; this reports
+        only what the ring ADDED, so compensating restores the previous
+        relationship exactly rather than introducing a new one."""
+        if self._ring is None:
+            return 0
+        with self._ring_lock:
+            return max(0, self._ring_w - self._ring_r)
 
     def set_monitor_tap(self, fn):
         """Register (or clear with None) a callable invoked with each mixed
@@ -325,25 +392,145 @@ class AudioEngine:
         self._monitor_tap = fn
 
     # ------------------------------------------------------------------
+    # Render-ahead ring: producer thread renders, device callback copies.
+    # ------------------------------------------------------------------
+
+    def _render_ahead(self):
+        """Keep RING_TARGET frames of finished mix queued up.
+
+        Runs on its own thread, so a slow pass here (a heavy DJ blend, a GIL
+        stall) drains the ring instead of dropping audio. Only falls behind
+        audibly if it cannot sustain realtime on average."""
+        gen = self._mixer()
+        next(gen)
+        while not self._ring_stop.is_set():
+            with self._ring_lock:
+                depth = self._ring_w - self._ring_r
+            if depth >= RING_TARGET:
+                # Full enough; nap briefly rather than spin (which would
+                # burn a core and hold the GIL for no reason).
+                self._ring_stop.wait(0.004)
+                continue
+            try:
+                raw = gen.send(RENDER_BLOCK)
+            except StopIteration:
+                return
+            chunk = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
+            n = len(chunk)
+            with self._ring_lock:
+                w = self._ring_w % RING_CAPACITY
+                k = min(n, RING_CAPACITY - w)
+                self._ring[w:w + k] = chunk[:k]
+                if k < n:
+                    self._ring[:n - k] = chunk[k:]
+                self._ring_w += n
+
+    def _device_feed(self):
+        """The actual miniaudio callback: copy out of the ring, nothing else.
+
+        No mixing, no allocation beyond one output block - so it needs the
+        GIL for microseconds instead of the ~150ms the old inline renderer
+        held it for, and it makes its deadline even while the show's Python
+        threads are busy."""
+        required = yield b""
+        while True:
+            out = np.zeros((required, CHANNELS), dtype=np.float32)
+            with self._ring_lock:
+                depth = self._ring_w - self._ring_r
+                n = min(required, depth)
+                if n > 0:
+                    r = self._ring_r % RING_CAPACITY
+                    k = min(n, RING_CAPACITY - r)
+                    out[:k] = self._ring[r:r + k]
+                    if k < n:
+                        out[k:n] = self._ring[:n - k]
+                    self._ring_r += n
+                left = depth - n
+            self._cb_count += 1
+            if left < self._cb_min_depth:
+                self._cb_min_depth = left
+            if n < required:
+                # The ring ran dry: this block is part silence. The only
+                # remaining cause is the producer failing to sustain
+                # realtime, which is a real "this machine cannot render
+                # this mix" signal rather than a scheduling accident.
+                self._cb_starved += 1
+                self._cb_short_frames += required - n
+                now = time.perf_counter()
+                if now - self._cb_last_warn > 10.0:
+                    self._cb_last_warn = now
+                    print(f"[AudioEngine] ring underrun: filled {n}/{required} "
+                          f"frames ({self._cb_starved}/{self._cb_count} "
+                          f"callbacks, {self._cb_short_frames} frames lost) - "
+                          f"the render thread cannot keep up")
+            # Tap on the CONSUMER side so the analyzer - and every
+            # audio-reactive shader - sees what is being played now, not
+            # what was rendered RING_TARGET_MS ago.
+            tap = self._monitor_tap
+            if tap is not None:
+                try:
+                    tap(out)
+                except Exception:
+                    pass
+            required = yield out.tobytes()
+
+    # ------------------------------------------------------------------
     # Public API (safe to call from any thread)
     # ------------------------------------------------------------------
 
     def start(self):
+        # GIL LATENCY: _mixer runs on miniaudio's callback thread and has a
+        # hard deadline (one buffer, nothing rendered ahead - being late IS
+        # a dropout). It competes for the GIL with pure-Python worker
+        # threads (the DJ brain's step(), the planner, web handlers), and
+        # CPython hands the GIL out with no priority: at the 5ms default a
+        # memcpy-sized callback measured 264ms late with 3 pure-Python
+        # threads running, and a rendering callback far worse (every
+        # mid-render release re-queues behind them). Shortening the switch
+        # interval bounds that wait - measured on this box, worst-case
+        # lateness fell 510ms -> 32ms going from 5ms to 0.5ms. The cost is
+        # more frequent thread switches; the mix loop is numpy-heavy (which
+        # drops the GIL anyway), so it is not measurably slower.
+        if sys.getswitchinterval() > 0.0005:
+            sys.setswitchinterval(0.0005)
+
+        self._ring = np.zeros((RING_CAPACITY, CHANNELS), dtype=np.float32)
+        self._ring_w = self._ring_r = 0
+        self._ring_stop.clear()
+        self._producer = threading.Thread(target=self._render_ahead,
+                                          daemon=True, name="audio-render")
+        self._producer.start()
+        # PRE-FILL before the device opens: starting with an empty ring
+        # would hand the DAC a ring-target's worth of silence (and count
+        # every one of those blocks as an underrun).
+        deadline = time.perf_counter() + 5.0
+        while time.perf_counter() < deadline:
+            with self._ring_lock:
+                if self._ring_w - self._ring_r >= RING_TARGET:
+                    break
+            time.sleep(0.01)
+
         self._device = miniaudio.PlaybackDevice(
             output_format=FORMAT,
             nchannels=CHANNELS,
             sample_rate=SAMPLE_RATE,
             buffersize_msec=200,
         )
-        gen = self._mixer()
+        gen = self._device_feed()
         next(gen)   # advance to first yield so miniaudio can send(framecount)
         self._device.start(gen)
 
     def stop(self):
+        # Device first: once it is closed nothing reads the ring, so the
+        # producer can exit without racing a callback.
         if self._device:
             self._device.stop()
             self._device.close()
             self._device = None
+        self._ring_stop.set()
+        if self._producer is not None:
+            self._producer.join(timeout=2.0)
+            self._producer = None
 
     def play_ambient(self, path, skip_seconds: float = 0.0,
                      fade_in: float = FADE_IN, fade_out: float = FADE_OUT,
@@ -548,16 +735,11 @@ class AudioEngine:
 
             buf = (narr_buf + other_buf) * self.master_volume
 
-            # Feed the monitor tap (audio analyzer's "internal" source) the
-            # final mix the show is about to play. Guarded + best-effort so a
-            # slow/throwing consumer can never stall the audio callback.
-            tap = self._monitor_tap
-            if tap is not None:
-                try:
-                    tap(buf)
-                except Exception:
-                    pass
-
+            # NOTE: the monitor tap is NOT fired here. This generator runs on
+            # the render-ahead thread, up to RING_TARGET_MS before the audio
+            # is actually heard; tapping here would make every audio-reactive
+            # shader lead the speakers by that much. _device_feed taps the
+            # block it hands the device instead.
             required_frames = yield buf.tobytes()
 
 

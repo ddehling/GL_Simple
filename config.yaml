@@ -39,6 +39,27 @@ audio:
   loopback_device: ""   # force a specific loopback/monitor by name (empty = auto per-OS)
   device_name: "TONOR"  # Microphone device name when source: microphone (tools/sound_editor.py)
 
+dj:
+  # Tempo engine for the decks. MEASURED on this machine (Intel N150,
+  # 4 cores) as % of one core spent inside the audio callback during a
+  # two-deck blend - the moment that has to stay under the deadline:
+  #   vari              23%   no keylock (pitch rides tempo on every seam)
+  #   rubberband-crisp  27%   R2 keylock - constant pitch, ~varispeed cost
+  #   rubberband        43%   R3 keylock - warble-free, but nearly 2x R2
+  # R3 ("rubberband") is the upstream default and the one picked by ear.
+  # Measured in the REAL app, DJ running, 6 forced transitions:
+  #   before the render-ahead ring, R3  44/699 blocks starved (6.3%)
+  #   before the render-ahead ring, R2   2/663 blocks starved (0.3%)
+  #   with the ring (lib/audio_engine.py), R3   0 underruns
+  # The ring took rendering off the device callback, so R3's cost no
+  # longer has to fit inside one buffer deadline - it only has to average
+  # under realtime, which it does. "rubberband-crisp" (R2) remains the
+  # cheap fallback if a heavier project ever pushes the average up.
+  # NOTE: measure this in the show, never standalone - a standalone bench
+  # understates in-callback time ~4x because it lacks the GL/web/DMX
+  # threads competing for the GIL.
+  stretch_engine: "rubberband"
+
 midi:
   enabled: true             # Korg nanoKontrol2 live control for the Club / DJ set
   device_name: "nanoKONTROL2"  # Partial, case-insensitive MIDI device name match
