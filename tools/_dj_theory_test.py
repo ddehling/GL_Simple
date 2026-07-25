@@ -180,13 +180,20 @@ def main():
     # A real DJ's "deep hypnotic night" and "hard driving night" are not
     # the same tracklist. Same seed, flavored themes: low overlap, and
     # each set's tracks measurably lean toward its axis targets.
+    # RANKED axes, not raw. The raw values compress into the top of their
+    # range on any real collection (hardness sat at exactly 1.0 for 81% of
+    # a 649-track library), which is why this check used to excuse itself
+    # with "axis means saturate on some libraries" and assert only that the
+    # lean wasn't INVERTED. axes_rank is the library percentile the brain
+    # actually steers on, so the separation is now a real number and the
+    # assertion can be a real one.
     def _axis_mean(theme_name, axis, seed=2):
         th = get_theme(theme_name)
         entries = suggest_set(library, th, minutes=45, seed=seed)
         ids = [e["track_id"] for e in entries]
         by_id = {t.id: t for t in library}
-        vals = [by_id[i].axes.get(axis) for i in ids
-                if i in by_id and by_id[i].axes.get(axis) is not None]
+        vals = [by_id[i].axes_rank.get(axis) for i in ids
+                if i in by_id and by_id[i].axes_rank.get(axis) is not None]
         return set(ids), float(np.mean(vals)) if vals else 0.5
     hyp_ids, hyp_hypnotic = _axis_mean("hypnotic_deep", "hypnotic")
     hard_ids, hard_hardness = _axis_mean("hard_drive", "hardness")
@@ -194,14 +201,11 @@ def main():
     _, hard_hypnotic = _axis_mean("hard_drive", "hypnotic")
     overlap = len(hyp_ids & hard_ids) / max(min(len(hyp_ids),
                                                 len(hard_ids)), 1)
-    # Axis means saturate on some libraries (whole collection ~0.9
-    # hypnotic) - there the 0% track overlap IS the differentiation and
-    # a +/-0.05 axis delta is noise. Fail only on a clearly INVERTED lean.
     check("[PRACTICE] flavored themes pick different music",
-          overlap <= 0.5 and hyp_hypnotic >= hard_hypnotic - 0.06
-          and hard_hardness >= hyp_hardness - 0.06,
-          f"track overlap {overlap * 100:.0f}%; hypnotic axis "
-          f"{hyp_hypnotic:.2f} vs {hard_hypnotic:.2f}, hardness "
+          overlap <= 0.5 and hyp_hypnotic > hard_hypnotic
+          and hard_hardness > hyp_hardness,
+          f"track overlap {overlap * 100:.0f}%; hypnotic rank "
+          f"{hyp_hypnotic:.2f} vs {hard_hypnotic:.2f}, hardness rank "
           f"{hard_hardness:.2f} vs {hyp_hardness:.2f}")
 
     # Live flavor override shifts picks the same way mid-set.

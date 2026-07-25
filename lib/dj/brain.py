@@ -17,6 +17,7 @@ import re
 import time
 
 from lib.dj import stretch_engine_name
+from lib.dj.features import _finite, hardness_raw
 from lib.dj.rhythm import (prep_signature, rhythm_terms, seam_rhythm,
                            tempo_mult_for)
 from lib.dj.themes import adapt_theme
@@ -322,15 +323,44 @@ def load_library(db):
         # vocal and speed stay raw (they carry absolute meaning: demucs
         # duration fraction / a fixed bpm mapping). "energy" rides the
         # existing energy_rank so axis_targets on it rank too.
-        # MID-RANK on ties: raw hardness CLIPS at 1.0 (~90% of this library
-        # is tied there) and bisect_left hands the whole tied blob the
-        # first-occurrence rank (~0.1) - a statistical lie that inverted
-        # hard/gentle targets. Ties belong mid-distribution; a degenerate
-        # axis then honestly reads "everyone ~0.55", not "everyone soft".
-        for axis in ("hypnotic", "hardness"):
-            vals = sorted((t.axes.get(axis) or 0.5) for t in out)
+        # MID-RANK on ties: bisect_left hands a tied blob the
+        # first-occurrence rank, which for a degenerate axis is a
+        # statistical lie ("everyone is soft"); ties belong mid-
+        # distribution. Kept as the honest behavior for any axis that
+        # still ties heavily.
+        #
+        # HARDNESS is recomputed from its INGREDIENTS rather than read
+        # from the stored axis. features.hardness_raw is unbounded by
+        # design, but libraries scanned before 2026-07-24 hold the old
+        # 0..1-CLIPPED value, where 81% of a real 649-track library sat
+        # at exactly 1.0 - ranking that blob gave four fifths of the
+        # collection the identical rank 0.60, so hard_drive's
+        # hardness-0.9 target and gentle_organic's hardness-0.2 target
+        # resolved to the SAME score for most candidates. Recomputing
+        # here means every existing library gets a live lever back
+        # without re-analyzing a single file; a rescan just makes the
+        # stored column agree.
+        for t in out:
+            t._hard_raw = hardness_raw(t.spectral, t.mood_hist,
+                                       t.rhythm_density,
+                                       _finite(t.axes.get("speed"), 0.5))
+        # VOCAL ranks too. The raw axis is a demucs duration fraction with
+        # a MEDIAN OF ZERO on a real library (57% of tracks are wholly
+        # instrumental) and a p90 of 0.44, so vocal_journey's authored
+        # `axis_targets={"vocal": 0.6}` sat above the 90th percentile -
+        # nothing to find, and every instrumental scored nearly the same as
+        # every singer. Ranked, a target of 0.9 means "the most sung
+        # material this collection has". The RAW value stays what every
+        # vocal-clash gate reads (_vocal_at, the acapella premise, the
+        # persona pull): those need absolute presence, not a ranking.
+        for axis, getter in (("hypnotic",
+                              lambda t: _finite(t.axes.get("hypnotic"), 0.5)),
+                             ("vocal",
+                              lambda t: _finite(t.axes.get("vocal"), 0.0)),
+                             ("hardness", lambda t: t._hard_raw)):
+            vals = sorted(getter(t) for t in out)
             for t in out:
-                v = t.axes.get(axis) or 0.5
+                v = getter(t)
                 t.axes_rank[axis] = (bisect.bisect_left(vals, v)
                                      + bisect.bisect_right(vals, v) - 1) \
                     / 2.0 / denom
@@ -712,12 +742,24 @@ class Brain:
                 s *= 1.0 - 0.75 * w
         for axis, target in axes_t.items():
             # Ranked value when the library overlay has one (hypnotic/
-            # hardness/energy saturate raw - see load_library), raw else.
+            # hardness/vocal/energy saturate raw - see load_library), raw
+            # else.
             v = cand.axes_rank.get(axis, cand.axes.get(axis))
             if v is None:
                 continue
-            s *= math.exp(-((float(v) - float(target)) / 0.35) ** 2) \
-                * 0.5 + 0.5
+            # SIGMA 0.25, FLOOR 0.40 (was 0.35 / 0.50). At sigma 0.35 on a
+            # 0..1 axis a candidate sitting a full 0.5 from the target -
+            # the opposite half of the library - still scored 0.68, so an
+            # axis target was at most a 1.5x preference against a product
+            # of twenty other terms. The themes measurably converged
+            # (hypnotic_deep's picks read 0.76 hypnotic against groove's
+            # 0.69 with a 0.95 target). Now that the axes are honest
+            # percentiles, a tighter pull cannot strand selection: material
+            # exists at every point of a uniform distribution by
+            # construction - the same argument that took the energy arc's
+            # sigma from 0.3 to 0.21.
+            s *= math.exp(-((float(v) - float(target)) / 0.25) ** 2) \
+                * 0.6 + 0.4
         return max(s, 0.15)             # lean hard, never blacklist
 
     def seam_feedback(self, style, up):
@@ -1049,32 +1091,53 @@ class Brain:
                 * (2.0 * (v if v is not None else 0.5) - 1.0)
         # PERSONA exploration widens the selection dice (neutral 0.9..1.1).
         dice_w = 0.1 * self.persona.explore
+        s_recency = self._recency_penalty(cand, now)
+        s_skip = self._skip_penalty(cand)
+        s_flavor = self._flavor_score(cand)
+        s_pairmem = self.pair_memory.get(
+            (getattr(current, "id", None), cand.id), 1.0)
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
                  * s_valence * s_dance * s_cohere * s_class * s_rhythm
                  * s_pers
-                 * self._recency_penalty(cand, now)
-                 * self._skip_penalty(cand) * s_pair
-                 * self._flavor_score(cand)
-                 * self.pair_memory.get(
-                     (getattr(current, "id", None), cand.id), 1.0)
+                 * s_recency
+                 * s_skip * s_pair
+                 * s_flavor
+                 * s_pairmem
                  * self.rng.uniform(1.0 - dice_w, 1.0 + dice_w))
         # STRETCH WALL: beyond ~5.5% the time-stretch is audible as feel
         # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
         # a dry pool may still cross it rather than strand the set.
-        if abs(math.log(rate)) > math.log(1.055):
-            total *= 0.05
+        s_wall = 0.05 if abs(math.log(rate)) > math.log(1.055) else 1.0
+        total *= s_wall
         # Confident grids keep the CHAIN mixable: a low-conf pick forces
         # long_fade on both its seams. Mild lean only - flavor can still
         # bring in a loose-gridded track it really wants.
-        total *= 0.75 + 0.25 * min(cand.bpm_conf, 1.0)
+        s_conf = 0.75 + 0.25 * min(cand.bpm_conf, 1.0)
+        total *= s_conf
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         # (Weight raised 0.45->0.60: at 0.45 a rise-theme night walked only
         # ~40% of its planned tempo climb - seam-quality terms outvoted it.)
+        s_bpm_arc = 1.0
         if bpm_target:
-            total *= 0.40 + 0.60 * math.exp(
+            s_bpm_arc = 0.40 + 0.60 * math.exp(
                 -((eff_bpm - bpm_target) / 7.0) ** 2)
+            total *= s_bpm_arc
+        # TERM BREAKDOWN rides the winning candidate's meta into the `armed`
+        # log line, so tools/dj_review.py can correlate every term against
+        # what the seam MEASURED. Eighteen constants were each tuned in
+        # isolation by ear or sim and never checked against outcomes - this
+        # is the join that makes that checkable. Cheap: a dict of floats per
+        # candidate, ~640 per pick, once every few minutes.
+        terms = {"rate": s_rate, "key": s_key, "energy": s_energy,
+                 "mood": s_mood, "spec": s_spec, "var": s_var,
+                 "style": s_style, "valence": s_valence, "dance": s_dance,
+                 "cohere": s_cohere, "class": s_class, "rhythm": s_rhythm,
+                 "persona": s_pers, "recency": s_recency, "skip": s_skip,
+                 "pair": s_pair, "flavor": s_flavor, "pairmem": s_pairmem,
+                 "wall": s_wall, "conf": s_conf, "bpm_arc": s_bpm_arc}
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
-                       "pitch_st": pitch_st, "forced_fade": forced_fade}
+                       "pitch_st": pitch_st, "forced_fade": forced_fade,
+                       "terms": terms}
 
     def set_theme(self, theme):
         """Live retheme - same library fitting as construction."""
@@ -1527,6 +1590,21 @@ class Brain:
             if k not in weights:
                 weights[k] = (dflt * self.style_fb.get(k, 1.0)
                               * self.style_memory.get(k, 1.0))
+        # GATE ATTRIBUTION: every style that gets ZEROED below records which
+        # gate did it. Without this the only observable was the outcome -
+        # four styles carried 93% of 560 real seams and nothing said whether
+        # the elaborate techniques lose the dice roll or never reach the
+        # table at all. kill() is the ONLY path that zeroes a weight from
+        # here down, so the record is complete by construction; it rides the
+        # plan into the `armed` log line for tools/dj_review.py --gates.
+        gated = {}
+
+        def kill(styles, reason):
+            for k in ((styles,) if isinstance(styles, str) else styles):
+                if weights.get(k, 0.0) > 0.0:
+                    gated.setdefault(k, reason)
+                weights[k] = 0.0
+
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
         # read as monotone. Same style as last seam: halved; as the last
@@ -1537,7 +1615,7 @@ class Brain:
                 weights[last] *= 0.5
                 if len(self.recent_styles) >= 2 \
                         and self.recent_styles[-2] == last:
-                    weights[last] = 0.0
+                    kill(last, "anti_streak")
         # ARC-COUPLED PACING: valleys lean into the long workhorse blends,
         # the climb favors decisive single-swaps, the peak unlocks the
         # punchy tier. Dynamics get SHAPE instead of uniform dice noise.
@@ -1564,9 +1642,22 @@ class Brain:
             if arc >= 0.82 and time.time() - self.last_moment_t \
                     > 2400.0 * self.persona.moment_cooldown_x:
                 moment = True
+                # DECISIVE, not merely boosted. A 4x nudge on a 0.08 base
+                # still lost to long_blend's 1.02 nine times in ten, so
+                # "engineered moment" produced a workhorse blend at most
+                # peaks - 3 double_drops and 4 cut_at_drops in 560 real
+                # seams. Once the system has decided THIS is a landmark
+                # (a genuine peak, and not for another cooldown), the
+                # spectacle tier has to actually win: boost it hard AND
+                # stand the workhorses down for this one seam. They are
+                # not removed - if every spectacle style is gated off by
+                # grid confidence or a missing drop, the blend still
+                # carries the seam, which is the correct fallback.
                 for k in ("double_drop", "cut_at_drop", "stem_drum_swap",
                           "acapella_out"):
-                    weights[k] = weights.get(k, 0) * 4.0
+                    weights[k] = weights.get(k, 0) * 12.0
+                for k in ("long_blend", "bass_swap", "filter_sweep"):
+                    weights[k] = weights.get(k, 0) * 0.25
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
         # A tempo-clash pair (user-ordered set beyond the stretch range,
         # rate fell back to 1.0) can NEVER beat-match - a "blend" there is
@@ -1575,26 +1666,42 @@ class Brain:
             low_conf = True
         if (meta or {}).get("a_rate", 1.0) not in (1.0, None)                 and not low_conf and pair.get("beaty", True):
             # dual-bend ramp is implemented in the blend path only
-            for k in list(weights):
-                if k not in ("long_blend", "bass_swap", "filter_sweep",
-                             "stem_drum_swap", "acapella_out"):
-                    weights[k] = 0.0
+            kill([k for k in list(weights)
+                  if k not in ("long_blend", "bass_swap", "filter_sweep",
+                               "stem_drum_swap", "acapella_out")],
+                 "dual_bend_blend_only")
+        fade_reason = None
+        rolled = False              # did a style dice roll actually happen?
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
             # a beat-matched blend there is inaudible as such and just
             # smears - do a deliberate clean fade on the phrase instead.
             style = "long_fade"
+            fade_reason = ("tempo_clash" if (meta or {}).get("tempo_clash")
+                           else "grid_conf<0.5" if low_conf
+                           else "beatless_seam")
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
-                weights["cut_at_drop"] = 0.0
+                kill("cut_at_drop", "downbeat_conf")
             # Short-dual precision styles (a few bars of overlap, no time
             # for the PLL to settle) demand STRONG grids on both sides -
             # at conf ~0.6 the stored grid itself wobbles 25-50ms
             # (measured on the real library) and the seam audibly flams.
             if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
-                for k in ("cut_at_drop", "double_drop", "echo_out",
-                          "bassline_layer"):
-                    weights[k] = 0.0
+                kill(("cut_at_drop", "double_drop", "echo_out",
+                      "bassline_layer"), "grid_conf<0.7")
+            # cut_at_drop earns a STRICTER bar than the rest of its tier.
+            # Measured over 560 logged seams (tools/dj_review.py): median
+            # flam 0.247 beats against 0.061-0.068 for every blend style
+            # and 0.034-0.056 for the other short ones - four times worse
+            # than anything else the DJ plays. It is the only technique
+            # that hard-cuts with zero overlap for the PLL to settle in,
+            # and it enters at a pre-drop point picked OUTSIDE the pair
+            # scan, so nothing else has vetted that landing. Small sample
+            # (n=4), so this tightens the gate rather than removing the
+            # style: on a strong grid the cut is the right move.
+            if min(cur.bpm_conf, cand.bpm_conf) < 0.8:
+                kill("cut_at_drop", "cut_needs_grid_conf>=0.8")
             # Short-dual styles are exposed to raw GROOVE-OFFSET flam: the
             # PLL is grid-primary, so two tracks whose basslines sit
             # differently against their own grids flam by the OFFSET
@@ -1607,9 +1714,9 @@ class Brain:
             # audible ~25ms. loop_roll_exit joined the list: the roll
             # repeats material, which showcases the flam.
             if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028:
-                for k in ("cut_at_drop", "double_drop", "echo_out",
-                          "bassline_layer", "loop_build", "loop_roll_exit"):
-                    weights[k] = 0.0
+                kill(("cut_at_drop", "double_drop", "echo_out",
+                      "bassline_layer", "loop_build", "loop_roll_exit"),
+                     "kick_offset>28ms")
             # GROOVE-AWARE STYLE STEERING (rhythm signatures, trusted
             # grids only). Selection already leaned away from these pairs;
             # when one plays anyway (setlist order, thin pool), pick the
@@ -1650,17 +1757,17 @@ class Brain:
             pre_drops = [p for p in cand.mix_ins
                          if p.get("style_hint") == "pre_drop"]
             if not pre_drops:
-                weights["cut_at_drop"] = 0.0
+                kill("cut_at_drop", "no_pre_drop_in_B")
             # (loop_roll_exit rolls the 16 beats just before out_s - its
             # window is derived, so no after_s restriction needed here.)
             loop_ok = any(l["start_s"] < pair["out_s"] for l in cur.loops)
             if not loop_ok:
-                weights["loop_roll_exit"] = 0.0
+                kill("loop_roll_exit", "no_loop_before_exit")
             # bassline_layer needs a bass-heavy, low-vocal loop in A that is
             # still AHEAD of the playhead when the transition arms.
             if self._bass_loop(cur, pair["out_s"],
                                after_s=after_s or 0.0) is None:
-                weights["bassline_layer"] = 0.0
+                kill("bassline_layer", "no_bass_loop_in_A")
             # double_drop aligns A's drop onset with B's drop onset (the
             # drop boundary IS a downbeat, so this works even where the
             # global downbeat_offset is uncertain); the sync snap handles
@@ -1668,17 +1775,17 @@ class Brain:
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
             b_drop = self._drop_after(cand, cand.duration_s * 0.15)
             if a_drop is None or b_drop is None:
-                weights["double_drop"] = 0.0
+                kill("double_drop", "no_drop_in_A_or_B")
             # loop_build stutters A into its own drop as a tension build,
             # then B cuts in on the drop. Needs a drop in A to build toward.
             if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
-                weights["loop_build"] = 0.0
+                kill("loop_build", "no_drop_in_A")
             # STEM STYLES need pre-rendered stems on disk (dj_stems.py).
             if not (getattr(cur, "has_stems", False)
                     and getattr(cand, "has_stems", False)):
-                weights["stem_drum_swap"] = 0.0
+                kill("stem_drum_swap", "no_stems")
             if not getattr(cur, "has_stems", False):
-                weights["acapella_out"] = 0.0
+                kill("acapella_out", "no_stems")
             elif weights.get("acapella_out", 0.0) > 0.0:
                 # acapella_out's premise: A actually SINGS around its exit
                 # (the tail IS its vocal riding B's instrumental), B stays
@@ -1696,13 +1803,14 @@ class Brain:
                 if sc is not None:
                     kf = sc
                 if tail_v < 0.35 or b_under > 0.5 or kf < 0.8:
-                    weights["acapella_out"] = 0.0
+                    kill("acapella_out", "acapella_premise")
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
                 menu = [("bass_swap", 1.0)]
             styles, ws = zip(*menu)
             style = self.rng.choices(styles, weights=ws, k=1)[0]
+            rolled = True
 
         # NEVER BLEND TWO SUNG PASSAGES: the swap-slot scan protects the
         # swap beat, but if A exits THROUGH a vocal passage while B enters
@@ -1717,12 +1825,27 @@ class Brain:
                         and (sb_v.get("vocalness") or 0) > 0.5)
             if both_pt or both_sec:
                 style = "long_fade"
+                fade_reason = "vocal_over_vocal"
 
         # METER CLASH: a confidently-3/4 track against a 4/4 one cannot
         # beat-match musically whatever the style - every bar line drifts.
         # Deliberate fade, same rule as a tempo clash.
         if style != "long_fade" and rt_sure and rt.get("meter_clash"):
             style = "long_fade"
+            fade_reason = "meter_clash"
+
+        # What the dice actually chose from, and what never made the table.
+        # Rides the plan into the `armed` log (tools/dj_review.py --gates).
+        # An empty menu when `rolled` is False is the truth, not a bug: a
+        # low-confidence or beatless seam takes the fade WITHOUT building a
+        # menu, so reporting the untouched theme weights there would count
+        # every style as "offered" on seams where no style was ever on the
+        # table - inflating the menu share of exactly the techniques the
+        # gate report exists to explain.
+        diag = {"gated": gated,
+                "menu": ({k: round(w, 3) for k, w in weights.items()
+                          if w > 0} if rolled else {}),
+                "fade_reason": fade_reason}
 
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
         self.recent_styles = (self.recent_styles + [style])[-4:]
@@ -1770,7 +1893,8 @@ class Brain:
             return {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats, "rhythm": rt,
                     "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
+                    "diag": diag}
         if style == "double_drop":
             # A exits on ITS drop; B is cued so its drop lands on the same
             # beat. out_s/in_s become the two drop onsets.
@@ -1781,7 +1905,8 @@ class Brain:
             plan = {"style": style, "rate": rate, "out_s": out_s,
                     "in_s": in_s, "beats": beats, "rhythm": rt,
                     "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
+                    "diag": diag}
             return plan
         # Blend-family styles anchor to PHRASE boundaries (16/32 beats) when
         # the hypermeter was confidently detected - the blend then completes
@@ -1799,7 +1924,8 @@ class Brain:
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats, "rhythm": rt,
                 "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0)}
+                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
+                    "diag": diag}
         # VARISPEED MEET-IN-THE-MIDDLE: with the varispeed engine pitch rides
         # tempo, so a single-sided match puts the whole pitch shift on B.
         # Split the bend across BOTH decks instead - A ramps to a_rate before

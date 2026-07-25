@@ -952,8 +952,47 @@ def find_mix_points(sections, duration_s):
     return pts
 
 
-def classify_axes(sections, bpm, spectral, mood_hist):
-    """Cross-track character axes in 0..1 + human-readable auto tags.
+def hardness_raw(spectral, mood_hist, rhythm_density, speed):
+    """UNCLIPPED hardness score - the single source of truth for the axis.
+
+    The old formula clipped at 1.0 and 81% of a real 649-track library
+    landed exactly there (measured 2026-07-24), which made the axis a
+    statistical constant: percentile-ranking a blob of ties hands every
+    tied track the same mid rank, so `axis_targets={"hardness": 0.9}` and
+    `{"hardness": 0.2}` resolved to the SAME number for four fifths of the
+    collection - two dead levers pointing opposite directions.
+
+    This version is deliberately unbounded: it is only ever consumed
+    through a library percentile rank (Brain.load_library's axes_rank, and
+    scan._recalibrate_tags' hard/gentle thresholds), where absolute scale
+    is meaningless and SPREAD is everything. Same ingredients as before
+    plus tempo and density, which is what separates a slow dubby bassline
+    from a driving one at the same bass share."""
+    return float(2.5 * (spectral or {}).get("bass_share", 0.33)
+                 + 0.8 * (mood_hist or {}).get("peak", 0.0)
+                 + 0.25 * min(float(rhythm_density or 0.0) / 3.0, 1.5)
+                 + 0.4 * float(speed if speed is not None else 0.5))
+
+
+def _finite(x, default=0.5):
+    """NaN/Inf-proof float. Near-silent or degenerate tracks produce NaN
+    section energies (0/0 through the per-track normalization), and a NaN
+    axis poisons every percentile sort that touches it - 10 tracks did
+    exactly that on the real library, dragging the sorted energy axis into
+    p10 > median."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
+
+
+def classify_axes(sections, bpm, spectral, mood_hist, rhythm_density=0.0):
+    """Cross-track character axes + human-readable auto tags.
+
+    `vocal`/`speed`/`energy`/`hypnotic` are 0..1; `hardness` is an
+    UNBOUNDED score (see hardness_raw) that only carries meaning once
+    percentile-ranked against a library.
 
     A song can obviously be several things at once - the axes are
     independent, and every threshold crossing contributes a tag."""
@@ -961,7 +1000,8 @@ def classify_axes(sections, bpm, spectral, mood_hist):
         w = np.array([max(s["end_s"] - s["start_s"], 0.1) for s in sections])
         tot = float(w.sum())
         def wavg(key):
-            return float(sum(s[key] * wi for s, wi in zip(sections, w)) / tot)
+            return _finite(sum(_finite(s[key]) * wi
+                               for s, wi in zip(sections, w)) / tot)
         # vocal axis is 0.0 until the ML vocal pass measures the track
         # (lib/dj/vocals.py sets axes["vocal"] + axes["vocal_src"]).
         vocal = 0.0
@@ -971,10 +1011,8 @@ def classify_axes(sections, bpm, spectral, mood_hist):
     else:
         busy = energy = hypnotic = 0.5
         vocal = 0.0
-    speed = float(np.clip((bpm - 80.0) / 70.0, 0.0, 1.0))
-    hardness = float(np.clip(
-        0.55 * busy + 1.1 * spectral.get("bass_share", 0.33)
-        + 0.5 * (mood_hist or {}).get("peak", 0.0), 0.0, 1.0))
+    speed = float(np.clip((_finite(bpm, 100.0) - 80.0) / 70.0, 0.0, 1.0))
+    hardness = hardness_raw(spectral, mood_hist, rhythm_density, speed)
     axes = {"vocal": round(vocal, 3), "speed": round(speed, 3),
             "hardness": round(hardness, 3), "energy": round(energy, 3),
             "hypnotic": round(hypnotic, 3)}
@@ -985,15 +1023,22 @@ def classify_axes(sections, bpm, spectral, mood_hist):
         tags.append("slow")
     elif bpm and bpm > 123:
         tags.append("fast")
-    if hardness > 0.62:
+    # FALLBACK THRESHOLDS ONLY. scan._recalibrate_tags re-derives all of
+    # these from library PERCENTILES after every scan - these numbers are
+    # what a track carries before that runs (and on libraries too small to
+    # percentile). They are the measured p28/p72 of the real library rather
+    # than round guesses, because the old guesses (hardness 0.62/0.32 on a
+    # 0..1-clipped axis, energy 0.68/0.38 on an axis that actually spans
+    # 0.62..0.85) tagged ~half the collection "hard" and nothing "mellow".
+    if hardness > 2.17:
         tags.append("hard")
-    elif hardness < 0.32:
+    elif hardness < 1.72:
         tags.append("gentle")
-    if energy > 0.68:
+    if energy >= 0.77:
         tags.append("driving")
-    elif energy < 0.38:
+    elif energy <= 0.67:
         tags.append("mellow")
-    if hypnotic > 0.82:
+    if hypnotic >= 0.92:
         tags.append("hypnotic")
     if (mood_hist or {}).get("peak", 0.0) > 0.25:
         tags.append("peaky")
@@ -1281,7 +1326,8 @@ def analyze_samples(samples, deep=True):
         if not live["agrees"] and live["live_bpm"] > 0:
             result["bpm_conf"] = round(result["bpm_conf"] * 0.5, 3)
     axes, auto_tags = classify_axes(sections, bpm, result["spectral"],
-                                    result["mood_hist"])
+                                    result["mood_hist"],
+                                    result["rhythm_density"])
     result["axes"] = axes
     result["auto_tags"] = auto_tags
     result["cues"] = find_interesting(sections)
