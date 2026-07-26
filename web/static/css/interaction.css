@@ -1,0 +1,173 @@
+/* GL_Simple — generic interaction panel.
+   Every color here comes from a CSS variable the active weather set's
+   theme block fills in (see lib/interaction.py), so one stylesheet gives
+   each set its own look: big touch targets, set-tinted, phone-first. */
+
+:root {
+    --ix-accent: #5ac8fa;
+    --ix-bg: #101014;
+    --ix-panel: #1a1a20;
+    --ix-text: #e8e8ee;
+}
+
+body.ix-themed {
+    background: radial-gradient(circle at 50% 0%,
+                color-mix(in srgb, var(--ix-accent) 18%, var(--ix-bg)) 0%,
+                var(--ix-bg) 60%);
+    color: var(--ix-text);
+}
+
+body.ix-themed h1 {
+    color: var(--ix-text);
+    text-shadow: 0 0 22px color-mix(in srgb, var(--ix-accent) 55%, transparent);
+}
+
+.ix-blurb {
+    text-align: center;
+    opacity: 0.75;
+    margin: 0 0 18px 0;
+    font-size: 1.02em;
+}
+
+.ix-idle {
+    text-align: center;
+    padding: 60px 20px;
+    opacity: 0.65;
+    font-size: 1.1em;
+}
+
+.ix-idle-sub {
+    margin-top: 10px;
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+.ix-section {
+    background: color-mix(in srgb, var(--ix-panel) 88%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ix-accent) 28%, transparent);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.ix-section h3 {
+    font-size: 1.05em;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.85;
+    margin-bottom: 4px;
+    color: var(--ix-accent);
+}
+
+.ix-note {
+    font-size: 0.85em;
+    opacity: 0.6;
+    margin-bottom: 10px;
+}
+
+.ix-controls {
+    display: grid;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.ix-layout-grid    { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.ix-layout-list    { grid-template-columns: 1fr; }
+.ix-layout-compact { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); }
+
+/* --- buttons --- */
+
+.ix-btn {
+    --btn-accent: var(--ix-accent);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 92px;
+    padding: 14px 10px;
+    border-radius: 12px;
+    border: 2px solid color-mix(in srgb, var(--btn-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--btn-accent) 12%, var(--ix-panel));
+    color: var(--ix-text);
+    font-size: 1em;
+    cursor: pointer;
+    transition: transform 0.08s, background 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.ix-btn:active {
+    transform: scale(0.96);
+    background: color-mix(in srgb, var(--btn-accent) 42%, var(--ix-panel));
+}
+
+.ix-btn-icon  { font-size: 1.9em; line-height: 1; }
+.ix-btn-label { font-weight: 600; text-align: center; }
+.ix-btn-hint  { font-size: 0.75em; opacity: 0.6; text-align: center; }
+
+.ix-flash { animation: ix-flash-anim 0.5s ease-out; }
+
+@keyframes ix-flash-anim {
+    0%   { box-shadow: 0 0 0 0 var(--btn-accent); }
+    100% { box-shadow: 0 0 0 16px transparent; }
+}
+
+/* --- sliders --- */
+
+.ix-slider { grid-column: 1 / -1; }
+
+.ix-slider-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.92em;
+    margin-bottom: 6px;
+}
+
+.ix-readout { opacity: 0.65; font-variant-numeric: tabular-nums; }
+
+.ix-slider input[type=range] {
+    width: 100%;
+    height: 34px;
+    accent-color: var(--ix-accent);
+}
+
+.ix-hint { font-size: 0.75em; opacity: 0.55; margin-top: 4px; }
+
+/* --- toggles --- */
+
+.ix-toggle {
+    min-height: 56px;
+    border-radius: 12px;
+    border: 2px solid color-mix(in srgb, var(--ix-accent) 35%, transparent);
+    background: var(--ix-panel);
+    color: var(--ix-text);
+    font-size: 1em;
+    cursor: pointer;
+}
+
+.ix-toggle.on {
+    background: color-mix(in srgb, var(--ix-accent) 35%, var(--ix-panel));
+    border-color: var(--ix-accent);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--ix-accent) 45%, transparent);
+}
+
+/* --- selects --- */
+
+.ix-select { grid-column: 1 / -1; }
+.ix-select-label { font-size: 0.92em; margin-bottom: 6px; }
+
+.ix-select select {
+    width: 100%;
+    padding: 12px;
+    font-size: 1em;
+    border-radius: 10px;
+    border: 2px solid color-mix(in srgb, var(--ix-accent) 35%, transparent);
+    background: var(--ix-panel);
+    color: var(--ix-text);
+}
+
+@media (max-width: 520px) {
+    body { padding: 12px; }
+    h1 { font-size: 1.8em; }
+    .ix-layout-grid { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
+}

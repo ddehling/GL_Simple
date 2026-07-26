@@ -170,6 +170,12 @@ class WebController:
         # countdown is armed, None when off. Fired by the emitter loop.
         self._set_switch_timer = None
 
+        # Per-weather-set interaction panels (set id -> normalized panel).
+        # Pushed by EnvironmentalSystem from the active project's
+        # ``interaction`` hook; empty means no set offers an interaction
+        # tab, which is the default for a project that declares none.
+        self._interaction_panels = {}
+
         # Preview frame streaming
         # Preview clients are tracked via Socket.IO 'preview' room
         self._geometry_json = None  # cached provider.to_json()
@@ -178,6 +184,30 @@ class WebController:
         """Hot-swap the active geometry provider (used by project-swap)."""
         self._geometry_provider = provider
         self._geometry_json = None
+
+    def set_interaction_panels(self, panels):
+        """Install the active project's normalized interaction panels.
+
+        Called by ``EnvironmentalSystem`` at boot and after every project
+        swap. ``panels`` maps weather-set id -> normalized panel (see
+        ``lib.interaction``); sets absent from the mapping simply get no
+        interaction tab, which is the default.
+        """
+        with self._dict_lock:
+            self._interaction_panels = dict(panels or {})
+
+    def _active_interaction_panel(self):
+        """Panel for the live weather set, or None.
+
+        Applies the panel's ``requires`` gate (the club panel points at
+        the DJ page and asks for ``dj``, so the tab stays hidden when the
+        DJ subsystem isn't available even though club is running)."""
+        from lib.interaction import panel_for_set
+        with self._dict_lock:
+            panels = getattr(self, '_interaction_panels', {})
+            cur = self.control_dict.get('current_weather_set')
+            snapshot = {'dj_info': self.control_dict.get('dj_info')}
+        return panel_for_set(panels, cur, snapshot)
 
     def set_weather_module(self, *, weather_state_enum=None,
                            weather_presets=None, weather_sets=None,
@@ -278,6 +308,60 @@ class WebController:
                 info = self.control_dict.get('dj_info') or {}
             return jsonify({"available": bool(info.get("available")),
                             "active": bool(info.get("active"))})
+
+        @self.app.route('/interaction')
+        def interaction_panel():
+            """Generic per-weather-set interaction page.
+
+            Renders whatever the live set declared; shows a "nothing
+            here" card when the set that owns the panel is no longer
+            running (someone left the tab open through a set change)."""
+            return render_template('interaction_panel.html')
+
+        @self.app.route('/api/interaction/info')
+        def interaction_info():
+            """What the interaction nav slot should show right now.
+
+            One endpoint drives the tab on every page: hidden when the
+            live set declares no panel, labelled and pointed at the
+            set's own page (``/dj`` for club) otherwise."""
+            panel = self._active_interaction_panel()
+            if panel is None:
+                return jsonify({"available": False})
+            with self._dict_lock:
+                dj = self.control_dict.get('dj_info') or {}
+            return jsonify({
+                "available": True,
+                "set": panel["set"],
+                "label": panel["label"],
+                "href": panel.get("page") or "/interaction",
+                "accent": panel["theme"]["accent"],
+                # "something is running behind this tab" — currently only
+                # the DJ-backed panel has a liveness notion; it lights the
+                # tab green exactly as the old dedicated DJ tab did.
+                "live": bool(dj.get("active")) if panel.get("requires") == "dj" else False,
+            })
+
+        @self.app.route('/api/interaction/spec')
+        def interaction_spec():
+            """Full panel spec + live values for the generic renderer."""
+            from lib.interaction import public_panel
+            panel = self._active_interaction_panel()
+            if panel is None:
+                with self._dict_lock:
+                    cur = self.control_dict.get('current_weather_set', 'unknown')
+                return jsonify({"available": False, "current_set": cur})
+            with self._dict_lock:
+                overrides = dict(self.web_param_overrides)
+                signals = copy.deepcopy(
+                    self.control_dict.get('interaction_signals', {}))
+                current_state = self.control_dict.get('current_weather', '')
+            return jsonify({
+                "available": True,
+                "panel": public_panel(panel),
+                "values": {"params": overrides, "signals": signals},
+                "current_state": current_state,
+            })
 
         @self.app.route('/preview')
         def preview():
@@ -1250,6 +1334,38 @@ class WebController:
                     with self._dict_lock:
                         self.control_dict['request_weather_state'] = new_state
                     self._values_cache = None
+
+        @self.socketio.on('interaction_action')
+        def handle_interaction_action(data):
+            """Queue one interaction-panel control press for the render thread.
+
+            The client sends only a control id (+ value for sliders and
+            selects). The action itself is looked up in the LIVE set's
+            panel, so a tab left open across a set change can't fire the
+            old set's events, and values are clamped to the declared
+            range before they leave this function.
+            """
+            from lib.interaction import resolve_action
+            data = data or {}
+            control_id = data.get('control')
+            if not isinstance(control_id, str):
+                return
+            panel = self._active_interaction_panel()
+            if panel is None or panel.get('page'):
+                return
+            # A stale tab may name the set it was rendered for; drop the
+            # press rather than applying it to whatever is live now.
+            wanted_set = data.get('set')
+            if isinstance(wanted_set, str) and wanted_set != panel['set']:
+                return
+            action = resolve_action(panel, control_id, data.get('value'))
+            if action is None:
+                return
+            with self._dict_lock:
+                queue = self.control_dict.setdefault('request_interaction_actions', [])
+                if len(queue) < 64:  # backstop against a stuck client
+                    queue.append(action)
+            self._values_cache = None
 
         @self.socketio.on('trigger_random_event')
         def handle_trigger_random_event(data=None):

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Lucifera Interaction</title>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <link rel="stylesheet" href="/static/css/control_panel.css">
+    <link rel="stylesheet" href="/static/css/interaction.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1 id="ix-heading">Interaction</h1>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <a href="/" class="tab">Controls</a>
+            <a href="/preview" class="tab">Preview</a>
+            <a href="/weather_editor" class="tab">Editor</a>
+            <a href="/club" class="tab" id="club-tab" style="display:none">Club</a>
+            <a href="/interaction" class="tab active" id="interaction-tab">Interaction</a>
+        </div>
+
+        <!-- Shown when the live weather set publishes no panel (someone
+             left this tab open through a set change). -->
+        <div class="ix-idle" id="ix-idle">
+            <p id="ix-idle-text">Nothing to play with right now.</p>
+            <p class="ix-idle-sub">This page wakes up when a weather set that
+               offers hands-on controls is running.</p>
+        </div>
+
+        <div id="ix-panel" style="display:none">
+            <p class="ix-blurb" id="ix-blurb"></p>
+            <div id="ix-sections"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/socket-client.js"></script>
+    <script src="/static/js/interaction_panel.js"></script>
+    <script src="/static/js/club_tab.js"></script>
+    <script src="/static/js/interaction_tab.js"></script>
+</body>
+</html>

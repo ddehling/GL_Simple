@@ -109,6 +109,7 @@ lib/
   weather_params.py         # Weather states, presets, environmental params
   weather_state.py          # WeatherStateController — transition interpolation
   weather_set.py            # WeatherSetManager — active set + event registry
+  interaction.py            # Per-weather-set web interaction panels (spec + validation)
 renderer/
   shader_renderer.py        # GLFW window + OpenGL rendering loop
   fan_geometry.py           # Pure-numpy fan/polar geometry (shared by GL and web preview)
@@ -124,7 +125,7 @@ web/
 tools/                      # Standalone utilities: sound_editor, computer, midi_integration_example, gl_test, wleddetect
 config/                     # DMX universe and fixture definitions (Unit*.txt)
 media/                      # Shared audio files (sounds/) and images usable by any project
-projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py. See docs/DEPLOYMENT.md.
+projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py, interaction.py. See docs/DEPLOYMENT.md.
 deploy/                     # catalog.yaml: id -> project repo URL, read by bin/setup.* scripts
 docs/                       # Documentation (see below)
 bin/                        # Setup script (setup.{sh,bat,ps1}), everyday launcher (run.{sh,bat,ps1}), systemd unit, NixOS install
@@ -185,6 +186,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/PARAMETER_MANAGEMENT.md` — Parameter system
 - `docs/DEPLOYMENT.md` — Per-project repo model, fresh-machine setup, GitHub auth, adding/switching projects
 - `docs/DJ_README.md` — Autonomous DJ subsystem (library scanner, mixing engine, PyQt6 set planner, /dj live tab)
+- `docs/INTERACTION_PANELS.md` — Per-weather-set interaction tab (buttons/sliders a set publishes; club = the DJ page)
 - `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
 - `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)
 - `docs/shader_contrast_playbook.md` — How to design shaders that read well under Fan's fixed `brightness_limit: 0.1` (read when authoring or editing visuals — hue/spatial/saturation levers under an energy budget)

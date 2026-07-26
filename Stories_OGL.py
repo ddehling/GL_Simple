@@ -539,6 +539,10 @@ class EnvironmentalSystem:
             )
             # Sync initial set name now that WeatherSetManager is ready
             self.web_controller.set("current_weather_set", self.weather_set.current_set)
+            # Per-weather-set interaction panels (the web UI's generic
+            # interaction tab). Projects that declare no ``interaction``
+            # hook get no tab on any set.
+            self._publish_interaction_panels(self.project)
         
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
@@ -1473,6 +1477,10 @@ class EnvironmentalSystem:
             # Stale parameter overrides reference the old project's params;
             # drop them rather than carry forward what may be invalid keys.
             self.web_controller.web_param_overrides = {}
+            # Interaction panels are project content too — republish from
+            # the incoming project (new_project; self.project is still the
+            # old one at this point in the swap).
+            self._publish_interaction_panels(new_project)
 
         self.project = new_project
         # Repoint state['media_root'] at the new project's media folder so
@@ -1526,6 +1534,104 @@ class EnvironmentalSystem:
         dims_str = ", ".join(f"{gid}={w}x{h}" for gid, (w, h) in zip(new_group_ids, new_dims))
         print(f"[Project] Swap complete: now {new_project.display_name} [{dims_str}]")
         return True
+
+    def _publish_interaction_panels(self, project) -> None:
+        """Push ``project``'s interaction panels into the web UI.
+
+        Panels come from the project's ``interaction`` hook (see
+        ``lib/interaction.py`` and ``docs/INTERACTION_PANELS.md``). A
+        project without the hook publishes nothing, which is exactly the
+        default: no weather set offers an interaction tab.
+        """
+        if self.web_controller is None:
+            return
+        from lib.interaction import load_project_panels
+        panels = load_project_panels(project)
+        self.web_controller.set_interaction_panels(panels)
+        if panels:
+            print(f"[Interaction] panels for {sorted(panels)}")
+
+    def _apply_interaction_controls(self) -> None:
+        """Drain interaction-panel presses queued by the web thread.
+
+        Runs on the render thread (from ``apply_web_controls``) because
+        every action below touches scheduler/weather state. The web layer
+        already validated each action against the live set's panel and
+        clamped its value — this side only executes.
+        """
+        if self.web_controller is None:
+            return
+        with self.web_controller._dict_lock:
+            actions = self.web_controller.control_dict.pop(
+                'request_interaction_actions', None)
+        if not actions:
+            return
+
+        now = time.time()
+        cooldowns = getattr(self, '_interaction_cooldowns', None)
+        if cooldowns is None:
+            cooldowns = self._interaction_cooldowns = {}
+
+        for action in actions:
+            kind = action.get('kind')
+            try:
+                if kind == 'event':
+                    key = action.get('control')
+                    cooldown = float(action.get('cooldown') or 0.0)
+                    if cooldown and now - cooldowns.get(key, 0.0) < cooldown:
+                        continue
+                    cooldowns[key] = now
+                    duration = action.get('duration')
+                    if duration is None:
+                        duration = float(self.weather_set.get_current_set_config()
+                                         .get("random_event_duration", 60))
+                    print(f"[Interaction] event {action['event']} "
+                          f"({float(duration):.0f}s)")
+                    self._schedule_event_from_map(
+                        action['event'], 0, float(duration),
+                        frame_id=int(action.get('frame_id', 0)))
+
+                elif kind == 'state':
+                    state_name = action['state']
+                    valid = [s.value for s in self.weather_set.get_set_states()]
+                    if state_name not in valid:
+                        print(f"[Interaction] state {state_name!r} not in the "
+                              f"current set; ignored")
+                        continue
+                    state_enum = self._weather_state_enum(state_name)
+                    t_duration = self.weather_state.get_weather_params(
+                        state_enum)["transition_duration"]
+                    if self.web_controller.get('instant_transitions', False):
+                        t_duration = 0.01
+                    self.transition_to_weather(state_enum,
+                                               transition_duration=t_duration)
+
+                elif kind == 'param':
+                    with self.web_controller._dict_lock:
+                        if action.get('value') is None:
+                            self.web_controller.web_param_overrides.pop(
+                                action['param'], None)
+                        else:
+                            self.web_controller.web_param_overrides[
+                                action['param']] = float(action['value'])
+                    self.web_controller._values_cache = None
+
+                elif kind == 'signal':
+                    from lib.interaction import make_signal
+                    key = action['key']
+                    cooldown = float(action.get('cooldown') or 0.0)
+                    if cooldown and now - cooldowns.get(key, 0.0) < cooldown:
+                        continue
+                    cooldowns[key] = now
+                    signals = self.scheduler.state.setdefault('interaction', {})
+                    signals[key] = make_signal(action['value'], signals.get(key))
+                    # Mirror into control_dict so the panel can show the
+                    # live value when a phone reconnects mid-show.
+                    with self.web_controller._dict_lock:
+                        self.web_controller.control_dict.setdefault(
+                            'interaction_signals', {})[key] = dict(signals[key])
+            except Exception as e:
+                print(f"[Interaction] action {action!r} failed: {e}")
 
     def _call_button_router_hook(self) -> None:
         """Run the active project's ``button_router`` hook (if any).
@@ -1724,6 +1830,9 @@ class EnvironmentalSystem:
 
         # Autonomous DJ: drain queued web actions + mirror status.
         self._apply_dj_controls()
+
+        # Interaction panel: drain queued button/slider presses.
+        self._apply_interaction_controls()
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)

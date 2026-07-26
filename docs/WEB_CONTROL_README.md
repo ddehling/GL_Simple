@@ -17,6 +17,10 @@ The web control system consists of three main components:
 - **Dynamic UI**: Control schema automatically generates the web interface
 - **Multiple Control Types**: Sliders, checkboxes, dropdowns
 - **Live Updates**: Interface polls for changes every 2 seconds
+- **Per-set Interaction Tab**: one nav slot owned by whichever weather set
+  is live — hidden by default, and whatever a set publishes when it opts
+  in (the club set points it at the DJ console). See
+  [INTERACTION_PANELS.md](INTERACTION_PANELS.md)
 
 ## Quick Start
 
