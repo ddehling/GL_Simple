@@ -56,10 +56,10 @@ source venv/Scripts/activate
 python Stories_OGL.py
 
 # Audio device configuration utility
-python tools/sound_editor.py
+python tools/editors/sound_editor.py
 
 # Shader testing / alternate renderer
-python tools/computer.py
+python tools/hardware/computer.py
 
 # Install / reinstall dependencies
 pip install -r requirements.txt
@@ -122,7 +122,13 @@ web/
   templates/                # Flask HTML templates for web UI
   static/js/preview.js      # WebGL2 live preview client
   static/css/preview.css    # Preview page styles
-tools/                      # Standalone utilities: sound_editor, computer, midi_integration_example, gl_test, wleddetect
+tools/                      # Programs you launch sit at the top level: dj_planner.py, narrative_editor_v2_qt.py, layout_editor.py
+  dj/                       # DJ CLIs — dj_scan, dj_player, dj_review, dj_mood, dj_stems, dj_beatport…
+    planner/                # Qt panels + backends the planner imports (was tools/djplanner/)
+  editors/                  # sound_editor (audio device config); narrative_editor_qt (v1, superseded by the v2 above)
+  tests/                    # _*.py gates, harnesses and sims — run each directly, there is no pytest setup
+  hardware/                 # Device-facing probes: gl_test, sacn_test_receiver, wleddetect, radar_listen, midi_integration_example, wol_box_emulator, computer
+  media/                    # Asset pipeline: tts_elevenlabs, tts_examples, normalize_ambient_volumes
 config/                     # DMX universe and fixture definitions (Unit*.txt)
 media/                      # Shared audio files (sounds/) and images usable by any project
 projects/                   # Per-project clones (gitignored). Each projects/<id>/ is its own private repo (GL_Simple_<id>) holding that project's project.yaml, shaders/, media/, event_map.py, weather_params.py, interaction.py. See docs/DEPLOYMENT.md.
@@ -175,7 +181,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 
 ## Audio Input
 
-`lib/audio_analyzer.py` captures microphone input and extracts frequency bands. Audio-reactive project shaders (e.g. `projects/fan/shaders/audio_*.py`) subscribe to this data. Run `tools/sound_editor.py` to identify the correct device name if audio isn't working.
+`lib/audio_analyzer.py` captures microphone input and extracts frequency bands. Audio-reactive project shaders (e.g. `projects/fan/shaders/audio_*.py`) subscribe to this data. Run `tools/editors/sound_editor.py` to identify the correct device name if audio isn't working.
 
 ## Documentation
 

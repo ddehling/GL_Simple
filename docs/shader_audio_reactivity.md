@@ -342,7 +342,7 @@ What works:
 - Keep additive floors under ~0.2 of the output range; temporal contrast
   (dark -> flash) survives the limiter, mid-level wiggle does not.
 
-Offline test for all of the above: `python tools/_club_signals_test.py`.
+Offline test for all of the above: `python tools/tests/_club_signals_test.py`.
 
 ## Audio Reactivity Best Practices
 

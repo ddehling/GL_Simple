@@ -142,7 +142,7 @@ class DJSystem:
         # 'do not use' tracks (DB v11) are never grabbed by the autoDJ.
         lib = [t for t in load_library(self.db) if not t.excluded]
         if not lib:
-            self.last_error = "library is empty - run tools/dj_scan.py"
+            self.last_error = "library is empty - run tools/dj/dj_scan.py"
             print(f"[DJ] {self.last_error}")
             return False
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
@@ -200,7 +200,7 @@ class DJSystem:
                 f = loose / len(lib)
                 print(f"[DJ] {loose}/{len(lib)} tracks have loose grids "
                       f"(<0.50) - ~{100*(1-(1-f)**2):.0f}% of pairs can only "
-                      "fade. Run: python tools/dj_scan.py --refine-grids")
+                      "fade. Run: python tools/dj/dj_scan.py --refine-grids")
         except Exception:
             pass
         self._refresh_setlist_names()
@@ -281,7 +281,7 @@ class DJSystem:
 
     def _start_recording(self):
         """Tap the submix into a timestamped WAV - every night becomes
-        review material (pair with tools/_dj_quality_test metrics)."""
+        review material (pair with tools/tests/_dj_quality_test metrics)."""
         import queue
         import wave
         os.makedirs(self.log_dir, exist_ok=True)
@@ -1448,7 +1448,7 @@ class DJSystem:
         self._urgent_exit = False
         # THE CALIBRATION JOIN: the selection term breakdown and the style
         # gate record ride into the log next to the seam this plan produced,
-        # so tools/dj_review.py can put every tuned constant beside what the
+        # so tools/dj/dj_review.py can put every tuned constant beside what the
         # seam actually MEASURED. Without these the log recorded outcomes
         # with no inputs, and 560 real seams taught nothing.
         diag = plan.get("diag") or {}

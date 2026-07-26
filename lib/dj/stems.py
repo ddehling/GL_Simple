@@ -1,7 +1,7 @@
 """Pre-rendered stem storage for stem-aware mixing.
 
 The vocal pass already runs htdemucs over every track and throws the
-separated audio away; this module is the KEEP-IT path. tools/dj_stems.py
+separated audio away; this module is the KEEP-IT path. tools/dj/dj_stems.py
 renders each track's four stems (drums/bass/other/vocals) once and
 encodes them under <music_root>/.stems/<track_id>/; the live system
 decodes them at load time so a deck can play any weighted subset

@@ -2,7 +2,7 @@
 #
 # The DJ system works without this - danceability/valence/mood are DERIVED
 # heuristically (lib/dj/character.py). With it, the "Mood (ML)" button in the
-# planner (or `python tools/dj_mood.py`) runs the Music2Emo model over each
+# planner (or `python tools/dj/dj_mood.py`) runs the Music2Emo model over each
 # track and stores REAL valence/arousal + mood tags (dark, party, epic,
 # melancholic...), which character.py then prefers over the heuristic.
 #

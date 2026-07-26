@@ -340,7 +340,7 @@ python lib/midi_controller.py
 Or run the integration example:
 
 ```bash
-python tools/midi_integration_example.py
+python tools/hardware/midi_integration_example.py
 ```
 
 Move controls on your nanoKontrol2 to see real-time updates.

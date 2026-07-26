@@ -1,5 +1,5 @@
 # OPTIONAL: ML music-structure labeling for the DJ library
-# (tools/dj_structure.py / the planner's "Structure (ML)" button).
+# (tools/dj/dj_structure.py / the planner's "Structure (ML)" button).
 #
 # Everything works without these - tracks just keep the internal SSM
 # sections and get no chorus/verse/bridge labels. With them, allin1

@@ -46,7 +46,7 @@ from typing import List, Optional
 import numpy as np
 import yaml
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from PyQt6.QtCore import (

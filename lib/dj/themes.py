@@ -24,7 +24,7 @@ class Theme:
     # ordering is not up for revision.
     #
     # The accent WEIGHTS were, though. Measured over 560 logged seams
-    # (tools/dj_review.py), the assumption behind the 0.08-0.15 tier -
+    # (tools/dj/dj_review.py), the assumption behind the 0.08-0.15 tier -
     # "they sound bad if even slightly off" - is only true of one of them:
     #
     #     echo_out        median flam 0.034 beats   (best of any style)
@@ -48,7 +48,7 @@ class Theme:
         "loop_roll_exit": 0.30, "bassline_layer": 0.20, "double_drop": 0.08,
         "loop_build": 0.28, "long_fade": 0.3,
         "filter_sweep": 0.6, "echo_out": 0.26,
-        # Stem styles (inert until tools/dj_stems.py has rendered stems):
+        # Stem styles (inert until tools/dj/dj_stems.py has rendered stems):
         # accents, same tier as the other elaborate techniques.
         "stem_drum_swap": 0.3, "acapella_out": 0.2})
     min_play_s: float = 150.0
@@ -103,7 +103,7 @@ class Theme:
 # relative position: peak_heavy = the fast end) while fitting the numbers
 # to the music that's actually there.
 # Bands widened APART 2026-07-24. The pairs that measured as duplicates
-# (tools/_dj_theme_sim.py: hard_drive/peak_heavy at 0.45 track overlap,
+# (tools/tests/_dj_theme_sim.py: hard_drive/peak_heavy at 0.45 track overlap,
 # chill_evening/gentle_organic at 0.33) were the pairs whose percentile
 # windows sat almost on top of each other - hard_drive 0.55-0.90 inside
 # peak_heavy's 0.62-0.97 is not a different tempo landscape, it is the
@@ -275,7 +275,7 @@ BUILTIN_THEMES = {t.name: t for t in [
 # peak_heavy; a chill_evening/wind_down/gentle_organic overlap triangle;
 # hypnotic_deep 30% on groove). The criterion was "offer only what
 # measures distinct", and after the axis and band work later the same day
-# they all do - tools/_dj_theme_sim.py, one 3h night each on the real
+# they all do - tools/tests/_dj_theme_sim.py, one 3h night each on the real
 # 529-track library:
 #
 #     hard_drive / peak_heavy          0.45 -> 0.20

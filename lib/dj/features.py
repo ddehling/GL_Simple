@@ -1,7 +1,7 @@
 """Offline per-track music analysis for the DJ subsystem.
 
 Everything the DJ brain needs to mix two songs well, computed once per file
-by the library scanner (tools/dj_scan.py) and stored in the sqlite library:
+by the library scanner (tools/dj/dj_scan.py) and stored in the sqlite library:
 
     tempo + beat grid   windowed autocorrelation -> comb-refined period/phase
                         per stable-tempo segment (handles tempo changes)
@@ -1250,7 +1250,7 @@ def live_crosscheck(bands, grid_bpm):
 def _rhythm_or_none(bands, grid, downbeat, mix_points=None):
     """Mix-derived rhythm signature (DB v13). Never fails an analysis: a
     track the fold can't handle just ships without one (the seam terms are
-    evidence-gated). The stem-derived upgrade lives in tools/dj_rhythm.py.
+    evidence-gated). The stem-derived upgrade lives in tools/dj/dj_rhythm.py.
     The primary mix in/out points anchor the v2 REGION patterns."""
     try:
         from lib.dj.rhythm import rhythm_signature

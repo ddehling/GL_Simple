@@ -24,8 +24,8 @@ python-osc
 Pillow
 
 # Standalone editor / GUI tools under tools/ (not needed to run the main app):
-#   PyQt6 + pyqtgraph -> tools/sound_editor.py, tools/layout_editor.py
-#   PySide6 + NodeGraphQt -> tools/narrative_editor_qt.py
+#   PyQt6 + pyqtgraph -> tools/editors/sound_editor.py, tools/layout_editor.py
+#   PySide6 + NodeGraphQt -> tools/editors/narrative_editor_qt.py
 PyQt6
 pyqtgraph
 PySide6

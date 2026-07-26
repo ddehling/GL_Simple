@@ -15,7 +15,7 @@ clone of Music2Emotion (a few hundred MB of checkpoints - too large to vendor
 into the repo). find_model_dir() locates it via $DJ_MOOD_MODEL_DIR or a
 sibling `../Music2Emotion`; without it available() is False and nothing runs.
 
-WHY A SUBPROCESS (tools/dj_mood.py, not an in-process QThread like enrich):
+WHY A SUBPROCESS (tools/dj/dj_mood.py, not an in-process QThread like enrich):
 Music2Emo's predict() uses paths relative to its own repo root, so we must
 chdir into it, and it pulls a heavy transformers/MERT stack into VRAM. Both
 are isolated (and killable) in a dedicated process. MoodExtractor therefore

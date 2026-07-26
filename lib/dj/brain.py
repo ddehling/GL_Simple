@@ -130,7 +130,7 @@ class TrackInfo:
         # 'do not use' flag (DB v11). Kept on the object so the library
         # browser can show + toggle it; callers that auto-select filter it out.
         self.excluded = bool(row.get("excluded"))
-        # Pre-rendered stems on disk (tools/dj_stems.py)? Stamped by
+        # Pre-rendered stems on disk (tools/dj/dj_stems.py)? Stamped by
         # load_library (needs the music root); gates the stem styles.
         self.has_stems = False
         self.cues = list(cues or [])
@@ -1123,7 +1123,7 @@ class Brain:
                 -((eff_bpm - bpm_target) / 7.0) ** 2)
             total *= s_bpm_arc
         # TERM BREAKDOWN rides the winning candidate's meta into the `armed`
-        # log line, so tools/dj_review.py can correlate every term against
+        # log line, so tools/dj/dj_review.py can correlate every term against
         # what the seam MEASURED. Eighteen constants were each tuned in
         # isolation by ear or sim and never checked against outcomes - this
         # is the join that makes that checkable. Cheap: a dict of floats per
@@ -1585,7 +1585,7 @@ class Brain:
                 weights[k] = w
         # Stem styles: accent-tier defaults when the theme dict predates
         # them (hard-gated on rendered stems below, so a default here is
-        # inert without tools/dj_stems.py output on disk).
+        # inert without tools/dj/dj_stems.py output on disk).
         for k, dflt in (("stem_drum_swap", 0.3), ("acapella_out", 0.2)):
             if k not in weights:
                 weights[k] = (dflt * self.style_fb.get(k, 1.0)
@@ -1596,7 +1596,7 @@ class Brain:
         # the elaborate techniques lose the dice roll or never reach the
         # table at all. kill() is the ONLY path that zeroes a weight from
         # here down, so the record is complete by construction; it rides the
-        # plan into the `armed` log line for tools/dj_review.py --gates.
+        # plan into the `armed` log line for tools/dj/dj_review.py --gates.
         gated = {}
 
         def kill(styles, reason):
@@ -1691,7 +1691,7 @@ class Brain:
                 kill(("cut_at_drop", "double_drop", "echo_out",
                       "bassline_layer"), "grid_conf<0.7")
             # cut_at_drop earns a STRICTER bar than the rest of its tier.
-            # Measured over 560 logged seams (tools/dj_review.py): median
+            # Measured over 560 logged seams (tools/dj/dj_review.py): median
             # flam 0.247 beats against 0.061-0.068 for every blend style
             # and 0.034-0.056 for the other short ones - four times worse
             # than anything else the DJ plays. It is the only technique
@@ -1835,7 +1835,7 @@ class Brain:
             fade_reason = "meter_clash"
 
         # What the dice actually chose from, and what never made the table.
-        # Rides the plan into the `armed` log (tools/dj_review.py --gates).
+        # Rides the plan into the `armed` log (tools/dj/dj_review.py --gates).
         # An empty menu when `rolled` is False is the truth, not a bug: a
         # low-confidence or beatless seam takes the fade WITHOUT building a
         # menu, so reporting the untouched theme weights there would count

@@ -84,7 +84,7 @@ display:
   headless: false     # true = no desktop window, web preview only
 
 audio:
-  device_name: "TONOR"  # Mic device (run tools/sound_editor.py to find yours)
+  device_name: "TONOR"  # Mic device (run tools/editors/sound_editor.py to find yours)
 
 web:
   enabled: true
@@ -385,7 +385,7 @@ midi.connect()
 **Test standalone:**
 ```bash
 python lib/midi_controller.py
-python tools/midi_integration_example.py
+python tools/hardware/midi_integration_example.py
 ```
 
 ---
@@ -635,7 +635,8 @@ web/
   static/js/preview.js      # WebGL2 live preview client
   static/css/preview.css    # Preview page styles
 config/                     # DMX universe and fixture definitions (Unit*.txt)
-tools/                      # Standalone utilities: sound_editor, midi_integration_example, etc.
+tools/                      # dj_planner.py, narrative_editor_v2_qt.py, layout_editor.py at the top
+                            # level; dj/, editors/, tests/, hardware/, media/ below it
 media/sounds/               # Ambient audio files
 media/images/               # Image assets
 docs/                       # Documentation

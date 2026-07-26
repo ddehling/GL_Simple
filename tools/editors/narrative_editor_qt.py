@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
 """
-Narrative Script Editor v2 (PySide6 + NodeGraphQt)
+Narrative Script Editor (PySide6 + NodeGraphQt)
 
 Visual node-graph editor for building narrative audio scripts.
-Uses PySide6 + NodeGraphQt for the interface, Claude Code CLI for AI-assisted generation.
-
-v2 builds on the v1 editor (tools/editors/narrative_editor_qt.py, kept intact) by
-anchoring stories around first-class recurring concepts:
-  - CODEX: characters / locations / events / themes / ideas live as entity
-    cards inside script.json ("entities" section) instead of only as prose
-    in the world bible. Entity slugs double as node tags — the existing
-    linkage mechanism — so save files stay fully compatible with the v1
-    editor and the runtime NarrativePlayer (both ignore/preserve the new
-    sections).
-  - Cards can be imported copy-by-value from other scripts' codices; the
-    "source" field on each card leaves room for a shared external codex
-    database later.
+Uses PyQt5 + NodeGraphQt for the interface, Claude Code CLI for AI-assisted generation.
 
 Usage:
-    python tools/narrative_editor_v2_qt.py
-    python tools/narrative_editor_v2_qt.py media/sounds/my_story/script.json
+    python tools/editors/narrative_editor_qt.py
+    python tools/editors/narrative_editor_qt.py media/sounds/my_story/script.json
 
 Requirements (beyond base project):
     pip install PySide6 NodeGraphQt qtpy
@@ -29,7 +17,6 @@ import datetime as _datetime
 import faulthandler
 import json
 import logging
-import math
 import os
 import queue
 import random
@@ -41,7 +28,7 @@ import threading
 import time
 import traceback
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,11 +42,10 @@ from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, Q
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-    QFrame, QGraphicsItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QFrame, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QStatusBar, QTabWidget, QTextEdit, QToolTip, QVBoxLayout, QWidget,
+    QStatusBar, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from NodeGraphQt import NodeGraph, BaseNode
@@ -68,18 +54,16 @@ from NodeGraphQt import NodeGraph, BaseNode
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-REPO_ROOT  = Path(__file__).parent.parent
+REPO_ROOT  = Path(__file__).resolve().parents[2]
 SOUNDS_DIR = REPO_ROOT / "media" / "sounds"
 RECENTS_PATH = REPO_ROOT / "config" / "narrative_recents.json"
 RECENTS_MAX = 10
 
-# Crash / autosave diagnostics — kept separate from v1 so both editors can
-# be open on the same machine (and even the same script) without clobbering
-# each other's sidecars or logs.
-LOG_DIR        = REPO_ROOT / "logs" / "narrative_editor_v2"
+# Crash / autosave diagnostics
+LOG_DIR        = REPO_ROOT / "logs" / "narrative_editor"
 CRASH_LOG_PATH = LOG_DIR / "crash.log"
 APP_LOG_PATH   = LOG_DIR / "app.log"
-AUTOSAVE_SUFFIX = ".autosave_v2.json"
+AUTOSAVE_SUFFIX = ".autosave.json"
 
 NODE_PREVIEW_LEN = 60        # chars shown inside a node box
 # Maximum story_context size sent to AI per call. The previous 4000-char
@@ -120,28 +104,6 @@ def _find_node_length_preset_index(rng):
 
 PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
 
-# Model ids passed to the `claude` CLI (--model). Latest usable tiers,
-# verified against this machine's CLI 2026-07-25. Update these when new
-# model generations ship — everything else references them.
-MODEL_SONNET = 'claude-sonnet-5'
-MODEL_OPUS   = 'claude-opus-5'
-# Top tier — for node prose, where the writing IS the deliverable. Roughly 2x
-# Opus's token cost and slower per call (watch CLI_TIMEOUT_S on big fan-outs);
-# not available to orgs configured below 30-day data retention. The structured
-# JSON passes (card/arc distillation, web proposal) stay on MODEL_OPUS.
-MODEL_FABLE  = 'claude-fable-5'
-
-
-def _model_short_name(model_id: str) -> str:
-    """'claude-sonnet-5' -> 'Sonnet 5' — for thinking-status labels."""
-    parts = (model_id or '').replace('claude-', '').split('-')
-    if not parts or not parts[0]:
-        return 'Claude'
-    name = parts[0].capitalize()
-    if len(parts) > 1:
-        name += ' ' + '.'.join(parts[1:])
-    return name
-
 # ElevenLabs voice parameter safe ranges (prevents slow/distorted speech)
 VOICE_STABILITY_MIN = 0.35
 VOICE_STABILITY_MAX = 0.80
@@ -176,11 +138,7 @@ _LAYER_MIGRATION = {
 
 GENERATION_PROFILES = {
     'full': {
-        # Depth ceiling in BEATS. The story structure's own length is the
-        # real bound for full runs — v2 structures may exceed the classic
-        # 10 layers, so this must not clip them (it used to be 10, which
-        # silently stopped >10-beat structures at beat 10).
-        'max_depth': 999,
+        'max_depth': 10,
         # (min, max) children per parent — but total layer is capped by layer_caps
         'widths': {
             'arrival': (2, 4), 'presence': (2, 4), 'curiosity': (2, 3),
@@ -197,7 +155,7 @@ GENERATION_PROFILES = {
         },
     },
     'continue': {
-        'max_depth': 999,   # structure-bounded, same as 'full'
+        'max_depth': 10,
         'widths': {
             'arrival': (2, 4), 'presence': (2, 4), 'curiosity': (2, 3),
             'discovery': (3, 5), 'complication': (2, 4), 'intimacy': (2, 3),
@@ -291,105 +249,7 @@ SCRIPT_TEMPLATE = {
     "variables": [],
     "start_nodes": [],
     "nodes": {},
-    "entities": {},
 }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Codex — first-class recurring concepts (v2)
-#
-# The codex replaces the monolithic world bible as the primary store of
-# recurring concepts: each entity is a card living in script.json under
-# "entities" (self-contained — the file is still the whole story). Entity
-# slugs double as node tags, which is the existing node↔entity linkage that
-# both the v1 editor and the runtime NarrativePlayer already preserve/ignore.
-#
-# The "source" field records provenance: "local" for cards authored here,
-# "import:<script>" for cards copied from another script's codex. A future
-# shared codex database can plug in behind the same accessors by using
-# "db:<id>" sources — no format change needed.
-# ─────────────────────────────────────────────────────────────────────────────
-
-ENTITY_KINDS = ['character', 'location', 'event', 'theme', 'idea', 'object']
-
-ENTITY_TEMPLATE = {
-    'kind': 'character',
-    'name': '',
-    'aliases': [],
-    'essence': '',        # 1-3 sentences; what generation prompts lead with
-    'facts': [],          # durable canon facts, one string each
-    'sensory': [],        # sensory anchors (smell/sound/texture), one each
-    'voice_notes': '',    # how the narrator handles this entity
-    'relationships': [],  # [{"to": other_slug, "nature": "..."}]
-    'notes': '',          # author-only; never sent to the AI
-    'source': 'local',
-}
-
-# Slugs that can never name an entity: an entity slug doubles as a node tag,
-# so it must not collide with layer tags, nor with the OLD layer names that
-# _migrate_layers rewrites on every load.
-RESERVED_ENTITY_SLUGS = frozenset(LAYER_ORDER) | frozenset(_LAYER_MIGRATION)
-
-
-def _sanitize_entity_card(card: dict) -> dict:
-    """Clamp an AI-proposed entity card to ENTITY_TEMPLATE field shapes.
-    Returns only the AI-authored fields — caller merges notes/source/etc."""
-    kind = card.get('kind', 'idea')
-    if kind not in ENTITY_KINDS:
-        kind = 'idea'
-    rels = []
-    for r in card.get('relationships', []) or []:
-        if isinstance(r, dict) and r.get('to'):
-            rels.append({'to': ScriptData.sanitize_entity_slug(str(r['to'])),
-                         'nature': str(r.get('nature', ''))[:200]})
-    return {
-        'kind': kind,
-        'name': str(card.get('name', '') or '')[:80],
-        'aliases': [str(a)[:60] for a in (card.get('aliases') or [])][:8],
-        'essence': str(card.get('essence', ''))[:1200],
-        'facts': [str(f)[:300] for f in (card.get('facts') or [])][:12],
-        'sensory': [str(s)[:200] for s in (card.get('sensory') or [])][:8],
-        'voice_notes': str(card.get('voice_notes', ''))[:600],
-        'relationships': rels[:10],
-    }
-
-# ─────────────────────────────────────────────────────────────────────────────
-# The Web — story-to-story relations (v2 Phase 3)
-#
-# Relations are stored on the FROM arc under 'relations':
-#   [{"to": arc_id, "type": <RELATION_TYPES key>, "note": str}, ...]
-# v1 ignores-and-preserves the field (its arc saves use dict.update()).
-# The runtime needs no changes: junctions become ordinary low-weight edges,
-# callbacks live inside node text, and everything else is planning metadata.
-#
-# Canon events live top-level under 'canon_events':
-#   [{"id": "ev_001", "summary": str, "entities": [slug], "established_by": arc_id}]
-# They are the cross-pollination ledger: facts a generated story established
-# that other stories can reference (callback) or retell (same_event).
-# ─────────────────────────────────────────────────────────────────────────────
-
-RELATION_TYPES = {
-    'shares_character': 'the same codex entities appear in both stories',
-    'same_event':       'both stories touch one canon event from different angles',
-    'callback':         "FROM story's text references TO story's canon events",
-    'sequel':           'FROM story takes place after TO story',
-    'junction':         'runtime drift: low-weight edges let a walk slide FROM → TO',
-}
-
-RELATION_COLORS = {
-    'shares_character': '#4a90d9',
-    'same_event':       '#9b59b6',
-    'callback':         '#e67e22',
-    'sequel':           '#2ecc71',
-    'junction':         '#e74c3c',
-}
-
-JUNCTION_EDGE_WEIGHT = 0.5   # drift edges are deliberately rare
-
-# A junction relation is considered fully woven once this many node pairs
-# connect the two stories (directly or via bridges) — further weave presses
-# skip it, keeping repeated weaving idempotent and cost bounded.
-MAX_JUNCTION_LINKS_PER_PAIR = 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1067,301 +927,6 @@ When the author asks for a draft premise, beat, or motif, write it at the above 
 not as advice about what one would look like.
 """
 
-SYSTEM_EXTRACT_CODEX = """\
-You are building a CODEX for a narrative audio-installation script: cards for the
-recurring concepts the story world is built from, distilled from the world bible
-and the existing node graph.
-
-Entity kinds:
-  character — a person, creature, or personified force that acts or speaks
-  location  — a place the narrative returns to
-  event     — ONE specific happening (past or ongoing) that stories can reference
-              from different angles ("the 2041 quake", not "earthquakes")
-  theme     — an emotional/structural undercurrent the narrative keeps touching
-  idea      — a concept or institution of the world (a ritual, a technology, a rule)
-  object    — a physical thing that recurs (a key, a drink, a bell)
-
-RULES:
-- slugs: short lowercase snake_case. If the TAG CENSUS in the prompt already has a
-  tag naming the same concept, USE THAT TAG as the slug — this is what links the
-  card to existing nodes. Never invent a near-duplicate of an existing tag.
-- Do not re-propose slugs listed as already in the codex.
-- essence: 1-3 sentences capturing the irreducible core — written to steer prose
-  generation, not as encyclopedia text.
-- facts: 3-8 short durable canon facts. Things that must stay true across every
-  story that uses this entity. No atmosphere — atmosphere goes in sensory.
-- sensory: 0-5 concrete sensory anchors (a smell, a sound, a texture).
-- voice_notes: how the narrator should handle this entity (register, distance,
-  what is never said aloud). One or two sentences; empty string if nothing special.
-- relationships: links to OTHER slugs in this output or the existing codex,
-  each with a short "nature" phrase.
-- Propose the entities that CARRY the world — typically 8-25 cards. Prefer fewer,
-  stronger cards over exhaustive coverage. Every character and location that
-  recurs; only the most load-bearing themes/ideas/events/objects.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{
-  "entities": {
-    "slug": {
-      "kind": "character",
-      "name": "Display Name",
-      "aliases": ["other name"],
-      "essence": "...",
-      "facts": ["..."],
-      "sensory": ["..."],
-      "voice_notes": "...",
-      "relationships": [{"to": "other_slug", "nature": "..."}]
-    }
-  }
-}
-"""
-
-SYSTEM_CODEX_CHAT = """\
-You are a creative collaborator helping an author develop CODEX ENTITY CARDS for
-a narrative audio installation. The codex holds the recurring concepts —
-characters, locations, events, themes, ideas, objects — that every story in the
-script is built from. Cards are injected into generation calls as CANON, so what
-lands on a card shapes all future prose.
-
-Card fields and their grain (so your suggestions land right):
-  essence       — 1-3 sentences of irreducible core, written to STEER PROSE
-                  generation, not encyclopedia text
-  facts         — durable canon: 3-8 short facts that must stay true in EVERY
-                  story that uses the entity (expensive — propose sparingly)
-  sensory       — 0-5 concrete anchors: a smell, a sound, a texture
-  voice_notes   — how the narrator handles this entity (register, distance,
-                  what is never said aloud)
-  relationships — links to other codex slugs with a short nature phrase
-  aliases       — other names the entity goes by
-
-Help the author deepen an entity: find its contradictions and hooks, propose
-facts worth canonizing (and flag ones too limiting to canonize), suggest
-relationships to other codex entities, and notice when the conversation is
-really describing a SEPARATE entity that deserves its own card — say so.
-
-When a WORLD BIBLE / CODEX block is appended below, treat it as reference
-material. The user's message defines the topic. When asked for a draft field,
-write it at the grain above directly — not advice about what it would look like.
-
-When the author is happy, they press "Distill Chat → Entity" and the
-conversation is distilled onto the card — so drive toward concrete,
-distillable material.
-"""
-
-SYSTEM_DISTILL_ENTITY = """\
-You are distilling a brainstorming conversation into a CODEX ENTITY CARD for a
-narrative audio installation. Cards are injected into prose generation as CANON.
-
-You receive the CURRENT CARD and the CONVERSATION. Return the updated card:
-refine and extend, don't discard — keep existing card content unless the
-conversation contradicts or supersedes it.
-
-Field rules:
-- essence: 1-3 sentences of irreducible core, written to steer prose.
-- facts: durable canon only, 3-8 short facts, each true in every future story.
-- sensory: 0-5 concrete anchors (a smell, a sound, a texture).
-- voice_notes: how the narrator handles this entity; '' if nothing special.
-- relationships: reference EXISTING codex slugs (list provided) or slugs you
-  define in related_entities.
-- related_entities: 0-3 OTHER concepts the conversation developed enough to
-  deserve their own card. Slugs: short lowercase snake_case. Do not re-propose
-  existing slugs. Omit or leave empty when the chat stayed on one entity.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{
-  "entity": {"kind": "character", "name": "...", "aliases": ["..."],
-             "essence": "...", "facts": ["..."], "sensory": ["..."],
-             "voice_notes": "...",
-             "relationships": [{"to": "slug", "nature": "..."}]},
-  "related_entities": {"slug": {"kind": "...", "name": "...", "essence": "...",
-                                 "facts": ["..."]}}
-}
-"""
-
-SYSTEM_PROPOSE_WEB = """\
-You are planning a WEB of interconnected stories for a narrative audio installation.
-Multiple stories coexist in one script and cross-pollinate through shared codex
-entities, canon events, callbacks, and junctions (runtime drift edges that let a
-listener's random walk slide from one story into another).
-
-You receive the world bible and the full codex (canon entity cards + canon events)
-in the system prompt, and the EXISTING STORIES with their relations in the user
-prompt. Propose a richer web: new stories anchored in the codex, plus typed
-relations among stories (existing and new).
-
-Relation types (relations point FROM one story TO another):
-  shares_character — the same codex entities appear in both stories
-  same_event       — both stories touch one canon event from different angles
-  callback         — FROM story's text references TO story's canon events
-  sequel           — FROM story takes place after TO story
-  junction         — runtime drift: low-weight edges let a walk slide FROM → TO
-
-RULES:
-- New stories must be anchored in EXISTING codex entities — recombine the cast in
-  new configurations rather than inventing new characters. 2-5 cast slugs each.
-- When the user prompt lists DORMANT CODEX ENTITIES (cast in no story yet),
-  PRIORITIZE them: build each new story around 1-3 dormant entities, pairing them
-  with at most 1-2 well-used ones for continuity. The CAST USAGE counts show which
-  entities are already heavily played — avoid adding more load to the top of that
-  list. Dormant entities exist because the author cared enough to write them;
-  giving them stories is a primary goal of this pass.
-- premise: 300-700 chars carrying character anchors + specific situation + stakes.
-  It reaches every node-generation call, so it must read cleanly as 'the bind is
-  <premise>' and 'the action must be <premise> enacted'.
-- structure: 4-10 beats, each {"layer": <archetype>, "direction": "..."}. layer is
-  one of: arrival, presence, curiosity, discovery, complication, intimacy, turn,
-  consequence, echo, stillness. Directions are concrete (scene anchor + one
-  transformation + a boundary), 100-300 chars. Short structures suit vignette or
-  callback stories; the classic 10 suits a full arc.
-- themes: comma-separated. motif: one concrete sensory thread, 60-150 chars.
-- relations: 1-3 per new story, referencing story NAMES (existing names verbatim,
-  or the names you propose). Junctions only between tonally compatible stories;
-  be conservative with same_event.
-- Propose 2-4 new stories unless the instructions say otherwise.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{
-  "stories": [
-    {"name": "...", "premise": "...", "themes": "a, b", "motif": "...",
-     "cast": ["slug"], "structure": [{"layer": "arrival", "direction": "..."}]}
-  ],
-  "relations": [
-    {"from": "Story Name", "to": "Other Story", "type": "junction", "note": "..."}
-  ]
-}
-"""
-
-SYSTEM_EXTRACT_CANON = """\
-You are extracting CANON from one generated story of a narrative audio installation:
-durable facts about codex entities, and specific canon events that other stories can
-later reference (callbacks) or retell from different angles.
-
-The system prompt carries the story's entity cards and the EXISTING canon events.
-The user prompt carries the story's premise and its node texts.
-
-RULES:
-- facts: only DURABLE, load-bearing facts this story establishes about a cast
-  entity — things every future story must keep true. Not atmosphere, not one-off
-  imagery. 0-4 per entity. NEVER restate a fact already on the entity's card.
-- events: 0-4 SPECIFIC happenings this story establishes (something occurred,
-  changed hands, was decided, was lost). One concrete sentence each, past tense,
-  with the involved entity slugs. Skip anything already in the existing canon.
-- When in doubt, extract LESS. Canon is expensive — every future story must honor it.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{
-  "facts": {"entity_slug": ["new durable fact", "..."]},
-  "events": [{"summary": "...", "entities": ["slug"]}]
-}
-"""
-
-SYSTEM_WEAVE_JUNCTIONS = """\
-You are weaving JUNCTIONS between two stories in a narrative audio graph: rare
-cross-story edges where a listener's random walk drifts out of story A into story B
-without noticing a boundary.
-
-You receive nodes from story A (drift sources) and story B (drift targets), each
-with its beat archetype, its position as a percentage through its own story, and a
-text excerpt.
-
-A good junction: the target reads as a natural next thought after the source —
-shared imagery, tone, or subject — the positions fit (a mid-story source should
-land in an early-to-mid target, never into a target's final beats), and the
-EMOTIONAL REGISTER carries across: never drop a listener from a tense, charged
-moment into a placid opening (or the reverse) without a step between.
-
-For each link, judge the seam itself:
-- If the target genuinely flows from the source as-is, emit the link alone.
-- If the PAIRING is right but the seam needs a stepping stone, also write
-  "bridge_text": one short spoken passage (25-60 words) that carries the
-  listener from the source's ending into the target's opening — same narrator
-  voice, concrete imagery shared with both sides, no exposition, no summary
-  of either story. It will play between the two nodes.
-
-RULES:
-- Suggest 1-4 links. Fewer good links beat many forced ones; zero is acceptable.
-- Never link nodes whose texts share nothing concrete.
-- "from" is a story-A node id; "to" is a story-B node id.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{"links": [{"from": "node_id", "to": "node_id",
-            "bridge_text": "...only when the seam needs it..."}]}
-"""
-
-SYSTEM_WEAVE_CALLBACKS = """\
-You are weaving CALLBACKS into an existing story: rewriting 1-2 of its nodes so
-they reference another story's canon — organically, as a memory, a rumor, an
-overheard fragment, or an object carrying the other story's residue. Never as
-exposition, never as a summary of the other story.
-
-You receive the TARGET CANON (the other story's events and premise) and CANDIDATE
-NODES from the story being rewritten.
-
-RULES:
-- Rewrite 1-2 candidates, no more. Choose the nodes where a callback lands most
-  naturally; if none do, return an empty list.
-- Keep each rewrite within ±20% of the original word count, in the same voice and
-  register, doing the same beat's story-work. The callback is one thread woven
-  through the existing fabric — the node's subject does not change.
-- Reference the canon obliquely and concretely (a name, an object, a place), not
-  by explaining what happened.
-- add_tags: entity slugs newly present in the rewritten text.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{"rewrites": [{"node_id": "...", "new_text": "...", "add_tags": ["slug"]}]}
-"""
-
-SYSTEM_CONSISTENCY_AUDIT = """\
-You are auditing one story's generated nodes against its CANON — the entity
-cards and canon events provided in the system prompt.
-
-Flag ONLY genuine conflicts:
-  hard — the node states something a card fact or canon event makes impossible
-  soft — the node strains canon: implies a contradiction, or uses an entity in
-         a way its essence or voice notes rule out
-
-Do NOT flag: atmosphere; new-but-compatible details; a node simply not
-mentioning canon; style or quality concerns; claims about things that have no
-card or event. False positives destroy trust in the audit — when unsure, stay
-silent.
-
-For each issue, quote or closely paraphrase the offending claim and name the
-SPECIFIC fact, event, or card element it conflicts with.
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{"issues": [{"node_id": "...", "claim": "...", "conflicts_with": "...",
-             "severity": "hard"}]}
-An empty issues list is a good outcome.
-"""
-
-SYSTEM_SEAM_AUDIT = """\
-You are auditing SEAMS in a narrative audio graph: places where one spoken
-node ends and a connected node begins. The listener hears the two back to
-back with a few seconds of silence between. Flag seams that would jar:
-
-  hard — a non-sequitur: the child re-establishes a different scene from
-         nowhere, contradicts the parent's moment, or responds to something
-         that never happened
-  soft — hearable but rough: an abrupt emotional register drop or spike,
-         the child re-introducing a subject the parent just covered as if
-         new, or a topic swerve with no shared hook
-
-Do NOT flag: intentional beat progression (a calm close after an intense
-moment is fine when the imagery carries through), different angles on the
-same moment, plain deepening of the scene, or seams that merely change pace.
-Most seams in a healthy graph are fine — false positives destroy trust in
-the audit; when unsure, stay silent.
-
-Each seam shows the parent's ENDING and the child's OPENING, and whether the
-edge crosses between two different stories (cross-story seams deserve the
-closest listen).
-
-Respond with ONLY this JSON — no markdown fences, no explanation:
-{"issues": [{"from": "parent_id", "to": "child_id", "severity": "hard",
-             "reason": "..."}]}
-An empty issues list is a good outcome.
-"""
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Data Model
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1545,222 +1110,6 @@ class ScriptData:
         self._data["variables"] = list(var_list)[:6]
         self.dirty = True
 
-    # ── Codex (entity) management ────────────────────────────────────────────
-    # See the "Codex" comment block above ENTITY_KINDS for the design. The
-    # short version: entities live in-file, slugs double as node tags, and
-    # every accessor goes through here so a shared external codex can swap
-    # in behind the same interface later.
-
-    @property
-    def entities(self) -> dict:
-        return self._data.setdefault('entities', {})
-
-    @staticmethod
-    def sanitize_entity_slug(name: str) -> str:
-        """Lowercase snake_case slug from a display name. '' if nothing usable."""
-        return re.sub(r'[^a-z0-9]+', '_', (name or '').strip().lower()).strip('_')
-
-    def _free_entity_slug(self, base: str) -> str:
-        """First slug derived from `base` that is neither taken nor reserved."""
-        final, counter = base, 2
-        while final in self.entities or final in RESERVED_ENTITY_SLUGS:
-            final = f'{base}_{counter}'
-            counter += 1
-        return final
-
-    @staticmethod
-    def _entity_match_key(text: str) -> str:
-        """Normalized form for duplicate detection: sanitized slug with
-        leading articles dropped, so 'The Goat' ≡ 'the_goat' ≡ 'goat'."""
-        slug = ScriptData.sanitize_entity_slug(text)
-        parts = [p for p in slug.split('_') if p]
-        while len(parts) > 1 and parts[0] in ('the', 'a', 'an'):
-            parts.pop(0)
-        return '_'.join(parts)
-
-    def find_equivalent_entity(self, name_or_slug: str) -> Optional[str]:
-        """Slug of an existing entity this name/slug duplicates, or None.
-        Matches article-insensitively against every existing slug, display
-        name, and alias — the exact-slug checks at the AI apply sites let
-        'goat' through when 'the_goat' already existed, silently creating
-        duplicate cards."""
-        key = self._entity_match_key(name_or_slug)
-        if not key:
-            return None
-        for slug, card in self.entities.items():
-            if not isinstance(card, dict):
-                continue
-            cands = [slug, card.get('name', '')]
-            cands += [a for a in (card.get('aliases') or [])
-                      if isinstance(a, str)]
-            if any(self._entity_match_key(c) == key for c in cands if c):
-                return slug
-        return None
-
-    def add_entity(self, name: str, kind: str = 'character',
-                   slug: str = '') -> Optional[str]:
-        """Create a new entity card. Returns the final slug, or None."""
-        base = self.sanitize_entity_slug(slug or name)
-        if not base:
-            return None
-        final = self._free_entity_slug(base)
-        card = deepcopy(ENTITY_TEMPLATE)
-        card['kind'] = kind if kind in ENTITY_KINDS else 'idea'
-        card['name'] = (name or '').strip() or final
-        self.entities[final] = card
-        self.dirty = True
-        return final
-
-    def update_entity(self, slug: str, fields: dict):
-        ent = self.entities.get(slug)
-        if ent is None:
-            return
-        # Change-aware — codex form flushes fire on focus changes too.
-        if all(ent.get(k) == v for k, v in fields.items()):
-            return
-        ent.update(fields)
-        self.dirty = True
-
-    def delete_entity(self, slug: str):
-        """Remove a card and scrub relationship references to it. Node tags
-        are content and are deliberately left untouched."""
-        if self.entities.pop(slug, None) is None:
-            return
-        for card in self.entities.values():
-            rels = card.get('relationships', [])
-            card['relationships'] = [r for r in rels if r.get('to') != slug]
-        self.dirty = True
-
-    def rename_entity(self, old: str, new: str,
-                      update_tags: bool = True) -> Optional[str]:
-        """Rename a slug; fixes relationship refs and (optionally) node tags
-        and node 'entities' lists. Returns the final slug, or None."""
-        if old not in self.entities:
-            return None
-        base = self.sanitize_entity_slug(new)
-        if not base or base == old:
-            return None
-        final = self._free_entity_slug(base)
-        self.entities[final] = self.entities.pop(old)
-        for card in self.entities.values():
-            for r in card.get('relationships', []):
-                if r.get('to') == old:
-                    r['to'] = final
-        if update_tags:
-            for nd in self._data['nodes'].values():
-                tags = nd.get('tags', [])
-                if old in tags:
-                    nd['tags'] = [final if t == old else t for t in tags]
-                ents = nd.get('entities')
-                if ents and old in ents:
-                    nd['entities'] = [final if e == old else e for e in ents]
-        self.dirty = True
-        return final
-
-    def entity_usage(self, slug: str) -> list:
-        """Node IDs referencing this entity (via tag or explicit list)."""
-        out = []
-        for nid, nd in self._data['nodes'].items():
-            if slug in nd.get('tags', []) or slug in (nd.get('entities') or []):
-                out.append(nid)
-        return out
-
-    def entity_counts(self) -> dict:
-        """{slug: (node_count, [story_id, ...])} for EVERY entity, one pass.
-
-        A story counts if one of its nodes references the entity, or if the
-        story lists the entity in its ``cast`` — cast membership is what
-        actually reaches generation, so an entity cast into a story it has
-        no nodes in yet still belongs to it. Nodes with no ``arc_id`` are
-        attributed to no story.
-
-        Single sweep on purpose: the list view needs this for every visible
-        card at once, and calling entity_usage() per slug is O(entities x
-        nodes) — a 40-card codex re-walked every node forty times on every
-        refresh."""
-        n_count = {s: 0 for s in self.entities}
-        stories = {s: set() for s in self.entities}
-        for nd in self._data.get('nodes', {}).values():
-            if not isinstance(nd, dict):
-                continue
-            arc_id = nd.get('arc_id') or ''
-            # Union, so a slug listed in BOTH tags and entities counts once
-            # per node — matching entity_usage's one-append-per-node.
-            for slug in set(nd.get('tags') or []) | set(nd.get('entities') or []):
-                if slug in n_count:
-                    n_count[slug] += 1
-                    if arc_id:
-                        stories[slug].add(arc_id)
-        for arc_id, arc in self.arcs.items():
-            cast = arc.get('cast')
-            if isinstance(cast, list):
-                for slug in cast:
-                    if slug in stories:
-                        stories[slug].add(arc_id)
-        return {s: (n_count[s], sorted(stories[s])) for s in self.entities}
-
-    def codex_summary(self, slugs: Optional[list] = None) -> str:
-        """Compact text block of entity cards for AI prompts. Stable kind-
-        then-slug ordering so it stays cache-friendly as a prompt prefix.
-        Pass `slugs` to scope to a cast subset (story generation later)."""
-        pool = self.entities
-        if slugs is not None:
-            pool = {s: pool[s] for s in slugs if s in pool}
-        if not pool:
-            return ''
-        def _order(kv):
-            kind = kv[1].get('kind', 'idea')
-            k = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 99
-            return (k, kv[0])
-        lines = []
-        for slug, card in sorted(pool.items(), key=_order):
-            lines.append(f'[{card.get("kind", "idea").upper()}] {card.get("name", slug)}  (tag: {slug})')
-            if card.get('aliases'):
-                lines.append(f'  aka: {", ".join(card["aliases"])}')
-            if card.get('essence'):
-                lines.append(f'  {card["essence"]}')
-            for f in card.get('facts', []):
-                lines.append(f'  - {f}')
-            if card.get('sensory'):
-                lines.append(f'  senses: {"; ".join(card["sensory"])}')
-            if card.get('voice_notes'):
-                lines.append(f'  voice: {card["voice_notes"]}')
-            for r in card.get('relationships', []):
-                # Only links whose target actually exists — dangling refs
-                # (e.g. from imports) would pollute generation prompts.
-                if r.get('to') in self.entities:
-                    lines.append(f'  ↔ {r["to"]}: {r.get("nature", "")}')
-            lines.append('')
-        return '\n'.join(lines).rstrip()
-
-    def import_entities_from(self, other_path, slugs: list) -> list:
-        """Copy entity cards from another script.json (copy-by-value; the
-        self-contained model). Slugs are kept IDENTICAL — they are the tag
-        linkage, and renaming on import would break cross-script identity.
-        Existing slugs are skipped, never overwritten. Returns imported slugs."""
-        try:
-            data = json.loads(Path(other_path).read_text(encoding='utf-8'))
-        except Exception:
-            return []
-        pool = data.get('entities', {})
-        src_label = f'import:{Path(other_path).parent.name}'
-        imported = []
-        for slug in slugs:
-            card = pool.get(slug)
-            if not isinstance(card, dict) or slug in self.entities \
-                    or slug in RESERVED_ENTITY_SLUGS:
-                continue
-            new_card = deepcopy(ENTITY_TEMPLATE)
-            new_card.update(deepcopy(card))
-            new_card['source'] = src_label
-            # Development chat stays with the donor script — cards travel clean.
-            new_card.pop('chat_history', None)
-            self.entities[slug] = new_card
-            imported.append(slug)
-        if imported:
-            self.dirty = True
-        return imported
-
     # ── Arc management ──────────────────────────────────────────────────────
 
     @property
@@ -1776,8 +1125,6 @@ class ScriptData:
         return self.arcs.get(aid) if aid else None
 
     def set_active_arc(self, arc_id: str):
-        if self._data.get('active_arc_id') == arc_id:
-            return
         self._data['active_arc_id'] = arc_id
         self.dirty = True
 
@@ -1806,17 +1153,9 @@ class ScriptData:
         self.dirty = True
 
     def save_arc(self, arc_id: str, data: dict):
-        arc = self.arcs.get(arc_id)
-        if arc is None:
-            return
-        # Change-aware: panel flushes (tab switches, selection changes, app
-        # close) call this with unchanged values — those must not mark the
-        # script dirty, or Ctrl+S is immediately followed by a phantom
-        # "unsaved changes" prompt on quit.
-        if all(arc.get(k) == v for k, v in data.items()):
-            return
-        arc.update(data)
-        self.dirty = True
+        if arc_id in self.arcs:
+            self.arcs[arc_id].update(data)
+            self.dirty = True
 
     def get_node_arc_id(self, node_id: str) -> str:
         nd = self._data.get('nodes', {}).get(node_id, {})
@@ -1832,223 +1171,6 @@ class ScriptData:
         if not arc_id:
             return {}
         return self._data.get('arcs', {}).get(arc_id, {}) or {}
-
-    # ── Story extensions on arcs (v2) ───────────────────────────────────────
-    # v2 "stories" ARE arcs, extended in place with two optional fields:
-    #   cast:      [entity_slug, ...] — which codex entities are in play
-    #   structure: [{"layer": <LAYER_ORDER archetype>, "direction": str}, ...]
-    #              — the flexible beat sequence (any length/order/repeats)
-    # Storing them on the arc keeps v1 fully compatible: v1's arc editor
-    # saves via dict.update() so unknown fields survive, and node arc_id
-    # stays the single story-linkage field. The classic 10-layer `beats`
-    # dict is kept in sync as a DERIVED view whenever v2 writes a structure,
-    # so v1 still displays sensible beats. Ownership rule: once a script is
-    # edited in v2, do story edits in v2 — v1 beat edits don't propagate
-    # back into structure.
-
-    @staticmethod
-    def default_structure() -> list:
-        """The classic 10-layer arc, as a structure list."""
-        return [{'layer': layer, 'direction': ''} for layer in LAYER_ORDER]
-
-    @staticmethod
-    def beats_from_structure(structure: list) -> dict:
-        """Derive the v1 beats dict from a structure list. Repeated
-        archetypes concatenate their directions with ' / '."""
-        beats = {layer: '' for layer in LAYER_ORDER}
-        for entry in structure:
-            layer = entry.get('layer', '')
-            d = (entry.get('direction') or '').strip()
-            if layer in beats and d:
-                beats[layer] = d if not beats[layer] else beats[layer] + ' / ' + d
-        return beats
-
-    def get_story_structure(self, arc_id: str) -> list:
-        """Resolved beat sequence for a story. Priority: the arc's explicit
-        `structure` field; else derived from its classic beats dict; else
-        the default 10-layer arc (also the path for arc_id ''). Always a
-        non-empty list of {'layer', 'direction'} with valid archetypes."""
-        arc = self.get_arc(arc_id)
-        raw = arc.get('structure')
-        if isinstance(raw, list):
-            clean = [{'layer': e['layer'],
-                      'direction': str(e.get('direction') or '')}
-                     for e in raw
-                     if isinstance(e, dict) and e.get('layer') in LAYER_ORDER]
-            if clean:
-                return clean
-        beats = arc.get('beats', {}) if arc else {}
-        return [{'layer': layer, 'direction': str(beats.get(layer) or '')}
-                for layer in LAYER_ORDER]
-
-    def set_story_structure(self, arc_id: str, structure: list):
-        """Write a story's structure and re-derive the v1 beats view."""
-        if arc_id not in self.arcs:
-            return
-        clean = [{'layer': e.get('layer'),
-                  'direction': str(e.get('direction') or '')}
-                 for e in structure if e.get('layer') in LAYER_ORDER]
-        if not clean:
-            clean = self.default_structure()
-        if self.arcs[arc_id].get('structure') == clean:
-            return   # beats are derived — unchanged structure means both match
-        self.arcs[arc_id]['structure'] = clean
-        self.arcs[arc_id]['beats'] = self.beats_from_structure(clean)
-        self.dirty = True
-
-    def get_story_cast(self, arc_id: str) -> list:
-        """Entity slugs in play for this story (only ones still in the
-        codex). Empty list = no cast = NOTHING from the codex is injected
-        into that story's generation (explicit opt-in per story)."""
-        arc = self.get_arc(arc_id)
-        cast = arc.get('cast') if arc else None
-        if not isinstance(cast, list):
-            return []
-        return [s for s in cast if s in self.entities]
-
-    def set_story_cast(self, arc_id: str, cast: list):
-        if arc_id in self.arcs and self.arcs[arc_id].get('cast') != list(cast):
-            self.arcs[arc_id]['cast'] = list(cast)
-            self.dirty = True
-
-    @staticmethod
-    def _canon_events_block(events: list) -> str:
-        if not events:
-            return ''
-        lines = ['CANON EVENTS (established happenings — reference freely, never contradict):']
-        for ev in events:
-            ents = ', '.join(ev.get('entities', []))
-            lines.append(f'- [{ev.get("id", "?")}] {ev.get("summary", "")}'
-                         + (f'  (entities: {ents})' if ents else ''))
-        return '\n'.join(lines)
-
-    def cast_codex_for(self, arc_id: str) -> str:
-        """Codex prompt block for a story's generation run: the cast's
-        cards followed by the canon events relevant to that cast.
-
-        NO CAST = NOTHING — a story with no checked entities gets no codex
-        material at all (cards or events). The codex is opt-in per story;
-        use full_codex_block() for script-level passes that genuinely need
-        everything."""
-        cast = self.get_story_cast(arc_id)
-        if not cast:
-            return ''
-        block = self.codex_summary(cast)
-        ev_block = self._canon_events_block(self.canon_events_for(arc_id))
-        if ev_block:
-            block = (block + '\n\n' if block else '') + ev_block
-        return block
-
-    def full_codex_block(self) -> str:
-        """The WHOLE codex + every canon event — for script-level passes
-        (web proposal, codex chat context) that legitimately survey
-        everything, regardless of any story's cast."""
-        block = self.codex_summary()
-        ev_block = self._canon_events_block(self.canon_events())
-        if ev_block:
-            block = (block + '\n\n' if block else '') + ev_block
-        return block
-
-    # ── Canon events (v2 Phase 3) ────────────────────────────────────────────
-
-    def canon_events(self) -> list:
-        return self._data.setdefault('canon_events', [])
-
-    def add_canon_event(self, summary: str, entities: list = None,
-                        established_by: str = '') -> Optional[str]:
-        """Append a canon event; returns its id (or None for empty summary)."""
-        summary = (summary or '').strip()
-        if not summary:
-            return None
-        evs = self.canon_events()
-        taken = {e.get('id') for e in evs if isinstance(e, dict)}
-        i = len(evs) + 1
-        while f'ev_{i:03d}' in taken:
-            i += 1
-        ev = {
-            'id': f'ev_{i:03d}',
-            'summary': summary,
-            'entities': [s for s in (entities or []) if s in self.entities],
-            'established_by': established_by,
-        }
-        evs.append(ev)
-        self.dirty = True
-        return ev['id']
-
-    def remove_canon_event(self, ev_id: str) -> bool:
-        """Delete a canon event by id. Returns True if one was removed."""
-        evs = self.canon_events()
-        kept = [e for e in evs if not (isinstance(e, dict)
-                                       and e.get('id') == ev_id)]
-        if len(kept) == len(evs):
-            return False
-        self._data['canon_events'] = kept
-        self.dirty = True
-        return True
-
-    def canon_events_for(self, arc_id: str) -> list:
-        """Events relevant to a story: cast-entity overlap, entity-less
-        (global) events, or events this story itself established. A story
-        with NO cast sees none — same opt-in rule as the cards."""
-        cast = set(self.get_story_cast(arc_id))
-        if not cast:
-            return []
-        out = []
-        for ev in self.canon_events():
-            if not isinstance(ev, dict):
-                continue
-            ents = set(ev.get('entities', []))
-            if not ents or (ents & cast) \
-                    or ev.get('established_by') == arc_id:
-                out.append(ev)
-        return out
-
-    # ── Story relations — the web (v2 Phase 3) ───────────────────────────────
-
-    def get_story_relations(self, arc_id: str) -> list:
-        """Valid outgoing relations of a story (targets must still exist)."""
-        arc = self.get_arc(arc_id)
-        rels = arc.get('relations') if arc else None
-        if not isinstance(rels, list):
-            return []
-        return [r for r in rels
-                if isinstance(r, dict) and r.get('to') in self.arcs
-                and r.get('type') in RELATION_TYPES]
-
-    def add_story_relation(self, from_id: str, to_id: str,
-                           rtype: str, note: str = '') -> bool:
-        """Add a relation FROM one story TO another. Dedupes on
-        (to, type). Returns True if added."""
-        if (from_id not in self.arcs or to_id not in self.arcs
-                or from_id == to_id or rtype not in RELATION_TYPES):
-            return False
-        rels = self.arcs[from_id].setdefault('relations', [])
-        for r in rels:
-            if isinstance(r, dict) and r.get('to') == to_id \
-                    and r.get('type') == rtype:
-                return False
-        rels.append({'to': to_id, 'type': rtype, 'note': (note or '').strip()})
-        self.dirty = True
-        return True
-
-    def remove_story_relation(self, from_id: str, to_id: str, rtype: str):
-        arc = self.arcs.get(from_id)
-        if not arc:
-            return
-        rels = arc.get('relations', [])
-        arc['relations'] = [r for r in rels
-                            if not (isinstance(r, dict)
-                                    and r.get('to') == to_id
-                                    and r.get('type') == rtype)]
-        self.dirty = True
-
-    def all_story_relations(self) -> list:
-        """Every relation in the web as (from_id, to_id, type, note)."""
-        out = []
-        for from_id in self.arcs:
-            for r in self.get_story_relations(from_id):
-                out.append((from_id, r['to'], r['type'], r.get('note', '')))
-        return out
 
     # ── Node length range ──────────────────────────────────────────────────
     # Controls the per-node word-count target that gets injected into the
@@ -2104,17 +1226,12 @@ class ScriptData:
         return val if val in WIDTH_PRESETS else None
 
     def set_arc_width_preset(self, arc_id: str, preset: Optional[str]):
-        """Set or clear a per-arc width override. None clears the override.
-        No-op (not dirty) when nothing changes."""
+        """Set or clear a per-arc width override. None clears the override."""
         if arc_id not in self.arcs:
             return
         if preset is None or preset not in WIDTH_PRESETS:
-            if 'width_preset' not in self.arcs[arc_id]:
-                return
             self.arcs[arc_id].pop('width_preset', None)
         else:
-            if self.arcs[arc_id].get('width_preset') == preset:
-                return
             self.arcs[arc_id]['width_preset'] = preset
         self.dirty = True
 
@@ -2138,18 +1255,13 @@ class ScriptData:
 
     def set_arc_node_word_range(self, arc_id: str,
                                   lo: Optional[int], hi: Optional[int]):
-        """Set or clear a per-arc override. No-op (not dirty) if unchanged."""
+        """Set or clear a per-arc override."""
         if arc_id not in self.arcs:
             return
         if lo is None or hi is None or lo <= 0 or hi < lo:
-            if 'node_word_range' not in self.arcs[arc_id]:
-                return
             self.arcs[arc_id].pop('node_word_range', None)
         else:
-            new = [int(lo), int(hi)]
-            if self.arcs[arc_id].get('node_word_range') == new:
-                return
-            self.arcs[arc_id]['node_word_range'] = new
+            self.arcs[arc_id]['node_word_range'] = [int(lo), int(hi)]
         self.dirty = True
 
     def get_effective_node_word_range(self, arc_id: str = '') -> tuple:
@@ -2244,39 +1356,6 @@ class ScriptData:
             if idx < len(node.get("weights", [])):
                 node["weights"].pop(idx)
             self.dirty = True
-
-    def nodes_that_cannot_end(self) -> set:
-        """Node ids from which NO path reaches a terminal node.
-
-        The player only finishes a walk on a node with an empty next[]
-        (narrative_player._advance); recency penalties make loops WITH an
-        exit escape quickly, but a pocket of nodes whose every path stays
-        inside the pocket traps the walk forever — no ramp-down, no
-        restart. Junction weaving can build such pockets if a story's
-        ending gets deleted/rewired after it was woven into a cycle.
-
-        Matches player semantics exactly: an edge to a nonexistent node id
-        also ends playback (missing node → empty next), so only edges to
-        EXISTING nodes count as continuations. Reverse-BFS from all
-        terminals; complement = trapped set. O(nodes + edges)."""
-        nodes = self._data.get('nodes', {})
-        rev: dict = {nid: [] for nid in nodes}
-        can_end = set()
-        frontier = []
-        for nid, nd in nodes.items():
-            nxts = [n for n in nd.get('next', []) if n in nodes]
-            if not nxts:
-                can_end.add(nid)
-                frontier.append(nid)
-            for n in nxts:
-                rev[n].append(nid)
-        while frontier:
-            cur = frontier.pop()
-            for prv in rev[cur]:
-                if prv not in can_end:
-                    can_end.add(prv)
-                    frontier.append(prv)
-        return set(nodes) - can_end
 
     def update_text(self, node_id: str, text: str):
         if node_id in self._data["nodes"]:
@@ -2674,56 +1753,6 @@ class ScriptData:
 # Parallel Node Generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-class StoryStructure:
-    """Resolved beat sequence for one story's generation run.
-
-    Wraps the list from ScriptData.get_story_structure(): an ordered list
-    of beats, each an archetype from LAYER_ORDER (which supplies the layer
-    tag, LAYER_FUNCTIONS text, premise role, voice defaults, and width/cap
-    profile defaults) plus this story's per-beat direction. Beats may
-    repeat archetypes and come in any order — advancement is by beat INDEX,
-    never by looking an archetype back up in LAYER_ORDER.
-    """
-
-    def __init__(self, beats: list):
-        self._beats = beats or ScriptData.default_structure()
-
-    @property
-    def n_beats(self) -> int:
-        return len(self._beats)
-
-    def _entry(self, i: int) -> dict:
-        return self._beats[max(0, min(i, len(self._beats) - 1))]
-
-    def archetype(self, i: int) -> str:
-        return self._entry(i)['layer']
-
-    def direction(self, i: int) -> str:
-        return self._entry(i).get('direction', '')
-
-    def width(self, i: int, profile: dict) -> tuple:
-        widths = profile.get('widths', {})
-        return widths.get(self.archetype(i), widths.get('*', (2, 3)))
-
-    def cap(self, i: int, profile: dict) -> int:
-        caps = profile.get('layer_caps', {})
-        return caps.get(self.archetype(i), 999)
-
-    def beat_index_for_node(self, nd: dict) -> int:
-        """Best-effort beat index of an existing node: the explicit 'beat'
-        field v2 generation stamps, else the first beat whose archetype
-        appears in the node's tags, else 0. (v1-generated nodes have no
-        'beat' field — the tag fallback covers them.)"""
-        b = nd.get('beat')
-        if isinstance(b, int) and 0 <= b < len(self._beats):
-            return b
-        tags = set(nd.get('tags', []))
-        for i, e in enumerate(self._beats):
-            if e['layer'] in tags:
-                return i
-        return 0
-
-
 @dataclass
 class NodeTask:
     """One pending/active/complete batch generation task.
@@ -2735,10 +1764,8 @@ class NodeTask:
     parent_id:       str                  # primary node to continue from
     parent_ids:      list  = field(default_factory=list)  # ALL parents (for convergence)
     root_id:         str   = ''           # seed node this branch descends from
-    layer_name:      str   = ''           # target layer ARCHETYPE for this node
-    layer_direction: str   = ''           # story beat guidance
-    beat_idx:        int   = 0            # index into the story's structure
-    arc_id:          str   = ''           # story (arc) this task belongs to
+    layer_name:      str   = ''           # target layer for this node
+    layer_direction: str   = ''           # arc beat guidance
     batch_size:      int   = 1            # how many siblings to generate in one call
     status:          str   = 'pending'    # pending | dispatched | complete | failed
     result:          dict  = field(default_factory=dict)
@@ -2761,13 +1788,7 @@ class ParallelNodeOrchestrator:
                  width_preset: str = DEFAULT_WIDTH_PRESET):
         self._script       = script
         self._ui_queue     = ui_queue
-        # `profile` is a name from GENERATION_PROFILES, or a ready-made
-        # profile dict (the expand flow passes a custom width override).
-        if isinstance(profile, dict):
-            base_profile = profile
-        else:
-            base_profile = GENERATION_PROFILES.get(profile,
-                                                   GENERATION_PROFILES['full'])
+        base_profile = GENERATION_PROFILES.get(profile, GENERATION_PROFILES['full'])
         # Apply the width preset's scale factor to children-per-parent and
         # per-layer caps. 'medium' is a no-op; 'small'/'large' shrink/grow.
         self._profile      = _scale_profile(base_profile, width_preset)
@@ -2777,11 +1798,8 @@ class ParallelNodeOrchestrator:
         self._on_complete  = on_complete   # callback()
         self._on_node_added = on_node_added  # callback(set_of_new_ids)
 
-        # One AIAssistant serves every worker thread: its sync calls are
-        # stateless subprocess invocations, so concurrency comes from the
-        # executor, not from instance count. (This used to be a pool of
-        # PARALLEL_WORKER_COUNT instances of which only [0] was ever used.)
-        self._worker = AIAssistant(model=model, thinking=thinking)
+        # Worker pool
+        self._workers = [AIAssistant(model=model, thinking=thinking) for _ in range(PARALLEL_WORKER_COUNT)]
         self._worker_sem = threading.Semaphore(PARALLEL_WORKER_COUNT)
         self._executor = ThreadPoolExecutor(max_workers=PARALLEL_WORKER_COUNT)
 
@@ -2812,30 +1830,15 @@ class ParallelNodeOrchestrator:
             for t in n.get('tags', []) if t not in layer_tags
         })
 
-        # Per-story resolved structures + cast-codex blocks, cached per arc
-        # id. The cast codex MUST stay byte-stable across the whole run so
-        # it lives in the prompt-cache-friendly system prefix like the bible.
-        self._structures: dict = {}
-        self._cast_codices: dict = {}
+    def _arc_fields_for_parent(self, parent_id: str) -> tuple:
+        """Resolve (premise, motif, themes, beats) from the parent node's arc_id.
 
-    def _structure_for_arc(self, arc_id: str) -> StoryStructure:
-        if arc_id not in self._structures:
-            self._structures[arc_id] = StoryStructure(
-                self._script.get_story_structure(arc_id))
-        return self._structures[arc_id]
-
-    def _cast_codex_for_arc(self, arc_id: str) -> str:
-        if arc_id not in self._cast_codices:
-            self._cast_codices[arc_id] = self._script.cast_codex_for(arc_id)
-        return self._cast_codices[arc_id]
-
-    def _story_fields(self, arc_id: str) -> tuple:
-        """(premise, motif, themes) for a story; empty strings if it's gone.
-        Beat direction is NOT here — it comes from the story structure by
-        beat index (see StoryStructure)."""
+        Returns empty values if the parent has no arc_id or the arc is gone.
+        """
+        arc_id = self._script.get_node_arc_id(parent_id)
         arc = self._script.get_arc(arc_id)
         return (arc.get('premise', ''), arc.get('motif', ''),
-                arc.get('themes', ''))
+                arc.get('themes', ''), arc.get('beats', {}) or {})
 
     def cancel(self):
         """Signal cancellation. In-flight tasks finish but results are discarded."""
@@ -2855,28 +1858,28 @@ class ParallelNodeOrchestrator:
             return
         print(f'[Parallel] Merged start from {len(valid)} parents: {valid}')
 
-        # Determine the child beat from the deepest parent (first parent's
-        # story structure governs the merge).
-        arc_id = self._script.get_node_arc_id(valid[0])
-        structure = self._structure_for_arc(arc_id)
-        deepest = 0
+        # Determine child layer from the deepest parent
+        deepest_idx = 0
         for nid in valid:
-            deepest = max(deepest,
-                          structure.beat_index_for_node(self._script.nodes[nid]))
+            tags = self._script.nodes[nid].get('tags', [])
+            layer = next((t for t in tags if t in LAYER_ORDER), 'arrival')
+            idx = LAYER_ORDER.index(layer) if layer in LAYER_ORDER else 0
+            deepest_idx = max(deepest_idx, idx)
 
-        if deepest + 1 >= structure.n_beats:
-            print(f'[Parallel] All parents at the final beat — nothing to generate')
+        next_idx = min(deepest_idx + 1, len(LAYER_ORDER) - 1)
+        child_layer = LAYER_ORDER[next_idx]
+        if child_layer == LAYER_ORDER[deepest_idx] and deepest_idx == len(LAYER_ORDER) - 1:
+            print(f'[Parallel] All parents at stillness — nothing to generate')
             self._ui_queue.put(lambda: self._on_complete() if self._on_complete else None)
             return
-        child_beat = deepest + 1
-        child_layer = structure.archetype(child_beat)
 
         # Use first parent as root for branch tracking
         root_id = valid[0]
         for nid in valid:
             self._node_to_root[nid] = root_id
 
-        direction = structure.direction(child_beat)
+        _, _, _, beats = self._arc_fields_for_parent(valid[0])
+        direction = beats.get(child_layer, '')
         tid = self._next_task_id()
         task = NodeTask(
             task_id=tid,
@@ -2885,14 +1888,11 @@ class ParallelNodeOrchestrator:
             root_id=root_id,
             layer_name=child_layer,
             layer_direction=direction,
-            beat_idx=child_beat,
-            arc_id=arc_id,
             batch_size=batch_size,
         )
         self._tasks[tid] = task
         self._total_created += batch_size
-        print(f'[Parallel] Merged batch: {batch_size}× beat {child_beat} '
-              f'({child_layer}) from parents {valid}')
+        print(f'[Parallel] Merged batch: {batch_size}× {child_layer} from parents {valid}')
 
         threading.Thread(target=self._coordinator_loop, daemon=True).start()
 
@@ -2907,15 +1907,16 @@ class ParallelNodeOrchestrator:
                 continue
             # Each seed is the root of its own branch
             self._node_to_root[nid] = nid
-            arc_id = self._script.get_node_arc_id(nid)
-            structure = self._structure_for_arc(arc_id)
-            beat = structure.beat_index_for_node(nd)
-            print(f'[Parallel]   {nid}: story={arc_id or "-"}, beat={beat} '
-                  f'({structure.archetype(beat)}), branch={nid}')
-            if beat + 1 >= structure.n_beats:
-                print(f'[Parallel]   {nid}: already at the final beat — no children')
+            tags = nd.get('tags', [])
+            layer = next((t for t in tags if t in LAYER_ORDER), 'arrival')
+            layer_idx = LAYER_ORDER.index(layer) if layer in LAYER_ORDER else 0
+            next_layer_idx = min(layer_idx + 1, len(LAYER_ORDER) - 1)
+            next_layer = LAYER_ORDER[next_layer_idx]
+            print(f'[Parallel]   {nid}: tags={tags}, layer={layer}, children→{next_layer}, branch={nid}')
+            if next_layer == layer:
+                print(f'[Parallel]   {nid}: already at stillness — no children')
                 continue
-            self._spawn_children(nid, beat + 1, root_id=nid)
+            self._spawn_children(nid, next_layer, root_id=nid)
 
         print(f'[Parallel] Initial tasks queued: {self._total_created}')
         # Start coordinator thread
@@ -2925,51 +1926,52 @@ class ParallelNodeOrchestrator:
         self._task_counter += 1
         return f'task_{self._task_counter:04d}'
 
-    def _count_beat_nodes(self, arc_id: str, beat_idx: int) -> int:
-        """Count expected nodes at a story beat across ALL branches (sum of
-        batch sizes). Keyed by (story, beat index) so repeated archetypes in
-        one structure each get their own budget."""
-        return sum(t.batch_size for t in self._tasks.values()
-                   if t.arc_id == arc_id and t.beat_idx == beat_idx)
+    def _get_width(self, layer_name: str) -> tuple:
+        widths = self._profile['widths']
+        return widths.get(layer_name, widths.get('*', (2, 3)))
 
-    def _spawn_children(self, parent_id: str, child_beat: int, root_id: str = ''):
-        """Create NodeTasks for children of parent_id at the story's beat
-        index `child_beat`.
+    def _get_layer_cap(self, layer_name: str) -> int:
+        caps = self._profile.get('layer_caps', {})
+        return caps.get(layer_name, 999)
 
-        Uses GLOBAL caps to limit total node count per beat.  When over cap,
+    def _count_global_layer_nodes(self, layer_name: str) -> int:
+        """Count expected nodes at a layer across ALL branches (sum of batch sizes)."""
+        return sum(t.batch_size for t in self._tasks.values() if t.layer_name == layer_name)
+
+    def _spawn_children(self, parent_id: str, child_layer: str, root_id: str = ''):
+        """Create NodeTasks for children of parent_id at child_layer.
+
+        Uses GLOBAL caps to limit total node count per layer.  When over cap,
         converges into existing same-branch nodes (no forced child creation).
         Cross-branch connections are handled by the cross-link AI pass.
         """
         if not root_id:
             root_id = self._node_to_root.get(parent_id, parent_id)
 
-        arc_id = self._script.get_node_arc_id(parent_id)
-        structure = self._structure_for_arc(arc_id)
-        child_layer = structure.archetype(child_beat)
-        lo, hi = structure.width(child_beat, self._profile)
+        lo, hi = self._get_width(child_layer)
         desired = random.randint(lo, hi)
-        direction = structure.direction(child_beat)
+        _, _, _, beats = self._arc_fields_for_parent(parent_id)
+        direction = beats.get(child_layer, '')
 
         with self._lock:
-            cap = structure.cap(child_beat, self._profile)
-            global_count = self._count_beat_nodes(arc_id, child_beat)
+            cap = self._get_layer_cap(child_layer)
+            global_count = self._count_global_layer_nodes(child_layer)
             remaining_slots = max(0, cap - global_count)
 
             n_to_create = min(desired, remaining_slots)
 
-            # Over global cap — converge into existing nodes at this beat
+            # Over global cap — converge into existing nodes at this layer
             if n_to_create == 0:
                 # Queue a deferred convergence — will be resolved after all
-                # tasks at this beat complete
+                # tasks at this layer complete
                 self._deferred_convergences.append(
-                    (parent_id, arc_id, child_beat, root_id))
-                print(f'[Parallel] ↗ Deferred converge: {parent_id} → beat {child_beat} '
-                      f'({child_layer}) ({global_count}/{cap})')
+                    (parent_id, child_layer, root_id))
+                print(f'[Parallel] ↗ Deferred converge: {parent_id} → layer {child_layer} '
+                      f'({global_count}/{cap})')
                 return  # hard stop — no new nodes when over cap
 
             print(f'[Parallel] Batch: {n_to_create} children for {parent_id} → '
-                  f'beat:{child_beat} ({child_layer}) branch:{root_id} '
-                  f'({global_count}+{n_to_create}/{cap})')
+                  f'layer:{child_layer} branch:{root_id} ({global_count}+{n_to_create}/{cap})')
 
             tid = self._next_task_id()
             task = NodeTask(
@@ -2979,8 +1981,6 @@ class ParallelNodeOrchestrator:
                 root_id=root_id,
                 layer_name=child_layer,
                 layer_direction=direction,
-                beat_idx=child_beat,
-                arc_id=arc_id,
                 batch_size=n_to_create,
             )
             self._tasks[tid] = task
@@ -3039,9 +2039,6 @@ class ParallelNodeOrchestrator:
             self._run_cross_link_passes()
 
         print(f'[Parallel] Generation complete. {self._total_completed} nodes generated.')
-        # Release the worker threads — otherwise each finished run leaves
-        # PARALLEL_WORKER_COUNT idle threads behind for the process lifetime.
-        self._executor.shutdown(wait=False)
         self._ui_queue.put(lambda: self._on_complete() if self._on_complete else None)
 
     def _resolve_deferred_convergences(self):
@@ -3049,16 +2046,16 @@ class ParallelNodeOrchestrator:
         if not self._deferred_convergences:
             return
         print(f'[Parallel] Resolving {len(self._deferred_convergences)} deferred convergences...')
-        for parent_id, arc_id, child_beat, root_id in self._deferred_convergences:
-            # Find completed nodes at this story beat, prefer same branch
+        for parent_id, child_layer, root_id in self._deferred_convergences:
+            # Find completed nodes at this layer, prefer same branch
             candidates = []
             for t in self._tasks.values():
-                if t.arc_id == arc_id and t.beat_idx == child_beat and t.final_node_ids:
+                if t.layer_name == child_layer and t.final_node_ids:
                     if t.root_id == root_id:
                         candidates.extend(t.final_node_ids)
             if not candidates:
                 for t in self._tasks.values():
-                    if t.arc_id == arc_id and t.beat_idx == child_beat and t.final_node_ids:
+                    if t.layer_name == child_layer and t.final_node_ids:
                         candidates.extend(t.final_node_ids)
             if candidates:
                 targets = random.sample(candidates, min(2, len(candidates)))
@@ -3073,7 +2070,7 @@ class ParallelNodeOrchestrator:
                     self._ui_queue.put(_wire)
                 print(f'[Parallel]   ↗ {parent_id} → {targets}')
             else:
-                print(f'[Parallel]   ⚠ {parent_id}: no nodes at beat {child_beat} to converge into')
+                print(f'[Parallel]   ⚠ {parent_id}: no nodes at layer {child_layer} to converge into')
         self._deferred_convergences.clear()
 
     def _get_ancestor_chain(self, node_id: str, depth: int = 4) -> list:
@@ -3156,14 +2153,16 @@ class ParallelNodeOrchestrator:
             print(f'[Parallel] ▶ {task.task_id}: batch {task.batch_size}× {task.layer_name} '
                   f'from {parent_label} (ancestors={len(ancestor_chain)}{premise_str}{hint_str})')
 
-            premise, motif, themes = self._story_fields(task.arc_id)
-            cast_codex = self._cast_codex_for_arc(task.arc_id)
+            worker = self._workers[0]
 
-            # Resolve the node word-count range from the task's story;
+            premise, motif, themes, _ = self._arc_fields_for_parent(primary_pid)
+
+            # Resolve the node word-count range from the parent's arc;
             # falls through to script default then to (40, 100).
-            node_word_range = self._script.get_effective_node_word_range(task.arc_id)
+            parent_arc_id = self._script.get_node_arc_id(primary_pid)
+            node_word_range = self._script.get_effective_node_word_range(parent_arc_id)
 
-            result = self._worker.generate_batch_sync(
+            result = worker.generate_batch_sync(
                 parent_id=primary_pid,
                 parent_text=parent_text,
                 parent_tags=parent_tags,
@@ -3180,7 +2179,6 @@ class ParallelNodeOrchestrator:
                 premise=premise,
                 premise_weight=premise_weight,
                 node_word_range=node_word_range,
-                cast_codex=cast_codex,
             )
 
             if self._cancelled.is_set():
@@ -3205,8 +2203,10 @@ class ParallelNodeOrchestrator:
             # Apply all nodes to script on main thread
             applied_event = threading.Event()
 
+            parent_arc_id = self._script.get_node_arc_id(primary_pid)
+
             def _apply(t=task, evt=applied_event, pids=all_parent_ids,
-                       node_dict=nodes, inherit_arc=task.arc_id):
+                       node_dict=nodes, inherit_arc=parent_arc_id):
                 applied_ids = []
                 for nid, ndata in node_dict.items():
                     # Build a single-node result dict for apply_single_node
@@ -3215,9 +2215,6 @@ class ParallelNodeOrchestrator:
                     final_id = self._script.apply_single_node(t.parent_id, single)
                     if final_id:
                         applied_ids.append(final_id)
-                        # Stamp the exact beat index so advancement stays
-                        # unambiguous even when a structure repeats archetypes.
-                        self._script.nodes[final_id]['beat'] = t.beat_idx
                         if inherit_arc:
                             self._script.set_node_arc_id(final_id, inherit_arc)
                         # Wire additional convergence parents
@@ -3246,24 +2243,21 @@ class ParallelNodeOrchestrator:
             root_id = task.root_id
             with self._lock:
                 self._total_completed += len(task.final_node_ids)
-                self._completed_by_layer[(task.arc_id, task.beat_idx)].append(task)
+                self._completed_by_layer[task.layer_name].append(task)
                 for fid in task.final_node_ids:
                     self._node_to_root[fid] = root_id
 
-            # Advancement is by beat INDEX in the story structure, not by
-            # re-deriving a layer from the AI's tags — predictable, and it
-            # supports structures that repeat archetypes. max_depth keeps
-            # its historical meaning (absolute beat-position ceiling; the
-            # expand profile's 2 ≈ one layer of children).
-            structure = self._structure_for_arc(task.arc_id)
             max_depth_layers = self._profile['max_depth']
-            next_beat = task.beat_idx + 1
             for final_id in task.final_node_ids:
-                if next_beat < structure.n_beats and next_beat < max_depth_layers:
-                    self._spawn_children(final_id, next_beat, root_id=root_id)
+                nd = self._script.nodes.get(final_id, {})
+                result_tags = nd.get('tags', [])
+                actual_layer = next((t for t in result_tags if t in LAYER_ORDER), task.layer_name)
+                layer_idx = LAYER_ORDER.index(actual_layer) if actual_layer in LAYER_ORDER else 0
+                if layer_idx + 1 < len(LAYER_ORDER) and layer_idx + 1 < max_depth_layers:
+                    next_layer = LAYER_ORDER[layer_idx + 1]
+                    self._spawn_children(final_id, next_layer, root_id=root_id)
                 else:
-                    print(f'[Parallel]   {final_id} is terminal '
-                          f'(beat={task.beat_idx}, {task.layer_name})')
+                    print(f'[Parallel]   {final_id} is terminal (layer={actual_layer})')
 
             # Progress
             msg = (f"Parallel: {self._total_completed}/{self._total_created} nodes "
@@ -3286,21 +2280,18 @@ class ParallelNodeOrchestrator:
             self._worker_sem.release()
 
     def _run_cross_link_passes(self):
-        """After all generation is done, suggest cross-branch connections.
-
-        Beat groups are independent, so their AI calls run concurrently on
-        the (now otherwise idle) worker pool instead of serially — on a
-        multi-story or wide run this was the slowest tail of generation."""
+        """After all generation is done, suggest cross-branch connections."""
         if not self._completed_by_layer:
             return
+        worker = self._workers[0]
 
-        # Build all jobs on this thread first (reads script state), then
-        # fan the AI calls out.
-        jobs = []
-        for (arc_id, beat_idx), completed in sorted(self._completed_by_layer.items()):
-            structure = self._structure_for_arc(arc_id)
-            if beat_idx >= structure.n_beats - 1:
-                continue  # skip each story's final beat
+        for layer_name in LAYER_ORDER[:-1]:  # skip stillness
+            completed = self._completed_by_layer.get(layer_name, [])
+            if len(completed) < 5:
+                continue  # not enough nodes to cross-link
+            print(f'[Parallel] Cross-linking layer "{layer_name}" ({len(completed)} nodes)...')
+
+            # Build layer_nodes list from all nodes produced by completed batch tasks
             layer_nodes = []
             children_map = {}
             for task in completed:
@@ -3308,130 +2299,37 @@ class ParallelNodeOrchestrator:
                     nd = self._script.nodes.get(nid, {})
                     if not nd:
                         continue
+                    text = nd.get('text', '')
+                    tags = nd.get('tags', [])
                     child_ids = nd.get('next', [])
-                    layer_nodes.append((nid, nd.get('text', ''),
-                                        nd.get('tags', []), child_ids))
+                    layer_nodes.append((nid, text, tags, child_ids))
                     for cid in child_ids:
                         cnd = self._script.nodes.get(cid, {})
-                        children_map[cid] = (cnd.get('text', ''),
-                                             cnd.get('tags', []))
-            if len(layer_nodes) < 5 or not children_map:
-                continue  # not enough nodes to be worth a cross-link call
-            label = f'{structure.archetype(beat_idx)}@{beat_idx}'
-            print(f'[Parallel] Cross-linking story {arc_id or "-"} {label} '
-                  f'({len(layer_nodes)} nodes)...')
-            jobs.append((label, layer_nodes, children_map))
+                        children_map[cid] = (cnd.get('text', ''), cnd.get('tags', []))
 
-        futures = [self._executor.submit(self._cross_link_one, *job)
-                   for job in jobs]
-        for f in futures:
+            if not children_map:
+                continue
+
             try:
-                f.result()
+                links = worker.suggest_cross_links_sync(layer_nodes, children_map)
+                print(f'[Parallel]   Cross-link suggestions for {layer_name}: {len(links)} links')
+                for link in links:
+                    print(f'[Parallel]     {link.get("from", "?")} → {link.get("to", "?")}')
+                if links:
+                    def _apply_links(cross_links=links):
+                        for link in cross_links:
+                            from_id = link.get('from', '')
+                            to_id = link.get('to', '')
+                            if (from_id in self._script.nodes
+                                    and to_id in self._script.nodes):
+                                src = self._script.nodes[from_id]
+                                if to_id not in src.get('next', []):
+                                    src.setdefault('next', []).append(to_id)
+                                    src.setdefault('weights', []).append(1.0)
+                                    self._script.dirty = True
+                    self._ui_queue.put(_apply_links)
             except Exception:
                 pass  # cross-linking is best-effort
-
-    def _cross_link_one(self, label: str, layer_nodes: list,
-                        children_map: dict):
-        """One cross-link AI call + edge application (worker thread)."""
-        if self._cancelled.is_set():
-            return
-        links = self._worker.suggest_cross_links_sync(layer_nodes, children_map)
-        print(f'[Parallel]   Cross-link suggestions for {label}: {len(links)} links')
-        for link in links:
-            print(f'[Parallel]     {link.get("from", "?")} → {link.get("to", "?")}')
-        if not links or self._cancelled.is_set():
-            return
-
-        def _apply_links(cross_links=links):
-            for link in cross_links:
-                from_id = link.get('from', '')
-                to_id = link.get('to', '')
-                if (from_id in self._script.nodes
-                        and to_id in self._script.nodes):
-                    src = self._script.nodes[from_id]
-                    if to_id not in src.get('next', []):
-                        src.setdefault('next', []).append(to_id)
-                        src.setdefault('weights', []).append(1.0)
-                        self._script.dirty = True
-        self._ui_queue.put(_apply_links)
-
-
-def _seed_count_for_story(script: 'ScriptData', arc_id: str) -> int:
-    """How many opening (beat-0) nodes to seed for a story: the scaled
-    generation profile's cap for the first beat's archetype, bounded 1..4.
-    Keeps a 'small' width preset from over-seeding (the old flow always
-    seeded 4 regardless of preset, so a small story started over cap)."""
-    structure = StoryStructure(script.get_story_structure(arc_id))
-    profile = _scale_profile(GENERATION_PROFILES['full'],
-                             script.get_effective_width_preset(arc_id))
-    return max(1, min(4, structure.cap(0, profile)))
-
-
-def make_full_orchestrator(script: 'ScriptData', ai: 'AIAssistant',
-                           ui_queue: queue.SimpleQueue, *,
-                           story_context: str, width_preset: str,
-                           on_progress, on_complete,
-                           on_node_added=None, register=None):
-    """The one construction path for full-profile generation runs (AI chat
-    panel and the Stories dialog). Guarantees the user's model AND thinking
-    selection travel with the run — the chat panel used to drop thinking —
-    and registers the run for Story ▸ Stop AI Generation."""
-    orch = ParallelNodeOrchestrator(
-        script=script,
-        ui_queue=ui_queue,
-        model=ai.model,
-        thinking=ai.thinking,
-        profile='full',
-        width_preset=width_preset,
-        story_context=story_context,
-        variables=script.variables,
-        on_progress=on_progress,
-        on_complete=on_complete,
-        on_node_added=on_node_added,
-    )
-    if register:
-        register(orch)
-    return orch
-
-
-def _fan_out_ai_calls(jobs: list, call, on_progress=None,
-                      max_workers: int = PARALLEL_WORKER_COUNT,
-                      cancel_event=None) -> list:
-    """Run `call(job)` for every job CONCURRENTLY on a transient thread
-    pool; returns results in job order (None where a job raised).
-
-    This is the engine behind the dialog AI passes (weave junctions/
-    callbacks, seam + consistency audits), which used to run their
-    independent calls sequentially — wall clock is now roughly the slowest
-    single call instead of the sum. `on_progress(done, total)` fires as
-    jobs complete (from worker threads — marshal to the UI queue yourself).
-
-    cancel_event: optional threading.Event — once set, jobs that haven't
-    started yet return None immediately; in-flight calls still run to
-    completion (bounded by the per-call timeout).
-    """
-    if not jobs:
-        return []
-    results = [None] * len(jobs)
-    done = 0
-
-    def guarded(job):
-        if cancel_event is not None and cancel_event.is_set():
-            return None
-        return call(job)
-
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as ex:
-        futures = {ex.submit(guarded, job): i for i, job in enumerate(jobs)}
-        for fut in as_completed(futures):
-            i = futures[fut]
-            try:
-                results[i] = fut.result()
-            except Exception as exc:
-                print(f'[AI fan-out] job {i + 1}/{len(jobs)} failed: {exc}')
-            done += 1
-            if on_progress:
-                on_progress(done, len(jobs))
-    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3442,11 +2340,7 @@ class AIAssistant:
     """Calls the `claude` CLI via subprocess — uses your Claude Code session,
     no separate API key required."""
 
-    DEFAULT_MODEL = MODEL_SONNET
-
-    # Per-attempt subprocess timeout (seconds). Class attr so tests can
-    # shrink it; every timed-out attempt tree-kills the CLI process group.
-    CLI_TIMEOUT_S = 360
+    DEFAULT_MODEL = 'claude-sonnet-4-6'
 
     # Extended-thinking levels triggered by keywords in the prompt.
     # Claude Code escalates its thinking budget when it sees these tokens.
@@ -3526,9 +2420,7 @@ class AIAssistant:
             lines.append(f"{prefix}: {msg['content'][:500]}")
         return "\n".join(lines)
 
-    def _reask_for_json(self, original_system: str, original_prompt: str,
-                        bad_raw: str,
-                        model_override: Optional[str] = None) -> str:
+    def _reask_for_json(self, original_system: str, original_prompt: str, bad_raw: str) -> str:
         """When _extract_json fails on a successful API response, ask the
         model to re-output its content as valid JSON only. One retry —
         recovers most parse failures (smart quotes, stray commas, fenced
@@ -3539,41 +2431,17 @@ class AIAssistant:
         call _extract_json on it (and is expected to let that raise if
         the retry also fails — no infinite-loop)."""
         fixer_prompt = (
-            "Your previous response failed to parse as JSON (it may have "
-            "been cut off mid-output). Below is the raw text you produced. "
-            "Re-output the same content as a single COMPLETE valid JSON "
-            "object only — no markdown fences, no commentary, no "
+            "Your previous response failed to parse as JSON. Below is the "
+            "raw text you produced. Re-output the same content as a single "
+            "valid JSON object only — no markdown fences, no commentary, no "
             "explanation. If the original output included preamble or "
-            "thinking notes, drop them. If it was cut off, finish the "
-            "remaining content more concisely so the whole object fits. "
-            "Keep the actual data identical otherwise.\n\n"
+            "thinking notes, drop them. Keep the actual data identical.\n\n"
             "----- YOUR PREVIOUS OUTPUT -----\n"
-            f"{bad_raw[:24000]}\n"
+            f"{bad_raw[:6000]}\n"
             "----- END -----\n\n"
             "Re-output now as a single valid JSON object:"
         )
-        return self._run_claude(original_system, fixer_prompt,
-                                model_override=model_override)
-
-    def _run_claude_json(self, system: str, prompt: str,
-                         model_override: Optional[str] = None,
-                         max_retries: int = 5) -> dict:
-        """_run_claude + _extract_json with one re-ask repair pass.
-
-        Every one-shot JSON pass (propose web, distills, canon/codex
-        extraction, weaving, audit) should call THIS rather than pairing
-        _run_claude with a bare _extract_json — a truncated or malformed
-        response then gets salvaged or regenerated instead of failing.
-        max_retries: fan-out passes (weave/audit) pass 2 — with many
-        concurrent jobs, 5 attempts × 360s each reads as a hang."""
-        raw = self._run_claude(system, prompt, max_retries=max_retries,
-                               model_override=model_override)
-        try:
-            return self._extract_json(raw)
-        except (ValueError, json.JSONDecodeError) as exc:
-            print(f'[AI] JSON parse failed ({exc}); re-asking for valid JSON only...')
-            return self._extract_json(self._reask_for_json(
-                system, prompt, raw, model_override=model_override))
+        return self._run_claude(original_system, fixer_prompt)
 
     @staticmethod
     def _extract_json(raw: str) -> dict:
@@ -3604,74 +2472,10 @@ class AIAssistant:
                 depth -= 1
                 if depth == 0:
                     return json.loads(raw[start:i + 1])
-        # Braces never balanced — the response was almost certainly cut off
-        # mid-generation. Try to salvage the complete prefix before giving up.
-        salvaged = AIAssistant._repair_truncated_json(raw[start:])
-        if salvaged is not None:
-            print(f'[AI] JSON response was truncated (len={len(raw)}); '
-                  f'salvaged the complete prefix.')
-            return salvaged
         # Show context around where it broke
         preview = raw[start:start+300] if len(raw) > start else raw
         raise ValueError(f"Unbalanced braces in JSON response (depth={depth}, "
                          f"len={len(raw)}, start={start}). Preview: {preview[:200]}")
-
-    @staticmethod
-    def _repair_truncated_json(text: str):
-        """Best-effort parse of a TRUNCATED top-level JSON object (a
-        response that stopped mid-generation). Each round: close any
-        unterminated string, append closers for the open containers, and
-        try to parse; on failure trim back to the last comma and retry —
-        keeping every complete element and dropping the partial tail.
-        Returns the parsed dict, or None if nothing parseable survives."""
-        text = text.strip()
-        for _ in range(200):
-            if not text or text[0] != '{':
-                return None
-            stack = []
-            in_string = False
-            escape = False
-            last_string_open = -1
-            for i, ch in enumerate(text):
-                if escape:
-                    escape = False
-                    continue
-                if ch == '\\' and in_string:
-                    escape = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    if in_string:
-                        last_string_open = i
-                    continue
-                if in_string:
-                    continue
-                if ch in '{[':
-                    stack.append(ch)
-                elif ch in '}]':
-                    if not stack:
-                        return None   # malformed, not truncated
-                    stack.pop()
-            if not in_string:
-                # Ends at a structural point — try closing the open
-                # containers. (Never close a cut-off string: that would
-                # keep a silently truncated prose value; trimming below
-                # drops the partial field instead.)
-                candidate = text + ''.join('}' if c == '{' else ']'
-                                           for c in reversed(stack))
-                try:
-                    parsed = json.loads(candidate)
-                    return parsed if isinstance(parsed, dict) else None
-                except json.JSONDecodeError:
-                    pass
-            # Drop the partial tail and retry. rfind may land inside a
-            # string (prose commas) — the rescan on the next pass detects
-            # that and trims again, converging on a structural boundary.
-            idx = text.rfind(',')
-            if idx <= 0:
-                return None
-            text = text[:idx].rstrip()
-        return None
 
     def _run_claude(self, system: str, prompt: str, max_retries: int = 5,
                     model_override: Optional[str] = None) -> str:
@@ -3721,89 +2525,47 @@ class AIAssistant:
             except OSError:
                 pass
 
-    @staticmethod
-    def _kill_process_tree(proc):
-        """Kill a subprocess AND all its descendants.
-
-        On Windows the claude CLI is a shim that spawns a node child which
-        inherits our stdout/stderr pipes. proc.kill() (what subprocess.run's
-        timeout path does) kills only the shim; the orphaned grandchild
-        keeps the pipes open and the follow-up communicate() blocks FOREVER
-        — this froze Weave Junctions with no error and no retry. taskkill /T
-        takes down the whole tree so the pipes actually close."""
-        try:
-            if sys.platform == 'win32':
-                subprocess.run(
-                    ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
-                    capture_output=True, timeout=15)
-            else:
-                proc.kill()
-        except Exception:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-
     def _run_claude_cmd(self, cmd: list, max_retries: int = 5,
                          stdin_data: Optional[str] = None) -> str:
         """Inner retry loop. Pulled out so _run_claude's temp-file
         cleanup wraps it cleanly via try/finally.
         stdin_data: if given, piped to the subprocess's stdin (used for the
-        user prompt so it doesn't sit on argv where Windows would cap it).
-
-        Uses Popen + explicit tree-kill instead of subprocess.run(timeout=…):
-        run()'s own timeout handling kills just the direct child and then
-        blocks indefinitely on Windows when a grandchild still holds the
-        pipes (see _kill_process_tree)."""
+        user prompt so it doesn't sit on argv where Windows would cap it)."""
         last_error = None
         for attempt in range(max_retries):
             backoff = min(3 * (2 ** attempt), 30)  # 3, 6, 12, 24, 30 seconds
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
             try:
-                out_s, err_s = proc.communicate(input=stdin_data,
-                                                timeout=self.CLI_TIMEOUT_S)
+                result = subprocess.run(
+                    cmd,
+                    input=stdin_data,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=360,
+                )
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip() or "claude CLI returned non-zero"
+                    last_error = RuntimeError(err)
+                    # Don't retry model/auth errors
+                    if 'model' in err.lower() or 'auth' in err.lower() or 'access' in err.lower():
+                        raise last_error
+                    print(f'[AI] Attempt {attempt+1}/{max_retries} failed: {err[:80]} (retry in {backoff}s)')
+                    time.sleep(backoff)
+                    continue
+                out = result.stdout.strip()
+                if not out:
+                    last_error = RuntimeError(
+                        f"claude produced no output (stderr: {result.stderr.strip()!r})")
+                    print(f'[AI] Attempt {attempt+1}/{max_retries}: empty output (retry in {backoff}s)')
+                    time.sleep(backoff)
+                    continue
+                return out
             except subprocess.TimeoutExpired:
-                self._kill_process_tree(proc)
-                try:
-                    proc.communicate(timeout=15)   # bounded reap, never hangs
-                except (subprocess.TimeoutExpired, OSError, ValueError):
-                    for st in (proc.stdout, proc.stderr, proc.stdin):
-                        try:
-                            if st:
-                                st.close()
-                        except OSError:
-                            pass
-                last_error = RuntimeError(
-                    f"claude CLI timed out ({self.CLI_TIMEOUT_S}s)")
+                last_error = RuntimeError("claude CLI timed out (360s)")
                 print(f'[AI] Attempt {attempt+1}/{max_retries}: timeout (retry in {backoff}s)')
                 time.sleep(backoff)
                 continue
-            if proc.returncode != 0:
-                err = (err_s or '').strip() or (out_s or '').strip() \
-                    or "claude CLI returned non-zero"
-                last_error = RuntimeError(err)
-                # Don't retry model/auth errors
-                if 'model' in err.lower() or 'auth' in err.lower() or 'access' in err.lower():
-                    raise last_error
-                print(f'[AI] Attempt {attempt+1}/{max_retries} failed: {err[:80]} (retry in {backoff}s)')
-                time.sleep(backoff)
-                continue
-            out = (out_s or '').strip()
-            if not out:
-                last_error = RuntimeError(
-                    f"claude produced no output (stderr: {(err_s or '').strip()!r})")
-                print(f'[AI] Attempt {attempt+1}/{max_retries}: empty output (retry in {backoff}s)')
-                time.sleep(backoff)
-                continue
-            return out
         raise last_error or RuntimeError("claude CLI failed after all retries")
 
     @classmethod
@@ -3814,8 +2576,7 @@ class AIAssistant:
                                        premise: str = '',
                                        themes: str = '',
                                        motif: str = '',
-                                       variables: list = None,
-                                       cast_codex: str = '') -> str:
+                                       variables: list = None) -> str:
         """Build the cache-friendly system prompt prefix.
 
         Everything that is STABLE within an arc-generation run belongs here so
@@ -3829,7 +2590,6 @@ class AIAssistant:
           - THEMATIC THREADS      — per-arc, stable
           - RECURRING MOTIF       — per-arc, stable
           - STORY VARIABLES       — per-script, stable
-          - CAST CODEX            — per-story, stable across the run (v2)
           - WORLD BIBLE           — per-script, stable (biggest by far)
 
         Caller passes whatever they want appended. Empty / None → block skipped.
@@ -3881,19 +2641,6 @@ class AIAssistant:
                     + vars_block +
                     "\n----- END STORY VARIABLES -----"
                 )
-        if cast_codex:
-            out += (
-                "\n\n----- CAST CODEX (entities in play — canon) -----\n"
-                "These entity cards are CANON for this story. The facts on a\n"
-                "card must hold in every node — contradicting a card is an\n"
-                "error. When one of these entities is present in a node's\n"
-                "text, include its slug (the 'tag:' value) in that node's\n"
-                "tags. Where a card and the world bible conflict, the card\n"
-                "wins. Like the bible, cards are INSTRUMENTS of each node's\n"
-                "transformation, not decoration to showcase.\n\n"
-                + cast_codex +
-                "\n----- END CAST CODEX -----"
-            )
         if story_context:
             sc = story_context[:CONTEXT_MAX]
             if len(story_context) > CONTEXT_MAX:
@@ -4026,64 +2773,6 @@ class AIAssistant:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def extract_codex(self, story_context: str, tag_census: str,
-                      sample_texts: list, existing_slugs: list,
-                      ui_queue: queue.SimpleQueue, on_done, on_error,
-                      instructions: str = ''):
-        """Ask Claude to propose codex entity cards from the world bible +
-        the node graph's tag census. Calls ``on_done(dict[slug -> card])``
-        with sanitized, ENTITY_TEMPLATE-shaped cards on success."""
-        if self._busy:
-            return
-        self._busy = True
-
-        parts = []
-        if instructions.strip():
-            parts.append(f"AUTHOR DIRECTION (highest priority):\n  {instructions.strip()}")
-        if existing_slugs:
-            parts.append("ALREADY IN CODEX (do NOT re-propose these concepts "
-                         "under ANY slug or name variant — no article/plural/"
-                         "synonym renames of them either):\n  "
-                         + ", ".join(sorted(existing_slugs)))
-        if tag_census.strip():
-            parts.append(
-                "TAG CENSUS — custom tags on existing nodes, with usage count and a\n"
-                "sample line of node text. PREFER these as entity slugs when they name\n"
-                "the same concept:\n" + tag_census)
-        if sample_texts:
-            sn_lines = ["SAMPLE NODE TEXTS (register/tone):"]
-            for s in sample_texts[:10]:
-                sn_lines.append(f'  - "{s[:240]}{"…" if len(s) > 240 else ""}"')
-            parts.append('\n'.join(sn_lines))
-        parts.append("Propose the codex now. Output the JSON object only.")
-        prompt = '\n\n'.join(parts)
-        system = self._augment_system_with_context(SYSTEM_EXTRACT_CODEX, story_context)
-
-        def run():
-            try:
-                data = self._run_claude_json(system, prompt)
-                ents = data.get('entities', data) if isinstance(data, dict) else {}
-                cleaned = {}
-                for slug, card in (ents or {}).items():
-                    if not isinstance(card, dict):
-                        continue
-                    slug = ScriptData.sanitize_entity_slug(str(slug))
-                    if not slug or slug in RESERVED_ENTITY_SLUGS:
-                        continue
-                    clean = _sanitize_entity_card(card)
-                    if not clean['name']:
-                        clean['name'] = slug
-                    clean['notes'] = ''
-                    clean['source'] = 'local'
-                    cleaned[slug] = clean
-                ui_queue.put(lambda c=cleaned: on_done(c))
-            except Exception as exc:
-                ui_queue.put(lambda e=exc: on_error(str(e)))
-            finally:
-                self._busy = False
-
-        threading.Thread(target=run, daemon=True).start()
-
     def chat(self, user_msg: str, ui_queue: queue.SimpleQueue,
              on_reply, on_error, script_summary: str = '', story_context: str = '',
              _system_override: str = '',
@@ -4155,44 +2844,24 @@ class AIAssistant:
                       on_done, on_error, story_context: str = '',
                       layer_direction: str = '', motif: str = '',
                       variables: list = None,
-                      node_word_range: Optional[tuple] = None,
-                      cast_codex: str = '',
-                      first_layer: str = 'arrival',
-                      n_seeds: int = 4):
-        """Generate only the opening beat — no children. Used to seed
-        iterative generation. `first_layer` supports story structures that
-        do not open on the classic 'arrival' archetype; `n_seeds` overrides
-        the default of 4 opening nodes (see _seed_count_for_story)."""
+                      node_word_range: Optional[tuple] = None):
+        """Generate only the arrival layer — no children. Used to seed iterative generation."""
         if self._busy:
             return
         self._busy = True
 
         parts = []
         if layer_direction:
-            parts.append(f'OPENING BEAT DIRECTION (this is what the opening nodes must cover):\n{layer_direction}')
+            parts.append(f'ARRIVAL LAYER DIRECTION (this is what the arrival nodes must cover):\n{layer_direction}')
         # NOTE: motif and variables now live in the SYSTEM prompt (cache friendly).
         parts.append(f'SUBJECT (this is what the script must be about — prioritize above all else):\n{prompt}')
-        if first_layer and first_layer != 'arrival' and first_layer in LAYER_ORDER:
-            parts.append(
-                f'FIRST BEAT OVERRIDE: this story does not open on the standard '
-                f'"arrival" layer — its opening beat is "{first_layer}". Tag every '
-                f'generated node with the layer tag "{first_layer}" instead of '
-                f'"arrival", prefix node IDs accordingly (e.g. "{first_layer}_..."), '
-                f'and write the nodes to perform that beat\'s story function: '
-                f'{LAYER_FUNCTIONS.get(first_layer, "")}'
-            )
-        if n_seeds and n_seeds != 4:
-            parts.append(
-                f'SEED COUNT OVERRIDE: generate exactly {n_seeds} opening '
-                f'node(s) instead of the default 4.'
-            )
         full_prompt = '\n\n'.join(parts)
-        # Push motif + variables + cast codex into the cached system prompt.
-        # (The story's premise has already been baked into `prompt` as the
-        # subject — no need to duplicate it in the system block here.)
+        # Push motif + variables into the cached system prompt. (The arc's
+        # premise has already been baked into `prompt` as the subject — no
+        # need to duplicate it in the system block here.)
         system = self._augment_system_with_context(
             SYSTEM_GENERATE_SEED, story_context, node_word_range,
-            motif=motif, variables=variables, cast_codex=cast_codex,
+            motif=motif, variables=variables,
         )
 
         def run():
@@ -4511,8 +3180,7 @@ class AIAssistant:
                              premise: str = '',
                              premise_weight: float = 1.0,
                              themes: str = '',
-                             node_word_range: Optional[tuple] = None,
-                             cast_codex: str = '') -> dict:
+                             node_word_range: Optional[tuple] = None) -> dict:
         """Blocking call that generates multiple sibling nodes from one parent.
 
         Returns dict with 'nodes' and 'connect_from' keys (SYSTEM_EXPAND format).
@@ -4605,13 +3273,11 @@ class AIAssistant:
         if hint:
             parts.append(f'\nCRITICAL — AUTHOR DIRECTION (this overrides thematic continuity): {hint}')
         prompt = '\n'.join(parts)
-        # Premise / themes / motif / variables / cast codex go into the SYSTEM
-        # prompt now, making them part of the cache-friendly prefix for the
-        # whole story-generation run.
+        # Premise / themes / motif / variables go into the SYSTEM prompt now,
+        # making them part of the cache-friendly prefix for the whole arc run.
         system = self._augment_system_with_context(
             SYSTEM_EXPAND, story_context, node_word_range,
             premise=premise, themes=themes, motif=motif, variables=variables,
-            cast_codex=cast_codex,
         )
 
         raw = self._run_claude(system, prompt)
@@ -6483,19 +5149,17 @@ class AIChatPanel(QWidget):
         self._ui_queue: Optional[queue.SimpleQueue] = None
         self._on_graph_generated = None
         self._on_nodes_incremental = None  # (new_node_ids: set) -> None
-        self._register_orchestrator = None
         self.selected_node_id: Optional[str] = None
         self._build_ui()
 
     def set_context(self, script: ScriptData, ai: AIAssistant,
                     ui_queue: queue.SimpleQueue, on_graph_generated,
-                    on_nodes_incremental=None, register_orchestrator=None):
+                    on_nodes_incremental=None):
         self._script = script
         self._ai = ai
         self._ui_queue = ui_queue
         self._on_graph_generated = on_graph_generated
         self._on_nodes_incremental = on_nodes_incremental
-        self._register_orchestrator = register_orchestrator
 
     def _build_script_context(self) -> str:
         """Return a focused context string for the AI chat prompt."""
@@ -6687,12 +5351,15 @@ class AIChatPanel(QWidget):
             self.append_message("assistant", f"Seeds: {', '.join(seed_ids)}")
             self.status_label.setText(f"Seeds done. Starting parallel expansion...")
 
-            # Launch orchestrator (shared factory — carries model+thinking,
-            # registers the run for Stop AI Generation)
-            self._orchestrator = make_full_orchestrator(
-                self._script, self._ai, self._ui_queue,
-                story_context=self._script.story_context,
+            # Launch orchestrator
+            self._orchestrator = ParallelNodeOrchestrator(
+                script=self._script,
+                ui_queue=self._ui_queue,
+                model=self._ai.model,
+                profile='full',
                 width_preset=self._script.width_preset,
+                story_context=self._script.story_context_focused,
+                variables=self._script.variables,
                 on_progress=lambda msg: (
                     self.status_label.setText(msg),
                     self.status_label.setStyleSheet("color: #cccc55; font-size: 10px;"),
@@ -6704,7 +5371,6 @@ class AIChatPanel(QWidget):
                     self._on_graph_generated() if self._on_graph_generated else None,
                 ),
                 on_node_added=self._on_nodes_incremental,
-                register=getattr(self, '_register_orchestrator', None),
             )
             self._orchestrator.start(seed_ids)
 
@@ -7318,2676 +5984,22 @@ class _GraphViewHoverFilter(QObject):
         return False
 
 
-class CodexDialog(QDialog):
-    """Modeless codex browser/editor — the v2 home of recurring concepts.
-
-    Left: kind filter + entity list (usage counts). Right: the card form.
-    Bottom-left: New / Delete / Import… / Extract (AI)….
-    Spotlight pushes the entity slug into the main window's search bar
-    (whole-word, all-fields scope) so its nodes light up on the graph.
-    """
-
-    def __init__(self, main_window, script: 'ScriptData', ai: 'AIAssistant',
-                 ui_queue: queue.SimpleQueue, embedded: bool = False,
-                 parent=None):
-        super().__init__(parent)
-        self._mw = main_window
-        self.script = script
-        self.ai = ai
-        self.ui_queue = ui_queue
-        self._embedded = embedded
-        self._current_slug: Optional[str] = None
-        self._loading = False          # guard: form population != user edits
-        # Separate AI instance for entity chat so its transcript doesn't mix
-        # with the main chat panel's. Its _history is re-seeded from the
-        # entity's persisted chat_history whenever the selection changes.
-        self._codex_ai = AIAssistant()
-        self._call_start_time: Optional[float] = None
-        self.setWindowTitle("Codex — Entities")
-        if not embedded:
-            self.setWindowFlags(self.windowFlags() | Qt.Window)
-            self.resize(940, 860)
-        self._build_ui()
-        self._refresh_list()
-        self._tick_timer = QTimer(self)
-        self._tick_timer.timeout.connect(self._tick_thinking_status)
-        self._tick_timer.start(250)
-
-    def set_script(self, script: 'ScriptData'):
-        """Re-point at a new ScriptData after the main window loads a file."""
-        self.script = script
-        self._current_slug = None
-        self._clear_form()
-        self._refresh_list()
-
-    # Embedded guard: Escape must not blank the tab (QDialog.reject hides).
-    def accept(self):
-        if not self._embedded:
-            super().accept()
-
-    def reject(self):
-        if not self._embedded:
-            super().reject()
-
-    # ── UI construction ─────────────────────────────────────────────────
-
-    def _build_ui(self):
-        outer = QVBoxLayout(self)
-        root = QHBoxLayout()
-        outer.addLayout(root, stretch=3)
-
-        # Left column — filter, list, actions
-        left = QVBoxLayout()
-        self._kind_filter = QComboBox()
-        self._kind_filter.addItem("All kinds", None)
-        for k in ENTITY_KINDS:
-            self._kind_filter.addItem(k.capitalize(), k)
-        # DEFERRED for the same reason as _on_row_selected and _on_tab_changed:
-        # rebuilding an item view synchronously inside another widget's signal
-        # dispatch destroys items Qt is still handling the event on, and
-        # access-violates on this machine. This was the last synchronous one.
-        self._kind_filter.currentIndexChanged.connect(
-            lambda *_: QTimer.singleShot(0, self._refresh_list))
-        left.addWidget(self._kind_filter)
-
-        self._list = QListWidget()
-        self._list.currentRowChanged.connect(self._on_row_selected)
-        self._list.setMinimumWidth(280)
-        left.addWidget(self._list, stretch=1)
-
-        row1 = QHBoxLayout()
-        btn_new = QPushButton("New Entity")
-        btn_new.clicked.connect(self._cmd_new_entity)
-        row1.addWidget(btn_new)
-        self._btn_delete = QPushButton("Delete")
-        self._btn_delete.clicked.connect(self._cmd_delete_entity)
-        row1.addWidget(self._btn_delete)
-        left.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        btn_import = QPushButton("Import…")
-        btn_import.setToolTip(
-            "Copy entity cards from another script.json's codex.\n"
-            "Copy-by-value: this file stays self-contained. Slugs are kept\n"
-            "identical (they are the tag linkage); existing slugs are skipped.")
-        btn_import.clicked.connect(self._cmd_import)
-        row2.addWidget(btn_import)
-        self._btn_extract = QPushButton("Extract (AI)…")
-        self._btn_extract.setToolTip(
-            "Ask the AI to propose entity cards from the world bible and the\n"
-            "node graph's tags. You review and check which ones to keep.")
-        self._btn_extract.clicked.connect(self._cmd_extract)
-        row2.addWidget(self._btn_extract)
-        left.addLayout(row2)
-
-        self._status = QLabel("")
-        self._status.setStyleSheet("color: #999; font-size: 11px;")
-        self._status.setWordWrap(True)
-        left.addWidget(self._status)
-
-        root.addLayout(left)
-
-        # Right column — the card form
-        form_widget = QWidget()
-        form = QFormLayout(form_widget)
-        form.setContentsMargins(8, 4, 4, 4)
-
-        self._f_name = QLineEdit()
-        self._f_name.editingFinished.connect(self._on_name_edited)
-        form.addRow("Name", self._f_name)
-
-        self._f_slug = QLineEdit()
-        self._f_slug.setToolTip(
-            "The entity's slug — doubles as the node tag that links nodes to\n"
-            "this card. Renaming here also renames the tag on every node.")
-        self._f_slug.editingFinished.connect(self._on_slug_edited)
-        form.addRow("Slug (tag)", self._f_slug)
-
-        self._f_kind = QComboBox()
-        for k in ENTITY_KINDS:
-            self._f_kind.addItem(k.capitalize(), k)
-        self._f_kind.currentIndexChanged.connect(self._save_current)
-        form.addRow("Kind", self._f_kind)
-
-        self._f_aliases = QLineEdit()
-        self._f_aliases.setPlaceholderText("comma, separated, names")
-        self._f_aliases.editingFinished.connect(self._save_current)
-        form.addRow("Aliases", self._f_aliases)
-
-        def _text_edit(height, placeholder=''):
-            te = QTextEdit()
-            te.setAcceptRichText(False)
-            te.setFixedHeight(height)
-            if placeholder:
-                te.setPlaceholderText(placeholder)
-            te.textChanged.connect(self._save_current)
-            return te
-
-        self._f_essence = _text_edit(
-            70, "1-3 sentences: the irreducible core, written to steer prose.")
-        form.addRow("Essence", self._f_essence)
-
-        self._f_facts = _text_edit(
-            90, "One durable canon fact per line — must stay true in every story.")
-        form.addRow("Facts", self._f_facts)
-
-        self._f_sensory = _text_edit(
-            56, "One sensory anchor per line (a smell, a sound, a texture).")
-        form.addRow("Sensory", self._f_sensory)
-
-        self._f_voice = _text_edit(
-            56, "How the narrator handles this entity (register, distance).")
-        form.addRow("Voice notes", self._f_voice)
-
-        # Relationships as REAL links: each row picks an existing codex
-        # entity (no free-form slugs), with a jump button to its card.
-        rels_widget = QWidget()
-        rels_v = QVBoxLayout(rels_widget)
-        rels_v.setContentsMargins(0, 0, 0, 0)
-        rels_v.setSpacing(2)
-        self._rels_box = QVBoxLayout()
-        self._rels_box.setSpacing(2)
-        self._rel_rows: list = []   # [(row_widget, target_combo, nature_edit)]
-        rels_v.addLayout(self._rels_box)
-        add_rel_btn = QPushButton("+ Add link")
-        add_rel_btn.setFixedWidth(80)
-        add_rel_btn.clicked.connect(self._cmd_add_rel_row)
-        rels_v.addWidget(add_rel_btn)
-        form.addRow("Links to", rels_widget)
-
-        # CRASH RULE: plain items only — NO setItemWidget here. Per-row
-        # button widgets made every card load destroy widgets that Qt was
-        # still tracking (hover/mouse-grab), which access-violates on this
-        # machine (crash.log 2026-07-25 14:30 — AV at _incoming_list.clear()
-        # reached from a row button's own click). The actions live on
-        # persistent buttons beside the list, which are never rebuilt.
-        incoming_widget = QWidget()
-        incoming_v = QVBoxLayout(incoming_widget)
-        incoming_v.setContentsMargins(0, 0, 0, 0)
-        incoming_v.setSpacing(2)
-        self._incoming_list = QListWidget()
-        self._incoming_list.setFixedHeight(84)
-        self._incoming_list.setToolTip(
-            "Entities whose cards link TO this one. Double-click (or → Go to) "
-            "jumps to the source; ⇄ adds a reciprocal 'Links to' line back.")
-        self._incoming_list.itemDoubleClicked.connect(
-            lambda _it: QTimer.singleShot(0, self._cmd_incoming_goto))
-        self._incoming_list.currentRowChanged.connect(
-            lambda _r: self._update_incoming_buttons())
-        incoming_v.addWidget(self._incoming_list)
-        inc_btns = QHBoxLayout()
-        inc_btns.setSpacing(4)
-        self._btn_incoming_goto = QPushButton("→ Go to")
-        self._btn_incoming_goto.setToolTip(
-            "Open the selected source entity's card.")
-        self._btn_incoming_goto.clicked.connect(
-            lambda *_: QTimer.singleShot(0, self._cmd_incoming_goto))
-        inc_btns.addWidget(self._btn_incoming_goto)
-        self._btn_incoming_back = QPushButton("⇄ Link back")
-        self._btn_incoming_back.setToolTip(
-            "Add a reciprocal link: this card → the selected source entity.")
-        self._btn_incoming_back.clicked.connect(
-            lambda *_: QTimer.singleShot(0, self._cmd_incoming_link_back))
-        inc_btns.addWidget(self._btn_incoming_back)
-        inc_btns.addStretch(1)
-        incoming_v.addLayout(inc_btns)
-        self._update_incoming_buttons()
-        form.addRow("Linked from", incoming_widget)
-
-        self._f_notes = _text_edit(
-            56, "Author-only notes — never sent to the AI.")
-        form.addRow("Notes", self._f_notes)
-
-        usage_row = QHBoxLayout()
-        self._usage_label = QLabel("")
-        self._usage_label.setStyleSheet("color: #999;")
-        usage_row.addWidget(self._usage_label, stretch=1)
-        self._btn_spotlight = QPushButton("Spotlight on graph")
-        self._btn_spotlight.setToolTip(
-            "Highlight every node carrying this entity's tag in the main window.")
-        self._btn_spotlight.clicked.connect(self._cmd_spotlight)
-        usage_row.addWidget(self._btn_spotlight)
-        form.addRow("Usage", usage_row)
-
-        self._source_label = QLabel("")
-        self._source_label.setStyleSheet("color: #777; font-size: 11px;")
-        form.addRow("Source", self._source_label)
-
-        root.addWidget(form_widget, stretch=1)
-
-        # ── Entity development chat (full width, below list + card) ──────
-        chat_hdr = QLabel("Entity Development Chat")
-        chat_hdr.setStyleSheet("font-weight: bold; margin-top: 4px;")
-        outer.addWidget(chat_hdr)
-
-        self.chat_log = QTextEdit()
-        self.chat_log.setReadOnly(True)
-        self.chat_log.setStyleSheet(
-            "background:#1a1a1a; color:#cccccc; font-size:11px;")
-        outer.addWidget(self.chat_log, stretch=2)
-
-        input_row = QHBoxLayout()
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText(
-            "Develop the selected entity with AI — history is saved per card…")
-        self.chat_input.returnPressed.connect(self._cmd_codex_chat)
-        input_row.addWidget(self.chat_input)
-        send_btn = QPushButton("Send")
-        send_btn.clicked.connect(self._cmd_codex_chat)
-        input_row.addWidget(send_btn)
-        self._distill_btn = QPushButton("Distill Chat → Entity")
-        self._distill_btn.setToolTip(
-            "Distill this conversation onto the selected entity's card\n"
-            "(refines existing content; also proposes any NEW entities the\n"
-            "chat surfaced, which you review before they're added).")
-        self._distill_btn.clicked.connect(self._cmd_distill_entity)
-        input_row.addWidget(self._distill_btn)
-        outer.addLayout(input_row)
-
-        self.chat_status = QLabel("")
-        self.chat_status.setStyleSheet("color:#888888; font-size:10px;")
-        outer.addWidget(self.chat_status)
-
-    # ── List handling ────────────────────────────────────────────────────
-
-    def _visible_slugs(self) -> list:
-        kind = self._kind_filter.currentData()
-        def _order(kv):
-            k = kv[1].get('kind', 'idea')
-            ki = ENTITY_KINDS.index(k) if k in ENTITY_KINDS else 99
-            return (ki, (kv[1].get('name') or kv[0]).lower())
-        return [slug for slug, card in sorted(self.script.entities.items(), key=_order)
-                if kind is None or card.get('kind') == kind]
-
-    def _story_label(self, arc_id: str) -> str:
-        """Display name for a story id, falling back to the id itself."""
-        return (self.script.arcs.get(arc_id, {}) or {}).get('name') or arc_id
-
-    def _refresh_list(self, *_):
-        # Belt and braces: a tooltip sourced from a row is one more raw
-        # pointer into an item, and rows do still get removed when cards are
-        # deleted. Cheap, and it costs nothing on the common path.
-        QToolTip.hideText()
-        counts = self.script.entity_counts()
-        desired = []
-        for slug in self._visible_slugs():
-            card = self.script.entities[slug]
-            n_use, story_ids = counts.get(slug, (0, []))
-            n_story = len(story_ids)
-            kind = card.get('kind', 'idea')
-            desired.append((
-                f"[{kind[:4]}] {card.get('name') or slug}"
-                f"   ·{n_use}n ·{n_story}s",
-                slug,
-                f"{slug} — {n_use} node(s), "
-                f"{n_story} {'story' if n_story == 1 else 'stories'}"
-                + (': ' + ', '.join(self._story_label(a) for a in story_ids)
-                   if story_ids else '')))
-        # IN-PLACE UPDATE — DO NOT REINTRODUCE clear().
-        #
-        # Three of this session's access violations landed on a QListWidget
-        # clear() in this tab (crash.log 14:30 _refresh_incoming, 16:13 and
-        # 17:36 here). clear() bulk-destroys every item, and anything Qt still
-        # holds a raw pointer into — tooltip, hover/mouse-grab state, the
-        # accessibility bridge — dies with it. Hiding the tooltip first was
-        # not enough, so stop destroying items instead of trying to enumerate
-        # what might be pointing at them.
-        #
-        # Rows are reused: same count, same widgets, only text/data/tooltip
-        # reassigned. The counts in the label change far more often than the
-        # row SET does (a node edit moves ·12n without adding a card), so the
-        # common refresh now destroys nothing at all. Surplus rows are removed
-        # one at a time with takeItem(), which hands ownership back rather
-        # than bulk-deleting under Qt.
-        self._loading = True
-        try:
-            while self._list.count() > len(desired):
-                self._list.takeItem(self._list.count() - 1)
-            while self._list.count() < len(desired):
-                self._list.addItem(QListWidgetItem())
-            for i, (label, slug, tip) in enumerate(desired):
-                item = self._list.item(i)
-                if item.text() != label:
-                    item.setText(label)
-                if item.data(Qt.UserRole) != slug:
-                    item.setData(Qt.UserRole, slug)
-                item.setToolTip(tip)
-        finally:
-            self._loading = False
-        # restore selection if the current slug is still visible
-        if self._current_slug:
-            for i in range(self._list.count()):
-                if self._list.item(i).data(Qt.UserRole) == self._current_slug:
-                    self._list.setCurrentRow(i)
-                    return
-        if self._list.count():
-            self._list.setCurrentRow(0)
-        else:
-            self._current_slug = None
-            self._clear_form()
-
-    def _on_row_selected(self, row: int):
-        if self._loading or row < 0:
-            return
-        item = self._list.item(row)
-        if not item:
-            return
-        slug = item.data(Qt.UserRole)
-        # CRASH RULE: _load_card rebuilds relationship rows + the incoming
-        # list; rebuilding item views synchronously inside currentRowChanged
-        # dispatch access-violates on this machine (same family as the
-        # Stories-tab cast_list AV, crash.log 2026-07-17 19:09). Defer; the
-        # guard drops the load if the selection moved again first.
-        QTimer.singleShot(0, lambda s=slug: self._load_card_deferred(s))
-
-    def _load_card_deferred(self, slug: str):
-        item = self._list.currentItem()
-        if item and item.data(Qt.UserRole) == slug \
-                and slug in self.script.entities:
-            self._load_card(slug)
-
-    # ── Form handling ────────────────────────────────────────────────────
-
-    def _clear_form(self):
-        self._loading = True
-        try:
-            for w in (self._f_name, self._f_slug, self._f_aliases):
-                w.clear()
-            for w in (self._f_essence, self._f_facts, self._f_sensory,
-                      self._f_voice, self._f_notes):
-                w.clear()
-            self._set_rel_rows([])
-            # Drain one at a time rather than clear() — same list, same reason
-            # as _refresh_incoming. The text/line edits above are safe to
-            # clear(); only item views bulk-destroy children Qt may hold.
-            QToolTip.hideText()
-            while self._incoming_list.count():
-                self._incoming_list.takeItem(self._incoming_list.count() - 1)
-            self._update_incoming_buttons()
-            self._usage_label.setText("")
-            self._source_label.setText("")
-            self.chat_log.clear()
-            self._codex_ai._history = []
-        finally:
-            self._loading = False
-
-    def _load_card(self, slug: str):
-        QToolTip.hideText()   # never rebuild widgets under an open tooltip
-        card = self.script.entities.get(slug)
-        if card is None:
-            return
-        self._current_slug = slug
-        self._loading = True
-        try:
-            self._f_name.setText(card.get('name', ''))
-            self._f_slug.setText(slug)
-            kind = card.get('kind', 'idea')
-            idx = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 0
-            self._f_kind.setCurrentIndex(idx)
-            self._f_aliases.setText(", ".join(card.get('aliases', [])))
-            self._f_essence.setPlainText(card.get('essence', ''))
-            self._f_facts.setPlainText("\n".join(card.get('facts', [])))
-            self._f_sensory.setPlainText("\n".join(card.get('sensory', [])))
-            self._f_voice.setPlainText(card.get('voice_notes', ''))
-            self._set_rel_rows(card.get('relationships', []))
-            self._refresh_incoming(slug)
-            self._f_notes.setPlainText(card.get('notes', ''))
-            n_use, story_ids = self.script.entity_counts().get(slug, (0, []))
-            n_story = len(story_ids)
-            self._usage_label.setText(
-                f"Used by {n_use} node(s) in {n_story} "
-                f"{'story' if n_story == 1 else 'stories'}")
-            # Which stories, on hover — the count answers "does this span the
-            # web?", the names answer "which parts of it?".
-            self._usage_label.setToolTip(
-                '\n'.join(self._story_label(a) for a in story_ids)
-                if story_ids else 'Not in any story yet')
-            self._source_label.setText(card.get('source', 'local'))
-            # Per-entity chat: repopulate the log and re-seed the chat AI's
-            # transcript so the conversation follows the selected card.
-            self.chat_log.clear()
-            history = card.get('chat_history', [])
-            for entry in history:
-                self._append_chat(entry.get('role', 'user'),
-                                  entry.get('content', ''))
-            self._codex_ai._history = list(history)
-        finally:
-            self._loading = False
-
-    @staticmethod
-    def _parse_lines(text: str) -> list:
-        return [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    # ── Relationship rows (real links, not free text) ────────────────────
-
-    def _fill_rel_combo(self, combo: QComboBox, selected: str):
-        """Populate a target picker with every OTHER codex entity. A saved
-        target that no longer exists (e.g. arrived via import) is kept as
-        an explicit '(missing)' item so the reference isn't silently lost."""
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            def _order(kv):
-                kind = kv[1].get('kind', 'idea')
-                ki = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 99
-                return (ki, (kv[1].get('name') or kv[0]).lower())
-            for slug, card in sorted(self.script.entities.items(), key=_order):
-                if slug == self._current_slug:
-                    continue
-                combo.addItem(
-                    f"[{card.get('kind', 'idea')[:4]}] "
-                    f"{card.get('name') or slug}", slug)
-            if selected and combo.findData(selected) < 0:
-                combo.addItem(f"(missing) {selected}", selected)
-            idx = combo.findData(selected) if selected else -1
-            combo.setCurrentIndex(idx if idx >= 0 else max(0, combo.count() - 1)
-                                  if combo.count() else -1)
-            if not selected and combo.count():
-                combo.setCurrentIndex(0)
-        finally:
-            combo.blockSignals(False)
-
-    def _add_rel_row(self, to_slug: str = '', nature: str = ''):
-        row_w = QWidget()
-        h = QHBoxLayout(row_w)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(4)
-        combo = QComboBox()
-        combo.setMinimumWidth(140)
-        self._fill_rel_combo(combo, to_slug)
-        combo.currentIndexChanged.connect(self._save_current)
-        h.addWidget(combo, stretch=2)
-        nat = QLineEdit(nature)
-        nat.setPlaceholderText("nature of the link")
-        nat.editingFinished.connect(self._save_current)
-        h.addWidget(nat, stretch=3)
-        go = QPushButton("→")
-        go.setFixedWidth(24)
-        go.setToolTip("Go to this entity's card")
-        go.clicked.connect(lambda *_, c=combo: self._goto_entity(c.currentData()))
-        h.addWidget(go)
-        rm = QPushButton("✕")
-        rm.setFixedWidth(24)
-        rm.clicked.connect(lambda *_, w=row_w: self._remove_rel_row(w))
-        h.addWidget(rm)
-        self._rels_box.addWidget(row_w)
-        self._rel_rows.append((row_w, combo, nat))
-
-    def _cmd_add_rel_row(self):
-        if not self._current_slug:
-            return
-        if len(self.script.entities) < 2:
-            self.chat_status.setText(
-                "Nothing to link to yet — the codex has no other entities.")
-            return
-        self._add_rel_row()
-        self._save_current()
-
-    def _remove_rel_row(self, row_w):
-        for i, (w, _c, _n) in enumerate(self._rel_rows):
-            if w is row_w:
-                self._rel_rows.pop(i)
-                self._rels_box.removeWidget(row_w)
-                row_w.deleteLater()
-                break
-        self._save_current()
-
-    def _set_rel_rows(self, rels: list):
-        prev = self._loading
-        self._loading = True
-        try:
-            for (w, _c, _n) in self._rel_rows:
-                self._rels_box.removeWidget(w)
-                w.deleteLater()
-            self._rel_rows = []
-            for r in rels:
-                if isinstance(r, dict) and r.get('to'):
-                    self._add_rel_row(r['to'], r.get('nature', ''))
-        finally:
-            self._loading = prev
-
-    def _rels_from_rows(self) -> list:
-        rels = []
-        for (_w, combo, nat) in self._rel_rows:
-            to = combo.currentData()
-            if to and to != self._current_slug:
-                rels.append({'to': to, 'nature': nat.text().strip()})
-        return rels
-
-    def _refresh_incoming(self, slug: str):
-        """List every entity whose card links TO this one. Rows are plain
-        items (see the CRASH RULE where the list is built); the → / ⇄
-        actions live on the buttons under the list and operate on the
-        selected row, so two-way relationships still take one click."""
-        desired = []
-        for src, card in self.script.entities.items():
-            if src == slug:
-                continue
-            for r in card.get('relationships', []):
-                if r.get('to') == slug:
-                    desired.append((
-                        (card.get('name') or src)
-                        + (f" — {r.get('nature')}" if r.get('nature') else ''),
-                        src))
-        current = [(self._incoming_list.item(i).text(),
-                    self._incoming_list.item(i).data(Qt.ItemDataRole.UserRole))
-                   for i in range(self._incoming_list.count())]
-        if current != desired:
-            # IN-PLACE UPDATE — DO NOT REINTRODUCE clear(). This list took an
-            # access violation at its clear() (crash.log 2026-07-25 14:30);
-            # see the long note in _refresh_list. Reuse rows, take surplus
-            # ones off one at a time, never bulk-destroy.
-            QToolTip.hideText()
-            while self._incoming_list.count() > len(desired):
-                self._incoming_list.takeItem(self._incoming_list.count() - 1)
-            while self._incoming_list.count() < len(desired):
-                self._incoming_list.addItem(QListWidgetItem())
-            for i, (label_text, src) in enumerate(desired):
-                item = self._incoming_list.item(i)
-                if item.text() != label_text:
-                    item.setText(label_text)
-                if item.data(Qt.ItemDataRole.UserRole) != src:
-                    item.setData(Qt.ItemDataRole.UserRole, src)
-                item.setToolTip(
-                    f"'{label_text}' links here. Double-click to open its "
-                    f"card, or ⇄ Link back to add the reciprocal line.")
-        self._update_incoming_buttons()
-
-    def _selected_incoming(self) -> Optional[str]:
-        item = self._incoming_list.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
-
-    def _update_incoming_buttons(self):
-        has = self._selected_incoming() is not None
-        self._btn_incoming_goto.setEnabled(has)
-        self._btn_incoming_back.setEnabled(has)
-
-    def _cmd_incoming_goto(self):
-        src = self._selected_incoming()
-        if src:
-            self._goto_entity(src)
-
-    def _cmd_incoming_link_back(self):
-        src = self._selected_incoming()
-        if src:
-            self._cmd_link_back(src)
-
-    def _cmd_link_back(self, src_slug: str):
-        """⇄ on a 'Linked from' row: add a 'Links to' line pointing back
-        at the source entity (nature left blank for the author to fill —
-        the reverse direction usually reads differently)."""
-        if not self._current_slug or src_slug not in self.script.entities:
-            return
-        if any(combo.currentData() == src_slug
-               for (_w, combo, _n) in self._rel_rows):
-            self.chat_status.setText(
-                f"Already links to '{src_slug}' — edit that row's nature instead.")
-            return
-        self._add_rel_row(src_slug, '')
-        self._save_current()
-        name = self.script.entities[src_slug].get('name') or src_slug
-        self.chat_status.setText(
-            f"Linked back to '{name}' — describe the nature of the link.")
-        self._rel_rows[-1][2].setFocus()   # cursor into the nature field
-
-    def _goto_entity(self, slug: Optional[str]):
-        """Jump the browser + card form to another entity."""
-        if not slug or slug not in self.script.entities:
-            self.chat_status.setText(f"'{slug}' is not in the codex.")
-            return
-        self._save_current()
-        self._current_slug = slug
-        kind = self.script.entities[slug].get('kind')
-        if self._kind_filter.currentData() not in (None, kind):
-            self._kind_filter.setCurrentIndex(0)   # All kinds → refreshes
-        else:
-            self._refresh_list()
-
-    def _save_current(self, *_):
-        if self._loading or not self._current_slug:
-            return
-        self.script.update_entity(self._current_slug, {
-            'name': self._f_name.text().strip(),
-            'kind': self._f_kind.currentData(),
-            'aliases': [a.strip() for a in self._f_aliases.text().split(',')
-                        if a.strip()],
-            'essence': self._f_essence.toPlainText().strip(),
-            'facts': self._parse_lines(self._f_facts.toPlainText()),
-            'sensory': self._parse_lines(self._f_sensory.toPlainText()),
-            'voice_notes': self._f_voice.toPlainText().strip(),
-            'relationships': self._rels_from_rows(),
-            'notes': self._f_notes.toPlainText().strip(),
-        })
-
-    def _on_name_edited(self):
-        if self._loading or not self._current_slug:
-            return
-        self._save_current()
-        # Auto-follow: a card whose slug is still the 'new_entity'
-        # placeholder tracks the name — even when nodes already carry the
-        # tag (rename_entity cascades node tags safely), because a stuck
-        # placeholder slug makes spotlight/prompts search for 'new_entity'.
-        slug = self._current_slug
-        if slug.startswith('new_entity'):
-            want = ScriptData.sanitize_entity_slug(self._f_name.text())
-            if want and want != slug and not want.startswith('new_entity'):
-                final = self.script.rename_entity(slug, want)
-                if final:
-                    self._current_slug = final
-                    self._loading = True
-                    try:
-                        self._f_slug.setText(final)
-                    finally:
-                        self._loading = False
-                    self._refresh_list()
-
-    def _on_slug_edited(self):
-        if self._loading or not self._current_slug:
-            return
-        new = self._f_slug.text().strip()
-        if not new or new == self._current_slug:
-            return
-        final = self.script.rename_entity(self._current_slug, new,
-                                          update_tags=True)
-        if final:
-            self._current_slug = final
-            self._status.setText(
-                f"Renamed to '{final}' (node tags updated).")
-            self._refresh_list()
-            self._mw._rebuild_graph()
-        else:
-            # invalid / collision-only rename — restore the real slug
-            self._f_slug.setText(self._current_slug)
-
-    # ── Commands ─────────────────────────────────────────────────────────
-
-    def _cmd_new_entity(self):
-        slug = self.script.add_entity("New Entity", kind='character')
-        if slug:
-            self._current_slug = slug
-            self._refresh_list()
-            self._f_name.setFocus()
-            self._f_name.selectAll()
-
-    def _cmd_delete_entity(self):
-        if not self._current_slug:
-            return
-        # Two-step inline confirm: first click arms, second click deletes.
-        if self._btn_delete.text() != "Really delete?":
-            self._btn_delete.setText("Really delete?")
-            QTimer.singleShot(2500, lambda: self._btn_delete.setText("Delete"))
-            return
-        self._btn_delete.setText("Delete")
-        slug = self._current_slug
-        self.script.delete_entity(slug)
-        self._current_slug = None
-        self._status.setText(f"Deleted '{slug}' (node tags left untouched).")
-        self._refresh_list()
-
-    def _cmd_spotlight(self):
-        if not self._current_slug:
-            return
-        # Rescue a card still carrying the 'new_entity' placeholder slug
-        # (e.g. from an older session): give it its real slug first so the
-        # spotlight searches something meaningful.
-        slug = self._current_slug
-        if slug.startswith('new_entity'):
-            want = ScriptData.sanitize_entity_slug(self._f_name.text())
-            if want and want != slug and not want.startswith('new_entity'):
-                final = self.script.rename_entity(slug, want)
-                if final:
-                    self._current_slug = slug = final
-                    self._refresh_list()
-        self._mw._text_only_btn.setChecked(False)
-        self._mw._word_btn.setChecked(True)
-        self._mw._search_bar.setText(slug)
-        # The search overlays live on the Graph tab — go there so the
-        # spotlight is actually visible.
-        self._mw.tabs.setCurrentIndex(0)
-        n = len(self.script.entity_usage(slug))
-        self._mw.status_bar.showMessage(
-            f"Spotlight: '{slug}' — {n} node(s) carry the tag "
-            "(glowing on the graph; clear the search box to dismiss).")
-
-    # ── Entity development chat ──────────────────────────────────────────
-
-    def _append_chat(self, role: str, text: str):
-        color = '#88ccff' if role == 'assistant' else '#cccccc'
-        label = 'Claude' if role == 'assistant' else 'You'
-        self.chat_log.append(
-            f'<span style="color:{color};"><b>{label}:</b> {text}</span><br>')
-
-    def _tick_thinking_status(self):
-        if self._call_start_time is None:
-            return
-        elapsed = time.time() - self._call_start_time
-        name = _model_short_name(getattr(self, '_call_model', ''))
-        self.chat_status.setText(f"Claude ({name}) is thinking… {elapsed:0.0f}s")
-
-    def _chat_context(self) -> str:
-        """Bible + full codex + the selected card's usage snippets — passed
-        as the chat call's story_context (the cached system-prompt block)."""
-        parts = []
-        if self.script.story_context:
-            parts.append(f'STORY CONTEXT:\n{self.script.story_context}')
-        codex_sum = self.script.codex_summary()
-        if codex_sum:
-            parts.append(f'FULL CODEX (current entity cards):\n{codex_sum}')
-        slug = self._current_slug
-        if slug:
-            lines = [f'CURRENTLY SELECTED ENTITY: {slug}']
-            usage = self.script.entity_usage(slug)
-            for nid in usage[:3]:
-                text = self.script.nodes.get(nid, {}).get('text', '')
-                if text:
-                    lines.append(f'  used in [{nid}]: "{text[:200]}"')
-            if usage:
-                lines.append(f'  ({len(usage)} node(s) total)')
-            parts.append('\n'.join(lines))
-        return '\n\n'.join(parts)
-
-    def _cmd_codex_chat(self):
-        msg = self.chat_input.text().strip()
-        if not msg:
-            return
-        if not self._current_slug:
-            self.chat_status.setText("Select (or create) an entity first — "
-                                     "the chat develops one card at a time.")
-            return
-        if not self._codex_ai.ready:
-            self.chat_status.setText("claude CLI not found")
-            return
-        if self._codex_ai.busy:
-            self.chat_status.setText("AI is busy…")
-            return
-        self.chat_input.clear()
-        self._append_chat('user', msg)
-        slug = self._current_slug
-        self._call_start_time = time.time()
-        self._call_model = self.ai.model
-        self._tick_thinking_status()
-
-        def on_reply(reply):
-            elapsed = (time.time() - self._call_start_time) \
-                if self._call_start_time else 0.0
-            self._call_start_time = None
-            self._append_chat('assistant', reply)
-            self.chat_status.setText(f'(last call: {elapsed:.1f}s)')
-            card = self.script.entities.get(slug)
-            if card is not None:
-                hist = card.setdefault('chat_history', [])
-                hist.append({'role': 'user', 'content': msg})
-                hist.append({'role': 'assistant', 'content': reply})
-                self.script.dirty = True
-
-        def on_error(e):
-            self._call_start_time = None
-            self.chat_status.setText(f'Error: {str(e)[:80]}')
-
-        # The chat follows the AI Model menu selection; only the one-shot
-        # "Distill Chat → Entity" pass (which writes canon) pins Opus.
-        self._codex_ai.chat(msg, self.ui_queue,
-                            on_reply=on_reply, on_error=on_error,
-                            story_context=self._chat_context(),
-                            _system_override=SYSTEM_CODEX_CHAT,
-                            model_override=self.ai.model)
-
-    def _cmd_distill_entity(self):
-        if not self._current_slug:
-            self.chat_status.setText("Select an entity first.")
-            return
-        if not self.ai.ready:
-            self.chat_status.setText("claude CLI not found")
-            return
-        slug = self._current_slug
-        card = self.script.entities.get(slug, {})
-        history = card.get('chat_history', [])
-        if not history:
-            self.chat_status.setText("No chat history to distill.")
-            return
-        self._save_current()
-
-        conv_lines = []
-        for entry in history:
-            who = 'Author' if entry.get('role') == 'user' else 'Claude'
-            conv_lines.append(f'{who}: {entry.get("content", "")}')
-        parts = [
-            f'CURRENT CARD (slug: {slug}):\n'
-            + (self.script.codex_summary([slug]) or '(empty card)'),
-            'EXISTING CODEX SLUGS (do not re-propose): '
-            + (', '.join(sorted(self.script.entities.keys())) or '(none)'),
-            'CONVERSATION TO DISTILL:\n' + '\n'.join(conv_lines),
-            'Distill the card now. Output the JSON object only.',
-        ]
-        prompt = '\n\n'.join(parts)
-
-        self._call_start_time = time.time()
-        self._call_model = MODEL_OPUS
-        self._tick_thinking_status()
-        self._append_chat('assistant', '[Distilling conversation onto the card...]')
-        self._distill_btn.setEnabled(False)
-
-        def run():
-            try:
-                # Opus: distillation writes canon.
-                data = self.ai._run_claude_json(SYSTEM_DISTILL_ENTITY, prompt,
-                                                model_override=MODEL_OPUS)
-                self.ui_queue.put(lambda d=data, s=slug:
-                                  self._apply_entity_distill(s, d))
-            except Exception as exc:
-                def fail(e=str(exc)):
-                    self._call_start_time = None
-                    self._distill_btn.setEnabled(True)
-                    self.chat_status.setText(f"Distill error: {e[:80]}")
-                self.ui_queue.put(fail)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _apply_entity_distill(self, slug: str, data: dict):
-        """Apply a distill result: update the card, then review any new
-        related entities the chat surfaced."""
-        elapsed = (time.time() - self._call_start_time) \
-            if self._call_start_time else 0.0
-        self._call_start_time = None
-        self._distill_btn.setEnabled(True)
-        if not isinstance(data, dict) or slug not in self.script.entities:
-            self.chat_status.setText("Distill failed: invalid response.")
-            return
-
-        clean = _sanitize_entity_card(data.get('entity') or {})
-        # Refine-not-discard: only overwrite fields the distill filled
-        # (an empty field in the response leaves the card's value alone).
-        updates = {k: v for k, v in clean.items() if v}
-        self.script.update_entity(slug, updates)
-
-        # Related entities → review picker (never overwrite existing slugs)
-        related = data.get('related_entities')
-        n_new = 0
-        if isinstance(related, dict):
-            fresh = {}
-            for rslug, rcard in related.items():
-                if not isinstance(rcard, dict):
-                    continue
-                rslug = ScriptData.sanitize_entity_slug(str(rslug))
-                if not rslug or rslug in RESERVED_ENTITY_SLUGS:
-                    continue
-                rclean = _sanitize_entity_card(rcard)
-                # Loose duplicate check (name/alias/article variants), not
-                # just exact slug — see find_equivalent_entity.
-                if self.script.find_equivalent_entity(rslug) or \
-                        self.script.find_equivalent_entity(rclean['name']):
-                    continue
-                if not rclean['name']:
-                    rclean['name'] = rslug
-                fresh[rslug] = rclean
-            if fresh:
-                entries = [(s, f'[{c["kind"][:4]}] {c["name"]}  ({s}) — '
-                               f'{c["essence"][:80]}')
-                           for s, c in fresh.items()]
-                for rslug in self._pick_entities_from_distill(entries):
-                    new_card = deepcopy(ENTITY_TEMPLATE)
-                    new_card.update(fresh[rslug])
-                    self.script.entities[rslug] = new_card
-                    n_new += 1
-                if n_new:
-                    self.script.dirty = True
-
-        self._load_card(slug)
-        self._refresh_list()
-        extra = f", +{n_new} new entit{'y' if n_new == 1 else 'ies'}" if n_new else ''
-        self.chat_status.setText(
-            f"Card updated from chat{extra}. ({elapsed:.1f}s)")
-        self._append_chat('assistant', f'[Distilled onto "{slug}"{extra}]')
-
-    def _pick_entities_from_distill(self, entries: list) -> list:
-        return _pick_checked(self, "New entities surfaced by the chat", entries)
-
-    # ── Import ───────────────────────────────────────────────────────────
-
-    def _cmd_import(self):
-        start_dir = str(self.script.path.parent.parent) if self.script.path \
-            else str(SOUNDS_DIR)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import entities from script", start_dir,
-            "Script JSON (*.json)")
-        if not path:
-            return
-        try:
-            data = json.loads(Path(path).read_text(encoding='utf-8'))
-        except Exception as exc:
-            self._status.setText(f"Could not read {Path(path).name}: {exc}")
-            return
-        pool = data.get('entities', {})
-        if not pool:
-            self._status.setText(
-                f"{Path(path).name} has no codex (no 'entities' section).")
-            return
-        chosen = self._pick_entities_dialog(
-            f"Import from {Path(path).parent.name}", pool,
-            disabled=set(self.script.entities.keys()))
-        if not chosen:
-            return
-        imported = self.script.import_entities_from(Path(path), chosen)
-        self._status.setText(
-            f"Imported {len(imported)} entit{'y' if len(imported) == 1 else 'ies'} "
-            f"from {Path(path).parent.name}.")
-        self._refresh_list()
-
-    def _pick_entities_dialog(self, title: str, pool: dict,
-                              disabled: set = frozenset()) -> list:
-        """Checkable list of candidate cards; returns the checked slugs.
-        Slugs in `disabled` are shown greyed-out and unchecked (already
-        present — never overwritten)."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        dlg.resize(560, 480)
-        vbox = QVBoxLayout(dlg)
-        info = QLabel("Check the entities to bring in. Greyed entries "
-                      "already exist in this codex and are skipped.")
-        info.setWordWrap(True)
-        vbox.addWidget(info)
-        lst = QListWidget()
-        def _order(kv):
-            k = kv[1].get('kind', 'idea') if isinstance(kv[1], dict) else 'idea'
-            ki = ENTITY_KINDS.index(k) if k in ENTITY_KINDS else 99
-            return (ki, kv[0])
-        for slug, card in sorted(pool.items(), key=_order):
-            if not isinstance(card, dict):
-                continue
-            kind = card.get('kind', 'idea')
-            essence = (card.get('essence', '') or '')[:110]
-            item = QListWidgetItem(
-                f"[{kind[:4]}] {card.get('name') or slug}  ({slug})"
-                + (f"\n      {essence}" if essence else ""))
-            item.setData(Qt.UserRole, slug)
-            if slug in disabled or slug in RESERVED_ENTITY_SLUGS:
-                item.setFlags(Qt.ItemIsUserCheckable)   # visible, not selectable
-                item.setCheckState(Qt.Unchecked)
-            else:
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked)
-            lst.addItem(item)
-        vbox.addWidget(lst, stretch=1)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(dlg.reject)
-        btn_row.addWidget(btn_cancel)
-        btn_ok = QPushButton("Add checked")
-        btn_ok.setDefault(True)
-        btn_ok.clicked.connect(dlg.accept)
-        btn_row.addWidget(btn_ok)
-        vbox.addLayout(btn_row)
-        if dlg.exec() != QDialog.Accepted:
-            return []
-        return [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
-                if lst.item(i).checkState() == Qt.Checked]
-
-    # ── AI extraction ────────────────────────────────────────────────────
-
-    def _tag_census(self) -> str:
-        """Custom-tag frequency table with one sample text line per tag —
-        the compact stand-in for dumping all node texts into the prompt."""
-        layer_tags = set(LAYER_ORDER)
-        counts: dict = {}
-        samples: dict = {}
-        for nid, nd in self.script.nodes.items():
-            text = nd.get('text', '')
-            for t in nd.get('tags', []):
-                if t in layer_tags:
-                    continue
-                counts[t] = counts.get(t, 0) + 1
-                if t not in samples and text:
-                    samples[t] = text.replace('\n', ' ')[:160]
-        lines = []
-        for t, c in sorted(counts.items(), key=lambda kv: -kv[1])[:120]:
-            s = samples.get(t, '')
-            lines.append(f'  {t} (x{c}): "{s}"')
-        return '\n'.join(lines)
-
-    def _cmd_extract(self):
-        if not self.ai.ready:
-            self._status.setText("Claude CLI not found — cannot extract.")
-            return
-        if self.ai.busy:
-            self._status.setText("AI is busy — try again in a moment.")
-            return
-        nodes = list(self.script.nodes.values())
-        sample_texts = [nd.get('text', '') for nd in nodes[:60]
-                        if nd.get('text')][:10]
-        self._btn_extract.setEnabled(False)
-        self._status.setText("Extracting codex… (this reads the bible + tags; "
-                             "may take a minute)")
-
-        def on_done(proposed: dict):
-            self._btn_extract.setEnabled(True)
-            # Drop anything that already exists — never overwrite. Match
-            # loosely (slug, name, alias, article variants) rather than by
-            # exact slug: the AI re-proposing 'goat' beside an existing
-            # 'the_goat' used to slip through and create duplicate cards.
-            fresh, dupes = {}, []
-            for s, c in proposed.items():
-                exist = self.script.find_equivalent_entity(s) or \
-                    self.script.find_equivalent_entity(c.get('name', ''))
-                if exist:
-                    dupes.append(f'{s} = {exist}')
-                else:
-                    fresh[s] = c
-            dupe_note = (f"  (skipped {len(dupes)} duplicate(s) of existing "
-                         f"entries: {', '.join(dupes[:6])})") if dupes else ''
-            if not fresh:
-                self._status.setText("Extraction returned nothing new."
-                                     + dupe_note)
-                return
-            chosen = self._pick_entities_dialog(
-                f"Extracted {len(fresh)} proposed entities", fresh)
-            added = 0
-            for slug in chosen:
-                card = deepcopy(ENTITY_TEMPLATE)
-                card.update(fresh[slug])
-                if slug not in self.script.entities \
-                        and slug not in RESERVED_ENTITY_SLUGS:
-                    self.script.entities[slug] = card
-                    added += 1
-            if added:
-                self.script.dirty = True
-            self._status.setText(
-                f"Added {added} entit{'y' if added == 1 else 'ies'} "
-                f"to the codex.{dupe_note}")
-            self._refresh_list()
-
-        def on_error(msg: str):
-            self._btn_extract.setEnabled(True)
-            self._status.setText(f"Extraction failed: {msg}")
-
-        self.ai.extract_codex(
-            story_context=self.script.story_context,
-            tag_census=self._tag_census(),
-            sample_texts=sample_texts,
-            existing_slugs=list(self.script.entities.keys()),
-            ui_queue=self.ui_queue,
-            on_done=on_done, on_error=on_error,
-        )
-
-
-def _pick_checked(parent, title: str, entries: list) -> list:
-    """Generic checkable review picker shared by the v2 AI passes.
-    entries = [(key, label)]; returns the checked keys (all pre-checked),
-    or [] on cancel.
-
-    INSTRUMENTED: this helper sits at the innermost Python frame of a
-    recurring access violation (crash.log 2026-07-25 15:51 and 16:58, both
-    reached from _apply_web_proposal after the user clicked Apply checked).
-    The AV kills the process before any handler runs, and the faulting frame
-    is reported as the CALLER (_pick_dialog), so the stack alone cannot say
-    whether it dies building the dialog, inside exec(), reading the rows
-    back, or unwinding. These four markers localise it — each is flushed to
-    logs/narrative_editor_v2/app.log as it happens, so the last line written
-    before the process dies is the statement that killed it. Remove once the
-    cause is known and fixed."""
-    _log = logging.getLogger("narrative_editor")
-    _log.info("pick_checked: building (%d entries) — %s", len(entries), title)
-    dlg = QDialog(parent)
-    dlg.setWindowTitle(title)
-    dlg.resize(640, 460)
-    vbox = QVBoxLayout(dlg)
-    lst = QListWidget()
-    for key, label in entries:
-        item = QListWidgetItem(label)
-        item.setData(Qt.ItemDataRole.UserRole, key)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(Qt.CheckState.Checked)
-        lst.addItem(item)
-    vbox.addWidget(lst, stretch=1)
-    row = QHBoxLayout()
-    row.addStretch(1)
-    btn_cancel = QPushButton("Cancel")
-    btn_cancel.clicked.connect(dlg.reject)
-    row.addWidget(btn_cancel)
-    btn_ok = QPushButton("Apply checked")
-    btn_ok.setDefault(True)
-    btn_ok.clicked.connect(dlg.accept)
-    row.addWidget(btn_ok)
-    vbox.addLayout(row)
-    _log.info("pick_checked: entering exec()")
-    code = dlg.exec()
-    _log.info("pick_checked: exec() returned %s — reading rows", code)
-    if code != QDialog.Accepted:
-        out = []
-    else:
-        out = [lst.item(i).data(Qt.ItemDataRole.UserRole)
-               for i in range(lst.count())
-               if lst.item(i).checkState() == Qt.CheckState.Checked]
-    # Tear the dialog down explicitly on the event loop instead of letting
-    # the last Python reference drop as this frame unwinds. Dropping it mid
-    # unwind is one of the few ways the AV could be attributed to the caller's
-    # line, which is what the crash log shows.
-    _log.info("pick_checked: read %d rows — releasing dialog", len(out))
-    dlg.setParent(None)
-    dlg.deleteLater()
-    return out
-
-
-class _ZoomableMapView(QGraphicsView):
-    """Wheel-zoom / drag-pan QGraphicsView for the web mini-map.
-
-    The map used to fitInView on every rebuild — with many stories that
-    scaled everything toward unreadable. Now: wheel zooms around the
-    cursor, left-drag pans, double-click (or the Fit button) refits."""
-
-    def __init__(self, scene, on_user_zoom=None, on_click=None):
-        super().__init__(scene)
-        self._on_user_zoom = on_user_zoom
-        self._on_click = on_click
-        self._press_pos = None
-        self._zoom = 1.0
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-
-    def mousePressEvent(self, event):
-        self._press_pos = event.position().toPoint()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        # A release without meaningful movement is a CLICK (ScrollHandDrag
-        # otherwise swallows clicks for panning) — report it in scene coords.
-        #
-        # CRASH-CRITICAL: the callback rebuilds the scene. It must run
-        # AFTER Qt finishes this release (super() first, then a 0-ms timer)
-        # — invoking it inline destroyed items the view was still touching
-        # and caused native access-violation crashes (see crash.log).
-        clicked = (self._on_click is not None and self._press_pos is not None
-                   and (event.position().toPoint()
-                        - self._press_pos).manhattanLength() < 6)
-        scene_pos = (self.mapToScene(event.position().toPoint())
-                     if clicked else None)
-        self._press_pos = None
-        super().mouseReleaseEvent(event)
-        if clicked:
-            QTimer.singleShot(0, lambda cb=self._on_click, p=scene_pos: cb(p))
-
-    def wheelEvent(self, event):
-        delta = event.angleDelta().y()
-        if not delta:
-            return
-        factor = 1.15 if delta > 0 else 1 / 1.15
-        new_zoom = self._zoom * factor
-        if not (0.05 <= new_zoom <= 8.0):
-            return
-        self._zoom = new_zoom
-        self.scale(factor, factor)
-        if self._on_user_zoom:
-            self._on_user_zoom()
-
-    def fit(self):
-        rect = self.scene().itemsBoundingRect().adjusted(-40, -40, 40, 40)
-        if rect.isEmpty():
-            return
-        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
-        self._zoom = 1.0   # new relative-zoom baseline
-
-    def mouseDoubleClickEvent(self, event):
-        self.fit()
-        super().mouseDoubleClickEvent(event)
-
-
-class WebPlannerDialog(QDialog):
-    """The Web — story-level planning (v2 Phase 3).
-
-    Top: a read-only mini-map of the story web (stories on a circle, typed
-    relation edges colored by kind, a dot marking the TO end). Middle: the
-    relations editor. Bottom: the AI passes —
-      Propose Web    — new story cards + relations from the codex + bible
-      Weave Junctions— cross-story drift edges for every junction relation
-      Weave Callbacks— rewrite 1-2 nodes per callback relation to reference
-                       the target story's canon (reviewed before applying)
-    """
-
-    def __init__(self, main_window, script: 'ScriptData', ai: 'AIAssistant',
-                 ui_queue: queue.SimpleQueue, embedded: bool = False,
-                 parent=None):
-        super().__init__(parent)
-        self._mw = main_window
-        self.script = script
-        self.ai = ai
-        self.ui_queue = ui_queue
-        self._embedded = embedded
-        self._ai_busy = False
-        self._weave_chain = False   # Weave All: junctions → callbacks
-        self._user_zoomed = False   # suppress auto-fit once the user zooms
-        self._selected_story: Optional[str] = None
-        self._path_stories: Optional[set] = None
-        self._path_edges: Optional[set] = None
-        self._up_edges: set = set()
-        self._down_edges: set = set()
-        self.setWindowTitle("Web Planner — Story Relations")
-        if not embedded:
-            self.setWindowFlags(self.windowFlags() | Qt.Window)
-            self.resize(1000, 760)
-        self._build_ui()
-        self._refresh()
-
-    def set_script(self, script: 'ScriptData'):
-        self.script = script
-        self._selected_story = None
-        self._refresh()
-
-    # Embedded guard: Escape must not blank the tab (QDialog.reject hides).
-    def accept(self):
-        if not self._embedded:
-            super().accept()
-
-    def reject(self):
-        if not self._embedded:
-            super().reject()
-
-    # ── UI ───────────────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        root = QVBoxLayout(self)
-
-        # Map toolbar: fit, story filter, and per-type toggles that double
-        # as the legend (click a color to hide/show that relation kind).
-        map_bar = QHBoxLayout()
-        btn_fit = QPushButton("Fit")
-        btn_fit.setFixedWidth(40)
-        btn_fit.setToolTip("Fit the whole web in view (double-click the map "
-                           "does the same). Wheel zooms, drag pans.")
-        btn_fit.clicked.connect(self._cmd_fit_map)
-        map_bar.addWidget(btn_fit)
-
-        self._trace_btn = QPushButton("Trace paths")
-        self._trace_btn.setCheckable(True)
-        self._trace_btn.setFixedHeight(22)
-        self._trace_btn.setToolTip(
-            "Off (default): selecting a story highlights only its DIRECT\n"
-            "relations. On: highlights the full chains — every path that\n"
-            "leads into the story and everything reachable onward from it.")
-        self._trace_btn.setStyleSheet(
-            "QPushButton { color: #777; border: 1px solid #444; "
-            "border-radius: 3px; padding: 0 8px; font-size: 10px; }"
-            "QPushButton:checked { color: #ffaa40; border: 1px solid #ffaa40; }")
-        self._trace_btn.toggled.connect(self._on_trace_toggled)
-        map_bar.addWidget(self._trace_btn)
-
-        self._story_filter = QLineEdit()
-        self._story_filter.setPlaceholderText(
-            "filter stories… (non-matching dim; relations list follows)")
-        self._story_filter.setClearButtonEnabled(True)
-        self._story_filter.textChanged.connect(self._schedule_refresh)
-        map_bar.addWidget(self._story_filter, stretch=1)
-
-        self._type_toggles: dict = {}
-        for rtype, color in RELATION_COLORS.items():
-            btn = QPushButton(rtype)
-            btn.setCheckable(True)
-            btn.setChecked(True)
-            btn.setFixedHeight(22)
-            btn.setToolTip(RELATION_TYPES.get(rtype, ''))
-            btn.setStyleSheet(
-                f"QPushButton {{ color: #555; border: 1px solid #444; "
-                f"border-radius: 3px; padding: 0 6px; font-size: 10px; }}"
-                f"QPushButton:checked {{ color: {color}; "
-                f"border: 1px solid {color}; }}")
-            btn.toggled.connect(self._schedule_refresh)
-            self._type_toggles[rtype] = btn
-            map_bar.addWidget(btn)
-        root.addLayout(map_bar)
-
-        self._scene = QGraphicsScene(self)
-        # No BSP index: the scene is rebuilt wholesale on every refresh and
-        # the index held dangling item pointers across clear() — implicated
-        # in the native access-violation crashes. Linear hit-testing is
-        # trivial at this item count.
-        self._scene.setItemIndexMethod(
-            QGraphicsScene.ItemIndexMethod.NoIndex)
-        self._view = _ZoomableMapView(
-            self._scene, on_user_zoom=self._on_user_zoomed,
-            on_click=self._on_map_clicked)
-        self._view.setToolTip(
-            "Click a story to trace every path leading into and out of it.\n"
-            "Click it again (or empty space) to clear. Wheel zooms, drag pans.")
-        self._view.setMinimumHeight(280)
-        self._view.setStyleSheet("background: #1a1a22; border: 1px solid #444;")
-        root.addWidget(self._view, stretch=2)
-
-        rel_hdr = QHBoxLayout()
-        rel_hdr.addWidget(QLabel("Relations  (FROM —type→ TO)"))
-        rel_hdr.addStretch(1)
-        rel_hdr.addWidget(QLabel("Sort:"))
-        self._sort_combo = QComboBox()
-        for label, key in (("From story", "from"), ("Type", "type"),
-                           ("To story", "to")):
-            self._sort_combo.addItem(label, key)
-        self._sort_combo.currentIndexChanged.connect(self._schedule_refresh)
-        rel_hdr.addWidget(self._sort_combo)
-        root.addLayout(rel_hdr)
-        self._rel_list = QListWidget()
-        root.addWidget(self._rel_list, stretch=1)
-
-        add_row = QHBoxLayout()
-        self._from_combo = QComboBox()
-        add_row.addWidget(self._from_combo, stretch=1)
-        self._type_combo = QComboBox()
-        for rtype, desc in RELATION_TYPES.items():
-            self._type_combo.addItem(rtype, rtype)
-            self._type_combo.setItemData(
-                self._type_combo.count() - 1, desc, Qt.ItemDataRole.ToolTipRole)
-        add_row.addWidget(self._type_combo)
-        self._to_combo = QComboBox()
-        add_row.addWidget(self._to_combo, stretch=1)
-        self._note_edit = QLineEdit()
-        self._note_edit.setPlaceholderText("note (optional)")
-        add_row.addWidget(self._note_edit, stretch=1)
-        btn_add = QPushButton("Add")
-        btn_add.clicked.connect(self._cmd_add_relation)
-        add_row.addWidget(btn_add)
-        btn_del = QPushButton("Remove selected")
-        btn_del.clicked.connect(self._cmd_remove_relation)
-        add_row.addWidget(btn_del)
-        root.addLayout(add_row)
-
-        # Context preview for the FROM/TO stories picked above — with many
-        # stories a bare name gives nothing to relate on; this shows each
-        # side's premise/cast/themes so a relation can be chosen on meaning.
-        ctx_row = QHBoxLayout()
-        self._from_info = QLabel("")
-        self._to_info = QLabel("")
-        for lbl in (self._from_info, self._to_info):
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(
-                "color: #9a9aa8; font-size: 11px; background: #202028; "
-                "border: 1px solid #333; border-radius: 3px; padding: 4px;")
-            lbl.setMinimumHeight(40)
-            ctx_row.addWidget(lbl, stretch=1)
-        root.addLayout(ctx_row)
-        self._from_combo.currentIndexChanged.connect(self._update_rel_context)
-        self._to_combo.currentIndexChanged.connect(self._update_rel_context)
-
-        ai_row = QHBoxLayout()
-        self._instr = QLineEdit()
-        self._instr.setPlaceholderText(
-            "guidance for the AI web proposal (optional — e.g. 'two short "
-            "vignette stories around the Toad')")
-        ai_row.addWidget(self._instr, stretch=1)
-        self._btn_propose = QPushButton("Propose Web (AI)")
-        self._btn_propose.setToolTip(
-            "Propose new story cards (premise, cast, structure) plus typed\n"
-            "relations, anchored in the codex. You review before anything\n"
-            "is created.")
-        self._btn_propose.clicked.connect(self._cmd_propose_web)
-        ai_row.addWidget(self._btn_propose)
-        self._btn_junctions = QPushButton("Weave Junctions (AI)")
-        self._btn_junctions.setToolTip(
-            "For every 'junction' relation: suggest and add rare cross-story\n"
-            f"edges (weight {JUNCTION_EDGE_WEIGHT}) where a listener's walk "
-            "can drift between stories.")
-        self._btn_junctions.clicked.connect(self._cmd_weave_junctions)
-        ai_row.addWidget(self._btn_junctions)
-        self._btn_callbacks = QPushButton("Weave Callbacks (AI)")
-        self._btn_callbacks.setToolTip(
-            "For every 'callback' relation: rewrite 1-2 nodes of the FROM\n"
-            "story to reference the TO story's canon. Rewrites are reviewed\n"
-            "side-by-side before applying.")
-        self._btn_callbacks.clicked.connect(self._cmd_weave_callbacks)
-        ai_row.addWidget(self._btn_callbacks)
-        self._btn_weave_all = QPushButton("Weave All (AI)")
-        self._btn_weave_all.setStyleSheet("font-weight: bold;")
-        self._btn_weave_all.setToolTip(
-            "One press for the whole weave: junctions first, then callbacks\n"
-            "when they finish (callback rewrites still get their one review\n"
-            "dialog at the end). Already-woven links are skipped, so press\n"
-            "it again cheaply whenever new stories join the web.")
-        self._btn_weave_all.clicked.connect(self._cmd_weave_all)
-        ai_row.addWidget(self._btn_weave_all)
-        self._btn_cancel_ai = QPushButton("Cancel")
-        self._btn_cancel_ai.setToolTip(
-            "Stop the running AI pass: calls not yet started are skipped;\n"
-            "in-flight calls finish (bounded by the per-call timeout) and\n"
-            "whatever completed is still applied.")
-        self._btn_cancel_ai.setVisible(False)
-        self._btn_cancel_ai.clicked.connect(self._cmd_cancel_ai)
-        ai_row.addWidget(self._btn_cancel_ai)
-        root.addLayout(ai_row)
-
-        self._status = QLabel("")
-        self._status.setStyleSheet("color: #999; font-size: 11px;")
-        self._status.setWordWrap(True)
-        root.addWidget(self._status)
-
-        if not self._embedded:
-            close_row = QHBoxLayout()
-            close_row.addStretch(1)
-            btn_close = QPushButton("Close")
-            btn_close.clicked.connect(self.accept)
-            close_row.addWidget(btn_close)
-            root.addLayout(close_row)
-
-    def _story_name(self, arc_id: str) -> str:
-        return self.script.arcs.get(arc_id, {}).get('name') or arc_id
-
-    def _on_user_zoomed(self):
-        self._user_zoomed = True
-
-    def _cmd_fit_map(self):
-        self._user_zoomed = False
-        self._view.fit()
-
-    def _schedule_refresh(self, *_):
-        """Coalesce and DEFER rebuilds to the next event-loop turn.
-
-        Every widget-signal-driven refresh (filter typing, legend toggles,
-        sort combo, add/remove buttons) must come through here: rebuilding
-        the scene/list synchronously inside Qt's own event dispatch caused
-        native access-violation crashes (see crash.log). Programmatic
-        callers (set_script, _select_story, tests) may still call
-        _refresh() directly — those run on a clean stack."""
-        if getattr(self, '_refresh_pending', False):
-            return
-        self._refresh_pending = True
-        QTimer.singleShot(0, self._do_scheduled_refresh)
-
-    def _do_scheduled_refresh(self):
-        self._refresh_pending = False
-        self._refresh()
-        if self._selected_story:
-            self._update_selection_status()
-
-    # ── Story selection + path tracing ───────────────────────────────────
-
-    def _on_map_clicked(self, scene_pos):
-        hit = None
-        for arc_id, rect in getattr(self, '_box_rects', {}).items():
-            if rect.contains(scene_pos):
-                hit = arc_id
-                break
-        if hit == self._selected_story:
-            hit = None   # clicking the selected story again clears
-        self._select_story(hit)
-
-    def _select_story(self, arc_id: Optional[str]):
-        """Select a story on the map: highlights its DIRECT relations (or,
-        with Trace paths on, every chain into and out of it), and the
-        relations list narrows to match. None / empty-space click clears."""
-        self._selected_story = arc_id if arc_id in self.script.arcs else None
-        self._refresh()
-        self._update_selection_status()
-
-    def _on_trace_toggled(self, _checked: bool):
-        self._schedule_refresh()
-
-    def _update_selection_status(self):
-        if not self._selected_story:
-            self._status.setText("")
-            return
-        name = self._story_name(self._selected_story)
-        if self._trace_btn.isChecked():
-            self._status.setText(
-                f"Selected '{name}' — full paths: {len(self._up_edges)} "
-                f"relation(s) on chains leading in, {len(self._down_edges)} "
-                "on chains leading onward. Click empty space to clear.")
-        else:
-            self._status.setText(
-                f"Selected '{name}' — {len(self._up_edges)} direct "
-                f"relation(s) in, {len(self._down_edges)} out. Turn on "
-                "'Trace paths' for the full chains; click empty space to clear.")
-
-    def _path_sets(self, sel: str) -> tuple:
-        """(stories, edges) highlighted for the selected story.
-
-        Default: only DIRECT relations touching `sel`. With the Trace
-        paths toggle on: every directed chain that reaches `sel` and
-        everything reachable onward from it. Hidden relation types
-        (unchecked legend toggles) never participate. Also fills
-        _up_edges/_down_edges for the status counts."""
-        shown = self._shown_types()
-        rels = [(f, t, ty) for f, t, ty, _ in self.script.all_story_relations()
-                if ty in shown]
-        if not self._trace_btn.isChecked():
-            # Direct neighbors only — what a click most obviously means.
-            self._down_edges = {(f, t, ty) for f, t, ty in rels if f == sel}
-            self._up_edges = {(f, t, ty) for f, t, ty in rels if t == sel}
-            edges = self._down_edges | self._up_edges
-            stories = {sel} | {t for _, t, _ in self._down_edges} \
-                | {f for f, _, _ in self._up_edges}
-            return stories, edges
-        fwd, rev = {}, {}
-        for f, t, ty in rels:
-            fwd.setdefault(f, []).append((t, ty))
-            rev.setdefault(t, []).append((f, ty))
-        self._down_edges = set()
-        down = {sel}
-        frontier = [sel]
-        while frontier:
-            cur = frontier.pop()
-            for nxt, ty in fwd.get(cur, []):
-                self._down_edges.add((cur, nxt, ty))
-                if nxt not in down:
-                    down.add(nxt)
-                    frontier.append(nxt)
-        self._up_edges = set()
-        up = {sel}
-        frontier = [sel]
-        while frontier:
-            cur = frontier.pop()
-            for prv, ty in rev.get(cur, []):
-                self._up_edges.add((prv, cur, ty))
-                if prv not in up:
-                    up.add(prv)
-                    frontier.append(prv)
-        return (down | up), (self._down_edges | self._up_edges)
-
-    def _shown_types(self) -> set:
-        return {t for t, b in self._type_toggles.items() if b.isChecked()}
-
-    def _story_matches(self, arc_id: str) -> bool:
-        term = self._story_filter.text().strip().lower()
-        if not term:
-            return True
-        return (term in (self._story_name(arc_id) or '').lower()
-                or term in arc_id.lower())
-
-    def _story_brief(self, arc_id: str, premise_chars: int = 240) -> str:
-        """Multi-line context card for one story — premise, themes, cast,
-        beat structure, node count. Shown as combo/list/map tooltips and in
-        the FROM/TO preview panes: with many stories a bare name gives
-        nothing to relate on. Memoized per refresh — the node count is
-        O(nodes) and this is called per combo item and per relation row."""
-        cache = getattr(self, '_brief_cache', None)
-        if cache is not None and arc_id in cache:
-            return cache[arc_id]
-        arc = self.script.arcs.get(arc_id) or {}
-        lines = [self._story_name(arc_id)]
-        prem = (arc.get('premise') or '').strip().replace('\n', ' ')
-        lines.append(prem[:premise_chars]
-                     + ('…' if len(prem) > premise_chars else '')
-                     if prem else '(no premise)')
-        themes = (arc.get('themes') or '').strip()
-        motif = (arc.get('motif') or '').strip()
-        if themes or motif:
-            lines.append('themes: '
-                         + ' · '.join(x for x in (themes, motif) if x)[:160])
-        cast = [c for c in (arc.get('cast') or []) if isinstance(c, str)]
-        if cast:
-            lines.append('cast: ' + ', '.join(cast[:8])
-                         + ('…' if len(cast) > 8 else ''))
-        layers = [s.get('layer', '') for s in (arc.get('structure') or [])
-                  if isinstance(s, dict) and s.get('layer')]
-        if layers:
-            lines.append('beats: ' + ' → '.join(layers))
-        n = sum(1 for nid in self.script.nodes
-                if self.script.get_node_arc_id(nid) == arc_id)
-        lines.append(f'{n} node(s) generated' if n else 'no nodes yet')
-        out = '\n'.join(lines)
-        if cache is not None:
-            cache[arc_id] = out
-        return out
-
-    def _update_rel_context(self, *_):
-        f = self._from_combo.currentData()
-        t = self._to_combo.currentData()
-        self._from_info.setText(
-            ('FROM — ' + self._story_brief(f)) if f else '')
-        self._to_info.setText(
-            ('TO — ' + self._story_brief(t)) if t else '')
-
-    def _refresh(self, *_):
-        if not hasattr(self, '_rel_list'):
-            return   # signal fired mid-construction
-        # A native tooltip may be open over an item we are about to delete;
-        # destroying the item under it access-violates on this machine
-        # (crash.log 2026-07-17 18:49 — AV at _rel_list.clear() while the
-        # new context tooltips were in use). Hide it before any rebuild.
-        QToolTip.hideText()
-        self._brief_cache = {}   # per-refresh memo for _story_brief
-        # combos — clear()+repopulate on every refresh is this machine's
-        # native-crash vector (same PySide6 pattern as arc_list, see
-        # crash.log); rebuild only when the story set actually changed,
-        # otherwise update names/tooltips in place.
-        arc_ids = list(self.script.arcs)
-        for combo in (self._from_combo, self._to_combo):
-            current_ids = [combo.itemData(i) for i in range(combo.count())]
-            if current_ids != arc_ids:
-                cur = combo.currentData()
-                combo.blockSignals(True)
-                combo.clear()
-                for arc_id in arc_ids:
-                    combo.addItem(self._story_name(arc_id), arc_id)
-                idx = combo.findData(cur)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                combo.blockSignals(False)
-            for i, arc_id in enumerate(arc_ids):
-                combo.setItemText(i, self._story_name(arc_id))
-                combo.setItemData(i, self._story_brief(arc_id),
-                                  Qt.ItemDataRole.ToolTipRole)
-        self._update_rel_context()   # signals were blocked above
-        # Path tracing for the selected story (drives map highlight + list)
-        sel = self._selected_story
-        if sel not in self.script.arcs:
-            sel = self._selected_story = None
-        if sel:
-            self._path_stories, self._path_edges = self._path_sets(sel)
-        else:
-            self._path_stories = self._path_edges = None
-            self._up_edges = set()
-            self._down_edges = set()
-        # relations list — honors the type toggles, the story filter
-        # (either endpoint may match), the path selection, and the sort
-        # selector
-        shown = self._shown_types()
-        rels = [r for r in self.script.all_story_relations()
-                if r[2] in shown
-                and (self._story_matches(r[0]) or self._story_matches(r[1]))]
-        if self._path_edges is not None:
-            rels = [r for r in rels if (r[0], r[1], r[2]) in self._path_edges]
-        sort_key = self._sort_combo.currentData() or 'from'
-        if sort_key == 'type':
-            rels.sort(key=lambda r: (r[2], self._story_name(r[0]).lower()))
-        elif sort_key == 'to':
-            rels.sort(key=lambda r: (self._story_name(r[1]).lower(), r[2]))
-        else:
-            rels.sort(key=lambda r: (self._story_name(r[0]).lower(), r[2]))
-        # Same crash-avoidance as the combos: only clear()+rebuild when the
-        # row set changed; tooltip refresh happens in place either way.
-        desired = []
-        for (f, t, rtype, note) in rels:
-            label = f'{self._story_name(f)}  —{rtype}→  {self._story_name(t)}'
-            if note:
-                label += f'    · {note}'
-            tip = (f"{rtype}: {RELATION_TYPES.get(rtype, '')}\n\n"
-                   f"FROM — {self._story_brief(f)}\n\n"
-                   f"TO — {self._story_brief(t)}")
-            desired.append((label, (f, t, rtype), rtype, tip))
-        current = [(self._rel_list.item(i).text(),
-                    self._rel_list.item(i).data(Qt.ItemDataRole.UserRole))
-                   for i in range(self._rel_list.count())]
-        if current != [(lbl, key) for lbl, key, _, _ in desired]:
-            self._rel_list.clear()
-            for label, key, rtype, tip in desired:
-                item = QListWidgetItem(label)
-                item.setData(Qt.ItemDataRole.UserRole, key)
-                item.setToolTip(tip)
-                color = RELATION_COLORS.get(rtype)
-                if color:
-                    item.setForeground(QColor(color))
-                self._rel_list.addItem(item)
-        else:
-            for i, (_label, _key, _rtype, tip) in enumerate(desired):
-                self._rel_list.item(i).setToolTip(tip)
-        self._rebuild_map()
-
-    def _rebuild_map(self):
-        self._scene.clear()
-        # Alphabetical placement — stable positions as stories are added
-        ids = sorted(self.script.arcs.keys(),
-                     key=lambda a: (self._story_name(a) or a).lower())
-        n = len(ids)
-        if not n:
-            self._scene.addSimpleText(
-                "No stories yet — create some in Story ▸ Stories…, or use "
-                "Propose Web (AI).").setBrush(QBrush(QColor('#888888')))
-            return
-        shown = self._shown_types()
-        radius = max(140.0, 46.0 * n)
-        centers = {}
-        box_w, box_h = 150.0, 34.0
-        for i, arc_id in enumerate(ids):
-            ang = (2.0 * math.pi * i / n) - math.pi / 2.0
-            cx, cy = radius * math.cos(ang), radius * math.sin(ang)
-            centers[arc_id] = (cx, cy)
-        # edges under boxes — hidden types skipped. With a story selected,
-        # path edges glow and everything else recedes; otherwise the text
-        # filter dims edges touching no matched story.
-        sel = self._selected_story
-        pair_seen: dict = {}
-        for (f, t, rtype, _note) in self.script.all_story_relations():
-            if rtype not in shown or f not in centers or t not in centers:
-                continue
-            (x1, y1), (x2, y2) = centers[f], centers[t]
-            # perpendicular offset so parallel relations don't overlap
-            k = pair_seen.get((f, t), 0) + pair_seen.get((t, f), 0)
-            pair_seen[(f, t)] = pair_seen.get((f, t), 0) + 1
-            dx, dy = x2 - x1, y2 - y1
-            dist = math.hypot(dx, dy) or 1.0
-            ox, oy = -dy / dist * 7.0 * k, dx / dist * 7.0 * k
-            color = QColor(RELATION_COLORS.get(rtype, '#888888'))
-            width = 1.6
-            if sel:
-                if (f, t, rtype) in (self._path_edges or set()):
-                    width = 2.6
-                else:
-                    color.setAlpha(40)
-            elif not (self._story_matches(f) or self._story_matches(t)):
-                color.setAlpha(55)
-            pen = QPen(color)
-            pen.setWidthF(width)
-            self._scene.addLine(x1 + ox, y1 + oy, x2 + ox, y2 + oy, pen)
-            # direction dot at 78% toward the TO end
-            px = x1 + ox + (x2 - x1) * 0.78
-            py = y1 + oy + (y2 - y1) * 0.78
-            self._scene.addEllipse(px - 3.5, py - 3.5, 7.0, 7.0,
-                                   QPen(color), QBrush(color))
-        # story boxes — selection outranks the text filter: the selected
-        # story gets an accent border, path stories stay bright, the rest
-        # recede. Rects are remembered for click hit-testing.
-        self._box_rects = {}
-        for arc_id, (cx, cy) in centers.items():
-            if sel:
-                on_path = arc_id in (self._path_stories or set())
-                is_sel = arc_id == sel
-                pen_c = '#ffaa40' if is_sel else ('#666688' if on_path
-                                                 else '#3a3a4a')
-                fill_c = '#2a2a3a' if on_path else '#202028'
-                text_c = '#dddddd' if on_path else '#555566'
-                pen = QPen(QColor(pen_c))
-                if is_sel:
-                    pen.setWidthF(2.4)
-            else:
-                matched = self._story_matches(arc_id)
-                pen = QPen(QColor('#666688' if matched else '#3a3a4a'))
-                fill_c = '#2a2a3a' if matched else '#202028'
-                text_c = '#dddddd' if matched else '#555566'
-            box_rect = QRectF(cx - box_w / 2, cy - box_h / 2, box_w, box_h)
-            self._box_rects[arc_id] = box_rect
-            rect = self._scene.addRect(box_rect, pen, QBrush(QColor(fill_c)))
-            rect.setZValue(10)
-            rect.setToolTip(self._story_brief(arc_id))
-            name = self._story_name(arc_id)
-            if len(name) > 20:
-                name = name[:19] + '…'
-            txt = self._scene.addSimpleText(name)
-            txt.setBrush(QBrush(QColor(text_c)))
-            br = txt.boundingRect()
-            txt.setPos(cx - br.width() / 2, cy - br.height() / 2)
-            txt.setZValue(11)
-            txt.setToolTip(self._story_brief(arc_id))
-        self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(
-            -40, -40, 40, 40))
-        # Respect the user's zoom/pan; only auto-fit while they haven't
-        # taken control (Fit button / double-click resets).
-        if not self._user_zoomed:
-            self._view.fit()
-
-    # ── Manual relation editing ──────────────────────────────────────────
-
-    def _cmd_add_relation(self):
-        f = self._from_combo.currentData()
-        t = self._to_combo.currentData()
-        rtype = self._type_combo.currentData()
-        if not f or not t or f == t:
-            self._status.setText("Pick two different stories.")
-            return
-        if self.script.add_story_relation(f, t, rtype, self._note_edit.text()):
-            self._note_edit.clear()
-            self._schedule_refresh()
-        else:
-            self._status.setText("That relation already exists.")
-
-    def _cmd_remove_relation(self):
-        item = self._rel_list.currentItem()
-        if not item:
-            return
-        f, t, rtype = item.data(Qt.ItemDataRole.UserRole)
-        self.script.remove_story_relation(f, t, rtype)
-        self._schedule_refresh()
-
-    # ── Shared helpers ───────────────────────────────────────────────────
-
-    def _set_ai_busy(self, busy: bool, msg: str = ''):
-        self._ai_busy = busy
-        for b in (self._btn_propose, self._btn_junctions,
-                  self._btn_callbacks, self._btn_weave_all):
-            b.setEnabled(not busy)
-        if busy:
-            self._cancel_ev = threading.Event()   # fresh per pass
-        self._btn_cancel_ai.setVisible(busy)
-        if msg:
-            self._status.setText(msg)
-
-    def _cmd_cancel_ai(self):
-        self._weave_chain = False   # a cancelled weave never chains onward
-        ev = getattr(self, '_cancel_ev', None)
-        if ev is not None and not ev.is_set():
-            ev.set()
-            self._status.setText(
-                "Cancelling — skipping queued calls, letting in-flight ones "
-                "finish…")
-
-    def _cmd_weave_all(self):
-        """One press for the whole weave: junctions, then callbacks once
-        the junction pass lands. Both passes skip already-woven material,
-        so this is the standing 'weave whatever is new' button."""
-        if not self._ai_guard():
-            return
-        self._weave_chain = True
-        if any(r[2] == 'junction'
-               for r in self.script.all_story_relations()):
-            self._cmd_weave_junctions()
-            if not self._ai_busy:
-                # Junctions bailed without starting (all saturated / no
-                # candidate nodes) — go straight to callbacks.
-                self._weave_chain = False
-                self._cmd_weave_callbacks()
-        else:
-            self._weave_chain = False
-            self._cmd_weave_callbacks()
-
-    def _ai_guard(self) -> bool:
-        if not self.ai.ready:
-            self._status.setText("claude CLI not found.")
-            return False
-        if self._ai_busy:
-            self._status.setText("An AI pass is already running.")
-            return False
-        return True
-
-    def _pick_dialog(self, title: str, entries: list) -> list:
-        return _pick_checked(self, title, entries)
-
-    @staticmethod
-    def _sample_even(items: list, k: int) -> list:
-        if len(items) <= k:
-            return list(items)
-        step = len(items) / k
-        return [items[int(i * step)] for i in range(k)]
-
-    def _annotated_story_nodes(self, arc_id: str) -> list:
-        """[(node_id, node, archetype, fraction)] for a story's nodes with
-        text, sorted by position through the story. Bridge nodes are
-        excluded — they're seam material, not weave candidates (otherwise
-        repeated weaving sprouts bridges from bridges)."""
-        structure = StoryStructure(self.script.get_story_structure(arc_id))
-        out = []
-        for nid, nd in self.script.nodes.items():
-            if self.script.get_node_arc_id(nid) != arc_id or not nd.get('text'):
-                continue
-            if nd.get('label') == 'bridge':
-                continue
-            b = structure.beat_index_for_node(nd)
-            out.append((nid, nd, structure.archetype(b),
-                        (b + 1) / structure.n_beats))
-        out.sort(key=lambda x: x[3])
-        return out
-
-    def _existing_junction_pairs(self, from_id: str, to_id: str) -> set:
-        """(source, target) node pairs already connected across this
-        junction — directly, or through a bridge node. The weave uses this
-        to tell the AI what exists, to skip saturated junctions, and to
-        refuse duplicate applications (a bridged pair has no direct edge,
-        so without this a re-press would build the same bridge again)."""
-        pairs = set()
-        arc_of = self.script.get_node_arc_id
-        for nid, nd in self.script.nodes.items():
-            # Bridges are conduits, not sources — counting bridge→target as
-            # its own pair would double-count every bridged crossing.
-            if arc_of(nid) != from_id or nd.get('label') == 'bridge':
-                continue
-            for nxt in nd.get('next', []):
-                tnd = self.script.nodes.get(nxt)
-                if tnd is None:
-                    continue
-                if arc_of(nxt) == to_id:
-                    pairs.add((nid, nxt))
-                elif tnd.get('label') == 'bridge':
-                    for b2 in tnd.get('next', []):
-                        if arc_of(b2) == to_id:
-                            pairs.add((nid, b2))
-        return pairs
-
-    # ── Propose Web (AI) ─────────────────────────────────────────────────
-
-    def _cmd_propose_web(self):
-        if not self._ai_guard():
-            return
-        parts = []
-        if self.script.arcs:
-            lines = ['EXISTING STORIES:']
-            for arc_id, arc in self.script.arcs.items():
-                layers = ' → '.join(
-                    e['layer'] for e in self.script.get_story_structure(arc_id))
-                cast = ', '.join(self.script.get_story_cast(arc_id)) or '(none)'
-                premise = (arc.get('premise') or '')[:300]
-                lines.append(f'- "{arc.get("name") or arc_id}": cast: {cast}; '
-                             f'structure: {layers}; premise: {premise}')
-            parts.append('\n'.join(lines))
-            rels = self.script.all_story_relations()
-            if rels:
-                parts.append('EXISTING RELATIONS:\n' + '\n'.join(
-                    f'  {self._story_name(f)} —{rtype}→ {self._story_name(t)}'
-                    for f, t, rtype, _ in rels))
-        else:
-            parts.append('EXISTING STORIES: (none yet)')
-        # Cast-usage census: tell the AI which entities are dormant (cast
-        # nowhere) so new stories activate them instead of piling more
-        # load onto the already-popular ones.
-        cast_counts = {slug: 0 for slug in self.script.entities}
-        for arc_id in self.script.arcs:
-            for slug in self.script.get_story_cast(arc_id):
-                if slug in cast_counts:
-                    cast_counts[slug] += 1
-        dormant = sorted(s for s, n in cast_counts.items() if n == 0)
-        used = sorted(((s, n) for s, n in cast_counts.items() if n > 0),
-                      key=lambda kv: -kv[1])
-        if dormant:
-            parts.append(
-                'DORMANT CODEX ENTITIES (cast in NO story yet — prioritize '
-                'these as anchors for the new stories):\n  '
-                + ', '.join(dormant))
-        if used:
-            parts.append('CAST USAGE (stories each entity is already cast '
-                         'in):\n  '
-                         + ', '.join(f'{s}×{n}' for s, n in used))
-        instructions = self._instr.text().strip()
-        if instructions:
-            parts.append(f'AUTHOR DIRECTION (highest priority):\n  {instructions}')
-        parts.append('Propose the web now. Output the JSON object only.')
-        prompt = '\n\n'.join(parts)
-        system = self.ai._augment_system_with_context(
-            SYSTEM_PROPOSE_WEB, self.script.story_context,
-            cast_codex=self.script.full_codex_block())
-
-        self._set_ai_busy(True, "Proposing web… (bible + codex + existing "
-                                "stories; may take a minute)")
-
-        def run():
-            try:
-                data = self.ai._run_claude_json(system, prompt,
-                                                model_override=MODEL_OPUS)
-                if self._cancel_ev.is_set():
-                    self.ui_queue.put(lambda: self._set_ai_busy(
-                        False, "Propose cancelled — nothing applied."))
-                    return
-                # Hop out of the drain before opening the picker: the drain
-                # slot must not host a nested modal event loop (it also pins
-                # _draining for the whole time the dialog is up, stalling
-                # every other queued UI update). Same deferral pattern as
-                # _on_row_selected / _on_tab_changed / the kind filter.
-                self.ui_queue.put(lambda d=data: QTimer.singleShot(
-                    0, lambda dd=d: self._apply_web_proposal(dd)))
-            except Exception as exc:
-                self.ui_queue.put(lambda e=str(exc): self._set_ai_busy(
-                    False, f"Propose failed: {e[:120]}"))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _apply_web_proposal(self, data: dict):
-        self._set_ai_busy(False)
-        stories = [s for s in (data.get('stories') or [])
-                   if isinstance(s, dict) and (s.get('name') or '').strip()]
-        relations = [r for r in (data.get('relations') or [])
-                     if isinstance(r, dict) and r.get('type') in RELATION_TYPES]
-        if not stories and not relations:
-            self._status.setText("Proposal came back empty.")
-            return
-        entries = []
-        for i, s in enumerate(stories):
-            entries.append((f'story:{i}',
-                            f'[story] {s["name"]} — {(s.get("premise") or "")[:90]}'))
-        for i, r in enumerate(relations):
-            entries.append((f'rel:{i}',
-                            f'[relation] {r.get("from", "?")} —{r["type"]}→ {r.get("to", "?")}'))
-        chosen = set(self._pick_dialog(
-            f'Web proposal: {len(stories)} stories, {len(relations)} relations',
-            entries))
-        if not chosen:
-            self._status.setText("Proposal discarded.")
-            return
-
-        name_to_id = {(arc.get('name') or '').strip().lower(): arc_id
-                      for arc_id, arc in self.script.arcs.items()}
-        n_stories = 0
-        for i, s in enumerate(stories):
-            if f'story:{i}' not in chosen:
-                continue
-            structure = [{'layer': e.get('layer'),
-                          'direction': str(e.get('direction') or '')}
-                         for e in (s.get('structure') or [])
-                         if isinstance(e, dict) and e.get('layer') in LAYER_ORDER]
-            if not structure:
-                structure = ScriptData.default_structure()
-            cast = [c for c in (s.get('cast') or []) if c in self.script.entities]
-            arc_id = self.script.add_arc()
-            self.script.save_arc(arc_id, {
-                'name':      str(s['name'])[:80],
-                'premise':   str(s.get('premise') or '')[:1500],
-                'themes':    str(s.get('themes') or '')[:300],
-                'motif':     str(s.get('motif') or '')[:300],
-                'structure': structure,
-                'beats':     ScriptData.beats_from_structure(structure),
-                'cast':      cast,
-                'notes':     '',
-            })
-            name_to_id[str(s['name']).strip().lower()] = arc_id
-            n_stories += 1
-        n_rels = 0
-        for i, r in enumerate(relations):
-            if f'rel:{i}' not in chosen:
-                continue
-            f = name_to_id.get(str(r.get('from', '')).strip().lower())
-            t = name_to_id.get(str(r.get('to', '')).strip().lower())
-            if f and t and self.script.add_story_relation(
-                    f, t, r['type'], str(r.get('note') or '')):
-                n_rels += 1
-        self._status.setText(
-            f"Web proposal applied: {n_stories} new stor"
-            f"{'y' if n_stories == 1 else 'ies'}, {n_rels} relation(s). "
-            "Generate each story from Story ▸ Stories….")
-        self._refresh()
-
-    # ── Weave Junctions (AI) ─────────────────────────────────────────────
-
-    def _junction_candidates(self, from_id: str, to_id: str) -> tuple:
-        """(sources, targets) for one junction: mid-to-late FROM nodes and
-        early-to-mid TO nodes (position guards live here in code; the AI
-        only picks among pre-filtered candidates)."""
-        src = [x for x in self._annotated_story_nodes(from_id) if x[3] >= 0.3]
-        tgt = [x for x in self._annotated_story_nodes(to_id) if x[3] <= 0.7]
-        if not src:
-            src = self._annotated_story_nodes(from_id)
-        if not tgt:
-            tgt = self._annotated_story_nodes(to_id)
-        return self._sample_even(src, 18), self._sample_even(tgt, 18)
-
-    def _cmd_weave_junctions(self):
-        if not self._ai_guard():
-            return
-        rels = [(f, t, note) for (f, t, rtype, note)
-                in self.script.all_story_relations() if rtype == 'junction']
-        if not rels:
-            self._status.setText("No 'junction' relations to weave — add one first.")
-            return
-        # Build every prompt on the UI thread; the worker only calls the AI.
-        # Already-woven junctions are skipped entirely (idempotent presses,
-        # bounded cost as the web grows); partially-woven ones tell the AI
-        # what exists so it doesn't re-suggest near-duplicates.
-        jobs = []
-        n_saturated = 0
-        for f, t, note in rels:
-            existing = self._existing_junction_pairs(f, t)
-            if len(existing) >= MAX_JUNCTION_LINKS_PER_PAIR:
-                n_saturated += 1
-                continue
-            src, tgt = self._junction_candidates(f, t)
-            if not src or not tgt:
-                continue
-            # The seam the listener hears is the source's ENDING flowing
-            # into the target's OPENING — show the AI those exact ends.
-            lines = [f'STORY A "{self._story_name(f)}" — drift SOURCES:']
-            for nid, nd, arch, frac in src:
-                lines.append(f'  [{nid}] {arch} @{int(frac * 100)}% '
-                             f'ending: "…{nd.get("text", "")[-200:]}"')
-            lines.append(f'\nSTORY B "{self._story_name(t)}" — drift TARGETS:')
-            for nid, nd, arch, frac in tgt:
-                lines.append(f'  [{nid}] {arch} @{int(frac * 100)}% '
-                             f'opening: "{nd.get("text", "")[:200]}…"')
-            if note:
-                lines.append(f'\nRELATION NOTE: {note}')
-            if existing:
-                lines.append(
-                    '\nALREADY WOVEN (existing crossings for this junction — '
-                    'do NOT re-suggest these pairs or near-duplicates; zero '
-                    'new links is the right answer if the junction already '
-                    'feels covered):')
-                for a, b in sorted(existing):
-                    lines.append(f'  {a} → {b}')
-            lines.append('\nSuggest the junction links now. Output the JSON object only.')
-            jobs.append((f, t, '\n'.join(lines),
-                         {x[0] for x in src}, {x[0] for x in tgt}))
-        if not jobs:
-            if n_saturated:
-                self._status.setText(
-                    f"All {n_saturated} junction(s) are already fully woven "
-                    f"(≥{MAX_JUNCTION_LINKS_PER_PAIR} crossings each). Delete "
-                    "drift edges/bridges on the graph to re-weave.")
-            else:
-                self._status.setText("Junction stories have no generated nodes yet.")
-            return
-        extra = f" ({n_saturated} already fully woven, skipped)" if n_saturated else ""
-        self._set_ai_busy(True, f"Weaving {len(jobs)} junction(s)…{extra}")
-
-        def run():
-            def one(job):
-                f, t, prompt, vf, vt = job
-                data = self.ai._run_claude_json(SYSTEM_WEAVE_JUNCTIONS, prompt,
-                                                max_retries=2)
-                out = []
-                for link in data.get('links', []) or []:
-                    if not isinstance(link, dict):
-                        continue
-                    a, b = link.get('from'), link.get('to')
-                    bridge = str(link.get('bridge_text') or '').strip()
-                    if a in vf and b in vt:
-                        out.append((f, t, a, b, bridge))
-                return out
-
-            def prog(done, total):
-                self.ui_queue.put(lambda d=done, n=total: self._status.setText(
-                    f"Weaving junctions… {d}/{n} done"))
-
-            ev = self._cancel_ev
-            results = _fan_out_ai_calls(jobs, one, prog, cancel_event=ev)
-            cancelled = ev.is_set()
-            all_links = [lk for r in results if r for lk in r]
-
-            def apply(links=all_links):
-                n_edges = 0
-                n_bridges = 0
-                n_dupes = 0
-                new_nodes = set()
-                woven: dict = {}   # (from_arc, to_arc) -> existing pair set
-                for from_arc, to_arc, a, b, bridge in links:
-                    if a not in self.script.nodes or b not in self.script.nodes:
-                        continue
-                    key = (from_arc, to_arc)
-                    if key not in woven:
-                        woven[key] = self._existing_junction_pairs(from_arc,
-                                                                   to_arc)
-                    if (a, b) in woven[key]:
-                        n_dupes += 1   # already connected (directly or bridged)
-                        continue
-                    woven[key].add((a, b))
-                    if bridge:
-                        bid = self._create_bridge_node(from_arc, a, b, bridge)
-                        if bid:
-                            new_nodes.add(bid)
-                            n_bridges += 1
-                            continue
-                    src_nd = self.script.nodes.get(a, {})
-                    if b not in src_nd.get('next', []):
-                        self.script.add_edge(a, b, weight=JUNCTION_EDGE_WEIGHT)
-                        n_edges += 1
-                if new_nodes:
-                    self._mw._add_nodes_incremental(new_nodes)
-                if n_edges or new_nodes:
-                    self._mw._sync_missing_edges()
-                parts = []
-                if n_edges:
-                    parts.append(f"{n_edges} drift edge(s) at weight "
-                                 f"{JUNCTION_EDGE_WEIGHT}")
-                if n_bridges:
-                    parts.append(f"{n_bridges} bridge node(s) — generate "
-                                 "audio for them before playback")
-                if n_dupes:
-                    parts.append(f"{n_dupes} already-woven pair(s) skipped")
-                head = ("Junctions woven (CANCELLED early — partial): "
-                        if cancelled else "Junctions woven: ")
-                msg = head + (", ".join(parts) if parts
-                              else "nothing new to add") + \
-                    ". Delete anything you dislike on the graph."
-                # New cross-story edges can seal a cycle with no path to
-                # any ending — a walk entering it never finishes. Check
-                # right away, while undoing is one edge-delete.
-                if n_edges or new_nodes:
-                    trapped = self.script.nodes_that_cannot_end()
-                    if trapped:
-                        msg += (f"  ⚠ {len(trapped)} node(s) can no longer "
-                                "reach an ending (trapped cycle) — see "
-                                "Story ▸ Web Statistics for the list.")
-                self._set_ai_busy(False, msg)
-                # Weave All chain: junctions done → run callbacks.
-                if self._weave_chain:
-                    self._weave_chain = False
-                    if not cancelled:
-                        self._status.setText(
-                            msg + "  → weaving callbacks next…")
-                        QTimer.singleShot(0, self._cmd_weave_callbacks)
-            self.ui_queue.put(apply)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _create_bridge_node(self, from_arc: str, a: str, b: str,
-                            text: str) -> Optional[str]:
-        """Materialize an AI-authored bridge between two junction endpoints:
-        a short transition node wired  a →(rare)→ bridge →(always)→ b.
-        The bridge belongs to the FROM story, and averages the endpoints'
-        story variables and voice settings so the visuals and delivery
-        glide through the crossing instead of jumping."""
-        s = self.script
-        na, nb = s.nodes.get(a), s.nodes.get(b)
-        if not na or not nb or not text.strip():
-            return None
-        base = f'bridge_{a[:16]}_{b[:16]}'
-        nid, counter = base, 2
-        while nid in s.nodes:
-            nid = f'{base}_{counter}'
-            counter += 1
-        pa = na.get('pos', [100, 100])
-        pb = nb.get('pos', [100, 100])
-        node = s.add_node(nid, '', pos=[(pa[0] + pb[0]) / 2.0,
-                                        (pa[1] + pb[1]) / 2.0])
-        s.update_text(nid, text)   # TTS sanitation
-
-        # Layer tag from the source (keeps layouts sensible) + any codex
-        # entities actually present in the bridge text.
-        arch = next((t for t in na.get('tags', []) if t in LAYER_ORDER), 'echo')
-        tags = [arch]
-        low = text.lower()
-        for slug, card in s.entities.items():
-            name = (card.get('name') or '').lower()
-            if slug in low or (name and name in low):
-                tags.append(slug)
-        node['tags'] = tags
-        node['label'] = 'bridge'
-
-        # Transitional values: halfway between the endpoints
-        vars_a = na.get('vars') or {}
-        vars_b = nb.get('vars') or {}
-        node['vars'] = {k: round((vars_a.get(k, 0.0) + vars_b.get(k, 0.0)) / 2, 2)
-                        for k in (set(vars_a) | set(vars_b))}
-        va = na.get('voice_settings') or {}
-        vb = nb.get('voice_settings') or {}
-        if va or vb:
-            vs = {
-                'stability': round((va.get('stability', 0.5)
-                                    + vb.get('stability', 0.5)) / 2, 2),
-                'similarity_boost': 0.75,
-                'style': round((va.get('style', 0.3)
-                                + vb.get('style', 0.3)) / 2, 2),
-            }
-            _clamp_voice_settings(vs)
-            node['voice_settings'] = vs
-
-        s.set_node_arc_id(nid, from_arc)
-        src_beat = na.get('beat')
-        if isinstance(src_beat, int):
-            node['beat'] = src_beat
-
-        # Drift is rare into the bridge; once on it, the crossing completes.
-        s.add_edge(a, nid, weight=JUNCTION_EDGE_WEIGHT)
-        s.add_edge(nid, b, weight=1.0)
-        return nid
-
-    # ── Weave Callbacks (AI) ─────────────────────────────────────────────
-
-    def _cmd_weave_callbacks(self):
-        if not self._ai_guard():
-            return
-        rels = [(f, t, note) for (f, t, rtype, note)
-                in self.script.all_story_relations() if rtype == 'callback']
-        if not rels:
-            self._status.setText("No 'callback' relations to weave — add one first.")
-            return
-        jobs = []
-        n_woven = 0
-        for f, t, note in rels:
-            # Idempotence: applied rewrites stamp 'callback_to' on the node;
-            # a relation with one is done — repeated presses skip it instead
-            # of re-rewriting text (or paying the AI call again).
-            if any(nd.get('callback_to') == t
-                   for nid, nd in self.script.nodes.items()
-                   if self.script.get_node_arc_id(nid) == f):
-                n_woven += 1
-                continue
-            candidates = [x for x in self._annotated_story_nodes(f)
-                          if x[3] >= 0.35 and not x[1].get('callback_to')]
-            if not candidates:
-                candidates = [x for x in self._annotated_story_nodes(f)
-                              if not x[1].get('callback_to')]
-            candidates = self._sample_even(candidates, 10)
-            if not candidates:
-                continue
-            target_arc = self.script.arcs.get(t, {})
-            events = [ev for ev in self.script.canon_events()
-                      if ev.get('established_by') == t] \
-                or self.script.canon_events_for(t)
-            parts = [f'TARGET STORY "{self._story_name(t)}":\n'
-                     f'  premise: {(target_arc.get("premise") or "")[:600]}']
-            if events:
-                parts.append('TARGET CANON EVENTS:\n' + '\n'.join(
-                    f'  - [{ev.get("id", "?")}] {ev.get("summary", "")}'
-                    for ev in events[:12]))
-            else:
-                parts.append('TARGET CANON EVENTS: (none extracted yet — treat '
-                             'the premise itself as the canon to reference)')
-            if note:
-                parts.append(f'RELATION NOTE: {note}')
-            cand_lines = [f'CANDIDATE NODES (story "{self._story_name(f)}"):']
-            for nid, nd, arch, frac in candidates:
-                cand_lines.append(f'  [{nid}] ({arch}): "{nd.get("text", "")}"')
-            parts.append('\n'.join(cand_lines))
-            parts.append('Weave the callback now. Output the JSON object only.')
-            jobs.append((f, t, '\n\n'.join(parts), {x[0] for x in candidates}))
-        if not jobs:
-            if n_woven:
-                self._status.setText(
-                    f"All {n_woven} callback(s) already woven. To redo one, "
-                    "delete the relation's rewritten node or its "
-                    "'callback_to' marker, then weave again.")
-            else:
-                self._status.setText("Callback stories have no generated nodes yet.")
-            return
-        extra = f" ({n_woven} already woven, skipped)" if n_woven else ""
-        self._set_ai_busy(True, f"Weaving {len(jobs)} callback(s)…{extra}")
-
-        def run():
-            def one(job):
-                f, t, prompt, valid = job
-                data = self.ai._run_claude_json(SYSTEM_WEAVE_CALLBACKS, prompt,
-                                                max_retries=2)
-                out = []
-                for rw in (data.get('rewrites') or [])[:2]:
-                    if not isinstance(rw, dict):
-                        continue
-                    nid = rw.get('node_id')
-                    new_text = (rw.get('new_text') or '').strip()
-                    if nid in valid and new_text:
-                        tags = [ScriptData.sanitize_entity_slug(str(x))
-                                for x in (rw.get('add_tags') or [])]
-                        out.append((nid, new_text, tags,
-                                    self._story_name(f), self._story_name(t),
-                                    t))
-                return out
-
-            def prog(done, total):
-                self.ui_queue.put(lambda d=done, n=total: self._status.setText(
-                    f"Weaving callbacks… {d}/{n} done"))
-
-            results = _fan_out_ai_calls(jobs, one, prog,
-                                        cancel_event=self._cancel_ev)
-            rewrites = [rw for r in results if r for rw in r]
-            self.ui_queue.put(lambda r=rewrites: self._review_callback_rewrites(r))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _review_callback_rewrites(self, rewrites: list):
-        self._set_ai_busy(False)
-        if not rewrites:
-            self._status.setText("No callback rewrites came back.")
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Callback rewrites ({len(rewrites)})")
-        dlg.resize(820, 560)
-        vbox = QVBoxLayout(dlg)
-        vbox.addWidget(QLabel("Check the rewrites to apply; select a row to "
-                              "compare old vs new text."))
-        lst = QListWidget()
-        for i, (nid, _new, _tags, fname, tname, _tid) in enumerate(rewrites):
-            item = QListWidgetItem(f"{nid}   ({fname} → {tname})")
-            item.setData(Qt.ItemDataRole.UserRole, i)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            lst.addItem(item)
-        vbox.addWidget(lst, stretch=1)
-        preview = QTextEdit()
-        preview.setReadOnly(True)
-        vbox.addWidget(preview, stretch=2)
-
-        def show_row(row):
-            if row < 0:
-                preview.clear()
-                return
-            i = lst.item(row).data(Qt.ItemDataRole.UserRole)
-            nid, new_text, _tags, _f, _t, _tid = rewrites[i]
-            old_text = self.script.nodes.get(nid, {}).get('text', '')
-            preview.setPlainText(f"── OLD ──\n{old_text}\n\n── NEW ──\n{new_text}")
-        lst.currentRowChanged.connect(show_row)
-        if lst.count():
-            lst.setCurrentRow(0)
-
-        row = QHBoxLayout()
-        row.addStretch(1)
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(dlg.reject)
-        row.addWidget(btn_cancel)
-        btn_ok = QPushButton("Apply checked")
-        btn_ok.setDefault(True)
-        btn_ok.clicked.connect(dlg.accept)
-        row.addWidget(btn_ok)
-        vbox.addLayout(row)
-
-        if dlg.exec() != QDialog.Accepted:
-            self._status.setText("Callback rewrites discarded.")
-            return
-        n = 0
-        for j in range(lst.count()):
-            if lst.item(j).checkState() != Qt.CheckState.Checked:
-                continue
-            i = lst.item(j).data(Qt.ItemDataRole.UserRole)
-            nid, new_text, add_tags, _f, _t, to_id = rewrites[i]
-            if nid not in self.script.nodes:
-                continue
-            self.script.update_text(nid, new_text)
-            nd = self.script.nodes[nid]
-            # Woven marker: makes the callback weave idempotent (this
-            # relation is skipped on future presses). v1/player ignore it.
-            nd['callback_to'] = to_id
-            for tag in add_tags:
-                if tag and tag in self.script.entities \
-                        and tag not in nd.get('tags', []):
-                    nd.setdefault('tags', []).append(tag)
-            # The audio no longer matches the rewritten text — flag for
-            # regeneration by clearing the file reference.
-            if nd.get('file'):
-                nd['file'] = None
-            self._mw._refresh_node(nid)
-            n += 1
-        self.script.dirty = True
-        self._status.setText(
-            f"Applied {n} callback rewrite(s). Regenerate audio for the "
-            "rewritten nodes (their file links were cleared).")
-
-
-class CanonEventsPanel(QWidget):
-    """Canon Events tab — the cross-story ledger built by Extract Canon.
-
-    Formerly a cramped 96px strip inside the Web Planner; now its own tab
-    with room to read summaries, a text filter, and removal. Events are
-    injected into the generation prompts of every story whose cast touches
-    the event's entities (entity-less events reach every story with a cast)."""
-
-    def __init__(self, main_window, script: 'ScriptData', parent=None):
-        super().__init__(parent)
-        self._mw = main_window
-        self.script = script
-        self._refresh_queued = False
-        self._build_ui()
-        self._refresh()
-
-    def set_script(self, script: 'ScriptData'):
-        self.script = script
-        self._refresh()
-
-    def _build_ui(self):
-        root = QVBoxLayout(self)
-
-        hdr = QLabel(
-            "Canon events are durable happenings a generated story "
-            "established — extracted with 'Extract Canon (AI)' on the "
-            "Stories tab. Each event reaches the generation prompts of "
-            "every story whose cast includes one of its entities (events "
-            "with no entities reach every story that has a cast). "
-            "Reference freely, never contradict; remove an event to "
-            "retire it from all future prompts.")
-        hdr.setWordWrap(True)
-        hdr.setStyleSheet("color: #999; font-size: 11px;")
-        root.addWidget(hdr)
-
-        bar = QHBoxLayout()
-        self._filter = QLineEdit()
-        self._filter.setPlaceholderText(
-            "filter — matches summary, entity slugs, source story, or id")
-        self._filter.textChanged.connect(self._schedule_refresh)
-        bar.addWidget(self._filter, stretch=1)
-        self._count_lbl = QLabel("")
-        self._count_lbl.setStyleSheet("color: #888;")
-        bar.addWidget(self._count_lbl)
-        btn_promote = QPushButton("Promote to Codex Event")
-        btn_promote.setToolTip(
-            "Create a codex entity (kind 'event') from the selected canon\n"
-            "event. The card's essence is the event summary, linked to the\n"
-            "involved entities. Stories can then cast the event directly,\n"
-            "and it becomes chattable/editable like any codex entry.\n"
-            "The ledger entry stays (marked ⇧) and gains the new slug.")
-        btn_promote.clicked.connect(self._cmd_promote_to_codex)
-        bar.addWidget(btn_promote)
-        btn_del = QPushButton("Remove selected")
-        btn_del.clicked.connect(self._cmd_remove_canon_event)
-        bar.addWidget(btn_del)
-        root.addLayout(bar)
-
-        self._canon_list = QListWidget()
-        self._canon_list.setAlternatingRowColors(True)
-        root.addWidget(self._canon_list, stretch=1)
-
-        self._status = QLabel("")
-        self._status.setStyleSheet("color: #999; font-size: 11px;")
-        self._status.setWordWrap(True)
-        root.addWidget(self._status)
-
-    def _story_name(self, arc_id: str) -> str:
-        arc = self.script.arcs.get(arc_id) or {}
-        return arc.get('name') or arc_id
-
-    def _schedule_refresh(self, *_args):
-        # CRASH RULE: never rebuild item views synchronously inside Qt
-        # signal dispatch (see crash.log) — coalesce onto the event loop.
-        if self._refresh_queued:
-            return
-        self._refresh_queued = True
-        QTimer.singleShot(0, self._do_scheduled_refresh)
-
-    def _do_scheduled_refresh(self):
-        self._refresh_queued = False
-        self._refresh()
-
-    def _refresh(self):
-        QToolTip.hideText()   # never delete the item under an open tooltip
-        needle = self._filter.text().strip().lower()
-        evs = [ev for ev in self.script.canon_events() if isinstance(ev, dict)]
-        self._canon_list.clear()
-        shown = 0
-        for ev in evs:
-            src = self._story_name(ev.get('established_by', '')) \
-                if ev.get('established_by') in self.script.arcs else '?'
-            ents = ', '.join(ev.get('entities', [])) or '—'
-            hay = ' '.join([str(ev.get('summary', '')), ents, src,
-                            str(ev.get('id', ''))]).lower()
-            if needle and needle not in hay:
-                continue
-            promoted = ev.get('promoted_to')
-            mark = ' ⇧' if promoted and promoted in self.script.entities \
-                else ''
-            item = QListWidgetItem(
-                f"[{ev.get('id', '?')}]{mark} {ev.get('summary', '')}\n"
-                f"    entities: {ents}   ·   from: {src}")
-            if mark:
-                item.setToolTip(f"Promoted to codex entity '{promoted}'")
-            item.setData(Qt.ItemDataRole.UserRole, ev.get('id'))
-            self._canon_list.addItem(item)
-            shown += 1
-        total = len(evs)
-        self._count_lbl.setText(
-            f"{shown}/{total} shown" if needle else f"{total} event(s)")
-        if not total:
-            self._status.setText(
-                "No canon events yet — generate a story, then run "
-                "'Extract Canon (AI)' on the Stories tab.")
-
-    def _cmd_remove_canon_event(self):
-        item = self._canon_list.currentItem()
-        if not item:
-            return
-        ev_id = item.data(Qt.ItemDataRole.UserRole)
-        if self.script.remove_canon_event(ev_id):
-            self._status.setText(
-                f"Removed canon event {ev_id} — it will no longer reach "
-                "any story's prompts.")
-            self._schedule_refresh()
-
-    def _cmd_promote_to_codex(self):
-        """Turn the selected ledger event into a codex entity (kind
-        'event'): essence = the summary, relationships = the involved
-        entities. The ledger entry is kept (its reach is by-cast; the card's
-        is by-casting-the-event) and gains the new slug in its entities, so
-        stories that cast the event entity also receive the ledger line."""
-        item = self._canon_list.currentItem()
-        if not item:
-            self._status.setText("Select a canon event to promote.")
-            return
-        ev_id = item.data(Qt.ItemDataRole.UserRole)
-        ev = next((e for e in self.script.canon_events()
-                   if isinstance(e, dict) and e.get('id') == ev_id), None)
-        if ev is None:
-            return
-        prior = ev.get('promoted_to')
-        if prior and prior in self.script.entities:
-            self._status.setText(
-                f"{ev_id} is already promoted — codex entity '{prior}'.")
-            return
-        summary = str(ev.get('summary', '')).strip()
-        default_name = summary[:60].rstrip(' .,;:') or ev_id
-        name, ok = QInputDialog.getText(
-            self, "Promote to Codex Event",
-            "Name for the new codex event entity:", text=default_name)
-        if not ok or not name.strip():
-            return
-        exist = self.script.find_equivalent_entity(name.strip())
-        if exist:
-            # Don't mint a duplicate card — link the ledger event to the
-            # existing entity instead (its card stays untouched).
-            ev['promoted_to'] = exist
-            if exist not in ev.setdefault('entities', []):
-                ev['entities'].append(exist)
-            self.script.dirty = True
-            self._status.setText(
-                f"Codex already has '{exist}' matching that name — linked "
-                f"{ev_id} to it instead of creating a duplicate.")
-            self._schedule_refresh()
-            return
-        slug = self.script.add_entity(name.strip(), 'event')
-        if not slug:
-            self._status.setText("Could not create an entity from that name.")
-            return
-        involved = [s for s in (ev.get('entities') or [])
-                    if s in self.script.entities]
-        src = self._story_name(ev.get('established_by', '')) \
-            if ev.get('established_by') in self.script.arcs else '?'
-        self.script.update_entity(slug, {
-            'essence': summary,
-            'relationships': [{'to': s, 'nature': 'involved in this event'}
-                              for s in involved],
-            'notes': f"Promoted from canon event {ev_id} "
-                     f"(established by: {src}).",
-        })
-        ev['promoted_to'] = slug
-        if slug not in ev.setdefault('entities', []):
-            ev['entities'].append(slug)
-        self.script.dirty = True
-        self._status.setText(
-            f"Promoted {ev_id} → codex entity '{slug}' (kind: event). "
-            "Edit its card on the Codex tab; cast it in stories to make "
-            "them orbit this event.")
-        self._schedule_refresh()
-
-
 class ArcEditorDialog(QDialog):
     """Popup dialog for editing story arcs and wiring them into generation."""
 
     LAYER_NAMES = LAYER_ORDER
 
     def __init__(self, script: 'ScriptData', ai: 'AIAssistant',
-                 ui_queue: queue.SimpleQueue, on_graph_generated=None,
-                 register_orchestrator=None, embedded: bool = False,
-                 parent=None):
+                 ui_queue: queue.SimpleQueue, on_graph_generated=None, parent=None):
         super().__init__(parent)
-        self._register_orchestrator = register_orchestrator
-        self._embedded = embedded
-        self.setWindowTitle("Stories")
-        if not embedded:
-            self.setMinimumSize(940, 720)
+        self.setWindowTitle("Story Arcs")
+        self.setMinimumSize(940, 720)
         self.script = script
         self._main_ai = ai
         self.ui_queue = ui_queue
         self._on_graph_generated = on_graph_generated
         self._arc_ai = AIAssistant()   # separate instance for arc chat
         self._current_arc_id: Optional[str] = None
-        # Generation queue: one full story run at a time (a run is already
-        # 8 concurrent AI calls); further Generate clicks enqueue.
-        self._gen_queue: list = []
-        self._gen_running = False
-        self._gen_current: Optional[str] = None
         self._loading = False           # suppress dirty callbacks while populating fields
         self._call_start_time: Optional[float] = None  # for elapsed-time status updates
         self._build_ui()
@@ -10015,10 +6027,10 @@ class ArcEditorDialog(QDialog):
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 4, 0)
-        ll.addWidget(QLabel("Stories"))
+        ll.addWidget(QLabel("Arcs"))
         self.arc_list = QListWidget()
-        self.arc_list.setMinimumWidth(180)
-        self.arc_list.setMaximumWidth(250)
+        self.arc_list.setMinimumWidth(150)
+        self.arc_list.setMaximumWidth(200)
         self.arc_list.currentRowChanged.connect(self._on_arc_selected)
         ll.addWidget(self.arc_list)
         btn_row = QHBoxLayout()
@@ -10044,12 +6056,6 @@ class ArcEditorDialog(QDialog):
         self.name_edit.textChanged.connect(self._on_field_changed)
         form_top.addRow("Name:", self.name_edit)
         rl.addLayout(form_top)
-
-        # Lifecycle status for the selected story: node count + canon state
-        self.story_status = QLabel("")
-        self.story_status.setStyleSheet("color: #9ab; font-size: 11px;")
-        self.story_status.setWordWrap(True)
-        rl.addWidget(self.story_status)
 
         rl.addWidget(QLabel("Premise:"))
         self.premise_edit = QTextEdit()
@@ -10087,42 +6093,23 @@ class ArcEditorDialog(QDialog):
         nl_row.addWidget(self.arc_nl_combo, stretch=1)
         rl.addLayout(nl_row)
 
-        cast_sep = QLabel("Cast — entities in play")
-        cast_sep.setStyleSheet("font-weight: bold; margin-top: 6px;")
-        rl.addWidget(cast_sep)
-        cast_hint = QLabel(
-            "Checked codex entities are injected as canon cards into every "
-            "generation call for this story. Nothing checked = NOTHING from "
-            "the codex is injected — check what belongs in this story.")
-        cast_hint.setStyleSheet("color: #888888; font-size: 10px;")
-        cast_hint.setWordWrap(True)
-        rl.addWidget(cast_hint)
-        self.cast_list = QListWidget()
-        self.cast_list.setFixedHeight(110)
-        self.cast_list.itemChanged.connect(lambda *_: self._on_field_changed())
-        rl.addWidget(self.cast_list)
-
-        sep = QLabel("Structure — Story Beats")
+        sep = QLabel("Story Beats")
         sep.setStyleSheet("font-weight: bold; margin-top: 6px;")
         rl.addWidget(sep)
         hint = QLabel(
-            "One row per generation beat, in order. The archetype sets the beat's "
-            "story function, node tag, and pacing defaults; the direction is this "
-            "story's specific intent (blank = archetype default). Add, remove, and "
-            "reorder freely — the classic 10-layer arc is just the default shape.")
+            "Each beat guides one generation layer. Leave blank for full AI freedom.")
         hint.setStyleSheet("color: #888888; font-size: 10px;")
-        hint.setWordWrap(True)
         rl.addWidget(hint)
 
-        self._structure_box = QVBoxLayout()
-        self._structure_box.setSpacing(2)
-        self._structure_rows: list = []   # [(row_widget, archetype_combo, direction_edit)]
-        rl.addLayout(self._structure_box)
-
-        add_beat_btn = QPushButton("+ Add beat")
-        add_beat_btn.setFixedWidth(90)
-        add_beat_btn.clicked.connect(self._cmd_add_beat)
-        rl.addWidget(add_beat_btn)
+        beat_form = QFormLayout()
+        self._beat_edits: dict = {}
+        for layer in self.LAYER_NAMES:
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"What should the {layer} layer cover?")
+            edit.textChanged.connect(self._on_field_changed)
+            self._beat_edits[layer] = edit
+            beat_form.addRow(f"{layer.capitalize()}:", edit)
+        rl.addLayout(beat_form)
 
         rl.addWidget(QLabel("Notes:"))
         self.notes_edit = QTextEdit()
@@ -10164,44 +6151,15 @@ class ArcEditorDialog(QDialog):
 
         # ── Bottom buttons ────────────────────────────────────────
         bot = QHBoxLayout()
-        distill_btn = QPushButton("Distill Chat → Story")
-        distill_btn.setToolTip("Use AI to extract premise, themes, motif, and structure from the chat conversation")
+        distill_btn = QPushButton("Distill Chat → Arc")
+        distill_btn.setToolTip("Use AI to extract premise, themes, motif, and beats from the chat conversation")
         distill_btn.clicked.connect(self._cmd_distill_chat_to_arc)
         bot.addWidget(distill_btn)
 
-        canon_btn = QPushButton("Extract Canon (AI)")
-        canon_btn.setToolTip(
-            "Read this story's generated nodes and extract durable canon:\n"
-            "new facts for cast entity cards + canon events other stories\n"
-            "can reference. You review before anything is written.")
-        canon_btn.clicked.connect(lambda: self._cmd_extract_canon())
-        bot.addWidget(canon_btn)
-
-        self.gen_btn = QPushButton("Generate Graph from Story")
+        self.gen_btn = QPushButton("Generate Graph from Arc")
         self.gen_btn.setStyleSheet("font-weight: bold;")
-        self.gen_btn.setToolTip(
-            "Generate this story's node graph. While a run is active, "
-            "clicking queues the selected story to generate next.")
         self.gen_btn.clicked.connect(self._cmd_generate_from_arc_parallel)
         bot.addWidget(self.gen_btn)
-
-        gen_all_btn = QPushButton("Generate All Empty")
-        gen_all_btn.setToolTip(
-            "Queue every story that has no nodes yet; they generate one "
-            "after another (each run is itself 8-way parallel).")
-        gen_all_btn.clicked.connect(self._cmd_generate_all)
-        bot.addWidget(gen_all_btn)
-
-        self.auto_canon_cb = QCheckBox("Auto-canon")
-        self.auto_canon_cb.setChecked(True)
-        self.auto_canon_cb.setToolTip(
-            "Pipeline mode: when a story finishes generating, extract its\n"
-            "canon automatically (no review picker — everything the AI\n"
-            "returns is applied; prune later on the Codex / Canon Events\n"
-            "tabs). Runs alongside the next queued generation, so\n"
-            "'Generate All Empty' leaves every story canon-stamped.\n"
-            "Uncheck to review each extraction by hand instead.")
-        bot.addWidget(self.auto_canon_cb)
 
         # Per-arc generation-width override. First entry inherits from the
         # script-wide setting; the other three pin a specific preset for
@@ -10219,193 +6177,12 @@ class ArcEditorDialog(QDialog):
         bot.addWidget(self.gen_width_combo)
 
         bot.addStretch()
-        if not self._embedded:
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.accept)
-            bot.addWidget(close_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        bot.addWidget(close_btn)
         root.addLayout(bot)
 
-    # ── Structure rows + cast picker (v2) ─────────────────────────────────────
-
-    def _cmd_add_beat(self):
-        self._add_structure_row()
-        self._on_field_changed()
-
-    def _add_structure_row(self, layer: str = 'arrival', direction: str = ''):
-        row_w = QWidget()
-        h = QHBoxLayout(row_w)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(4)
-        combo = QComboBox()
-        for lname in LAYER_ORDER:
-            combo.addItem(lname, lname)
-        idx = combo.findData(layer)
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.setFixedWidth(110)
-        combo.currentIndexChanged.connect(self._on_field_changed)
-        h.addWidget(combo)
-        edit = QLineEdit(direction)
-        edit.setPlaceholderText("What this beat must cover (blank = archetype default)")
-        edit.textChanged.connect(self._on_field_changed)
-        h.addWidget(edit, stretch=1)
-        for label, cb in (("↑", lambda *_, w=row_w: self._move_structure_row(w, -1)),
-                          ("↓", lambda *_, w=row_w: self._move_structure_row(w, +1)),
-                          ("✕", lambda *_, w=row_w: self._remove_structure_row(w))):
-            b = QPushButton(label)
-            b.setFixedWidth(24)
-            b.clicked.connect(cb)
-            h.addWidget(b)
-        self._structure_box.addWidget(row_w)
-        self._structure_rows.append((row_w, combo, edit))
-
-    def _row_index(self, row_w) -> int:
-        for i, (w, _, _) in enumerate(self._structure_rows):
-            if w is row_w:
-                return i
-        return -1
-
-    def _move_structure_row(self, row_w, delta: int):
-        i = self._row_index(row_w)
-        j = i + delta
-        if i < 0 or not (0 <= j < len(self._structure_rows)):
-            return
-        self._structure_rows[i], self._structure_rows[j] = \
-            self._structure_rows[j], self._structure_rows[i]
-        self._structure_box.removeWidget(row_w)
-        self._structure_box.insertWidget(j, row_w)
-        self._on_field_changed()
-
-    def _remove_structure_row(self, row_w):
-        if len(self._structure_rows) <= 1:
-            return  # a story keeps at least one beat
-        i = self._row_index(row_w)
-        if i < 0:
-            return
-        self._structure_rows.pop(i)
-        self._structure_box.removeWidget(row_w)
-        row_w.deleteLater()
-        self._on_field_changed()
-
-    def _set_structure_rows(self, structure: list):
-        """Rebuild the beat rows from a structure list (suppresses the
-        per-row change signals while populating)."""
-        prev = self._loading
-        self._loading = True
-        try:
-            for (w, _, _) in self._structure_rows:
-                self._structure_box.removeWidget(w)
-                w.deleteLater()
-            self._structure_rows = []
-            for e in (structure or ScriptData.default_structure()):
-                self._add_structure_row(e.get('layer', 'arrival'),
-                                        e.get('direction', ''))
-        finally:
-            self._loading = prev
-
-    def _structure_from_rows(self) -> list:
-        return [{'layer': combo.currentData(),
-                 'direction': edit.text().strip()}
-                for (_, combo, edit) in self._structure_rows]
-
-    def _reload_cast_list(self, selected: set):
-        """Repopulate the cast picker from the current codex."""
-        self.cast_list.blockSignals(True)
-        try:
-            self.cast_list.clear()
-            ents = self.script.entities
-            def _order(kv):
-                kind = kv[1].get('kind', 'idea')
-                ki = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 99
-                return (ki, (kv[1].get('name') or kv[0]).lower())
-            if not ents:
-                placeholder = QListWidgetItem(
-                    "(codex is empty — Story ▸ Codex… to add entities)")
-                placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-                self.cast_list.addItem(placeholder)
-                return
-            for slug, card in sorted(ents.items(), key=_order):
-                kind = card.get('kind', 'idea')
-                item = QListWidgetItem(
-                    f"[{kind[:4]}] {card.get('name') or slug}  ({slug})")
-                item.setData(Qt.ItemDataRole.UserRole, slug)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(Qt.CheckState.Checked if slug in selected
-                                   else Qt.CheckState.Unchecked)
-                self.cast_list.addItem(item)
-        finally:
-            self.cast_list.blockSignals(False)
-
-    def _cast_from_list(self) -> list:
-        out = []
-        for i in range(self.cast_list.count()):
-            item = self.cast_list.item(i)
-            slug = item.data(Qt.ItemDataRole.UserRole)
-            if slug and item.checkState() == Qt.CheckState.Checked:
-                out.append(slug)
-        return out
-
     # ── Arc list management ──────────────────────────────────────────────────
-
-    def _story_status_maps(self) -> tuple:
-        """(node_counts, event_counts) keyed by arc_id — one pass each."""
-        node_counts: dict = {}
-        for nid in self.script.nodes:
-            a = self.script.get_node_arc_id(nid)
-            node_counts[a] = node_counts.get(a, 0) + 1
-        event_counts: dict = {}
-        for ev in self.script.canon_events():
-            if isinstance(ev, dict):
-                src = ev.get('established_by', '')
-                event_counts[src] = event_counts.get(src, 0) + 1
-        return node_counts, event_counts
-
-    def _arc_list_label(self, arc_id: str, active_id: str,
-                        node_counts: dict, event_counts: dict) -> tuple:
-        """(text, tooltip) for a story list entry — one compact line:
-        '★ Name · 42n ✓' (node count; ✓ = canon extracted). The tooltip
-        carries the verbose status."""
-        arc = self.script.arcs.get(arc_id, {})
-        name = arc.get('name') or arc_id
-        star = '★ ' if arc_id == active_id else '  '
-        n = node_counts.get(arc_id, 0)
-        n_ev = event_counts.get(arc_id, 0)
-        extracted = bool(arc.get('canon_extracted_at')) or n_ev > 0
-        text = f'{star}{name} · {n}n' + (' ✓' if extracted else '')
-        tip = f'{n} node(s) generated' if n else 'No nodes generated yet'
-        if extracted:
-            tip += ' · canon extracted' + (f' ({n_ev} event(s))' if n_ev else '')
-            if arc.get('canon_extracted_at'):
-                tip += f" — {arc['canon_extracted_at']}"
-        elif n:
-            tip += ' · canon not extracted yet'
-        return text, tip
-
-    def _update_story_status(self):
-        """Status line in the editor pane for the selected story."""
-        arc_id = self._current_arc_id
-        if not arc_id or arc_id not in self.script.arcs:
-            self.story_status.setText('')
-            return
-        node_counts, event_counts = self._story_status_maps()
-        n = node_counts.get(arc_id, 0)
-        n_ev = event_counts.get(arc_id, 0)
-        arc = self.script.arcs[arc_id]
-        stamp = arc.get('canon_extracted_at')
-        if not n:
-            text = ("No nodes generated yet — use 'Generate Graph from "
-                    "Story' below.")
-        else:
-            text = f"{n} node(s) generated"
-            if stamp or n_ev:
-                text += f" · canon extracted"
-                if n_ev:
-                    text += f" — {n_ev} event(s)"
-                if stamp:
-                    text += f" ({stamp})"
-            else:
-                text += (" · canon NOT extracted — run 'Extract Canon (AI)' "
-                         "so other stories can reference this one.")
-        self.story_status.setText(text)
 
     def _refresh_arc_list(self):
         # On the SELECTION-click path the arc set is unchanged — only the
@@ -10422,25 +6199,23 @@ class ArcEditorDialog(QDialog):
         current_ids  = [self.arc_list.item(i).data(Qt.ItemDataRole.UserRole)
                         for i in range(self.arc_list.count())]
 
-        node_counts, event_counts = self._story_status_maps()
         self.arc_list.blockSignals(True)
         try:
             if current_ids == desired_ids and current_ids:
                 # In-place label update — no clear(), no item recreation.
                 for i, arc_id in enumerate(desired_ids):
-                    text, tip = self._arc_list_label(
-                        arc_id, active_id, node_counts, event_counts)
-                    self.arc_list.item(i).setText(text)
-                    self.arc_list.item(i).setToolTip(tip)
+                    arc   = self.script.arcs[arc_id]
+                    name  = arc.get('name') or arc_id
+                    label = ('★ ' if arc_id == active_id else '  ') + name
+                    self.arc_list.item(i).setText(label)
             else:
                 # Arc set genuinely changed (add / delete / rename / first
                 # population) — full rebuild is unavoidable.
                 self.arc_list.clear()
-                for arc_id in self.script.arcs:
-                    text, tip = self._arc_list_label(
-                        arc_id, active_id, node_counts, event_counts)
-                    item = QListWidgetItem(text)
-                    item.setToolTip(tip)
+                for arc_id, arc in self.script.arcs.items():
+                    name  = arc.get('name') or arc_id
+                    label = ('★ ' if arc_id == active_id else '  ') + name
+                    item  = QListWidgetItem(label)
                     item.setData(Qt.ItemDataRole.UserRole, arc_id)
                     self.arc_list.addItem(item)
 
@@ -10461,35 +6236,24 @@ class ArcEditorDialog(QDialog):
         self._save_current()
         if row < 0:
             self._current_arc_id = None
-            QTimer.singleShot(0, self._clear_fields)
+            self._clear_fields()
             return
         arc_id = self.arc_list.item(row).data(Qt.ItemDataRole.UserRole)
         self._current_arc_id = arc_id
         self.script.set_active_arc(arc_id)  # selected arc is always the active one
         self._refresh_arc_list()
-        # CRASH RULE: _load_arc rebuilds the cast list and structure rows;
-        # doing that synchronously inside currentRowChanged dispatch AV'd
-        # natively (crash.log 2026-07-17 19:09 — cast_list.clear() in
-        # _reload_cast_list). Defer to the event loop; the guard drops the
-        # reload if the selection moved again before the timer fired.
-        QTimer.singleShot(0, lambda a=arc_id: self._load_arc_deferred(a))
-
-    def _load_arc_deferred(self, arc_id: str):
-        if arc_id == self._current_arc_id and arc_id in self.script.arcs:
-            self._load_arc(arc_id)
+        self._load_arc(arc_id)
 
     def _load_arc(self, arc_id: str):
-        # The story list rows have hover tooltips; never destroy widgets
-        # under an open native tooltip (same AV family as the planner).
-        QToolTip.hideText()
         arc = self.script.arcs.get(arc_id, {})
         self._loading = True
         self.name_edit.setText(arc.get('name', ''))
         self.premise_edit.setPlainText(arc.get('premise', ''))
         self.themes_edit.setText(arc.get('themes', ''))
         self.motif_edit.setText(arc.get('motif', ''))
-        self._set_structure_rows(self.script.get_story_structure(arc_id))
-        self._reload_cast_list(set(self.script.get_story_cast(arc_id)))
+        beats = arc.get('beats', {})
+        for layer, edit in self._beat_edits.items():
+            edit.setText(beats.get(layer, ''))
         self.notes_edit.setPlainText(arc.get('notes', ''))
         # Per-arc node-length override dropdown. Default: "Inherit from
         # script default" (item 0). If the arc has a custom range that
@@ -10521,7 +6285,6 @@ class ArcEditorDialog(QDialog):
         for entry in arc.get('chat_history', []):
             self._append_chat(entry.get('role', 'user'), entry.get('content', ''))
         self._loading = False
-        self._update_story_status()
 
     def _reset_arc_nl_combo(self):
         """Rebuild the per-arc node-length combo to its canonical list
@@ -10540,8 +6303,8 @@ class ArcEditorDialog(QDialog):
         self.premise_edit.clear()
         self.themes_edit.clear()
         self.motif_edit.clear()
-        self._set_structure_rows(ScriptData.default_structure())
-        self._reload_cast_list(set())
+        for edit in self._beat_edits.values():
+            edit.clear()
         self.notes_edit.clear()
         self._reset_arc_nl_combo()
         self.arc_nl_combo.setCurrentIndex(0)
@@ -10549,7 +6312,6 @@ class ArcEditorDialog(QDialog):
         self.gen_width_combo.setCurrentIndex(0)  # inherit
         self.gen_width_combo.blockSignals(False)
         self.chat_log.clear()
-        self.story_status.setText('')
         self._loading = False
 
     def _save_current(self):
@@ -10558,16 +6320,14 @@ class ArcEditorDialog(QDialog):
         arc_id = self._current_arc_id
         if arc_id not in self.script.arcs:
             return
-        structure = self._structure_from_rows()
+        beats = {layer: edit.text() for layer, edit in self._beat_edits.items()}
         self.script.save_arc(arc_id, {
-            'name':      self.name_edit.text(),
-            'premise':   self.premise_edit.toPlainText(),
-            'themes':    self.themes_edit.text(),
-            'motif':     self.motif_edit.text(),
-            'structure': structure,
-            'beats':     ScriptData.beats_from_structure(structure),
-            'cast':      self._cast_from_list(),
-            'notes':     self.notes_edit.toPlainText(),
+            'name':    self.name_edit.text(),
+            'premise': self.premise_edit.toPlainText(),
+            'themes':  self.themes_edit.text(),
+            'motif':   self.motif_edit.text(),
+            'beats':   beats,
+            'notes':   self.notes_edit.toPlainText(),
         })
         # Per-arc node-length override — None = inherit (combo index 0)
         data = self.arc_nl_combo.currentData()
@@ -10582,14 +6342,11 @@ class ArcEditorDialog(QDialog):
 
     def _refresh_list_item(self, arc_id: str):
         active_id = self.script.active_arc_id
-        node_counts, event_counts = self._story_status_maps()
+        name = self.script.arcs.get(arc_id, {}).get('name') or arc_id
         for i in range(self.arc_list.count()):
             item = self.arc_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == arc_id:
-                text, tip = self._arc_list_label(
-                    arc_id, active_id, node_counts, event_counts)
-                item.setText(text)
-                item.setToolTip(tip)
+                item.setText(('★ ' if arc_id == active_id else '  ') + name)
                 return
 
     def _on_field_changed(self):
@@ -10599,19 +6356,17 @@ class ArcEditorDialog(QDialog):
     def _cmd_new_arc(self):
         self._save_current()
         arc_id = self.script.add_arc()
-        # If this is the first story, seed it with whatever is already in the fields
+        # If this is the first arc, seed it with whatever is already in the fields
         if len(self.script.arcs) == 1:
-            structure = self._structure_from_rows()
-            name = self.name_edit.text().strip() or 'New Story'
+            beats = {layer: edit.text() for layer, edit in self._beat_edits.items()}
+            name = self.name_edit.text().strip() or 'New Arc'
             self.script.save_arc(arc_id, {
-                'name':      name,
-                'premise':   self.premise_edit.toPlainText(),
-                'themes':    self.themes_edit.text(),
-                'motif':     self.motif_edit.text(),
-                'structure': structure,
-                'beats':     ScriptData.beats_from_structure(structure),
-                'cast':      self._cast_from_list(),
-                'notes':     self.notes_edit.toPlainText(),
+                'name':    name,
+                'premise': self.premise_edit.toPlainText(),
+                'themes':  self.themes_edit.text(),
+                'motif':   self.motif_edit.text(),
+                'beats':   beats,
+                'notes':   self.notes_edit.toPlainText(),
             })
         self._refresh_arc_list()
         for i in range(self.arc_list.count()):
@@ -10630,84 +6385,19 @@ class ArcEditorDialog(QDialog):
             self._clear_fields()
 
     def _cmd_generate_from_arc_parallel(self):
-        """Generate the selected story — or queue it while a run is active."""
+        """Parallel generation from arc — one node per AI call."""
         if not self._current_arc_id:
-            self.chat_status.setText("No story selected.")
+            self.chat_status.setText("No arc selected.")
             return
         self._save_current()
+        arc = self.script.arcs.get(self._current_arc_id, {})
+
         if not self._main_ai.ready:
             self.chat_status.setText("claude CLI not found.")
             return
-        arc_id = self._current_arc_id
-        if self._gen_running:
-            name = self.script.arcs.get(arc_id, {}).get('name') or arc_id
-            if arc_id == self._gen_current:
-                self.chat_status.setText(f"'{name}' is generating right now.")
-            elif arc_id in self._gen_queue:
-                self.chat_status.setText(f"'{name}' is already queued "
-                                         f"(position {self._gen_queue.index(arc_id) + 1}).")
-            else:
-                self._gen_queue.append(arc_id)
-                self.chat_status.setText(
-                    f"Queued '{name}' — {len(self._gen_queue)} story(ies) "
-                    "waiting; runs start automatically.")
-            return
-        self._start_generation(arc_id)
-
-    def _cmd_generate_all(self):
-        """Queue every story that has no nodes yet."""
-        if not self._main_ai.ready:
-            self.chat_status.setText("claude CLI not found.")
-            return
-        self._save_current()
-        node_counts, _ = self._story_status_maps()
-        pending = [aid for aid in self.script.arcs
-                   if node_counts.get(aid, 0) == 0
-                   and aid != self._gen_current
-                   and aid not in self._gen_queue]
-        if not pending:
-            self.chat_status.setText(
-                "Every story already has nodes (or is queued). Select one "
-                "and Generate to extend it instead.")
-            return
-        self._gen_queue.extend(pending)
-        self.chat_status.setText(
-            f"Queued {len(pending)} empty story(ies); generating one at a "
-            "time.")
-        if not self._gen_running:
-            self._start_next_generation()
-
-    def _start_next_generation(self):
-        while self._gen_queue and not self._gen_running:
-            arc_id = self._gen_queue.pop(0)
-            if arc_id in self.script.arcs:
-                self._start_generation(arc_id)
-                return
-
-    def _finish_generation(self, message: str, cancelled: bool = False):
-        self._gen_running = False
-        self._gen_current = None
-        self.gen_btn.setText("Generate Graph from Story")
-        self._refresh_arc_list()
-        self._update_story_status()
-        if cancelled and self._gen_queue:
-            n = len(self._gen_queue)
-            self._gen_queue.clear()
-            message += f" Queue cleared ({n} story(ies) dropped)."
-        elif self._gen_queue:
-            nxt = self.script.arcs.get(self._gen_queue[0], {})
-            message += (f" Next in queue: "
-                        f"'{nxt.get('name') or self._gen_queue[0]}'.")
-            QTimer.singleShot(0, self._start_next_generation)
-        self.chat_status.setText(message)
-
-    def _start_generation(self, arc_id: str):
-        """Run one story's seed + orchestration (called by the queue)."""
-        arc = self.script.arcs.get(arc_id, {})
 
         prompt = arc.get('premise', '').strip() or arc.get('name', 'Generate a narrative graph.')
-        structure = self.script.get_story_structure(arc_id)
-        cast_codex = self.script.cast_codex_for(arc_id)
+        arc_beats = arc.get('beats', {})
         arc_motif = arc.get('motif', '')
         arc_notes = arc.get('notes', '').strip()
 
@@ -10716,14 +6406,11 @@ class ArcEditorDialog(QDialog):
         if arc_notes:
             story_ctx = (story_ctx + '\n\n' + arc_notes).strip() if story_ctx else arc_notes
 
-        self._gen_running = True
-        self._gen_current = arc_id
-        self.gen_btn.setText("Queue Generation")
-        self.chat_status.setText(
-            f"Generating seed nodes for '{arc.get('name') or arc_id}'…")
+        self.gen_btn.setEnabled(False)
+        self.chat_status.setText("Generating seed nodes…")
         self._append_chat('assistant', f'[Parallel gen from arc: {arc.get("name", "")}]')
 
-        arc_id_for_seeds = arc_id
+        arc_id_for_seeds = self._current_arc_id
 
         def on_seed_done(data):
             before = set(self.script.nodes.keys())
@@ -10735,56 +6422,42 @@ class ArcEditorDialog(QDialog):
                 if nid in self.script.nodes:
                     self.script.set_start(nid, True)
                     self.script.set_node_arc_id(nid, arc_id_for_seeds)
-                    # Seeds are beat 0 of this story's structure.
-                    self.script.nodes[nid]['beat'] = 0
 
             self._append_chat('assistant', f'Seeds: {", ".join(seed_ids)}')
             self.chat_status.setText(f'Seeds done. Starting parallel expansion…')
 
-            def on_complete():
-                if self._on_graph_generated:
-                    self._on_graph_generated()
-                cancelled = orch._cancelled.is_set()
-                if cancelled:
-                    self._finish_generation("Generation stopped.",
-                                            cancelled=True)
-                else:
-                    name = self.script.arcs.get(arc_id_for_seeds, {}).get(
-                        'name') or arc_id_for_seeds
-                    self._finish_generation(
-                        f"'{name}' generated — {len(self.script.nodes)} "
-                        "total nodes.")
-                    # Pipeline: extraction runs in its own thread, so the
-                    # generation queue advances in parallel with it.
-                    if self.auto_canon_cb.isChecked():
-                        QTimer.singleShot(0, lambda: self._cmd_extract_canon(
-                            arc_id=arc_id_for_seeds, auto=True))
-
-            orch = make_full_orchestrator(
-                self.script, self._main_ai, self.ui_queue,
-                story_context=story_ctx,
+            self._orchestrator = ParallelNodeOrchestrator(
+                script=self.script,
+                ui_queue=self.ui_queue,
+                model=self._main_ai.model,
+                thinking=self._main_ai.thinking,
+                profile='full',
                 width_preset=self.script.get_effective_width_preset(arc_id_for_seeds),
+                story_context=story_ctx,
+                variables=self.script.variables,
                 on_progress=lambda msg: self.chat_status.setText(msg),
-                on_complete=on_complete,
+                on_complete=lambda: (
+                    self.gen_btn.setEnabled(True),
+                    self.chat_status.setText(
+                        f'Parallel generation complete — {len(self.script.nodes)} nodes'),
+                    self._on_graph_generated() if self._on_graph_generated else None,
+                ),
                 on_node_added=None,  # don't rebuild graph per-node; full rebuild on_complete
-                register=self._register_orchestrator,
             )
-            self._orchestrator = orch
-            orch.start(seed_ids)
+            self._orchestrator.start(seed_ids)
 
         def on_seed_error(e):
-            self._finish_generation(f"Seed error: {e[:60]} — moving on.")
+            self.chat_status.setText(f'Seed error: {e[:60]}')
+            self.gen_btn.setEnabled(True)
 
         self._main_ai.generate_seed(
             prompt, self.ui_queue, on_seed_done, on_seed_error,
             story_context=story_ctx,
-            layer_direction=structure[0].get('direction', ''),
-            first_layer=structure[0].get('layer', 'arrival'),
-            cast_codex=cast_codex,
+            layer_direction=arc_beats.get('arrival', ''),
             motif=arc_motif,
             variables=self.script.variables,
-            node_word_range=self.script.get_effective_node_word_range(arc_id),
-            n_seeds=_seed_count_for_story(self.script, arc_id),
+            node_word_range=self.script.get_effective_node_word_range(
+                self._current_arc_id),
         )
 
     # ── Arc chat ─────────────────────────────────────────────────────────────
@@ -10802,18 +6475,11 @@ class ArcEditorDialog(QDialog):
             parts.append(f"Themes: {arc['themes']}")
         if arc.get('motif'):
             parts.append(f"Recurring motif: {arc['motif']}")
-        cast = self.script.get_story_cast(self._current_arc_id)
-        if cast:
-            names = [self.script.entities.get(s, {}).get('name') or s for s in cast]
-            parts.append(f"Cast: {', '.join(names)}")
-        structure = self.script.get_story_structure(self._current_arc_id)
-        parts.append(f"Structure ({len(structure)} beats): "
-                     + ' → '.join(e['layer'] for e in structure))
-        filled = [(i, e) for i, e in enumerate(structure) if e['direction'].strip()]
-        if filled:
-            parts.append('Beat directions:')
-            for i, e in filled:
-                parts.append(f'  {i + 1}. {e["layer"]}: {e["direction"]}')
+        filled_beats = [(k, v) for k, v in arc.get('beats', {}).items() if v.strip()]
+        if filled_beats:
+            parts.append('Story beats:')
+            for layer, beat in filled_beats:
+                parts.append(f'  {layer}: {beat}')
         if arc.get('notes'):
             parts.append(f"Notes: {arc['notes']}")
         return '\n'.join(parts)
@@ -10829,150 +6495,7 @@ class ArcEditorDialog(QDialog):
         if self._call_start_time is None:
             return
         elapsed = time.time() - self._call_start_time
-        name = _model_short_name(getattr(self, '_call_model', ''))
-        self.chat_status.setText(f"Claude ({name}) is thinking… {elapsed:0.0f}s")
-
-    def _cmd_extract_canon(self, arc_id: str = '', auto: bool = False):
-        """Extract canon (entity facts + canon events) from a story's
-        generated nodes — the cross-pollination ledger (v2 Phase 3).
-
-        auto=True is the pipeline mode (fired when a generation finishes):
-        operates on the given arc_id instead of the selection, applies
-        everything without the review picker (prune later on the Codex /
-        Canon Events tabs), and stays quiet in the chat pane unless the
-        story is the one on screen."""
-        if auto:
-            if arc_id not in self.script.arcs:
-                return
-        else:
-            if not self._current_arc_id:
-                self.chat_status.setText("No story selected.")
-                return
-            self._save_current()
-            arc_id = self._current_arc_id
-        if not self._main_ai.ready:
-            self.chat_status.setText("Claude CLI not found.")
-            return
-        arc = self.script.arcs.get(arc_id, {})
-
-        story_nodes = [(nid, nd) for nid, nd in self.script.nodes.items()
-                       if self.script.get_node_arc_id(nid) == arc_id
-                       and nd.get('text')]
-        if not story_nodes:
-            self.chat_status.setText("This story has no generated nodes yet.")
-            return
-
-        # Cards + existing canon go in the (cached) system prompt so the
-        # model can avoid restating what is already recorded.
-        system = self._main_ai._augment_system_with_context(
-            SYSTEM_EXTRACT_CANON, '',
-            cast_codex=self.script.cast_codex_for(arc_id))
-        parts = [f'STORY "{arc.get("name") or arc_id}":\n'
-                 f'  premise: {(arc.get("premise") or "")[:600]}']
-        text_lines = ['NODE TEXTS:']
-        for nid, nd in story_nodes[:50]:
-            text_lines.append(f'  [{nid}] "{nd.get("text", "")[:400]}"')
-        parts.append('\n'.join(text_lines))
-        parts.append('Extract the new canon now. Output the JSON object only.')
-        prompt = '\n\n'.join(parts)
-
-        if auto:
-            self.chat_status.setText(
-                f'Auto-extracting canon from "{arc.get("name") or arc_id}" '
-                f'({len(story_nodes)} nodes)…')
-        else:
-            self._call_start_time = time.time()
-            self._call_model = self._main_ai.model
-            self._tick_thinking_status()
-            self._append_chat('assistant',
-                              f'[Extracting canon from {len(story_nodes)} nodes...]')
-
-        def on_done(data):
-            self._call_start_time = None
-            facts = data.get('facts') if isinstance(data, dict) else None
-            events = data.get('events') if isinstance(data, dict) else None
-            facts = facts if isinstance(facts, dict) else {}
-            events = [e for e in (events or [])
-                      if isinstance(e, dict) and (e.get('summary') or '').strip()]
-            # Only facts for entities that exist, and only genuinely new ones
-            entries = []
-            payload = {}
-            for slug, new_facts in facts.items():
-                card = self.script.entities.get(slug)
-                if not card or not isinstance(new_facts, list):
-                    continue
-                have = set(card.get('facts', []))
-                for j, fact in enumerate(new_facts):
-                    fact = str(fact).strip()
-                    if fact and fact not in have:
-                        key = f'fact:{slug}:{j}'
-                        payload[key] = (slug, fact)
-                        entries.append((key, f'[fact] {slug}: {fact[:110]}'))
-            for j, ev in enumerate(events):
-                key = f'event:{j}'
-                ents = [ScriptData.sanitize_entity_slug(str(x))
-                        for x in (ev.get('entities') or [])]
-                payload[key] = (str(ev['summary']).strip(), ents)
-                entries.append((key, f'[event] {str(ev["summary"]).strip()[:120]}'))
-            if not entries:
-                # Extraction ran and found nothing new — still counts as
-                # extracted for the lifecycle status.
-                self.script.save_arc(arc_id, {
-                    'canon_extracted_at': time.strftime('%Y-%m-%d %H:%M')})
-                self._refresh_list_item(arc_id)
-                self._update_story_status()
-                self.chat_status.setText(
-                    ('Auto-canon: ' if auto else 'Extraction ')
-                    + 'found no new canon'
-                    + (f' in "{arc.get("name") or arc_id}".' if auto else '.'))
-                return
-            if auto:
-                # Pipeline mode: apply everything — the dedupe guards above
-                # already dropped known facts/unknown slugs, and both facts
-                # and events stay editable (Codex / Canon Events tabs).
-                chosen = list(payload)
-            else:
-                chosen = _pick_checked(
-                    self, f'Canon from "{arc.get("name") or arc_id}"',
-                    entries)
-            n_facts = n_events = 0
-            for key in chosen:
-                if key.startswith('fact:'):
-                    slug, fact = payload[key]
-                    card = self.script.entities.get(slug)
-                    if card is not None and fact not in card.get('facts', []):
-                        card.setdefault('facts', []).append(fact)
-                        n_facts += 1
-                else:
-                    summary, ents = payload[key]
-                    if self.script.add_canon_event(summary, ents,
-                                                   established_by=arc_id):
-                        n_events += 1
-            if n_facts or n_events:
-                self.script.save_arc(arc_id, {
-                    'canon_extracted_at': time.strftime('%Y-%m-%d %H:%M')})
-            self._refresh_list_item(arc_id)
-            self._update_story_status()
-            self.chat_status.setText(
-                ('Auto-canon' if auto else 'Canon') +
-                f' recorded for "{arc.get("name") or arc_id}": '
-                f'{n_facts} fact(s), {n_events} event(s).')
-            if not auto or arc_id == self._current_arc_id:
-                self._append_chat('assistant',
-                                  f'[Canon: +{n_facts} facts, +{n_events} events]')
-
-        def on_error(e):
-            self._call_start_time = None
-            self.chat_status.setText(f"Canon extraction error: {str(e)[:80]}")
-
-        def run():
-            try:
-                data = self._main_ai._run_claude_json(system, prompt)
-                self.ui_queue.put(lambda: on_done(data))
-            except Exception as exc:
-                self.ui_queue.put(lambda e=exc: on_error(str(e)))
-
-        threading.Thread(target=run, daemon=True).start()
+        self.chat_status.setText(f"Claude (Opus) is thinking… {elapsed:0.0f}s")
 
     def _cmd_distill_chat_to_arc(self):
         """Use AI to extract structured arc fields from the chat conversation."""
@@ -11013,32 +6536,19 @@ class ArcEditorDialog(QDialog):
         layer_names = ', '.join(LAYER_ORDER)
 
         system = (
-            "You are distilling a brainstorming conversation into structured story fields "
+            "You are distilling a brainstorming conversation into structured story arc fields "
             "for a narrative audio installation.\n\n"
-            "The story drives generation of a node graph where each node is 15-35 seconds of "
-            "spoken audio. A story is an ordered STRUCTURE of beats; each beat names one of "
-            "the 10 layer archetypes: " + layer_names + ".\n"
-            "The classic shape is all 10 archetypes in order, but the structure is flexible: "
-            "choose 4-12 beats, skip archetypes, repeat one (e.g. two consecutive 'discovery' "
-            "beats for a slow reveal), or reorder when the conversation genuinely calls for "
-            "it. Default to the classic 10 when in doubt.\n\n"
+            "The arc drives generation of a node graph where each node is 15-35 seconds of "
+            "spoken audio. The 10 story layers are: " + layer_names + ".\n\n"
             "Extract the following from the conversation and return ONLY a JSON object:\n"
             "{\n"
-            '  "name": "Short story title (2-5 words)",\n'
+            '  "name": "Short arc title (2-5 words)",\n'
             '  "premise": "Several sentences, 600-1000 chars. See PREMISE RULES.",\n'
             '  "themes": "Comma-separated themes (e.g. isolation, transformation, memory)",\n'
             '  "motif": "One concrete recurring sensory/symbolic thread (a smell, a sound, an object). 60-150 chars.",\n'
             '  "notes": "Character details, world-building, tone guidance — anything useful for generation",\n'
-            '  "cast": ["entity_slug", ...],\n'
-            '  "structure": [ {"layer": "arrival", "direction": "..."}, {"layer": "presence", "direction": "..."}, ... ]\n'
+            '  "beats": { "arrival": "...", "presence": "...", ..., "stillness": "..." }\n'
             "}\n\n"
-            "── CAST RULES ──\n"
-            "Pick the cast from the AVAILABLE CODEX ENTITIES list in the prompt — exact\n"
-            "slugs only, never invented. Choose the entities genuinely central to THIS\n"
-            "story (typically 2-6). The cast controls exactly which entity cards are\n"
-            "injected into every node-generation call: an empty cast means NO codex\n"
-            "material reaches generation at all, so include every entity the story\n"
-            "needs — and none it doesn't. If no listed entity fits, return [].\n\n"
             "── PREMISE RULES ──\n"
             "The premise is injected into EVERY node generation call with a layer-specific role label\n"
             "('establish this premise's world' at arrival, 'the bind IS this premise made specific' at\n"
@@ -11055,7 +6565,7 @@ class ArcEditorDialog(QDialog):
             "  - Worldbuilding details that already live in the story context don't need restating here;\n"
             "    the character's specific anchors do, since the context is shared and the premise is not.\n\n"
             "── BEAT RULES ──\n"
-            "Each beat's `direction` is the steering text the generator sees as 'LAYER DIRECTION'. It must\n"
+            "Each beat is the per-layer steering text the generator sees as 'LAYER DIRECTION'. It must\n"
             "out-shout the dense story context, which means each beat carries THREE elements:\n"
             "  1. SCENE/SITUATION ANCHOR — a concrete moment or setup, not just a theme.\n"
             "       Good: 'she returns to the commissary after an austerity-rain stretch'\n"
@@ -11072,8 +6582,7 @@ class ArcEditorDialog(QDialog):
             "model reads them as text-to-deliver rather than guidance.\n\n"
             "── OTHER RULES ──\n"
             "- Motif must be CONCRETE and SENSORY (a smell, a sound, an object), not thematic.\n"
-            "- If the conversation did not cover a beat, write one that fits the story's trajectory.\n"
-            "- Every structure entry's `layer` MUST be one of the 10 archetype names.\n"
+            "- If the conversation did not cover a beat, write one that fits the arc's trajectory.\n"
             "- No markdown fences, no explanation — just the JSON."
         )
 
@@ -11082,19 +6591,10 @@ class ArcEditorDialog(QDialog):
             prompt_parts.append(f'STORY CONTEXT (shared across all arcs — incorporate this setting/tone):\n{self.script.story_context_focused}')
         if existing:
             prompt_parts.append('EXISTING ARC FIELDS (refine these, don\'t ignore them):\n' + '\n'.join(existing))
-        if self.script.entities:
-            ent_lines = ['AVAILABLE CODEX ENTITIES (for the "cast" field — use these exact slugs):']
-            for e_slug, e_card in self.script.entities.items():
-                ent_lines.append(
-                    f'  {e_slug} [{e_card.get("kind", "idea")}] '
-                    f'{e_card.get("name") or e_slug}: '
-                    f'{(e_card.get("essence") or "")[:80]}')
-            prompt_parts.append('\n'.join(ent_lines))
         prompt_parts.append(f'CONVERSATION TO DISTILL:\n{conversation}')
         prompt = '\n\n'.join(prompt_parts)
 
         self._call_start_time = time.time()
-        self._call_model = MODEL_OPUS
         self._tick_thinking_status()
         self._append_chat('assistant', '[Distilling conversation into arc fields...]')
 
@@ -11116,32 +6616,13 @@ class ArcEditorDialog(QDialog):
                 self.motif_edit.setText(data['motif'])
             if data.get('notes'):
                 self.notes_edit.setPlainText(data['notes'])
-            # Preferred: flexible structure array. Fallback: legacy beats
-            # dict (older cached responses) mapped onto the classic shape.
-            structure = data.get('structure')
-            if isinstance(structure, list):
-                clean = [{'layer': e.get('layer'),
-                          'direction': str(e.get('direction') or '')}
-                         for e in structure
-                         if isinstance(e, dict) and e.get('layer') in LAYER_ORDER]
-                if clean:
-                    self._set_structure_rows(clean)
-            elif isinstance(data.get('beats'), dict):
-                beats = data['beats']
-                self._set_structure_rows(
-                    [{'layer': layer, 'direction': str(beats.get(layer) or '')}
-                     for layer in LAYER_ORDER])
-            # Cast: check the distilled entities in the picker (invalid /
-            # invented slugs filtered — cast is opt-in, so this is what
-            # wires the story's codex material)
-            cast = data.get('cast')
-            if isinstance(cast, list):
-                valid = {ScriptData.sanitize_entity_slug(str(c)) for c in cast}
-                valid &= set(self.script.entities.keys())
-                self._reload_cast_list(valid)
+            beats = data.get('beats', {})
+            for layer, text in beats.items():
+                if layer in self._beat_edits and text:
+                    self._beat_edits[layer].setText(text)
 
             self._on_field_changed()  # mark dirty
-            self.chat_status.setText(f"Story fields updated from chat. ({elapsed:.1f}s)")
+            self.chat_status.setText(f"Arc fields updated from chat. ({elapsed:.1f}s)")
             self._append_chat('assistant',
                 f'Distilled: "{data.get("name", "")}" — {data.get("premise", "")[:100]}...')
 
@@ -11154,8 +6635,9 @@ class ArcEditorDialog(QDialog):
             try:
                 # Force Opus for arc distillation — extracts structured
                 # premise/themes/beats from chat and quality matters.
-                data = self._main_ai._run_claude_json(system, prompt,
-                                                      model_override=MODEL_OPUS)
+                raw = self._main_ai._run_claude(system, prompt,
+                                                 model_override='claude-opus-4-6')
+                data = self._main_ai._extract_json(raw)
                 self.ui_queue.put(lambda: on_done(data))
             except Exception as exc:
                 self.ui_queue.put(lambda e=exc: on_error(str(e)))
@@ -11176,7 +6658,6 @@ class ArcEditorDialog(QDialog):
         self._append_chat('user', msg)
         arc_ctx = self._build_arc_context()
         self._call_start_time = time.time()
-        self._call_model = self._main_ai.model
         self._tick_thinking_status()
 
         def on_reply(reply):
@@ -11199,43 +6680,14 @@ class ArcEditorDialog(QDialog):
         if self.script.story_context_focused:
             full_ctx = f'STORY CONTEXT:\n{self.script.story_context_focused}\n\n'
         full_ctx += arc_ctx
-        # Cast codex cards so the chat knows the canon for the entities in play
-        cast_block = self.script.cast_codex_for(self._current_arc_id) \
-            if self._current_arc_id else ''
-        if cast_block:
-            full_ctx += f'\n\nCAST CODEX (canon entity cards for this story):\n{cast_block}'
 
-        # The chat follows the AI Model menu selection; only the one-shot
-        # "Distill Chat → Story" pass (which writes the card) pins Opus.
+        # Force Opus for arc development — premise/themes/beats benefit
+        # from the smarter model and they're cached after the first call.
         self._arc_ai.chat(msg, self.ui_queue,
                           on_reply=on_reply, on_error=on_error,
                           story_context=full_ctx,
                           _system_override=SYSTEM_ARC_CHAT,
-                          model_override=self._main_ai.model)
-
-    def set_script(self, script: 'ScriptData'):
-        """Re-point at a new ScriptData after the main window loads a file.
-        (As a floating dialog this class was recreated per open; as an
-        embedded tab it lives forever, so it must follow script swaps.)"""
-        self.script = script
-        self._current_arc_id = None
-        self._clear_fields()
-        self._refresh_arc_list()
-        if self.script.arcs:
-            first_id = next(iter(self.script.arcs))
-            self._current_arc_id = first_id
-            self._load_arc(first_id)
-            self._refresh_arc_list()
-
-    # Embedded guard: QDialog hides itself on accept/reject (incl. the
-    # Escape key) — as a tab page that would blank the tab.
-    def accept(self):
-        if not self._embedded:
-            super().accept()
-
-    def reject(self):
-        if not self._embedded:
-            super().reject()
+                          model_override='claude-opus-4-6')
 
     def closeEvent(self, event):
         self._save_current()
@@ -11487,13 +6939,13 @@ class StoryContextChatDialog(QDialog):
             self._status.setText(f"Error: {err[:80]}")
             self._append_system(f"Error: {err[:200]}")
 
-        # The chat follows the AI Model menu selection (pick Opus in the
-        # Story ▸ AI Model menu when drafting the bible warrants it).
+        # Force Opus for story-context drafting — quality matters far more
+        # than speed for the world bible, and it gets cached anyway.
         self._call_start_time = time.time()
         self._update_thinking_status()
         self._ai.chat_context(self._history, msg_to_send,
                               self._ui_queue, on_done, on_error,
-                              model_override=self._ai.model)
+                              model_override='claude-opus-4-6')
 
     def _on_commit(self):
         """REPLACE: parent overwrites context with the latest reply."""
@@ -11542,9 +6994,9 @@ class StoryContextChatDialog(QDialog):
         if self._call_start_time is None:
             return
         elapsed = time.time() - self._call_start_time
+        # Use Opus name explicitly so the user knows why it's slower.
         self._status.setText(
-            f"Claude ({_model_short_name(self._ai.model)}) is thinking… "
-            f"{elapsed:0.0f}s"
+            f"Claude (Opus) is thinking… {elapsed:0.0f}s"
         )
 
 
@@ -11608,16 +7060,13 @@ class MainWindow(QMainWindow):
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
         self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
                                     self._on_graph_generated,
-                                    on_nodes_incremental=self._add_nodes_incremental,
-                                    register_orchestrator=self._register_orchestrator)
+                                    on_nodes_incremental=self._add_nodes_incremental)
         self.play_panel.set_context(self.script, self.ui_queue)
 
         # Connect props signals
         self.props_panel.node_modified.connect(self._on_node_modified)
 
-        # QTimer to drain ui_queue. See _drain_queue for why the reentrancy
-        # flag exists — it is crash-critical, not defensive tidying.
-        self._draining = False
+        # QTimer to drain ui_queue
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(50)
         self._drain_timer.timeout.connect(self._drain_queue)
@@ -11635,16 +7084,8 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # NodeGraphQt graph. Narrative graphs are legitimately CYCLIC
-        # (loops, junction drift, callbacks), so acyclic enforcement must
-        # be off: NodeGraphQt's acyclic_check has no visited-set — on a
-        # graph that already contains a cycle its BFS re-queues the cycle
-        # FOREVER, freezing the main thread on the next connect_to (this
-        # hung Weave Junctions' apply step; py-spy showed acyclic_check
-        # pinned). It also silently refuses cycle-closing edges, dropping
-        # woven links from the view.
+        # NodeGraphQt graph
         self.graph = NodeGraph()
-        self.graph.set_acyclic(False)
         self.graph.register_node(NarrativeNode)
         graph_widget = self.graph.widget
 
@@ -11796,40 +7237,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
 
-        # ── Main tabs: Graph | Codex | Stories | Web Planner | Canon ─────
-        # The codex / stories / web sections used to be modeless floating
-        # dialogs opened from the Story menu — hard to move between. They
-        # are now persistent tab pages beside the graph; the old menu
-        # entries (and their shortcuts) jump to the matching tab.
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.addTab(splitter, "Graph")
-
-        self.codex_panel = CodexDialog(self, self.script, self.ai,
-                                       self.ui_queue, embedded=True)
-        self.tabs.addTab(self.codex_panel, "Codex")
-
-        self.stories_panel = ArcEditorDialog(
-            self.script, self.ai, self.ui_queue,
-            on_graph_generated=self._on_graph_generated,
-            register_orchestrator=self._register_orchestrator,
-            embedded=True)
-        self.tabs.addTab(self.stories_panel, "Stories")
-
-        self.web_panel = WebPlannerDialog(self, self.script, self.ai,
-                                          self.ui_queue, embedded=True)
-        self.tabs.addTab(self.web_panel, "Web Planner")
-
-        self.canon_panel = CanonEventsPanel(self, self.script)
-        self.tabs.addTab(self.canon_panel, "Canon Events")
-
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        # Back-compat aliases (older commands/tests reach these names)
-        self._codex_dlg = self.codex_panel
-        self._arc_dlg = self.stories_panel
-        self._web_dlg = self.web_panel
-
-        main_layout.addWidget(self.tabs)
+        main_layout.addWidget(splitter)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -11907,39 +7315,10 @@ class MainWindow(QMainWindow):
 
         # Story menu
         story_menu = menubar.addMenu("Story")
-        act_codex = QAction("Codex Tab", self)
-        act_codex.setShortcut("Ctrl+Shift+E")
-        act_codex.setToolTip(
-            "Entity cards for recurring concepts — characters, locations, "
-            "events, themes, ideas, objects. Slugs double as node tags.")
-        act_codex.triggered.connect(self._cmd_open_codex)
-        story_menu.addAction(act_codex)
-
-        act_arcs = QAction("Stories Tab", self)
+        act_arcs = QAction("Story Arcs…", self)
         act_arcs.setShortcut("Ctrl+Shift+R")
-        act_arcs.setToolTip(
-            "Story cards: premise, cast (codex entities), and a flexible "
-            "beat structure — v2's generalization of arcs.")
         act_arcs.triggered.connect(self._cmd_open_arc_editor)
         story_menu.addAction(act_arcs)
-
-        act_web = QAction("Web Planner Tab", self)
-        act_web.setShortcut("Ctrl+Shift+W")
-        act_web.setToolTip(
-            "The story web: typed relations between stories, AI web "
-            "proposals, junction weaving (cross-story drift edges), and "
-            "callback weaving.")
-        act_web.triggered.connect(self._cmd_open_web_planner)
-        story_menu.addAction(act_web)
-
-        act_canon = QAction("Canon Events Tab", self)
-        act_canon.setShortcut("Ctrl+Shift+N")
-        act_canon.setToolTip(
-            "The cross-story ledger: events extracted from generated "
-            "stories, injected into casting stories' prompts. Promote an "
-            "event to a codex entity to make it castable.")
-        act_canon.triggered.connect(self._cmd_open_canon_events)
-        story_menu.addAction(act_canon)
 
         act_ctx = QAction("Story Context…", self)
         act_ctx.setShortcut("Ctrl+Shift+C")
@@ -12024,11 +7403,12 @@ class MainWindow(QMainWindow):
         story_menu.addSeparator()
         model_menu = story_menu.addMenu("AI Model")
         self._model_actions = {}
-        for model_id, short in [
-            (MODEL_SONNET, 'Sonnet 5'),
-            (MODEL_OPUS,   'Opus 5'),
-            (MODEL_FABLE,  'Fable 5'),
+        for model_id in [
+            'claude-sonnet-4-6',
+            'claude-opus-4-6',
+            'claude-haiku-4-5-20251001',
         ]:
+            short = model_id.split('-')[1].capitalize()  # Sonnet / Opus / Haiku
             act = QAction(short, self, checkable=True)
             act.setData(model_id)
             act.triggered.connect(lambda checked, m=model_id: self._set_ai_model(m))
@@ -12057,43 +7437,12 @@ class MainWindow(QMainWindow):
         if default_think:
             default_think.setChecked(True)
 
-        story_menu.addSeparator()
-        act_stop = QAction("Stop AI Generation", self)
-        act_stop.setShortcut("Ctrl+Shift+G")
-        act_stop.setToolTip(
-            "Cancel every running generation job (full runs, expands, "
-            "continues). In-flight AI calls finish and are discarded.")
-        act_stop.triggered.connect(self._cmd_stop_generation)
-        story_menu.addAction(act_stop)
-
         # Analysis menu
         analysis_menu = menubar.addMenu("Analysis")
         act_freq = QAction("Toggle Frequency Heat Map", self)
         act_freq.setShortcut("Ctrl+Shift+A")
         act_freq.triggered.connect(lambda: self._freq_btn.setChecked(not self._freq_btn.isChecked()))
         analysis_menu.addAction(act_freq)
-
-        act_webstats = QAction("Web Statistics…", self)
-        act_webstats.setToolTip(
-            "Simulate 2000 listener walks and report per-story occupancy, "
-            "drift between stories, and which junction edges carry it.")
-        act_webstats.triggered.connect(self._cmd_web_statistics)
-        analysis_menu.addAction(act_webstats)
-
-        act_audit = QAction("Consistency Audit (AI)…", self)
-        act_audit.setToolTip(
-            "Check every story's node texts against its canon (entity cards "
-            "+ canon events). Read-only; reports issues to review.")
-        act_audit.triggered.connect(self._cmd_consistency_audit)
-        analysis_menu.addAction(act_audit)
-
-        act_seams = QAction("Seam Audit (AI)…", self)
-        act_seams.setToolTip(
-            "Listen-check edge transitions: every cross-story seam plus a "
-            "sample of in-story seams. Flags non-sequiturs and register "
-            "jumps; fix flagged children with AI Rewrite.")
-        act_seams.triggered.connect(self._cmd_seam_audit)
-        analysis_menu.addAction(act_seams)
 
         # Voice menu
         voice_menu = menubar.addMenu("Voice")
@@ -12102,42 +7451,28 @@ class MainWindow(QMainWindow):
         act_voice.triggered.connect(self._cmd_open_voice_settings)
         voice_menu.addAction(act_voice)
 
-    def _on_tab_changed(self, idx: int):
-        """Refresh the tab the user just switched to — the graph and the
-        section panels edit the same script, so counts/lists go stale.
-
-        DEFERRED: refreshing synchronously inside the currentChanged signal
-        rebuilt lists/scenes Qt was still dispatching events on — native
-        access-violation crashes on this machine (see crash.log)."""
-        w = self.tabs.widget(idx)
-        if w is self.codex_panel:
-            QTimer.singleShot(0, self.codex_panel._refresh_list)
-        elif w is self.stories_panel:
-            QTimer.singleShot(0, self.stories_panel._refresh_arc_list)
-        elif w is self.web_panel:
-            QTimer.singleShot(0, self.web_panel._refresh)
-        elif w is self.canon_panel:
-            QTimer.singleShot(0, self.canon_panel._refresh)
-        else:
-            self._update_title()   # story renames etc. reflect in title
-
-    def _cmd_open_codex(self):
-        # Refresh explicitly too — setCurrentWidget doesn't fire
-        # currentChanged when the tab is already current.
-        self.tabs.setCurrentWidget(self.codex_panel)
-        self.codex_panel._refresh_list()
-
-    def _cmd_open_web_planner(self):
-        self.tabs.setCurrentWidget(self.web_panel)
-        self.web_panel._refresh()
-
-    def _cmd_open_canon_events(self):
-        self.tabs.setCurrentWidget(self.canon_panel)
-        self.canon_panel._refresh()
-
     def _cmd_open_arc_editor(self):
-        self.tabs.setCurrentWidget(self.stories_panel)
-        self.stories_panel._refresh_arc_list()
+        # Modeless so the main editor stays interactive while the arc
+        # editor is open. If one is already open, raise/focus it instead
+        # of stacking duplicates.
+        existing = getattr(self, '_arc_dlg', None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dlg = ArcEditorDialog(self.script, self.ai, self.ui_queue,
+                              on_graph_generated=self._on_graph_generated,
+                              parent=self)
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        # Refresh title after the dialog closes (the user may have
+        # renamed arcs, etc).
+        dlg.finished.connect(lambda _result: self._update_title())
+        # Drop the reference once the window is destroyed so a fresh
+        # open creates a new dialog instead of resurrecting a dead one.
+        dlg.destroyed.connect(lambda *_: setattr(self, '_arc_dlg', None))
+        self._arc_dlg = dlg
+        dlg.show()
 
     def _set_script_width_preset(self, preset: str):
         """Apply the chosen Small/Medium/Large generation width to the
@@ -12412,8 +7747,8 @@ class MainWindow(QMainWindow):
         self.ai.model = model_id
         for mid, act in self._model_actions.items():
             act.setChecked(mid == model_id)
-        self.status_bar.showMessage(
-            f"AI model: {_model_short_name(model_id)}", 3000)
+        short = model_id.split('-')[1].capitalize()
+        self.status_bar.showMessage(f"AI model: {short}", 3000)
 
     def _set_ai_thinking(self, level: str):
         """Switch the extended-thinking level used for AI calls."""
@@ -12774,36 +8109,17 @@ class MainWindow(QMainWindow):
         self.voice_panel.setParent(None)
 
     def _drain_queue(self):
-        # CRASH-CRITICAL reentrancy guard. A queued callback may open a modal
-        # — _apply_web_proposal -> _pick_dialog -> _pick_checked -> dlg.exec(),
-        # a QMessageBox, a file dialog — and exec() spins a NESTED event loop.
-        # The 50ms drain timer keeps firing inside that loop, so without this
-        # flag _drain_queue re-enters ~20x/second while the outer fn() is still
-        # on the stack, running further callbacks that rebuild the graph and
-        # lists. Those rebuilds destroy Qt objects the outer frame and the open
-        # dialog still reference -> native access violation with no Python
-        # traceback. Same failure class as the _ZoomableMapView note above.
-        #
-        # Skipping is safe: nothing is dropped, the queue just drains on the
-        # next tick once the modal closes. Deferring UI mutations while a modal
-        # owns the screen is the behaviour we want anyway.
-        if self._draining:
-            return
-        self._draining = True
-        try:
-            while True:
-                try:
-                    fn = self.ui_queue.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    fn()
-                except Exception as exc:
-                    import traceback
-                    traceback.print_exc()
-                    self.status_bar.showMessage(f"Error: {exc}")
-        finally:
-            self._draining = False
+        while True:
+            try:
+                fn = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self.status_bar.showMessage(f"Error: {exc}")
 
     # ── NodeGraph signal handlers ────────────────────────────────────────────
 
@@ -13153,28 +8469,6 @@ class MainWindow(QMainWindow):
             act_connect = menu.addAction("Connect to…")
             act_connect.triggered.connect(lambda: self._cmd_start_connect(node_id))
 
-            # Assign node(s) to a story (v2) — applies to the whole selection
-            # when the clicked node is part of it. Nodes without a story are
-            # invisible to cast-aware generation and the web weaving passes.
-            if self.script.arcs:
-                sel = self._get_selected_node_ids()
-                targets = sel if (len(sel) > 1 and node_id in sel) else [node_id]
-                label = (f"Assign to Story ({len(targets)} selected) →"
-                         if len(targets) > 1 else "Assign to Story →")
-                story_menu = menu.addMenu(label)
-                current = self.script.get_node_arc_id(node_id)
-                for arc_id, arc in self.script.arcs.items():
-                    name = arc.get('name') or arc_id
-                    mark = '● ' if arc_id == current else '   '
-                    act_s = story_menu.addAction(mark + name)
-                    act_s.triggered.connect(
-                        lambda _=False, a=arc_id, ts=list(targets):
-                            self._cmd_assign_story(ts, a))
-                act_none = story_menu.addAction('   (no story)')
-                act_none.triggered.connect(
-                    lambda _=False, ts=list(targets):
-                        self._cmd_assign_story(ts, ''))
-
             nexts = self.script.nodes.get(node_id, {}).get('next', [])
             if nexts:
                 del_conn_menu = menu.addMenu("Delete Connection →")
@@ -13239,21 +8533,6 @@ class MainWindow(QMainWindow):
             menu.addAction(act_fit)
 
         menu.exec(global_pos)
-
-    def _cmd_assign_story(self, node_ids: list, arc_id: str):
-        """Set arc_id on the given nodes (''=none). Story membership drives
-        node coloring, cast-aware generation, and the web weaving passes."""
-        n = 0
-        for nid in node_ids:
-            if nid in self.script.nodes:
-                self.script.set_node_arc_id(nid, arc_id)
-                self._refresh_node(nid)
-                n += 1
-        name = (self.script.arcs.get(arc_id, {}).get('name') or arc_id) \
-            if arc_id else 'no story'
-        self.status_bar.showMessage(f"Assigned {n} node(s) to {name}.")
-        if self._selected_node_id and self._selected_node_id in node_ids:
-            self.props_panel.load_node(self.script, self._selected_node_id)
 
     def _select_node(self, node_id: str):
         node = self._node_items.get(node_id)
@@ -13750,7 +9029,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.append_message("assistant",
             f"[Parallel {'merge-expand' if multi else 'expand'} {label} ({node_min}-{node_max} nodes)]")
 
-        # Expand profile with the user's min/max as the width for every beat
+        # Override the expand profile's width with the user's min/max
         expand_profile = {
             'max_depth': 2,
             'widths': {'*': (node_min, node_max)},
@@ -13765,7 +9044,7 @@ class MainWindow(QMainWindow):
                 ui_queue=self.ui_queue,
                 model=self.ai.model,
                 thinking=self.ai.thinking,
-                profile=expand_profile,
+                profile='expand',
                 story_context=self.script.story_context_focused,
                 variables=self.script.variables,
                 on_progress=lambda msg: self.status_bar.showMessage(f"[{jt}] {msg}"),
@@ -13775,7 +9054,8 @@ class MainWindow(QMainWindow):
             return o
 
         orch = _make_expand_orch(job_tag)
-        self._register_orchestrator(orch)
+        orch._profile = expand_profile
+        self._orchestrators.append(orch)
         if multi:
             orch.start_merged(parent_ids, batch_size=random.randint(node_min, node_max))
         else:
@@ -13823,161 +9103,11 @@ class MainWindow(QMainWindow):
             return o
 
         orch = _make_continue_orch(job_tag)
-        self._register_orchestrator(orch)
+        self._orchestrators.append(orch)
         if multi:
             orch.start_merged(parent_ids)
         else:
             orch.start(parent_ids)
-
-    # ── Seam audit (flow naturalness) ───────────────────────────────────────
-
-    def _collect_seams(self, max_seams: int = 120) -> list:
-        """Seams to audit as (from_id, to_id, cross_story). Every cross-story
-        edge is included (junctions and bridges are the riskiest seams);
-        same-story edges fill the remaining budget as an even sample."""
-        cross, intra = [], []
-        for nid, nd in self.script.nodes.items():
-            if not nd.get('text'):
-                continue
-            fa = self.script.get_node_arc_id(nid)
-            for tgt in nd.get('next', []):
-                tnd = self.script.nodes.get(tgt)
-                if not tnd or not tnd.get('text'):
-                    continue
-                ta = self.script.get_node_arc_id(tgt)
-                if fa != ta and fa and ta:
-                    cross.append((nid, tgt, True))
-                else:
-                    intra.append((nid, tgt, False))
-        seams = cross[:max_seams]
-        room = max_seams - len(seams)
-        if room > 0 and intra:
-            step = max(1, len(intra) // room)
-            seams += intra[::step][:room]
-        return seams
-
-    def _cmd_seam_audit(self):
-        """AI pass: listen-check transitions between connected nodes.
-        Read-only — reports jarring seams; fix via AI Rewrite on the child."""
-        if not self.ai.ready:
-            self.status_bar.showMessage("claude CLI not found")
-            return
-        if getattr(self, '_seam_audit_running', False):
-            self.status_bar.showMessage("Seam audit already running")
-            return
-        seams = self._collect_seams()
-        if not seams:
-            self.status_bar.showMessage("No seams to audit — no connected nodes with text.")
-            return
-
-        # Chunk into calls; build every prompt on the UI thread.
-        CHUNK = 30
-        valid_edges = {(a, b) for a, b, _ in seams}
-        chunks = []
-        for i in range(0, len(seams), CHUNK):
-            lines = [f'SEAMS ({i + 1}-{min(i + CHUNK, len(seams))} of {len(seams)}):']
-            for a, b, is_cross in seams[i:i + CHUNK]:
-                pa = self.script.nodes[a].get('text', '')
-                pb = self.script.nodes[b].get('text', '')
-                marker = '  [CROSS-STORY]' if is_cross else ''
-                lines.append(f'- {a} → {b}{marker}')
-                lines.append(f'    parent ending: "…{pa[-220:]}"')
-                lines.append(f'    child opening: "{pb[:220]}…"')
-            lines.append('\nAudit these seams now. Output the JSON object only.')
-            chunks.append('\n'.join(lines))
-
-        self._seam_audit_running = True
-        n_cross = sum(1 for _, _, c in seams if c)
-        self.status_bar.showMessage(
-            f"Seam audit: {len(seams)} seam(s) ({n_cross} cross-story) in "
-            f"{len(chunks)} call(s)…")
-
-        def run():
-            def one(prompt):
-                data = self.ai._run_claude_json(SYSTEM_SEAM_AUDIT, prompt,
-                                                max_retries=2)
-                out = []
-                for iss in (data.get('issues') or []):
-                    if not isinstance(iss, dict):
-                        continue
-                    a, b = iss.get('from'), iss.get('to')
-                    if (a, b) not in valid_edges:
-                        continue
-                    sev = 'hard' if iss.get('severity') == 'hard' else 'soft'
-                    out.append((a, b, sev, str(iss.get('reason') or '')[:300]))
-                return out
-
-            def prog(done_n, total):
-                self.ui_queue.put(
-                    lambda d=done_n, n=total: self.status_bar.showMessage(
-                        f"Seam audit… {d}/{n} batch(es) done"))
-
-            results = _fan_out_ai_calls(chunks, one, prog)
-            issues = [iss for r in results if r for iss in r]
-
-            def done():
-                self._seam_audit_running = False
-                self._show_seam_results(issues, len(seams))
-            self.ui_queue.put(done)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _show_seam_results(self, issues: list, n_checked: int):
-        if not issues:
-            self.status_bar.showMessage(
-                f"Seam audit: all {n_checked} checked seam(s) read clean.")
-            return
-        arc_of = self.script.get_node_arc_id
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Seam Audit — {len(issues)} rough seam(s) "
-                           f"of {n_checked} checked")
-        dlg.setWindowFlags(dlg.windowFlags() | Qt.Window)
-        dlg.resize(780, 520)
-        v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(
-            "Double-click a seam to select its CHILD node (the usual fix: "
-            "AI Rewrite its opening to pick up the parent's thread). The "
-            "audit changes nothing itself."))
-        lst = QListWidget()
-        for a, b, sev, reason in sorted(issues, key=lambda x: x[2] != 'hard'):
-            cross = ' [cross-story]' if (arc_of(a) != arc_of(b)
-                                         and arc_of(a) and arc_of(b)) else ''
-            item = QListWidgetItem(
-                f"[{sev.upper()}] {a} → {b}{cross}\n    {reason}")
-            item.setData(Qt.ItemDataRole.UserRole, b)
-            item.setForeground(QColor('#ff7060' if sev == 'hard' else '#e0b050'))
-            lst.addItem(item)
-        lst.itemDoubleClicked.connect(
-            lambda item: self._select_node(item.data(Qt.ItemDataRole.UserRole)))
-        v.addWidget(lst, stretch=1)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        btn = QPushButton("Close")
-        btn.clicked.connect(dlg.accept)
-        row.addWidget(btn)
-        v.addLayout(row)
-        dlg.show()   # modeless so double-click selection stays usable
-        self._seam_dlg = dlg
-
-    def _register_orchestrator(self, orch):
-        """Track a generation run so Stop AI Generation can cancel it.
-        All entry paths (chat panel, Stories dialog, expand, continue)
-        register here. Finished runs are pruned opportunistically."""
-        self._orchestrators = [o for o in self._orchestrators if o.running]
-        self._orchestrators.append(orch)
-
-    def _cmd_stop_generation(self):
-        """Cancel every running generation job."""
-        active = [o for o in self._orchestrators if o.running]
-        self._orchestrators = []
-        if not active:
-            self.status_bar.showMessage("No AI generation running.")
-            return
-        for o in active:
-            o.cancel()
-        self.status_bar.showMessage(
-            f"Cancelled {len(active)} generation job(s) — in-flight calls "
-            "finish in the background and are discarded.")
 
     def _on_orchestrator_complete(self, orch, job_tag: str, verb: str):
         """Called when any orchestrator finishes. Cleans up and refreshes UI."""
@@ -13995,34 +9125,16 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._cmd_apply_tree_layout()
 
-    def _run_frequency_simulation(self, n_runs: int = 2000,
-                                  web_stats: Optional[dict] = None) -> dict:
+    def _run_frequency_simulation(self, n_runs: int = 2000) -> dict:
         """Monte Carlo random walk with recency damping.
 
         Estimates each node's audio duration from word count (121 wpm) plus a
         3 s inter-node delay.  Tracks simulated time so recency counters decay
         at the same rate as the real player (1 count per 36000 s / 10 hours).
-
-        Pass a dict as `web_stats` to additionally collect story-level
-        statistics (v2 Phase 4): per-story visit occupancy, walk starts by
-        story, story-boundary crossings with the edges that carried them,
-        and how many walks drifted through 2+ stories.
         """
         nodes = self.script.nodes
         starts = self.script.start_nodes or list(nodes.keys())
         counts = {nid: 0 for nid in nodes}
-
-        arc_map = None
-        if web_stats is not None:
-            arc_map = {nid: self.script.get_node_arc_id(nid) for nid in nodes}
-            web_stats.update({
-                'walks': n_runs,
-                'occupancy': defaultdict(int),      # arc_id ('' = none) -> visits
-                'starts': defaultdict(int),         # arc_id -> walk starts
-                'transitions': defaultdict(int),    # (from_arc, to_arc) -> crossings
-                'edge_usage': defaultdict(int),     # (from_nid, to_nid) -> crossings
-                'drift_walks': 0,                   # walks visiting 2+ stories
-            })
 
         INTER_NODE_DELAY = 3.0          # seconds between nodes
         WPM              = 121.0        # measured speech rate
@@ -14039,18 +9151,10 @@ class MainWindow(QMainWindow):
             steps = 0
             recency: dict = {}
             sim_time = 0.0
-            walk_stories: set = set()
-            if web_stats is not None:
-                web_stats['starts'][arc_map.get(current, '')] += 1
             while current and steps < 300:
                 if current not in nodes:
                     break
                 counts[current] += 1
-                if web_stats is not None:
-                    cur_arc = arc_map.get(current, '')
-                    web_stats['occupancy'][cur_arc] += 1
-                    if cur_arc:
-                        walk_stories.add(cur_arc)
 
                 # Advance simulated clock and decay recency
                 dt = node_dur.get(current, INTER_NODE_DELAY)
@@ -14090,16 +9194,8 @@ class MainWindow(QMainWindow):
                     if r <= acc:
                         nxt = nid
                         break
-                if web_stats is not None and nxt in nodes:
-                    next_arc = arc_map.get(nxt, '')
-                    if next_arc != arc_map.get(current, ''):
-                        web_stats['transitions'][
-                            (arc_map.get(current, ''), next_arc)] += 1
-                        web_stats['edge_usage'][(current, nxt)] += 1
                 current = nxt
                 steps += 1
-            if web_stats is not None and len(walk_stories) >= 2:
-                web_stats['drift_walks'] += 1
         return counts
 
     def _cmd_frequency_analysis(self, active: bool):
@@ -14128,228 +9224,6 @@ class MainWindow(QMainWindow):
         if self._freq_btn.isChecked():
             self._freq_counts = self._run_frequency_simulation(2000)
             self._apply_frequency_heat()
-
-    # ── Web statistics (v2 Phase 4) ─────────────────────────────────────────
-
-    def _cmd_web_statistics(self):
-        """Story-level Monte Carlo report: occupancy per story, walk starts,
-        drift rate, and which edges carry story-boundary crossings."""
-        if not self.script.nodes:
-            self.status_bar.showMessage("No nodes to analyse")
-            return
-        N_RUNS = 2000
-        stats: dict = {}
-        counts = self._run_frequency_simulation(N_RUNS, web_stats=stats)
-
-        def sname(arc_id):
-            if not arc_id:
-                return '(no story)'
-            return self.script.arcs.get(arc_id, {}).get('name') or arc_id
-
-        story_nodes = defaultdict(int)
-        for nid in self.script.nodes:
-            story_nodes[self.script.get_node_arc_id(nid)] += 1
-
-        total_visits = sum(stats['occupancy'].values()) or 1
-        lines = [f'Web statistics — {N_RUNS} simulated walks, '
-                 f'{sum(counts.values())} node visits',
-                 f'{len(self.script.arcs)} stor'
-                 f'{"y" if len(self.script.arcs) == 1 else "ies"}, '
-                 f'{len(self.script.nodes)} nodes, '
-                 f'{len(self.script.all_story_relations())} relation(s)', '']
-
-        lines.append('Occupancy (share of all node visits):')
-        for arc_id, v in sorted(stats['occupancy'].items(),
-                                key=lambda kv: -kv[1]):
-            lines.append(f'  {v / total_visits * 100:5.1f}%  {sname(arc_id)}'
-                         f'  ({story_nodes.get(arc_id, 0)} nodes)')
-        # stories that never got visited at all
-        for arc_id in self.script.arcs:
-            if arc_id not in stats['occupancy']:
-                lines.append(f'    0.0%  {sname(arc_id)}'
-                             f'  ({story_nodes.get(arc_id, 0)} nodes) — unreachable')
-        lines.append('')
-
-        lines.append('Walk starts by story:')
-        for arc_id, v in sorted(stats['starts'].items(), key=lambda kv: -kv[1]):
-            lines.append(f'  {v / N_RUNS * 100:5.1f}%  {sname(arc_id)}')
-        lines.append('')
-
-        drift_pct = stats['drift_walks'] / max(1, stats['walks']) * 100
-        lines.append(f'Drift: {drift_pct:.1f}% of walks visited 2+ stories.')
-        lines.append('')
-
-        if stats['transitions']:
-            arc_of = {nid: self.script.get_node_arc_id(nid)
-                      for nid in self.script.nodes}
-            edges_by_pair = defaultdict(list)
-            for (a, b), n in stats['edge_usage'].items():
-                edges_by_pair[(arc_of.get(a, ''), arc_of.get(b, ''))].append(
-                    (a, b, n))
-            lines.append('Story boundary crossings:')
-            for (fa, ta), n in sorted(stats['transitions'].items(),
-                                      key=lambda kv: -kv[1]):
-                lines.append(f'  {sname(fa)} → {sname(ta)}: {n} crossing(s)')
-                for a, b, en in sorted(edges_by_pair.get((fa, ta), []),
-                                       key=lambda x: -x[2])[:6]:
-                    lines.append(f'      {a} → {b}   ({en})')
-        else:
-            lines.append('No story boundary crossings — the stories are '
-                         'isolated. Add junction relations in the Web Planner '
-                         'and run Weave Junctions to connect them.')
-
-        n_un = story_nodes.get('', 0)
-        if n_un and len(self.script.arcs) > 0:
-            lines += ['', f'! {n_un} node(s) have no story — right-click → '
-                          'Assign to Story to include them in the web.']
-
-        # Ending reachability — a walk entering one of these nodes can
-        # NEVER finish (no path to a terminal; recency can't escape a
-        # pocket with no exit).
-        trapped = self.script.nodes_that_cannot_end()
-        lines.append('')
-        if trapped:
-            by_story = defaultdict(list)
-            for nid in trapped:
-                by_story[self.script.get_node_arc_id(nid)].append(nid)
-            lines.append(f'!! {len(trapped)} node(s) can NEVER reach an '
-                         'ending — walks entering them are trapped forever:')
-            for arc_id, nids in sorted(by_story.items(),
-                                       key=lambda kv: -len(kv[1])):
-                sample = ', '.join(sorted(nids)[:5])
-                more = f' … +{len(nids) - 5}' if len(nids) > 5 else ''
-                lines.append(f'    {sname(arc_id)}: {len(nids)} — '
-                             f'{sample}{more}')
-            lines.append('    Fix: give the loop an exit edge toward a '
-                         'terminal node, or a terminal of its own.')
-        else:
-            lines.append('Ending reachability: OK — every node can reach '
-                         'a terminal.')
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Web Statistics")
-        dlg.resize(700, 560)
-        v = QVBoxLayout(dlg)
-        te = QTextEdit()
-        te.setReadOnly(True)
-        te.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
-        te.setPlainText('\n'.join(lines))
-        v.addWidget(te, stretch=1)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        btn = QPushButton("Close")
-        btn.clicked.connect(dlg.accept)
-        row.addWidget(btn)
-        v.addLayout(row)
-        dlg.exec()
-
-    # ── Consistency audit (v2 Phase 4) ──────────────────────────────────────
-
-    def _cmd_consistency_audit(self):
-        """AI pass: check every story's node texts against its canon (entity
-        cards + canon events). Read-only — reports issues, changes nothing."""
-        if not self.ai.ready:
-            self.status_bar.showMessage("claude CLI not found")
-            return
-        if getattr(self, '_audit_running', False):
-            self.status_bar.showMessage("Audit already running")
-            return
-        jobs = []
-        for arc_id, arc in self.script.arcs.items():
-            story_nodes = [(nid, nd) for nid, nd in self.script.nodes.items()
-                           if self.script.get_node_arc_id(nid) == arc_id
-                           and nd.get('text')]
-            if not story_nodes:
-                continue
-            cast_codex = self.script.cast_codex_for(arc_id)
-            if not cast_codex:
-                continue   # no canon to audit against
-            system = self.ai._augment_system_with_context(
-                SYSTEM_CONSISTENCY_AUDIT, '', cast_codex=cast_codex)
-            parts = [f'STORY "{arc.get("name") or arc_id}":\n'
-                     f'  premise: {(arc.get("premise") or "")[:600]}']
-            tl = ['NODE TEXTS:']
-            for nid, nd in story_nodes[:60]:
-                tl.append(f'  [{nid}] "{nd.get("text", "")[:400]}"')
-            parts.append('\n'.join(tl))
-            parts.append('Audit the nodes now. Output the JSON object only.')
-            jobs.append((arc.get('name') or arc_id, system,
-                         '\n\n'.join(parts), {nid for nid, _ in story_nodes}))
-        if not jobs:
-            self.status_bar.showMessage(
-                "Nothing to audit — no story has both nodes and a codex.")
-            return
-        self._audit_running = True
-        self.status_bar.showMessage(
-            f"Consistency audit: {len(jobs)} stor"
-            f"{'y' if len(jobs) == 1 else 'ies'}…")
-
-        def run():
-            def one(job):
-                name, system, prompt, valid = job
-                data = self.ai._run_claude_json(system, prompt, max_retries=2)
-                out = []
-                for iss in (data.get('issues') or []):
-                    if not isinstance(iss, dict):
-                        continue
-                    nid = iss.get('node_id')
-                    if nid not in valid:
-                        continue
-                    sev = 'hard' if iss.get('severity') == 'hard' else 'soft'
-                    out.append((name, nid, sev,
-                                str(iss.get('claim') or '')[:300],
-                                str(iss.get('conflicts_with') or '')[:300]))
-                return out
-
-            def prog(done_n, total):
-                self.ui_queue.put(
-                    lambda d=done_n, n=total: self.status_bar.showMessage(
-                        f"Consistency audit… {d}/{n} stories done"))
-
-            results = _fan_out_ai_calls(jobs, one, prog)
-            issues = [iss for r in results if r for iss in r]
-
-            def done():
-                self._audit_running = False
-                self._show_audit_results(issues)
-            self.ui_queue.put(done)
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _show_audit_results(self, issues: list):
-        if not issues:
-            self.status_bar.showMessage(
-                "Consistency audit: no canon conflicts found.")
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Consistency Audit — {len(issues)} issue(s)")
-        dlg.setWindowFlags(dlg.windowFlags() | Qt.Window)
-        dlg.resize(780, 540)
-        v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(
-            "Double-click an issue to select its node on the graph. The audit "
-            "never edits anything — fix by hand or with AI Rewrite."))
-        lst = QListWidget()
-        for name, nid, sev, claim, conflict in sorted(
-                issues, key=lambda x: (x[2] != 'hard', x[0])):
-            item = QListWidgetItem(
-                f"[{sev.upper()}] {nid}   ({name})\n"
-                f"    claim: {claim}\n"
-                f"    conflicts with: {conflict}")
-            item.setData(Qt.ItemDataRole.UserRole, nid)
-            item.setForeground(QColor('#ff7060' if sev == 'hard' else '#e0b050'))
-            lst.addItem(item)
-        lst.itemDoubleClicked.connect(
-            lambda item: self._select_node(item.data(Qt.ItemDataRole.UserRole)))
-        v.addWidget(lst, stretch=1)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        btn = QPushButton("Close")
-        btn.clicked.connect(dlg.accept)
-        row.addWidget(btn)
-        v.addLayout(row)
-        dlg.show()   # modeless so double-click node selection stays usable
-        self._audit_dlg = dlg
 
     def _detect_cycles(self) -> set:
         """Return the set of node IDs that participate in at least one cycle (DFS)."""
@@ -14752,11 +9626,6 @@ class MainWindow(QMainWindow):
 
     def _cmd_save(self):
         self._sync_positions()
-        # Flush the Stories tab BEFORE saving: a legacy arc materializes
-        # its structure/cast fields on first flush, and that must land in
-        # this save — otherwise the close-time flush re-dirties the script
-        # right after Ctrl+S and quit prompts about "unsaved changes".
-        self.stories_panel._save_current()
         if self.script.path:
             try:
                 self.script.save()
@@ -14770,7 +9639,6 @@ class MainWindow(QMainWindow):
 
     def _cmd_save_as(self):
         self._sync_positions()
-        self.stories_panel._save_current()   # see _cmd_save
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Script", str(SOUNDS_DIR), "JSON files (*.json)"
         )
@@ -14838,8 +9706,7 @@ class MainWindow(QMainWindow):
         self.voice_panel.set_context(self.script, self.vm, self.ui_queue, self.props_panel)
         self.chat_panel.set_context(self.script, self.ai, self.ui_queue,
                                     self._on_graph_generated,
-                                    on_nodes_incremental=self._add_nodes_incremental,
-                                    register_orchestrator=self._register_orchestrator)
+                                    on_nodes_incremental=self._add_nodes_incremental)
         self.play_panel.set_context(self.script, self.ui_queue)
         # Re-sync the Node Length / Width submenus to the newly-loaded script
         self._refresh_node_length_checks()
@@ -14847,11 +9714,6 @@ class MainWindow(QMainWindow):
         # The trigger-state options come from the script's weather set,
         # so the bulk-apply button's enabled-state may change.
         self._update_apply_trigger_btn()
-        # Re-point the section tabs at the new ScriptData.
-        self.codex_panel.set_script(self.script)
-        self.stories_panel.set_script(self.script)
-        self.web_panel.set_script(self.script)
-        self.canon_panel.set_script(self.script)
 
     def _update_title(self):
         if self.script.path:
@@ -14859,7 +9721,7 @@ class MainWindow(QMainWindow):
         else:
             name = self.script.name or "New Script"
         dirty = "*" if self.script.dirty else ""
-        self.setWindowTitle(f"Narrative Editor v2 — {name}{dirty}")
+        self.setWindowTitle(f"Narrative Editor — {name}{dirty}")
 
         nodes = self.script.nodes
         n = len(nodes)
@@ -14876,9 +9738,6 @@ class MainWindow(QMainWindow):
         self._stat_duration.setText(f"~{dur_str} speech")
 
     def closeEvent(self, event):
-        # Flush any in-progress story-card edits before the dirty check
-        # (the Stories tab autosaves per keystroke, but be certain).
-        self.stories_panel._save_current()
         if self.script.dirty:
             reply = QMessageBox.question(
                 self, "Unsaved Changes",
@@ -14920,7 +9779,7 @@ def _install_diagnostics():
     # We keep the file handle open for the lifetime of the process.
     crash_fp = open(CRASH_LOG_PATH, "a", buffering=1, encoding="utf-8")
     crash_fp.write(
-        f"\n===== narrative_editor_v2 session start {_datetime.datetime.now().isoformat()} "
+        f"\n===== narrative_editor session start {_datetime.datetime.now().isoformat()} "
         f"pid={os.getpid()} =====\n"
     )
     faulthandler.enable(file=crash_fp, all_threads=True)

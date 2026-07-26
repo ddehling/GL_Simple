@@ -109,7 +109,7 @@ def _structure_wsl_command(music_dir, db):
     with open(tl, "w", encoding="utf-8") as f:
         json.dump(batch, f)
     py = os.environ.get("DJ_WSL_ALLIN1_PY", "$HOME/allin1/bin/python")
-    script = os.path.join(_REPO_ROOT, "tools", "dj_structure.py")
+    script = os.path.join(_REPO_ROOT, "tools", "dj", "dj_structure.py")
     cmd = (f'{py} "{_wsl_path(script)}" --tracklist "{_wsl_path(tl)}" '
            f'--results "{_wsl_path(rp)}"')
     return ("wsl.exe", ["-e", "bash", "-lc", cmd]), None
@@ -117,12 +117,12 @@ from lib.dj.brain import Brain, load_library
 from lib.dj.rhythm import seam_chips
 from lib.dj.themes import BUILTIN_THEMES, get_theme
 from lib.dj import setlist as SL
-from tools.djplanner.arcstrip import ArcStrip
-from tools.djplanner.seaminspector import SeamInspector
-from tools.djplanner.waveform import WaveformView
-from tools.djplanner.mixview import MixTimeline
-from tools.djplanner.deckmon import DeckMonitor
-from tools.djplanner.player import TrackPlayer, PlanPreview
+from tools.dj.planner.arcstrip import ArcStrip
+from tools.dj.planner.seaminspector import SeamInspector
+from tools.dj.planner.waveform import WaveformView
+from tools.dj.planner.mixview import MixTimeline
+from tools.dj.planner.deckmon import DeckMonitor
+from tools.dj.planner.player import TrackPlayer, PlanPreview
 
 RATE = 44100
 SECTION_COLORS = {
@@ -1192,7 +1192,7 @@ class LibraryTab(QWidget):
                     return
 
     def _play_track(self, t, start_s=0.0):
-        from tools.djplanner.player import TrackPlayer  # noqa: F401
+        from tools.dj.planner.player import TrackPlayer  # noqa: F401
         self.planner.claim_playback("library")
         self._select_playing_in_list(t)
         self.play_lbl.setText(f"decoding  {t.title[:40]}...")
@@ -1374,8 +1374,8 @@ class LibraryTab(QWidget):
     def run_scan(self, force=False, refine=False):
         if self._proc is not None:
             return
-        script = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "tools", "dj_scan.py")
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "dj", "dj_scan.py")
         args = [script, "--dir", self.planner.music_dir]
         if force:
             args.append("--force")
@@ -1462,8 +1462,8 @@ class LibraryTab(QWidget):
                 "Mood model not found - clone github.com/AMAAI-Lab/"
                 "Music2Emotion next to GL_Simple or set $DJ_MOOD_MODEL_DIR")
             return
-        script = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "tools", "dj_mood.py")
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "dj", "dj_mood.py")
         self._mood_proc = QProcess(self)
         self._mood_proc.setProcessChannelMode(
             QProcess.ProcessChannelMode.MergedChannels)
@@ -1553,7 +1553,7 @@ class LibraryTab(QWidget):
                 return
             program, args = cmd
         else:
-            script = os.path.join(_REPO_ROOT, "tools", "dj_structure.py")
+            script = os.path.join(_REPO_ROOT, "tools", "dj", "dj_structure.py")
             program, args = sys.executable, [script, "--dir",
                                              self.planner.music_dir]
         self._structure_proc = QProcess(self)
@@ -1625,8 +1625,8 @@ class LibraryTab(QWidget):
                 "stem renderer unavailable - pip install -r "
                 "requirements-dj-vocals.txt (torch + demucs)")
             return
-        script = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "tools", "dj_stems.py")
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "dj", "dj_stems.py")
         self._stems_proc = QProcess(self)
         self._stems_proc.setProcessChannelMode(
             QProcess.ProcessChannelMode.MergedChannels)
@@ -1767,13 +1767,13 @@ class LibraryTab(QWidget):
     def run_chroma(self):
         self._run_single_stage(
             {"name": "chroma",
-             "args": [os.path.join(_REPO_ROOT, "tools", "dj_chroma.py"),
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj", "dj_chroma.py"),
                       "--dir", self.planner.music_dir]})
 
     def run_rhythm(self):
         self._run_single_stage(
             {"name": "rhythm",
-             "args": [os.path.join(_REPO_ROOT, "tools", "dj_rhythm.py"),
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj", "dj_rhythm.py"),
                       "--dir", self.planner.music_dir]})
 
     def run_revocals(self):
@@ -1784,7 +1784,7 @@ class LibraryTab(QWidget):
             return
         self._run_single_stage(
             {"name": "vocal curves",
-             "args": [os.path.join(_REPO_ROOT, "tools", "dj_scan.py"),
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj", "dj_scan.py"),
                       "--dir", self.planner.music_dir, "--revocals"]})
 
     def _pipe_next(self):
@@ -1822,7 +1822,7 @@ class LibraryTab(QWidget):
             self._pipe_structure_import = False
             if mode == "native":
                 st["program"] = sys.executable
-                st["args"] = [os.path.join(_REPO_ROOT, "tools",
+                st["args"] = [os.path.join(_REPO_ROOT, "tools", "dj",
                                            "dj_structure.py"),
                               "--dir", self.planner.music_dir]
             elif mode == "wsl":
@@ -2721,7 +2721,7 @@ class SetTab(QWidget):
         self.status.setWordWrap(True)
         right.addWidget(self.status)
         # Conversational set-builder (Claude tool-loop over this same set).
-        from tools.djplanner.copilot_panel import CopilotPanel
+        from tools.dj.planner.copilot_panel import CopilotPanel
         self.copilot_panel = CopilotPanel(planner, self)
         self.copilot_panel.entriesApplied.connect(self._copilot_applied)
         right.addWidget(self.copilot_panel, 1)
@@ -4049,7 +4049,7 @@ class Planner(QMainWindow):
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
         try:
-            from tools.djplanner.discover import DiscoverTab
+            from tools.dj.planner.discover import DiscoverTab
             self.discover_tab = DiscoverTab(self)
             self.tabs.addTab(self.discover_tab, "Discover")
         except Exception as e:

@@ -233,7 +233,7 @@ class VocalAnalyzer:
 
 def curve_from_stems(db, track_id, samples):
     """(times, shares) derived from PRE-RENDERED stems on disk - the
-    separation already happened once (tools/dj_stems.py), so the vocal
+    separation already happened once (tools/dj/dj_stems.py), so the vocal
     share is a pure numpy ratio, no torch/model/GPU involved. None when
     stems are absent or unreadable (callers fall through to the model).
     The stems' lossy encode adds a ~2000-sample codec delay vs the mix -

@@ -37,7 +37,7 @@ audio:
   source: "linein"
   linein_device: ""     # name fragment of the wired input (empty = auto-pick a line/aux input)
   loopback_device: ""   # force a specific loopback/monitor by name (empty = auto per-OS)
-  device_name: "TONOR"  # Microphone device name when source: microphone (tools/sound_editor.py)
+  device_name: "TONOR"  # Microphone device name when source: microphone (tools/editors/sound_editor.py)
 
 dj:
   # Tempo engine for the decks. MEASURED on this machine (Intel N150,
