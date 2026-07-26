@@ -1687,11 +1687,13 @@ class LibraryTab(QWidget):
                                   "(or stop it) first")
             return
         from lib.dj import vocals, mood_ml
-        tools_dir = os.path.dirname(os.path.abspath(__file__))
         mdir = self.planner.music_dir
 
         def tool(n):
-            return os.path.join(tools_dir, n)
+            # The CLIs live in tools/dj/, NOT next to this file. Building
+            # this from dirname(__file__) is what silently broke every
+            # pipeline stage after the 2026-07-25 tools reorg.
+            return os.path.join(_REPO_ROOT, "tools", "dj", n)
         voc_ok = vocals.available()
         # NO --refine-grids here: tracks whose grid confidence stays low
         # after refinement would re-queue a full re-analysis on EVERY
@@ -1844,6 +1846,18 @@ class LibraryTab(QWidget):
             self._enrich.progress.connect(self._pipe_enrich_progress)
             self._enrich.finished_run.connect(self._pipe_enrich_done)
             self._enrich.start()
+            return
+        # A python interpreter handed a path that isn't there exits with
+        # code 2 - the SAME code the DJ tools use for "optional deps
+        # missing", so a mis-built script path used to report itself as
+        # "skipped (deps unavailable)" and the whole pipeline would run
+        # start-to-finish in a second having analyzed nothing (real bug
+        # after the tools reorg). Name it before we launch.
+        if (st.get("program", sys.executable) == sys.executable
+                and st.get("args") and not os.path.exists(st["args"][0])):
+            self._pipe_failed.append(f"{self._pipe_stage_name} "
+                                     f"(script missing: {st['args'][0]})")
+            self._pipe_next()
             return
         if st.get("scanfile"):
             # The scanner reports via the progress JSON, not PROGRESS
