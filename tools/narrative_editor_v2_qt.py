@@ -50,16 +50,22 @@ from typing import Dict, List, Optional
 # Must be set before any Qt or NodeGraphQt imports
 os.environ['QT_API'] = 'pyside6'
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent, QRectF
-from PySide6.QtGui import QColor, QPalette, QAction, QTextOption, QTextCursor, QPen, QBrush
+from PySide6.QtCore import (
+    Qt, QTimer, Signal, QObject, QEvent, QPoint, QRect, QRectF, QSize,
+)
+from PySide6.QtGui import (
+    QColor, QPalette, QAction, QFontMetrics, QTextOption,
+    QTextCursor, QPen, QBrush,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QFrame, QGraphicsItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QHBoxLayout, QInputDialog, QLabel, QLayout, QLineEdit,
     QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QStatusBar, QTabWidget, QTextEdit, QToolTip, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+    QSplitter, QStatusBar, QTabWidget, QTextEdit, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 from NodeGraphQt import NodeGraph, BaseNode
@@ -5098,6 +5104,173 @@ class NarrativeNode(BaseNode):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared layout helpers — keeping panels shrinkable
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two recurring shapes in this editor used to pin the whole window to a huge
+# minimum size, because QTabWidget's minimum is the MAX over every page —
+# one over-wide tab makes the entire app un-shrinkable:
+#
+#   1. A single-row QHBoxLayout of labelled action buttons. QPushButton's
+#      minimumSizeHint equals its sizeHint (buttons never elide), so a row
+#      of six controls had a ~1500px hard floor. FlowLayout wraps instead,
+#      dropping the floor to the widest single button.
+#   2. Status QLabels fed long progress strings. A plain QLabel's minimum
+#      grows with its text, so the layout visibly jumped mid-generation as
+#      messages arrived. ElidedLabel keeps a fixed footprint.
+
+class FlowLayout(QLayout):
+    """Left-to-right layout that wraps to a new line when it runs out of width.
+
+    Qt ships no wrapping layout; this is the canonical implementation from
+    the Qt "Flow Layout" example, trimmed to what we need. Minimum width is
+    the widest single item, so an action row collapses to two (or three)
+    rows on a narrow window instead of forcing the window wider.
+    """
+
+    def __init__(self, parent=None, margin=0, spacing=4):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+            # The host must ADVERTISE height-for-width or its parent layout
+            # never asks: it would hand the host a single row's worth of
+            # height and the wrapped rows would be clipped off the bottom.
+            policy = parent.sizePolicy()
+            policy.setHeightForWidth(True)
+            parent.setSizePolicy(policy)
+        self.setSpacing(spacing)
+        self._items: list = []
+
+    # No __del__ here on purpose: QLayout's own destructor frees the items,
+    # and this file has a history of shutdown-time access violations — one
+    # less Python destructor running against half-torn-down Qt objects.
+
+    def addItem(self, item):          # noqa: N802 (Qt override)
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):          # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):          # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):    # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):      # noqa: N802
+        return True
+
+    def heightForWidth(self, width):  # noqa: N802
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):      # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):               # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self):            # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def _do_layout(self, rect, test_only):
+        m = self.contentsMargins()
+        eff = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x, y = eff.x(), eff.y()
+        line_height = 0
+        space = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + space
+            if next_x - space > eff.right() and line_height > 0:
+                x = eff.x()
+                y = y + line_height + space
+                next_x = x + hint.width() + space
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + m.bottom()
+
+
+class ElidedLabel(QLabel):
+    """Single-line status label that never widens its parent layout.
+
+    Long AI-progress messages are elided to whatever width the layout
+    happens to give us, and the untruncated text becomes the tooltip. The
+    Ignored horizontal size policy is the load-bearing part: it makes
+    qSmartMinSize report a minimum width of 0, so the text can never push
+    the window's minimum size around as messages stream in.
+    """
+
+    def __init__(self, text: str = '', parent=None):
+        super().__init__('', parent)
+        self._full_text = ''
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Fixed)
+        self.setText(text)
+
+    def setText(self, text: str):     # noqa: N802
+        self._full_text = text or ''
+        self.setToolTip(self._full_text)
+        self._apply_elide()
+
+    def text(self) -> str:
+        """The untruncated text — what callers set, not what's on screen."""
+        return self._full_text
+
+    def resizeEvent(self, event):     # noqa: N802
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self):
+        # QLabel does the drawing (so `color:` in a stylesheet still
+        # applies); we only hand it a pre-shortened string.
+        avail = max(0, self.width() - 2)
+        shown = (QFontMetrics(self.font()).elidedText(
+                     self._full_text, Qt.ElideRight, avail)
+                 if avail else self._full_text)
+        if shown != QLabel.text(self):
+            QLabel.setText(self, shown)
+
+    def _line_height(self) -> int:
+        # Derived from the FONT, never the text: glyphs like '·' and '→' in
+        # AI progress strings resolve through a fallback font that is a
+        # couple of pixels taller, and a content-derived height made the
+        # whole page twitch vertically the first time one arrived.
+        return QFontMetrics(self.font()).height()
+
+    def sizeHint(self):               # noqa: N802
+        return QSize(0, self._line_height())
+
+    def minimumSizeHint(self):        # noqa: N802
+        return QSize(0, self._line_height())
+
+
+def stabilize_button_width(button: 'QPushButton', *texts: str):
+    """Pin a button wide enough for every caption it will ever show.
+
+    Buttons whose text swaps at runtime (Generate ⇄ Queue) otherwise resize
+    and shove every sibling control sideways mid-run.
+    """
+    metrics = QFontMetrics(button.font())
+    widest = max(metrics.horizontalAdvance(t) for t in texts)
+    button.setMinimumWidth(widest + 24)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PropertiesPanel
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -7553,7 +7726,15 @@ class CodexDialog(QDialog):
         self._source_label.setStyleSheet("color: #777; font-size: 11px;")
         form.addRow("Source", self._source_label)
 
-        root.addWidget(form_widget, stretch=1)
+        # Scrolled: the card form's fixed-height text edits add up to ~650px,
+        # which was a hard floor on the window's height (QTabWidget takes the
+        # max minimum over every page). Scrolling it here is the same
+        # treatment the Stories tab already gives its editor pane.
+        form_scroll = QScrollArea()
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QFrame.NoFrame)
+        form_scroll.setWidget(form_widget)
+        root.addWidget(form_scroll, stretch=1)
 
         # ── Entity development chat (full width, below list + card) ──────
         chat_hdr = QLabel("Entity Development Chat")
@@ -7584,7 +7765,7 @@ class CodexDialog(QDialog):
         input_row.addWidget(self._distill_btn)
         outer.addLayout(input_row)
 
-        self.chat_status = QLabel("")
+        self.chat_status = ElidedLabel("")
         self.chat_status.setStyleSheet("color:#888888; font-size:10px;")
         outer.addWidget(self.chat_status)
 
@@ -8618,6 +8799,13 @@ class WebPlannerDialog(QDialog):
         self._story_filter.textChanged.connect(self._schedule_refresh)
         map_bar.addWidget(self._story_filter, stretch=1)
 
+        root.addLayout(map_bar)
+
+        # Legend/filter toggles on their own wrapping row: one per relation
+        # type, and type names run long ('shares_character'), so inline in
+        # map_bar they set a ~780px floor on this tab.
+        toggle_host = QWidget()
+        toggle_row = FlowLayout(toggle_host, margin=0, spacing=3)
         self._type_toggles: dict = {}
         for rtype, color in RELATION_COLORS.items():
             btn = QPushButton(rtype)
@@ -8632,8 +8820,8 @@ class WebPlannerDialog(QDialog):
                 f"border: 1px solid {color}; }}")
             btn.toggled.connect(self._schedule_refresh)
             self._type_toggles[rtype] = btn
-            map_bar.addWidget(btn)
-        root.addLayout(map_bar)
+            toggle_row.addWidget(btn)
+        root.addWidget(toggle_host)
 
         self._scene = QGraphicsScene(self)
         # No BSP index: the scene is rebuilt wholesale on every refresh and
@@ -8669,6 +8857,8 @@ class WebPlannerDialog(QDialog):
         add_row = QHBoxLayout()
         self._from_combo = QComboBox()
         add_row.addWidget(self._from_combo, stretch=1)
+        # Capped below — a combo sized to its contents means one long story
+        # name silently re-inflates this tab's minimum width.
         self._type_combo = QComboBox()
         for rtype, desc in RELATION_TYPES.items():
             self._type_combo.addItem(rtype, rtype)
@@ -8683,9 +8873,14 @@ class WebPlannerDialog(QDialog):
         btn_add = QPushButton("Add")
         btn_add.clicked.connect(self._cmd_add_relation)
         add_row.addWidget(btn_add)
-        btn_del = QPushButton("Remove selected")
+        btn_del = QPushButton("Remove")
+        btn_del.setToolTip("Remove the relation selected in the list above.")
         btn_del.clicked.connect(self._cmd_remove_relation)
         add_row.addWidget(btn_del)
+        for combo in (self._from_combo, self._type_combo, self._to_combo):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(10)
         root.addLayout(add_row)
 
         # Context preview for the FROM/TO stories picked above — with many
@@ -8700,17 +8895,26 @@ class WebPlannerDialog(QDialog):
                 "color: #9a9aa8; font-size: 11px; background: #202028; "
                 "border: 1px solid #333; border-radius: 3px; padding: 4px;")
             lbl.setMinimumHeight(40)
+            # Ignored width: these wrap to whatever they're given, so their
+            # premise text must not set a floor on the tab's width.
+            lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
+                              QSizePolicy.Policy.Minimum)
             ctx_row.addWidget(lbl, stretch=1)
         root.addLayout(ctx_row)
         self._from_combo.currentIndexChanged.connect(self._update_rel_context)
         self._to_combo.currentIndexChanged.connect(self._update_rel_context)
 
-        ai_row = QHBoxLayout()
+        # Guidance field on its own row (it can shrink); the five AI buttons
+        # below it in a FlowLayout that wraps. As one unwrapped row these
+        # pinned this tab — and so the window — to ~940px of width.
         self._instr = QLineEdit()
         self._instr.setPlaceholderText(
             "guidance for the AI web proposal (optional — e.g. 'two short "
             "vignette stories around the Toad')")
-        ai_row.addWidget(self._instr, stretch=1)
+        root.addWidget(self._instr)
+
+        ai_host = QWidget()
+        ai_row = FlowLayout(ai_host, margin=0, spacing=4)
         self._btn_propose = QPushButton("Propose Web (AI)")
         self._btn_propose.setToolTip(
             "Propose new story cards (premise, cast, structure) plus typed\n"
@@ -8749,11 +8953,10 @@ class WebPlannerDialog(QDialog):
         self._btn_cancel_ai.setVisible(False)
         self._btn_cancel_ai.clicked.connect(self._cmd_cancel_ai)
         ai_row.addWidget(self._btn_cancel_ai)
-        root.addLayout(ai_row)
+        root.addWidget(ai_host)
 
-        self._status = QLabel("")
+        self._status = ElidedLabel("")
         self._status.setStyleSheet("color: #999; font-size: 11px;")
-        self._status.setWordWrap(True)
         root.addWidget(self._status)
 
         if not self._embedded:
@@ -9966,6 +10169,10 @@ class ArcEditorDialog(QDialog):
     """Popup dialog for editing story arcs and wiring them into generation."""
 
     LAYER_NAMES = LAYER_ORDER
+    # Both captions the generate button cycles through; the button is sized
+    # for the wider of the two once, at build time.
+    GEN_LABEL_IDLE = "Generate Graph"
+    GEN_LABEL_BUSY = "Queue Generation"
 
     def __init__(self, script: 'ScriptData', ai: 'AIAssistant',
                  ui_queue: queue.SimpleQueue, on_graph_generated=None,
@@ -10158,18 +10365,24 @@ class ArcEditorDialog(QDialog):
         input_row.addWidget(send_btn)
         root.addLayout(input_row)
 
-        self.chat_status = QLabel("")
+        # Elided: orchestrator progress strings run 80+ chars and used to
+        # widen the whole tab (and therefore the window) mid-generation.
+        self.chat_status = ElidedLabel("")
         self.chat_status.setStyleSheet("color:#888888; font-size:10px;")
         root.addWidget(self.chat_status)
 
         # ── Bottom buttons ────────────────────────────────────────
-        bot = QHBoxLayout()
-        distill_btn = QPushButton("Distill Chat → Story")
+        # FlowLayout, not QHBoxLayout: these six controls in one unwrapped
+        # row set a ~1500px minimum width on this tab, which QTabWidget
+        # propagated to the entire window.
+        bot_host = QWidget()
+        bot = FlowLayout(bot_host, margin=0, spacing=4)
+        distill_btn = QPushButton("Distill Chat")
         distill_btn.setToolTip("Use AI to extract premise, themes, motif, and structure from the chat conversation")
         distill_btn.clicked.connect(self._cmd_distill_chat_to_arc)
         bot.addWidget(distill_btn)
 
-        canon_btn = QPushButton("Extract Canon (AI)")
+        canon_btn = QPushButton("Extract Canon")
         canon_btn.setToolTip(
             "Read this story's generated nodes and extract durable canon:\n"
             "new facts for cast entity cards + canon events other stories\n"
@@ -10177,11 +10390,15 @@ class ArcEditorDialog(QDialog):
         canon_btn.clicked.connect(lambda: self._cmd_extract_canon())
         bot.addWidget(canon_btn)
 
-        self.gen_btn = QPushButton("Generate Graph from Story")
+        self.gen_btn = QPushButton(self.GEN_LABEL_IDLE)
         self.gen_btn.setStyleSheet("font-weight: bold;")
         self.gen_btn.setToolTip(
             "Generate this story's node graph. While a run is active, "
             "clicking queues the selected story to generate next.")
+        # Pinned width so the idle ⇄ queueing caption swap doesn't shove
+        # the rest of the row sideways the moment generation starts.
+        stabilize_button_width(self.gen_btn, self.GEN_LABEL_IDLE,
+                               self.GEN_LABEL_BUSY)
         self.gen_btn.clicked.connect(self._cmd_generate_from_arc_parallel)
         bot.addWidget(self.gen_btn)
 
@@ -10218,12 +10435,11 @@ class ArcEditorDialog(QDialog):
         self.gen_width_combo.currentIndexChanged.connect(self._on_field_changed)
         bot.addWidget(self.gen_width_combo)
 
-        bot.addStretch()
         if not self._embedded:
             close_btn = QPushButton("Close")
             close_btn.clicked.connect(self.accept)
             bot.addWidget(close_btn)
-        root.addLayout(bot)
+        root.addWidget(bot_host)
 
     # ── Structure rows + cast picker (v2) ─────────────────────────────────────
 
@@ -10308,22 +10524,57 @@ class ArcEditorDialog(QDialog):
                 for (_, combo, edit) in self._structure_rows]
 
     def _reload_cast_list(self, selected: set):
-        """Repopulate the cast picker from the current codex."""
+        """Repopulate the cast picker from the current codex.
+
+        CRASH RULE: this used to clear() + rebuild on EVERY arc selection,
+        and cast_list.clear() is a repeat native access-violation site
+        (crash.log 2026-07-17 19:09 and 2026-07-26 06:15, both AV'd right
+        here). Deferring the call to the event loop was not enough — the
+        2026-07-26 crash came in through the deferred path. So take the
+        same cure _refresh_arc_list already uses: switching stories almost
+        never changes the codex, so when the slug list is unchanged, only
+        the check states are updated and no QListWidgetItem is destroyed.
+        """
+        ents = self.script.entities
+
+        def _order(kv):
+            kind = kv[1].get('kind', 'idea')
+            ki = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 99
+            return (ki, (kv[1].get('name') or kv[0]).lower())
+
+        ordered = sorted(ents.items(), key=_order) if ents else []
+        desired = [slug for slug, _ in ordered]
+        current = [self.cast_list.item(i).data(Qt.ItemDataRole.UserRole)
+                   for i in range(self.cast_list.count())]
+
+        scroll_value = self.cast_list.verticalScrollBar().value()
         self.cast_list.blockSignals(True)
         try:
+            if desired and current == desired:
+                # Same cast, different story — only the ticks move.
+                for i, slug in enumerate(desired):
+                    self.cast_list.item(i).setCheckState(
+                        Qt.CheckState.Checked if slug in selected
+                        else Qt.CheckState.Unchecked)
+                return
+            if not desired and current == [None]:
+                # Empty codex, placeholder already showing — nothing to do.
+                # (A fresh script sits in this state, and that is exactly
+                # when a user clicks around the story list fastest.)
+                return
+
+            # Codex genuinely changed (or first population) — rebuild.
+            # Never destroy items with a native tooltip still up over them.
+            QToolTip.hideText()
+            self.cast_list.setCurrentRow(-1)
             self.cast_list.clear()
-            ents = self.script.entities
-            def _order(kv):
-                kind = kv[1].get('kind', 'idea')
-                ki = ENTITY_KINDS.index(kind) if kind in ENTITY_KINDS else 99
-                return (ki, (kv[1].get('name') or kv[0]).lower())
             if not ents:
                 placeholder = QListWidgetItem(
                     "(codex is empty — Story ▸ Codex… to add entities)")
                 placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
                 self.cast_list.addItem(placeholder)
                 return
-            for slug, card in sorted(ents.items(), key=_order):
+            for slug, card in ordered:
                 kind = card.get('kind', 'idea')
                 item = QListWidgetItem(
                     f"[{kind[:4]}] {card.get('name') or slug}  ({slug})")
@@ -10334,6 +10585,7 @@ class ArcEditorDialog(QDialog):
                 self.cast_list.addItem(item)
         finally:
             self.cast_list.blockSignals(False)
+            self.cast_list.verticalScrollBar().setValue(scroll_value)
 
     def _cast_from_list(self) -> list:
         out = []
@@ -10392,8 +10644,8 @@ class ArcEditorDialog(QDialog):
         arc = self.script.arcs[arc_id]
         stamp = arc.get('canon_extracted_at')
         if not n:
-            text = ("No nodes generated yet — use 'Generate Graph from "
-                    "Story' below.")
+            text = (f"No nodes generated yet — use '{self.GEN_LABEL_IDLE}' "
+                    "below.")
         else:
             text = f"{n} node(s) generated"
             if stamp or n_ev:
@@ -10687,7 +10939,7 @@ class ArcEditorDialog(QDialog):
     def _finish_generation(self, message: str, cancelled: bool = False):
         self._gen_running = False
         self._gen_current = None
-        self.gen_btn.setText("Generate Graph from Story")
+        self.gen_btn.setText(self.GEN_LABEL_IDLE)
         self._refresh_arc_list()
         self._update_story_status()
         if cancelled and self._gen_queue:
@@ -10718,7 +10970,7 @@ class ArcEditorDialog(QDialog):
 
         self._gen_running = True
         self._gen_current = arc_id
-        self.gen_btn.setText("Queue Generation")
+        self.gen_btn.setText(self.GEN_LABEL_BUSY)
         self.chat_status.setText(
             f"Generating seed nodes for '{arc.get('name') or arc_id}'…")
         self._append_chat('assistant', f'[Parallel gen from arc: {arc.get("name", "")}]')
