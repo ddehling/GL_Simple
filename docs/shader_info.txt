@@ -177,6 +177,122 @@ the story_* variables published by NarrativePlayer.
 | 0.30 | two_lights (the pair: orbit, freeze, phantom afterimage, touch) | narrative |
 | 0.20 | heart_tide (still-water mirror, rim-lit waterline) | state |
 
+## FyneWynz realm z-band table (canonical, July 2026)
+
+One vintage from bud break to the last glass, depth-based from birth. Same
+two-driver split as Beloved: STATE shaders read the wyne_* weather params
+(wyne_tint / must_hue / row_density / ripeness / cluster_load / rot_bloom /
+cellar_depth / ferment_activity / aroma / pour_flow / lees_density /
+taint_level); NARRATIVE shaders read the story_* variables published by
+NarrativePlayer (vine / cask / glass, each with a light and a dark face).
+
+`must_hue` is the realm's spine — a 0..1 wine-colour axis (green-gold ->
+rose -> ruby -> inky purple) that six of the layers sample through an
+identical local `must_colour()` helper, so the whole set is tinted by
+whatever is currently in the glass. It is duplicated per file on purpose
+(there is no shared shader library — see no_shared_shader_library).
+
+| z | Effect | Driver family |
+|---|---|---|
+| 0.97 | wyne_sky (horizon band over the hillside; collapses to lantern gloom as cellar_depth rises) | state |
+| 0.90 | stars | engine (starryness) |
+| 0.86 | wyne_hillside (trellis rows + rim-lit crest; silhouette-against-band) | state |
+| 0.80 | wyne_terroir (the Vine: warm mineral glints + roots / cold vintage-chart lattice) | narrative |
+| 0.70 | wyne_clusters (hanging bunches; veraison colour walk + botrytis gold) | state |
+| 0.62 | wyne_cellar (barrel heads, rim-lit hoops, two candles) | state |
+| 0.55 | wyne_ferment (rising CO2 rings + churning cap with bright fissures) | state |
+| 0.45 | wyne_oak (the Cask: thin amber rings / crowding vanilla banding + bloom) | narrative |
+| 0.35 | wyne_aroma (tasting-note rings in seven separated hues) | both (state `aroma` OR story_glass_light, whichever is higher) |
+| 0.28 | wyne_goblet (the Glass: the pour, bowl, legs / the cold bottle hoard + dust) | both (story_glass_* OR state `pour_flow`) |
+| 0.20 | wyne_lees (sediment motes + settled band) | state |
+| 0.12 | wyne_taint (the corked bottle: grey-green mould veil) | state |
+
+**Four of these layers are drawn in REAL FEET** (`fan_uv_to_physical` +
+`FanCoords.set_uniforms`), not in buffer UV: wyne_hillside, wyne_clusters,
+wyne_cellar and wyne_goblet. The fan is a semicircular ANNULUS, so a shape
+authored in UV arrives on the hardware as a radial wedge - the first cut of
+this realm drew a "landscape" that rendered as a decorative sunburst. Each
+object gets its own angular cell and stands radially outward from a base
+radius, giving a local frame in feet:
+
+    a = (theta - theta_cell) * r   -> across the object
+    b = r - base_radius            -> up the object
+
+That produces true-proportioned barrels, wine glasses, bottles and trellised
+vines. The row geometry (GROUND_R 6.6, WIRE1 2.9, NVINE 11) is duplicated in
+wyne_hillside and wyne_clusters so the bunches hang off the trellis wire -
+keep those constants in step, the same way desert_dunes/desert_toads do.
+
+**SIZE FEATURES AGAINST THE PIXEL PITCH.** The fan's radial pitch is
+constant (16.6 ft / 300 rows = 0.055 ft per row), but the ANGULAR pitch grows
+with radius: one of the 128 columns spans `r * pi / 128` feet, i.e. 0.20 ft at
+r=8 and 0.31 ft at r=12.8. Anything narrower than ~2-3 columns does not read.
+The grape berries were authored at a 0.20 ft radius - exactly ONE column - so
+they rendered as specks and the vineyard looked like it had no fruit; they are
+now 0.42 ft. Bottles went 1.72 ft (5 columns) -> 2.6 ft (8). Check any new
+feature with `r * pi / 128` before assuming it is too dim rather than too
+small. (This is the same trap as the desert cacti sway amplitudes.)
+
+Two related lessons from sizing the grapes up: berries composited by SUMMING
+overlapping gaussians plateau into one solid lozenge - use `max()` plus a
+per-berry specular dot instead, because a real bunch is a mass of TOUCHING
+berries and it is the highlights that make it read as fruit, not gaps. And a
+new param must be added to `WYNE_PARAMS` in the visual harness or the harness
+renders it at zero while the app shows it working (`bottle_rack` hit this).
+
+**The sky must reach the RIM.** `wyne_sky` grades from a bright horizon (at
+eye level in the vineyard, ~v 0.28 - NOT at the canopy line) out to a dark but
+non-zero zenith at the outer ring: `grad = mix(1.0, 0.30, t)`. Three separate
+attempts got this wrong and each produced a different user-visible complaint -
+a hairline band, a sky "starting halfway up the arc", and a sky that "ends too
+low". The rules that came out of it: (a) never let the falloff reach zero, an
+overhead sky is DARKER than the horizon, not absent; (b) never hard-cut the
+lower edge, fade it out under the ground layers instead; (c) keep the gradient
+STEEP anyway, because the outer annulus is by far the largest area on a fan and
+a bright zenith spends the whole per-receiver budget on empty sky.
+
+**WHICH SIDE IS UP (FyneWynz-specific, and it bit twice)**: because every
+object in this realm stands RADIALLY OUTWARD from an inner ground arc
+(`b = r - GROUND_R`), "up" here is OUTWARD - the zenith is the OUTER ring and
+the horizon sits partway out at the vineyard's canopy line (~v 0.635). This is
+INVERTED from the forest/desert/beloved sets, where the outer ring is the
+horizon and the inner ring is the sky. `wyne_sky` inherited the forest
+convention from heart_sky and so drew its sky on the wrong side of the horizon
+- underneath the vines - where it survived only as a thin ring wedged between
+the canopy and the cut-off. If you add a sky-like layer here, grade it from
+the horizon OUTWARD to the rim, and grade it across the whole region: an
+earlier attempt to keep it "tight" per the contrast playbook collapsed it into
+a hairline and blacked out the rest of the sky.
+
+**Day/night**: FyneWynz reads the engine clock `outstate['season']` (0
+midnight, 0.25 dawn, 0.5 noon, 0.75 dusk) exactly like the forest/desert/
+bartiki sets. `wyne_sky`, `wyne_hillside` and `wyne_clusters` carry a local
+`tod_sun()` / `daylight()` pair (duplicated per file - no shared library),
+so the same vineyard is warm at golden hour, white at noon and cold blue by
+moonlight. Each state's `season_preference` is its point on that clock, NOT
+a position in the growing year. Indoor states (cellar, bottle age, ferment)
+sit near 0 and are gated by `cellar_depth` anyway. Keep a NIGHT FLOOR on
+every day-driven term (`mix(0.78, 1.0, day)`, not `mix(0.0, 1.0, day)`) or
+the night states fall to ~35% of the brightness budget and read as broken.
+
+**Gravity is real too**: `wyne_ferment` bubbles rise in +y FEET and
+`wyne_lees` sediment falls in -y FEET. Scrolling those fields in buffer
+space made gas converge on the hub of the fan and sediment fly radially
+outward in every direction at once.
+
+Two notes for anyone extending this realm:
+
+- **wyne_taint is the only ALPHA-BLENDED layer in the set that is meant to
+  REMOVE brightness.** Everything else is additive glow or a dark
+  silhouette. Its job is to mute what is behind it, so it must never be
+  switched to additive — that would make a corked bottle the brightest
+  state in the realm, which is exactly backwards.
+- Every layer is horizontally continuous across the seam without a
+  duplicate-geometry pass: procedural features measure their horizontal
+  distance with a wrapped delta (`dx -= floor(dx + 0.5)`), and the grid /
+  row frequencies (ROWS, NX, GX, NB, NBOT, NE) are all integers over
+  v_uv.x. Keep that property when adding features.
+
 ## Club / DJ realm z-band table (canonical, July 2026)
 
 Thirty-one audio-reactive pattern layers plus one-shots (three are MilkDrop/projectM-style feedback loops with private ping-pong FBOs - they rebind viewport.fbo and restore blend/depth state). The four original
