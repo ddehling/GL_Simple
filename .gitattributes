@@ -1,0 +1,30 @@
+# Binary assets must NEVER go through end-of-line conversion.
+#
+# Git guesses text-vs-binary by looking for a NUL byte in the first 8 KB.
+# Some PDFs (uncompressed content streams) and some audio files have no NUL
+# up there, so git calls them text - and on Windows, where core.autocrlf is
+# true, every checkout then rewrites their LF bytes to CRLF and the file is
+# corrupt. docs/fynewynz_wine_list.pdf committed exactly that way
+# ("LF will be replaced by CRLF the next time Git touches it").
+#
+# Marking the extensions explicitly is the only reliable fix: it turns the
+# heuristic off for the file types where a wrong guess destroys data.
+*.pdf   binary
+*.mp3   binary
+*.wav   binary
+*.ogg   binary
+*.flac  binary
+*.m4a   binary
+*.aac   binary
+*.opus  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.ttf   binary
+*.otf   binary
+*.sqlite3 binary
+*.npy   binary
+*.npz   binary
