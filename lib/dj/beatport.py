@@ -763,6 +763,18 @@ class Wishlist:
             self.save()
         return n - len(self.items)
 
+    def remove_many(self, bp_ids):
+        """Drop several items in ONE pass + ONE save - removing a large
+        selection track-by-track would rewrite the file per item."""
+        drop = set(bp_ids)
+        if not drop:
+            return 0
+        n = len(self.items)
+        self.items = [it for it in self.items if it.get("bp_id") not in drop]
+        if len(self.items) != n:
+            self.save()
+        return n - len(self.items)
+
     def open_in_browser(self, bp_id=None):
         """Open one item's Beatport page (or all) for manual add-to-cart."""
         import webbrowser

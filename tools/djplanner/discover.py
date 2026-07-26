@@ -14,10 +14,11 @@ import os
 import tempfile
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
-                             QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                             QPushButton, QSlider, QSplitter, QTableWidget,
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+                             QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                             QListWidget, QListWidgetItem, QPushButton,
+                             QSlider, QSplitter, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
 from lib.dj import beatport as BP
@@ -155,6 +156,9 @@ class DiscoverTab(QWidget):
         self.planner = planner
         self.client = BP.BeatportClient()
         self.wishlist = BP.Wishlist(planner.music_dir)
+        # Two-step-confirm arming state for the wishlist buttons.
+        self._wish_armed = self._open_armed = None
+        self._wish_total = 0.0
         self.rows = []
         self._fit = {}                 # row id -> (fit_vs_track, neighbours)
         self._search = self._preview = self._login_worker = None
@@ -312,16 +316,25 @@ class DiscoverTab(QWidget):
         wh = QHBoxLayout()
         self.wish_lbl = QLabel("Wishlist")
         wh.addWidget(self.wish_lbl, 1)
-        ob = QPushButton("Open all on Beatport")
-        ob.clicked.connect(lambda: self.wishlist.open_in_browser())
-        wh.addWidget(ob)
-        rb = QPushButton("Remove")
-        rb.clicked.connect(self._wish_remove)
-        wh.addWidget(rb)
+        self.wish_open_btn = QPushButton("Open all on Beatport")
+        self.wish_open_btn.clicked.connect(self._wish_open)
+        wh.addWidget(self.wish_open_btn)
+        self.wish_rm_btn = QPushButton("Remove")
+        self.wish_rm_btn.clicked.connect(self._wish_remove)
+        wh.addWidget(self.wish_rm_btn)
         wv.addLayout(wh)
         self.wish_list = QListWidget()
+        # Multi-select: ctrl/shift-click, ctrl+A, rubber-band drag.
+        self.wish_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         self.wish_list.itemDoubleClicked.connect(self._wish_open_one)
+        self.wish_list.itemSelectionChanged.connect(self._wish_sel_changed)
         wv.addWidget(self.wish_list)
+        # Delete key removes the selection (same two-step confirm).
+        self._wish_del = QShortcut(QKeySequence.StandardKey.Delete,
+                                   self.wish_list)
+        self._wish_del.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._wish_del.activated.connect(self._wish_remove)
         right.addWidget(wl)
         right.setSizes([320, 220])
         split.addWidget(right)
@@ -855,33 +868,116 @@ class DiscoverTab(QWidget):
             self.status.setText(("added to wishlist: " if added else
                                  "already on wishlist: ") + r["title"])
 
+    @staticmethod
+    def _price_of(it):
+        p = str(it.get("price") or "").replace("$", "").replace("€", "")
+        try:
+            return float(p)
+        except ValueError:
+            return 0.0
+
     def _refresh_wishlist(self):
+        """Rebuild the list, preserving the selection by bp_id (rows shift
+        when items are removed, so never carry selection by index)."""
+        keep = set(self._wish_selected_ids())
+        self.wish_list.blockSignals(True)
         self.wish_list.clear()
         total = 0.0
         for it in self.wishlist.items:
-            self.wish_list.addItem(QListWidgetItem(
+            row = QListWidgetItem(
                 f"{it['title'][:28]} — {it['artist'][:18]}  "
                 f"{it.get('bpm', 0):.0f} {it.get('camelot', '')}  "
-                f"{it.get('price') or ''}"))
-            p = str(it.get("price") or "").replace("$", "").replace("€", "")
-            try:
-                total += float(p)
-            except ValueError:
-                pass
+                f"{it.get('price') or ''}")
+            row.setData(Qt.ItemDataRole.UserRole, it.get("bp_id"))
+            self.wish_list.addItem(row)
+            if it.get("bp_id") in keep:
+                row.setSelected(True)
+            total += self._price_of(it)
+        self.wish_list.blockSignals(False)
+        self._wish_total = total
+        self._wish_sel_changed()
+
+    def _wish_selected_ids(self):
+        return [i.data(Qt.ItemDataRole.UserRole)
+                for i in self.wish_list.selectedItems()
+                if i.data(Qt.ItemDataRole.UserRole) is not None]
+
+    def _wish_sel_changed(self):
+        """Selection drives both button labels; any change disarms a
+        pending confirm so a stale 'Confirm' can't fire on a new set."""
+        self._wish_disarm()
+        n = len(self.wish_list.selectedItems())
+        total = getattr(self, "_wish_total", 0.0)
         self.wish_lbl.setText(
             f"Wishlist — {len(self.wishlist.items)} tracks"
-            + (f", ~${total:.2f}" if total else ""))
+            + (f", ~${total:.2f}" if total else "")
+            + (f"   ({n} selected)" if n else ""))
+        self.wish_rm_btn.setText(f"Remove ({n})" if n else "Remove")
+        self.wish_rm_btn.setEnabled(bool(n))
+        self.wish_open_btn.setText(
+            f"Open {n} on Beatport" if n else "Open all on Beatport")
+
+    def _wish_disarm(self):
+        self._wish_armed = None
+        if getattr(self, "wish_rm_btn", None):
+            n = len(self.wish_list.selectedItems())
+            self.wish_rm_btn.setText(f"Remove ({n})" if n else "Remove")
+        if getattr(self, "wish_open_btn", None) and \
+                getattr(self, "_open_armed", None):
+            self._open_armed = None
+            n = len(self.wish_list.selectedItems())
+            self.wish_open_btn.setText(
+                f"Open {n} on Beatport" if n else "Open all on Beatport")
 
     def _wish_remove(self):
-        i = self.wish_list.currentRow()
-        if 0 <= i < len(self.wishlist.items):
-            self.wishlist.remove(self.wishlist.items[i].get("bp_id"))
-            self._refresh_wishlist()
+        """Two-step inline confirm (no modal dialogs): first click arms the
+        button, second commits. Auto-disarms after 5s or on any selection
+        change."""
+        ids = self._wish_selected_ids()
+        if not ids:
+            self.status.setText("select one or more wishlist tracks first "
+                                "(ctrl/shift-click, or ctrl+A for all)")
+            return
+        if self._wish_armed != tuple(ids):
+            self._wish_armed = tuple(ids)
+            self.wish_rm_btn.setText(f"Confirm remove {len(ids)}?")
+            self.status.setText(f"click again to remove {len(ids)} track(s) "
+                                "from the wishlist")
+            QTimer.singleShot(5000, self._wish_disarm)
+            return
+        removed = self.wishlist.remove_many(ids)
+        self._wish_armed = None
+        self._refresh_wishlist()
+        self.status.setText(f"removed {removed} track(s) from the wishlist")
 
-    def _wish_open_one(self, _item):
-        i = self.wish_list.currentRow()
-        if 0 <= i < len(self.wishlist.items):
-            self.wishlist.open_in_browser(self.wishlist.items[i].get("bp_id"))
+    def _wish_open(self):
+        """Open the selection (or everything when nothing is selected).
+        Opening many tabs at once gets the same two-step confirm - the
+        wishlist can hold hundreds of tracks."""
+        ids = self._wish_selected_ids()
+        if not ids:
+            # A None id would make open_in_browser open EVERYTHING.
+            ids = [it.get("bp_id") for it in self.wishlist.items
+                   if it.get("bp_id") is not None]
+        if not ids:
+            return
+        if len(ids) > 8 and self._open_armed != tuple(ids):
+            self._open_armed = tuple(ids)
+            self.wish_open_btn.setText(f"Confirm open {len(ids)} tabs?")
+            self.status.setText(f"that opens {len(ids)} browser tabs - "
+                                "click again to confirm")
+            QTimer.singleShot(5000, self._wish_disarm)
+            return
+        self._open_armed = None
+        for b in ids:
+            self.wishlist.open_in_browser(b)
+        self._wish_sel_changed()
+        self.status.setText(f"opened {len(ids)} track(s) on Beatport")
+
+    def _wish_open_one(self, item):
+        b = item.data(Qt.ItemDataRole.UserRole)
+        if b is not None:
+            self.wishlist.open_in_browser(b)
 
     # -- misc ---------------------------------------------------------------
     def open_track(self):
