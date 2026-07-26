@@ -396,7 +396,7 @@ def e2e_test(keep_wav):
 
         if keep_wav:
             out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "logs", "dj_e2e_set.wav")
+                               "..", "..", "logs", "dj_e2e_set.wav")
             os.makedirs(os.path.dirname(out), exist_ok=True)
             wavfile.write(out, RATE,
                           (np.clip(mix, -1, 1) * 32767).astype(np.int16))

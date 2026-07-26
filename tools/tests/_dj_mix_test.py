@@ -234,7 +234,7 @@ def main():
 
     if "--wav" in sys.argv:
         from scipy.io import wavfile
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
                          "logs", "dj_mix_test.wav")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         wavfile.write(p, RATE, (np.clip(mix, -1, 1) * 32767).astype(np.int16))

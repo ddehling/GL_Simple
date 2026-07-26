@@ -340,7 +340,7 @@ def render_seam(library, cur, style, wav=False):
 
     if wav:
         from scipy.io import wavfile
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
                          "logs", f"dj_qa_{style}.wav")
         wavfile.write(p, RATE,
                       (np.clip(mix, -1, 1) * 32767).astype(np.int16))
