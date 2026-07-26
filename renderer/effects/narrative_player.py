@@ -103,6 +103,14 @@ class NarrativePlayer(ShaderEffect):
     PLAY    = 'play'
     DELAY   = 'delay'
     RESTART = 'restart'
+    # Terminal phase: the script has nothing playable (an empty graph, or a
+    # next[] pointing at a node that no longer exists). Both `_play_node`
+    # and `update` already routed here, but the constant was never defined —
+    # so instead of going quiet the player raised AttributeError every frame
+    # and took the whole engine down with it. Reaching DONE is a dead end by
+    # design: the player parks, ramps its variables to zero so the narrative
+    # shaders fade out cleanly, and waits for a reload.
+    DONE    = 'done'
 
     def __init__(self, viewport, script_path: str = '', delay: float = 3.0,
                  restart_delay: float = 10.0, var_ramp_duration: float = 10.0):
@@ -389,6 +397,13 @@ class NarrativePlayer(ShaderEffect):
             for nid in to_remove:
                 del self._recency[nid]
 
+        if self._phase == self.DONE:
+            # Nothing playable. Stay silent and let the variables finish
+            # ramping to zero; do not spin on the state machine.
+            self._update_var_ramp(dt)
+            self._inject_vars(state)
+            return
+
         if self._phase == self.IDLE:
             starts = self._start_nodes or list(self._nodes.keys())
             if starts:
@@ -396,6 +411,10 @@ class NarrativePlayer(ShaderEffect):
                                         self._recency)
                 self._play_node(pick or starts[0], engine)
             else:
+                print('[NarrativePlayer] Script has no playable nodes - '
+                      'parking. (Check that the script still has a `nodes` '
+                      'block; the v2 editor writes one file for both.)')
+                self._ramp_to_zero()
                 self._phase = self.DONE
 
         elif self._phase == self.PLAY:

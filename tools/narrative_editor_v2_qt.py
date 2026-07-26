@@ -121,10 +121,15 @@ def _find_node_length_preset_index(rng):
 PARALLEL_WORKER_COUNT = 8   # concurrent AI calls for parallel generation
 
 # Model ids passed to the `claude` CLI (--model). Latest usable tiers,
-# verified against this machine's CLI 2026-07-16. Update these when new
+# verified against this machine's CLI 2026-07-25. Update these when new
 # model generations ship — everything else references them.
 MODEL_SONNET = 'claude-sonnet-5'
-MODEL_OPUS   = 'claude-opus-4-8'
+MODEL_OPUS   = 'claude-opus-5'
+# Top tier — for node prose, where the writing IS the deliverable. Roughly 2x
+# Opus's token cost and slower per call (watch CLI_TIMEOUT_S on big fan-outs);
+# not available to orgs configured below 30-day data retention. The structured
+# JSON passes (card/arc distillation, web proposal) stay on MODEL_OPUS.
+MODEL_FABLE  = 'claude-fable-5'
 
 
 def _model_short_name(model_id: str) -> str:
@@ -1659,6 +1664,40 @@ class ScriptData:
             if slug in nd.get('tags', []) or slug in (nd.get('entities') or []):
                 out.append(nid)
         return out
+
+    def entity_counts(self) -> dict:
+        """{slug: (node_count, [story_id, ...])} for EVERY entity, one pass.
+
+        A story counts if one of its nodes references the entity, or if the
+        story lists the entity in its ``cast`` — cast membership is what
+        actually reaches generation, so an entity cast into a story it has
+        no nodes in yet still belongs to it. Nodes with no ``arc_id`` are
+        attributed to no story.
+
+        Single sweep on purpose: the list view needs this for every visible
+        card at once, and calling entity_usage() per slug is O(entities x
+        nodes) — a 40-card codex re-walked every node forty times on every
+        refresh."""
+        n_count = {s: 0 for s in self.entities}
+        stories = {s: set() for s in self.entities}
+        for nd in self._data.get('nodes', {}).values():
+            if not isinstance(nd, dict):
+                continue
+            arc_id = nd.get('arc_id') or ''
+            # Union, so a slug listed in BOTH tags and entities counts once
+            # per node — matching entity_usage's one-append-per-node.
+            for slug in set(nd.get('tags') or []) | set(nd.get('entities') or []):
+                if slug in n_count:
+                    n_count[slug] += 1
+                    if arc_id:
+                        stories[slug].add(arc_id)
+        for arc_id, arc in self.arcs.items():
+            cast = arc.get('cast')
+            if isinstance(cast, list):
+                for slug in cast:
+                    if slug in stories:
+                        stories[slug].add(arc_id)
+        return {s: (n_count[s], sorted(stories[s])) for s in self.entities}
 
     def codex_summary(self, slugs: Optional[list] = None) -> str:
         """Compact text block of entity cards for AI prompts. Stable kind-
@@ -7343,7 +7382,12 @@ class CodexDialog(QDialog):
         self._kind_filter.addItem("All kinds", None)
         for k in ENTITY_KINDS:
             self._kind_filter.addItem(k.capitalize(), k)
-        self._kind_filter.currentIndexChanged.connect(self._refresh_list)
+        # DEFERRED for the same reason as _on_row_selected and _on_tab_changed:
+        # rebuilding an item view synchronously inside another widget's signal
+        # dispatch destroys items Qt is still handling the event on, and
+        # access-violates on this machine. This was the last synchronous one.
+        self._kind_filter.currentIndexChanged.connect(
+            lambda *_: QTimer.singleShot(0, self._refresh_list))
         left.addWidget(self._kind_filter)
 
         self._list = QListWidget()
@@ -7451,12 +7495,44 @@ class CodexDialog(QDialog):
         rels_v.addWidget(add_rel_btn)
         form.addRow("Links to", rels_widget)
 
+        # CRASH RULE: plain items only — NO setItemWidget here. Per-row
+        # button widgets made every card load destroy widgets that Qt was
+        # still tracking (hover/mouse-grab), which access-violates on this
+        # machine (crash.log 2026-07-25 14:30 — AV at _incoming_list.clear()
+        # reached from a row button's own click). The actions live on
+        # persistent buttons beside the list, which are never rebuilt.
+        incoming_widget = QWidget()
+        incoming_v = QVBoxLayout(incoming_widget)
+        incoming_v.setContentsMargins(0, 0, 0, 0)
+        incoming_v.setSpacing(2)
         self._incoming_list = QListWidget()
         self._incoming_list.setFixedHeight(84)
         self._incoming_list.setToolTip(
-            "Entities whose cards link TO this one. → jumps to the source; "
-            "⇄ adds a reciprocal 'Links to' line back to it.")
-        form.addRow("Linked from", self._incoming_list)
+            "Entities whose cards link TO this one. Double-click (or → Go to) "
+            "jumps to the source; ⇄ adds a reciprocal 'Links to' line back.")
+        self._incoming_list.itemDoubleClicked.connect(
+            lambda _it: QTimer.singleShot(0, self._cmd_incoming_goto))
+        self._incoming_list.currentRowChanged.connect(
+            lambda _r: self._update_incoming_buttons())
+        incoming_v.addWidget(self._incoming_list)
+        inc_btns = QHBoxLayout()
+        inc_btns.setSpacing(4)
+        self._btn_incoming_goto = QPushButton("→ Go to")
+        self._btn_incoming_goto.setToolTip(
+            "Open the selected source entity's card.")
+        self._btn_incoming_goto.clicked.connect(
+            lambda *_: QTimer.singleShot(0, self._cmd_incoming_goto))
+        inc_btns.addWidget(self._btn_incoming_goto)
+        self._btn_incoming_back = QPushButton("⇄ Link back")
+        self._btn_incoming_back.setToolTip(
+            "Add a reciprocal link: this card → the selected source entity.")
+        self._btn_incoming_back.clicked.connect(
+            lambda *_: QTimer.singleShot(0, self._cmd_incoming_link_back))
+        inc_btns.addWidget(self._btn_incoming_back)
+        inc_btns.addStretch(1)
+        incoming_v.addLayout(inc_btns)
+        self._update_incoming_buttons()
+        form.addRow("Linked from", incoming_widget)
 
         self._f_notes = _text_edit(
             56, "Author-only notes — never sent to the AI.")
@@ -7523,19 +7599,59 @@ class CodexDialog(QDialog):
         return [slug for slug, card in sorted(self.script.entities.items(), key=_order)
                 if kind is None or card.get('kind') == kind]
 
+    def _story_label(self, arc_id: str) -> str:
+        """Display name for a story id, falling back to the id itself."""
+        return (self.script.arcs.get(arc_id, {}) or {}).get('name') or arc_id
+
     def _refresh_list(self, *_):
+        # Belt and braces: a tooltip sourced from a row is one more raw
+        # pointer into an item, and rows do still get removed when cards are
+        # deleted. Cheap, and it costs nothing on the common path.
+        QToolTip.hideText()
+        counts = self.script.entity_counts()
+        desired = []
+        for slug in self._visible_slugs():
+            card = self.script.entities[slug]
+            n_use, story_ids = counts.get(slug, (0, []))
+            n_story = len(story_ids)
+            kind = card.get('kind', 'idea')
+            desired.append((
+                f"[{kind[:4]}] {card.get('name') or slug}"
+                f"   ·{n_use}n ·{n_story}s",
+                slug,
+                f"{slug} — {n_use} node(s), "
+                f"{n_story} {'story' if n_story == 1 else 'stories'}"
+                + (': ' + ', '.join(self._story_label(a) for a in story_ids)
+                   if story_ids else '')))
+        # IN-PLACE UPDATE — DO NOT REINTRODUCE clear().
+        #
+        # Three of this session's access violations landed on a QListWidget
+        # clear() in this tab (crash.log 14:30 _refresh_incoming, 16:13 and
+        # 17:36 here). clear() bulk-destroys every item, and anything Qt still
+        # holds a raw pointer into — tooltip, hover/mouse-grab state, the
+        # accessibility bridge — dies with it. Hiding the tooltip first was
+        # not enough, so stop destroying items instead of trying to enumerate
+        # what might be pointing at them.
+        #
+        # Rows are reused: same count, same widgets, only text/data/tooltip
+        # reassigned. The counts in the label change far more often than the
+        # row SET does (a node edit moves ·12n without adding a card), so the
+        # common refresh now destroys nothing at all. Surplus rows are removed
+        # one at a time with takeItem(), which hands ownership back rather
+        # than bulk-deleting under Qt.
         self._loading = True
         try:
-            self._list.clear()
-            for slug in self._visible_slugs():
-                card = self.script.entities[slug]
-                n_use = len(self.script.entity_usage(slug))
-                kind = card.get('kind', 'idea')
-                item = QListWidgetItem(
-                    f"[{kind[:4]}] {card.get('name') or slug}   ·{n_use}")
-                item.setData(Qt.UserRole, slug)
-                item.setToolTip(f"{slug} — used by {n_use} node(s)")
-                self._list.addItem(item)
+            while self._list.count() > len(desired):
+                self._list.takeItem(self._list.count() - 1)
+            while self._list.count() < len(desired):
+                self._list.addItem(QListWidgetItem())
+            for i, (label, slug, tip) in enumerate(desired):
+                item = self._list.item(i)
+                if item.text() != label:
+                    item.setText(label)
+                if item.data(Qt.UserRole) != slug:
+                    item.setData(Qt.UserRole, slug)
+                item.setToolTip(tip)
         finally:
             self._loading = False
         # restore selection if the current slug is still visible
@@ -7581,7 +7697,13 @@ class CodexDialog(QDialog):
                       self._f_voice, self._f_notes):
                 w.clear()
             self._set_rel_rows([])
-            self._incoming_list.clear()
+            # Drain one at a time rather than clear() — same list, same reason
+            # as _refresh_incoming. The text/line edits above are safe to
+            # clear(); only item views bulk-destroy children Qt may hold.
+            QToolTip.hideText()
+            while self._incoming_list.count():
+                self._incoming_list.takeItem(self._incoming_list.count() - 1)
+            self._update_incoming_buttons()
             self._usage_label.setText("")
             self._source_label.setText("")
             self.chat_log.clear()
@@ -7610,8 +7732,16 @@ class CodexDialog(QDialog):
             self._set_rel_rows(card.get('relationships', []))
             self._refresh_incoming(slug)
             self._f_notes.setPlainText(card.get('notes', ''))
-            n_use = len(self.script.entity_usage(slug))
-            self._usage_label.setText(f"Used by {n_use} node(s)")
+            n_use, story_ids = self.script.entity_counts().get(slug, (0, []))
+            n_story = len(story_ids)
+            self._usage_label.setText(
+                f"Used by {n_use} node(s) in {n_story} "
+                f"{'story' if n_story == 1 else 'stories'}")
+            # Which stories, on hover — the count answers "does this span the
+            # web?", the names answer "which parts of it?".
+            self._usage_label.setToolTip(
+                '\n'.join(self._story_label(a) for a in story_ids)
+                if story_ids else 'Not in any story yet')
             self._source_label.setText(card.get('source', 'local'))
             # Per-entity chat: repopulate the log and re-seed the chat AI's
             # transcript so the conversation follows the selected card.
@@ -7725,43 +7855,62 @@ class CodexDialog(QDialog):
         return rels
 
     def _refresh_incoming(self, slug: str):
-        """List every entity whose card links TO this one — each row has a
-        jump button and a ⇄ button that adds the reciprocal 'Links to'
-        line, so two-way relationships take one click instead of a trip
-        to the other card."""
-        self._incoming_list.clear()
+        """List every entity whose card links TO this one. Rows are plain
+        items (see the CRASH RULE where the list is built); the → / ⇄
+        actions live on the buttons under the list and operate on the
+        selected row, so two-way relationships still take one click."""
+        desired = []
         for src, card in self.script.entities.items():
             if src == slug:
                 continue
             for r in card.get('relationships', []):
                 if r.get('to') == slug:
-                    label_text = (card.get('name') or src) \
-                        + (f" — {r.get('nature')}" if r.get('nature') else '')
-                    item = QListWidgetItem()
+                    desired.append((
+                        (card.get('name') or src)
+                        + (f" — {r.get('nature')}" if r.get('nature') else ''),
+                        src))
+        current = [(self._incoming_list.item(i).text(),
+                    self._incoming_list.item(i).data(Qt.ItemDataRole.UserRole))
+                   for i in range(self._incoming_list.count())]
+        if current != desired:
+            # IN-PLACE UPDATE — DO NOT REINTRODUCE clear(). This list took an
+            # access violation at its clear() (crash.log 2026-07-25 14:30);
+            # see the long note in _refresh_list. Reuse rows, take surplus
+            # ones off one at a time, never bulk-destroy.
+            QToolTip.hideText()
+            while self._incoming_list.count() > len(desired):
+                self._incoming_list.takeItem(self._incoming_list.count() - 1)
+            while self._incoming_list.count() < len(desired):
+                self._incoming_list.addItem(QListWidgetItem())
+            for i, (label_text, src) in enumerate(desired):
+                item = self._incoming_list.item(i)
+                if item.text() != label_text:
+                    item.setText(label_text)
+                if item.data(Qt.ItemDataRole.UserRole) != src:
                     item.setData(Qt.ItemDataRole.UserRole, src)
-                    row = QWidget()
-                    h = QHBoxLayout(row)
-                    h.setContentsMargins(4, 0, 4, 0)
-                    h.setSpacing(4)
-                    lbl = QLabel(label_text)
-                    h.addWidget(lbl, stretch=1)
-                    go = QPushButton("→")
-                    go.setFixedWidth(24)
-                    go.setToolTip("Go to this entity's card")
-                    go.clicked.connect(
-                        lambda *_, s2=src: self._goto_entity(s2))
-                    h.addWidget(go)
-                    back = QPushButton("⇄")
-                    back.setFixedWidth(24)
-                    back.setToolTip(
-                        f"Add a reciprocal link: this card → "
-                        f"{card.get('name') or src}")
-                    back.clicked.connect(
-                        lambda *_, s2=src: self._cmd_link_back(s2))
-                    h.addWidget(back)
-                    item.setSizeHint(row.sizeHint())
-                    self._incoming_list.addItem(item)
-                    self._incoming_list.setItemWidget(item, row)
+                item.setToolTip(
+                    f"'{label_text}' links here. Double-click to open its "
+                    f"card, or ⇄ Link back to add the reciprocal line.")
+        self._update_incoming_buttons()
+
+    def _selected_incoming(self) -> Optional[str]:
+        item = self._incoming_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _update_incoming_buttons(self):
+        has = self._selected_incoming() is not None
+        self._btn_incoming_goto.setEnabled(has)
+        self._btn_incoming_back.setEnabled(has)
+
+    def _cmd_incoming_goto(self):
+        src = self._selected_incoming()
+        if src:
+            self._goto_entity(src)
+
+    def _cmd_incoming_link_back(self):
+        src = self._selected_incoming()
+        if src:
+            self._cmd_link_back(src)
 
     def _cmd_link_back(self, src_slug: str):
         """⇄ on a 'Linked from' row: add a 'Links to' line pointing back
@@ -8264,7 +8413,20 @@ class CodexDialog(QDialog):
 def _pick_checked(parent, title: str, entries: list) -> list:
     """Generic checkable review picker shared by the v2 AI passes.
     entries = [(key, label)]; returns the checked keys (all pre-checked),
-    or [] on cancel."""
+    or [] on cancel.
+
+    INSTRUMENTED: this helper sits at the innermost Python frame of a
+    recurring access violation (crash.log 2026-07-25 15:51 and 16:58, both
+    reached from _apply_web_proposal after the user clicked Apply checked).
+    The AV kills the process before any handler runs, and the faulting frame
+    is reported as the CALLER (_pick_dialog), so the stack alone cannot say
+    whether it dies building the dialog, inside exec(), reading the rows
+    back, or unwinding. These four markers localise it — each is flushed to
+    logs/narrative_editor_v2/app.log as it happens, so the last line written
+    before the process dies is the statement that killed it. Remove once the
+    cause is known and fixed."""
+    _log = logging.getLogger("narrative_editor")
+    _log.info("pick_checked: building (%d entries) — %s", len(entries), title)
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     dlg.resize(640, 460)
@@ -8287,11 +8449,23 @@ def _pick_checked(parent, title: str, entries: list) -> list:
     btn_ok.clicked.connect(dlg.accept)
     row.addWidget(btn_ok)
     vbox.addLayout(row)
-    if dlg.exec() != QDialog.Accepted:
-        return []
-    return [lst.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(lst.count())
-            if lst.item(i).checkState() == Qt.CheckState.Checked]
+    _log.info("pick_checked: entering exec()")
+    code = dlg.exec()
+    _log.info("pick_checked: exec() returned %s — reading rows", code)
+    if code != QDialog.Accepted:
+        out = []
+    else:
+        out = [lst.item(i).data(Qt.ItemDataRole.UserRole)
+               for i in range(lst.count())
+               if lst.item(i).checkState() == Qt.CheckState.Checked]
+    # Tear the dialog down explicitly on the event loop instead of letting
+    # the last Python reference drop as this frame unwinds. Dropping it mid
+    # unwind is one of the few ways the AV could be attributed to the caller's
+    # line, which is what the crash log shows.
+    _log.info("pick_checked: read %d rows — releasing dialog", len(out))
+    dlg.setParent(None)
+    dlg.deleteLater()
+    return out
 
 
 class _ZoomableMapView(QGraphicsView):
@@ -9125,7 +9299,13 @@ class WebPlannerDialog(QDialog):
                     self.ui_queue.put(lambda: self._set_ai_busy(
                         False, "Propose cancelled — nothing applied."))
                     return
-                self.ui_queue.put(lambda d=data: self._apply_web_proposal(d))
+                # Hop out of the drain before opening the picker: the drain
+                # slot must not host a nested modal event loop (it also pins
+                # _draining for the whole time the dialog is up, stalling
+                # every other queued UI update). Same deferral pattern as
+                # _on_row_selected / _on_tab_changed / the kind filter.
+                self.ui_queue.put(lambda d=data: QTimer.singleShot(
+                    0, lambda dd=d: self._apply_web_proposal(dd)))
             except Exception as exc:
                 self.ui_queue.put(lambda e=str(exc): self._set_ai_busy(
                     False, f"Propose failed: {e[:120]}"))
@@ -11435,7 +11615,9 @@ class MainWindow(QMainWindow):
         # Connect props signals
         self.props_panel.node_modified.connect(self._on_node_modified)
 
-        # QTimer to drain ui_queue
+        # QTimer to drain ui_queue. See _drain_queue for why the reentrancy
+        # flag exists — it is crash-critical, not defensive tidying.
+        self._draining = False
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(50)
         self._drain_timer.timeout.connect(self._drain_queue)
@@ -11844,7 +12026,8 @@ class MainWindow(QMainWindow):
         self._model_actions = {}
         for model_id, short in [
             (MODEL_SONNET, 'Sonnet 5'),
-            (MODEL_OPUS,   'Opus 4.8'),
+            (MODEL_OPUS,   'Opus 5'),
+            (MODEL_FABLE,  'Fable 5'),
         ]:
             act = QAction(short, self, checkable=True)
             act.setData(model_id)
@@ -12229,8 +12412,8 @@ class MainWindow(QMainWindow):
         self.ai.model = model_id
         for mid, act in self._model_actions.items():
             act.setChecked(mid == model_id)
-        short = model_id.split('-')[1].capitalize()
-        self.status_bar.showMessage(f"AI model: {short}", 3000)
+        self.status_bar.showMessage(
+            f"AI model: {_model_short_name(model_id)}", 3000)
 
     def _set_ai_thinking(self, level: str):
         """Switch the extended-thinking level used for AI calls."""
@@ -12591,17 +12774,36 @@ class MainWindow(QMainWindow):
         self.voice_panel.setParent(None)
 
     def _drain_queue(self):
-        while True:
-            try:
-                fn = self.ui_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                fn()
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                self.status_bar.showMessage(f"Error: {exc}")
+        # CRASH-CRITICAL reentrancy guard. A queued callback may open a modal
+        # — _apply_web_proposal -> _pick_dialog -> _pick_checked -> dlg.exec(),
+        # a QMessageBox, a file dialog — and exec() spins a NESTED event loop.
+        # The 50ms drain timer keeps firing inside that loop, so without this
+        # flag _drain_queue re-enters ~20x/second while the outer fn() is still
+        # on the stack, running further callbacks that rebuild the graph and
+        # lists. Those rebuilds destroy Qt objects the outer frame and the open
+        # dialog still reference -> native access violation with no Python
+        # traceback. Same failure class as the _ZoomableMapView note above.
+        #
+        # Skipping is safe: nothing is dropped, the queue just drains on the
+        # next tick once the modal closes. Deferring UI mutations while a modal
+        # owns the screen is the behaviour we want anyway.
+        if self._draining:
+            return
+        self._draining = True
+        try:
+            while True:
+                try:
+                    fn = self.ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception as exc:
+                    import traceback
+                    traceback.print_exc()
+                    self.status_bar.showMessage(f"Error: {exc}")
+        finally:
+            self._draining = False
 
     # ── NodeGraph signal handlers ────────────────────────────────────────────
 
