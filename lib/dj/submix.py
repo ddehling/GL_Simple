@@ -21,7 +21,6 @@ NOT-YET-FIRED event of that transaction - the abort path for an armed
 transition (already-fired events are the caller's to unwind).
 """
 import os
-from collections import deque
 from queue import SimpleQueue
 
 import numpy as np
@@ -72,7 +71,12 @@ class DJSubmix:
         self._cal_last = None    # clock of the last pre-audible resnap
         self._cal_applied = 0.0  # cumulative base-rate correction (frac)
         self.telemetry = {}      # replaced wholesale each read()
-        self._tel_hist = deque() # (clock, snapshot) for telemetry_delayed
+        # (clock, snapshot) for telemetry_delayed. A LIST that read() replaces
+        # wholesale, never mutates in place: read() runs on the audio render-
+        # ahead thread while the main thread iterates this in
+        # telemetry_delayed(), and an in-place deque append/popleft under that
+        # iteration raises "deque mutated during iteration".
+        self._tel_hist = []
 
     # -- control-thread API ----------------------------------------------------
     def post(self, event):
@@ -461,17 +465,23 @@ class DJSubmix:
         # flash and stage transition moves a beat early. Control/planning
         # code keeps using `telemetry` (render time) - events are scheduled
         # on the render clock and must stay there.
-        self._tel_hist.append((self.clock, snap))
-        while len(self._tel_hist) > 2 and \
-                self.clock - self._tel_hist[0][0] > TEL_HIST_FRAMES:
-            self._tel_hist.popleft()
+        hist = self._tel_hist + [(self.clock, snap)]
+        drop = 0
+        while len(hist) - drop > 2 and \
+                self.clock - hist[drop][0] > TEL_HIST_FRAMES:
+            drop += 1
+        # Rebind, never mutate: readers on the main thread hold the old list
+        # and keep iterating it safely. ~2s of history is a few dozen entries,
+        # so the per-block copy is noise next to the mix itself.
+        self._tel_hist = hist[drop:] if drop else hist
         return out
 
     def telemetry_delayed(self, frames):
         """Telemetry as of `frames` before the render head - i.e. what the
         room is hearing now. Falls back to the newest snapshot when the
         history does not reach that far back (startup, or no delay)."""
-        if frames <= 0 or not self._tel_hist:
+        hist = self._tel_hist       # grab once; read() rebinds, never mutates
+        if frames <= 0 or not hist:
             return self.telemetry
         target = self.clock - frames
         # NEAREST snapshot, not the last one at-or-before `target`: history
@@ -479,7 +489,7 @@ class DJSubmix:
         # up to a full block every time. Nearest turns that systematic lag
         # into a +/- half-block error centred on zero.
         best, best_err = None, None
-        for clk, snap in self._tel_hist:
+        for clk, snap in hist:
             err = abs(clk - target)
             if best_err is None or err < best_err:
                 best, best_err = snap, err

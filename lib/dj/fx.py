@@ -165,6 +165,51 @@ def make_riser(dur_s=8.0, gain=0.5, seed=0):
     return np.stack([x, x], axis=1)
 
 
+def at_peak(buf, peak):
+    """Rescale a one-shot to an exact PEAK amplitude.
+
+    The `gain` args below are pre-filter amplitudes, not peaks: filtered
+    noise has a crest factor near 5, so make_riser(gain=0.16) actually
+    peaks at 0.67 and gain=0.26 clips past full scale. Anything layered
+    over a live mix needs its headroom stated in peaks, or the master
+    limiter decides the balance for you."""
+    m = float(np.abs(buf).max())
+    return buf * (float(peak) / m) if m > 1e-9 else buf
+
+
+def make_roll(beat_s, beats=4, gain=0.3, seed=2):
+    """Accelerating snare/clap ROLL into a landing: hits subdivide 8ths ->
+    16ths -> 32nds over `beats` beats with a swelling envelope, the last
+    hit one subdivision BEFORE the end so the landing itself is free for
+    the impact.
+
+    `beat_s` is the OUTPUT beat (source period / playback rate) - the roll
+    has to lock to what the room hears, not to the file's natural tempo.
+    A riser alone reads as a synth swell; it's the rhythmic acceleration
+    that tells a crowd exactly which downbeat to expect."""
+    beat_s = max(float(beat_s), 0.08)
+    total = beat_s * max(int(beats), 1)
+    hn = int(0.09 * RATE)                        # one hit, decay included
+    n = int(total * RATE) + hn
+    rng = np.random.RandomState(seed)
+    t = np.arange(hn) / RATE
+    filt = SweepFilter(channels=1)
+    filt.set(mode="hp", cutoff_hz=900.0, q=0.9)  # snare-ish, no sub content
+    hit = filt.process((rng.randn(hn) * np.exp(-t / 0.022))[:, None])[:, 0]
+    hit /= max(float(np.abs(hit).max()), 1e-9)
+    out = np.zeros(n)
+    at = 0.0
+    while at < total - 1e-6:
+        frac = at / total
+        div = 2.0 if frac < 0.5 else (4.0 if frac < 0.8 else 8.0)
+        i0 = int(at * RATE)
+        seg = hit[:max(0, min(hn, n - i0))]
+        out[i0:i0 + len(seg)] += seg * (gain * (0.35 + 0.65 * frac ** 2))
+        at += beat_s / div
+    x = np.clip(out, -1.0, 1.0).astype(np.float32)
+    return np.stack([x, x], axis=1)
+
+
 def make_impact(gain=0.7, seed=1):
     """Impact hit: pitch-dropping sub boom + short noise burst + LP tail."""
     dur = 1.4

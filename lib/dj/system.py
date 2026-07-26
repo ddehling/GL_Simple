@@ -117,6 +117,10 @@ class DJSystem:
         self._flam_pairs = set()     # (a_id, b_id) seams that flam-bailed:
                                      # retries become deliberate fades
         self._pulse = (0.0, 0.0)     # momentary energy tap: (value, t_set)
+        self._moment_clock = 0       # submix clock the operator MOMENT lands
+        self._moment_txn = None      # its txn tag (second press = recall)
+        self._moment_gain = 1.0      # deck gain to restore on the landing
+        self._moment_stamped = 0     # landing already flashed to the visuals
         self._decoded = {}           # track_id -> stereo samples (RAM cache)
         self._decoded_order = []
         self._decoding = set()
@@ -673,10 +677,15 @@ class DJSystem:
             swap_eta = (self.swap_at - vclock) / RATE
         # A pending operator MOMENT pre-arms the visuals the same way an
         # approaching seam does.
-        m_clk = getattr(self, "_moment_clock", 0)
+        m_clk = self._moment_clock
         if m_clk > vclock:
             m_eta = (m_clk - vclock) / RATE
             eta = m_eta if eta is None else min(eta, m_eta)
+        elif m_clk and m_clk > self._moment_stamped:
+            # The landing is an ENGINEERED drop - stamp it directly rather
+            # than hoping the DSP detector arms on the hole we just cut.
+            self._dj_drop_wall = time.time()
+            self._moment_stamped = m_clk
         # GROUND-TRUTH MUSICAL DROPS: the DB knows every drop section of
         # every track. The DSP drop detector needs a QUIET episode to arm
         # (by design, so fades can't fake drops) - a relentless hard set
@@ -760,7 +769,7 @@ class DJSystem:
             "level": round(float(tel.get("peak", 0.0)), 3),
             "moment_eta": round((self._moment_clock - self.submix.clock)
                                 / RATE, 1)
-            if getattr(self, "_moment_clock", 0) > self.submix.clock
+            if self._moment_clock > self.submix.clock
             else None,
             "autopilot": self.autopilot,
             "arc_phase": round(self.arc_progress(), 4),
@@ -990,27 +999,7 @@ class DJSystem:
                 self._horizon = self._horizon[1:]   # vetoed item leaves
                 self._horizon_key = None
             elif kind == "moment" and self.state in ("playing", "armed")                     and self.current is not None:
-                pos = self._pos_s()
-                tel_d = (self.submix.telemetry or {}).get("decks", {})
-                rate = (tel_d.get(self.active_deck) or {}).get("rate", 1.0)
-                if pos is not None:
-                    t_hit = self.current.nearest_phrase(
-                        pos + 4 * self.current.period_s)
-                    while t_hit < pos + 2.5:
-                        t_hit += (self.current.phrase_beats or 32)                             * self.current.period_s
-                    eta = (t_hit - pos) / max(rate, 1e-6)
-                    hit = self.submix.clock + int(eta * RATE)
-                    from lib.dj import fx as _fx
-                    rise = min(eta - 0.1, 8.0)
-                    if rise >= 1.0:
-                        self.submix.post({"at": hit - int(rise * RATE),
-                                          "cmd": "fx_play",
-                                          "samples": _fx.make_riser(
-                                              rise, gain=0.16)})
-                    self.submix.post({"at": hit, "cmd": "fx_play",
-                                      "samples": _fx.make_impact(gain=0.26)})
-                    self._moment_clock = hit
-                    self._log({"event": "moment", "in_s": round(eta, 1)})
+                self._do_moment()
             elif kind == "seam_fb":
                 if self._last_style:
                     self.brain.seam_feedback(self._last_style, val)
@@ -1424,6 +1413,10 @@ class DJSystem:
             plan, self.submix.telemetry, self.active_deck, incoming,
             self.current, self.next_track)
         events += self._perc_bed_events(plan, blend_at, swap_at)
+        # The seam takes ownership of this deck now: any MOMENT still in
+        # flight has to be recalled first, or its restore (or worse, its
+        # hole) fires in the middle of the blend.
+        self._cancel_moment("armed")
         # Tag the whole script as one transaction so _do_abort can recall
         # every not-yet-fired event with a single cancel.
         self._txn_id += 1
@@ -1547,6 +1540,9 @@ class DJSystem:
             target = float(val)
         target = max(0.0, min(target, dur - 10.0))
         target = self.current.nearest_downbeat(target)
+        # The landing was computed from the OLD playhead - after a jump it
+        # points at a bar that no longer exists.
+        self._cancel_moment("seek")
         self.submix.post({"cmd": "cue", "deck": self.active_deck,
                           "time_s": target})
         # NOTE: do NOT touch _started_clock - `played` tracks OUTPUT time the
@@ -1554,6 +1550,170 @@ class DJSystem:
         # not make the system think the track is 'done' and fire a mix (the
         # bug that left every jump stuck in the armed state).
         self._log({"event": "seek", "to_s": round(target, 1)})
+
+    def _do_moment(self):
+        """OPERATOR MOMENT: an engineered build-and-drop on the LIVE deck.
+
+        A crowd moment is CONTRAST, not a layer. The first version only
+        played a riser + impact over an unchanged track and read as
+        garbage, for a measurable reason: make_riser(gain=0.16) is -17
+        dBFS RMS and a mastered club track sits around -9, so the build
+        was buried under the very music it was supposed to lift, and the
+        impact landed on a full-energy bar where there was no hole for it
+        to fill. Turning the samples up isn't the fix (0.26 already peaks
+        past full scale into the master limiter) - making ROOM is.
+
+        So the gesture shapes the MUSIC and lets the samples reinforce it:
+
+            |<---------- build (16 beats) ---------->|
+            high-pass sweeps 30 -> 600 Hz ...........|
+                    accelerating roll (8 beats) .....|
+                                       hole (1 beat) |
+                                                     * landing: filter off,
+                                                       gain back, impact
+
+        Everything restores ON the downbeat, which is what the room hears
+        as the drop. A second press before the landing recalls the whole
+        thing (see _cancel_moment)."""
+        if self._moment_clock > self.submix.clock:
+            self._cancel_moment("recalled")      # second press = take it back
+            return
+        pos = self._pos_s()
+        tel_d = (self.submix.telemetry or {}).get("decks", {})
+        dk = tel_d.get(self.active_deck) or {}
+        if pos is None or not dk.get("playing"):
+            return
+        rate = max(float(dk.get("rate") or 1.0), 1e-6)
+        g0 = float(dk.get("gain", 1.0))
+        if g0 <= 0.05:
+            # Mid-fade or already ducked to nothing: there is no music here
+            # to build out of, and restoring to this gain would strand a
+            # silent deck.
+            self._log({"event": "moment_skipped", "why": "deck not up"})
+            return
+        period = max(float(self.current.period_s or 0.5), 0.15)
+        beat = period / rate                     # OUTPUT seconds per beat
+        phrase = (self.current.phrase_beats or 32) * period    # source secs
+
+        # A landing far enough out to BUILD into. The old code demanded
+        # only 2.5s, so a boundary that happened to be close gave a naked
+        # impact with no build at all - the same button did a different
+        # thing every press.
+        build_beats = 16 if 16 * beat <= 10.0 else 8
+        build = build_beats * beat
+        # Land on the 16-BEAT grid (the phrase grid and its midpoint), not
+        # on phrases alone: a 32-beat phrase is 16s at 120 bpm, so phrase-
+        # only landings made the operator wait up to a third of a minute
+        # for a button that is supposed to feel like a reflex. 4 bars is
+        # always a musically real place to drop.
+        grid = min(phrase, 16 * period)
+        anchor = self.current.nearest_phrase(pos + (build + 2.0 * beat) * rate)
+        need = pos + (build + 1.0) * rate
+        cands = [anchor + i * grid for i in range(-2, 9)]
+        cands = [c for c in cands
+                 if c >= need and c <= self.current.duration_s - 2.0]
+        if not cands:
+            self._log({"event": "moment_skipped", "why": "no landing"})
+            return
+        t_hit = min(cands)
+        eta = (t_hit - pos) / rate
+        hit = self.submix.clock + int(eta * RATE)
+        deck = self.active_deck
+        from lib.dj import fx as _fx
+
+        # Peak-controlled, not gain-controlled: these land on a mix that is
+        # already near full scale, so their headroom has to be explicit
+        # (see fx.at_peak).
+        riser = {"at": hit - int(build * RATE), "cmd": "fx_play",
+                 "samples": _fx.at_peak(_fx.make_riser(build), 0.45)}
+        roll_beats = 8 if build_beats >= 16 else 4
+        roll = {"at": hit - int(roll_beats * beat * RATE), "cmd": "fx_play",
+                "samples": _fx.at_peak(_fx.make_roll(beat, roll_beats), 0.38)}
+        impact = {"at": hit, "cmd": "fx_play",
+                  "samples": _fx.at_peak(_fx.make_impact(), 0.55)}
+
+        if self.state == "armed":
+            # The seam script owns this deck's gain/EQ/filter until the
+            # handover - shaping it here would fight the transition and
+            # could strand it filtered. Layer-only, and it still lands on
+            # a downbeat.
+            ev = [riser, roll, impact]
+        else:
+            back = hit + int(max(0.5, beat) * RATE)
+            ev = [
+                # -- the build ---------------------------------------------
+                # Two filter events: one set() call can't sweep, it would
+                # start AND end at the same cutoff (see SweepFilter.set).
+                # The sweep alone drains the bass - an EQ move on top of it
+                # would be one more thing to have to put back.
+                # Starts at 30 Hz, under the sub: the resonant bump has to
+                # sit BELOW the material at the top of the sweep or the
+                # build opens by shoving a bass-heavy master into the
+                # limiter (measured +0.9 dB of peak at q=1.1 from 45 Hz).
+                {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
+                 "mode": "hp", "cutoff_hz": 30.0, "ramp_s": 0.0, "q": 1.0},
+                {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
+                 "cutoff_hz": 600.0, "ramp_s": build},
+                riser,
+                roll,
+                # THE HOLE: one beat of near-silence. This is the part that
+                # makes the landing hit - the roll rides over it alone.
+                {"at": hit - int(beat * RATE), "cmd": "gain", "deck": deck,
+                 "value": 0.07 * g0, "ramp_s": min(0.06, 0.25 * beat)},
+                # -- the landing, all on the downbeat ----------------------
+                {"at": hit, "cmd": "filter", "deck": deck, "mode": "off"},
+                # 50 ms, not 0: it still reads as instant, and it staggers
+                # the track's return behind the impact's transient instead
+                # of stacking both peaks into the master limiter.
+                {"at": hit, "cmd": "gain", "deck": deck, "value": g0,
+                 "ramp_s": 0.05},
+                impact,
+                # Insurance. Nothing may leave this deck high-passed at 600
+                # Hz and 7% gain - an abort or watchdog firing mid-gesture
+                # would otherwise silence the room.
+                {"at": back, "cmd": "filter", "deck": deck, "mode": "off"},
+                {"at": back, "cmd": "gain", "deck": deck, "value": g0,
+                 "ramp_s": 0.05},
+            ]
+        # Own txn namespace: _do_abort cancels by the CURRENT _txn_id, so a
+        # moment must never touch that counter or an abort would recall the
+        # moment and leave the transition script running.
+        self._moment_txn = f"moment{self.submix.clock}"
+        for e in ev:
+            e["txn"] = self._moment_txn
+        self.submix.post_many(ev)
+        self._moment_clock = hit
+        self._moment_gain = g0
+        self._log({"event": "moment", "in_s": round(eta, 1),
+                   "build_s": round(build, 1), "beats": build_beats,
+                   "layer_only": self.state == "armed"})
+
+    def _cancel_moment(self, why="cancel"):
+        """Recall a scheduled MOMENT and put the deck back. Called on a
+        second press, and by anything that takes over the live deck
+        (arming, abort, seek, watchdog handoff) - a half-fired gesture
+        leaves the deck high-passed and 20 dB down, which is a dead room."""
+        if not self._moment_txn:
+            return
+        if self._moment_clock and \
+                self.submix.clock > self._moment_clock + RATE:
+            # Already landed and restored itself - nothing left to recall,
+            # and re-posting the stored gain here would stomp whatever owns
+            # the deck now.
+            self._moment_txn = None
+            return
+        deck = self.active_deck
+        self.submix.post({"cmd": "cancel", "txn": self._moment_txn})
+        # Queue order is preserved, so this lands after the cancel and
+        # restates whatever already fired (no-op if nothing had).
+        self.submix.post_many([
+            {"cmd": "filter", "deck": deck, "mode": "off"},
+            {"cmd": "gain", "deck": deck, "value": self._moment_gain,
+             "ramp_s": 0.08},
+        ])
+        self._log({"event": "moment_cancel", "why": why})
+        self._moment_txn = None
+        self._moment_clock = 0
 
     def _do_abort(self, via="abort"):
         """Recall an ARMED transition: cancel its not-yet-fired events and
@@ -1718,6 +1878,7 @@ class DJSystem:
         goes silent, not to win seam-of-the-night."""
         nxt = self.next_track
         incoming = "b" if self.active_deck == "a" else "a"
+        self._cancel_moment("handoff")   # its hole would land mid-rescue
         if self._recovery_txn is not None:
             self.submix.post({"cmd": "cancel", "txn": self._recovery_txn})
             self._recovery_txn = None

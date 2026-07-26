@@ -156,7 +156,10 @@ DJSystem) · `_dj_quality_test` / `_dj_theory_test` / `_dj_soak_test`
 wiring + DB v10 — canned blobs, no torch) · `_dj_exclude_test` (do-not-use
 flag DB v11 + boundary filter + save-set invariant) · `_dj_rhythm_test`
 (rhythm signatures DB v13: synthetic known patterns → extraction, swing,
-pairwise clash/flam terms, tempo-multiple recovery, chips vocabulary).
+pairwise clash/flam terms, tempo-multiple recovery, chips vocabulary) ·
+`_dj_moment_test` (the operator MOMENT gesture measured in the rendered
+audio: the hole, the sweep, the landing, and that the deck is always given
+back — pass a path to also write a WAV you can listen to).
 
 Sims (not pass/fail — they print distributions you read):
 `_dj_persona_sim` (are the personas audibly different DJs?) ·
@@ -182,3 +185,14 @@ Sims (not pass/fail — they print distributions you read):
 - WSOLA legitimately duplicates/skips the odd transient beyond ±5%
   stretch; the brain prefers small ratios for a reason.
 - Windows can't decode m4a/aac via miniaudio — PyAV fallback handles it.
+- A one-shot layered over the live mix is inaudible at any sane gain: the
+  MOMENT button used to just play a riser + impact over an unchanged track
+  (riser RMS −17 dBFS under a −9 dBFS master) and read as nothing. Crowd
+  moments are CONTRAST — sweep the bass out, cut a beat of near-silence,
+  give it all back on the downbeat. `fx.at_peak` exists because the `gain`
+  args of `make_riser`/`make_impact` are pre-filter amplitudes, not peaks
+  (filtered noise has a crest factor near 5 — `gain=0.26` clips).
+- Anything that shapes the LIVE deck outside a transition must be recalled
+  by whatever takes the deck over next (`_cancel_moment` from `_arm`,
+  `_do_seek`, the watchdog handoff). A half-fired build leaves the deck
+  high-passed at 600 Hz and 7 % gain, which is a dead room.

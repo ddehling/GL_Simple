@@ -183,7 +183,9 @@
                  and testing, and they were crowding ABORT-sized mis-taps
                  into a 7-button phone row. -->
             <div class="transport" style="margin-top:6px">
-                <button class="btn go" id="dj-moment">✦ MOMENT</button>
+                <button class="btn go" id="dj-moment"
+                        title="Build into the next phrase and drop on it">
+                    ✦ MOMENT</button>
                 <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
                 <!-- Trainwreck rescue: recalls an armed transition. Only
                      shown while the plan is still before its point of no
@@ -825,8 +827,15 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             if (dj.level != null)
                 $("dj-level").style.width =
                     Math.min(100, dj.level * 100) + "%";
-            $("dj-moment").textContent = dj.moment_eta != null
-                ? `✦ ${Math.max(0, dj.moment_eta).toFixed(0)}s` : "✦ MOMENT";
+            // While a moment is building the button IS the cancel - the
+            // gesture cuts a hole in the live track, so calling it off has
+            // to be one tap away.
+            const mEta = dj.moment_eta;
+            $("dj-moment").textContent = mEta != null
+                ? `✕ ${Math.max(0, mEta).toFixed(0)}s` : "✦ MOMENT";
+            $("dj-moment").title = mEta != null
+                ? "Building - tap again to call it off"
+                : "Build into the next phrase and drop on it";
             renderHistory(dj.history);
             show($("dj-tonight"), (dj.history || []).length > 0);
             $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
