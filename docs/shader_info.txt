@@ -240,16 +240,22 @@ berries and it is the highlights that make it read as fruit, not gaps. And a
 new param must be added to `WYNE_PARAMS` in the visual harness or the harness
 renders it at zero while the app shows it working (`bottle_rack` hit this).
 
-**The sky must reach the RIM.** `wyne_sky` grades from a bright horizon (at
-eye level in the vineyard, ~v 0.28 - NOT at the canopy line) out to a dark but
-non-zero zenith at the outer ring: `grad = mix(1.0, 0.30, t)`. Three separate
-attempts got this wrong and each produced a different user-visible complaint -
-a hairline band, a sky "starting halfway up the arc", and a sky that "ends too
-low". The rules that came out of it: (a) never let the falloff reach zero, an
-overhead sky is DARKER than the horizon, not absent; (b) never hard-cut the
-lower edge, fade it out under the ground layers instead; (c) keep the gradient
-STEEP anyway, because the outer annulus is by far the largest area on a fan and
-a bright zenith spends the whole per-receiver budget on empty sky.
+**The sky must reach the RIM, and it starts at the SKYLINE.** Since the
+July 2026 vista rebuild, `wyne_hillside` is a landscape (foreground fruiting
+row + two vine-striped ridgelines) whose far crest undulates over v ~0.66-0.76,
+and `wyne_sky`'s horizon sits at v 0.62 - just under the LOWEST crest dip - so
+the ridge silhouettes against the bright end of the sky and bright sky never
+shows UNDER a hill (an eye-level horizon band behind the row was tried after
+the vista landed and read as exactly that mistake; if the crest heights move,
+move the sky horizon with them). From the horizon the sky grades out to a dark
+but non-zero zenith at the outer ring: `grad = mix(1.0, 0.30, t)`. Earlier
+attempts produced a hairline band, a sky "starting halfway up the arc" (when
+nothing yet filled the space below it), and a sky that "ends too low". The
+rules that came out of it: (a) never let the falloff reach zero, an overhead
+sky is DARKER than the horizon, not absent; (b) never hard-cut the lower edge,
+fade it out under the terrain layers instead; (c) keep the gradient STEEP
+anyway, because the outer annulus is by far the largest area on a fan and a
+bright zenith spends the whole per-receiver budget on empty sky.
 
 **WHICH SIDE IS UP (FyneWynz-specific, and it bit twice)**: because every
 object in this realm stands RADIALLY OUTWARD from an inner ground arc
