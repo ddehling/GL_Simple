@@ -208,7 +208,12 @@ class Deck:
 
     # -- transport -----------------------------------------------------------
     def cue(self, time_s):
-        """Position the cursor (deck stopped or playing)."""
+        """Position the cursor (deck stopped or playing). Repositioning
+        the platter ends any in-flight brake - without this, a cue+start
+        recall of a braking deck (moment spinback) would reposition the
+        stretcher while _read_brake kept grinding the OLD raw position
+        down to a stop it no longer owns."""
+        self._brake = None
         frame = int(time_s * RATE)
         self._virt = frame
         self.stretch.seek(frame)

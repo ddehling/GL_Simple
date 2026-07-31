@@ -113,12 +113,10 @@ def cmd_autonomous(args):
 
 def cmd_audition(args):
     """Render just the seam between two specific tracks."""
-    from lib.audio_engine import AudioEngine
     from lib.dj.db import LibraryDB
     from lib.dj.brain import Brain, load_library
-    from lib.dj.submix import DJSubmix
     from lib.dj.themes import get_theme
-    from lib.dj.features import decode_file_stereo
+    from lib.dj.audition import render_seam
 
     root = resolve_music_dir(args.dir)
     db = LibraryDB(root)
@@ -150,31 +148,10 @@ def cmd_audition(args):
     print(f"plan: {plan['style']} | A exits {plan['out_s']:.1f}s | "
           f"B enters {plan['in_s']:.1f}s | pair score {plan['pair_score']}")
 
-    pre_roll = 12.0
-    engine = AudioEngine()
-    sub = DJSubmix()
-    engine.attach_track("dj", sub)
-    cue_a = max(0.0, plan["out_s"] - pre_roll)
-    cue_a = a.nearest_downbeat(cue_a)
-    sub.post_many([
-        {"cmd": "load", "deck": "a", "samples": decode_file_stereo(db.abs(a.path)),
-         "grid": a.grid, "gain_db": a.gain_db, "cue_s": cue_a},
-        {"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01},
-        {"cmd": "start", "deck": "a"},
-        {"cmd": "load", "deck": "b", "samples": decode_file_stereo(db.abs(b.path)),
-         "grid": b.grid, "gain_db": b.gain_db, "cue_s": plan["in_s"]},
-    ])
-    # Prime telemetry with one tiny silent read so build_events sees deck A.
-    gen = engine._mixer()
-    next(gen)
-    gen.send(256)
-    events, swap_at, blend_at = brain.build_events(
-        plan, sub.telemetry, "a", "b", a, b)
-    sub.post_many(events)
-    total_s = pre_roll + (swap_at - blend_at) / RATE + 30.0
-    out = [np.frombuffer(gen.send(4410), dtype=np.float32).reshape(-1, 2)
-           for _ in range(int(total_s * RATE) // 4410)]
-    mix = np.concatenate(out, axis=0)
+    # Shared renderer (lib/dj/audition.py) - same automation the planner's
+    # audition button plays, dynamic pre-roll included (the old fixed 12s
+    # pre-roll squeezed every long blend).
+    mix = render_seam(db, a, b, plan, status=lambda s: print("  " + s))
     wav = args.wav or os.path.join("logs", "dj_audition.wav")
     os.makedirs(os.path.dirname(os.path.abspath(wav)), exist_ok=True)
     _write_wav(wav, mix)

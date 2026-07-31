@@ -196,7 +196,7 @@ whatever is currently in the glass. It is duplicated per file on purpose
 |---|---|---|
 | 0.97 | wyne_sky (horizon band over the hillside; collapses to lantern gloom as cellar_depth rises) | state |
 | 0.90 | stars | engine (starryness) |
-| 0.86 | wyne_hillside (trellis rows + rim-lit crest; silhouette-against-band) | state |
+| 0.86 | wyne_hillside (vine-striped hill vista + foreground fruiting row; rim-lit crests) | state |
 | 0.80 | wyne_terroir (the Vine: warm mineral glints + roots / cold vintage-chart lattice) | narrative |
 | 0.70 | wyne_clusters (hanging bunches; veraison colour walk + botrytis gold) | state |
 | 0.62 | wyne_cellar (barrel heads, rim-lit hoops, two candles) | state |

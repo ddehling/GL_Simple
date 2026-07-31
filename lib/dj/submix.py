@@ -55,6 +55,7 @@ class DJSubmix:
         self.clock = 0           # output frames rendered since attach
         self.mix_gain = 1.0
         self._fade = None        # (per_frame_delta, target)
+        self._mgain_ramp = None  # (target, per_frame_delta) master-bus ramp
         self.done = False
         self._auto = []          # automation events sorted by 'at'
         self._sync = None        # {"slave": name, "master": name}
@@ -101,6 +102,21 @@ class DJSubmix:
             # Pre-rendered one-shot (riser/impact) - the third mini-layer.
             self._fx.append([np.asarray(e["samples"], dtype=np.float32),
                              0, float(e.get("gain", 1.0))])
+            return
+        if cmd == "mix_gain":
+            # MASTER-BUS gain, the one gesture that works while a seam
+            # script owns both decks (see DJSystem._moment_cut). Separate
+            # from _fade, which is the shutdown ramp and sets `done` -
+            # and subordinate to it: once a shutdown fade is running,
+            # nothing may push the master back up.
+            if self._fade is not None:
+                return
+            tgt = float(np.clip(e.get("value", 1.0), 0.0, 1.0))
+            ramp = max(float(e.get("ramp_s", 0.0)), 0.0)
+            self._mgain_ramp = None if ramp <= 0.0 else \
+                (tgt, abs(tgt - self.mix_gain) / (ramp * RATE))
+            if ramp <= 0.0:
+                self.mix_gain = tgt
             return
         if cmd == "duck":
             self._duck = ({"depth": float(e.get("depth", 0.22))}
@@ -432,6 +448,14 @@ class DJSubmix:
                 self.mix_gain = g1
                 if g1 <= target:
                     self.done = True
+            elif self._mgain_ramp is not None:
+                tgt, step = self._mgain_ramp
+                g0 = self.mix_gain
+                g1 = g0 + np.clip(tgt - g0, -step * m, step * m)
+                out[pos:pos + m] *= np.linspace(g0, g1, m)[:, None]
+                self.mix_gain = float(g1)
+                if abs(g1 - tgt) < 1e-6:
+                    self._mgain_ramp = None
             elif self.mix_gain != 1.0:
                 out[pos:pos + m] *= self.mix_gain
             self.clock += m

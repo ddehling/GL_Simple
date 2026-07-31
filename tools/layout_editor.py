@@ -866,6 +866,9 @@ WEATHER_SETS = {{
         #     ``projects/{id}/media/``) to a ``script.json`` authored
         #     in the narrative editor. Pair with
         #     ``"narrative_player"`` in ``background_events``.
+        #   - ``narrative_node_delay``: seconds of silence between one
+        #     narrative clip ending and the next starting. Omit (or
+        #     None) to keep the player default (3 s).
         #   - ``sound_pool_dir``: directory (relative to
         #     ``projects/{id}/media/``) of clips for the random
         #     ambient sound pool. Pair with ``"sound_pool"`` in
@@ -875,6 +878,7 @@ WEATHER_SETS = {{
         #     (default); above 0 = gapless stream, each clip
         #     crossfading into the next.
         "narrative_script": None,
+        "narrative_node_delay": None,
         "sound_pool_dir": None,
         "sound_pool_crossfade": 0.0,
         "background_events": [],

@@ -43,101 +43,21 @@ term section too: the groove predictor is a claim about a seam made before
 it played, and this is the only place that claim is ever scored.
 """
 import argparse
-import glob
-import json
-import math
 import os
 import statistics as st
 import sys
 from collections import Counter, defaultdict
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
-LOG_DIR = os.path.join(ROOT, "logs")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
-# A seam is "rough" by the ENGINE's own bar - the same thresholds
-# system._assess_seam uses to hand out an auto thumbs-down - so this report
-# and the cross-night learning never disagree about what a bad seam was.
-FLAM_BEATS = 0.12
-HOLE_S = 1.5
-# ...but the codebase's own stated audibility threshold for two percussive
-# transients is ~25 ms (brain.plan_transition's groove-offset gate), which
-# is ~0.055 beats at 128 bpm - less than HALF the verdict bar. The two
-# numbers measure slightly different things (grid-phase error vs kick
-# placement), so a seam in the band between them is not proven audible;
-# what IS certain is that it is invisible to the learning loop. Counted
-# separately rather than folded silently into "clean".
-AUDIBLE_BEATS = 0.055
-
-
-# ---------------------------------------------------------------- loading
-
-def load_nights(since_days=None, last_only=False, log_dir=LOG_DIR):
-    """[(date_str, [event, ...]), ...] oldest first."""
-    paths = sorted(glob.glob(os.path.join(log_dir, "dj_*.jsonl")))
-    paths = [p for p in paths
-             if os.path.basename(p)[3:-6].isdigit()]     # dj_YYYYMMDD.jsonl
-    if last_only:
-        paths = paths[-1:]
-    elif since_days:
-        paths = paths[-int(since_days):]
-    nights = []
-    for p in paths:
-        evs = []
-        with open(p, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    evs.append(json.loads(line))
-                except ValueError:
-                    continue
-        if evs:
-            nights.append((os.path.basename(p)[3:-6], evs))
-    return nights
-
-
-def pair_seams(events):
-    """Join each `armed` plan to the `seam_quality` it produced.
-
-    The engine logs the plan when it arms and the measurement when the seam
-    finishes, with the incoming title as the only shared key (`armed.next`
-    == `seam_quality.b`). Walk forward in time and match the first unclaimed
-    measurement for that title - an armed transition that got ABORTED never
-    produces one and correctly drops out."""
-    seams = []
-    pending = []                       # armed events awaiting their outcome
-    for e in events:
-        k = e.get("event")
-        if k == "armed":
-            pending.append(e)
-        elif k == "abort":
-            if pending:
-                pending.pop()          # recalled before it played
-        elif k == "seam_quality":
-            hit = None
-            for i, a in enumerate(pending):
-                if a.get("next") == e.get("b"):
-                    hit = pending.pop(i)
-                    break
-            seams.append({"armed": hit or {}, "q": e})
-    return seams
-
-
-def is_rough(q):
-    return (float(q.get("max_err_beats") or 0.0) >= FLAM_BEATS
-            or float(q.get("hole_s") or 0.0) >= HOLE_S)
-
-
-def severity(q):
-    """A single 0..1 badness number for correlation. Flam in beats and hole
-    in seconds are different units; normalize each by the point it becomes
-    AUDIBLE (not the verdict bar - correlation wants the full gradient, not
-    a step at the threshold) and take the worse."""
-    f = float(q.get("max_err_beats") or 0.0) / AUDIBLE_BEATS
-    h = float(q.get("hole_s") or 0.0) / 0.35
-    return min(max(f, h), 3.0) / 3.0
+# The data layer (log loading, armed<->seam_quality joining, the rough/
+# audible thresholds) lives in lib/dj/review.py so the planner's
+# post-mortem surfaces read the SAME evidence with the SAME bars. This
+# file is only the human formatting.
+from lib.dj.review import (AUDIBLE_BEATS, FLAM_BEATS, HOLE_S, LOG_DIR,
+                           corr as _corr, is_rough, load_nights,
+                           pair_seams, severity)
 
 
 # ---------------------------------------------------------------- reports
@@ -307,22 +227,6 @@ def _report_rhythm_prediction(seams):
             print("    NOT PREDICTIVE. The groove terms gate styles and lean")
             print("    selection on the strength of this claim; it is not")
             print("    currently earning that authority.")
-
-
-def _corr(xs, ys):
-    """Pearson r over the pairs where both are present."""
-    pts = [(x, y) for x, y in zip(xs, ys)
-           if isinstance(x, (int, float)) and isinstance(y, (int, float))
-           and math.isfinite(x) and math.isfinite(y)]
-    if len(pts) < 6:
-        return None
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    sx, sy = st.pstdev(xs), st.pstdev(ys)
-    if sx < 1e-9 or sy < 1e-9:
-        return None
-    mx, my = st.mean(xs), st.mean(ys)
-    return (sum((x - mx) * (y - my) for x, y in pts) / len(pts)) / (sx * sy)
 
 
 def report_gates(seams, events):

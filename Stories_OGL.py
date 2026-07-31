@@ -2139,6 +2139,9 @@ class EnvironmentalSystem:
         # narrative_player background event reads this and reloads when it
         # changes, so switching weather sets cleanly swaps scripts.
         state["narrative_script"] = self.weather_set.get_narrative_script()
+        # Optional per-set override for the pause between narrative clips
+        # (None = keep the narrative_player's node_delay default).
+        state["narrative_node_delay"] = self.weather_set.get_narrative_node_delay()
         # Same deal for the random ambient-sound pool directory.
         state["sound_pool_dir"] = self.weather_set.get_sound_pool_dir()
         # Opt-in crossfade window (seconds) for the sound pool: 0 = original
@@ -2193,90 +2196,25 @@ class EnvironmentalSystem:
         state["high_punch"] = sig["high_punch"]
         state["audio_punch"] = sig["punch"]
         state["audio_energy"] = sig["energy"]
-        # When the autonomous DJ is playing, it KNOWS the energy of what's
-        # on the decks (per-track level x playhead energy curve) - the DSP
-        # estimate reads every steady track as ~medium (AGC bands hover at
-        # 1.0), which left the club unable to tell chill from peak. Ground
-        # truth wins; the DSP value remains the mic-mode fallback. Smoothed
-        # here (~0.8s) - just enough to hide the 2 Hz curve steps.
-        dj_e = state.get("dj_energy")
-        if state.get("dj_active") and dj_e is not None:
-            prev = getattr(self, "_dj_energy_sm", None)
-            k = 1.0 - float(np.exp(-(audio_dt or 0.025) / 0.8))
-            sm = dj_e if prev is None else prev + (float(dj_e) - prev) * k
-            self._dj_energy_sm = sm
-            state["audio_energy"] = sm
-        else:
-            self._dj_energy_sm = None
         state["build_level"] = sig["build"]
-        # DJ FOREKNOWLEDGE -> deterministic build: the decks publish the
-        # next drop/seam ETA; ramp build_level through the final 8s so
-        # every pattern's coil-up (and the director's squeeze) lands
-        # BEFORE every known drop - the DSP riser detector only catches
-        # builds the mastering makes obvious.
-        dj_eta = state.get("dj_next_drop_eta")
-        if state.get("dj_active") and dj_eta is not None and dj_eta < 8.0:
-            state["build_level"] = max(state["build_level"],
-                                       min(1.0, 1.0 - dj_eta / 8.0))
         state["drop"] = sig["drop"]
         state["drop_decay"] = sig["drop_decay"]
-        # DJ ground-truth drops: the decks KNOW when a drop section lands
-        # (published as a wall-time stamp). Fire the same drop/drop_decay
-        # signals the DSP detector would - hard sets never give the DSP
-        # path the quiet episode it needs to arm, so without this the
-        # club sat still through the hardest-hitting moments.
-        ddt = state.get("dj_drop_t")
-        if (state.get("dj_active") and ddt
-                and ddt != getattr(self, "_dj_drop_seen", None)):
-            self._dj_drop_seen = ddt
-            self._dj_drop_env = 1.0
-            state["drop"] = True
-        env = getattr(self, "_dj_drop_env", 0.0)
-        if env > 0.001:
-            state["drop_decay"] = max(state["drop_decay"], env)
-            self._dj_drop_env = env * float(
-                np.exp(-(audio_dt or 0.025) / 0.35))
-        # GROUND-TRUTH BEAT: while the DJ plays, the audible deck's stored
-        # grid IS the beat - sample-tight bpm/phase/bar/phrase for every
-        # beat-synced shader, where the DSP detector on the mix lags and
-        # quantizes ('doesn't respond to beats in a clear manner' - user).
-        # Punches get a grid-pulse FLOOR scaled by the section's bass
-        # share: relentless hard sets flatten the AGC punch envelopes
-        # exactly when the floor hits hardest.
+        # DJ ground-truth -> visuals coupling (energy smoothing, build
+        # foreknowledge ramp, hard/natural drop stamps, grid-pulse beat
+        # floor, operator-MOMENT breath-hold). Lives in lib/dj/vis.py so
+        # the offline trace gate (_dj_moment_vis_test) exercises the
+        # exact code that drives the room; the DSP values above remain
+        # the mic-mode fallback it passes through when the DJ is off.
+        if getattr(self, "_dj_vis", None) is None:
+            from lib.dj.vis import DJVisualCoupler
+            self._dj_vis = DJVisualCoupler()
         lb = None
         if self._dj is not None and self._dj.active:
             try:
                 lb = self._dj.live_beat()
             except Exception:
                 lb = None
-        if lb is not None:
-            state["bpm"] = lb["bpm"]
-            ph = lb["phase"]
-            prev_ph = getattr(self, "_dj_beat_prev", None)
-            onset = prev_ph is not None and ph < prev_ph - 0.5
-            self._dj_beat_prev = ph
-            drive = lb.get("drive", 1.0)
-            if onset and drive >= 0.2:
-                self._dj_beat_env = drive
-            benv = getattr(self, "_dj_beat_env", 0.0)
-            # Phases/bpm stay grid-true through breakdowns (motion should
-            # keep gliding); PULSES follow the section's actual rhythm -
-            # a resting kick must not flash the room.
-            state["beat"] = bool(state["beat"]) or (onset and drive >= 0.2)
-            state["beat_decay"] = max(state["beat_decay"], benv)
-            state["beat_phase"] = ph
-            state["bar_phase"] = lb["bar_phase"]
-            state["phrase_phase"] = lb["phrase_phase"]
-            state["beat_confidence"] = max(state["beat_confidence"], 0.95)
-            pulse = benv * min(1.0, lb["bass_share"] * 2.5)
-            state["beat_intensity"] = max(state["beat_intensity"], pulse)
-            state["bass_punch"] = max(state["bass_punch"], pulse)
-            state["audio_punch"] = max(state["audio_punch"], pulse)
-            self._dj_beat_env = benv * float(
-                np.exp(-(audio_dt or 0.025) / 0.18))
-        else:
-            self._dj_beat_prev = None
-            self._dj_beat_env = 0.0
+        self._dj_vis.apply(state, audio_dt, lb)
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
         state["rhythm_density"] = sig["density"]
@@ -2512,7 +2450,7 @@ class EnvironmentalSystem:
                         self._dj_pending_arc = list(arg or [])
                         self._dj.set_arc_waypoints(arg or [])
                     elif action == 'moment':
-                        self._dj.moment()
+                        self._dj.moment(str(arg or 'drop'))
                     elif action == 'mix_now':
                         self._dj.mix_now()
                     elif action == 'abort':

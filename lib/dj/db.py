@@ -13,8 +13,12 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 13              # v13: tracks.rhythm (beat-synchronous
-                                 #      rhythm signature - lib/dj/rhythm.py)
+SCHEMA_VERSION = 14              # v14: setlists.total_s/arc_json (compiled
+                                 #      set duration + arc, honored live) +
+                                 #      tracks.bpm_source/bpm_scan/
+                                 #      bpm_verified_at (live tempo verify
+                                 #      written back - see set_verified_tempo)
+                                 # (v13: tracks.rhythm / rhythm signature)
                                  # (v12: tracks.chroma + tracks.structure)
                                  # (v11: tracks.excluded / do-not-use flag)
                                  # (v10: tracks.mood_ml / Music2Emo)
@@ -52,6 +56,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     chroma TEXT,                        -- v12 JSON 12-bin A-origin pitch-class profile
     structure TEXT,                     -- v12 JSON ML segments {segments:[[s,e,label]..]}
     rhythm TEXT,                        -- v13 JSON beat-sync rhythm signature
+    bpm_source TEXT,                    -- v14 'scan' (default) | 'live_verified'
+    bpm_scan REAL,                      -- v14 original scanner bpm (pre-verify)
+    bpm_verified_at REAL,               -- v14 when the live verify wrote back
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -119,6 +126,8 @@ CREATE TABLE IF NOT EXISTS setlists (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     theme TEXT, notes TEXT,
+    total_s REAL,                       -- v14 compiled set length (live arc clock)
+    arc_json TEXT,                      -- v14 JSON [[progress, energy], ...] waypoints
     created_at REAL, updated_at REAL
 );
 CREATE TABLE IF NOT EXISTS setlist_entries (
@@ -222,6 +231,19 @@ class LibraryDB:
             if "rhythm" not in have:                          # v13
                 self.conn.execute(
                     "ALTER TABLE tracks ADD COLUMN rhythm TEXT")
+            for col, typ in (("bpm_source", "TEXT"),          # v14
+                             ("bpm_scan", "REAL"),
+                             ("bpm_verified_at", "REAL")):
+                if col not in have:
+                    self.conn.execute(
+                        f"ALTER TABLE tracks ADD COLUMN {col} {typ}")
+            have_sl = {r[1] for r in
+                       self.conn.execute("PRAGMA table_info(setlists)")}
+            for col, typ in (("total_s", "REAL"),             # v14
+                             ("arc_json", "TEXT")):
+                if have_sl and col not in have_sl:
+                    self.conn.execute(
+                        f"ALTER TABLE setlists ADD COLUMN {col} {typ}")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -398,6 +420,61 @@ class LibraryDB:
             except ValueError:
                 return None
         return None
+
+    def set_setlist_meta(self, setlist_id, theme=None, notes=None,
+                         total_s=None, arc_json=None):
+        """Update a setlist's plan-level metadata. Only the fields passed
+        non-None are written; total_s/arc_json are what the live system
+        uses to run the set's OWN arc clock instead of the generic night
+        cycle (system.arc_progress)."""
+        sets, vals = [], []
+        for col, v in (("theme", theme), ("notes", notes),
+                       ("total_s", total_s), ("arc_json", arc_json)):
+            if v is not None:
+                sets.append(f"{col} = ?")
+                vals.append(v)
+        if not sets:
+            return
+        sets.append("updated_at = ?")
+        vals += [time.time(), setlist_id]
+        self.conn.execute(
+            f"UPDATE setlists SET {', '.join(sets)} WHERE id = ?",
+            tuple(vals))
+        self.conn.commit()
+
+    def set_verified_tempo(self, track_id, bpm, beat_grid, conf):
+        """Write back a live-verified tempo (system._verify_tempo's groove
+        re-measure). The scanner's original bpm is preserved once in
+        bpm_scan so the correction is reversible; every future library
+        load (planner compile AND live) then starts from the measured
+        value instead of re-discovering the same disagreement nightly."""
+        self.conn.execute(
+            "UPDATE tracks SET bpm_scan = COALESCE(bpm_scan, bpm),"
+            " bpm = ?, bpm_conf = ?, beat_grid = ?,"
+            " bpm_source = 'live_verified', bpm_verified_at = ?"
+            " WHERE id = ?",
+            (bpm, conf,
+             json.dumps(beat_grid) if beat_grid is not None else None,
+             time.time(), track_id))
+        self.conn.commit()
+
+    def coverage_counts(self):
+        """Per-pass analysis coverage over non-missing tracks:
+        {pass_name: (done, total)}. The GUI's "is my library ready?"
+        answer - previously only reachable via each CLI's --stats."""
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM tracks WHERE missing = 0"
+            " AND error IS NULL").fetchone()[0]
+        out = {"tracks": (total, total)}
+        for name, col in (("grid", "beat_grid"), ("key", "camelot"),
+                          ("chroma", "chroma"), ("rhythm", "rhythm"),
+                          ("enrich", "enrichment"), ("mood", "mood_ml"),
+                          ("structure", "structure")):
+            done = self.conn.execute(
+                f"SELECT COUNT(*) FROM tracks WHERE missing = 0"
+                f" AND error IS NULL AND {col} IS NOT NULL").fetchone()[0]
+            out[name] = (done, total)
+        return out
 
     def set_excluded(self, track_id, flag):
         """Mark/unmark a track 'do not use'. Excluded tracks stay in the DB and

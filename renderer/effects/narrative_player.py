@@ -528,6 +528,15 @@ def shader_narrative_player(state: dict, outstate: dict,
     effect = state.get('effect')
     if effect is None:
         return
+
+    # Inter-node delay: per-set value from outstate wins (None = set left
+    # it unset), the node_delay kwarg is the fallback. 0 is a valid value.
+    desired_delay = outstate.get('narrative_node_delay')
+    try:
+        effect.delay = node_delay if desired_delay is None else float(desired_delay)
+    except (TypeError, ValueError):
+        effect.delay = node_delay
+
     current = effect.script_path
     if desired != current:
         if desired:

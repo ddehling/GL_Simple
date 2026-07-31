@@ -6,7 +6,7 @@ mids/highs untouched. Stateful (scipy sosfilt zi per channel), block-based,
 with per-block linear gain ramps so automation never zipper-clicks.
 """
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi
+from scipy.signal import butter, sosfilt
 
 RATE = 44100
 LOW_HZ = 200.0
@@ -22,13 +22,19 @@ def _lr4(freq, kind):
 class ThreeBandEQ:
     def __init__(self, channels=2):
         self.channels = channels
+        # One cascade per band, both channels filtered in a single
+        # sosfilt call (axis=0). scipy's per-call Python overhead (~90us
+        # of arg validation) dominated the actual filtering at 256-frame
+        # sub-blocks - the old per-channel/per-stage layout was 16 calls
+        # per process(), this is 3 (perf audit 2026-07-31). The merged
+        # mid cascade (band-pass = HP then LP) is the same math: a
+        # cascade of cascades is one longer cascade.
         self._sos = {
-            "low_lp": _lr4(LOW_HZ, "low"),
-            "mid_hp": _lr4(LOW_HZ, "high"),
-            "mid_lp": _lr4(HIGH_HZ, "low"),
-            "high_hp": _lr4(HIGH_HZ, "high"),
+            "low": _lr4(LOW_HZ, "low"),
+            "mid": np.vstack([_lr4(LOW_HZ, "high"), _lr4(HIGH_HZ, "low")]),
+            "high": _lr4(HIGH_HZ, "high"),
         }
-        self._zi = {k: np.stack([sosfilt_zi(s) * 0.0 for _ in range(channels)])
+        self._zi = {k: np.zeros((len(s), 2, channels))
                     for k, s in self._sos.items()}
         self.gains = np.ones(3)          # current low/mid/high
         self._targets = np.ones(3)
@@ -52,10 +58,8 @@ class ThreeBandEQ:
                 and np.all(np.abs(self._targets - 1.0) < 1e-3))
 
     def _run(self, key, x):
-        y = np.empty_like(x)
-        for c in range(self.channels):
-            y[:, c], self._zi[key][c] = sosfilt(
-                self._sos[key], x[:, c], zi=self._zi[key][c])
+        y, self._zi[key] = sosfilt(self._sos[key], x, axis=0,
+                                   zi=self._zi[key])
         return y
 
     def process(self, block):
@@ -81,9 +85,9 @@ class ThreeBandEQ:
         if flat and not active:
             return block                                  # true bypass
         x = block.astype(np.float64)
-        low = self._run("low_lp", x)
-        mid = self._run("mid_lp", self._run("mid_hp", x))
-        high = self._run("high_hp", x)
+        low = self._run("low", x)
+        mid = self._run("mid", x)
+        high = self._run("high", x)
         ramp = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
         gl = g0[0] + (g1[0] - g0[0]) * ramp
         gm = g0[1] + (g1[1] - g0[1]) * ramp

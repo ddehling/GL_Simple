@@ -22,6 +22,7 @@ import json
 import math
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,7 +30,40 @@ import numpy as np
 from PyQt6.QtCore import (QAbstractItemModel, Qt, QAbstractTableModel, QModelIndex, QRect,
                           QSize, QSortFilterProxyModel, QThread, QTimer,
                           QProcess, pyqtSignal)
-from PyQt6.QtGui import QColor, QPalette, QAction, QCursor, QFont
+from PyQt6.QtGui import (QColor, QPalette, QAction, QCursor, QFont,
+                         QKeySequence, QShortcut)
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+    QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
+    QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
+    QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
+    QPlainTextEdit, QSlider, QMenu, QCheckBox, QTreeWidget,
+    QTreeWidgetItem, QHeaderView)
+
+from lib.dj import resolve_music_dir
+from lib.dj import setlist as SL
+from lib.dj.brain import Brain, load_library
+from lib.dj.db import LibraryDB
+from lib.dj.planner_util import dup_keys, track_genre, track_sig
+from lib.dj.suggest import suggest_followers
+from lib.dj.rhythm import seam_chips
+from lib.dj.themes import BUILTIN_THEMES, get_theme
+from tools.dj.planner.arcstrip import ArcStrip
+from tools.dj.planner.seaminspector import SeamInspector
+from tools.dj.planner.waveform import WaveformView
+from tools.dj.planner.mixview import MixTimeline
+from tools.dj.planner.deckmon import DeckMonitor
+from tools.dj.planner.player import TrackPlayer, PlanPreview
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The analysis pipeline (stage list, WSL structure handoff, headless
+# runner) is shared with tools/dj/dj_analyze.py - see lib/dj/analyze.py.
+from lib.dj.analyze import (build_stages as _build_stages,
+                            structure_import_results
+                            as _structure_import_results_db,
+                            structure_mode as _structure_mode,
+                            structure_wsl_command as _structure_wsl_command)
 
 
 def _mono_font():
@@ -45,85 +79,6 @@ def _clip(s, w):
     return (s[:w - 1] + "…") if len(s) > w else s.ljust(w)
 
 
-def _genre_of(t):
-    """One display genre: first MusicBrainz genre, else the file tag."""
-    gs = getattr(t, "genres", None) or []
-    if gs:
-        return gs[0]
-    fg = (getattr(t, "file_genre", "") or "").replace("/", ",")
-    return fg.split(",")[0].strip()
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
-    QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
-    QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
-    QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit, QSlider, QMenu, QCheckBox, QTreeWidget,
-    QTreeWidgetItem, QHeaderView)
-
-from lib.dj import resolve_music_dir
-from lib.dj.db import LibraryDB
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _wsl_path(p):
-    """C:\\foo\\bar -> /mnt/c/foo/bar (how WSL mounts Windows drives)."""
-    p = os.path.abspath(p)
-    return "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
-
-
-def _structure_mode():
-    """'native' when allin1 imports here, 'wsl' when only WSL can run it
-    (NATTEN publishes no Windows wheels - see requirements-dj-structure.txt),
-    else None."""
-    import shutil
-    from lib.dj import structure_ml
-    if structure_ml.available():
-        return "native"
-    if shutil.which("wsl.exe"):
-        return "wsl"
-    return None
-
-
-def _structure_batch_paths(music_dir):
-    return (os.path.join(music_dir, ".structure_batch.json"),
-            os.path.join(music_dir, ".structure_results.jsonl"))
-
-
-def _structure_wsl_command(music_dir, db):
-    """(program, args) for a SQLITE-FREE batch run through WSL, or
-    (None, reason). The WSL side must never open the library DB: the
-    planner holds it in WAL mode on the Windows side, and WAL's shared
-    memory can't span /mnt/c (measured: 'disk I/O error'). So we export
-    the todo list here, WSL appends JSONL results, and
-    _structure_import_results() folds them back into the DB we own.
-    Env path overridable via $DJ_WSL_ALLIN1_PY."""
-    rows = [r for r in db.all_tracks()
-            if not r.get("missing") and not r.get("error")
-            and not r.get("structure")]
-    if not rows:
-        return None, "structure: everything already labeled"
-    tl, rp = _structure_batch_paths(music_dir)
-    batch = [{"id": r["id"], "title": (r.get("title") or r["path"])[:60],
-              "path": _wsl_path(db.abs(r["path"]))} for r in rows]
-    with open(tl, "w", encoding="utf-8") as f:
-        json.dump(batch, f)
-    py = os.environ.get("DJ_WSL_ALLIN1_PY", "$HOME/allin1/bin/python")
-    script = os.path.join(_REPO_ROOT, "tools", "dj", "dj_structure.py")
-    cmd = (f'{py} "{_wsl_path(script)}" --tracklist "{_wsl_path(tl)}" '
-           f'--results "{_wsl_path(rp)}"')
-    return ("wsl.exe", ["-e", "bash", "-lc", cmd]), None
-from lib.dj.brain import Brain, load_library
-from lib.dj.rhythm import seam_chips
-from lib.dj.themes import BUILTIN_THEMES, get_theme
-from lib.dj import setlist as SL
-from tools.dj.planner.arcstrip import ArcStrip
-from tools.dj.planner.seaminspector import SeamInspector
-from tools.dj.planner.waveform import WaveformView
-from tools.dj.planner.mixview import MixTimeline
-from tools.dj.planner.deckmon import DeckMonitor
-from tools.dj.planner.player import TrackPlayer, PlanPreview
-
 RATE = 44100
 SECTION_COLORS = {
     "intro": QColor(70, 90, 120), "outro": QColor(70, 90, 120),
@@ -132,15 +87,6 @@ SECTION_COLORS = {
 }
 COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "type",
         "tags", "rhythm", "structure"]
-
-
-def track_genre(t):
-    """Best single genre label for a track: MusicBrainz genre (from the
-    Enrich pass) first, else the embedded file genre tag."""
-    g = getattr(t, "genres", None)
-    if g:
-        return g[0]
-    return (getattr(t, "file_genre", "") or "").split(",")[0].split("/")[0].strip()
 
 
 def energy_glyph(e):
@@ -1078,6 +1024,15 @@ class LibraryTab(QWidget):
         ba.clicked.connect(lambda: self._set_excluded(False))
         bot.addWidget(ba)
         bot.addStretch(1)
+        # ANALYSIS COVERAGE: which passes still have gaps - "is my library
+        # ready?" without dropping to each CLI's --stats.
+        self.coverage_lbl = QLabel("")
+        self.coverage_lbl.setToolTip(
+            "Analysis passes with missing tracks. Run '⟳ Analyze all' "
+            "(each stage skips what's already done) or the individual "
+            "pass under ⚙ Passes. Stems are opt-in ('+ stems') and gate "
+            "the stem transition styles.")
+        bot.addWidget(self.coverage_lbl)
         self.count_lbl = QLabel("")
         bot.addWidget(self.count_lbl)
         v.addLayout(bot)
@@ -1329,6 +1284,20 @@ class LibraryTab(QWidget):
         self.count_lbl.setText(
             f"{len(tracks)} tracks"
             + (f"  ({n_excl} do-not-use)" if n_excl else ""))
+        try:
+            cov = self.planner.db.coverage_counts()
+            total = cov.get("tracks", (0, 0))[1]
+            gaps = [f"{k} {d}/{tt}" for k, (d, tt) in cov.items()
+                    if k != "tracks" and d < tt]
+            n_stems = sum(1 for t in tracks
+                          if getattr(t, "has_stems", False))
+            if total and n_stems < total:
+                gaps.append(f"stems {n_stems}/{total}")
+            self.coverage_lbl.setText(
+                "analysis ✓ complete" if not gaps
+                else "gaps: " + " · ".join(gaps))
+        except Exception:
+            self.coverage_lbl.setText("")
         if flat:
             # Root the view AT the single container: pure sortable list.
             src0 = self.model.index(0, 0)
@@ -1508,27 +1477,11 @@ class LibraryTab(QWidget):
 
     # -- structure (allin1 ML, subprocess; native or via WSL) ----------------
     def _structure_import_results(self):
-        """Fold a WSL batch's JSONL results into the DB (which only the
-        Windows side may open - see _structure_wsl_command). Safe to call
+        """Fold a WSL batch's JSONL results into the DB we own (only the
+        Windows side may open it - see lib/dj/analyze.py). Safe to call
         any time; imports leftovers from interrupted runs too."""
-        tl, rp = _structure_batch_paths(self.planner.music_dir)
-        n = 0
-        if os.path.isfile(rp):
-            with open(rp, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        d = json.loads(line)
-                        self.planner.db.set_structure(int(d["id"]),
-                                                      d["structure"])
-                        n += 1
-                    except (ValueError, KeyError, TypeError):
-                        continue
-            os.remove(rp)
-        try:
-            os.remove(tl)
-        except OSError:
-            pass
-        return n
+        return _structure_import_results_db(self.planner.db,
+                                            self.planner.music_dir)
 
     def run_structure(self):
         if self._structure_proc is not None:             # toggles to stop
@@ -1686,50 +1639,12 @@ class LibraryTab(QWidget):
             self.scan_lbl.setText("another pass is running - wait for it "
                                   "(or stop it) first")
             return
-        from lib.dj import vocals, mood_ml
-        mdir = self.planner.music_dir
-
-        def tool(n):
-            # The CLIs live in tools/dj/, NOT next to this file. Building
-            # this from dirname(__file__) is what silently broke every
-            # pipeline stage after the 2026-07-25 tools reorg.
-            return os.path.join(_REPO_ROOT, "tools", "dj", n)
-        voc_ok = vocals.available()
-        # NO --refine-grids here: tracks whose grid confidence stays low
-        # after refinement would re-queue a full re-analysis on EVERY
-        # pipeline run (~minutes each time). The dedicated "Refine grids"
-        # button remains the deliberate way to chew that tail.
-        stages = [
-            {"name": "scan", "scanfile": True,
-             "args": [tool("dj_scan.py"), "--dir", mdir]},
-            {"name": "chroma",
-             "args": [tool("dj_chroma.py"), "--dir", mdir]},
-        ]
-        if self.stems_chk.isChecked():
-            # Stems BEFORE vocal curves: with stems on disk, the vocal
-            # pass derives its curve from the vocals stem - no second
-            # separation of the same track.
-            stages.append({"name": "stems", "skip": None if voc_ok
-                           else "torch/demucs not installed",
-                           "args": [tool("dj_stems.py"), "--dir", mdir]})
-        stages += [
-            # Rhythm AFTER stems: with drum stems on disk the signature is
-            # measured from the clean rhythm section instead of the mix.
-            {"name": "rhythm",
-             "args": [tool("dj_rhythm.py"), "--dir", mdir]},
-            {"name": "vocal curves", "skip": None if voc_ok
-             else "torch/demucs not installed",
-             "args": [tool("dj_scan.py"), "--dir", mdir, "--revocals"]},
-            {"name": "enrich", "enrich": True},
-            {"name": "mood", "skip": None if mood_ml.available()
-             else "Music2Emotion model/torch missing",
-             "args": [tool("dj_mood.py"), "--dir", mdir]},
-        ]
-        # Structure resolves native-or-WSL at STAGE time (the WSL batch
-        # export must see the DB state after earlier stages ran).
-        stages.append({"name": "structure", "structure": True,
-                       "skip": None if _structure_mode() is not None
-                       else "no native allin1 and no WSL"})
+        # ONE stage list, shared with the headless CLI (dj_analyze.py) so
+        # the two can never drift - see lib/dj/analyze.py for the ordering
+        # rationale (stems before vocals, rhythm after stems, no
+        # --refine-grids).
+        stages = _build_stages(self.planner.music_dir,
+                               include_stems=self.stems_chk.isChecked())
         self._pipe = stages
         self._pipe_total = len(stages)
         self._pipe_skipped = []
@@ -2123,231 +2038,6 @@ class CompileWorker(QThread):
             self.done.emit({"error": f"{type(e).__name__}: {e}"})
 
 
-def _suggest_next_tracks(library, entries, theme, compiled, pair_memory,
-                         target_s=3600.0, n=7, anchor_idx=None):
-    """Top-n candidates to FOLLOW the current set: scored with the live
-    brain against the LAST track (seam quality, key/chroma, tempo reach,
-    mood/genre coherence, pair memory) at the arc position the NEXT track
-    would occupy, with an artist-variety lean against the last few
-    entries. Empty set -> opener candidates (energy fit to the arc's
-    start inside the theme's tempo window). Runs on a worker thread -
-    touches only the snapshots it was handed.
-
-    ARC ANCHOR: progress toward the TARGET set length (the tab's minutes
-    spinner), NOT position within the current entries - the last slot's
-    offset over the current total is ~1.0 by construction, which scored
-    every suggestion at the arc's END and offered closers all night
-    (user-reported). A 3-track set of a planned 60 minutes is ~15% in,
-    and the suggestions should sound like it.
-
-    anchor_idx: follow the SELECTED slot instead of the set's last track
-    (mid-set repair: 'what should come after slot 3?'). Arc position and
-    the artist-variety window move to that slot; exclusions still cover
-    the whole set."""
-    from lib.dj.brain import Brain
-    by_id = {t.id: t for t in library}
-    set_ids = [e["track_id"] for e in entries]
-    used = set(set_ids)
-    if anchor_idx is None or not (0 <= anchor_idx < len(set_ids)):
-        anchor_idx = len(set_ids) - 1
-    last = by_id.get(set_ids[anchor_idx]) if set_ids else None
-    brain = Brain(library, theme)
-    brain.pair_memory = dict(pair_memory or {})
-    if last is None:
-        import math
-        arc0 = theme.arc_target(0.0)
-        lo, hi = theme.bpm_range
-        cands = [t for t in library
-                 if any(lo * 0.95 <= t.bpm * m <= hi * 1.05
-                        for m in (1.0, 2.0, 0.5))]
-        cands.sort(key=lambda t: abs(t.energy_proxy() - arc0))
-        return [{"id": t.id, "title": t.title, "artist": t.artist,
-                 "genre": _genre_of(t),
-                 "bpm": t.bpm, "camelot": t.camelot, "fit": None,
-                 "why": "opener", "beat": None, "key": None,
-                 "theme": round(math.exp(
-                     -((t.energy_proxy() - arc0) / 0.21) ** 2), 3),
-                 "energy": round(t.energy_proxy(), 2),
-                 "arc": round(arc0, 2)} for t in cands[:n]]
-    brain.veto_ids.update(used)              # never suggest set members
-    # Where would the track AFTER the anchor slot sit in the intended
-    # night? Running length up to (and including) the anchor, plus half
-    # a typical play, over the target length.
-    est_play = 0.5 * (theme.min_play_s + theme.max_play_s)
-    slots = (compiled or {}).get("slots") or []
-    if anchor_idx < len(slots):
-        s = slots[anchor_idx]
-        total = s["start_offset_s"] + (s.get("play_s") or est_play)
-    elif slots:
-        total = (compiled or {}).get("total_s", 0.0)
-    else:
-        total = (anchor_idx + 1) * est_play
-    progress = min((total + 0.5 * est_play) / max(target_s, 60.0), 1.0)
-    arc = theme.arc_target(progress)
-    recent_artists = {(by_id[i].artist or "").lower()
-                      for i in set_ids[max(0, anchor_idx - 2):anchor_idx + 1]
-                      if i in by_id and by_id[i].artist}
-    import math
-    import re as _re
-    from lib.dj import stretch_engine_name
-    from lib.dj.brain import (_title_root, camelot_compat,
-                              chroma_key_compat)
-    from lib.dj.rhythm import seam_rhythm as _seam_rhythm
-    from lib.dj.rhythm import seam_chips as _seam_chips
-    vari = stretch_engine_name() == "vari"
-    scored = []
-    for t in library:
-        if t.id in used:
-            continue
-        if brain.rate_for(last.bpm, t)[0] is None:   # cheap tempo gate
-            continue
-        s, meta = brain.score(last, t, arc, last.bpm)
-        if s <= 0 or meta is None:
-            continue
-        if (t.artist or "").lower() in recent_artists:
-            s *= 0.45                        # variety over artist streaks
-        scored.append((s, t, meta))
-    scored.sort(key=lambda x: -x[0])
-
-    def components(t, meta):
-        """The three per-dimension qualities shown in the panel, computed
-        the same way score() weighs them."""
-        rate = meta.get("rate") or 1.0
-        beat = math.exp(-((abs(math.log(rate))) / 0.045) ** 2)
-        pair = meta.get("pair")
-        if pair and not pair.get("beaty", True):
-            beat *= 0.5                  # one side beatless: it'd be a fade
-        key = camelot_compat(last.camelot, t.camelot)
-        semis = (12.0 * math.log(max(rate, 1e-6)) / math.log(2.0)
-                 if vari else float(meta.get("pitch_st") or 0))
-        sc = chroma_key_compat(getattr(last, "chroma", None),
-                               getattr(t, "chroma", None), semis)
-        if sc is not None:
-            key = 0.45 * key + 0.55 * sc
-        e = brain._arc_energy(t)
-        s_en = math.exp(-((e - arc) / 0.21) ** 2)
-        mood = sum(theme.mood_weights.get(m, 0.0) * f
-                   for m, f in (t.mood_hist or {}).items())
-        theme_q = 0.6 * s_en + 0.4 * min(1.0, mood / 0.35)
-        # Groove compatibility vs the last track (region-aware; None when
-        # either side has no rhythm signature). rate=None in the chips
-        # call: the stretch is its own column here.
-        rt = _seam_rhythm(last, t, rate)
-        return {"beat": round(beat, 3), "key": round(key, 3),
-                "theme": round(theme_q, 3),
-                "groove": round(rt["score"], 3) if rt else None,
-                "groove_chips": _seam_chips({"rate": None}, {"rhythm": rt})
-                if rt else [],
-                "stretch_pct": round((rate - 1.0) * 100.0, 1),
-                "energy": round(e, 2), "arc": round(arc, 2)}
-
-    def _flat(title):
-        return _re.sub(r"[^a-z0-9]+", "", (title or "").lower())
-
-    def _sig(t):
-        return (_flat(t.title), int((t.duration_s or 0.0) // 8),
-                ((t.row or {}).get("content_hash") or "").strip())
-
-    # One suggestion per SONG, and never a song the SET already contains
-    # in ANY copy/version: identity is title root + content hash + the
-    # mangled-tag re-rip check ('02_Alex - Youth (feat_ ...)': same ~8s
-    # duration bucket AND one flattened title containing the other).
-    # Seeding the seen-sets from the set's own tracks makes set members
-    # and their twins unsuggestable, not just their exact track ids.
-    set_tracks = [by_id[i] for i in used if i in by_id]
-    seen_roots = {(_title_root(t.title) or t.title.lower())
-                  for t in set_tracks}
-    seen_hashes = {h for _, _, h in map(_sig, set_tracks) if h}
-    kept = [(f, b) for f, b, _ in map(_sig, set_tracks) if f]
-    n_viable = max(len(scored), 1)
-    out = []
-    for rank, (s, t, meta) in enumerate(scored):
-        root = _title_root(t.title) or t.title.lower()
-        if root in seen_roots:
-            continue
-        flat, dur_b, chash = _sig(t)
-        if chash and chash in seen_hashes:
-            continue
-        if any(abs(dur_b - kb) <= 1 and flat and kf
-               and (flat in kf or kf in flat)
-               for kf, kb in kept):
-            continue
-        seen_roots.add(root)
-        if chash:
-            seen_hashes.add(chash)
-        kept.append((flat, dur_b))
-        out.append({"id": t.id, "title": t.title, "artist": t.artist,
-                    "genre": _genre_of(t),
-                    "bpm": t.bpm, "camelot": t.camelot, "fit": round(s, 3),
-                    # Where this candidate ranks among EVERYTHING viable -
-                    # the fit's raw scale is a many-factor product (ceiling
-                    # ~0.4) and reads misleadingly low on its own.
-                    "top_pct": max(1, round(100 * (rank + 1) / n_viable)),
-                    "n_viable": n_viable,
-                    "rate": round((meta.get("rate") or 1.0), 3),
-                    **components(t, meta)})
-        if len(out) >= n:
-            break
-
-    # SECOND TIER: fade-reachable. The beat tier can only draw from the
-    # ±8% tempo neighbourhood of the last track (63% of an eclectic
-    # library is out of reach at any moment) - but the live DJ has a
-    # deliberate entrance for exactly those: the dipped long_fade, where
-    # beat and key don't overlap enough to matter. Score those on what a
-    # fade DOES carry across: energy-vs-arc, theme mood, genre
-    # continuity. Still inside the theme's tempo identity, still
-    # variety-leaned, same song-dedup.
-    lo, hi = theme.bpm_range
-    fade_scored = []
-    for t in library:
-        if t.id in used:
-            continue
-        if brain.rate_for(last.bpm, t)[0] is not None:
-            continue                          # that's the beat tier's job
-        if not any(lo * 0.93 <= t.bpm * m <= hi * 1.07
-                   for m in (1.0, 2.0, 0.5)):
-            continue
-        s_en = math.exp(-((brain._arc_energy(t) - arc) / 0.21) ** 2)
-        mood = sum(theme.mood_weights.get(m, 0.0) * f
-                   for m, f in (t.mood_hist or {}).items())
-        s_mood = 0.25 + mood
-        inter = len(t.genre_set & last.genre_set)
-        base = min(len(t.genre_set), len(last.genre_set))
-        s_coh = 0.84 + 0.16 * (inter / base if base else 0.0)
-        s = s_en * s_mood * s_coh
-        if (t.artist or "").lower() in recent_artists:
-            s *= 0.45
-        theme_q = 0.6 * s_en + 0.4 * min(1.0, mood / 0.35)
-        fade_scored.append((s, t, s_en, theme_q))
-    fade_scored.sort(key=lambda x: -x[0])
-    n_fade = max(len(fade_scored), 1)
-    for rank, (s, t, s_en, theme_q) in enumerate(fade_scored):
-        if len(out) >= n + 7:
-            break
-        root = _title_root(t.title) or t.title.lower()
-        if root in seen_roots:
-            continue
-        flat, dur_b, chash = _sig(t)
-        if chash and chash in seen_hashes:
-            continue
-        if any(abs(dur_b - kb) <= 1 and flat and kf
-               and (flat in kf or kf in flat) for kf, kb in kept):
-            continue
-        seen_roots.add(root)
-        if chash:
-            seen_hashes.add(chash)
-        kept.append((flat, dur_b))
-        out.append({"id": t.id, "title": t.title, "artist": t.artist,
-                    "genre": _genre_of(t), "tier": "fade",
-                    "bpm": t.bpm, "camelot": t.camelot, "fit": round(s, 3),
-                    "top_pct": max(1, round(100 * (rank + 1) / n_fade)),
-                    "n_viable": n_fade,
-                    "beat": None, "key": None, "theme": round(theme_q, 3),
-                    "energy": round(t.energy_proxy(), 2),
-                    "arc": round(arc, 2)})
-    return out
-
-
 class PlanOpWorker(QThread):
     """One long planning operation (suggest / optimize / autofill / shape /
     slot alternatives / bridge) off the GUI thread: the beam searches walk
@@ -2377,43 +2067,11 @@ class AuditionWorker(QThread):
 
     def run(self):
         try:
-            from lib.audio_engine import AudioEngine
-            from lib.dj.submix import DJSubmix
-            from lib.dj.features import decode_file_stereo
-            a, b, plan = self.a, self.b, dict(self.plan)
-            self.status.emit("decoding...")
-            sa = decode_file_stereo(self.db.abs(a.path))
-            sb = decode_file_stereo(self.db.abs(b.path))
-            engine = AudioEngine()
-            sub = DJSubmix()
-            engine.attach_track("dj", sub)
-            # Pre-roll must cover the WHOLE planned blend: at 12s fixed, a
-            # 32-64 beat blend's start clamped to "now" and the geometry
-            # compressed - every long seam auditioned squeezed and slammy
-            # (the live night never does this; it arms far ahead).
-            pre = max(12.0, plan.get("beats", 32) * 60.0
-                      / max(a.bpm, 60.0) + 6.0)
-            cue_a = a.nearest_downbeat(max(0.0, plan["out_s"] - pre))
-            sub.post_many([
-                {"cmd": "load", "deck": "a", "samples": sa, "grid": a.grid,
-                 "gain_db": a.gain_db, "cue_s": cue_a},
-                {"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01},
-                {"cmd": "start", "deck": "a"},
-                {"cmd": "load", "deck": "b", "samples": sb, "grid": b.grid,
-                 "gain_db": b.gain_db, "cue_s": plan["in_s"]},
-            ])
-            gen = engine._mixer()
-            next(gen)
-            gen.send(256)
-            brain = Brain([], get_theme("groove"))
-            events, swap_at, blend_at = brain.build_events(
-                plan, sub.telemetry, "a", "b", a, b)
-            sub.post_many(events)
-            self.status.emit("rendering seam...")
-            total = pre + (swap_at - blend_at) / RATE + 25.0
-            out = [np.frombuffer(gen.send(4410), dtype=np.float32)
-                   .reshape(-1, 2) for _ in range(int(total * RATE) // 4410)]
-            self.done.emit(np.concatenate(out, axis=0))
+            # One renderer shared with dj_player --audition - see
+            # lib/dj/audition.py (dynamic pre-roll and all).
+            from lib.dj.audition import render_seam
+            self.done.emit(render_seam(self.db, self.a, self.b, self.plan,
+                                       status=self.status.emit))
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -2434,6 +2092,16 @@ class SetTab(QWidget):
         self._op = None                  # running PlanOpWorker, one at a time
         self._plan_btns = []             # greyed out while an op runs
         self.seam_player = TrackPlayer()
+        # UNDO for set edits: every mutator snapshots first, so Ctrl+Z
+        # walks back anything - including Optimize/Shape/Auto-fill, which
+        # replace the WHOLE list and were irreversible before.
+        self._undo_stack, self._redo_stack = [], []
+        for keys, fn in (("Ctrl+Z", self._undo_edit),
+                         ("Ctrl+Y", self._redo_edit),
+                         ("Ctrl+Shift+Z", self._redo_edit)):
+            sc = QShortcut(QKeySequence(keys), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
 
         h = QHBoxLayout(self)
         left = QVBoxLayout()
@@ -2446,7 +2114,31 @@ class SetTab(QWidget):
             b = QPushButton(label)
             b.clicked.connect(fn)
             srow.addWidget(b)
+        # PUSH TO LIVE: save, then hand the set to the running show over
+        # the web controller's action queue - the same channel the /dj
+        # panel's setlist picker uses. Works whether the DJ is idle (arms;
+        # Start plays it) or already playing (replans from the list). The
+        # set's saved theme/length/arc ride along via load_setlist.
+        push = QPushButton("▶ Push to live")
+        menu = QMenu(push)
+        menu.addAction("Load in order (play top to bottom)",
+                       lambda: self._push_live("order"))
+        menu.addAction("Load as pool (brain steers inside the list)",
+                       lambda: self._push_live("pool"))
+        push.setMenu(menu)
+        push.setToolTip(
+            "Send this set to the running show (localhost web panel). "
+            "Saves first; the show picks up the set's theme and arc "
+            "clock too. Override host via DJ_SHOW_URL.")
+        srow.addWidget(push)
         left.addLayout(srow)
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel("Notes:"))
+        self.notes_edit = QLineEdit()
+        self.notes_edit.setPlaceholderText(
+            "set notes (venue, occasion, what worked) - saved with the set")
+        nrow.addWidget(self.notes_edit, 1)
+        left.addLayout(nrow)
 
         # PLAN MODE inputs: how should the night go?
         prow = QHBoxLayout()
@@ -2468,21 +2160,43 @@ class SetTab(QWidget):
         self.minutes_spin.valueChanged.connect(self._target_changed)
         prow.addWidget(self.minutes_spin)
         left.addLayout(prow)
+        # ONE primary ordering flow (the four underlying ops overlapped so
+        # much that picking among them was expertise the UI demanded for
+        # nothing). Build set = suggest for the theme/length, then shape
+        # the chosen metric curve (or just clean the seams for 'flat').
+        # The individual ops live under More ▾ - and every one of them is
+        # a Ctrl+Z away from being undone now.
         prow2 = QHBoxLayout()
-        sg = QPushButton("Suggest set (plan mode)")
-        sg.clicked.connect(self.suggest)
-        prow2.addWidget(sg)
-        op = QPushButton("Optimize order")
-        op.clicked.connect(self.optimize)
-        prow2.addWidget(op)
-        af = QPushButton("Auto-fill anchors")
-        af.clicked.connect(self.autofill)
-        prow2.addWidget(af)
+        bs = QPushButton("✦ Build set")
+        bs.setToolTip(
+            "Generate the whole set in one go: suggest tracks for the "
+            "theme + target length, then order them so the shape curve "
+            "below actually happens (flat = optimize seams only). "
+            "Replaces the current set - Ctrl+Z brings it back.")
+        bs.clicked.connect(self.build_set)
+        prow2.addWidget(bs, 1)
+        more = QPushButton("More ▾")
+        mm = QMenu(more)
+        mm.addAction("Suggest set (replace)", self.suggest)
+        mm.addAction("Optimize order (seams only)", self.optimize)
+        mm.addAction("Apply shape to current set", self.apply_shape)
+        mm.addAction("Auto-fill timed anchors", self.autofill)
+        more.setMenu(mm)
+        more.setToolTip(
+            "The individual ordering ops, for surgical use:\n"
+            "· Suggest - a fresh set from the theme\n"
+            "· Optimize - reorder suggestions for cleaner seams (keeps "
+            "anchors put; won't create an arc)\n"
+            "· Apply shape - impose the curve below on the current set\n"
+            "· Auto-fill - insert fills so timed anchors land on their "
+            "offsets")
+        prow2.addWidget(more)
         left.addLayout(prow2)
-        self._plan_btns += [sg, op, af]
+        self._plan_btns += [bs, more]
 
         # SHAPE the set: order it so tempo/energy follows a curve (the only
-        # control that actually makes a set BUILD; keeps seams mixable).
+        # control that actually makes a set BUILD; feeds Build set and the
+        # menu's Apply shape).
         prow3 = QHBoxLayout()
         prow3.addWidget(QLabel("Shape:"))
         self.shape_metric = QComboBox()
@@ -2490,16 +2204,12 @@ class SetTab(QWidget):
         prow3.addWidget(self.shape_metric)
         self.shape_curve = QComboBox()
         self.shape_curve.addItems(["rise", "peak", "wind_down", "flat"])
+        self.shape_curve.setToolTip(
+            "rise = build all set · peak = up then down · wind_down = "
+            "start hot, land soft · flat = no curve, best seams only")
         prow3.addWidget(self.shape_curve)
-        shb = QPushButton("Apply shape")
-        shb.setToolTip("Reorder the set so the chosen metric follows the "
-                       "curve — rise = build, peak = up then down. Tempo "
-                       "shaping gives the cleanest result.")
-        shb.clicked.connect(self.apply_shape)
-        prow3.addWidget(shb)
         prow3.addStretch(1)
         left.addLayout(prow3)
-        self._plan_btns.append(shb)
 
         # THE ARC STRIP: the set's shape (energy vs the theme's target,
         # bpm path, seam quality) visible WHILE building, not only after
@@ -2637,31 +2347,19 @@ class SetTab(QWidget):
         brow.addWidget(shop)
         brow.addStretch(1)
         right.addLayout(brow)
-        # Play the whole compiled set WITHOUT leaving the Set tab - drives the
-        # Mix tab's preview (which already holds the current plan via the
-        # planCompiled->set_plan wiring), so audio plays regardless of which
-        # tab is showing.
+        # Play/Stop only - the full transport (pause, jump track, jump
+        # seam, scrub) lives on the Mix tab, which this drives; a second
+        # complete remote control here just duplicated it.
         pbrow = QHBoxLayout()
         self.play_set_btn = QPushButton("▶ Play set")
         self.play_set_btn.setToolTip("Play the compiled set from the SELECTED "
-                                     "song (from the top when none selected); "
-                                     "same engine as the Mix tab.")
+                                     "song (from the top when none selected). "
+                                     "Full transport on the Mix tab.")
         self.play_set_btn.clicked.connect(self._play_set)
         pbrow.addWidget(self.play_set_btn)
-        self.set_pause_btn = QPushButton("⏸")
-        self.set_pause_btn.setCheckable(True)
-        self.set_pause_btn.toggled.connect(
-            lambda on: self.planner.mix_tab._pause(on))
-        pbrow.addWidget(self.set_pause_btn)
         pstop = QPushButton("■ Stop")
         pstop.clicked.connect(lambda: self.planner.stop_all_playback())
         pbrow.addWidget(pstop)
-        pnext = QPushButton("⏭ track")
-        pnext.clicked.connect(lambda: self.planner.mix_tab._jump(+1))
-        pbrow.addWidget(pnext)
-        pseam = QPushButton("→ seam")
-        pseam.clicked.connect(lambda: self.planner.mix_tab._next_seam())
-        pbrow.addWidget(pseam)
         pbrow.addStretch(1)
         right.addLayout(pbrow)
 
@@ -2734,6 +2432,19 @@ class SetTab(QWidget):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         right.addWidget(self.status)
+        # RANKED WORST SEAMS: the report card's actionable half. The
+        # one-line card says "median seam 0.41" - this says WHICH seams
+        # drag it down, worst first; click one to select it (inspector +
+        # audition), then repair via alternatives/bridge/style pin.
+        self.worst_list = QListWidget()
+        self.worst_list.setFont(_mono_font())
+        self.worst_list.setMaximumHeight(96)
+        self.worst_list.setToolTip(
+            "The set's weakest seams, worst first. Click to jump to the "
+            "seam; right-click the entry above it for repairs "
+            "(alternatives / bridge).")
+        self.worst_list.itemClicked.connect(self._worst_clicked)
+        right.addWidget(self.worst_list)
         # Conversational set-builder (Claude tool-loop over this same set).
         from tools.dj.planner.copilot_panel import CopilotPanel
         self.copilot_panel = CopilotPanel(planner, self)
@@ -2745,8 +2456,37 @@ class SetTab(QWidget):
     def theme(self):
         return get_theme(self.theme_combo.currentText())
 
+    def _snapshot_undo(self):
+        """Capture the entry list BEFORE a mutation - one call at the top
+        of every mutator is the whole undo system."""
+        self._undo_stack.append([dict(e) for e in self.entries])
+        del self._undo_stack[:-50]
+        self._redo_stack.clear()
+
+    def _undo_edit(self):
+        if not self._undo_stack:
+            self.status.setText("nothing to undo")
+            return
+        self._redo_stack.append([dict(e) for e in self.entries])
+        self.entries = self._undo_stack.pop()
+        self._rebuild()
+        self.recompile()
+        self.status.setText(
+            f"undo ({len(self._undo_stack)} more, Ctrl+Y = redo)")
+
+    def _redo_edit(self):
+        if not self._redo_stack:
+            self.status.setText("nothing to redo")
+            return
+        self._undo_stack.append([dict(e) for e in self.entries])
+        self.entries = self._redo_stack.pop()
+        self._rebuild()
+        self.recompile()
+        self.status.setText(f"redo ({len(self._redo_stack)} more)")
+
     def add_tracks(self, tracks, at=None):
         """Append tracks, or insert them at index `at` (in order)."""
+        self._snapshot_undo()
         new = [{"track_id": t.id, "pin_type": "suggestion",
                 "target_offset_min": None,
                 "style_override": None,
@@ -2803,9 +2543,9 @@ class SetTab(QWidget):
                 f"{at.title[:30]}):")
 
         def fn():
-            return _suggest_next_tracks(library, entries, theme, compiled,
-                                        pair_mem, target_s=target_s,
-                                        anchor_idx=anchor)
+            return suggest_followers(library, entries, theme, compiled,
+                                     pair_mem, target_s=target_s,
+                                     anchor_idx=anchor)
 
         def done(res):
             if gen != self._suggest_gen:
@@ -2844,10 +2584,12 @@ class SetTab(QWidget):
                        f"H{self._q_bar(r.get('key'))}"
                        f"G{self._q_bar(r.get('groove'))}"
                        f"T{self._q_bar(r.get('theme'))}")
+            ago = self._played_ago(r["id"])
             it = QListWidgetItem(
                 f"{_clip(r['title'], 30)} {_clip(r['artist'], 18)} "
                 f"{_clip(r.get('genre', ''), 14)} "
-                f"{r['bpm']:3.0f} {r['camelot']:>3s}  {quality}  {note}",
+                f"{r['bpm']:3.0f} {r['camelot']:>3s}  {quality}  {note}"
+                + (f"  ·{ago}" if ago else ""),
                 self.suggest_list)
             it.setData(Qt.ItemDataRole.UserRole, r["id"])
             if r.get("tier") == "fade":
@@ -2991,7 +2733,7 @@ class SetTab(QWidget):
                 cols = [tag, f"track {e['track_id']}", "", "", "", "",
                         "", "", "", ""]
             else:
-                cols = [tag, t.title, t.artist, _genre_of(t),
+                cols = [tag, t.title, t.artist, track_genre(t),
                         f"{t.bpm:.0f}", t.camelot,
                         energy_glyph(t.energy_proxy()), groove_glyph(t),
                         "", ""]
@@ -3111,6 +2853,7 @@ class SetTab(QWidget):
     def _reordered(self, *a):
         # Entries ride the items via ENTRY_ROLE (column 0) - never map
         # back through display text.
+        self._snapshot_undo()            # self.entries still pre-drag here
         self.entries = [e for e in
                         (self.set_list.item(i).data(0, self.ENTRY_ROLE)
                          for i in range(self.set_list.count()))
@@ -3118,6 +2861,7 @@ class SetTab(QWidget):
         self.recompile()
 
     def _toggle_anchor(self, item):
+        self._snapshot_undo()
         e = self.entries[self.set_list.row(item)]
         e["pin_type"] = ("anchor" if e["pin_type"] == "suggestion"
                          else "suggestion")
@@ -3130,6 +2874,7 @@ class SetTab(QWidget):
         i = self.set_list.currentRow()
         if i < 0:
             return
+        self._snapshot_undo()
         self.entries[i]["pin_type"] = "anchor"
         self.entries[i]["target_offset_min"] = self.anchor_min.value() or None
         self._rebuild()
@@ -3138,28 +2883,13 @@ class SetTab(QWidget):
     def _remove_entry(self):
         i = self.set_list.currentRow()
         if 0 <= i < len(self.entries):
+            self._snapshot_undo()
             self.entries.pop(i)
             self._rebuild()
             self.recompile()
 
-    def _dup_keys(self, t):
-        """Identity keys for duplicate detection. A byte-identical copy
-        in another directory shares the scan's content hash; a re-rip or
-        re-encode falls back to normalized title/artist plus a coarse
-        length bucket (so a radio edit never collides with the extended
-        mix of the same name)."""
-        keys = []
-        h = ((t.row.get("content_hash") or "").strip()
-             if getattr(t, "row", None) else "")
-        if h:
-            keys.append(("h", h))
-        ti = (t.title or "").strip().lower()
-        ar = (t.artist or "").strip().lower()
-        if ti:
-            keys.append(("m", ti, ar, int((t.duration_s or 0.0) // 8)))
-        return keys
-
     def remove_duplicates(self):
+        self._snapshot_undo()
         by_id = {t.id: t for t in self.planner.library}
         # Union entries that share ANY identity key.
         owner = {}                    # key -> first entry index
@@ -3173,7 +2903,7 @@ class SetTab(QWidget):
 
         for i, e in enumerate(self.entries):
             t = by_id.get(e["track_id"])
-            keys = self._dup_keys(t) if t is not None else []
+            keys = dup_keys(t) if t is not None else []
             keys.append(("id", e["track_id"]))     # literal repeats
             for k in keys:
                 if k in owner:
@@ -3248,10 +2978,41 @@ class SetTab(QWidget):
         self._op.start()
 
     def _apply_entries(self, entries):
+        self._snapshot_undo()
         self.entries = entries
         self._rebuild()
         self.recompile()
         self.status.setText("")
+
+    def build_set(self):
+        """The one-button ordering flow: suggest a set for the theme +
+        target length, then impose the chosen shape (order_by_shape keeps
+        seams beat-matchable while it curves), or - for 'flat' - clean the
+        seams with the beam optimizer instead. Composing the ops here
+        replaces the old which-of-four-buttons ritual; the pieces stay
+        available under More for surgical edits."""
+        if self.entries and QMessageBox.question(
+                self, "Build set", "Replace the current set?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        lib, theme = self.planner.library, self.theme()
+        minutes = float(self.minutes_spin.value())
+        metric = self.shape_metric.currentText()
+        shape = self.shape_curve.currentText()
+
+        def run():
+            entries = SL.suggest_set(lib, theme, minutes)
+            if len(entries) > 2:
+                if shape == "flat":
+                    entries = SL.optimize_order(lib, entries, theme)
+                else:
+                    entries = SL.order_by_shape(lib, entries, theme,
+                                                metric=metric, shape=shape)
+            return entries
+        self._run_plan_op(
+            f"building the set (suggest → "
+            f"{'optimize' if shape == 'flat' else f'{metric} {shape}'})",
+            run, self._apply_entries)
 
     def suggest(self):
         if self.entries and QMessageBox.question(
@@ -3317,6 +3078,9 @@ class SetTab(QWidget):
                         for e in sl["entries"]]
         if sl.get("theme") in BUILTIN_THEMES:
             self.theme_combo.setCurrentText(sl["theme"])
+        self.notes_edit.setText(sl.get("notes") or "")
+        self._undo_stack.clear()         # a loaded set is a fresh timeline
+        self._redo_stack.clear()
         self._rebuild()
         self.recompile()
 
@@ -3349,6 +3113,8 @@ class SetTab(QWidget):
             return
         self.setlist_id = sid
         self.entries = []                    # New = deliberately start empty
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self._rebuild()
         self.refresh_setlists()
         self._select_combo_silently(sid)
@@ -3362,13 +3128,46 @@ class SetTab(QWidget):
                 return
             self.setlist_id = sid
         SL.save_entries(self.planner.db, self.setlist_id, self.entries)
-        self.planner.db.conn.execute(
-            "UPDATE setlists SET theme = ? WHERE id = ?",
-            (self.theme_combo.currentText(), self.setlist_id))
-        self.planner.db.conn.commit()
+        # Plan-level metadata rides with the set: theme + compiled length
+        # (the live system runs the set's own arc clock off total_s) and
+        # the operator's notes.
+        self.planner.db.set_setlist_meta(
+            self.setlist_id, theme=self.theme_combo.currentText(),
+            notes=self.notes_edit.text(),
+            total_s=(self.compiled or {}).get("total_s"))
         self.refresh_setlists()
         self._select_combo_silently(self.setlist_id)
         self.status.setText(f"saved {len(self.entries)} tracks.")
+
+    def _push_live(self, mode="order"):
+        """Save, then load this set into the running show via the web
+        controller's HTTP action route (planner and show are separate
+        processes; the DB is the payload, this is just the trigger)."""
+        self.save_set()
+        if self.setlist_id is None:
+            return                       # user cancelled the save prompt
+        row = self.planner.db.conn.execute(
+            "SELECT name FROM setlists WHERE id = ?",
+            (self.setlist_id,)).fetchone()
+        if row is None:
+            return
+        name = row["name"]
+        import urllib.request
+        base = os.environ.get("DJ_SHOW_URL", "http://localhost:5000")
+        action = "setlist" if mode == "order" else "setlist_pool"
+        req = urllib.request.Request(
+            base + "/api/dj/action",
+            data=json.dumps({"action": action, "value": name}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=2.0):
+                pass
+            self.status.setText(
+                f"pushed '{name}' to the live show ({mode} mode).")
+        except Exception:
+            self.status.setText(
+                f"live show not reachable at {base} - set saved; "
+                "load it from the web panel when the show is up.")
 
     def _selected_slot_start(self):
         """Wall-clock offset of the SELECTED entry's compiled slot, so Play
@@ -3390,7 +3189,6 @@ class SetTab(QWidget):
         if not self.compiled:
             self.status.setText("build a set first")
             return
-        self.set_pause_btn.setChecked(False)
         start_s = self._selected_slot_start()
         self.planner.mix_tab.play_set(start_s)
         which = "from the selected song" if start_s > 0.0 else "from the top"
@@ -3404,6 +3202,8 @@ class SetTab(QWidget):
             SL.delete_setlist(self.planner.db, self.setlist_id)
             self.setlist_id = None
             self.entries = []
+            self._undo_stack.clear()
+            self._redo_stack.clear()
             self._rebuild()
             self.refresh_setlists()
             self.recompile()
@@ -3447,10 +3247,12 @@ class SetTab(QWidget):
         for i, s in enumerate(result["slots"]):
             t = s["track"]
             mins = s["start_offset_s"] / 60.0
+            ago = self._played_ago(t.id)
             QListWidgetItem(
                 f"{int(mins):3d}:{int(s['start_offset_s'] % 60):02d}  "
                 f"{t.title}  ({t.bpm:.0f} {t.camelot}, "
-                f"{s['play_s'] / 60.0:.1f} min)", self.plan_list)
+                f"{s['play_s'] / 60.0:.1f} min)"
+                + (f"  · played {ago}" if ago else ""), self.plan_list)
             p = s["transition"]
             if p:
                 nxt = result["slots"][i + 1]["track"]
@@ -3471,6 +3273,20 @@ class SetTab(QWidget):
                 if pm:
                     badges.append("★ mixed well before" if pm > 1.0
                                   else "✖ rough before")
+                # NIGHT EVIDENCE: this exact pairing was measured live
+                # (seam_quality in logs/dj_*.jsonl) - the visibility the
+                # numeric pair memory never had.
+                nv = getattr(self.planner, "night_verdicts", {}) \
+                    .get((t.title, nxt.title))
+                if nv:
+                    last = nv[-1]
+                    d = f"{last['date'][4:6]}-{last['date'][6:8]}"
+                    if any(v["rough"] for v in nv):
+                        badges.append(f"✖ flammed live {d}")
+                    else:
+                        badges.append(f"✓ clean live {d}"
+                                      + (f" ×{len(nv)}" if len(nv) > 1
+                                         else ""))
                 warn = ("   ⚠ " + "; ".join(s["warnings"])
                         if s["warnings"] else "")
                 item = QListWidgetItem(
@@ -3500,6 +3316,7 @@ class SetTab(QWidget):
                     break
         self._update_strip(result)
         self.status.setText(self._report_card(result))
+        self._update_worst(result)
         self.planCompiled.emit(result)
 
     def _engine_changed(self, name):
@@ -3599,6 +3416,50 @@ class SetTab(QWidget):
             bits.append(f"{len(result['warnings'])} warnings")
         return "  ·  ".join(bits)
 
+    def _update_worst(self, result, n=5):
+        """Rank the set's seams worst-first (warnings outrank raw score)
+        and list the bottom N as clickable repair targets."""
+        self.worst_list.clear()
+        slots = result["slots"]
+        seams = []
+        for i, s in enumerate(slots[:-1]):
+            p = s.get("transition")
+            if p:
+                seams.append((len(s["warnings"]),
+                              -(p.get("pair_score") or 0.0), i, s, p))
+        seams.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        for nw, negs, i, s, p in seams[:n]:
+            if nw == 0 and -negs >= 0.15:
+                continue                 # healthy seam - nothing to repair
+            nxt = slots[i + 1]["track"]
+            why = "; ".join(s["warnings"][:2]) \
+                or ("deliberate fade" if p["style"] == "long_fade"
+                    else f"weak seam {-negs:.2f}")
+            it = QListWidgetItem(
+                f"{i + 1:2d}→{i + 2:<2d} {_clip(s['track'].title, 20)}→"
+                f"{_clip(nxt.title, 20)} {p['style']:14} {why}",
+                self.worst_list)
+            it.setData(Qt.ItemDataRole.UserRole, i)
+            it.setForeground(QColor(230, 110, 110) if nw
+                             else QColor(255, 170, 100))
+
+    def _worst_clicked(self, item):
+        i = item.data(Qt.ItemDataRole.UserRole)
+        if i is not None:
+            self._strip_clicked(i)
+
+    def _played_ago(self, track_id):
+        """'today' / 'Nd ago' from play_history, or None if never played
+        live. The recency chip that keeps a set from accidentally leaning
+        on last Saturday's exact records."""
+        ts = getattr(self.planner, "last_played", {}).get(track_id)
+        if not ts:
+            return None
+        d = (time.time() - ts) / 86400.0
+        if d < 1.0:
+            return "today"
+        return f"{d:.0f}d ago"
+
     def _strip_clicked(self, i):
         if 0 <= i < self.set_list.count():
             self.set_list.setCurrentRow(i)
@@ -3611,6 +3472,7 @@ class SetTab(QWidget):
             self.theme_combo.blockSignals(True)
             self.theme_combo.setCurrentText(theme_name)
             self.theme_combo.blockSignals(False)
+        self._snapshot_undo()
         self.entries = [dict(e) for e in entries]
         self._rebuild()
         self.recompile()
@@ -3733,6 +3595,7 @@ class SetTab(QWidget):
         if not (0 <= i < len(self.entries)):     # list edited while scoring
             self.status.setText("the set changed while scoring - try again")
             return
+        self._snapshot_undo()
         self.entries[i]["track_id"] = chosen.data()
         self._rebuild()
         self.recompile()
@@ -3765,6 +3628,7 @@ class SetTab(QWidget):
                 and self.entries[i].get("track_id") == a.id):
             self.status.setText("the set changed while searching - try again")
             return
+        self._snapshot_undo()
         for k, t in enumerate(chain):
             self.entries.insert(i + 1 + k, {
                 "track_id": t.id, "pin_type": "suggestion",
@@ -4036,6 +3900,102 @@ class MixTab(QWidget):
 
 
 # ==========================================================================
+# Nights tab: post-mortem of what the live DJ actually did
+# ==========================================================================
+
+class NightsTab(QWidget):
+    """Reads logs/dj_*.jsonl - the same evidence tools/dj/dj_review.py
+    reports on - and shows each night's play-by-play plus the engine's own
+    per-seam verdicts (seam_quality events), so last weekend's flams are
+    visible WHILE building next weekend's set. Read-only: the numeric
+    learning already happens via seam_feedback/pair memory; this tab is
+    the visibility that memory never had."""
+
+    def __init__(self, planner):
+        super().__init__()
+        self.planner = planner
+        self._nights = []              # [(date, events)] newest first
+        h = QHBoxLayout(self)
+        left = QVBoxLayout()
+        rb = QPushButton("↻ Reload logs")
+        rb.setToolTip("Re-read logs/dj_*.jsonl (e.g. after a show) and "
+                      "refresh the Set tab's night badges.")
+        rb.clicked.connect(self.reload_logs)
+        left.addWidget(rb)
+        self.night_list = QListWidget()
+        self.night_list.setFont(_mono_font())
+        self.night_list.currentRowChanged.connect(self._night_selected)
+        left.addWidget(self.night_list, 1)
+        h.addLayout(left, 2)
+        right = QVBoxLayout()
+        right.addWidget(QLabel(
+            "Measured seams (engine verdicts; red = rough by the same bar "
+            "that charges pair memory):"))
+        self.seam_tree = QTreeWidget()
+        self.seam_tree.setHeaderLabels(
+            ["out → in", "style", "verdict", "flam (beats)", "hole (s)"])
+        self.seam_tree.setRootIsDecorated(False)
+        self.seam_tree.setFont(_mono_font())
+        self.seam_tree.header().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        right.addWidget(self.seam_tree, 3)
+        right.addWidget(QLabel("Play-by-play:"))
+        self.track_list = QListWidget()
+        self.track_list.setFont(_mono_font())
+        right.addWidget(self.track_list, 2)
+        h.addLayout(right, 3)
+
+    def reload_logs(self):
+        self.planner.reload_night_data(force=True)
+        self.refresh()
+        # The Set tab's seam badges read night_verdicts - refresh them.
+        if self.planner.set_tab.entries:
+            self.planner.set_tab.recompile()
+
+    def refresh(self):
+        from lib.dj.review import night_summary
+        self._nights = list(reversed(
+            getattr(self.planner, "night_logs", [])))
+        self.night_list.clear()
+        for s in reversed(night_summary(
+                getattr(self.planner, "night_logs", []))):
+            d = s["date"]
+            line = (f"{d[:4]}-{d[4:6]}-{d[6:]}  {s['hours']:4.1f}h  "
+                    f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
+                    f"{s['rough']:2d} rough  {s['skips']:3d} skips")
+            if s["themes"]:
+                line += "  [" + "/".join(s["themes"][:4]) + "]"
+            it = QListWidgetItem(line, self.night_list)
+            if s["rough"]:
+                it.setForeground(QColor(255, 170, 100))
+        if self.night_list.count():
+            self.night_list.setCurrentRow(0)
+
+    def _night_selected(self, row):
+        from lib.dj.review import night_seam_rows, night_tracks
+        self.seam_tree.clear()
+        self.track_list.clear()
+        if not (0 <= row < len(self._nights)):
+            return
+        _, evs = self._nights[row]
+        for r in night_seam_rows(evs):
+            it = QTreeWidgetItem([
+                f"{r['a'][:34]} → {r['b'][:34]}", r["style"], r["verdict"]
+                + (" (urgent)" if r["urgent"] else ""),
+                f"{r['max_err_beats']:.3f}", f"{r['hole_s']:.2f}"])
+            if r["rough"]:
+                for c in range(5):
+                    it.setForeground(c, QColor(230, 110, 110))
+            elif r["verdict"] != "clean":
+                for c in range(5):
+                    it.setForeground(c, QColor(255, 170, 100))
+            self.seam_tree.addTopLevelItem(it)
+        for title, artist, via in night_tracks(evs):
+            QListWidgetItem(f"{_clip(title, 42)} {_clip(artist, 24)} "
+                            f"via {via}", self.track_list)
+
+
+# ==========================================================================
 # Main window
 # ==========================================================================
 
@@ -4056,10 +4016,12 @@ class Planner(QMainWindow):
         self.analysis_tab = AnalysisTab(self)
         self.set_tab = SetTab(self)
         self.mix_tab = MixTab(self)
+        self.nights_tab = NightsTab(self)
         self.tabs.addTab(self.library_tab, "Library")
         self.tabs.addTab(self.analysis_tab, "Analysis")
         self.tabs.addTab(self.set_tab, "Set")
         self.tabs.addTab(self.mix_tab, "Mix")
+        self.tabs.addTab(self.nights_tab, "Nights")
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
         try:
@@ -4075,6 +4037,7 @@ class Planner(QMainWindow):
 
         self.reload_library()
         self.set_tab.refresh_setlists()
+        self.nights_tab.refresh()
 
     # ---- playback arbiter: ONE thing plays at a time --------------------
     def claim_playback(self, owner):
@@ -4123,6 +4086,16 @@ class Planner(QMainWindow):
             self.pair_memory = _b.pair_memory
         except Exception:
             self.pair_memory = {}
+        # Night-log evidence (parsed once; the Nights tab's reload button
+        # forces a re-read) + last-played recency for the chips.
+        self.reload_night_data()
+        try:
+            self.last_played = {
+                r["track_id"]: r["last"] for r in self.db.conn.execute(
+                    "SELECT track_id, MAX(started_at) AS last"
+                    " FROM play_history GROUP BY track_id")}
+        except Exception:
+            self.last_played = {}
         self.library_tab.refresh()
         if not keep_analysis:
             self.analysis_tab.refresh_tracklist()
@@ -4133,6 +4106,20 @@ class Planner(QMainWindow):
             self.set_tab.recompile()     # _compiled refreshes suggestions
         else:
             self.set_tab._suggest_timer.start(600)   # opener suggestions
+
+    def reload_night_data(self, force=False):
+        """Parse logs/dj_*.jsonl into night_logs + per-pair verdicts (the
+        Set tab's 'flammed live' badges). Cached - the logs only change
+        when a show plays - unless force."""
+        if not force and getattr(self, "night_logs", None) is not None:
+            return
+        try:
+            from lib.dj.review import load_nights, pair_verdicts
+            self.night_logs = load_nights()
+            self.night_verdicts = pair_verdicts(self.night_logs)
+        except Exception as e:
+            print(f"[planner] night logs unavailable: {e}")
+            self.night_logs, self.night_verdicts = [], {}
 
     def _open_analysis(self, track):
         self.tabs.setCurrentWidget(self.analysis_tab)

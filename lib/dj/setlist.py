@@ -197,7 +197,15 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             # overrides the generic clamp.
             tp = float(e.get("target_play_s") or target_play)
             after = min(in_s + tp, max(t.duration_s - 50.0, in_s + 40))
-            plan = brain.plan_transition(t, nxt, meta, after_s=after)
+            # A pinned seam style goes through plan_transition itself (NOT
+            # a label overwrite after the fact - that skipped the style's
+            # geometry: loop windows, drop anchoring, exit policy). The
+            # live order-mode passes the same pin, so what compiles here
+            # is what arms at night; a gate-refused pin is reported in
+            # plan["diag"]["style_pin"].
+            plan = brain.plan_transition(
+                t, nxt, meta, after_s=after,
+                force_style=ne.get("style_override"))
             # An EXPLICIT play hint (the anchor timing solver) is a timing
             # promise, not a suggestion: if the chosen seam overshoots it,
             # force the exit onto the nearest phrase - same trade the live
@@ -213,8 +221,12 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
                 if plan["style"] == "loop_roll_exit":
                     plan["loop_start_s"] = max(
                         0.0, plan["out_s"] - 16 * t.period_s)
-            if ne.get("style_override"):
-                plan["style"] = ne["style_override"]
+            pin = (plan.get("diag") or {}).get("style_pin")
+            if pin and not pin.get("honored"):
+                slot["warnings"].append(
+                    f"style pin '{pin['want']}' refused"
+                    f" ({pin.get('why_not') or 'gated'})"
+                    f" - plays {plan['style']}")
             key_fit = camelot_compat(t.camelot, nxt.camelot)
             if key_fit < 0.5:
                 slot["warnings"].append(

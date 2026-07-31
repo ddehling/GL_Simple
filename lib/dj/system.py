@@ -37,6 +37,8 @@ PLAN_LEAD_S = 60.0               # start choosing next this early. Must
                                  # 'now' (now_guard), so arming later than
                                  # the blend span SILENTLY SHORTENS it.
 MIN_LEAD_S = 8.0                 # never arm closer than this to the seam
+HORIZON_N = 6                    # provisional queue depth (display only -
+                                 # slot 0 is the sole committed pick)
 SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
 WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
                                  # the end of the current track unarmed
@@ -99,6 +101,9 @@ class DJSystem:
         self._arc_waypoints = []         # [(progress 0..1, energy 0..1)]
         self._horizon = []               # provisional next-N briefs
         self._horizon_key = None         # staleness stamp
+        self._horizon_dry = None         # (key, len) when the planner
+                                         # couldn't extend - don't retry
+                                         # every tick at 0.5s a burn
         self._history = []               # tonight's tracklist briefs
         self._last_style = None          # last completed transition style
         self._played_energy_ema = None   # arc feedback: what actually played
@@ -107,6 +112,8 @@ class DJSystem:
         self._setlist_name = None
         self._setlist_mode = "order"
         self._setlist_queue = []     # upcoming entry dicts (plan-following)
+        self._setlist_total_s = None  # compiled length -> the set's arc clock
+        self._setlist_start_clock = None
         self.setlist_names = []      # for the web picker, refreshed by step()
         self._setlists_checked = 0.0
         self._txn_id = 0             # transition transaction tag (abort)
@@ -121,6 +128,12 @@ class DJSystem:
         self._moment_txn = None      # its txn tag (second press = recall)
         self._moment_gain = 1.0      # deck gain to restore on the landing
         self._moment_stamped = 0     # landing already flashed to the visuals
+        self._moment_flavor = None   # active gesture: drop/spinback/stall
+        self._moment_hole = (0, 0)   # clock span of the breath-hold (visuals)
+        self._moment_rate = 1.0      # deck rate to restore on recall
+        self._moment_denied = None   # (flavor, why, wall_t): last refusal,
+                                     # surfaced on the panel button - a
+                                     # silent refusal reads as a dead button
         self._decoded = {}           # track_id -> stereo samples (RAM cache)
         self._decoded_order = []
         self._decoding = set()
@@ -246,39 +259,46 @@ class DJSystem:
                 scope = {e["track_id"] for e in self._setlist_queue}
             if scope is not None and self.current is not None:
                 scope.add(self.current.id)
-            user_counts = {}
-            auto_counts = {}
-            genre_counts = {}
             for t in self.brain.library:
                 t.user_tags = per_track.get(t.id, [])
+            # COUNT FROM all_tags - the exact set the hard filter
+            # (_tag_ok) matches against - so a chip's (n) IS the
+            # rotation size a single lit chip produces. The old code
+            # counted user/auto/genre from their raw sources: genre
+            # chips double-counted tracks tagged by BOTH MusicBrainz
+            # and the file genre, and any tag reachable through a
+            # second source (user tag on some tracks, genre on others)
+            # showed a count smaller than the pool it selects
+            # (user-reported: 'not the correct number of songs in
+            # rotation', 2026-07-31).
+            user_names, genre_names, auto_names = set(), set(), set()
+            counts = {}
+            for t in self.brain.library:
                 if scope is not None and t.id not in scope:
                     continue
-                for tag in t.user_tags:
-                    user_counts[tag] = user_counts.get(tag, 0) + 1
-                for tag in t.auto_tags:
-                    auto_counts[tag] = auto_counts.get(tag, 0) + 1
-                # GENRE chips: MusicBrainz genres + embedded file genre. Both
-                # already fold into all_tags, so selecting one drives the hard
-                # filter / soft lean immediately.
+                user_names.update(t.user_tags)
+                auto_names.update(t.auto_tags)
                 for g in (getattr(t, "genres", None) or []):
-                    gl = str(g).lower()
-                    genre_counts[gl] = genre_counts.get(gl, 0) + 1
+                    genre_names.add(str(g).lower())
                 for part in (getattr(t, "file_genre", "") or "").replace(
                         "/", ",").replace(";", ",").split(","):
                     part = part.strip().lower()
                     if part:
-                        genre_counts[part] = genre_counts.get(part, 0) + 1
-            vocab = [(tag, n, True) for tag, n in
-                     sorted(user_counts.items(), key=lambda kv: -kv[1])]
-            genre_top = sorted(genre_counts.items(),
-                               key=lambda kv: -kv[1])[:24]
-            self._genre_tags = {g for g, _ in genre_top
-                                if g not in user_counts}
-            vocab += [(g, n, False) for g, n in genre_top
-                      if g in self._genre_tags]
-            vocab += [(tag, n, False) for tag, n in
-                      sorted(auto_counts.items(), key=lambda kv: -kv[1])
-                      if tag not in user_counts and tag not in self._genre_tags]
+                        genre_names.add(part)
+                for tag in set(t.all_tags):
+                    counts[tag] = counts.get(tag, 0) + 1
+            vocab = [(tag, counts.get(tag, 0), True) for tag in
+                     sorted(user_names, key=lambda k: -counts.get(k, 0))]
+            genre_top = sorted(
+                ((g, counts.get(g, 0)) for g in genre_names
+                 if g not in user_names),
+                key=lambda kv: -kv[1])[:24]
+            self._genre_tags = {g for g, _ in genre_top}
+            vocab += [(g, n, False) for g, n in genre_top]
+            vocab += [(tag, counts.get(tag, 0), False) for tag in
+                      sorted(auto_names, key=lambda k: -counts.get(k, 0))
+                      if tag not in user_names
+                      and tag not in self._genre_tags]
             self._tag_vocab = vocab[:80]     # everything, sane ceiling
         except Exception as e:
             print(f"[DJ] tag refresh skipped: {e}")
@@ -454,13 +474,18 @@ class DJSystem:
         with self._lock:
             self._pending.append(("seam_fb", bool(up)))
 
-    def moment(self):
-        """OPERATOR MOMENT: build a riser into the next phrase boundary
-        and land an impact ON it - a crowd moment on demand, phrase-tight.
-        The visuals pre-arm through the published ETA and hear the impact
-        as a drop."""
+    def moment(self, flavor="drop"):
+        """OPERATOR MOMENT: an engineered crowd moment on demand, in one
+        of four flavors (see _do_moment): 'drop' builds 8-24 beats and
+        lands ON the track's real drop, 'spinback' kills the platter and
+        slams into it cold, 'stall' catches the beat in a decaying echo
+        and slams back, 'nextdrop' runs the build on the live track and
+        lands on the INCOMING track's drop (double-drops the set). A
+        second press while one is building recalls it. The visuals
+        pre-arm through the published ETA and the landing is stamped as
+        a hard drop."""
         with self._lock:
-            self._pending.append(("moment", None))
+            self._pending.append(("moment", str(flavor or "drop")))
 
     def set_flavor(self, flavor):
         """Live music-type steering: {'prefer_tags': {tag: w}, 'avoid_tags':
@@ -510,11 +535,30 @@ class DJSystem:
 
     # -- arc / outstate -----------------------------------------------------------
     def arc_progress(self):
+        # A loaded setlist runs its OWN arc clock over the compiled set
+        # length, so a 90-minute planned set traverses its whole arc in 90
+        # minutes regardless of the configured night length. The compiled
+        # total is an estimate (live play lengths are drawn stochastically,
+        # +-10-20%) - the clamp parks the arc at 1.0 if the set runs long.
+        if self._setlist_name and self._setlist_total_s \
+                and self._setlist_start_clock is not None:
+            elapsed = (self.submix.clock - self._setlist_start_clock) / RATE
+            return min(1.0, elapsed / max(self._setlist_total_s, 60.0))
         elapsed = (self.submix.clock - self._set_start_clock) / RATE
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
         if theme.arc == "all_night":
             return min(1.0, elapsed / max(self.night_hours * 3600.0, 60.0))
         return (elapsed % SET_CYCLE_S) / SET_CYCLE_S
+
+    def _arc_slot(self):
+        """(phase, cycle_i) of NOW - where a history entry sits on the
+        night canvas. cycle_i counts SET_CYCLE_S wraps so the panel can
+        show only the current window; all_night themes never wrap."""
+        elapsed = (self.submix.clock - self._set_start_clock) / RATE
+        theme = self.brain.theme if self.brain else get_theme(self._theme_name)
+        if theme.arc == "all_night":
+            return self.arc_progress(), 0
+        return self.arc_progress(), int(elapsed // SET_CYCLE_S)
 
     def _arc_base(self, progress):
         """Theme arc, overridden by live waypoints when the operator has
@@ -676,15 +720,27 @@ class DJSystem:
                 and vclock < self.swap_at:
             swap_eta = (self.swap_at - vclock) / RATE
         # A pending operator MOMENT pre-arms the visuals the same way an
-        # approaching seam does.
+        # approaching seam does - plus its own keys so the room can be
+        # CHOREOGRAPHED: dj_moment_hole is True through the breath-hold
+        # (the hole / the dying platter / the echo stall), where the
+        # renderer pins the build at max and suppresses beat pulses the
+        # ear can't hear (see Stories_OGL).
         m_clk = self._moment_clock
+        moment_eta = None
+        moment_hole = False
         if m_clk > vclock:
             m_eta = (m_clk - vclock) / RATE
             eta = m_eta if eta is None else min(eta, m_eta)
+            moment_eta = m_eta
+            h0, h1 = self._moment_hole
+            moment_hole = bool(h1) and h0 <= vclock < h1
         elif m_clk and m_clk > self._moment_stamped:
             # The landing is an ENGINEERED drop - stamp it directly rather
-            # than hoping the DSP detector arms on the hole we just cut.
+            # than hoping the DSP detector arms on the hole we just cut,
+            # and stamp it HARD: the renderer slams longer for an operator
+            # moment than for a passing musical drop.
             self._dj_drop_wall = time.time()
+            self._dj_drop_hard = True
             self._moment_stamped = m_clk
         # GROUND-TRUTH MUSICAL DROPS: the DB knows every drop section of
         # every track. The DSP drop detector needs a QUIET episode to arm
@@ -707,8 +763,15 @@ class DJSystem:
                     drop_eta = d
                 if (prev_id == self.current.id and prev_pos is not None
                         and prev_pos < st <= pos
-                        and pos - prev_pos < 2.0):     # not a seek jump
+                        and pos - prev_pos < 2.0       # not a seek jump
+                        # A MOMENT lands one beat shy of the drop it jumped
+                        # to, so the playhead crosses the section boundary
+                        # right after the engineered stamp - re-stamping it
+                        # as 'musical' here downgraded the hard slam to the
+                        # 0.35s flash (caught by _dj_moment_vis_test).
+                        and not (m_clk and m_clk <= vclock <= m_clk + RATE)):
                     self._dj_drop_wall = time.time()
+                    self._dj_drop_hard = False      # musical, not engineered
             self._drop_scan_prev = (self.current.id, pos)
         ndrop = eta
         if drop_eta is not None:
@@ -718,7 +781,10 @@ class DJSystem:
                 "dj_arc_heat": self.arc_target(),
                 "dj_energy": self.live_energy(),
                 "dj_drop_t": getattr(self, "_dj_drop_wall", None),
+                "dj_drop_hard": bool(getattr(self, "_dj_drop_hard", False)),
                 "dj_next_drop_eta": ndrop,
+                "dj_moment_eta": moment_eta,
+                "dj_moment_hole": moment_hole,
                 "dj_blend_eta": eta,
                 "dj_swap_eta": swap_eta,
                 "dj_style": self.plan["style"] if self.plan else None}
@@ -771,7 +837,22 @@ class DJSystem:
                                 / RATE, 1)
             if self._moment_clock > self.submix.clock
             else None,
+            # Last refused press, shown on its button for a few seconds
+            # ("no drop in this track") - a silent refusal is a dead
+            # button to the operator.
+            "moment_denied": ({"flavor": self._moment_denied[0],
+                               "why": self._moment_denied[1]}
+                              if self._moment_denied is not None
+                              and time.time() - self._moment_denied[2] < 4.0
+                              else None),
+            "moment_flavor": (self._moment_flavor
+                              if self._moment_clock > self.submix.clock
+                              else None),
             "autopilot": self.autopilot,
+            # Which SET_CYCLE_S window we're in: history entries carry
+            # their own "cyc" so the night canvas shows exactly the
+            # tracks of the CURRENT window (0m..now).
+            "arc_cycle_i": self._arc_slot()[1],
             "arc_phase": round(self.arc_progress(), 4),
             "arc_heat": round(self.arc_target(), 3),
             "energy_nudge": self._energy_nudge,
@@ -944,6 +1025,8 @@ class DJSystem:
                     self._setlist_mode = mode
                     self.brain.pool_ids = None
                     self._setlist_queue = []
+                    self._setlist_total_s = None
+                    self._setlist_start_clock = None
                     if sl and mode == "pool":
                         # THE LIST AS A POOL: brain picks the order, all
                         # steering applies, nothing outside the list plays.
@@ -954,8 +1037,40 @@ class DJSystem:
                         self._horizon = []          # replan inside the pool
                     elif sl:
                         self._setlist_queue = list(sl["entries"])
+                    if sl:
+                        # The set was PLANNED against a theme, a length and
+                        # (maybe) a drawn arc - apply all three so the night
+                        # plays the set as designed. Each is only a starting
+                        # point: the operator's later theme/arc actions
+                        # override normally.
+                        if sl.get("theme") \
+                                and sl["theme"] != self._theme_name:
+                            try:
+                                self.brain.set_theme(get_theme(sl["theme"]))
+                                self._theme_name = sl["theme"]
+                                self._log({"event": "theme",
+                                           "theme": sl["theme"],
+                                           "via": "setlist"})
+                            except Exception:
+                                pass
+                        if sl.get("total_s"):
+                            self._setlist_total_s = float(sl["total_s"])
+                            self._setlist_start_clock = self.submix.clock
+                        arc = sl.get("arc_json")
+                        if arc and not self._arc_waypoints:
+                            try:
+                                pts = json.loads(arc) \
+                                    if isinstance(arc, str) else arc
+                                self._arc_waypoints = sorted(
+                                    (max(0.0, min(1.0, float(p))),
+                                     max(0.0, min(1.0, float(e))))
+                                    for p, e in pts)[:8]
+                            except (ValueError, TypeError):
+                                pass
                     self._log({"event": "setlist",
                                "name": self._setlist_name, "mode": mode,
+                               "theme": sl.get("theme") if sl else None,
+                               "total_s": self._setlist_total_s,
                                "tracks": len(sl["entries"]) if sl else 0})
                     self._refresh_tags()
                     if self.state == "playing":
@@ -999,7 +1114,7 @@ class DJSystem:
                 self._horizon = self._horizon[1:]   # vetoed item leaves
                 self._horizon_key = None
             elif kind == "moment" and self.state in ("playing", "armed")                     and self.current is not None:
-                self._do_moment()
+                self._do_moment(val or "drop")
             elif kind == "seam_fb":
                 if self._last_style:
                     self.brain.seam_feedback(self._last_style, val)
@@ -1017,6 +1132,21 @@ class DJSystem:
             elif kind == "mix_now":
                 if self.state == "playing":
                     self._do_skip()                 # force the transition now
+            elif kind == "tempo_writeback":
+                # Queued by _verify_tempo on the decode thread (LibraryDB
+                # is one-instance-per-thread); the write happens HERE so
+                # the correction persists - the planner's next compile and
+                # every future night start from the measured tempo instead
+                # of re-discovering the same disagreement.
+                try:
+                    self.db.set_verified_tempo(
+                        val["track_id"], val["bpm"], val["grid"],
+                        val["conf"])
+                    self._log({"event": "tempo_writeback", **{
+                        k: val[k] for k in
+                        ("track_id", "bpm", "conf", "dev_pct")}})
+                except Exception as e:
+                    print(f"[DJ] tempo write-back failed: {e}")
 
         if time.time() - self._setlists_checked > 10.0:
             self._refresh_setlist_names()
@@ -1065,7 +1195,12 @@ class DJSystem:
 
     def _maybe_horizon(self):
         """Provisional next-N for the trajectory display; recomputed only
-        when its inputs changed (it runs real selection, not free)."""
+        when its inputs changed (it runs real selection, not free).
+
+        HORIZON_N deep (was 3). Only slot 0 is ever COMMITTED; on an
+        actively-steered night the tail is direction, not promise (log
+        measurement 2026-07-30: steering invalidates the plan about once
+        per song), so the panel ghosts slots 3+."""
         if self.current is None or self.brain is None:
             return
         steer = (self._theme_name,
@@ -1073,9 +1208,14 @@ class DJSystem:
                  tuple(sorted(self.brain.require_tags)),   # genre/tag HARD filter
                  tuple(self._arc_waypoints), round(self._energy_nudge, 2))
         steered = steer != self._horizon_key
-        if not steered and len(self._horizon) >= 3                 and (self.next_track is None
-                     or self._horizon[0]["id"] == self.next_track.id):
+        front_ok = (self.next_track is None
+                    or (bool(self._horizon)
+                        and self._horizon[0]["id"] == self.next_track.id))
+        if not steered and len(self._horizon) >= HORIZON_N and front_ok:
             return
+        if not steered and front_ok \
+                and self._horizon_dry == (steer, len(self._horizon)):
+            return          # planner is dry at this depth; don't re-burn
         if steered:
             self._horizon = []           # steering changed: replan the lot
         self._horizon_key = steer
@@ -1091,7 +1231,7 @@ class DJSystem:
                     "energy": self.next_track.energy_proxy(),
                     "tags": self.next_track.all_tags[:4],
                     "why": "setlist next"})
-            for e in self._setlist_queue[:3]:
+            for e in self._setlist_queue[:HORIZON_N]:
                 t = by_id.get(e["track_id"])
                 if t is None:
                     continue
@@ -1101,8 +1241,8 @@ class DJSystem:
                     "tags": t.all_tags[:4],
                     "why": "setlist " + ("anchor" if e.get("pin_type")
                                          == "anchor" else "pick")})
-            self._annotate_horizon(items[:3])
-            self._horizon = items[:3]
+            self._annotate_horizon(items[:HORIZON_N])
+            self._horizon = items[:HORIZON_N]
             return
         prog0 = self.arc_progress()
         step = 300.0 / (SET_CYCLE_S if (self.brain.theme.arc != "all_night")
@@ -1120,14 +1260,20 @@ class DJSystem:
                 if h["id"] in by_id and k not in seen:
                     seen.add(k)
                     kept.append(h)
-            kept = kept[:3]
-            need = 3 - len(kept)
-            if need > 0:
+            kept = kept[:HORIZON_N]
+            filled = len(kept)
+            if filled < HORIZON_N:
+                # ONE slot per step() tick, not all six in one burst: a
+                # steering change used to trigger a ~3s pure-Python
+                # replanning burst on the DJ thread - a GIL competitor
+                # to the audio producer, right when the operator is
+                # touching the controls (perf audit 2026-07-31). The
+                # queue now converges over a few ticks instead.
                 tail = by_id[kept[-1]["id"]] if kept else self.current
                 pre = [by_id[h["id"]] for h in kept]
                 kept += self.brain.plan_horizon(
-                    tail, arc_at, tail.bpm, n=need, preplayed=pre)
-            if self.brain.pool_ids is not None and len(kept) < 3:
+                    tail, arc_at, tail.bpm, n=1, preplayed=pre)
+            if self.brain.pool_ids is not None and len(kept) < HORIZON_N:
                 # From an off-pool (or tempo-remote) current track the
                 # planner may reach nothing - but the pool WILL play,
                 # via the dipped-fade fallback. Show it.
@@ -1137,12 +1283,17 @@ class DJSystem:
                                if t.id in self.brain.pool_ids
                                and t.id not in have),
                               key=lambda t: abs(t.energy_proxy() - arc))
-                for t in rest[:3 - len(kept)]:
+                for t in rest[:HORIZON_N - len(kept)]:
                     kept.append({"id": t.id, "title": t.title,
                                  "artist": t.artist, "bpm": t.bpm,
                                  "energy": t.energy_proxy(),
                                  "tags": t.all_tags[:4],
                                  "why": "setlist pool (fade in)"})
+            # Dry marker: the planner couldn't extend past this depth
+            # (dead end / tiny pool) - don't re-burn a selection pass
+            # every 0.4s tick until something actually changes.
+            self._horizon_dry = ((steer, len(kept))
+                                 if len(kept) == filled else None)
             self._horizon = kept
             self._annotate_horizon(self._horizon)
             if self.next_track is not None and self._horizon:
@@ -1176,6 +1327,7 @@ class DJSystem:
                           if x.id == entry["track_id"]), None)
             if first is not None:
                 self._play_hint_s = entry.get("target_play_s")
+                self._next_style_hint = None    # no seam into the opener
         if first is None:
             first = self.brain.choose_first(self.arc_target())
         if first is None:
@@ -1205,9 +1357,12 @@ class DJSystem:
         self.brain.note_played(first)
         self._note_pool_played(first)
         self._note_energy(first)
+        ph, ci = self._arc_slot()
         self._history.append({"t": time.strftime("%H:%M"),
                               "title": first.title, "artist": first.artist,
-                              "via": "start"})
+                              "via": "start", "phase": round(ph, 4),
+                              "cyc": ci,
+                              "energy": round(first.energy_proxy(), 3)})
         self._history_id = self.db.log_play_start(first.id, theme=self._theme_name)
         self._log({"event": "play", "track": first.title,
                    "artist": first.artist, "bpm": first.bpm,
@@ -1288,6 +1443,7 @@ class DJSystem:
                 else:
                     self.brain.pool_ids = None
                     self._setlist_name = None
+                    self._setlist_total_s = None
                     cand, meta = self._pick_next(out_bpm)
             if cand is None:
                 self.last_error = "no compatible next track"
@@ -1325,10 +1481,25 @@ class DJSystem:
             self._next_meta = dict(self._next_meta or {})
             self._next_meta["tempo_clash"] = True
         after = pos + max(self._exit_played - played, MIN_LEAD_S)
+        # Honor the planner's per-seam style pin (setlist_entries.
+        # style_override) - only when the hint still matches the committed
+        # next track (reroll/substitution invalidates it by construction).
+        hint = getattr(self, "_next_style_hint", None)
+        force_style = hint[1] if hint and hint[0] == self.next_track.id \
+            else None
         plan = self.brain.plan_transition(self.current, self.next_track,
                                           self._next_meta,
                                           after_s=min(after, deadline),
-                                          arc=self.arc_target())
+                                          arc=self.arc_target(),
+                                          force_style=force_style)
+        if force_style:
+            # (hint is NOT consumed here: a hold/steer replan of the same
+            # pinned pair keeps the pin; the next queue pop replaces it.)
+            pin = (plan.get("diag") or {}).get("style_pin") or {}
+            self._log({"event": "style_pin", "want": force_style,
+                       "honored": bool(pin.get("honored")),
+                       "why_not": pin.get("why_not"),
+                       "style": plan.get("style")})
         # VERIFIED TEMPO: the plan's rate was computed from the STORED
         # bpm; when predecode measured the incoming track's true tempo,
         # rescale so the deck plays at the tempo that actually matches
@@ -1471,6 +1642,7 @@ class DJSystem:
             self.brain.pool_ids = None
             self._setlist_name = None
             self._setlist_mode = "order"
+            self._setlist_total_s = None      # night arc clock resumes
             self._log({"event": "setlist_pool_done"})
             print("[DJ] setlist pool complete - free play resumes")
 
@@ -1501,10 +1673,14 @@ class DJSystem:
             self._horizon = self._horizon[1:]
         else:
             self._horizon = []
+        ph, ci = self._arc_slot()
         self._history.append({"t": time.strftime("%H:%M"),
                               "title": self.current.title,
                               "artist": self.current.artist,
-                              "via": self.plan["style"]})
+                              "via": self.plan["style"],
+                              "phase": round(ph, 4), "cyc": ci,
+                              "energy": round(
+                                  self.current.energy_proxy(), 3)})
         self._history = self._history[-60:]
         self._log({"event": "play", "track": self.current.title,
                    "artist": self.current.artist, "bpm": self.current.bpm,
@@ -1551,32 +1727,41 @@ class DJSystem:
         # bug that left every jump stuck in the armed state).
         self._log({"event": "seek", "to_s": round(target, 1)})
 
-    def _do_moment(self):
-        """OPERATOR MOMENT: an engineered build-and-drop on the LIVE deck.
+    def _do_moment(self, flavor="nextdrop"):
+        """OPERATOR MOMENT: there is exactly ONE - the set double-drops
+        forward into the NEXT track's real drop (_moment_nextdrop).
 
-        A crowd moment is CONTRAST, not a layer. The first version only
-        played a riser + impact over an unchanged track and read as
-        garbage, for a measurable reason: make_riser(gain=0.16) is -17
-        dBFS RMS and a mastered club track sits around -9, so the build
-        was buried under the very music it was supposed to lift, and the
-        impact landed on a full-energy bar where there was no hole for it
-        to fill. Turning the samples up isn't the fix (0.26 already peaks
-        past full scale into the master limiter) - making ROOM is.
+        Four flavors shipped on 2026-07-29 and the operator's verdict
+        the next day was final: 'only next is good', 'drop is awful',
+        'stall is worthless', 'spinback is basically another next'.
+        Every same-track gesture - build-and-resume, build-and-jump,
+        echo stall, spinback dive - failed three consecutive rebuilds
+        across three different sound designs, because the payoff was
+        still the same song. The one gesture that ever landed is the
+        one that changes the music. So: one button, one gesture, and
+        anything it can't deliver it refuses OUT LOUD (_moment_skip
+        flashes the reason on the button).
 
-        So the gesture shapes the MUSIC and lets the samples reinforce it:
+        `flavor` is accepted (old panels / queued events may still send
+        drop/spinback/stall) and ignored - every press is a nextdrop.
 
-            |<---------- build (16 beats) ---------->|
-            high-pass sweeps 30 -> 600 Hz ...........|
-                    accelerating roll (8 beats) .....|
-                                       hole (1 beat) |
-                                                     * landing: filter off,
-                                                       gain back, impact
-
-        Everything restores ON the downbeat, which is what the room hears
-        as the drop. A second press before the landing recalls the whole
-        thing (see _cancel_moment)."""
+        Recall contract: the gesture arms as a real transition, so a
+        second press (or ABORT MIX) routes to _do_abort, which kills
+        the incoming deck and restores the outgoing one wholesale. The
+        pending landing pre-arms the visuals through outstate
+        (dj_moment_eta / the dj_next_drop_eta ramp) and the landing is
+        stamped as a HARD drop (see outstate_keys)."""
         if self._moment_clock > self.submix.clock:
-            self._cancel_moment("recalled")      # second press = take it back
+            # Second press = take it back (the pending moment is an
+            # armed transition; abort is its recall path).
+            if self.state == "armed":
+                self._do_abort(via="moment_recall")
+            return
+        if self.state == "armed":
+            # A seam script owns both decks until the handover; layering
+            # anything on top of it read as garbage every time it was
+            # tried. Refuse, visibly.
+            self._moment_skip("nextdrop", "mix in progress")
             return
         pos = self._pos_s()
         tel_d = (self.submix.telemetry or {}).get("decks", {})
@@ -1586,134 +1771,230 @@ class DJSystem:
         rate = max(float(dk.get("rate") or 1.0), 1e-6)
         g0 = float(dk.get("gain", 1.0))
         if g0 <= 0.05:
-            # Mid-fade or already ducked to nothing: there is no music here
-            # to build out of, and restoring to this gain would strand a
-            # silent deck.
-            self._log({"event": "moment_skipped", "why": "deck not up"})
+            # Mid-fade or already ducked to nothing: there is no music
+            # here to build out of.
+            self._moment_skip("nextdrop", "deck not up")
             return
         period = max(float(self.current.period_s or 0.5), 0.15)
         beat = period / rate                     # OUTPUT seconds per beat
-        phrase = (self.current.phrase_beats or 32) * period    # source secs
+        self._moment_nextdrop(pos, rate, g0, period, beat,
+                              self.active_deck)
 
-        # A landing far enough out to BUILD into. The old code demanded
-        # only 2.5s, so a boundary that happened to be close gave a naked
-        # impact with no build at all - the same button did a different
-        # thing every press.
-        build_beats = 16 if 16 * beat <= 10.0 else 8
-        build = build_beats * beat
-        # Land on the 16-BEAT grid (the phrase grid and its midpoint), not
-        # on phrases alone: a 32-beat phrase is 16s at 120 bpm, so phrase-
-        # only landings made the operator wait up to a third of a minute
-        # for a button that is supposed to feel like a reflex. 4 bars is
-        # always a musically real place to drop.
+    def _moment_skip(self, flavor, why):
+        """Refuse a moment press LOUDLY: log it and stamp the denial so
+        the panel can flash the reason on the button. A refusal the
+        operator can't see is indistinguishable from a dead button."""
+        self._moment_denied = (flavor, why, time.time())
+        self._log({"event": "moment_skipped", "flavor": flavor, "why": why})
+
+    def _snap_beat(self, t, period):
+        """Snap a source time to the track's BEAT grid (nearest_downbeat
+        gives bar lines; add whole beats from there)."""
+        db = self.current.nearest_downbeat(t)
+        return db + round((t - db) / max(period, 1e-6)) * period
+
+    def _moment_landing(self, pos, rate, beat, period, flavor="drop"):
+        """Shared drop/nextdrop schedule. Land on the 16-BEAT grid (the
+        phrase grid and its midpoint), not on phrases alone: a 32-beat
+        phrase is 16s at 120 bpm, so phrase-only landings made the
+        operator wait up to a third of a minute for a button that is
+        supposed to feel like a reflex. The shortest run-up that still
+        reads as a build is 2 bars; the landing is the first grid point
+        at least that far out, so the wait is 8-24 beats and the build
+        spans ALL of it. Returns (t_hit, eta, hit) or None (logged)."""
+        phrase = (self.current.phrase_beats or 32) * period    # source secs
         grid = min(phrase, 16 * period)
-        anchor = self.current.nearest_phrase(pos + (build + 2.0 * beat) * rate)
-        need = pos + (build + 1.0) * rate
+        min_build = 8.0 * beat
+        anchor = self.current.nearest_phrase(pos + (min_build + 2.0 * beat)
+                                             * rate)
+        need = pos + (min_build - 0.05) * rate
         cands = [anchor + i * grid for i in range(-2, 9)]
         cands = [c for c in cands
                  if c >= need and c <= self.current.duration_s - 2.0]
         if not cands:
-            self._log({"event": "moment_skipped", "why": "no landing"})
-            return
+            self._moment_skip(flavor, "track ending")
+            return None
         t_hit = min(cands)
         eta = (t_hit - pos) / rate
-        hit = self.submix.clock + int(eta * RATE)
-        deck = self.active_deck
+        return t_hit, eta, self.submix.clock + int(eta * RATE)
+
+    def _next_drop_target(self):
+        """Shared by nextdrop and spinback: (next_track, samples, drop_s)
+        when the queued next is decoded and has a playable drop under
+        the runway rule (entering the incoming track AT its drop with
+        less than gate+ride left would arm the NEXT transition seconds
+        after the slam); target None otherwise. EARLIEST playable drop:
+        enter the track at its drop and keep the rest of it to ride."""
+        nxt = self.next_track
+        samples = None
+        if nxt is not None:
+            with self._decode_lock:
+                samples = self._decoded.get(nxt.id)
+            if samples is None and not getattr(self, "threaded", True):
+                samples = self._decoded_samples(nxt)
+        target = None
+        if nxt is not None and samples is not None:
+            pn = max(float(nxt.period_s or 0.5), 0.15)
+            try:
+                from lib.dj.features import drop_moments
+                cands = [nxt.nearest_downbeat(d)
+                         for d in drop_moments(nxt.sections or [])]
+            except Exception:
+                cands = []
+            ok = [d for d in cands if 4.0 * pn < d
+                  < nxt.duration_s - (PLAN_LEAD_S + 25.0
+                                      + max(16.0 * pn, 30.0))]
+            target = min(ok) if ok else None
+        return nxt, samples, target
+
+    def _moment_nextdrop(self, pos, rate, g0, period, beat, deck):
+        """THE moment: DOUBLE-DROP THE SET. A build on the live track
+        (sweep + trim push + roll + loop-roll + hole), landing on the
+        INCOMING track's real drop, entered cold at full gain - the set
+        jumps forward a whole track on one button, straight into its
+        hottest bar. The only crowd gesture that survived four review
+        rounds; every same-track flavor was cut ('only next is good').
+
+        It arms as a real TRANSITION (plan style 'moment_nextdrop',
+        state 'armed', swap_at = the landing), so _finish_swap does all
+        the handover bookkeeping - history, brain notes, deck flip -
+        and the recall is _do_abort (a second press routes there; the
+        ABORT MIX button works too), which kills the incoming deck and
+        restores the outgoing one wholesale. When the next isn't
+        queued/decoded or has no playable drop it REFUSES with the
+        reason on the button (same-track fallbacks are gone - they were
+        the gestures the operator kept calling garbage)."""
+        nxt, samples, target = self._next_drop_target()
+        if target is None:
+            if nxt is not None and samples is None:
+                self._predecode(nxt)     # be ready for the next press
+            self._moment_skip("nextdrop",
+                              "no next queued" if nxt is None else
+                              "next still decoding" if samples is None
+                              else "next has no drop")
+            return
+        landing = self._moment_landing(pos, rate, beat, period, "nextdrop")
+        if landing is None:
+            return
+        t_hit, eta, hit = landing
+        build = eta
+        build_beats = int(round(build / beat))
+        hole = hit - int(beat * RATE)
         from lib.dj import fx as _fx
-
-        # Peak-controlled, not gain-controlled: these land on a mix that is
-        # already near full scale, so their headroom has to be explicit
-        # (see fx.at_peak).
-        riser = {"at": hit - int(build * RATE), "cmd": "fx_play",
-                 "samples": _fx.at_peak(_fx.make_riser(build), 0.45)}
-        roll_beats = 8 if build_beats >= 16 else 4
+        # No synth riser (the whoosh verdict); the dying deck's own
+        # sweep + trim + loop-roll carry the build, plus the snare roll.
+        roll_beats = 8 if build_beats >= 12 else 4
         roll = {"at": hit - int(roll_beats * beat * RATE), "cmd": "fx_play",
-                "samples": _fx.at_peak(_fx.make_roll(beat, roll_beats), 0.38)}
+                "samples": _fx.at_peak(_fx.make_roll(beat, roll_beats), 0.5)}
         impact = {"at": hit, "cmd": "fx_play",
-                  "samples": _fx.at_peak(_fx.make_impact(), 0.55)}
-
-        if self.state == "armed":
-            # The seam script owns this deck's gain/EQ/filter until the
-            # handover - shaping it here would fight the transition and
-            # could strand it filtered. Layer-only, and it still lands on
-            # a downbeat.
-            ev = [riser, roll, impact]
-        else:
-            back = hit + int(max(0.5, beat) * RATE)
-            ev = [
-                # -- the build ---------------------------------------------
-                # Two filter events: one set() call can't sweep, it would
-                # start AND end at the same cutoff (see SweepFilter.set).
-                # The sweep alone drains the bass - an EQ move on top of it
-                # would be one more thing to have to put back.
-                # Starts at 30 Hz, under the sub: the resonant bump has to
-                # sit BELOW the material at the top of the sweep or the
-                # build opens by shoving a bass-heavy master into the
-                # limiter (measured +0.9 dB of peak at q=1.1 from 45 Hz).
-                {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
-                 "mode": "hp", "cutoff_hz": 30.0, "ramp_s": 0.0, "q": 1.0},
-                {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
-                 "cutoff_hz": 600.0, "ramp_s": build},
-                riser,
-                roll,
-                # THE HOLE: one beat of near-silence. This is the part that
-                # makes the landing hit - the roll rides over it alone.
-                {"at": hit - int(beat * RATE), "cmd": "gain", "deck": deck,
-                 "value": 0.07 * g0, "ramp_s": min(0.06, 0.25 * beat)},
-                # -- the landing, all on the downbeat ----------------------
-                {"at": hit, "cmd": "filter", "deck": deck, "mode": "off"},
-                # 50 ms, not 0: it still reads as instant, and it staggers
-                # the track's return behind the impact's transient instead
-                # of stacking both peaks into the master limiter.
-                {"at": hit, "cmd": "gain", "deck": deck, "value": g0,
-                 "ramp_s": 0.05},
-                impact,
-                # Insurance. Nothing may leave this deck high-passed at 600
-                # Hz and 7% gain - an abort or watchdog firing mid-gesture
-                # would otherwise silence the room.
-                {"at": back, "cmd": "filter", "deck": deck, "mode": "off"},
-                {"at": back, "cmd": "gain", "deck": deck, "value": g0,
-                 "ramp_s": 0.05},
-            ]
-        # Own txn namespace: _do_abort cancels by the CURRENT _txn_id, so a
-        # moment must never touch that counter or an abort would recall the
-        # moment and leave the transition script running.
-        self._moment_txn = f"moment{self.submix.clock}"
+                  "samples": _fx.at_peak(_fx.make_impact(), 0.85)}
+        dur = build - 5.0 * beat
+        anchor = self._snap_beat(pos + dur * rate, period)
+        ev = [
+            # -- the build on the DYING deck. Sweep starts at 30 Hz,
+            # under the sub (a 45 Hz/q1.1 start measurably shoved a
+            # bass-heavy master into the limiter); two filter events
+            # because one set() call can't sweep (see SweepFilter.set).
+            {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
+             "mode": "hp", "cutoff_hz": 30.0, "ramp_s": 0.0, "q": 1.0},
+            {"at": hit - int(build * RATE), "cmd": "filter", "deck": deck,
+             "cutoff_hz": 600.0, "ramp_s": build},
+            {"at": hit - int(build * RATE), "cmd": "gain", "deck": deck,
+             "value": min(1.3 * g0, 1.35), "ramp_s": 0.9 * build},
+            roll,
+            {"at": hit - int(5 * beat * RATE), "cmd": "loop", "deck": deck,
+             "start_s": anchor, "end_s": anchor + period},
+            {"at": hit - int(3 * beat * RATE), "cmd": "loop", "deck": deck,
+             "start_s": anchor, "end_s": anchor + period / 2.0},
+            {"at": hit - int(2 * beat * RATE), "cmd": "loop", "deck": deck,
+             "start_s": anchor, "end_s": anchor + period / 4.0},
+            {"at": hole, "cmd": "clear_loop", "deck": deck},
+            {"at": hole, "cmd": "gain", "deck": deck, "value": 0.0,
+             "ramp_s": 0.06},
+            # -- the incoming deck: mount silent under the hole and
+            # pre-roll the beat before ITS drop (cue one HOLE-length
+            # back: it advances `beat` output seconds at rate 1.0).
+            {"at": hole, "cmd": "load", "deck": self._other(deck),
+             "samples": samples, "track_id": nxt.id, "grid": nxt.grid,
+             "gain_db": nxt.gain_db, "kick_offset_s": nxt.kick_offset_s,
+             "cue_s": target - beat},
+            {"at": hole, "cmd": "gain", "deck": self._other(deck),
+             "value": 0.0, "ramp_s": 0.01},
+            {"at": hole, "cmd": "start", "deck": self._other(deck)},
+            # -- the landing: THE NEXT TRACK'S DROP, cold ----------------
+            {"at": hit, "cmd": "gain", "deck": self._other(deck),
+             "value": 1.0, "ramp_s": 0.05},
+            impact,
+            {"at": hit + int(0.25 * RATE), "cmd": "stop", "deck": deck},
+            # Insurance: the incoming deck must never stay muted.
+            {"at": hit + int(beat * RATE), "cmd": "gain",
+             "deck": self._other(deck), "value": 1.0, "ramp_s": 0.05},
+        ]
+        # Transition txn, not a moment txn: _do_abort recalls by _txn_id
+        # and its recovery already restores gain/EQ/filter/rate/loop on
+        # the outgoing deck and kills the incoming one.
+        self._txn_id += 1
         for e in ev:
-            e["txn"] = self._moment_txn
+            e["txn"] = self._txn_id
         self.submix.post_many(ev)
-        self._moment_clock = hit
+        self.plan = {"style": "moment_nextdrop", "rate": 1.0,
+                     "out_s": t_hit, "in_s": target, "beats": 0,
+                     "pair_score": 0.0, "cand_id": nxt.id,
+                     "no_return_at": hole}
+        self.swap_at = hit               # _finish_swap flips ON the drop
+        self.blend_at = self.submix.clock
+        self.state = "armed"
+        self._seam_metrics = None        # a cut, nothing to judge
+        self._moment_clock = hit         # countdown + hole/hard-drop visuals
         self._moment_gain = g0
-        self._log({"event": "moment", "in_s": round(eta, 1),
-                   "build_s": round(build, 1), "beats": build_beats,
-                   "layer_only": self.state == "armed"})
+        self._moment_rate = rate
+        self._moment_flavor = "nextdrop"
+        self._moment_hole = (hole, hit)
+        self._moment_txn = None          # recall is _do_abort, not txn-cancel
+        self._log({"event": "moment", "flavor": "nextdrop",
+                   "in_s": round(eta, 1), "build_s": round(build, 1),
+                   "beats": build_beats, "payoff": "next",
+                   "to_s": round(target, 1), "next": nxt.title})
+
+    def _other(self, deck):
+        return "b" if deck == "a" else "a"
 
     def _cancel_moment(self, why="cancel"):
-        """Recall a scheduled MOMENT and put the deck back. Called on a
-        second press, and by anything that takes over the live deck
-        (arming, abort, seek, watchdog handoff) - a half-fired gesture
-        leaves the deck high-passed and 20 dB down, which is a dead room."""
+        """Recall a txn-tagged MOMENT and put the deck back. The one
+        live gesture (nextdrop) arms as a transition and recalls via
+        _do_abort instead, so today this is a no-op guard - but the
+        callers (_arm, _do_seek, the watchdog handoff) keep calling it
+        so any future txn-tagged gesture is recalled by whatever takes
+        over the live deck, never left half-fired."""
         if not self._moment_txn:
             return
         if self._moment_clock and \
                 self.submix.clock > self._moment_clock + RATE:
-            # Already landed and restored itself - nothing left to recall,
-            # and re-posting the stored gain here would stomp whatever owns
-            # the deck now.
+            # Already landed and restored itself - nothing left to
+            # recall, and re-posting the stored gain would stomp
+            # whatever owns the deck now.
             self._moment_txn = None
+            self._moment_flavor = None
             return
         deck = self.active_deck
         self.submix.post({"cmd": "cancel", "txn": self._moment_txn})
-        # Queue order is preserved, so this lands after the cancel and
-        # restates whatever already fired (no-op if nothing had).
+        # Queue order is preserved, so these land after the cancel and
+        # restate whatever already fired (no-op if nothing had).
         self.submix.post_many([
             {"cmd": "filter", "deck": deck, "mode": "off"},
+            {"cmd": "echo", "deck": deck, "active": False},
+            {"cmd": "release_loop", "deck": deck},
             {"cmd": "gain", "deck": deck, "value": self._moment_gain,
              "ramp_s": 0.08},
+            {"cmd": "rate", "deck": deck, "value": self._moment_rate,
+             "ramp_s": 0.15},
         ])
-        self._log({"event": "moment_cancel", "why": why})
+        self._log({"event": "moment_cancel", "why": why,
+                   "flavor": self._moment_flavor})
         self._moment_txn = None
         self._moment_clock = 0
+        self._moment_flavor = None
+        self._moment_hole = (0, 0)
 
     def _do_abort(self, via="abort"):
         """Recall an ARMED transition: cancel its not-yet-fired events and
@@ -1772,6 +2053,13 @@ class DJSystem:
         # same step) so the operator (or the skip flow) decides what's next.
         played = (clk - self._started_clock) / RATE
         self._exit_played = max(self._exit_played, played + PLAN_LEAD_S + 30.0)
+        if self._moment_flavor == "nextdrop":
+            # The recalled transition WAS the pending moment: clear its
+            # countdown/hole state or the visuals keep pre-arming a
+            # landing that will never come.
+            self._moment_clock = 0
+            self._moment_flavor = None
+            self._moment_hole = (0, 0)
         self._log({"event": "abort", "via": via, "style": style})
         return True
 
@@ -2097,12 +2385,18 @@ class DJSystem:
                 if rate is None:
                     meta["tempo_clash"] = True   # plan -> long_fade
             self._play_hint_s = entry.get("target_play_s")
+            # Planner style pin, keyed on the track id so it self-
+            # invalidates if the pick is rerolled/substituted before arming.
+            self._next_style_hint = (t.id, entry.get("style_override")) \
+                if entry.get("style_override") else None
             self._log({"event": "setlist_next", "track": t.title,
                        "pin": entry.get("pin_type", "suggestion"),
+                       "style_pin": entry.get("style_override"),
                        "remaining": len(self._setlist_queue)})
             return t, meta
         self._setlist_name = None
         self._setlist_mode = "order"
+        self._setlist_total_s = None          # night arc clock resumes
         return None, None
 
     # -- helpers ---------------------------------------------------------------
@@ -2362,6 +2656,18 @@ class DJSystem:
             print(f"[DJ] tempo fix: {track.title[:30]} stored "
                   f"{track.bpm:.2f} -> measured {best:.2f} "
                   f"({dev * 100:+.2f}%)")
+            # PERSIST the correction (queued: this runs on the decode
+            # thread, the DB belongs to the planner thread - same pattern
+            # as the auto seam-feedback writes). Confident reads only; the
+            # 0.6% dev floor above already prevents churn on re-measures
+            # of an accepted correction.
+            if conf >= 0.6:
+                with self._lock:
+                    self._pending.append(("tempo_writeback", {
+                        "track_id": track.id, "bpm": round(best, 3),
+                        "grid": self._grid_fix[track.id]["grid"],
+                        "conf": round(conf, 2),
+                        "dev_pct": round(dev * 100.0, 2)}))
         except Exception as e:
             print(f"[DJ] tempo verify failed for {track.path}: {e}")
 

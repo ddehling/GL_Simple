@@ -671,14 +671,13 @@ class DiscoverTab(QWidget):
         plus loose artist-token overlap, so 'Track (Extended Mix)' on
         Beatport matches the library's 'Track (Original Mix)'."""
         from lib.dj.brain import _title_root
+        from lib.dj.planner_util import artist_tokens
         lib = self.planner.library
         if self._owned_idx is None or self._owned_idx_n != len(lib):
             idx = {}
             for t in lib:
                 root = _title_root(t.title) or (t.title or "").lower()
-                idx.setdefault(root, set()).update(
-                    w for w in (t.artist or "").lower().replace(",", " ")
-                    .split() if len(w) > 2)
+                idx.setdefault(root, set()).update(artist_tokens(t.artist))
             self._owned_idx = idx
             self._owned_idx_n = len(lib)
         root = _title_root(r.get("title") or "") \
@@ -686,8 +685,7 @@ class DiscoverTab(QWidget):
         toks = self._owned_idx.get(root)
         if toks is None:
             return False
-        rt = {w for w in (r.get("artist") or "").lower().replace(",", " ")
-              .split() if len(w) > 2}
+        rt = artist_tokens(r.get("artist"))
         return not toks or not rt or bool(toks & rt)
 
     def _rerender(self):

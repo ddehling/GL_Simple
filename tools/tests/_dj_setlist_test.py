@@ -8,6 +8,7 @@ order honors the plan.
 
 Usage: python tools/tests/_dj_setlist_test.py
 """
+import json
 import os
 import shutil
 import sys
@@ -256,7 +257,47 @@ def main():
         check("play hint round-trips", got.get("target_play_s") == 123.4,
               f"target_play_s={got.get('target_play_s')}")
 
+        # -- Style pins go THROUGH plan_transition (not a label overwrite) -----
+        # A pinned style must either be the planned style or be refused with
+        # a visible warning (safety gates outrank the pin).
+        pplan = SL.compile_plan(lib, [
+            {"track_id": ids[2], "pin_type": "anchor"},
+            {"track_id": ids[0], "pin_type": "suggestion",
+             "style_override": "long_blend"},
+        ], theme)
+        tr = pplan["slots"][0]["transition"]
+        pin_diag = (tr.get("diag") or {}).get("style_pin") or {}
+        check("compile honors style pin",
+              (tr["style"] == "long_blend" and pin_diag.get("honored"))
+              or (pin_diag.get("honored") is False
+                  and any("style pin" in w for w in pplan["warnings"])),
+              f"style={tr['style']} pin={pin_diag}")
+        # A pin the gates zero (no stems on disk here) must be refused, warn,
+        # and fall back to a normal roll - never play the impossible style.
+        pplan2 = SL.compile_plan(lib, [
+            {"track_id": ids[2], "pin_type": "anchor"},
+            {"track_id": ids[0], "pin_type": "suggestion",
+             "style_override": "stem_drum_swap"},
+        ], theme)
+        tr2 = pplan2["slots"][0]["transition"]
+        check("gated style pin refused with warning",
+              tr2["style"] != "stem_drum_swap"
+              and any("style pin" in w for w in pplan2["warnings"]),
+              f"style={tr2['style']} warnings={pplan2['warnings']}")
+
         # -- Plan-following through the live system ---------------------------------
+        # Re-save friday with a pinned style on the 2nd seam + plan meta, so
+        # this run also proves the pin and the set's own arc clock reach the
+        # live side.
+        SL.save_entries(db, sid, [
+            {"track_id": ids[2], "pin_type": "anchor",
+             "target_offset_min": None},
+            {"track_id": ids[0], "pin_type": "suggestion",
+             "style_override": "long_blend"},
+            {"track_id": ids[1], "pin_type": "anchor",
+             "target_offset_min": 6.0},
+        ])
+        db.set_setlist_meta(sid, total_s=1234.0)
         from lib.dj.system import DJSystem
         from lib.audio_engine import AudioEngine
         engine = AudioEngine()
@@ -268,9 +309,12 @@ def main():
         gen = engine._mixer()
         next(gen)
         played, prev = [], None
+        saw_total = None
         for i in range(int(360.0 * RATE) // 4410):
             gen.send(4410)
             dj.step()
+            if saw_total is None and dj._setlist_total_s is not None:
+                saw_total = dj._setlist_total_s
             cur = (dj.status()["current"] or {}).get("id")
             if cur != prev and cur is not None:
                 played.append(cur)
@@ -278,6 +322,25 @@ def main():
         dj.stop()
         check("setlist order honored", played[:3] == [ids[2], ids[0], ids[1]],
               f"played={played} want={[ids[2], ids[0], ids[1]]}")
+        check("setlist arc clock armed", saw_total == 1234.0,
+              f"saw_total={saw_total}")
+        # The live order-mode must have run the pin through plan_transition
+        # and logged the outcome (honored or gate-refused - both are fine,
+        # silence is the bug).
+        import glob as _glob
+        pins = []
+        for lf in _glob.glob(os.path.join(tmp, "dj_*.jsonl")):
+            with open(lf, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    if ev.get("event") == "style_pin":
+                        pins.append(ev)
+        check("live style pin logged",
+              any(p.get("want") == "long_blend" for p in pins),
+              f"pins={pins}")
 
         # -- Planner UI headless smoke (tabbed v2) ------------------------------
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

@@ -1132,56 +1132,61 @@ class WebController:
                       'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort',
                       'persona'}
 
-        @self.socketio.on('dj_action')
-        def handle_dj_action(data):
-            """Queue one DJ control action for the app's 5 Hz bridge.
+        def queue_dj_action(data):
+            """Validate + clamp one DJ control action and queue it for the
+            app's 5 Hz bridge. Shared by the socketio event AND the HTTP
+            route (the planner's Push-to-live) - one whitelist, one
+            sanitizer. Returns True when the action was queued.
 
-            All DJ controls funnel through ONE queued-action channel
-            (validate -> clamp -> append); Stories_OGL._apply_dj_controls
-            drains it on the render thread where DJSystem lives.
+            All DJ controls funnel through ONE queued-action channel;
+            Stories_OGL._apply_dj_controls drains it on the render thread
+            where DJSystem lives.
             """
             data = data or {}
             action = data.get('action')
             if action not in DJ_ACTIONS:
-                return
+                return False
             arg = data.get('value')
             if action in ('nudge', 'pulse'):
                 try:
                     arg = max(-0.4, min(0.4, float(arg)))
                 except (TypeError, ValueError):
-                    return
+                    return False
             elif action == 'next_id':
                 try:
                     arg = int(arg)
                 except (TypeError, ValueError):
-                    return
+                    return False
             elif action in ('theme', 'setlist', 'setlist_pool', 'persona'):
                 if not isinstance(arg, str) or len(arg) > 80:
-                    return
+                    return False
             elif action == 'autopilot':
                 arg = bool(arg)
             elif action in ('seek', 'seek_rel'):
                 try:
                     arg = float(arg)
                 except (TypeError, ValueError):
-                    return
+                    return False
             elif action == 'seam_fb':
                 arg = bool(arg)
+            elif action == 'moment':
+                arg = arg if arg in ('drop', 'spinback', 'stall',
+                                     'nextdrop') else 'drop'
             elif action == 'arc':
                 if not isinstance(arg, list):
-                    return
+                    return False
                 pts = []
                 for it in arg[:8]:
                     try:
                         pts.append((max(0.0, min(1.0, float(it[0]))),
                                     max(0.0, min(1.0, float(it[1])))))
                     except (TypeError, ValueError, IndexError):
-                        return
+                        return False
                 arg = pts
             elif action == 'flavor':
                 # Sanitize: known sections only, str tags, weights 0..1.
                 if not isinstance(arg, dict):
-                    return
+                    return False
                 clean = {}
                 for sec in ('prefer_tags', 'avoid_tags', 'axis_targets'):
                     part = arg.get(sec)
@@ -1204,6 +1209,19 @@ class WebController:
             with self._dict_lock:
                 q = self.control_dict.setdefault('request_dj_actions', [])
                 q.append((action, arg))
+            return True
+
+        @self.socketio.on('dj_action')
+        def handle_dj_action(data):
+            queue_dj_action(data)
+
+        @self.app.route('/api/dj/action', methods=['POST'])
+        def api_dj_action():
+            """HTTP twin of the dj_action socketio event, so out-of-process
+            tools (the set planner's Push-to-live) can drive the same
+            whitelisted queue with a plain POST. Identical validation."""
+            ok = queue_dj_action(request.get_json(silent=True))
+            return jsonify({'ok': bool(ok)}), (200 if ok else 400)
 
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}

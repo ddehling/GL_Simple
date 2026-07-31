@@ -182,10 +182,17 @@
                  seek/jump controls live behind ••• - they are for rehearsal
                  and testing, and they were crowding ABORT-sized mis-taps
                  into a 7-button phone row. -->
+            <!-- THE moment. Four flavors shipped 2026-07-29; the operator's
+                 verdict was 'only next is good', so only NEXT survives:
+                 build on this track, land on the NEXT track's real drop.
+                 While it's building the button becomes the cancel; a
+                 refused press flashes the reason in place. -->
             <div class="transport" style="margin-top:6px">
-                <button class="btn go" id="dj-moment"
-                        title="Build into the next phrase and drop on it">
-                    ✦ MOMENT</button>
+                <button class="btn go" id="dj-nextdrop"
+                        title="Build on this track, land on the NEXT track's drop - double-drop the set">
+                    ✦ NEXT DROP</button>
+            </div>
+            <div class="transport" style="margin-top:6px">
                 <button class="btn skip" id="dj-mixnow">▶▶ Mix now</button>
                 <!-- Trainwreck rescue: recalls an armed transition. Only
                      shown while the plan is still before its point of no
@@ -305,7 +312,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             </div>
             <div class="now-sub" style="margin-top:12px">Music type
                 <span style="opacity:.5;font-size:11px">
-                    (tap: only this → avoid → off)</span></div>
+                    (tap to toggle; lit = only these play)</span></div>
             <div class="theme-row" id="dj-flavor"></div>
             <div class="now-sub" id="dj-libinfo" style="margin-top:10px"></div>
         </div>
@@ -359,18 +366,38 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             });
         }
 
-        // FLAVOR CHIPS: the library's own tag vocabulary. Each chip
-        // cycles off -> ONLY THIS (green) -> AVOID (red) -> off. Green chips
-        // are a HARD filter: when any are lit, ONLY tracks carrying at least
-        // one lit tag may play (not merely boosted). Red chips soft-avoid.
-        const flavorState = {};          // tag -> 0 off | 1 require | 2 avoid
+        // FLAVOR CHIPS: the library's own tag vocabulary. A chip is a
+        // plain ON/OFF toggle (the old off/require/avoid cycle read as
+        // "a weird multi-level click system" - operator, 2026-07-30).
+        // Lit chips are a HARD filter: when any are lit, ONLY tracks
+        // carrying at least one lit tag may play (not merely boosted).
+        const flavorState = {};          // tag -> false off | true on
+        // SNAPSHOT-ECHO GUARD (same problem the timer widget solves): a
+        // tap paints optimistically, but the server applies it via the
+        // action queue + 0.4s step tick, so for ~1s every status update
+        // still carries the OLD require_tags - restoreFlavor was
+        // reverting both the button and flavorState mid-flight, which
+        // read as "the click didn't work" and made a second tap undo
+        // the first (user-reported 2026-07-31). While recently touched,
+        // local state is the truth and server echoes are ignored.
+        let flavorTouched = 0;
         function sendFlavor() {
-            const require = [], avoid = {};
-            for (const [t, s] of Object.entries(flavorState)) {
-                if (s === 1) require.push(t);
-                if (s === 2) avoid[t] = 1.0;
+            flavorTouched = Date.now();
+            const require = [];
+            for (const [t, s] of Object.entries(flavorState))
+                if (s) require.push(t);
+            // avoid_tags always sent (empty) so a stale avoid set from an
+            // older session/panel is cleared, never silently kept.
+            emit("flavor", {require_tags: require, avoid_tags: {}});
+        }
+        function paintFlavor() {
+            for (const b of document.querySelectorAll(
+                    "#dj-flavor .theme-btn[data-tag]")) {
+                const on = !!flavorState[b.dataset.tag];
+                b.style.background = on ? "#2e6b3a" : "";
+                b.style.borderColor = on ? "#fff5"
+                    : (b.dataset.user ? "#8cf" : "");
             }
-            emit("flavor", {require_tags: require, avoid_tags: avoid});
         }
         const TAG_GROUPS = [
             ["yours", null],
@@ -393,10 +420,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             clr.className = "theme-btn"; clr.textContent = "clear all";
             clr.style.borderColor = "#a66";
             clr.onclick = () => {
-                for (const k of Object.keys(flavorState)) flavorState[k] = 0;
-                for (const b of document.querySelectorAll(
-                        "#dj-flavor .theme-btn[data-tag]")) {
-                    b.style.background = ""; }
+                for (const k of Object.keys(flavorState))
+                    flavorState[k] = false;
+                paintFlavor();
                 sendFlavor();
             };
             $("dj-flavor").appendChild(clr);
@@ -434,19 +460,21 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 $("dj-flavor").appendChild(lab);
                 grp.forEach(([tag, n, isUser]) => addChip(tag, n, isUser));
             });
+            // Fresh buttons carry no styling: repaint from the local
+            // state, or a vocab rebuild landing inside the echo-guard
+            // window (restoreFlavor silent) would flash lit chips off.
+            paintFlavor();
         }
         function addChip(tag, n, isUser) {
             (function([tag, n, isUser]) {
                 const b = document.createElement("button");
                 b.className = "theme-btn"; b.dataset.tag = tag;
+                if (isUser) b.dataset.user = "1";
                 b.textContent = `${isUser ? "* " : ""}${tag} (${n})`;
                 if (isUser) b.style.borderColor = "#8cf";
                 b.onclick = () => {
-                    flavorState[tag] = ((flavorState[tag] || 0) + 1) % 3;
-                    const s = flavorState[tag];
-                    b.style.background = s === 1 ? "#2e6b3a"
-                        : s === 2 ? "#7a3030" : "";
-                    b.style.borderColor = s ? "#fff5" : "";
+                    flavorState[tag] = !flavorState[tag];
+                    paintFlavor();
                     sendFlavor();
                 };
                 $("dj-flavor").appendChild(b);
@@ -820,22 +848,29 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             $("dj-count").textContent = dj.blend_in_s != null
                 ? `- ${dj.style ? dj.style.replace(/_/g, " ") : "mix"} in ${Math.max(0, Math.round(dj.blend_in_s))}s` : "";
             setHtml($("dj-queue"), (dj.horizon || []).map((h, i) =>
-                `<div style="padding:1px 0"><b>${i + 1}.</b> ` +
+                `<div style="padding:1px 0${i >= 3 ? ";opacity:.55" : ""}">` +
+                `<b>${i + 1}.</b> ` +
                 `${(h.title || "?").slice(0, 30)} ` +
                 `<span style="opacity:.6">${h.why || ""}</span></div>`
             ).join(""));
             if (dj.level != null)
                 $("dj-level").style.width =
                     Math.min(100, dj.level * 100) + "%";
-            // While a moment is building the button IS the cancel - the
-            // gesture cuts a hole in the live track, so calling it off has
-            // to be one tap away.
-            const mEta = dj.moment_eta;
-            $("dj-moment").textContent = mEta != null
-                ? `✕ ${Math.max(0, mEta).toFixed(0)}s` : "✦ MOMENT";
-            $("dj-moment").title = mEta != null
-                ? "Building - tap again to call it off"
-                : "Build into the next phrase and drop on it";
+            // While the moment is building the button IS the cancel; a
+            // refused press flashes WHY in place for a few seconds
+            // ("✗ no next queued") - a silent refusal is
+            // indistinguishable from a dead button.
+            const mEta = dj.moment_eta, den = dj.moment_denied;
+            {
+                const b = $("dj-nextdrop"), active = mEta != null;
+                b.textContent = active
+                    ? `✕ ${Math.max(0, mEta).toFixed(0)}s`
+                    : den ? `✗ ${den.why}` : "✦ NEXT DROP";
+                b.title = active
+                    ? "Building - tap again to call it off"
+                    : "Build on this track, land on the NEXT track's drop - double-drop the set";
+                b.style.opacity = (!active && den) ? 0.75 : "";
+            }
             renderHistory(dj.history);
             show($("dj-tonight"), (dj.history || []).length > 0);
             $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
@@ -863,6 +898,32 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             });
             g.stroke();
             const px = (dj.arc_phase || 0) * cv.width;
+            // PLAYED, TIME-TRUE: every song of the CURRENT window from 0m
+            // to the now-line - the night you already made, not just the
+            // next few minutes of it. Each block starts at the phase its
+            // track came in on and runs to the next track (the last one -
+            // still playing - runs to now).
+            const hist = (dj.history || []).filter(
+                (h) => h.phase != null && h.cyc === dj.arc_cycle_i);
+            hist.forEach((h, i) => {
+                const x0 = h.phase * cv.width;
+                const xEnd = i + 1 < hist.length
+                    ? hist[i + 1].phase * cv.width : px;
+                const w = Math.max(xEnd - x0, 3);
+                const hy = cv.height - 8
+                    - (h.energy != null ? h.energy : 0.5) * (cv.height - 22);
+                const cur = i === hist.length - 1;     // still playing
+                g.fillStyle = cur ? "#3a5a7a" : "#333e49";
+                g.fillRect(x0, hy - 9, w, 18);
+                g.strokeStyle = "#0006"; g.lineWidth = 1;
+                g.strokeRect(x0, hy - 9, w, 18);
+                if (w > 26) {
+                    g.fillStyle = cur ? "#dfe8f0" : "#9aa8b5";
+                    g.font = "10px sans-serif";
+                    g.fillText((h.title || "?").slice(0, Math.max(w / 6, 5)),
+                               x0 + 3, hy + 4);
+                }
+            });
             g.strokeStyle = "#fff"; g.lineWidth = 2;
             g.beginPath(); g.moveTo(px, 0); g.lineTo(px, cv.height); g.stroke();
             // TIME AXIS: the canvas spans one arc cycle - label it.
@@ -886,6 +947,10 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 if (hx > cv.width - 4) return;       // beyond this cycle
                 const hw = Math.max(((h.play_s || 300) / cyc) * cv.width, 26);
                 const hy = cv.height - 8 - (h.energy || 0.5) * (cv.height - 22);
+                // Slots 3+ are direction, not promise (steering replans
+                // about once a song) - ghost them so the queue doesn't
+                // read as more certain the further out it gets.
+                g.globalAlpha = i >= 3 ? 0.45 : 1.0;
                 g.fillStyle = i === 0 ? "#2e6b3a" : "#2a4a6a";
                 g.fillRect(hx, hy - 9, Math.min(hw, cv.width - hx - 2), 18);
                 g.strokeStyle = "#0006"; g.lineWidth = 1;
@@ -893,6 +958,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 g.fillStyle = "#dfe8f0"; g.font = "10px sans-serif";
                 g.fillText((h.title || "?").slice(0, Math.max(hw / 6, 8)),
                            hx + 3, hy + 4);
+                g.globalAlpha = 1.0;
             });
             wps.forEach(([p, e], i) => {
                 const [x, y] = arcXY(cv, p, e);
@@ -1062,7 +1128,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
 
         // ---------- controls ----------
         $("dj-hold").onclick = () => emit("hold");
-        $("dj-moment").onclick = () => emit("moment");
+        $("dj-nextdrop").onclick = () => emit("moment", "nextdrop");
         $("dj-vol").oninput = () =>
             socket.emit("update_global",
                         {modifier: "master_volume",
@@ -1076,19 +1142,18 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         // Restore flavor chip state from the system (page reloads, other
         // operators).
         function restoreFlavor(flavor, requireTags) {
-            const want = {};
-            for (const t of (requireTags || [])) want[t] = 1;   // green = require
-            for (const t of Object.keys((flavor && flavor.avoid_tags) || {}))
-                want[t] = 2;
-            for (const b of document.querySelectorAll("#dj-flavor .theme-btn")) {
-                const st = want[b.dataset.tag] || 0;
-                if ((flavorState[b.dataset.tag] || 0) !== st) {
-                    flavorState[b.dataset.tag] = st;
-                    b.style.background = st === 1 ? "#2e6b3a"
-                        : st === 2 ? "#7a3030" : "";
-                    b.style.borderColor = st ? "#fff5" : "";
-                }
-            }
+            // On/off only: the server's require_tags set IS the chip
+            // state - but only once the operator's own taps have had
+            // time to round-trip (see flavorTouched above). (Old
+            // sessions may still hold avoid_tags server-side; they
+            // clear on the next chip press - sendFlavor always sends
+            // an empty avoid set.)
+            if (Date.now() - flavorTouched < 3000) return;
+            const want = new Set(requireTags || []);
+            for (const b of document.querySelectorAll(
+                    "#dj-flavor .theme-btn[data-tag]"))
+                flavorState[b.dataset.tag] = want.has(b.dataset.tag);
+            paintFlavor();
         }
 
         socket.on("disconnect", () => {

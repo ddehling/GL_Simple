@@ -8,7 +8,7 @@ The one-shots are synthesized OFFLINE on the control thread at plan time
 and shipped to the submix as ready buffers.
 """
 import numpy as np
-from scipy.signal import sosfilt, sosfilt_zi
+from scipy.signal import sosfilt
 
 RATE = 44100
 
@@ -78,13 +78,12 @@ class SweepFilter:
             self._fc = self._target
         sos = _rbj_sos(self.mode, self._fc, self.q)
         if self._zi is None:
-            self._zi = np.stack([sosfilt_zi(sos) * 0.0
-                                 for _ in range(self.channels)])
-        out = np.empty_like(block)
-        for c in range(self.channels):
-            out[:, c], self._zi[c] = sosfilt(sos, block[:, c],
-                                             zi=self._zi[c])
-        return out
+            self._zi = np.zeros((1, 2, self.channels))
+        # Both channels in ONE sosfilt call (axis=0): scipy's per-call
+        # Python overhead dominated the 1-section filter at 256-frame
+        # sub-blocks (perf audit 2026-07-31).
+        out, self._zi = sosfilt(sos, block, axis=0, zi=self._zi)
+        return out.astype(block.dtype)
 
 
 class EchoDelay:
@@ -142,27 +141,53 @@ class EchoDelay:
 # One-shot synthesis (offline, control thread)
 # --------------------------------------------------------------------------
 
-def make_riser(dur_s=8.0, gain=0.5, seed=0):
-    """White-noise riser: band-passed noise whose center sweeps up with a
-    squared amplitude swell - the standard pre-drop tension tool."""
+def make_riser(dur_s=8.0, gain=0.5, seed=0, beat_s=None):
+    """Pre-drop riser, three layers wide instead of one mono hiss:
+
+      - STEREO band-swept noise (independent L/R seeds - decorrelated
+        noise is what makes a riser sound big instead of like a leak),
+      - a detuned tone stack rising one octave underneath (the pitch
+        climb the ear actually tracks as 'something is coming'),
+      - when beat_s is given, an accelerating sidechain-style pump that
+        deepens and speeds up toward the landing - tension you can feel
+        in the rhythm, not just the spectrum.
+
+    Squared amplitude swell as before; quick release so it never smears
+    past its landing downbeat."""
     n = int(dur_s * RATE)
+    t = np.arange(n) / RATE
+    frac_t = t / max(dur_s, 1e-6)
     rng = np.random.RandomState(seed)
-    noise = rng.randn(n).astype(np.float64)
-    out = np.zeros(n)
-    step = 2048
-    filt = SweepFilter(channels=1)
-    filt.set(mode="lp", cutoff_hz=400.0, q=2.2)
-    for i in range(0, n, step):
-        frac = i / n
-        filt.set(cutoff_hz=400.0 * (20.0 ** frac))     # 400 -> 8 kHz
-        seg = noise[i:i + step][:, None]
-        out[i:i + len(seg)] = filt.process(seg)[:, 0]
-    amp = (np.linspace(0.0, 1.0, n) ** 2) * gain
+    ch = []
+    for _c in range(2):
+        noise = rng.randn(n).astype(np.float64)
+        out = np.zeros(n)
+        step = 2048
+        filt = SweepFilter(channels=1)
+        filt.set(mode="lp", cutoff_hz=400.0, q=2.2)
+        for i in range(0, n, step):
+            frac = i / n
+            filt.set(cutoff_hz=400.0 * (20.0 ** frac))     # 400 -> 8 kHz
+            seg = noise[i:i + step][:, None]
+            out[i:i + len(seg)] = filt.process(seg)[:, 0]
+        ch.append(out)
+    # Tone stack: three detuned partials climbing an octave. Quiet next
+    # to the noise, but pitch is what sells the climb.
+    tone = np.zeros(n)
+    for det in (-0.008, 0.0, 0.009):
+        f = 110.0 * (1.0 + det) * (2.0 ** frac_t)
+        tone += np.sin(2 * np.pi * np.cumsum(f) / RATE)
+    tone *= 0.22
+    amp = (frac_t ** 2) * gain
+    if beat_s and beat_s > 0.05:
+        f_pump = (1.0 / beat_s) * (1.0 + frac_t)       # 1x -> 2x per beat
+        ph = 2 * np.pi * np.cumsum(f_pump) / RATE
+        amp *= 1.0 - 0.4 * frac_t * (0.5 + 0.5 * np.cos(ph))
     # quick release so the riser never smears past its landing downbeat
     rel = min(int(0.02 * RATE), n)
     amp[-rel:] *= np.linspace(1.0, 0.0, rel)
-    x = (out * amp).astype(np.float32)
-    return np.stack([x, x], axis=1)
+    return np.stack([((ch[0] + tone) * amp), ((ch[1] + tone) * amp)],
+                    axis=1).astype(np.float32)
 
 
 def at_peak(buf, peak):
@@ -175,6 +200,29 @@ def at_peak(buf, peak):
     limiter decides the balance for you."""
     m = float(np.abs(buf).max())
     return buf * (float(peak) / m) if m > 1e-9 else buf
+
+
+def at_tail(buf, rms=0.13, peak=0.6):
+    """Rescale a SWELLING one-shot by the RMS of its final quarter, with a
+    soft cap on the peak.
+
+    at_peak is the wrong tool for a riser: a squared swell spends its whole
+    peak budget on its last instants (crest factor ~11), so peaking a riser
+    at 0.45 leaves its body at -28 dBFS RMS - 13 dB under a club master,
+    i.e. the buried-build failure all over again, just via a different
+    knob. Loudness against a mix is an RMS fact, so state it in RMS where
+    it matters (the tail that rides into the landing) and tame the final
+    spike with a soft clip instead of letting it set the level of
+    everything before it."""
+    tail = buf[-max(1, len(buf) // 4):]
+    r = float(np.sqrt(np.mean(tail.astype(np.float64) ** 2)))
+    if r < 1e-9:
+        return buf
+    out = buf * (float(rms) / r)
+    m = float(np.abs(out).max())
+    if m > peak:
+        out = np.tanh(out / peak) * peak
+    return out.astype(np.float32)
 
 
 def make_roll(beat_s, beats=4, gain=0.3, seed=2):
@@ -194,34 +242,55 @@ def make_roll(beat_s, beats=4, gain=0.3, seed=2):
     rng = np.random.RandomState(seed)
     t = np.arange(hn) / RATE
     filt = SweepFilter(channels=1)
-    filt.set(mode="hp", cutoff_hz=900.0, q=0.9)  # snare-ish, no sub content
-    hit = filt.process((rng.randn(hn) * np.exp(-t / 0.022))[:, None])[:, 0]
+    filt.set(mode="hp", cutoff_hz=900.0, q=0.9)  # crack, no sub content
+    crack = filt.process((rng.randn(hn) * np.exp(-t / 0.022))[:, None])[:, 0]
+    # A real snare is crack + BODY: a pitch-thunking tone burst around
+    # 195 Hz. Noise alone read as a typewriter, not a drum.
+    body = np.sin(2 * np.pi * 195.0 * t + 3.0 * np.exp(-t / 0.008)) \
+        * np.exp(-t / 0.05)
+    hit = 0.75 * crack + 0.6 * body
     hit /= max(float(np.abs(hit).max()), 1e-9)
-    out = np.zeros(n)
-    at = 0.0
+    out = np.zeros((n, 2))
+    at, k = 0.0, 0
     while at < total - 1e-6:
         frac = at / total
         div = 2.0 if frac < 0.5 else (4.0 if frac < 0.8 else 8.0)
         i0 = int(at * RATE)
         seg = hit[:max(0, min(hn, n - i0))]
-        out[i0:i0 + len(seg)] += seg * (gain * (0.35 + 0.65 * frac ** 2))
+        g = gain * (0.35 + 0.65 * frac ** 2)
+        # Alternate hits lean L/R, narrowing as the roll tightens -
+        # motion that collapses to center right before the landing.
+        pan = 0.22 * (1.0 - frac) * (1 if k % 2 else -1)
+        out[i0:i0 + len(seg), 0] += seg * g * (1.0 - pan)
+        out[i0:i0 + len(seg), 1] += seg * g * (1.0 + pan)
         at += beat_s / div
-    x = np.clip(out, -1.0, 1.0).astype(np.float32)
-    return np.stack([x, x], axis=1)
+        k += 1
+    return np.clip(out, -1.0, 1.0).astype(np.float32)
 
 
 def make_impact(gain=0.7, seed=1):
-    """Impact hit: pitch-dropping sub boom + short noise burst + LP tail."""
-    dur = 1.4
+    """Landing impact: saturated pitch-dropping sub boom + noise burst +
+    a STEREO crash wash that hangs over the first bar of the drop.
+
+    The old version was a 0.35s clean sine thud - it read as 'PHHHT'
+    (user) next to a full-scale master. Weight comes from saturation
+    (tanh fattens the boom's harmonics), and size comes from the
+    decorrelated crash tail: a real drop is a hit AND a wash."""
+    dur = 2.2
     n = int(dur * RATE)
     t = np.arange(n) / RATE
-    f = 110.0 * np.exp(-t / 0.06) + 42.0
+    f = 120.0 * np.exp(-t / 0.07) + 40.0
     phase = 2 * np.pi * np.cumsum(f) / RATE
-    boom = np.sin(phase) * np.exp(-t / 0.35)
+    boom = np.tanh(1.8 * np.sin(phase) * np.exp(-t / 0.5))
     rng = np.random.RandomState(seed)
-    burst = rng.randn(n) * np.exp(-t / 0.05) * 0.6
-    filt = SweepFilter(channels=1)
-    filt.set(mode="lp", cutoff_hz=3000.0, q=0.9)
-    mix = filt.process((boom + burst)[:, None] * gain)[:, 0]
-    x = np.clip(mix, -1.0, 1.0).astype(np.float32)
-    return np.stack([x, x], axis=1)
+    burst = rng.randn(n) * np.exp(-t / 0.04) * 0.7
+    lp = SweepFilter(channels=1)
+    lp.set(mode="lp", cutoff_hz=3500.0, q=0.9)
+    center = lp.process((boom + burst)[:, None])[:, 0]
+    out = np.zeros((n, 2))
+    for c in range(2):
+        crash = rng.randn(n) * np.exp(-t / 0.55) * 0.30
+        hp = SweepFilter(channels=1)
+        hp.set(mode="hp", cutoff_hz=2500.0, q=0.7)
+        out[:, c] = center + hp.process(crash[:, None])[:, 0]
+    return np.clip(out * gain, -1.0, 1.0).astype(np.float32)

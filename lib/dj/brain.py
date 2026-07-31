@@ -16,6 +16,8 @@ import random
 import re
 import time
 
+import numpy as np
+
 from lib.dj import stretch_engine_name
 from lib.dj.features import _finite, hardness_raw
 from lib.dj.rhythm import (prep_signature, rhythm_terms, seam_rhythm,
@@ -1405,8 +1407,14 @@ class Brain:
                 base = 0.5 * base + 0.5 * ml_in.get(ml, 0.5)
             return base * (1.0 - 0.6 * voc)
 
-        best = None
-        for o in outs[:8]:
+        # PREPASS both axes once (the old o x i loop recomputed every
+        # per-i quantity - section, ml label, 24s vocal walk - for every
+        # o, an 8x waste; and called _blend_floor per combo, ~21 calls
+        # per candidate = 60% of all selection time. Perf audit
+        # 2026-07-31; scores are arithmetic-identical, just hoisted.)
+        outs = outs[:8]
+        o_pre = []
+        for o in outs:
             sec_a = cur.section_at(min(o["time_s"] + 1.0,
                                        cur.duration_s - 1.0))
             # POINT-ACCURATE vocals: the seam only overlaps A's last ~24s
@@ -1420,32 +1428,53 @@ class Brain:
                 if sec_a is not None else 0.0
             ml_a = cur.ml_segment_at(min(o["time_s"] + 1.0,
                                          cur.duration_s - 1.0))
-            for i in cand.mix_ins[:8]:
-                sec_b = cand.section_at(min(i["time_s"] + 1.0,
-                                            cand.duration_s - 1.0))
-                if sec_a is None or sec_b is None:
+            o_pre.append((o, sec_a, voc_a, ml_a))
+        i_pre = []
+        for i in cand.mix_ins[:8]:
+            sec_b = cand.section_at(min(i["time_s"] + 1.0,
+                                        cand.duration_s - 1.0))
+            if sec_b is None:
+                i_pre.append((i, None, 0.0, "", 0.0))
+                continue
+            voc_b = max(sec_b.get("vocalness") or 0.0,
+                        self._vocal_span_max(cand, i["time_s"],
+                                             i["time_s"] + 24.0))
+            ml_b = cand.ml_segment_at(min(i["time_s"] + 1.0,
+                                          cand.duration_s - 1.0))
+            # Prefer mixing the incoming in EARLIER (nearer its groove
+            # start) over a deep point, but only a gentle lean - the
+            # mix-in must still land where the track has energy, or the
+            # blend goes quiet as the outgoing leaves.
+            early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
+            i_pre.append((i, sec_b, voc_b, ml_b, early_b))
+        # NO HOLES IN THE BLEND: section MEANS hide a near-silent
+        # stretch inside the overlap (a breakdown bar, a stripped
+        # intro) - the render then dips to nothing mid-blend
+        # (measured rms 0.04, user-audible dead air). Walk the two
+        # 2 Hz energy curves through the aligned overlap window and
+        # punish any moment where BOTH sides are quiet at once.
+        # One vectorized pass for the whole out x in grid.
+        holes = self._blend_floor_grid(
+            cur, [o["time_s"] for o in outs],
+            cand, [ip[0]["time_s"] for ip in i_pre])
+        best = None
+        for oi, (o, sec_a, voc_a, ml_a) in enumerate(o_pre):
+            if sec_a is None:
+                continue
+            of = out_fit(sec_a, voc_a, ml_a)
+            busy_a = sec_a.get("busyness") or 0.0
+            ra = sec_a.get("rhythm_density") or 0.0
+            ea = sec_a.get("energy") or 0.0
+            for ii, (i, sec_b, voc_b, ml_b, early_b) in enumerate(i_pre):
+                if sec_b is None:
                     continue
-                busy_a = sec_a.get("busyness") or 0.0
                 busy_b = sec_b.get("busyness") or 0.0
-                voc_b = max(sec_b.get("vocalness") or 0.0,
-                            self._vocal_span_max(cand, i["time_s"],
-                                                 i["time_s"] + 24.0))
-                ml_b = cand.ml_segment_at(min(i["time_s"] + 1.0,
-                                              cand.duration_s - 1.0))
-                fit = out_fit(sec_a, voc_a, ml_a) \
-                    * in_fit(sec_b, voc_b, ml_b)
-                # Prefer mixing the incoming in EARLIER (nearer its groove
-                # start) over a deep point, but only a gentle lean - the
-                # mix-in must still land where the track has energy, or the
-                # blend goes quiet as the outgoing leaves.
-                early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
+                fit = of * in_fit(sec_b, voc_b, ml_b)
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
                 # BLEND WHERE THE BEATS ARE: a beat-matched blend is only
                 # audible as beat-matched if BOTH sides carry rhythm and
                 # comparable energy - otherwise it just reads as a fade.
-                ra = sec_a.get("rhythm_density") or 0.0
                 rb = sec_b.get("rhythm_density") or 0.0
-                ea = sec_a.get("energy") or 0.0
                 eb = sec_b.get("energy") or 0.0
                 beaty = ra >= 1.2 and rb >= 1.2
                 rhythm_fit = (1.3 if beaty else 0.55) \
@@ -1458,13 +1487,7 @@ class Brain:
                 if voc_a > 0.5 and voc_b > 0.5:
                     clash *= 0.25
                 mp = 0.5 + 0.5 * max(o["score"], 0.0) * max(i["score"], 0.0)
-                # NO HOLES IN THE BLEND: section MEANS hide a near-silent
-                # stretch inside the overlap (a breakdown bar, a stripped
-                # intro) - the render then dips to nothing mid-blend
-                # (measured rms 0.04, user-audible dead air). Walk the two
-                # 2 Hz energy curves through the aligned overlap window and
-                # punish any moment where BOTH sides are quiet at once.
-                hole = self._blend_floor(cur, o["time_s"], cand, i["time_s"])
+                hole = holes[oi][ii]
                 # Weighted-sum form so a mediocre pair stays ~0.05-1, never
                 # collapsing to ~0 (which would zero the whole selection).
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
@@ -1480,35 +1503,67 @@ class Brain:
         return best
 
     @staticmethod
+    def _energy_arr(track):
+        """The track's 2 Hz energy curve as a cached numpy array. The
+        curve is scanned ~12x per CANDIDATE during selection - list
+        indexing in a Python loop made _blend_floor 60% of all scoring
+        time (perf audit 2026-07-31)."""
+        arr = getattr(track, "_ec_arr", None)
+        if arr is None:
+            arr = np.asarray(track.row.get("energy_curve") or [],
+                             dtype=np.float64)
+            track._ec_arr = arr
+        return arr
+
+    @staticmethod
+    def _blend_floor_grid(cur, out_ss, cand, in_ss,
+                          span_s=15.0, carry_s=40.0):
+        """Quietest combined moment of each (out, in) seam, walked through
+        the stored 2 Hz energy curves (0..1.2, per-track p95-normalized):
+        during the ~span_s overlap A ([out_s-span, out_s]) still carries
+        the room, so the floor is max(A, B); PAST the seam B is alone - a
+        mix-in at the top of a long dying breakdown reads fine as a
+        section mean but leaves the room empty for 20s once A is gone
+        (measured rms 0.04). Returns a (len(out_ss), len(in_ss)) list of
+        floors; 1.0 entries when either curve is missing (no evidence,
+        no penalty).
+
+        One broadcasted pass for the whole grid: best_pair used to call
+        the scalar walk per combo, ~21 calls per candidate = 60% of all
+        selection time (perf audit 2026-07-31). Numerically identical to
+        the original loop: int() truncation toward zero matches
+        .astype(int64) for the values involved, and the loop's
+        break-at-first-overrun equals the prefix mask because the index
+        is non-decreasing in tau (verified exact over the library)."""
+        no, ni = len(out_ss), len(in_ss)
+        ca = Brain._energy_arr(cur)
+        cb = Brain._energy_arr(cand)
+        if not len(ca) or not len(cb) or not no or not ni:
+            return [[1.0] * ni for _ in range(no)]
+        tau = np.arange(int(carry_s * 2) + 1, dtype=np.float64) * 0.5
+        # B side: (ni, K) - what the incoming curve does after each in_s.
+        ib = ((np.asarray(in_ss, dtype=np.float64)[:, None] + tau)
+              * 2.0).astype(np.int64)
+        valid = ib < len(cb)                   # prefix per row (see above)
+        eb = np.where(ib >= 0, cb[np.clip(ib, 0, len(cb) - 1)], 0.0)
+        # A side: (no, K) - what the outgoing curve still carries.
+        ia = ((np.asarray(out_ss, dtype=np.float64)[:, None]
+               - span_s + tau) * 2.0).astype(np.int64)
+        ok_a = (tau <= span_s) & (ia >= 0) & (ia < len(ca))
+        ea = np.where(ok_a, ca[np.clip(ia, 0, len(ca) - 1)], 0.0)
+        # (no, ni, K): the seam floor is min over the VALID taus of
+        # max(A, B); invalid taus (past B's end) sit at +inf so they
+        # never win the min, and an all-invalid row keeps floor 1.0.
+        m = np.maximum(ea[:, None, :], eb[None, :, :])
+        m = np.where(valid[None, :, :], m, np.inf)
+        floors = np.minimum(m.min(axis=2), 1.0)
+        return floors.tolist()
+
+    @staticmethod
     def _blend_floor(cur, out_s, cand, in_s, span_s=15.0, carry_s=40.0):
-        """Quietest combined moment of the seam, walked through the stored
-        2 Hz energy curves (0..1.2, per-track p95-normalized): during the
-        ~span_s overlap A ([out_s-span, out_s]) still carries the room, so
-        the floor is max(A, B); PAST the seam B is alone - a mix-in at the
-        top of a long dying breakdown reads fine as a section mean but
-        leaves the room empty for 20s once A is gone (measured rms 0.04).
-        Returns the min; 1.0 when either curve is missing (no evidence,
-        no penalty)."""
-        ca = cur.row.get("energy_curve") or []
-        cb = cand.row.get("energy_curve") or []
-        if not ca or not cb:
-            return 1.0
-        floor = 1.0
-        for k in range(int(carry_s * 2) + 1):
-            tau = k * 0.5
-            ib = int((in_s + tau) * 2.0)
-            if ib >= len(cb):
-                break
-            eb = float(cb[ib]) if ib >= 0 else 0.0
-            ea = 0.0
-            if tau <= span_s:
-                ia = int((out_s - span_s + tau) * 2.0)
-                if 0 <= ia < len(ca):
-                    ea = float(ca[ia])
-            m = max(ea, eb)
-            if m < floor:
-                floor = m
-        return floor
+        """Scalar convenience wrapper over _blend_floor_grid."""
+        return Brain._blend_floor_grid(cur, [out_s], cand, [in_s],
+                                       span_s, carry_s)[0][0]
 
     def _drop_after(self, track, after_s):
         """First DROP MOMENT (energy slams up at a boundary) at/after
@@ -1542,11 +1597,15 @@ class Brain:
         return best[1] if best else None
 
     # -- transition planning -----------------------------------------------------
-    def plan_transition(self, cur, cand, meta, after_s=None, arc=None):
+    def plan_transition(self, cur, cand, meta, after_s=None, arc=None,
+                        force_style=None):
         """Resolve style + timing. Returns a plan dict (see build_events).
         `arc` (0..1, optional) couples style choice to the night's energy
         position - valleys breathe, the climb commits, the peak spends the
-        spectacle tier."""
+        spectacle tier. `force_style` (a planner style pin) collapses the
+        dice roll to that style - but only if every safety gate left it on
+        the menu; a gated-off pin falls back to the normal roll and the
+        refusal is recorded in the plan's diag (style_pin.honored)."""
         pair = meta.get("pair") if meta else None
         if pair is None or (after_s is not None
                             and pair["out_s"] < after_s):
@@ -1808,9 +1867,19 @@ class Brain:
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
                 menu = [("bass_swap", 1.0)]
-            styles, ws = zip(*menu)
-            style = self.rng.choices(styles, weights=ws, k=1)[0]
-            rolled = True
+            if force_style == "long_fade":
+                # Operator pinned the deliberate fade - always available.
+                style = "long_fade"
+                fade_reason = "style_pin"
+            elif force_style and weights.get(force_style, 0.0) > 0.0:
+                # Style pin: only reachable when every gate above left it
+                # on the menu - safety gates outrank the pin.
+                style = force_style
+                rolled = True
+            else:
+                styles, ws = zip(*menu)
+                style = self.rng.choices(styles, weights=ws, k=1)[0]
+                rolled = True
 
         # NEVER BLEND TWO SUNG PASSAGES: the swap-slot scan protects the
         # swap beat, but if A exits THROUGH a vocal passage while B enters
@@ -1846,6 +1915,13 @@ class Brain:
                 "menu": ({k: round(w, 3) for k, w in weights.items()
                           if w > 0} if rolled else {}),
                 "fade_reason": fade_reason}
+        if force_style:
+            # Planned-set pin outcome: honored, or refused by which gate.
+            diag["style_pin"] = {
+                "want": force_style, "honored": style == force_style,
+                "why_not": (None if style == force_style
+                            else gated.get(force_style) or fade_reason
+                            or "lost_menu")}
 
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
         self.recent_styles = (self.recent_styles + [style])[-4:]
@@ -1956,33 +2032,65 @@ class Brain:
             plan["tail_beats"] = 16       # A's exposed vocal rides B this long
         return plan
 
+    @staticmethod
+    def _vc_arrs(track):
+        """The fine demucs vocal curve as cached (xs, ys) numpy arrays,
+        or None when the track has no stored curve. Sampled ~14x per
+        candidate during selection (perf audit 2026-07-31)."""
+        cached = getattr(track, "_vc_arrs", None)
+        if cached is None:
+            vc = (track.axes or {}).get("vc")
+            if vc and len(vc) >= 2:
+                cached = (np.asarray([p[0] for p in vc], dtype=np.float64),
+                          np.asarray([p[1] for p in vc], dtype=np.float64))
+            else:
+                cached = False
+            track._vc_arrs = cached
+        return cached or None
+
     @classmethod
     def _vocal_span_max(cls, track, t0, t1, step_s=6.0):
         """Peak vocal presence inside [t0, t1] of a track's timeline,
         sampled from the fine demucs curve. The clash question is 'is
-        there a vocal line ANYWHERE in this window', so max, not mean."""
-        t0 = max(0.0, min(t0, track.duration_s))
-        t1 = max(t0, min(t1, track.duration_s))
-        n = max(2, int((t1 - t0) / step_s) + 1)
-        return max(cls._vocal_at(track, t0 + (t1 - t0) * k / (n - 1))
-                   for k in range(n))
+        there a vocal line ANYWHERE in this window', so max, not mean.
 
-    @staticmethod
-    def _vocal_at(track, t):
+        Memoized per track: the windows come from stored mix points, so
+        the same few spans are re-walked for every candidate the picker
+        scores (~7000 redundant walks per selection pass, perf audit
+        2026-07-31)."""
+        cache = getattr(track, "_vspan_cache", None)
+        if cache is None:
+            cache = track._vspan_cache = {}
+        key = (round(t0, 4), round(t1, 4), step_s)
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        ct0 = max(0.0, min(t0, track.duration_s))
+        ct1 = max(ct0, min(t1, track.duration_s))
+        n = max(2, int((ct1 - ct0) / step_s) + 1)
+        arrs = cls._vc_arrs(track)
+        if arrs is not None:
+            xs, ys = arrs
+            ts = ct0 + (ct1 - ct0) * np.arange(n, dtype=np.float64) / (n - 1)
+            # np.interp clamps outside [xs0, xs-1] to the end values -
+            # the same behavior as the scalar path's edge branches.
+            out = float(np.interp(ts, xs, ys).max())
+        else:
+            out = max(cls._vocal_at(track, ct0 + (ct1 - ct0) * k / (n - 1))
+                      for k in range(n))
+        if len(cache) > 256:            # a night touches ~16 spans/track
+            cache.clear()
+        cache[key] = out
+        return out
+
+    @classmethod
+    def _vocal_at(cls, track, t):
         """Vocal presence at a source time: fine demucs curve when stored
         (axes['vc']), per-section mean otherwise."""
-        vc = (track.axes or {}).get("vc")
-        if vc and len(vc) >= 2:
-            xs = [p[0] for p in vc]
-            ys = [p[1] for p in vc]
-            if t <= xs[0]:
-                return ys[0]
-            if t >= xs[-1]:
-                return ys[-1]
-            for i in range(len(xs) - 1):
-                if xs[i] <= t <= xs[i + 1]:
-                    f = (t - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
-                    return ys[i] + f * (ys[i + 1] - ys[i])
+        arrs = cls._vc_arrs(track)
+        if arrs is not None:
+            xs, ys = arrs
+            return float(np.interp(t, xs, ys))
         sec = track.section_at(t)
         return (sec.get("vocalness") or 0.0) if sec else 0.0
 

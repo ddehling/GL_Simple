@@ -167,6 +167,21 @@ class WeatherSetManager:
             return None
         return src
 
+    def get_narrative_node_delay(self) -> Optional[float]:
+        """Return the current set's inter-node narrative delay in seconds.
+
+        None (the default for sets that omit the key) keeps the
+        narrative_player's own default; a number overrides the pause
+        between one clip's audio ending and the next node starting.
+        """
+        raw = self.get_current_set_config().get("narrative_node_delay")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     def get_sound_pool_crossfade(self) -> float:
         """Return the current set's sound-pool crossfade window in seconds.
 

@@ -1,23 +1,31 @@
-"""Gate for the operator MOMENT gesture (DJSystem._do_moment).
+"""Gate for THE operator MOMENT (DJSystem._do_moment -> nextdrop).
 
-The moment is the one control that deliberately CUTS the live deck - a
-high-pass sweep, then a beat of near-silence, then everything back on the
-downbeat with an impact. Every failure mode of that is a public one, so
-this renders the real DJSubmix (real Deck, real SweepFilter, real master
-limiter) and measures the audio:
+Four flavors shipped on 2026-07-29; the operator's verdict the next day
+was final: 'only next is good', 'drop is awful', 'stall is worthless',
+'spinback is basically another next'. Every same-track gesture was cut.
+What remains is one button that either double-drops the set forward into
+the NEXT track's real drop, or refuses with the reason on the button:
 
-  1. FULL GESTURE: the music holes out, the sweep drains the bass, the
-     landing is a step up in level, and the deck is left EXACTLY as it was
-     found (gain, EQ, filter). Nothing clips.
-  2. RECALL: a second press cancels a gesture in flight and restores the
-     deck - the audio must not be left holed.
-  3. ARMED: with a transition armed the seam script owns the deck, so the
-     moment must be layer-only and touch nothing.
-  4. PREEMPTION: _cancel_moment mid-gesture (what _arm, _do_seek and the
-     watchdog handoff call) restores the deck.
-  5. SCHEDULE: across 90-174 bpm and off-unity rates the build stays a
-     musical length and the landing stays within one phrase.
-  6. DECK DOWN: a deck that is faded out is skipped, not shaped.
+  build on the LIVE track (HP sweep + trim push + snare roll +
+  LOOP-ROLL: the track beat-repeats 1 -> 1/2 -> 1/4 beat) -> 1-beat
+  hole (the dying deck cuts, the incoming deck pre-rolls silently) ->
+  landing: THE NEXT TRACK'S DROP, cold, full gain, impact.
+
+It arms as a real transition (swap_at = the landing, _finish_swap flips
+the decks) and recalls via _do_abort. Rendered through the real DJSubmix
+(real Deck, real SweepFilter, real master limiter) and measured:
+
+  1. FULL GESTURE: bass swept out of the build, loop-roll stutter
+     present, real hole, handover ON the landing, deck B riding the
+     incoming drop, slam over the hole, nothing clips.
+  2. RECALL: a second press mid-build aborts - original deck restored
+     and still playing, incoming deck killed, countdown cleared.
+  3. REFUSALS, each visible (_moment_denied) with nothing scheduled:
+     no next queued / next has no drop / deck faded out / seam armed.
+  4. SCHEDULE across 90-174 bpm and off-unity rates: the build spans
+     the whole 8-24-beat wait (no dead air after the press).
+  5. LEGACY FLAVORS: old panels may still send drop/spinback/stall -
+     every one of them is a nextdrop now.
 
 Usage:
     python tools/tests/_dj_moment_test.py           # ALL PASS gate
@@ -25,6 +33,7 @@ Usage:
 """
 import os
 import sys
+import threading
 
 import numpy as np
 from scipy.signal import butter, sosfilt
@@ -37,8 +46,12 @@ from lib.dj.system import DJSystem                # noqa: E402
 import lib.dj.fx as fxmod                         # noqa: E402
 
 BPM = 120.0
-DUR = 180.0
-CLEAN = {"gain": 1.0, "eq": [1.0, 1.0, 1.0], "filter": "off"}
+# Long enough that the incoming drop clears the runway rule
+# (PLAN_LEAD_S + 25 + ride ~ 115s of track needed after the landing).
+DUR = 260.0
+DROP_S = 120.0        # the synthetic track's one real drop (sections below)
+CLEAN = {"gain": 1.0, "eq": [1.0, 1.0, 1.0], "filter": "off", "echo": False,
+         "rate": 1.0}
 failures = []
 
 
@@ -63,18 +76,52 @@ def synth_track(period):
     pad = 0.25 * np.sin(2 * np.pi * 440.0 * t) \
         + 0.2 * np.sin(2 * np.pi * 660.0 * t)
     x = 0.55 * kick + 0.45 * bass + hat + 0.25 * pad
+    # ANTHEM section from DROP_S on: what the landing arrives ON has to
+    # be audibly hotter than what died, or 'landing on the real drop' is
+    # unmeasurable here and inaudible in the demo renders.
+    hot = (t >= DROP_S).astype(np.float64)
+    saw = sum(np.sin(2 * np.pi * 164.8 * k * t + k) / k for k in range(1, 6))
+    stab = 0.5 + 0.5 * np.sin(2 * np.pi * t / (2 * period) - np.pi / 2)
+    eighth = np.exp(-(t % (period / 2)) / 0.05)
+    x = x + hot * (0.4 * saw * stab + 0.35 * np.sin(2 * np.pi * 82.0 * t)
+                   * eighth)
     x = (x / np.abs(x).max() * 0.85).astype(np.float32)
     return np.stack([x, x], axis=1)
 
 
 class Track:
-    """The slice of TrackInfo _do_moment actually reads."""
+    """The slice of TrackInfo the gesture actually reads."""
     id, title = 1, "synthetic"
     period_s, phrase_beats, duration_s = 60.0 / BPM, 32, DUR
+    sections = [
+        {"start_s": 0.0, "end_s": DROP_S - 10.0, "energy": 0.35,
+         "kind": "groove"},
+        {"start_s": DROP_S - 10.0, "end_s": DROP_S, "energy": 0.30,
+         "kind": "break"},
+        {"start_s": DROP_S, "end_s": DUR, "energy": 0.92, "kind": "groove"},
+    ]
 
     def nearest_phrase(self, t):
         span = self.phrase_beats * self.period_s
         return round(t / span) * span
+
+    def nearest_downbeat(self, t):
+        return round(t / self.period_s) * self.period_s
+
+    def section_at(self, t):
+        for s in self.sections:
+            if s["start_s"] <= t < s["end_s"]:
+                return s
+        return self.sections[-1]
+
+
+class Track2(Track):
+    """The queued next track: same grid/sections shape, its own id.
+    Its analyzed drop is at DROP_S, where synth_track's anthem is."""
+    id, title = 2, "incoming"
+    grid = [{"start_s": 0.0, "end_s": DUR, "period_s": Track.period_s,
+             "first_beat_s": 0.0}]
+    gain_db, kick_offset_s = 0.0, 0.0
 
 
 def make_system(state="playing"):
@@ -89,35 +136,70 @@ def make_system(state="playing"):
     s.submix, s.current, s.state, s.active_deck = sm, Track(), state, "a"
     s._moment_clock, s._moment_txn = 0, None
     s._moment_gain, s._moment_stamped = 1.0, 0
+    s._moment_flavor, s._moment_hole = None, (0, 0)
+    s._moment_rate, s._moment_denied = 1.0, None
+    s.next_track, s.plan, s.swap_at, s.blend_at = None, None, None, None
+    s.threaded = True
+    s._decode_lock = threading.Lock()
+    s._decoded = {}
+    s._predecode = lambda t: None
+    s._txn_id, s._recovery_txn = 0, None
+    s._started_clock, s._exit_played, s._seam_metrics = 0, 0.0, None
     s.engine = None
     s.log = []
     s._log = s.log.append
     return s
 
 
-def render(s, seconds, fire_at=None, again_at=None, cancel_at=None):
-    """Render `seconds` of audio, pressing MOMENT at the given offsets."""
+def nextdrop_system(state="playing"):
+    """make_system + a decoded queued next and a minimal handover flip
+    (the real _finish_swap needs the DB/brain stack; the gesture's
+    contract is that it ARMS a transition whose swap lands on the drop -
+    full bookkeeping has its own coverage via the transition machinery)."""
+    s = make_system(state)
+    s.next_track = Track2()
+    s._decoded = {2: synth_track(Track.period_s)}
+
+    def fin():
+        s.current, s.next_track = s.next_track, None
+        s.active_deck = "b"
+        s.state, s.plan = "playing", None
+        s.swap_at = s.blend_at = None
+    s._finish_swap = fin
+    return s
+
+
+def render(s, seconds, fire_at=None, again_at=None, flavor="nextdrop"):
+    """Render `seconds`, pressing MOMENT at the given offsets and doing
+    the tick loop's armed-state duty (fire _finish_swap on swap_at)."""
     n, out = 2048, []
     for i in range(int(seconds * RATE / n)):
         now = i * n / RATE
         if fire_at is not None and now >= fire_at:
-            s._do_moment()
+            s._do_moment(flavor)
             fire_at = None
         if again_at is not None and now >= again_at:
-            s._do_moment()
+            s._do_moment(flavor)
             again_at = None
-        if cancel_at is not None and now >= cancel_at:
-            s._cancel_moment("armed")       # what _arm() does to take over
-            cancel_at = None
+        if s.state == "armed" and s.swap_at is not None \
+                and s.submix.clock >= s.swap_at:
+            s._finish_swap()
         out.append(s.submix.read(n))
     return np.concatenate(out)
 
 
-def deck_state(s):
-    d = s.submix.decks["a"]
+def deck_state(s, deck="a"):
+    d = s.submix.decks[deck]
     return {"gain": round(d.gain, 3),
             "eq": [round(float(g), 3) for g in d.eq.gains],
-            "filter": d.filter.mode}
+            "filter": d.filter.mode,
+            "echo": bool(d.echo.active),
+            "rate": round(float(d.rate), 3)}
+
+
+def deck_time(s, deck="a"):
+    return float(((s.submix.telemetry or {}).get("decks", {})
+                  .get(deck) or {}).get("time_s") or -1.0)
 
 
 def peak(a, t0, t1):
@@ -129,122 +211,161 @@ def rms(a, t0, t1):
     return float(np.sqrt(np.mean(w ** 2)))
 
 
+def periodicity(a, t0, t1, lag_s):
+    """Normalized autocorrelation at one lag - the loop-roll makes the
+    audio periodic at the loop length, which nothing else does."""
+    w = a[int(t0 * RATE):int(t1 * RATE), 0].astype(np.float64)
+    k = int(lag_s * RATE)
+    x, y = w[:-k], w[k:]
+    d = float(np.sqrt((x ** 2).sum() * (y ** 2).sum()))
+    return float((x * y).sum() / d) if d > 1e-12 else 0.0
+
+
 def low_rms(a, t0, t1, hz=200.0):
-    """RMS below `hz` - measures the sweep itself, independent of how much
-    mid/high content the material happens to carry."""
+    """RMS below `hz` - measures the sweep itself, independent of how
+    much mid/high content the material happens to carry."""
     w = a[int(t0 * RATE):int(t1 * RATE), 0]
     sos = butter(4, hz, "low", fs=RATE, output="sos")
     return float(np.sqrt(np.mean(sosfilt(sos, w) ** 2)))
 
 
-def render_music_only(state="playing"):
-    """Same render with the one-shots silenced: the hole has to be in the
-    TRACK, not merely covered by the riser sitting on top of it."""
-    real = fxmod.at_peak
-    fxmod.at_peak = lambda buf, pk: np.zeros_like(buf)
-    try:
-        s = make_system(state)
-        return s, render(s, 40.0, fire_at=4.0)
-    finally:
-        fxmod.at_peak = real
+def denied_why(s):
+    return s._moment_denied[1] if s._moment_denied else None
 
 
 def main():
     wav = sys.argv[1] if len(sys.argv) > 1 else None
 
-    print("\n1. full gesture")
-    s = make_system("playing")
-    audio = render(s, 40.0, fire_at=4.0)
+    print("\n1. the full gesture")
+    s = make_system()          # music-only twin below measures the build
+    s = nextdrop_system()
+    audio = render(s, 30.0, fire_at=4.5)
+    got = [e for e in s.log if e.get("event") == "moment"]
     hit = s._moment_clock / RATE
-    ms, music = render_music_only()
+    nrm = rms(audio, 1.0, 4.0)
+    check("scheduled onto the next track's drop",
+          bool(got) and got[0]["flavor"] == "nextdrop"
+          and got[0]["payoff"] == "next" and got[0]["to_s"] == DROP_S,
+          f"{got}")
+    check("the build spans the whole wait (no dead air)",
+          bool(got) and abs(got[0]["build_s"] - got[0]["in_s"]) <= 0.06,
+          f"build {got[0]['build_s']}s vs wait {got[0]['in_s']}s"
+          if got else "no moment")
+    # Music-only twin (one-shots silenced): the build must be in the
+    # TRACK - bass swept out, loop-roll stutter, real hole.
+    real_pk = fxmod.at_peak
+    fxmod.at_peak = lambda buf, *a, **k: np.zeros_like(buf)
+    try:
+        ms = nextdrop_system()
+        music = render(ms, 30.0, fire_at=4.5)
+    finally:
+        fxmod.at_peak = real_pk
     mh = ms._moment_clock / RATE
-    normal = peak(music, mh - 14, mh - 10)
-    check("the music holes out before the landing",
-          peak(music, mh - 0.35, mh - 0.08) < 0.25 * normal,
-          f"peak {peak(music, mh - 0.35, mh - 0.08):.3f} vs {normal:.3f} "
-          f"normal")
-    check("the build sweeps the bass out",
+    check("the build sweeps the bass out of the dying deck",
           low_rms(music, mh - 2.5, mh - 0.6)
-          < 0.25 * low_rms(music, mh - 14, mh - 10),
+          < 0.3 * low_rms(music, 1.0, 4.0),
           f"<200 Hz RMS {low_rms(music, mh - 2.5, mh - 0.6):.4f} vs "
-          f"{low_rms(music, mh - 14, mh - 10):.4f} normal")
-    check("the landing is a step up in level",
-          rms(audio, hit, hit + 0.4) > 1.6 * rms(audio, hit - 0.45,
+          f"{low_rms(music, 1.0, 4.0):.4f} normal")
+    p_roll = periodicity(music, mh - 0.95, mh - 0.55, Track.period_s / 4)
+    p_ctl = periodicity(music, mh - 7.0, mh - 6.6, Track.period_s / 4)
+    check("the loop-roll stutters the track itself",
+          p_roll > 0.5 and p_roll > p_ctl + 0.2,
+          f"autocorr {p_roll:.2f} in the roll vs {p_ctl:.2f} unlooped")
+    check("the hole is a real hole (music-only)",
+          rms(music, mh - 0.45, mh - 0.05) < 0.2 * rms(music, 1.0, 4.0),
+          f"RMS {rms(music, mh - 0.45, mh - 0.05):.3f} vs "
+          f"{rms(music, 1.0, 4.0):.3f} normal")
+    check("the handover happened ON the landing",
+          s.state == "playing" and s.active_deck == "b"
+          and s.current is not None and s.current.id == 2,
+          f"state={s.state} deck={s.active_deck}")
+    check("deck B is riding the incoming drop",
+          s.submix.decks["b"].playing
+          and abs(deck_time(s, "b") - (DROP_S + (30.0 - hit))) < 0.6,
+          f"playhead {deck_time(s, 'b'):.1f}s, expected "
+          f"{DROP_S + (30.0 - hit):.1f}s")
+    check("the old deck is stopped",
+          not s.submix.decks["a"].playing, "deck a still playing")
+    check("the landing slams over the hole",
+          rms(audio, hit, hit + 0.8) > 1.6 * rms(audio, hit - 0.45,
                                                  hit - 0.05),
-          f"RMS {rms(audio, hit, hit + 0.4):.3f} after vs "
-          f"{rms(audio, hit - 0.45, hit - 0.05):.3f} through the hole")
-    check("the track is all the way back afterwards",
-          peak(music, mh + 5, mh + 9) >= 0.85 * normal,
-          f"peak {peak(music, mh + 5, mh + 9):.3f} vs {normal:.3f}")
-    check("the deck is left exactly as it was found",
-          deck_state(s) == CLEAN, f"{deck_state(s)}")
+          f"RMS {rms(audio, hit, hit + 0.8):.3f} vs "
+          f"{rms(audio, hit - 0.45, hit - 0.05):.3f} in the hole")
     check("nothing clips", float(np.abs(audio).max()) <= 0.9851,
           f"peak {float(np.abs(audio).max()):.3f} (ceiling 0.985)")
 
-    print("\n2. second press recalls it")
-    s2 = make_system("playing")
-    a2 = render(s2, 30.0, fire_at=4.0, again_at=8.0)
-    check("logged the recall",
-          any(e.get("event") == "moment_cancel" for e in s2.log),
-          f"{[e.get('event') for e in s2.log]}")
-    check("the deck is restored", deck_state(s2) == CLEAN,
+    print("\n2. second press recalls it (abort path)")
+    s2 = nextdrop_system()
+    a2 = render(s2, 20.0, fire_at=4.0, again_at=5.5)
+    check("recall went through abort",
+          any(e.get("event") == "abort" and e.get("via") == "moment_recall"
+              for e in s2.log), f"{[e.get('event') for e in s2.log]}")
+    check("still on the original deck and track",
+          s2.state == "playing" and s2.active_deck == "a"
+          and s2.current.id == 1 and s2.next_track is not None,
+          f"state={s2.state} deck={s2.active_deck}")
+    check("the deck is restored and playing",
+          deck_state(s2) == CLEAN and s2.submix.decks["a"].playing,
           f"{deck_state(s2)}")
-    check("nothing is left holed", peak(a2, 26, 30) >= 0.85 * peak(a2, 0, 2),
-          f"tail peak {peak(a2, 26, 30):.3f} vs {peak(a2, 0, 2):.3f}")
+    check("the incoming deck never took over",
+          not s2.submix.decks["b"].playing, "deck b playing")
     check("the countdown clears", s2._moment_clock == 0,
           f"moment_clock {s2._moment_clock}")
-
-    print("\n3. armed: layer only")
-    s3 = make_system("armed")
-    _ms3, m3 = render_music_only("armed")
-    h3 = _ms3._moment_clock / RATE
-    render(s3, 30.0, fire_at=4.0)
-    check("the deck is untouched", deck_state(s3) == CLEAN,
-          f"{deck_state(s3)}")
-    # RMS over the last two beats, not peak over a 0.2 s slice: a short
-    # window lands wherever the kick isn't and reads low on a track that
-    # is playing perfectly normally.
-    check("no hole is cut in the music",
-          rms(m3, h3 - 1.0, h3 - 0.02) > 0.7 * rms(m3, h3 - 14, h3 - 10),
-          f"RMS {rms(m3, h3 - 1.0, h3 - 0.02):.3f} vs "
-          f"{rms(m3, h3 - 14, h3 - 10):.3f} normal")
-    check("it is flagged layer-only",
-          any(e.get("layer_only") for e in s3.log), f"{s3.log}")
-
-    print("\n4. preempted mid-gesture (arm / seek / watchdog)")
-    s4 = make_system("playing")
-    a4 = render(s4, 20.0, fire_at=4.0, cancel_at=8.0)
-    check("the deck is restored", deck_state(s4) == CLEAN,
-          f"{deck_state(s4)}")
     check("the audio is unbroken",
-          peak(a4, 16, 20) >= 0.85 * peak(a4, 0, 2),
-          f"tail peak {peak(a4, 16, 20):.3f} vs {peak(a4, 0, 2):.3f}")
+          peak(a2, 16, 20) >= 0.85 * peak(a2, 1, 3),
+          f"tail peak {peak(a2, 16, 20):.3f} vs {peak(a2, 1, 3):.3f}")
 
-    print("\n5. schedule across tempos")
+    print("\n3. refusals are visible and schedule nothing")
+    s3 = make_system()                       # no next queued at all
+    render(s3, 4.0, fire_at=2.0)
+    check("no next queued -> refused",
+          denied_why(s3) == "no next queued" and s3._moment_clock == 0,
+          f"denied={s3._moment_denied}, log={s3.log}")
+    s4 = nextdrop_system()
+    s4.next_track.sections = [{"start_s": 0.0, "end_s": DUR, "energy": 0.5,
+                               "kind": "groove"}]
+    render(s4, 4.0, fire_at=2.0)
+    check("next has no drop -> refused",
+          denied_why(s4) == "next has no drop" and s4._moment_clock == 0,
+          f"denied={s4._moment_denied}")
+    s5 = nextdrop_system()
+    s5.submix.post({"cmd": "gain", "deck": "a", "value": 0.0, "ramp_s": 0.01})
+    render(s5, 4.0, fire_at=2.0)
+    check("deck faded out -> refused",
+          denied_why(s5) == "deck not up" and s5._moment_clock == 0,
+          f"denied={s5._moment_denied}")
+    s6 = nextdrop_system("armed")
+    render(s6, 4.0, fire_at=2.0)
+    check("seam armed -> refused",
+          denied_why(s6) == "mix in progress" and s6._moment_clock == 0,
+          f"denied={s6._moment_denied}")
+
+    print("\n4. schedule across tempos")
     for bpm, rate in [(90.0, 1.0), (120.0, 1.0), (128.0, 1.03), (174.0, 1.0)]:
         Track.period_s = 60.0 / bpm
-        st = make_system("playing")
+        Track2.grid = [{"start_s": 0.0, "end_s": DUR,
+                        "period_s": Track.period_s, "first_beat_s": 0.0}]
+        st = nextdrop_system()
         st.submix.post({"cmd": "rate", "deck": "a", "value": rate})
         render(st, 6.0, fire_at=3.0)
         got = [e for e in st.log if e.get("event") == "moment"]
         beat = Track.period_s / rate
-        ok = bool(got) and 3.0 <= got[0]["build_s"] <= 10.0 \
-            and got[0]["build_s"] + 1.0 <= got[0]["in_s"] \
-            <= got[0]["build_s"] + 16 * beat
+        ok = bool(got) and abs(got[0]["build_s"] - got[0]["in_s"]) <= 0.06 \
+            and 8 * beat - 0.15 <= got[0]["in_s"] <= 24 * beat + 0.5
         check(f"{bpm:.0f} bpm at rate {rate}", ok,
               (f"build {got[0]['build_s']}s ({got[0]['beats']} beats), "
                f"lands in {got[0]['in_s']}s") if got else f"skipped: {st.log}")
     Track.period_s = 60.0 / BPM
+    Track2.grid = [{"start_s": 0.0, "end_s": DUR, "period_s": Track.period_s,
+                    "first_beat_s": 0.0}]
 
-    print("\n6. deck faded out")
-    s6 = make_system("playing")
-    s6.submix.post({"cmd": "gain", "deck": "a", "value": 0.0, "ramp_s": 0.01})
-    render(s6, 6.0, fire_at=3.0)
-    check("skipped with a reason",
-          any(e.get("event") == "moment_skipped" for e in s6.log),
-          f"{s6.log}")
-    check("nothing was scheduled", s6._moment_clock == 0,
-          f"moment_clock {s6._moment_clock}")
+    print("\n5. legacy flavors all map to the one gesture")
+    for legacy in ("drop", "spinback", "stall"):
+        sl = nextdrop_system()
+        render(sl, 6.0, fire_at=3.0, flavor=legacy)
+        got = [e for e in sl.log if e.get("event") == "moment"]
+        check(f"'{legacy}' press fires a nextdrop",
+              bool(got) and got[0]["flavor"] == "nextdrop", f"{got}")
 
     if wav:
         try:
