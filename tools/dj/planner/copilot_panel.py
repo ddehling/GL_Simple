@@ -99,11 +99,18 @@ class CopilotPanel(QWidget):
                 self.planner.library,
                 theme_name=self.set_tab.theme_combo.currentText(),
                 pair_memory=getattr(self.planner, "pair_memory", None),
-                beatport=bp, wishlist=wl)
+                beatport=bp, wishlist=wl,
+                night_verdicts=getattr(self.planner, "night_verdicts", None),
+                last_played=getattr(self.planner, "last_played", None))
         else:
             # Re-sync the working library so do-not-use flags (and re-tags)
             # applied since the copilot was built take effect immediately.
             self.copilot.set_library(self.planner.library)
+            # ...and the night evidence (fresh after a Nights-tab reload).
+            self.copilot.night_verdicts = dict(
+                getattr(self.planner, "night_verdicts", None) or {})
+            self.copilot.last_played = dict(
+                getattr(self.planner, "last_played", None) or {})
         if not self.copilot.available():
             self.status.setText("Copilot needs an API key: "
                                 + self.copilot.why_unavailable())
@@ -182,7 +189,37 @@ class CopilotPanel(QWidget):
             self.revert_btn.setEnabled(True)
             self.entriesApplied.emit(list(self.copilot.entries),
                                      self.copilot.theme_name)
+        # Deferred UI actions (save / push-to-live): the tool loop runs on
+        # a worker thread where neither the DB nor the show belong; the
+        # tools queued the intent, and HERE - on the GUI thread, after the
+        # Set tab adopted the entries - is where it happens.
+        actions, self.copilot.pending_ui = self.copilot.pending_ui, []
+        for kind, args in actions:
+            try:
+                if kind == "save":
+                    self._do_save(args.get("name"))
+                    self._append("[set saved]\n")
+                elif kind == "push":
+                    self.set_tab._push_live(args.get("mode", "order"))
+                    self._append(f"[{self.set_tab.status.text()}]\n")
+            except Exception as e:
+                self._append(f"[error] {kind}: {type(e).__name__}: {e}\n")
         self.input.setFocus()
+
+    def _do_save(self, name):
+        """Save via the Set tab's own path (persists theme + compiled
+        length + notes). A given name selects-or-creates that setlist;
+        without one, the tab's current setlist is used (prompting the
+        user if the set is unnamed - the human stays in charge of names)."""
+        st = self.set_tab
+        if name:
+            from lib.dj import setlist as SL
+            row = self.planner.db.conn.execute(
+                "SELECT id FROM setlists WHERE name = ?", (name,)).fetchone()
+            st.setlist_id = row["id"] if row else SL.create_setlist(
+                self.planner.db, name,
+                theme=st.theme_combo.currentText())
+        st.save_set()
 
     def _on_failed(self, msg):
         self._append(f"[error] {msg}\n")

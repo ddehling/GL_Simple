@@ -34,6 +34,12 @@ MODEL = os.environ.get("DJ_COPILOT_MODEL", "claude-opus-4-8")
 MAX_TOOL_TURNS = 24              # runaway-loop backstop per user message
 HISTORY_MAX_MSGS = 40            # trim old turns; the set state is re-read
 
+# The full transition-style menu (mirrors brain.plan_transition's beats
+# table) - the vocabulary pin_style validates against.
+STYLES = ("long_blend", "bass_swap", "filter_sweep", "loop_roll_exit",
+          "echo_out", "cut_at_drop", "double_drop", "loop_build",
+          "bassline_layer", "stem_drum_swap", "acapella_out", "long_fade")
+
 
 # --------------------------------------------------------------------------
 # Credentials: resolve a CONCRETE key/token from several sources.
@@ -261,6 +267,41 @@ TOOLS = [
           "Top replacement candidates for one slot, scored by the seam "
           "into it and out of it at that moment's arc.",
           {"position": {"type": "integer"}}, ["position"]),
+    _tool("pin_style",
+          "Pin the transition STYLE of the seam between slot `position` "
+          "and the next slot. The pin is honored by the compiled preview "
+          "AND the live night - it goes through the real style gates, so "
+          "a style the seam can't do (stem styles without stems on both "
+          "tracks, precision styles on shaky grids, drop styles with no "
+          "drop) is REFUSED with a visible 'style pin ... refused' "
+          "warning and the brain's own choice plays. Check get_set after "
+          "pinning. Omit `style` to clear a pin.",
+          {"position": {"type": "integer"},
+           "style": {"type": "string", "enum": list(STYLES)}},
+          ["position"]),
+    _tool("night_history",
+          "What the LIVE show actually measured and played: last-played "
+          "recency per track (avoid building tonight's set out of last "
+          "weekend's exact records) and per-pairing seam verdicts "
+          "(clean/flam/hole, from the engine's own measurements) for any "
+          "pairing that has played live before. Defaults to the current "
+          "set's tracks. Check this before finalizing a set.",
+          {"track_ids": {"type": "array", "items": {"type": "integer"},
+                         "description": "omit = the current set"}}),
+    _tool("save_set",
+          "Save the current set to the library DB (as `name` if given - "
+          "created or overwritten; else into the currently-loaded "
+          "setlist). Executes through the planner UI right after this "
+          "turn's reply.",
+          {"name": {"type": "string"}}),
+    _tool("push_to_live",
+          "Save the set and load it into the RUNNING show (its theme, "
+          "length and style pins ride along). mode 'order' = play top to "
+          "bottom; 'pool' = the live brain steers inside the list. This "
+          "changes what plays tonight - ALWAYS confirm with the user "
+          "first. Executes right after this turn's reply; the planner "
+          "reports if the show isn't reachable.",
+          {"mode": {"type": "string", "enum": ["order", "pool"]}}),
 ]
 
 # Beatport tools are appended only when an authenticated client is present.
@@ -291,13 +332,23 @@ class SetCopilot:
     entries; the UI adopts it after each turn (revertibly)."""
 
     def __init__(self, library, theme_name="groove", pair_memory=None,
-                 client=None, beatport=None, wishlist=None):
+                 client=None, beatport=None, wishlist=None,
+                 night_verdicts=None, last_played=None):
         self.library = library
         self.by_id = {t.id: t for t in library}
         self.theme_name = theme_name
         self.pair_memory = dict(pair_memory or {})
+        # Night evidence (injected by the panel from the planner's parsed
+        # logs): {(a_title, b_title): [verdict dicts]} and
+        # {track_id: last_played_epoch}. Empty dicts when logs are absent.
+        self.night_verdicts = dict(night_verdicts or {})
+        self.last_played = dict(last_played or {})
         self.entries = []
         self.messages = []
+        # UI actions (save / push-to-live) the tool loop may not run
+        # directly: the DB and the show belong to the GUI thread. Tools
+        # queue them here; the panel executes them after the turn.
+        self.pending_ui = []
         self._client = client
         self._mode = "sdk" if client is not None else None
         self._claude_exe = None
@@ -458,6 +509,25 @@ builds"), set the rising theme AND pass the genre tags to build_set.
 - Confirm before destructive moves (suggest_set over a hand-built set, \
 clearing anchors).
 
+NIGHT EVIDENCE (night_history): the live engine measures every seam it \
+plays. Before declaring a set done, check night_history for the set: a \
+pairing marked rough has AUDIBLY flammed on a real night - replace it, \
+bridge it, or pin a safer style; tracks with small played_days_ago are \
+what the room heard last time - lean on variety unless asked otherwise.
+
+STYLE PINS (pin_style): each seam's style is normally a weighted dice \
+roll at night. Pinning locks it - through the REAL gates, so an \
+impossible pin (stem styles need "stems" on BOTH tracks - see the stems \
+flag in track rows; cut_at_drop needs strong grids and a pre-drop entry) \
+is refused with a warning and the fallback plays. Pin sparingly: for a \
+moment the user asked for (a double_drop at the peak), or to force \
+long_fade/bass_swap across a seam night_history says flams.
+
+PERSISTENCE: save_set stores the set; push_to_live saves AND loads it \
+into the running show (theme, length and pins ride along). NEVER call \
+push_to_live without the user's explicit confirmation in this \
+conversation - it changes what plays tonight.
+
 REPORTING - THIS IS A HARD RULE:
 - Describe the set ONLY from get_set's actual numbers (bpm, energy, seam \
 styles). NEVER claim a build, arc, drop, or progression the numbers don't \
@@ -496,6 +566,8 @@ real energy trend, fade share), then what you'd do next.""" + (
             r["arousal"] = round(t.arousal, 2)
         if getattr(t, "ml_moods", None):
             r["moods"] = t.ml_moods[:6]
+        if getattr(t, "has_stems", False):
+            r["stems"] = True            # unlocks stem_drum_swap/acapella_out
         return r
 
     def _t_search_library(self, args):
@@ -543,6 +615,7 @@ real energy trend, fade share), then what you'd do next.""" + (
             }
         row.update({
             "bpm_conf": round(t.bpm_conf, 2),
+            "has_stems": bool(getattr(t, "has_stems", False)),
             "kick_offset_ms": round(t.kick_offset_s * 1000),
             "drops_at_s": [round(d) for d in drop_moments(t.sections)],
             "n_loops": len(t.loops),
@@ -844,6 +917,78 @@ real energy trend, fade share), then what you'd do next.""" + (
         return {"alternatives": [dict(self._row(t), fit=round(v, 4))
                                  for v, t in scored[:8]]}
 
+    def _t_pin_style(self, args):
+        i = int(args["position"])
+        self._check_pos(i)
+        if i + 1 >= len(self.entries):
+            raise ValueError(f"slot {i} is the last slot - there is no "
+                             "seam after it to pin")
+        style = args.get("style")
+        if style is not None and style not in STYLES:
+            raise ValueError(f"unknown style '{style}'; styles: "
+                             f"{list(STYLES)}")
+        # style_override lives on the INCOMING entry (the seam INTO it) -
+        # same convention compile_plan and the live order-mode read.
+        self.entries[i + 1]["style_override"] = style
+        return {"ok": True,
+                "note": ("pin cleared" if style is None else
+                         f"seam {i}->{i + 1} pinned to {style}. Call "
+                         "get_set: a gate-refused pin shows a 'style pin "
+                         "... refused' warning and plays the fallback.")}
+
+    def _t_night_history(self, args):
+        import time as _time
+        ids = [int(x) for x in (args.get("track_ids") or [])] \
+            or [e["track_id"] for e in self.entries]
+        if not ids:
+            return {"note": "set is empty and no track_ids given"}
+        now = _time.time()
+        tracks, titles = [], set()
+        for i in ids:
+            t = self.by_id.get(i)
+            if t is None:
+                continue
+            titles.add(t.title)
+            ts = self.last_played.get(i)
+            tracks.append({
+                "track_id": i, "title": t.title,
+                "played_days_ago": round((now - ts) / 86400.0, 1)
+                if ts else None})
+        live = []
+        for (a, b), evs in self.night_verdicts.items():
+            if a in titles or b in titles:
+                live.append({
+                    "from": a, "to": b,
+                    "rough": any(e["rough"] for e in evs),
+                    "nights": [{"date": e["date"], "style": e["style"],
+                                "verdict": e["verdict"],
+                                "max_err_beats": e["max_err_beats"]}
+                               for e in evs[-3:]]})
+        live.sort(key=lambda r: not r["rough"])   # measured-rough first
+        return {"tracks": tracks, "live_seams": live[:40],
+                "note": "'rough' = measured flam/hole by the engine's own "
+                        "bar (the same evidence behind pair memory); "
+                        "played_days_ago null = never played live"}
+
+    def _t_save_set(self, args):
+        name = (args.get("name") or "").strip() or None
+        self.pending_ui.append(("save", {"name": name}))
+        return {"ok": True,
+                "note": "queued - the planner saves the set (with its "
+                        "theme, compiled length and notes) right after "
+                        "this reply" + (f" as '{name}'" if name else "")}
+
+    def _t_push_to_live(self, args):
+        mode = args.get("mode") or "order"
+        if mode not in ("order", "pool"):
+            raise ValueError("mode must be 'order' or 'pool'")
+        self.pending_ui.append(("push", {"mode": mode}))
+        return {"ok": True,
+                "note": f"queued - saved and loaded into the running show "
+                        f"({mode} mode) right after this reply; the "
+                        "planner's status line reports if the show isn't "
+                        "reachable"}
+
     def _t_beatport_search(self, args):
         if not self.beatport:
             raise ValueError("not signed in to Beatport")
@@ -898,6 +1043,7 @@ real energy trend, fade share), then what you'd do next.""" + (
         assistant's final text. Dispatches to the CLI or SDK transport."""
         if self._mode is None:
             self.available()
+        self.pending_ui = []             # fresh queue per turn
         if self._mode == "cli":
             return self._run_turn_cli(user_text, on_event)
         return self._run_turn_sdk(user_text, on_event)

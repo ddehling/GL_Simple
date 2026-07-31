@@ -501,6 +501,46 @@ def main():
             check("build_set degrades gracefully on empty pool",
                   not narrow["ok"] and narrow["pool_size"] == 0,
                   f"ok={narrow['ok']} pool={narrow['pool_size']}")
+
+            # pin_style writes the seam-INTO convention (entry i+1) and
+            # validates the vocabulary; night_history reads the injected
+            # log evidence; save/push queue deferred UI actions.
+            t0, t1 = lib[0], lib[1]
+            nv = {(t0.title, t1.title): [
+                {"date": "20260725", "style": "long_blend",
+                 "verdict": "flam", "max_err_beats": 0.21, "hole_s": 0.0,
+                 "urgent": False, "rough": True}]}
+            lp = {t0.id: __import__("time").time() - 3 * 86400}
+            cp3 = SetCopilot(lib, theme_name="groove", client=object(),
+                             night_verdicts=nv, last_played=lp)
+            cp3.sync([{"track_id": t0.id, "pin_type": "suggestion"},
+                      {"track_id": t1.id, "pin_type": "suggestion"}],
+                     "groove")
+            r = cp3.run_tool("pin_style", {"position": 0,
+                                           "style": "long_fade"})
+            pin_ok = (r["ok"] and cp3.entries[1]["style_override"]
+                      == "long_fade")
+            cp3.run_tool("pin_style", {"position": 0})       # clear
+            pin_ok = pin_ok and cp3.entries[1]["style_override"] is None
+            try:
+                cp3.run_tool("pin_style", {"position": 0, "style": "nope"})
+                pin_ok = False
+            except ValueError:
+                pass
+            check("copilot pin_style round-trips + validates", pin_ok,
+                  f"override={cp3.entries[1]['style_override']}")
+            nh = cp3.run_tool("night_history", {})
+            check("copilot night_history reads log evidence",
+                  nh["live_seams"] and nh["live_seams"][0]["rough"]
+                  and any(t["played_days_ago"] and 2.5 < t["played_days_ago"]
+                          < 3.5 for t in nh["tracks"]),
+                  f"seams={len(nh['live_seams'])} tracks={nh['tracks']}")
+            cp3.run_tool("save_set", {"name": "cp-test"})
+            cp3.run_tool("push_to_live", {"mode": "pool"})
+            check("copilot save/push queue deferred UI actions",
+                  cp3.pending_ui == [("save", {"name": "cp-test"}),
+                                     ("push", {"mode": "pool"})],
+                  f"pending={cp3.pending_ui}")
         except Exception as e:
             import traceback
             traceback.print_exc()
