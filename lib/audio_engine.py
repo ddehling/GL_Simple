@@ -317,6 +317,12 @@ class AudioEngine:
         # here each frame, so the slider takes effect live and independently
         # of master / narrative / ambient. 1.0 = no attenuation.
         self.soundpool_volume = 1.0
+        # Stereo balance, -1.0 (left only) .. +1.0 (right only), 0 = centered.
+        # Panning is a linear attenuation of the OPPOSITE channel only — the
+        # favored channel is never boosted, so balance can't clip a mix that
+        # was otherwise in range. Pushed from the web UI's audio_balance
+        # global modifier each frame by Stories_OGL.
+        self.balance = 0.0
         # Monotonic counter feeding unique oneshot track keys. Generated on
         # the caller's thread in schedule_event (before the async decode) so
         # the caller can reference the track later via fade_out_event.
@@ -734,6 +740,15 @@ class AudioEngine:
                 other_buf /= (peak / 2.0)
 
             buf = (narr_buf + other_buf) * self.master_volume
+
+            # Stereo balance: attenuate only the channel opposite the pan
+            # direction (column 0 = left, 1 = right). Applied after master
+            # volume so it acts on the final mix, including narrative.
+            bal = self.balance
+            if bal > 0.0:
+                buf[:, 0] *= max(0.0, 1.0 - bal)
+            elif bal < 0.0:
+                buf[:, 1] *= max(0.0, 1.0 + bal)
 
             # NOTE: the monitor tap is NOT fired here. This generator runs on
             # the render-ahead thread, up to RING_TARGET_MS before the audio

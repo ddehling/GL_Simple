@@ -112,6 +112,7 @@ class WebController:
             "master_volume": 1.0,
             "narrative_volume": 1.0,
             "soundpool_volume": 1.0,
+            "audio_balance": 0.0,
         }
 
         # Global modifier metadata for UI generation
@@ -160,6 +161,11 @@ class WebController:
                 "label": "Soundpool Volume",
                 "min": 0.0, "max": 4.0, "step": 0.05, "default": 1.0,
                 "description": "Controls random sound-pool clip volume (independent of master/narrative/ambient)"
+            },
+            "audio_balance": {
+                "label": "Balance",
+                "min": -1.0, "max": 1.0, "step": 0.05, "default": 0.0,
+                "description": "Stereo balance: 0 = centered, -1 = left speaker only, +1 = right speaker only (opposite side fades linearly)"
             },
         }
 

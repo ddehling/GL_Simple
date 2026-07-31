@@ -123,7 +123,7 @@ function connectSocket() {
             const slider = document.getElementById(`global-${key}`);
             const display = document.getElementById(`global-val-${key}`);
             if (slider && !slider.matches(':active')) slider.value = val;
-            if (display) display.textContent = parseFloat(val).toFixed(2) + 'x';
+            if (display) display.textContent = formatGlobalValue(key, parseFloat(val));
         }
 
         // Update weather info
@@ -297,22 +297,31 @@ async function loadGlobalsSchema() {
     }
 }
 
+function formatGlobalValue(key, value) {
+    if (key === 'audio_balance') {
+        if (Math.abs(value) < 0.001) return 'Center';
+        return (value < 0 ? 'L ' : 'R ') + Math.abs(value).toFixed(2);
+    }
+    return value.toFixed(2) + 'x';
+}
+
 function renderGlobals() {
     const container = document.getElementById('globals-container');
     container.innerHTML = '';
 
     for (const [key, schema] of Object.entries(globalSchema)) {
+        const value = globalModifiers[key] ?? schema.default;
         const card = document.createElement('div');
         card.className = 'control-card';
         card.innerHTML = `
             <div class="control-label">
                 <span>${schema.label}</span>
-                <span class="control-value" id="global-val-${key}">${(globalModifiers[key] || schema.default).toFixed(2)}x</span>
+                <span class="control-value" id="global-val-${key}">${formatGlobalValue(key, value)}</span>
             </div>
             <div class="control-sublabel">${schema.description}</div>
             <input type="range" id="global-${key}"
                 min="${schema.min}" max="${schema.max}" step="${schema.step}"
-                value="${globalModifiers[key] || schema.default}"
+                value="${value}"
                 oninput="onGlobalChange('${key}', this.value)">
         `;
         container.appendChild(card);
@@ -324,7 +333,7 @@ function onGlobalChange(modifier, value) {
     globalModifiers[modifier] = value;
     setInteractionCooldown(`global-${modifier}`);
     const display = document.getElementById(`global-val-${modifier}`);
-    if (display) display.textContent = value.toFixed(2) + 'x';
+    if (display) display.textContent = formatGlobalValue(modifier, value);
 
     if (socket && socket.connected) {
         socket.emit('update_global', { modifier, value });

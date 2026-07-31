@@ -2123,11 +2123,13 @@ class EnvironmentalSystem:
             master_vol = self.web_controller.global_modifiers.get('master_volume', 1.0)
             narrative_vol = self.web_controller.global_modifiers.get('narrative_volume', 1.0)
             soundpool_vol = self.web_controller.global_modifiers.get('soundpool_volume', 1.0)
+            audio_balance = self.web_controller.global_modifiers.get('audio_balance', 0.0)
             ambient_vol = float(self.weather_state.weather_params.get('Sound_volume', 1.0))
             state["soundengine"].master_volume = master_vol
             state["soundengine"].narrative_volume = narrative_vol
             state["soundengine"].soundpool_volume = soundpool_vol
             state["soundengine"].ambient_volume = ambient_vol
+            state["soundengine"].balance = audio_balance
 
             # Cache the final output for the web UI snapshot (post-overrides)
             self._last_web_output = output
