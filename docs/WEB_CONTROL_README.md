@@ -52,7 +52,6 @@ The system includes these default controls:
 - **Enable Fireflies** (checkbox): Toggle firefly effects
 - **Enable Stars** (checkbox): Toggle star effects
 - **Color Mode** (dropdown): Color scheme selection
-- **Effect Speed** (0.1 - 5.0): Speed multiplier for all effects
 
 ### Adding Custom Controls
 

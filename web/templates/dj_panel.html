@@ -325,6 +325,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             <div class="setrow">
                 <select id="dj-timer-hours">
                     <option value="0">Off</option>
+                    <option value="setlist">End of setlist</option>
                     <option value="1">1 hour</option>
                     <option value="2">2 hours</option>
                     <option value="3">3 hours</option>
@@ -594,15 +595,17 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         let timerTouched = 0;   // suppress snapshot echo right after a change
         function sendTimer() {
             timerTouched = Date.now();
+            const v = timerHours.value;
             socket.emit("set_switch_timer", {
-                hours: parseInt(timerHours.value, 10),
+                hours: v === "setlist" ? "setlist" : parseInt(v, 10),
                 target: timerTarget.value});
         }
         timerHours.onchange = sendTimer;
         // Retargeting only matters while a countdown is armed; picking a
         // target with the timer Off is just staging the dropdown.
         timerTarget.onchange = () => {
-            if (parseInt(timerHours.value, 10) > 0) sendTimer();
+            const v = timerHours.value;
+            if (v === "setlist" || parseInt(v, 10) > 0) sendTimer();
         };
         function fillTimerTargets(sets) {
             const key = (sets || []).join("|");
@@ -624,7 +627,10 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             if (settled && st && document.activeElement !== timerTarget)
                 timerTarget.value = st.target;
             $("dj-timer-count").textContent = st
-                ? `→ ${st.target} in ${fmtHMS(st.remaining_s)}` : "off";
+                ? (st.remaining_s == null
+                   ? `→ ${st.target} when the setlist ends`
+                   : `→ ${st.target} in ${fmtHMS(st.remaining_s)}`)
+                : "off";
             $("dj-timer-count").style.color = st ? "#9f9" : "";
         }
 

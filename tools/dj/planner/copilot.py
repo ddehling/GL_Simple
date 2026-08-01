@@ -38,7 +38,9 @@ HISTORY_MAX_MSGS = 40            # trim old turns; the set state is re-read
 # table) - the vocabulary pin_style validates against.
 STYLES = ("long_blend", "bass_swap", "filter_sweep", "loop_roll_exit",
           "echo_out", "cut_at_drop", "double_drop", "loop_build",
-          "bassline_layer", "stem_drum_swap", "acapella_out", "long_fade")
+          "bassline_layer", "stem_drum_swap", "acapella_out",
+          "stem_bass_swap", "drum_bridge", "acapella_in", "melody_carry",
+          "long_fade")
 
 
 # --------------------------------------------------------------------------

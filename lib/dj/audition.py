@@ -44,6 +44,15 @@ def render_seam(db, a, b, plan, status=None):
         {"cmd": "load", "deck": "b", "samples": sb, "grid": b.grid,
          "gain_db": b.gain_db, "cue_s": plan["in_s"]},
     ])
+    # Attach stems when rendered so the STEM styles (and the vocal duck)
+    # audition truthfully - without this, stem_gains no-op against a
+    # stem-less deck and the audition plays full mixes.
+    from lib.dj.stems import load_stems
+    for deck, t, arr in (("a", a, sa), ("b", b, sb)):
+        if getattr(t, "has_stems", False):
+            st = load_stems(db.music_root, t.id, expected_len=len(arr))
+            if st:
+                sub.post({"cmd": "attach_stems", "deck": deck, "stems": st})
     # Prime telemetry with one tiny silent read so build_events sees deck A.
     gen = engine._mixer()
     next(gen)

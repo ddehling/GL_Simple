@@ -65,9 +65,16 @@ def load_stems(music_root, track_id, expected_len=None, dtype=np.float16):
     paths = stem_paths(music_root, track_id)
     if paths is None:
         return None
+    import time as _time
     from lib.dj.features import decode_file_stereo
     out = {}
     for name, p in paths.items():
+        # Real sleep between the four decodes: this runs on the live
+        # decode thread while audio plays, and sleep(0) only OFFERS the
+        # GIL - the same lesson as _decode_gil_friendly. Four files back
+        # to back without a yield is exactly the callback-starvation
+        # shape that produced audible dropouts from the mix decoder.
+        _time.sleep(0.002)
         arr = decode_file_stereo(p)
         if expected_len is not None:
             if len(arr) < expected_len:
@@ -132,20 +139,47 @@ def encode_stem(arr, path_no_ext):
                        f"({last_err})")
 
 
+# Separation models the renderer accepts. htdemucs_ft = the DEFAULT
+# (fine-tuned bag of four models: cleaner stems at ~4x the render time;
+# weights auto-download on first use); htdemucs = the plain v4 model for
+# quick renders. A track's stems dir records which model produced it
+# (MODEL_STAMP).
+STEM_MODELS = ("htdemucs_ft", "htdemucs")
+DEFAULT_STEM_MODEL = "htdemucs_ft"
+MODEL_STAMP = "model.txt"
+
+
+def stem_model_of(music_root, track_id):
+    """Which model rendered this track's stems ('htdemucs' assumed for
+    stamps predating the pulldown), or None without stems."""
+    if not has_stems(music_root, track_id):
+        return None
+    try:
+        with open(os.path.join(stems_dir(music_root, track_id),
+                               MODEL_STAMP), encoding="utf-8") as f:
+            return f.read().strip() or "htdemucs"
+    except OSError:
+        return "htdemucs"
+
+
 class StemRenderer:
-    """htdemucs full-track separation -> encoded stem files. Construct
+    """demucs full-track separation -> encoded stem files. Construct
     only if lib.dj.vocals.available() (same torch+demucs stack)."""
 
-    def __init__(self):
+    def __init__(self, model=DEFAULT_STEM_MODEL):
         import torch
         from demucs.pretrained import get_model
+        if model not in STEM_MODELS:
+            raise ValueError(f"unknown stem model '{model}'"
+                             f" (choose from {STEM_MODELS})")
+        self.model_name = model
         self._torch = torch
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model = get_model("htdemucs").to(self._device)
+        self._model = get_model(model).to(self._device)
         self._model.eval()
         self._sources = list(self._model.sources)   # drums/bass/other/vocals
         if self._device == "cuda":
-            print("[DJ stems] using CUDA")
+            print(f"[DJ stems] {model} using CUDA")
 
     def render(self, samples_stereo, music_root, track_id):
         """Separate a full track ((n,2) float32 @44100) and write its four
@@ -167,4 +201,7 @@ class StemRenderer:
         for i, name in enumerate(self._sources):
             encode_stem(out[i].T.astype(np.float32),
                         os.path.join(d, name))
+        with open(os.path.join(d, MODEL_STAMP), "w",
+                  encoding="utf-8") as f:
+            f.write(self.model_name)
         return d

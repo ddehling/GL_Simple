@@ -41,7 +41,10 @@ def cmd_render(args):
     for r in rows:
         if r.get("missing") or r.get("error"):
             continue
-        if not args.force and ST.has_stems(root, r["id"]):
+        if args.track and r["id"] != args.track:
+            continue                     # single-track mode (Analysis tab)
+        if not args.force and not args.track \
+                and ST.has_stems(root, r["id"]):
             continue
         todo.append((r["id"], db.abs(r["path"]),
                      (r.get("title") or r["path"])[:40]))
@@ -62,7 +65,7 @@ def cmd_render(args):
         return 2
 
     from lib.dj.features import decode_file_stereo
-    renderer = ST.StemRenderer()
+    renderer = ST.StemRenderer(model=args.model)
     matched = missed = 0
     for i, (tid, path, title) in enumerate(todo, 1):
         try:
@@ -116,6 +119,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dir", default="", help="music library directory")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--track", type=int, default=0,
+                    help="render ONE track by library id (re-renders even "
+                    "if stems exist - the Analysis tab's per-song button)")
+    ap.add_argument("--model", default=ST.DEFAULT_STEM_MODEL,
+                    choices=list(ST.STEM_MODELS),
+                    help="htdemucs_ft (fine-tuned bag: cleaner stems, "
+                    "~4x render time; DEFAULT) or htdemucs (fast)")
     ap.add_argument("--force", action="store_true",
                     help="re-render even when stems exist")
     ap.add_argument("--stats", action="store_true",

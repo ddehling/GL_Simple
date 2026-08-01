@@ -1611,8 +1611,15 @@ class Brain:
                             and pair["out_s"] < after_s):
             pair = self.best_pair(cur, cand, after_s=after_s)
         if pair is None:
-            # Last resort: exit on the last downbeat-aligned half minute.
-            pair = {"out_s": max(cur.duration_s - 35.0, cur.duration_s * 0.6),
+            # Last resort: exit on the last downbeat-aligned half minute -
+            # but NEVER before the requested after-point (a late entry on
+            # a short tail inverted out<in, and the seam fired seconds
+            # after the song started).
+            out_fb = max(cur.duration_s - 35.0, cur.duration_s * 0.6)
+            if after_s is not None:
+                out_fb = min(max(out_fb, after_s),
+                             max(cur.duration_s - 8.0, out_fb))
+            pair = {"out_s": out_fb,
                     "in_s": cand.mix_ins[0]["time_s"] if cand.mix_ins else 0.0,
                     "out_hint": "blend", "in_hint": "blend", "score": 0.1}
         rate = meta["rate"] if meta else 1.0
@@ -1636,7 +1643,7 @@ class Brain:
         if pers.style_bias or pers.theatrics != 1.0:
             _accent = ("cut_at_drop", "double_drop", "loop_build",
                        "loop_roll_exit", "echo_out", "bassline_layer",
-                       "stem_drum_swap")
+                       "stem_drum_swap", "drum_bridge", "acapella_in")
             for k in list(weights):
                 w = weights[k] * pers.style_bias.get(k, 1.0)
                 if k in _accent:
@@ -1645,7 +1652,9 @@ class Brain:
         # Stem styles: accent-tier defaults when the theme dict predates
         # them (hard-gated on rendered stems below, so a default here is
         # inert without tools/dj/dj_stems.py output on disk).
-        for k, dflt in (("stem_drum_swap", 0.3), ("acapella_out", 0.2)):
+        for k, dflt in (("stem_drum_swap", 0.3), ("acapella_out", 0.2),
+                        ("stem_bass_swap", 0.3), ("drum_bridge", 0.2),
+                        ("acapella_in", 0.15), ("melody_carry", 0.2)):
             if k not in weights:
                 weights[k] = (dflt * self.style_fb.get(k, 1.0)
                               * self.style_memory.get(k, 1.0))
@@ -1680,7 +1689,7 @@ class Brain:
         # punchy tier. Dynamics get SHAPE instead of uniform dice noise.
         _punchy = ("cut_at_drop", "double_drop", "loop_build",
                    "loop_roll_exit", "echo_out", "bassline_layer",
-                   "stem_drum_swap")
+                   "stem_drum_swap", "drum_bridge", "acapella_in")
         moment = False
         if arc is not None:
             if arc < 0.35:
@@ -1713,7 +1722,7 @@ class Brain:
                 # grid confidence or a missing drop, the blend still
                 # carries the seam, which is the correct fallback.
                 for k in ("double_drop", "cut_at_drop", "stem_drum_swap",
-                          "acapella_out"):
+                          "acapella_out", "acapella_in", "drum_bridge"):
                     weights[k] = weights.get(k, 0) * 12.0
                 for k in ("long_blend", "bass_swap", "filter_sweep"):
                     weights[k] = weights.get(k, 0) * 0.25
@@ -1727,7 +1736,9 @@ class Brain:
             # dual-bend ramp is implemented in the blend path only
             kill([k for k in list(weights)
                   if k not in ("long_blend", "bass_swap", "filter_sweep",
-                               "stem_drum_swap", "acapella_out")],
+                               "stem_drum_swap", "acapella_out",
+                               "stem_bass_swap", "drum_bridge",
+                               "acapella_in", "melody_carry")],
                  "dual_bend_blend_only")
         fade_reason = None
         rolled = False              # did a style dice roll actually happen?
@@ -1784,19 +1795,21 @@ class Brain:
                 if rt["kick_agreement"] < 0.35:
                     # Contradicting kick patterns: never run both lows
                     # open. The one-low-bed styles carry the seam.
+                    # drum_bridge IS two exposed kicks - worst offender.
                     for k in ("long_blend", "bassline_layer",
-                              "double_drop", "loop_build"):
+                              "double_drop", "loop_build", "drum_bridge"):
                         weights[k] = weights.get(k, 0.0) * 0.15
                     for k in ("bass_swap", "stem_drum_swap",
-                              "cut_at_drop"):
+                              "stem_bass_swap", "cut_at_drop"):
                         weights[k] = weights.get(k, 0.0) * 1.5
                 if rt["swing_delta"] > 0.055:
                     # Swung vs straight flams every offbeat for the whole
                     # overlap; only removing one percussion bed fixes it.
-                    # stem_drum_swap does exactly that; otherwise keep the
-                    # overlap short and decisive.
+                    # stem_drum_swap does exactly that; drum_bridge keeps
+                    # BOTH percussion beds - it showcases the clash.
                     for k in ("long_blend", "filter_sweep",
-                              "loop_roll_exit", "bassline_layer"):
+                              "loop_roll_exit", "bassline_layer",
+                              "drum_bridge"):
                         weights[k] = weights.get(k, 0.0) * 0.3
                     weights["stem_drum_swap"] = \
                         weights.get("stem_drum_swap", 0.0) * 2.0
@@ -1840,12 +1853,32 @@ class Brain:
             if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
                 kill("loop_build", "no_drop_in_A")
             # STEM STYLES need pre-rendered stems on disk (dj_stems.py).
-            if not (getattr(cur, "has_stems", False)
-                    and getattr(cand, "has_stems", False)):
-                kill("stem_drum_swap", "no_stems")
-            if not getattr(cur, "has_stems", False):
-                kill("acapella_out", "no_stems")
-            elif weights.get("acapella_out", 0.0) > 0.0:
+            a_stems = getattr(cur, "has_stems", False)
+            b_stems = getattr(cand, "has_stems", False)
+            if not (a_stems and b_stems):
+                kill(("stem_drum_swap", "stem_bass_swap", "drum_bridge"),
+                     "no_stems")
+            if not a_stems:
+                kill(("acapella_out", "melody_carry"), "no_stems")
+            if not b_stems:
+                kill("acapella_in", "no_stems")
+            # drum_bridge runs BOTH grids fully exposed for bars -
+            # precision-tier grid bar applies.
+            if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
+                kill("drum_bridge", "grid_conf<0.7")
+            # The key-sensitive stem premises share one PRECISE key fit
+            # (chroma-aware, corrected for any pitch-shift rescue).
+            kf_precise = None
+            if any(weights.get(k, 0.0) > 0.0 for k in
+                   ("acapella_out", "acapella_in", "melody_carry")):
+                kf_precise = camelot_compat(cur.camelot, cand.camelot)
+                sc = chroma_key_compat(
+                    getattr(cur, "chroma", None), cand.chroma,
+                    12.0 * math.log(max(rate, 1e-6)) / math.log(2.0)
+                    if stretch_engine_name() == "vari" else float(pst))
+                if sc is not None:
+                    kf_precise = sc
+            if weights.get("acapella_out", 0.0) > 0.0:
                 # acapella_out's premise: A actually SINGS around its exit
                 # (the tail IS its vocal riding B's instrumental), B stays
                 # vocal-free under it, and the keys sit close - an exposed
@@ -1854,15 +1887,28 @@ class Brain:
                     cur, pair["out_s"] - 16.0, pair["out_s"] + 16.0)
                 b_under = self._vocal_span_max(
                     cand, pair["in_s"] + 20.0, pair["in_s"] + 60.0)
-                kf = camelot_compat(cur.camelot, cand.camelot)
-                sc = chroma_key_compat(
-                    getattr(cur, "chroma", None), cand.chroma,
-                    12.0 * math.log(max(rate, 1e-6)) / math.log(2.0)
-                    if stretch_engine_name() == "vari" else float(pst))
-                if sc is not None:
-                    kf = sc
-                if tail_v < 0.35 or b_under > 0.5 or kf < 0.8:
+                if tail_v < 0.35 or b_under > 0.5 or kf_precise < 0.8:
                     kill("acapella_out", "acapella_premise")
+            if weights.get("acapella_in", 0.0) > 0.0:
+                # THE MIRROR: B's intro actually sings (its isolated vocal
+                # rides A's bed before the full mix lands), A's outro
+                # stays out of its way, keys tight.
+                b_in_v = self._vocal_span_max(
+                    cand, pair["in_s"], pair["in_s"] + 30.0)
+                a_out_v = self._vocal_span_max(
+                    cur, pair["out_s"] - 20.0, pair["out_s"] + 4.0)
+                if b_in_v < 0.35 or a_out_v > 0.35 or kf_precise < 0.8:
+                    kill("acapella_in", "acapella_premise")
+            if weights.get("melody_carry", 0.0) > 0.0 \
+                    and kf_precise < 0.8:
+                # A's melodic bed sustains under B - key fit IS the premise.
+                kill("melody_carry", "key_fit<0.8")
+            # KEY CLASH is drum_bridge's home turf: both tracks strip to
+            # percussion while the harmony resets - boost it exactly where
+            # everything harmonic struggles.
+            if weights.get("drum_bridge", 0.0) > 0.0 \
+                    and camelot_compat(cur.camelot, cand.camelot) < 0.5:
+                weights["drum_bridge"] *= 2.5
             weights["long_fade"] = 0.0
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
@@ -1883,8 +1929,11 @@ class Brain:
 
         # NEVER BLEND TWO SUNG PASSAGES: the swap-slot scan protects the
         # swap beat, but if A exits THROUGH a vocal passage while B enters
-        # on one, the whole overlap is two voices fighting. The dipped
-        # fade handles that pair gracefully - use it.
+        # on one, the whole overlap is two voices fighting. With stems on
+        # A a blend can DUCK A's vocal stem instead of surrendering the
+        # seam to a fade (vocal_over_vocal was a top logged fade reason);
+        # without stems the dipped fade stays the graceful answer.
+        duck_vocal = False
         if style != "long_fade":
             sa_v = (cur.section_at(pair["out_s"] - 1.0) or {})
             sb_v = (cand.section_at(pair["in_s"] + 1.0) or {})
@@ -1893,8 +1942,13 @@ class Brain:
             both_sec = ((sa_v.get("vocalness") or 0) > 0.5
                         and (sb_v.get("vocalness") or 0) > 0.5)
             if both_pt or both_sec:
-                style = "long_fade"
-                fade_reason = "vocal_over_vocal"
+                if getattr(cur, "has_stems", False) and style in (
+                        "long_blend", "bass_swap", "filter_sweep",
+                        "stem_bass_swap", "melody_carry"):
+                    duck_vocal = True
+                else:
+                    style = "long_fade"
+                    fade_reason = "vocal_over_vocal"
 
         # METER CLASH: a confidently-3/4 track against a 4/4 one cannot
         # beat-match musically whatever the style - every bar line drifts.
@@ -1938,7 +1992,9 @@ class Brain:
                  "loop_roll_exit": 32, "bassline_layer": 16,
                  "double_drop": 16, "loop_build": 16, "long_fade": 0,
                  "filter_sweep": 32, "echo_out": 8,
-                 "stem_drum_swap": 32, "acapella_out": 32}[style]
+                 "stem_drum_swap": 32, "acapella_out": 32,
+                 "stem_bass_swap": 32, "drum_bridge": 16,
+                 "acapella_in": 32, "melody_carry": 32}[style]
         if style == "long_blend":
             # LENGTH VARIETY: the workhorse mostly runs 64 beats; some of
             # the time it stretches to a 96-beat marathon (still a
@@ -1957,7 +2013,7 @@ class Brain:
         # dual - keep the exposure to one phrase.
         d_off_p = abs(cur.kick_offset_s - cand.kick_offset_s)
         if beats > 32 and style in ("long_blend", "bass_swap",
-                                    "filter_sweep") \
+                                    "filter_sweep", "stem_bass_swap") \
                 and ((rt is not None and rt.get("score", 1.0) < 0.45)
                      or d_off_p > 0.025):
             beats = 32
@@ -2000,6 +2056,7 @@ class Brain:
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats, "rhythm": rt,
                 "pair_score": pair["score"], "cand_id": cand.id,
+                "duck_vocal_a": duck_vocal,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
                     "diag": diag}
         # VARISPEED MEET-IN-THE-MIDDLE: with the varispeed engine pitch rides
@@ -2010,7 +2067,9 @@ class Brain:
         # are the ones whose event builder implements the outgoing ramp.
         if (stretch_engine_name() == "vari"
                 and style in ("long_blend", "bass_swap", "filter_sweep",
-                              "stem_drum_swap", "acapella_out")
+                              "stem_drum_swap", "acapella_out",
+                              "stem_bass_swap", "drum_bridge",
+                              "acapella_in", "melody_carry")
                 and plan["a_rate"] in (1.0, None) and not pst
                 and abs(math.log(max(plan["rate"], 1e-6))) > 0.010):
             plan["rate"] = math.sqrt(plan["rate"])
@@ -2028,8 +2087,8 @@ class Brain:
             plan["loop_start_s"] = cur.nearest_downbeat(loop["start_s"])
             plan["loop_beats"] = beats_len
             plan["layer_beats"] = 16          # bars both tracks play together
-        if style == "acapella_out":
-            plan["tail_beats"] = 16       # A's exposed vocal rides B this long
+        if style in ("acapella_out", "melody_carry"):
+            plan["tail_beats"] = 16   # A's exposed vocal/melody rides B
         return plan
 
     @staticmethod
@@ -2567,13 +2626,16 @@ class Brain:
         # blend widens to 6 - by then the highs have already migrated, so
         # the swap is the SECOND move, not the whole transition.
         swap_beats = 6 if long_stage else 4
-        # STEM_DRUM_SWAP enters on the DRUMS STEM alone: the stems already
-        # strip B's bassline/melody/vocals, so the EQ carve would only
-        # gut the drums themselves. Low sits at 0.55 (two beat-locked
-        # kicks reinforce; full double-sub would pump the limiter).
-        stem_entry = style == "stem_drum_swap"
+        # STEM_DRUM_SWAP / DRUM_BRIDGE enter on the DRUMS STEM alone: the
+        # stems already strip B's bassline/melody/vocals, so the EQ carve
+        # would only gut the drums themselves. Low sits at 0.55 (two
+        # beat-locked kicks reinforce; full double-sub would pump the
+        # limiter). ACAPELLA_IN enters on B's VOCAL stem alone - the voice
+        # needs its mids/air open from the first bar.
+        stem_entry = style in ("stem_drum_swap", "drum_bridge")
+        vox_entry = style == "acapella_in"
         b_low0 = 0.55 if stem_entry else 0.0
-        if stem_entry:
+        if stem_entry or vox_entry:
             b_mid0, b_high0 = 1.0, 1.0
         # QUIET-INTRO ENTRY TRIM: loudness comp (gain_db) levels whole
         # TRACKS, but the blend plays B's entry REGION against A's outro -
@@ -2608,6 +2670,22 @@ class Brain:
             ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
                        "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
                                  "vocals": 0.0}, "ramp_s": 0.01})
+        elif vox_entry:
+            ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
+                       "gains": {"vocals": 1.0, "drums": 0.0, "bass": 0.0,
+                                 "other": 0.0}, "ramp_s": 0.01})
+        elif style == "stem_bass_swap":
+            # B enters whole EXCEPT its bassline - the stem-clean version
+            # of the EQ carve: no spill, drums/melody untouched.
+            ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
+                       "gains": {"drums": 1.0, "bass": 0.0, "other": 1.0,
+                                 "vocals": 1.0}, "ramp_s": 0.01})
+        if plan.get("duck_vocal_a"):
+            # VOCAL DUCK: two sung passages overlap - A's voice steps
+            # aside for the blend instead of the whole seam fading.
+            ev.append({"at": S0, "cmd": "stem_gains", "deck": active,
+                       "gains": {"vocals": 0.0, "drums": 1.0, "bass": 1.0,
+                                 "other": 1.0}, "ramp_s": 2 * beat_out})
         if long_stage:
             span_s = (end - S0) / RATE
             # Stage 1 - BEATS TOGETHER: B rises to near-full presence over
@@ -2653,7 +2731,7 @@ class Brain:
             {"at": mid_open_at, "cmd": "eq", "deck": incoming, "mid": 1.0,
              "ramp_s": (4 if key_ok else 8) * beat_out},
         ]
-        if stem_entry:
+        if style == "stem_drum_swap":
             # The swap opens B's full stem set with its bass/EQ arrival,
             # and A collapses to its DRUMS stem - what survives A's EQ
             # (low cut, mid shelf) is pure percussion riding over B: the
@@ -2666,6 +2744,37 @@ class Brain:
                  "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
                            "vocals": 0.0}, "ramp_s": swap_beats * beat_out},
             ]
+        elif style == "drum_bridge":
+            # THE PERCUSSION BREAK: at the swap A also collapses to drums;
+            # both rhythm sections ride together for bridge_beats with all
+            # harmonic content gone (the key-clash rescue), then B opens
+            # its full mix and takes the floor.
+            bridge = int(plan.get("bridge_beats", 8) * beat_out * RATE)
+            ev += [
+                {"at": mid, "cmd": "stem_gains", "deck": active,
+                 "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
+                           "vocals": 0.0}, "ramp_s": swap_beats * beat_out},
+                {"at": mid + bridge, "cmd": "stem_gains", "deck": incoming,
+                 "gains": {"drums": 1.0, "bass": 1.0, "other": 1.0,
+                           "vocals": 1.0}, "ramp_s": 4 * beat_out},
+            ]
+        elif style == "stem_bass_swap":
+            # The swap trades the actual BASS STEMS - one bassline at all
+            # times, zero crossover spill.
+            ev += [
+                {"at": mid, "cmd": "stem_gains", "deck": incoming,
+                 "gains": {"drums": 1.0, "bass": 1.0, "other": 1.0,
+                           "vocals": 1.0}, "ramp_s": swap_beats * beat_out},
+                {"at": mid, "cmd": "stem_gains", "deck": active,
+                 "gains": {"drums": 1.0, "bass": 0.0, "other": 1.0,
+                           "vocals": 1.0}, "ramp_s": swap_beats * beat_out},
+            ]
+        elif style == "acapella_in":
+            # B's full mix lands at the swap - the voice that rode A's
+            # bed gets its own instrumental underneath it.
+            ev.append({"at": mid, "cmd": "stem_gains", "deck": incoming,
+                       "gains": {"drums": 1.0, "bass": 1.0, "other": 1.0,
+                                 "vocals": 1.0}, "ramp_s": 2 * beat_out})
         if style == "acapella_out":
             # A's exit is NOT a fade-to-nothing: at the blend boundary A
             # collapses to its VOCAL stem and rides B's full instrumental
@@ -2687,6 +2796,37 @@ class Brain:
                  "ramp_s": 2 * beat_out},
                 {"at": tail_end, "cmd": "gain", "deck": active,
                  "value": 0.0, "ramp_s": 8 * beat_out},
+            ]
+        elif style == "melody_carry":
+            # A's exit is its MELODY BED: at the blend boundary A
+            # collapses to its 'other' stem (pads/leads, no drums/bass/
+            # voice) and sustains under B's full mix for tail_beats -
+            # harmonic glue for tight-key pairs, then it breathes out.
+            tail_beats = plan.get("tail_beats", 16)
+            tail_end = end + int(tail_beats * beat_out * RATE)
+            ev += [
+                {"at": mid, "cmd": "gain", "deck": active, "value": 0.5,
+                 "ramp_s": 0.6 * half_exit},
+                {"at": end, "cmd": "stem_gains", "deck": active,
+                 "gains": {"other": 1.0, "vocals": 0.0, "drums": 0.0,
+                           "bass": 0.0}, "ramp_s": 2 * beat_out},
+                {"at": end, "cmd": "eq", "deck": active, "low": 0.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 2 * beat_out},
+                {"at": end, "cmd": "gain", "deck": active, "value": 0.7,
+                 "ramp_s": 2 * beat_out},
+                {"at": tail_end, "cmd": "gain", "deck": active,
+                 "value": 0.0, "ramp_s": 8 * beat_out},
+            ]
+        elif style == "drum_bridge":
+            # A holds NEAR-FULL through the percussion bridge (its drums
+            # are half the point), then leaves fast once B's full mix
+            # lands.
+            bridge = int(plan.get("bridge_beats", 8) * beat_out * RATE)
+            ev += [
+                {"at": mid, "cmd": "gain", "deck": active, "value": 0.85,
+                 "ramp_s": 2 * beat_out},
+                {"at": mid + bridge, "cmd": "gain", "deck": active,
+                 "value": 0.0, "ramp_s": 4 * beat_out},
             ]
         else:
             ev += [
@@ -2739,7 +2879,8 @@ class Brain:
                  "end_s": ls + 4 * cur.period_s},
             ]
         stop_at = end + int(4 * beat_out * RATE)
-        if style == "acapella_out":       # the vocal tail plays past `end`
+        if style in ("acapella_out", "melody_carry"):
+            # the vocal/melody tail plays past `end`
             stop_at = end + int((plan.get("tail_beats", 16) + 12)
                                 * beat_out * RATE)
         ev += [{"at": stop_at, "cmd": "stop", "deck": active},

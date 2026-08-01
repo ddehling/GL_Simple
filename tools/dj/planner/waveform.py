@@ -1,21 +1,86 @@
-"""Zoomable waveform view for the Analysis tab.
+"""Zoomable waveform/spectrogram view for the Analysis tab.
 
 Shows the whole song's shape and lets you dive to beat level:
-    - min/max peak waveform (pyramid-downsampled for speed)
+    - log-frequency SPECTROGRAM (default once computed) or min/max peak
+      waveform - toggled via set_mode(); same overlays either way
     - section bands colored by kind (top strip)
     - vocal-likely regions (red underline strip)
     - beat grid when zoomed in (downbeats stronger)
     - cue flags (in=green / out=red / interest=yellow; auto ones hollow)
     - playhead; click = seek; wheel = cursor-centered zoom; drag = pan
 
-Signals: seekRequested(float seconds), cueClicked(dict).
+Signals: seekRequested(float seconds), cueClicked(dict),
+viewChanged(t0, t1) - the stem lanes follow the same time window.
 """
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 RATE = 44100
+
+
+# -- spectrogram ------------------------------------------------------------
+
+def _colormap():
+    """256x3 uint8 LUT, near-black -> violet -> hot orange -> white. The
+    bottom third stays genuinely DARK so only real energy lights up -
+    contrast lives in the LUT as much as in the dB mapping."""
+    anchors = ((0, (4, 4, 10)), (70, (28, 14, 72)), (130, (125, 30, 92)),
+               (190, (238, 112, 32)), (255, (255, 251, 205)))
+    xs = np.array([a[0] for a in anchors], dtype=np.float32)
+    lut = np.empty((256, 3), dtype=np.uint8)
+    for ch in range(3):
+        ys = np.array([a[1][ch] for a in anchors], dtype=np.float32)
+        lut[:, ch] = np.interp(np.arange(256), xs, ys).astype(np.uint8)
+    return lut
+
+
+_LUT = _colormap()
+
+
+def compute_spectrogram(mono, hop=1024, win=2048, fmin=30.0, fmax=16000.0,
+                        bands=160):
+    """Log-frequency power spectrogram of a mono float32 track.
+
+    Returns {"u8": (bands, frames) uint8 intensity, "hop_s": float} or
+    None on a too-short input; coloring happens at paint time (the view
+    peak-pools columns per pixel, so transients survive any zoom).
+
+    Contrast: per-band WHITENING (60% of each band's median offset
+    removed - raw power puts all the brightness in the bass and the top
+    half of the picture reads flat and dim), a 60 dB window off the
+    99.5th percentile, and a gamma curve that keeps the floor dark.
+    Runs off the GUI thread (SpectroWorker)."""
+    mono = np.asarray(mono, dtype=np.float32)
+    if len(mono) < win * 4:
+        return None
+    sw = np.lib.stride_tricks.sliding_window_view(mono, win)[::hop]
+    frames = len(sw)
+    w = np.hanning(win).astype(np.float32)
+    freqs = np.fft.rfftfreq(win, 1.0 / RATE)
+    edges = np.searchsorted(freqs, np.geomspace(fmin, fmax, bands + 1))
+    edges = np.clip(edges, 1, len(freqs) - 1)
+    out = np.empty((frames, bands), dtype=np.float32)
+    step = 1024                          # frames per chunk (RAM-bounded)
+    for f0 in range(0, frames, step):
+        spec = np.abs(np.fft.rfft(sw[f0:f0 + step] * w, axis=1)) ** 2
+        # Log-band pooling; duplicate edges (low bands narrower than one
+        # fft bin) degrade to single-bin reads, which is correct.
+        out[f0:f0 + step] = np.maximum.reduceat(spec, edges[:-1], axis=1)
+    db = 10.0 * np.log10(out + 1e-10)
+    med = np.median(db, axis=0)
+    # Partial whitening only: enough to lift hats/vocals out of the murk,
+    # NOT enough to flatten the picture into a uniform orange wall (full
+    # whitening removed the very brightness structure that reads as
+    # contrast). 48 dB window + gamma 1.9 keep the floor genuinely dark -
+    # tuned by eye on a dense full-spectrum track (2026-08 sweep).
+    db -= 0.32 * (med - float(np.median(med)))
+    top = float(np.percentile(db, 99.5))
+    x = np.clip((db - (top - 48.0)) * (1.0 / 48.0), 0.0, 1.0)
+    u8 = (np.power(x, 1.9, dtype=np.float32) * 255.0).astype(np.uint8)
+    return {"u8": np.ascontiguousarray(u8.T[::-1]),   # low freq at bottom
+            "hop_s": hop / RATE}
 
 SECTION_COLORS = {
     "intro": QColor(70, 90, 130), "outro": QColor(70, 90, 130),
@@ -29,6 +94,7 @@ CUE_COLORS = {"in": QColor(90, 220, 120), "out": QColor(240, 100, 90),
 class WaveformView(QWidget):
     seekRequested = pyqtSignal(float)
     cueClicked = pyqtSignal(dict)
+    viewChanged = pyqtSignal(float, float)    # visible window (t0, t1)
 
     def __init__(self):
         super().__init__()
@@ -43,6 +109,9 @@ class WaveformView(QWidget):
         self._pyramid = []           # [(spp, min[], max[]), ...] coarse->fine
         self._drag_x = None
         self._drag_t0 = None
+        self.mode = "wave"           # 'spec' once a spectrogram lands
+        self._spec = None            # {"u8", "hop_s"}
+        self._spec_cache = None      # (key, QImage, rgb backing array)
 
     # -- data -------------------------------------------------------------
     def set_track(self, track, samples_mono, cues):
@@ -70,8 +139,56 @@ class WaveformView(QWidget):
                 mx = prev[2][:pm * factor].reshape(pm, factor).max(axis=1)
             self._pyramid.append((spp, mn.astype(np.float32),
                                   mx.astype(np.float32)))
+        self._spec = None
+        self._spec_cache = None
+        if self.mode == "spec":
+            self.mode = "wave"       # until the new track's spectro lands
         self.view_t0, self.view_t1 = 0.0, self.duration
         self.playhead = 0.0
+        self.viewChanged.emit(self.view_t0, self.view_t1)
+        self.update()
+
+    def set_spectrogram(self, spec, show=True):
+        """Adopt a computed spectrogram ({"u8", "hop_s"} from
+        compute_spectrogram); switches to spec mode unless show=False."""
+        self._spec = spec
+        self._spec_cache = None
+        if spec is None:
+            self.mode = "wave"
+        elif show:
+            self.mode = "spec"
+        self.update()
+
+    def _spec_image(self, W):
+        """Colorized QImage of the visible window, one PEAK-POOLED column
+        per screen pixel. Painter-scaling the raw frame image instead
+        averaged ~9 frames into each pixel at full zoom-out and smeared
+        every transient (user: 'blurry, not enough contrast'). Cached on
+        (frame window, width) so playhead-only repaints cost nothing."""
+        u8, hop_s = self._spec["u8"], self._spec["hop_s"]
+        nf = u8.shape[1]
+        f0 = max(0, min(int(self.view_t0 / hop_s), nf - 1))
+        f1 = max(f0 + 1, min(int(np.ceil(self.view_t1 / hop_s)), nf))
+        key = (f0, f1, W)
+        if self._spec_cache is not None and self._spec_cache[0] == key:
+            return self._spec_cache[1]
+        vis = u8[:, f0:f1]
+        n = vis.shape[1]
+        if n >= W:                       # zoomed out: max-pool per column
+            col_edges = np.arange(W) * n // W
+            cols = np.maximum.reduceat(vis, col_edges, axis=1)
+        else:                            # zoomed in: nearest (crisp beats)
+            cols = vis[:, np.arange(W) * n // W]
+        rgb = np.ascontiguousarray(_LUT[cols])
+        img = QImage(rgb.data, W, rgb.shape[0], 3 * W,
+                     QImage.Format.Format_RGB888)
+        self._spec_cache = (key, img, rgb)    # rgb kept alive for QImage
+        return img
+
+    def set_mode(self, mode):
+        """'spec' | 'wave' (spec silently falls back while uncomputed)."""
+        self.mode = mode if (mode == "wave" or self._spec is not None) \
+            else "wave"
         self.update()
 
     def set_cues(self, cues):
@@ -85,6 +202,7 @@ class WaveformView(QWidget):
             span = self.view_t1 - self.view_t0
             self.view_t0 = max(0.0, t - span * 0.2)
             self.view_t1 = min(self.duration, self.view_t0 + span)
+            self.viewChanged.emit(self.view_t0, self.view_t1)
         self.update()
 
     # -- coords ---------------------------------------------------------------
@@ -119,9 +237,10 @@ class WaveformView(QWidget):
                 continue
             col = SECTION_COLORS.get(s["kind"], QColor(85, 85, 90))
             p.fillRect(QRectF(x0, 0, x1 - x0, strip_h), col)
-            wash = QColor(col)
-            wash.setAlpha(26)
-            p.fillRect(QRectF(x0, wave_top, x1 - x0, wave_h), wash)
+            if self.mode != "spec":      # a wash would tint the spectrogram
+                wash = QColor(col)
+                wash.setAlpha(26)
+                p.fillRect(QRectF(x0, wave_top, x1 - x0, wave_h), wash)
             if x1 - x0 > 46:
                 p.setPen(QColor(235, 235, 235, 200))
                 p.drawText(QRectF(x0 + 3, 0, x1 - x0 - 4, strip_h),
@@ -131,49 +250,115 @@ class WaveformView(QWidget):
                 p.fillRect(QRectF(x0, H - voc_h - 2, x1 - x0, voc_h),
                            QColor(230, 90, 110, 190))
 
-        # Beat grid when zoomed in enough.
+        # Spectrogram band (spec mode): one peak-pooled column per pixel;
+        # only the vertical axis is painter-scaled (smooth). The
+        # grid/cues/playhead draw on top.
         span = self.view_t1 - self.view_t0
+        if self.mode == "spec" and self._spec is not None:
+            img = self._spec_image(W)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.drawImage(QRectF(0, wave_top, W, wave_h), img,
+                        QRectF(0, 0, img.width(), img.height()))
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                            False)
+
+        # Beat/bar/phrase grid, three tiers so the musical structure reads
+        # at EVERY zoom: faint beat ticks close in, bar lines (downbeats)
+        # further out, and PHRASE boundaries - the hypermeter the mixer
+        # aligns blends and exits to - in amber at any zoom where they
+        # are distinguishable.
         grid = self.track.grid or []
         if grid and span > 0:
             period = grid[0]["period_s"]
-            px_per_beat = W / (span / period)
-            if px_per_beat >= 5:
+            px_beat = W / (span / max(period, 1e-6))
+            # step 1 = every beat; step 4 = bars only (medium zoom).
+            step = 1 if px_beat >= 5 else 4 if px_beat * 4 >= 7 else 0
+            if step:
+                # SOLID cyan, no alpha games: bars must be instantly
+                # readable over the hot orange regions AND the dark floor.
+                # Downbeats get a 1px dark halo so they cut through the
+                # brightest material.
+                down_pen = QPen(QColor(140, 240, 255), 1)
+                halo_pen = QPen(QColor(0, 0, 0, 170), 3)
+                beat_pen = QPen(QColor(140, 240, 255, 130), 1)
                 for g in grid:
                     first_down = g["first_beat_s"] \
                         + self.track.downbeat_offset * g["period_s"]
-                    k0 = int((self.view_t0 - g["first_beat_s"])
-                             / g["period_s"]) - 1
-                    t = g["first_beat_s"] + max(k0, 0) * g["period_s"]
+                    k0 = int((self.view_t0 - first_down)
+                             / g["period_s"]) - step
+                    k0 -= k0 % step          # stay on downbeat multiples
+                    t = first_down + k0 * g["period_s"]
                     while t <= min(self.view_t1, g["end_s"]):
                         if t >= max(self.view_t0, g["start_s"]):
                             x = self._t2x(t)
                             beats_from_down = round(
                                 (t - first_down) / g["period_s"])
                             is_down = beats_from_down % 4 == 0
-                            p.setPen(QPen(QColor(255, 255, 255,
-                                                 70 if is_down else 28), 1))
+                            if is_down:
+                                p.setPen(halo_pen)
+                                p.drawLine(int(x), wave_top, int(x),
+                                           wave_top + wave_h)
+                            p.setPen(down_pen if is_down else beat_pen)
                             p.drawLine(int(x), wave_top, int(x),
                                        wave_top + wave_h)
-                        t += g["period_s"]
+                        t += g["period_s"] * step
 
-        # Waveform from the best-fitting pyramid level.
-        spp_needed = span * RATE / max(W, 1)
-        level = self._pyramid[0]
-        for lv in self._pyramid:
-            if lv[0] <= spp_needed:
-                level = lv
-        spp, mn, mx = level
-        p.setPen(QPen(QColor(140, 200, 235, 210), 1))
-        i0 = int(self.view_t0 * RATE / spp)
-        for x in range(W):
-            t = self._x2t(x)
-            j0 = int(t * RATE / spp)
-            j1 = max(int((t + span / W) * RATE / spp), j0 + 1)
-            j0 = np.clip(j0, 0, len(mn) - 1)
-            j1 = np.clip(j1, j0 + 1, len(mn))
-            lo, hi = float(mn[j0:j1].min()), float(mx[j0:j1].max())
-            p.drawLine(x, int(mid_y - hi * wave_h * 0.48),
-                       x, int(mid_y - lo * wave_h * 0.48))
+        # Phrase boundaries (16/32-beat hypermeter, confidence-gated).
+        tr = self.track
+        if getattr(tr, "phrase_beats", 0) and tr.phrase_conf >= 0.1 \
+                and span > 0:
+            pspan = tr.phrase_beats * tr.period_s
+            px_phrase = W / (span / max(pspan, 1e-6))
+            if px_phrase >= 8:
+                k = max(int((self.view_t0 - tr.phrase_start_s)
+                            / max(pspan, 1e-6)) - 1, -1)
+                while True:
+                    t = tr.phrase_start_s + k * pspan
+                    if t > min(self.view_t1, self.duration):
+                        break
+                    if t >= max(self.view_t0, 0.0):
+                        x = self._t2x(t)
+                        # Phrase = the line that matters most: bright
+                        # green (nothing else in the picture is green),
+                        # 3px solid on a black halo, full band height,
+                        # plus a FILLED label chip - readable over the
+                        # hottest spectrogram regions, period.
+                        p.setPen(QPen(QColor(0, 0, 0, 200), 7))
+                        p.drawLine(int(x), wave_top, int(x),
+                                   wave_top + wave_h)
+                        p.setPen(QPen(QColor(90, 255, 140), 3))
+                        p.drawLine(int(x), wave_top, int(x),
+                                   wave_top + wave_h)
+                        if px_phrase >= 46 and k >= 0:
+                            chip = QRectF(x + 4, wave_top + 3, 34, 16)
+                            p.setPen(Qt.PenStyle.NoPen)
+                            p.setBrush(QColor(90, 255, 140))
+                            p.drawRect(chip)
+                            p.setBrush(Qt.BrushStyle.NoBrush)
+                            p.setPen(QColor(8, 8, 12))
+                            p.drawText(chip,
+                                       Qt.AlignmentFlag.AlignCenter,
+                                       f"P{k}")
+                    k += 1
+
+        # Waveform from the best-fitting pyramid level (wave mode only).
+        if self.mode != "spec":
+            spp_needed = span * RATE / max(W, 1)
+            level = self._pyramid[0]
+            for lv in self._pyramid:
+                if lv[0] <= spp_needed:
+                    level = lv
+            spp, mn, mx = level
+            p.setPen(QPen(QColor(140, 200, 235, 210), 1))
+            for x in range(W):
+                t = self._x2t(x)
+                j0 = int(t * RATE / spp)
+                j1 = max(int((t + span / W) * RATE / spp), j0 + 1)
+                j0 = np.clip(j0, 0, len(mn) - 1)
+                j1 = np.clip(j1, j0 + 1, len(mn))
+                lo, hi = float(mn[j0:j1].min()), float(mx[j0:j1].max())
+                p.drawLine(x, int(mid_y - hi * wave_h * 0.48),
+                           x, int(mid_y - lo * wave_h * 0.48))
 
         # Cues.
         for c in self.cues:
@@ -222,6 +407,7 @@ class WaveformView(QWidget):
         self.view_t0 = max(0.0, t_cursor - frac * span)
         self.view_t1 = min(self.duration, self.view_t0 + span)
         self.view_t0 = max(0.0, self.view_t1 - span)
+        self.viewChanged.emit(self.view_t0, self.view_t1)
         self.update()
 
     def mousePressEvent(self, ev):
@@ -240,6 +426,7 @@ class WaveformView(QWidget):
                 t0 = float(np.clip(self._drag_t0 + dt, 0,
                                    self.duration - span))
                 self.view_t0, self.view_t1 = t0, t0 + span
+                self.viewChanged.emit(self.view_t0, self.view_t1)
                 self.update()
 
     def mouseReleaseEvent(self, ev):

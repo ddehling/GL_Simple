@@ -1164,6 +1164,35 @@ class DJSystem:
         if self.state == "playing":
             self._watchdog(self._pos_s())
 
+        # AUDIO-STARVATION ATTRIBUTION: the engine counts callbacks its
+        # ring couldn't fill (audible skips), but only to the console -
+        # nothing correlated them with WHAT was happening. Poll every ~5s
+        # and log the delta with context, so the night log can answer
+        # "do stem seams (or stem decodes) cause skips" with data.
+        now_t = time.time()
+        if self.engine is not None \
+                and now_t - getattr(self, "_cb_check_t", 0.0) > 5.0:
+            self._cb_check_t = now_t
+            try:
+                stats = self.engine.callback_stats()
+            except AttributeError:
+                stats = None
+            if stats:
+                d = stats.get("starved", 0) - getattr(self, "_cb_seen", 0)
+                if d > 0:
+                    self._cb_seen = stats["starved"]
+                    style = (self.plan or {}).get("style") \
+                        or self._last_style
+                    self._log({
+                        "event": "audio_starved", "n": d,
+                        "state": self.state, "style": style,
+                        "stem_style": style in (
+                            "stem_drum_swap", "acapella_out", "acapella_in",
+                            "stem_bass_swap", "drum_bridge", "melody_carry")
+                        or bool((self.plan or {}).get("duck_vocal_a")),
+                        "decoding": bool(getattr(self, "_decoding", None)),
+                        "min_depth_ms": stats.get("min_depth_ms")})
+
     def _pick_next(self, out_bpm):
         """The live pick FOLLOWS the displayed queue: take the horizon's
         front if it still scores, so what the operator sees is what
@@ -1544,8 +1573,14 @@ class DJSystem:
             stems_b = self._decoded_stems.get(self.next_track.id)
             stems_a = self._decoded_stems.get(self.current.id) \
                 if self.current is not None else None
-        need_a = plan["style"] in ("stem_drum_swap", "acapella_out")
-        need_b = plan["style"] == "stem_drum_swap"
+        st = plan["style"]
+        need_a = st in ("stem_drum_swap", "acapella_out", "melody_carry",
+                        "drum_bridge", "stem_bass_swap")
+        need_b = st in ("stem_drum_swap", "drum_bridge", "acapella_in",
+                        "stem_bass_swap")
+        duck_a = bool(plan.get("duck_vocal_a"))
+        if duck_a and not need_a:
+            need_a = True                # the duck needs A's vocal stem
         if need_a and stems_a is None:
             # Cache may have evicted A's stems (loaded two tracks ago) -
             # they're on disk, re-decode inline (a few seconds on the
@@ -1562,10 +1597,22 @@ class DJSystem:
             except Exception as e:
                 print(f"[DJ] stem re-decode failed: {e}")
                 stems_a = None
+        if duck_a and stems_a is None and st not in (
+                "stem_drum_swap", "acapella_out", "melody_carry",
+                "drum_bridge", "stem_bass_swap"):
+            # Duck-only failure: keep the style, drop the duck (rare -
+            # stems were on disk at plan time; one blend risks the
+            # vocal overlap rather than tearing up the geometry).
+            plan["duck_vocal_a"] = False
+            duck_a = False
+            need_a = False
+            self._log({"event": "stem_downgrade", "style": st,
+                       "what": "vocal_duck"})
         if (need_b and stems_b is None) or (need_a and stems_a is None):
             self._log({"event": "stem_downgrade", "style": plan["style"]})
             plan["style"] = "bass_swap"
             plan.pop("tail_beats", None)
+            plan["duck_vocal_a"] = False
         elif need_a and stems_a is not None:
             self.submix.post({"cmd": "attach_stems",
                               "deck": self.active_deck, "stems": stems_a})

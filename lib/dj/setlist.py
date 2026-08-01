@@ -25,7 +25,7 @@ from lib.dj.rhythm import seam_rhythm, tempo_mult_for
 # ones a kick-pattern clash actually bites. bass_swap/stem_drum_swap keep
 # one low bed at a time; cut_at_drop never overlaps; fades opt out.
 _LOW_OPEN_STYLES = ("long_blend", "loop_roll_exit", "double_drop",
-                    "loop_build", "bassline_layer")
+                    "loop_build", "bassline_layer", "drum_bridge")
 
 
 def _make_edge(brain):
@@ -148,8 +148,15 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
         tracks.append((t, e))
 
     offset = 0.0
-    entry_in_s = tracks[0][0].mix_ins[0]["time_s"] \
-        if tracks and tracks[0][0].mix_ins else 0.0
+    # The OPENER enters at its EARLIEST mix-in, not its best-SCORING one:
+    # mix_ins are ranked by seam score, and a mid-song winner opened the
+    # set minutes deep - on tracks whose best in-point sits near the tail
+    # the first exit could even land BEFORE the entry, and the preview
+    # played a few seconds of song one before blending (user-reported).
+    if tracks and tracks[0][0].mix_ins:
+        entry_in_s = min(p["time_s"] for p in tracks[0][0].mix_ins)
+    else:
+        entry_in_s = 0.0
     entry_rate = 1.0                 # rate this track was brought in at
     # Aim each track to play a sensible stretch before mixing out, so the
     # set doesn't lurch through 30-second snippets.
@@ -293,7 +300,9 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             blend_wall = plan["beats"] * t.period_s / a_r \
                 if plan["style"] in ("long_blend", "bass_swap",
                                      "filter_sweep", "loop_roll_exit",
-                                     "stem_drum_swap", "acapella_out") \
+                                     "stem_drum_swap", "acapella_out",
+                                     "stem_bass_swap", "drum_bridge",
+                                     "acapella_in", "melody_carry") \
                 else 0.0
             play -= blend_wall * (a_r - 1.0)  # blend runs at meeting tempo
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]
@@ -555,8 +564,13 @@ def order_by_shape(library, entries, theme, metric="tempo", shape="rise",
 
     def mval(t):
         return t.bpm if metric == "tempo" else t.energy_proxy()
-    vals = [mval(t) for _, t in items]
-    vlo, span = min(vals), max(max(vals) - min(vals), 1e-6)
+    # RANK-normalized metric: a shape is a claim about ORDER ("the
+    # fastest records in the middle"), not about value distances. Value
+    # normalization broke on skewed sets - tempos bunched high scored an
+    # ascending order as well as a true crest for 'peak', because no
+    # ordering could match the curve's raw VALUES; rank space always can.
+    by_val = sorted(items, key=lambda et: mval(et[1]))
+    nrm = {et[1].id: k / max(n - 1, 1) for k, et in enumerate(by_val)}
 
     def target(pos):
         f = pos / (n - 1)
@@ -574,6 +588,10 @@ def order_by_shape(library, entries, theme, metric="tempo", shape="rise",
             return 1.0                           # fade only
         return 0.0 if abs(math.log(r)) < math.log(1.055) else 0.4
 
+    def step_cost(last, t, tgt):
+        pen = seam_pen(last, t) if last is not None else 0.0
+        return abs(nrm[t.id] - tgt) + 0.6 * pen
+
     # State: (cost, picks tuple, used frozenset, last_track).
     states = [(0.0, (), frozenset(), None)]
     for pos in range(n):
@@ -581,18 +599,55 @@ def order_by_shape(library, entries, theme, metric="tempo", shape="rise",
         nxt = {}
         for cost, picks, used, last in states:
             cands = [(e, t) for (e, t) in items if t.id not in used]
-            cands.sort(key=lambda et: abs((mval(et[1]) - vlo) / span - tgt))
-            for e, t in cands[:12]:
-                arc_err = abs((mval(t) - vlo) / span - tgt)
-                pen = seam_pen(last, t) if last is not None else 0.0
-                c = cost + arc_err + 0.6 * pen
+            # Truncate by the FULL step cost (arc fit AND seam), not arc
+            # fit alone - arc-only truncation starved the beam of the
+            # seam-viable near-target picks whenever a value cluster
+            # crowded the top of the sort.
+            cands.sort(key=lambda et: step_cost(last, et[1], tgt))
+            # SHAPE CORRIDOR - HARD: shape OWNS the order (the tool's
+            # whole contract); seams are optimized within it, never
+            # traded against it. Without this the beam bought big shape
+            # violations with cheap seams ('rise' ending on its two
+            # lowest tracks because every seam onto those tempo-islands
+            # was a fade the beam kept deferring). A state that strands
+            # inventory outside the corridor simply dies; if the whole
+            # beam dies, the rank baseline below wins with the exact
+            # shape and pays its fades honestly.
+            near = [et for et in cands
+                    if abs(nrm[et[1].id] - tgt) <= 0.3]
+            for e, t in near[:12]:
+                c = cost + step_cost(last, t, tgt)
                 key = (used | {t.id}, t.id)
                 if key not in nxt or c < nxt[key][0]:
                     nxt[key] = (c, picks + (e,), used | {t.id}, t)
         states = sorted(nxt.values(), key=lambda s: s[0])[:beam]
         if not states:
-            return list(entries)
-    return list(states[0][1])
+            break                        # corridor infeasible - ranked wins
+
+    # RANK BASELINE, judged by the SAME objective as the beam. The beam
+    # is myopic on sparse value tails (measured on the real library: a
+    # 'rise' dumped its three slowest tracks at the END - clean early
+    # seams outbid the tail's arc error until the outliers were the only
+    # tracks left; the returned order cost 7.4 where plain value-sorting
+    # cost 5.0). Assigning value-sorted tracks to target-sorted positions
+    # realizes the requested shape EXACTLY (zero rank error by
+    # construction); return whichever ordering the objective actually
+    # scores cheaper.
+    ranked = [None] * n
+    for k, p in enumerate(sorted(range(n), key=target)):
+        ranked[p] = by_val[k]
+
+    def total(seq):
+        c, last = 0.0, None
+        for pos, (e, t) in enumerate(seq):
+            c += step_cost(last, t, target(pos))
+            last = t
+        return c
+
+    if states and len(states[0][1]) == n:
+        beam_seq = [(e, by_id[e["track_id"]]) for e in states[0][1]]
+        return [e for e, _ in min((beam_seq, ranked), key=total)]
+    return [e for e, _ in ranked]
 
 
 def bridge(library, a, b, theme, seed=0, exclude_ids=()):

@@ -229,7 +229,6 @@ The server listens on `0.0.0.0` by default. To restrict to localhost, change `we
 - **Enable Fireflies** (checkbox)
 - **Enable Stars** (checkbox)
 - **Color Mode** (dropdown)
-- **Effect Speed** (0.1–5.0)
 
 ### Adding Custom Controls
 

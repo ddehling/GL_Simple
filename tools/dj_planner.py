@@ -36,8 +36,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QLineEdit, QTableView, QListWidget, QListWidgetItem, QPushButton,
     QComboBox, QStyledItemDelegate, QSplitter, QMessageBox, QInputDialog,
-    QAbstractItemView, QDoubleSpinBox, QSpinBox, QStyle, QTabWidget,
-    QPlainTextEdit, QSlider, QMenu, QCheckBox, QTreeWidget,
+    QAbstractItemView, QDoubleSpinBox, QSpinBox, QSizePolicy, QStyle,
+    QTabWidget, QPlainTextEdit, QSlider, QMenu, QCheckBox, QTreeWidget,
     QTreeWidgetItem, QHeaderView)
 
 from lib.dj import resolve_music_dir
@@ -79,6 +79,18 @@ def _clip(s, w):
     return (s[:w - 1] + "…") if len(s) > w else s.ljust(w)
 
 
+def _no_width_floor(widget):
+    """Stop a status/caption label from setting the WINDOW's minimum
+    width. A QLabel's minimum tracks its text, QTabWidget's minimum is
+    the max over pages - one long one-line status pinned the whole
+    planner wider than a monitor. Ignored horizontal policy: the label
+    takes whatever its row has and clips."""
+    sp = widget.sizePolicy()
+    sp.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    widget.setSizePolicy(sp)
+    return widget
+
+
 RATE = 44100
 SECTION_COLORS = {
     "intro": QColor(70, 90, 120), "outro": QColor(70, 90, 120),
@@ -86,7 +98,72 @@ SECTION_COLORS = {
     "breakdown": QColor(90, 70, 130),
 }
 COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "type",
-        "tags", "rhythm", "structure"]
+        "tags", "rhythm", "structure", "stems"]
+
+
+# How much each transition style EXPOSES the four seam risk channels
+# (key overlap, both-lows overlap, long groove overlap, short-window
+# precision), 0..1 each. Mirrors plan_transition's steering rules - a
+# kick clash bites the open-bass blends, swing clashes bite long
+# overlaps, weak grids bite the precision hits, an exposed acapella
+# bites on key. DISPLAY heuristic only (the transition-options rating);
+# selection and compile use the brain's full score.
+_STYLE_EXPOSURE = {
+    #                key   lows  groove prec
+    "long_blend":    (0.8,  1.0,  0.9,  0.3),
+    "bass_swap":     (0.5,  0.2,  0.6,  0.3),
+    "filter_sweep":  (0.6,  0.5,  0.7,  0.3),
+    "loop_roll_exit": (0.5, 0.7,  0.8,  0.6),
+    "echo_out":      (0.3,  0.3,  0.3,  0.7),
+    "cut_at_drop":   (0.1,  0.1,  0.1,  1.0),
+    "double_drop":   (0.4,  0.9,  0.6,  1.0),
+    "loop_build":    (0.3,  0.7,  0.5,  0.9),
+    "bassline_layer": (0.7, 1.0,  0.7,  0.8),
+    "stem_drum_swap": (0.5, 0.2,  0.4,  0.5),
+    "acapella_out":  (1.0,  0.1,  0.2,  0.4),
+    "stem_bass_swap": (0.5, 0.1,  0.6,  0.3),
+    "drum_bridge":   (0.05, 0.9,  0.7,  0.8),
+    "acapella_in":   (1.0,  0.1,  0.2,  0.4),
+    "melody_carry":  (0.9,  0.2,  0.3,  0.3),
+}
+
+
+def style_rating(si, p, a, b, style):
+    """0..1 predicted seam quality FOR ONE STYLE: the seam's measured
+    physics viewed through that style's exposure profile. A fade opts out
+    of beat/key physics entirely - safe, never spectacular - so it gets a
+    flat 'clean handoff' score."""
+    if style == "long_fade":
+        return 0.62
+    si, p = si or {}, p or {}
+    rt = si.get("rhythm") or {}
+    key_s = si.get("key_fit", 0.6)
+    ka = rt.get("kick_agreement")
+    lows_s = 0.7 if ka is None else ka
+    if (si.get("d_off") or 0.0) > 0.025:
+        lows_s = min(lows_s, 0.45)       # bass placement gap flams the lows
+    groove_s = rt.get("score")
+    groove_s = 0.75 if groove_s is None else groove_s
+    if (rt.get("swing_delta") or 0.0) > 0.055:
+        groove_s = min(groove_s, 0.35)   # swung vs straight: nothing fixes it
+    conf = min(getattr(a, "bpm_conf", 0.5), getattr(b, "bpm_conf", 0.5))
+    prec_s = min(1.0, max(0.0, (conf - 0.4) / 0.5))
+    fl = rt.get("flam_ms")
+    if fl is not None and 15.0 <= fl <= 80.0:
+        prec_s = min(prec_s, 0.35)       # machine-gun near-miss window
+    if (si.get("d_off") or 0.0) > 0.028:
+        prec_s = min(prec_s, 0.30)       # same gate the brain applies
+    ek, el, eg, ep = _STYLE_EXPOSURE[style]
+    r = 1.0
+    for e, s in ((ek, key_s), (el, lows_s), (eg, groove_s), (ep, prec_s)):
+        r *= 1.0 - e * (1.0 - min(max(s, 0.0), 1.0))
+    rate = p.get("rate") or 1.0
+    r *= math.exp(-(abs(math.log(max(rate, 1e-6))) / 0.06) ** 2)
+    floor = si.get("floor")
+    if floor is not None and floor < 0.15 \
+            and _STYLE_EXPOSURE[style][1] >= 0.5:
+        r *= 0.6                         # dead air bites the open overlaps
+    return max(0.0, min(1.0, r))
 
 
 def energy_glyph(e):
@@ -268,8 +345,9 @@ def track_folder(t):
 class LibraryTreeModel(QAbstractItemModel):
     """Two-level tree: folders (collapsible to one line) -> tracks."""
 
-    def __init__(self):
+    def __init__(self, music_dir=""):
         super().__init__()
+        self.music_dir = music_dir   # stems-column tooltip (model stamp)
         self.folders = []            # [{"name": str, "tracks": [TrackInfo]}]
 
     def set_tracks(self, tracks, flat=False):
@@ -369,6 +447,17 @@ class LibraryTreeModel(QAbstractItemModel):
                 return os.path.splitext(t.path)[1].lstrip(".").lower()
             if c == 8:
                 return " ".join(t.all_tags)
+            if c == 11:
+                return "✓" if getattr(t, "has_stems", False) else ""
+        if role == Qt.ItemDataRole.ToolTipRole and c == 11:
+            if getattr(t, "has_stems", False):
+                from lib.dj.stems import stem_model_of
+                model = stem_model_of(self.music_dir, t.id) or "htdemucs"
+                return (f"stems rendered with {model} (.stems/<id>/) - "
+                        "stem_drum_swap and acapella_out can use this "
+                        "track; solo them in the Analysis tab")
+            return ("no stems - render from the Analysis tab (one "
+                    "song) or '+ stems' in Analyze all (library-wide)")
         if role == Qt.ItemDataRole.ToolTipRole and c == 9:
             sig = getattr(t, "rhythm_sig", None)
             if not sig:
@@ -452,6 +541,9 @@ class LibraryProxy(QSortFilterProxyModel):
                     sig = getattr(t, "rhythm_sig", None)
                     return sig.get("density", 0.0) if sig else -1.0
                 return dens(ta) < dens(tb)
+            if c == 11:                  # stems: rendered tracks together
+                return (getattr(ta, "has_stems", False)
+                        < getattr(tb, "has_stems", False))
             ka = (m.data(left, Qt.ItemDataRole.DisplayRole) or "").lower()
             kb = (m.data(right, Qt.ItemDataRole.DisplayRole) or "").lower()
             return ka < kb
@@ -616,9 +708,10 @@ class SetListView(QTreeWidget):
     the others smaller to grow it). Rows drag-reorder as whole entries;
     dropping INTO a row is disabled (a set has no nesting)."""
     HEADERS = ["", "title", "artist", "genre", "bpm", "key", "energy",
-               "groove", "seam", "rhythm"]
-    RHY_COL = 9
-    SEAM_COL = 8
+               "groove", "st", "seam", "rhythm"]
+    RHY_COL = 10
+    SEAM_COL = 9
+    STEM_COL = 8
     reordered = pyqtSignal()
 
     def __init__(self):
@@ -633,7 +726,7 @@ class SetListView(QTreeWidget):
             QAbstractItemView.SelectionBehavior.SelectRows)
         hdr = self.header()
         hdr.setStretchLastSection(True)          # rhythm takes the rest
-        for i, w in enumerate((26, 230, 120, 96, 44, 40, 64, 52, 64)):
+        for i, w in enumerate((26, 230, 120, 96, 44, 40, 64, 52, 30, 64)):
             self.setColumnWidth(i, w)
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
@@ -958,7 +1051,7 @@ class LibraryTab(QWidget):
         self._seek_timer.timeout.connect(self._seek_tick)
         self._seek_timer.start(150)
 
-        self.model = LibraryTreeModel()
+        self.model = LibraryTreeModel(planner.music_dir)
         self.proxy = LibraryProxy()
         self.proxy.setSourceModel(self.model)
         from PyQt6.QtWidgets import QTreeView
@@ -979,13 +1072,23 @@ class LibraryTab(QWidget):
         self.table.setItemDelegateForColumn(9, RhythmDelegate(self.table))
         self.table.setItemDelegateForColumn(10, StripDelegate(self.table))
         for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 46, 150, 110,
-                               260)):
+                               260, 46)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
         self.table.selectionModel().selectionChanged.connect(
             self._extend_folder_selection)
-        # Right-click: same do-not-use toggle as the buttons below.
+        # Right-click: add-to-set (same as the button/drag path) + the
+        # do-not-use toggle from the buttons below.
+        add_act = QAction("➕ Add to set", self)
+        add_act.triggered.connect(self._add_selected)
+        self.table.addAction(add_act)
+        stem_act = QAction("▤ Render stems for selected", self)
+        stem_act.triggered.connect(self._stems_selected)
+        self.table.addAction(stem_act)
+        sep = QAction(self)
+        sep.setSeparator(True)
+        self.table.addAction(sep)
         excl_act = QAction("🚫 Mark do-not-use", self)
         excl_act.triggered.connect(lambda: self._set_excluded(True))
         self.table.addAction(excl_act)
@@ -1026,7 +1129,7 @@ class LibraryTab(QWidget):
         bot.addStretch(1)
         # ANALYSIS COVERAGE: which passes still have gaps - "is my library
         # ready?" without dropping to each CLI's --stats.
-        self.coverage_lbl = QLabel("")
+        self.coverage_lbl = _no_width_floor(QLabel(""))
         self.coverage_lbl.setToolTip(
             "Analysis passes with missing tracks. Run '⟳ Analyze all' "
             "(each stage skips what's already done) or the individual "
@@ -1060,6 +1163,25 @@ class LibraryTab(QWidget):
         ts = self.selected_tracks()
         if ts:
             self.addTracks.emit(ts)
+
+    def _stems_selected(self):
+        """Queue a stem render for every selected track (the planner-wide
+        queue runs them one at a time; the bottom status bar narrates).
+        Tracks that already have stems are skipped - re-render those
+        per-song from the Analysis tab if you switched models."""
+        ts = self.selected_tracks()
+        if not ts:
+            return
+        todo = [t for t in ts if not getattr(t, "has_stems", False)]
+        queued = sum(
+            1 for t in todo
+            if self.planner.render_stems(t, on_status=self.scan_lbl.setText))
+        skipped = len(ts) - len(todo)
+        note = (f"queued {queued} track(s) for stems" if todo
+                else "all selected tracks already have stems")
+        if skipped and todo:
+            note += f" ({skipped} already rendered - skipped)"
+        self.scan_lbl.setText(note + "; progress in the bottom status bar")
 
     def _open_analysis(self):
         ts = self.selected_tracks()
@@ -1848,6 +1970,49 @@ class DecodeWorker(QThread):
             self.done.emit(self.track, f"{type(e).__name__}: {e}")
 
 
+class SpectroWorker(QThread):
+    """Log-frequency spectrogram of the opened track, off the GUI thread
+    (~1s of FFT for a 5-minute song)."""
+    done = pyqtSignal(int, object)             # track_id, spec dict | None
+
+    def __init__(self, track_id, mono):
+        super().__init__()
+        self.track_id, self.mono = track_id, mono
+
+    def run(self):
+        try:
+            from tools.dj.planner.waveform import compute_spectrogram
+            self.done.emit(self.track_id, compute_spectrogram(self.mono))
+        except Exception as e:
+            print(f"[analysis] spectrogram failed: {e}")
+            self.done.emit(self.track_id, None)
+
+
+class StemLoadWorker(QThread):
+    """Decode a track's four stem files + their display envelopes."""
+    done = pyqtSignal(int, object)   # track_id, {"envs","arrs"} | error str
+
+    def __init__(self, music_dir, track_id, expected_len):
+        super().__init__()
+        self.music_dir = music_dir
+        self.track_id = track_id
+        self.expected_len = expected_len
+
+    def run(self):
+        try:
+            from lib.dj.stems import load_stems
+            from tools.dj.planner.stemlanes import stem_envelope
+            arrs = load_stems(self.music_dir, self.track_id,
+                              expected_len=self.expected_len)
+            if arrs is None:
+                self.done.emit(self.track_id, "no stems on disk")
+                return
+            envs = {name: stem_envelope(a) for name, a in arrs.items()}
+            self.done.emit(self.track_id, {"envs": envs, "arrs": arrs})
+        except Exception as e:
+            self.done.emit(self.track_id, f"{type(e).__name__}: {e}")
+
+
 class AnalysisTab(QWidget):
     def __init__(self, planner):
         super().__init__()
@@ -1856,6 +2021,10 @@ class AnalysisTab(QWidget):
         self.player = TrackPlayer()
         self.selected_cue = None
         self._decoder = None
+        self._samples = None             # decoded stereo (playback + stems)
+        self._spectro = None             # SpectroWorker
+        self._stem_loader = None         # StemLoadWorker
+        self._stems = None               # {name: (n,2) float16}
         v = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -1863,14 +2032,79 @@ class AnalysisTab(QWidget):
         self.track_combo.setMinimumWidth(360)
         self.track_combo.currentIndexChanged.connect(self._combo_pick)
         top.addWidget(self.track_combo, 1)
-        self.info_lbl = QLabel("")
+        self.info_lbl = _no_width_floor(QLabel(""))
         top.addWidget(self.info_lbl, 2)
+        self.spec_btn = QPushButton("▦ Spectrogram")
+        self.spec_btn.setCheckable(True)
+        self.spec_btn.setChecked(True)
+        self.spec_btn.setToolTip(
+            "Toggle spectrogram (log-frequency, 30 Hz-16 kHz) vs the "
+            "min/max waveform. Same overlays either way.")
+        self.spec_btn.toggled.connect(
+            lambda on: self.wave.set_mode("spec" if on else "wave"))
+        top.addWidget(self.spec_btn)
         v.addLayout(top)
 
         self.wave = WaveformView()
         self.wave.seekRequested.connect(self._seek)
         self.wave.cueClicked.connect(self._cue_clicked)
         v.addWidget(self.wave, 1)
+
+        # STEM LANES: what each demucs stem extracted and where, on the
+        # same time axis (zoom/pan follows the view above).
+        from tools.dj.planner.stemlanes import StemLanes
+        self.lanes = StemLanes()
+        self.lanes.hide()
+        self.wave.viewChanged.connect(self.lanes.set_view)
+        self.lanes.seekRequested.connect(self._lane_seek)
+        v.addWidget(self.lanes)
+
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel("Stems:"))
+        self.stems_lbl = _no_width_floor(QLabel(""))
+        srow.addWidget(self.stems_lbl, 1)
+        self.stem_checks = {}
+        for name in ("drums", "bass", "other", "vocals"):
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            cb.setEnabled(False)
+            cb.setToolTip(
+                f"Include the {name} stem in playback. Uncheck others to "
+                "SOLO one stem and hear exactly what the separation "
+                "extracted (all four checked = the original mix).")
+            cb.toggled.connect(self._stem_mix_changed)
+            self.stem_checks[name] = cb
+            srow.addWidget(cb)
+        self.stem_model_box = QComboBox()
+        from lib.dj.stems import DEFAULT_STEM_MODEL, STEM_MODELS
+        self.stem_model_box.addItems(list(STEM_MODELS))
+        self.stem_model_box.setCurrentText(DEFAULT_STEM_MODEL)
+        self.stem_model_box.setToolTip(
+            "Separation model:\n"
+            "htdemucs_ft - fine-tuned bag of four models (DEFAULT): "
+            "audibly cleaner stems, ~1-2 min/track on GPU (weights "
+            "download on first use).\n"
+            "htdemucs - plain v4: ~10-30s/track, for quick checks.\n"
+            "(A RoFormer option can slot in here later if ft isn't "
+            "enough.)")
+        srow.addWidget(self.stem_model_box)
+        self.stem_render_btn = QPushButton("Render stems")
+        self.stem_render_btn.setToolTip(
+            "Separate just this song with the chosen model (subprocess). "
+            "Stems land in .stems/<id>/ and unlock the stem transition "
+            "styles for this track. Re-rendering with a different model "
+            "overwrites.")
+        self.stem_render_btn.clicked.connect(self._render_stems)
+        srow.addWidget(self.stem_render_btn)
+        self.stem_del_btn = QPushButton("Delete stems")
+        self.stem_del_btn.setEnabled(False)
+        self.stem_del_btn.setToolTip(
+            "Remove this track's stem files from disk. The stem transition "
+            "styles (stem_drum_swap / acapella_out) stop considering it "
+            "until re-rendered.")
+        self.stem_del_btn.clicked.connect(self._delete_stems)
+        srow.addWidget(self.stem_del_btn)
+        v.addLayout(srow)
 
         tr = QHBoxLayout()
         self.play_btn = QPushButton("▶ Play")
@@ -1889,8 +2123,8 @@ class AnalysisTab(QWidget):
         self.del_cue_btn.setEnabled(False)
         tr.addWidget(self.del_cue_btn)
         tr.addStretch(1)
-        self.cue_lbl = QLabel("click a cue flag to select it")
-        tr.addWidget(self.cue_lbl)
+        self.cue_lbl = _no_width_floor(QLabel("click a cue flag to select it"))
+        tr.addWidget(self.cue_lbl, 1)
         v.addLayout(tr)
 
         self.detail = QPlainTextEdit()
@@ -1939,10 +2173,21 @@ class AnalysisTab(QWidget):
         if isinstance(samples, str):
             self.info_lbl.setText("decode failed: " + samples)
             return
+        self._samples = samples
         self.player.load(samples)
         mono = samples.mean(axis=1)
         self.wave.set_track(track, mono,
                             self.planner.db.cues_for(track.id))
+        # Spectrogram (off-thread; the waveform shows until it lands).
+        self._spectro = SpectroWorker(track.id, mono)
+        self._spectro.done.connect(self._spectro_done)
+        self._spectro.start()
+        # Stems: show the lanes when this track has them.
+        self._stems = None
+        self.lanes.clear()
+        self._sync_stem_row()
+        if getattr(track, "has_stems", False):
+            self._load_stems()
         lc = track.row.get("live_check") or {}
         axes = track.axes
         self.info_lbl.setText(
@@ -1981,6 +2226,145 @@ class AnalysisTab(QWidget):
             self.time_lbl.setText(f"{int(t // 60)}:{int(t % 60):02d}")
             if self.player.playing:
                 self.wave.set_playhead(t)
+                self.lanes.set_playhead(t)
+
+    # -- spectrogram --------------------------------------------------------
+    def _spectro_done(self, track_id, spec):
+        if self.track is not None and track_id == self.track.id:
+            self.wave.set_spectrogram(spec,
+                                      show=self.spec_btn.isChecked())
+
+    # -- stems ----------------------------------------------------------------
+    def _lane_seek(self, t):
+        self._seek(t)
+        self.wave.set_playhead(t, follow=False)
+        self.lanes.set_playhead(t)
+
+    def _sync_stem_row(self):
+        have = self._stems is not None
+        rendering = getattr(self.planner, "_stem_proc", None) is not None
+        for cb in self.stem_checks.values():
+            cb.setEnabled(have)
+        self.stem_del_btn.setEnabled(have and not rendering)
+        self.stem_render_btn.setEnabled(self.track is not None
+                                        and not rendering)
+        if rendering:
+            pass                         # label carries live progress
+        elif have:
+            from lib.dj.stems import stem_model_of
+            model = stem_model_of(self.planner.music_dir, self.track.id) \
+                if self.track is not None else None
+            self.stems_lbl.setText(
+                (f"on disk ({model}) - " if model else "on disk - ")
+                + "solo/mute to hear what each stem extracted")
+        elif self.track is not None \
+                and getattr(self.track, "has_stems", False):
+            self.stems_lbl.setText("loading stems...")
+        else:
+            self.stems_lbl.setText("not rendered for this track")
+
+    def _load_stems(self):
+        if self.track is None or self._samples is None:
+            return
+        self._stem_loader = StemLoadWorker(
+            self.planner.music_dir, self.track.id, len(self._samples))
+        self._stem_loader.done.connect(self._stems_loaded)
+        self._stem_loader.start()
+        self._sync_stem_row()
+
+    def _stems_loaded(self, track_id, payload):
+        if self.track is None or track_id != self.track.id:
+            return
+        if isinstance(payload, str):
+            self.stems_lbl.setText("stem load failed: " + payload)
+            return
+        self._stems = payload["arrs"]
+        from lib.dj.stems import stem_model_of
+        self.lanes.set_stems(payload["envs"], len(self._samples) / RATE,
+                             model=stem_model_of(self.planner.music_dir,
+                                                 track_id))
+        self.lanes.set_view(self.wave.view_t0, self.wave.view_t1)
+        for cb in self.stem_checks.values():
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+        self.lanes.set_muted(())
+        self._sync_stem_row()
+
+    def _stem_mix_changed(self, *_a):
+        """Solo/mute audition: rebuild the player buffer from the checked
+        stems (all four checked = the ORIGINAL mix - cleaner than a stem
+        sum, which carries separation artifacts)."""
+        if self._stems is None or self._samples is None:
+            return
+        checked = [n for n, cb in self.stem_checks.items()
+                   if cb.isChecked()]
+        self.lanes.set_muted(n for n in self.stem_checks
+                             if n not in checked)
+        pos, was = self.player.time_s(), self.player.playing
+        if len(checked) == len(self.stem_checks):
+            buf = self._samples
+        elif not checked:
+            buf = np.zeros((len(self._samples), 2), dtype=np.float32)
+        else:
+            buf = np.zeros((len(self._samples), 2), dtype=np.float32)
+            for n in checked:
+                buf += self._stems[n].astype(np.float32)
+        self.player.load(buf)
+        self.player.seek(pos)
+        if was:
+            self.player.play()
+
+    def _render_stems(self):
+        """Kick the planner-wide background render for the open track;
+        this tab's status line narrates and the lanes load on finish."""
+        if self.track is None:
+            return
+        self.planner.render_stems(
+            self.track, model=self.stem_model_box.currentText(),
+            on_status=self.stems_lbl.setText,
+            on_done=self._stems_rendered)
+        self._sync_stem_row()
+
+    def _stems_rendered(self, track_id, ok):
+        if ok and self.track is not None and self.track.id == track_id:
+            self._load_stems()
+
+    def _delete_stems(self):
+        if self.track is None or self._stems is None:
+            return
+        if QMessageBox.question(
+                self, "Delete stems",
+                f"Delete the rendered stems for '{self.track.title}'?\n"
+                "The stem transition styles stop considering this track "
+                "until re-rendered.") != QMessageBox.StandardButton.Yes:
+            return
+        import shutil
+        from lib.dj.stems import stems_dir
+        # If a solo/mute mix is loaded, put the original back first.
+        for cb in self.stem_checks.values():
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+        if self._samples is not None:
+            pos, was = self.player.time_s(), self.player.playing
+            self.player.load(self._samples)
+            self.player.seek(pos)
+            if was:
+                self.player.play()
+        try:
+            shutil.rmtree(stems_dir(self.planner.music_dir, self.track.id))
+        except OSError as e:
+            self.stems_lbl.setText(f"delete failed: {e}")
+            return
+        self._stems = None
+        self.lanes.clear()
+        self.track.has_stems = False
+        for t in self.planner.library_all or self.planner.library:
+            if t.id == self.track.id:
+                t.has_stems = False
+        self.planner.library_tab.table.viewport().update()  # stems column
+        self._sync_stem_row()
 
     # -- cues -------------------------------------------------------------------
     def _add_cue(self, kind):
@@ -2130,7 +2514,6 @@ class SetTab(QWidget):
             "Send this set to the running show (localhost web panel). "
             "Saves first; the show picks up the set's theme and arc "
             "clock too. Override host via DJ_SHOW_URL.")
-        srow.addWidget(push)
         left.addLayout(srow)
         nrow = QHBoxLayout()
         nrow.addWidget(QLabel("Notes:"))
@@ -2138,6 +2521,7 @@ class SetTab(QWidget):
         self.notes_edit.setPlaceholderText(
             "set notes (venue, occasion, what worked) - saved with the set")
         nrow.addWidget(self.notes_edit, 1)
+        nrow.addWidget(push)             # its own row keeps srow narrow
         left.addLayout(nrow)
 
         # PLAN MODE inputs: how should the night go?
@@ -2217,8 +2601,9 @@ class SetTab(QWidget):
         self.arc_strip = ArcStrip()
         self.arc_strip.slotClicked.connect(self._strip_clicked)
         left.addWidget(self.arc_strip)
-        left.addWidget(QLabel("Set (drag to reorder, double-click = anchor,"
-                              " Del = remove, right-click = repair)"))
+        left.addWidget(_no_width_floor(
+            QLabel("Set (drag to reorder, double-click = anchor,"
+                   " Del = remove, right-click = repair)")))
         self.set_list = SetListView()
         # Rhythm-strip column delegate. PARENTED - an unparented delegate
         # gets GC'd and dies natively at first paint (see RhythmDelegate
@@ -2244,6 +2629,22 @@ class SetTab(QWidget):
         br = QAction("insert bridge to next track", self)
         br.triggered.connect(self._insert_bridge)
         self.set_list.addAction(br)
+        # PIN the transition style INTO the selected song: the pin goes
+        # through plan_transition's real gates (compile AND live), so a
+        # vetoed pin shows a 'style pin refused' warning on the ↳ line
+        # instead of silently playing something impossible.
+        from tools.dj.planner.copilot import STYLES
+        pin_menu = QMenu("📌 pin transition INTO this song", self.set_list)
+        auto = pin_menu.addAction("auto (clear pin)")
+        auto.triggered.connect(lambda: self._pin_style(None))
+        pin_menu.addSeparator()
+        for s in STYLES:
+            a = pin_menu.addAction(s)
+            a.triggered.connect(lambda _, st=s: self._pin_style(st))
+        self.set_list.addAction(pin_menu.menuAction())
+        stem_act = QAction("▤ render stems for this song", self)
+        stem_act.triggered.connect(self._render_stems_selected)
+        self.set_list.addAction(stem_act)
         self.set_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.ActionsContextMenu)
         left.addWidget(self.set_list, 1)
@@ -2275,16 +2676,47 @@ class SetTab(QWidget):
                                # carry the rhythm strip on the right
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Compiled plan (select a ↳ seam, audition):"))
+        right.addWidget(_no_width_floor(
+            QLabel("Compiled plan (select a ↳ seam, audition):")))
         self.plan_list = QListWidget()
-        right.addWidget(self.plan_list, 1)
-        # SEAM INSPECTOR: selecting a ↳ seam draws the two rhythm grids
-        # aligned at the planned read - the visual answer to "why is this
-        # seam flagged" (and the trust-builder for the chips).
+        right.addWidget(self.plan_list, 3)   # the plan IS the tab - keep it big
+        # SEAM INSPECTOR + TRANSITION OPTIONS side by side: same seam,
+        # two views (rhythm grids | style menu), half the vertical cost.
+        insp_row = QHBoxLayout()
         self.seam_inspector = SeamInspector()
-        right.addWidget(self.seam_inspector)
+        insp_row.addWidget(self.seam_inspector, 3)
+        opt_col = QVBoxLayout()
+        opt_col.addWidget(_no_width_floor(QLabel(
+            "Transition options (click = pin, then audition):")))
+        self.style_opts = QListWidget()
+        self.style_opts.setFont(_mono_font())
+        self.style_opts.setMaximumHeight(170)
+        self.style_opts.setToolTip(
+            "Everything plan_transition considered for the selected seam,\n"
+            "playable styles sorted best-first:\n"
+            "▶ = what the compiler chose · 📌 = your pin\n"
+            "▤stems = plays through rendered stem files on this seam ·\n"
+            "▤duck = this blend will mute A's vocal stem through the\n"
+            "overlap (two sung passages would otherwise clash)\n"
+            "q 0..1 = predicted seam quality for THAT style (the seam's\n"
+            "measured physics - key fit, kick agreement, swing, grid\n"
+            "confidence - weighted by what the style exposes; a fade is\n"
+            "always 'safe but flat'). Display estimate, not the brain's\n"
+            "score. odds = dice weight share · 'gated' = a safety rule\n"
+            "removed it (render stems, refine grids... to unlock).\n"
+            "Click a row to pin the seam to that style - honored live.")
+        self.style_opts.itemClicked.connect(self._style_option_clicked)
+        opt_col.addWidget(self.style_opts, 1)
+        insp_row.addLayout(opt_col, 2)
+        right.addLayout(insp_row)
         self.plan_list.currentRowChanged.connect(self._seam_selected)
         brow = QHBoxLayout()
+        self.play_set_btn = QPushButton("▶ Play set")
+        self.play_set_btn.setToolTip(
+            "Play the compiled set from the SELECTED song (from the top "
+            "when none selected). Full transport on the Mix tab.")
+        self.play_set_btn.clicked.connect(self._play_set)
+        brow.addWidget(self.play_set_btn)
         self.audition_btn = QPushButton("▶ Audition seam")
         self.audition_btn.clicked.connect(self.audition)
         brow.addWidget(self.audition_btn)
@@ -2316,7 +2748,9 @@ class SetTab(QWidget):
         brow.addWidget(self.rate_dn_btn)
         # TEMPO ENGINE picker - the no-env-vars way to A/B varispeed vs
         # keylock: pick, recompile, audition the same seam again.
-        brow.addSpacing(12)
+        brow.addStretch(1)
+        right.addLayout(brow)
+        brow = QHBoxLayout()             # second row: engine + shopping
         brow.addWidget(QLabel("Engine:"))
         self.engine_box = QComboBox()
         self.engine_box.addItems(["vari", "rubberband", "rubberband-crisp",
@@ -2347,30 +2781,23 @@ class SetTab(QWidget):
         brow.addWidget(shop)
         brow.addStretch(1)
         right.addLayout(brow)
-        # Play/Stop only - the full transport (pause, jump track, jump
-        # seam, scrub) lives on the Mix tab, which this drives; a second
-        # complete remote control here just duplicated it.
-        pbrow = QHBoxLayout()
-        self.play_set_btn = QPushButton("▶ Play set")
-        self.play_set_btn.setToolTip("Play the compiled set from the SELECTED "
-                                     "song (from the top when none selected). "
-                                     "Full transport on the Mix tab.")
-        self.play_set_btn.clicked.connect(self._play_set)
-        pbrow.addWidget(self.play_set_btn)
-        pstop = QPushButton("■ Stop")
-        pstop.clicked.connect(lambda: self.planner.stop_all_playback())
-        pbrow.addWidget(pstop)
-        pbrow.addStretch(1)
-        right.addLayout(pbrow)
+
+        # BOTTOM TABS: suggestions / worst seams / copilot each wanted a
+        # permanent slice of the column and the plan list paid for all of
+        # them (user: "the plan window is very small now"). One at a time
+        # is plenty - they're consultation surfaces, not monitors.
+        bottom = QTabWidget()
+        sug_page = QWidget()
+        sv = QVBoxLayout(sug_page)
+        sv.setContentsMargins(4, 4, 4, 4)
 
         # -- next-track suggestions: what should FOLLOW this set --------------
-        self.suggest_hdr = QLabel("Suggested next:")
-        right.addWidget(self.suggest_hdr)
+        self.suggest_hdr = _no_width_floor(QLabel("Suggested next:"))
+        sv.addWidget(self.suggest_hdr)
         self.suggest_list = QListWidget()
         self.suggest_list.setFont(_mono_font())   # column-aligned rows
         self.suggest_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.suggest_list.setMaximumHeight(150)
         self.suggest_list.setToolTip(
             "Top candidates to follow the set's last track, scored with "
             "the live brain (seam quality, key, tempo, mood/genre, pair "
@@ -2380,7 +2807,7 @@ class SetTab(QWidget):
             "Double-click to preview; multi-select "
             "and '+ Add' to append. Refreshes as the set changes.")
         self.suggest_list.itemDoubleClicked.connect(self._suggest_play)
-        right.addWidget(self.suggest_list)
+        sv.addWidget(self.suggest_list, 1)
         sgrow = QHBoxLayout()
         sg_play = QPushButton("▶ Play")
         sg_play.clicked.connect(self._suggest_play)
@@ -2419,7 +2846,8 @@ class SetTab(QWidget):
         sgrow.addWidget(sg_f15)
         self.sg_time = QLabel("-:-- / -:--")
         sgrow.addWidget(self.sg_time)
-        right.addLayout(sgrow)
+        sv.addLayout(sgrow)
+        bottom.addTab(sug_page, "Suggested next")
         self._sg_tick = QTimer(self)
         self._sg_tick.timeout.connect(self._sg_tick_update)
         self._sg_tick.start(250)
@@ -2429,27 +2857,27 @@ class SetTab(QWidget):
         self._suggest_timer.setSingleShot(True)
         self._suggest_timer.timeout.connect(self._suggest_start)
 
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        right.addWidget(self.status)
         # RANKED WORST SEAMS: the report card's actionable half. The
         # one-line card says "median seam 0.41" - this says WHICH seams
         # drag it down, worst first; click one to select it (inspector +
         # audition), then repair via alternatives/bridge/style pin.
         self.worst_list = QListWidget()
         self.worst_list.setFont(_mono_font())
-        self.worst_list.setMaximumHeight(96)
         self.worst_list.setToolTip(
             "The set's weakest seams, worst first. Click to jump to the "
             "seam; right-click the entry above it for repairs "
             "(alternatives / bridge).")
         self.worst_list.itemClicked.connect(self._worst_clicked)
-        right.addWidget(self.worst_list)
+        bottom.addTab(self.worst_list, "Worst seams")
         # Conversational set-builder (Claude tool-loop over this same set).
         from tools.dj.planner.copilot_panel import CopilotPanel
         self.copilot_panel = CopilotPanel(planner, self)
         self.copilot_panel.entriesApplied.connect(self._copilot_applied)
-        right.addWidget(self.copilot_panel, 1)
+        bottom.addTab(self.copilot_panel, "Set Copilot")
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        right.addWidget(self.status)
+        right.addWidget(bottom, 1)
         h.addLayout(right, 2)
 
     # -- entries ------------------------------------------------------------
@@ -2729,15 +3157,22 @@ class SetTab(QWidget):
             tag = "⚓" if e["pin_type"] == "anchor" else "•"
             if e.get("target_offset_min"):
                 tag += f"@{e['target_offset_min']:.0f}m"
+            if e.get("style_override"):
+                tag += "📌"              # seam INTO this song is pinned
             if t is None:
                 cols = [tag, f"track {e['track_id']}", "", "", "", "",
-                        "", "", "", ""]
+                        "", "", "", "", ""]
             else:
                 cols = [tag, t.title, t.artist, track_genre(t),
                         f"{t.bpm:.0f}", t.camelot,
                         energy_glyph(t.energy_proxy()), groove_glyph(t),
+                        "▤" if getattr(t, "has_stems", False) else "",
                         "", ""]
             it = QTreeWidgetItem(cols)
+            it.setToolTip(SetListView.STEM_COL,
+                          "▤ = stems rendered (stem transition styles "
+                          "available)" if getattr(t, "has_stems", False)
+                          else "no stems - right-click to render")
             # Rows drag as WHOLE entries; never droppable INTO (no nesting)
             it.setFlags(Qt.ItemFlag.ItemIsSelectable
                         | Qt.ItemFlag.ItemIsEnabled
@@ -2879,6 +3314,45 @@ class SetTab(QWidget):
         self.entries[i]["target_offset_min"] = self.anchor_min.value() or None
         self._rebuild()
         self.recompile()
+
+    def _pin_style(self, style):
+        """Pin (or clear) the transition style of the seam INTO the
+        selected song - stored on its entry (style_override), the same
+        field compile_plan and the live order-mode honor."""
+        i = self.set_list.currentRow()
+        if not (0 <= i < len(self.entries)):
+            return
+        if i == 0 and style:
+            self.status.setText(
+                "the first song has no incoming transition to pin")
+            return
+        self._snapshot_undo()
+        self.entries[i]["style_override"] = style
+        self._rebuild()
+        self.set_list.setCurrentRow(i)
+        self.recompile()
+        self.status.setText(
+            f"seam into slot {i + 1} pinned to {style} - check the ↳ line "
+            "(a 'style pin refused' warning = a gate vetoed it)"
+            if style else "style pin cleared - the brain rolls again")
+
+    def _render_stems_selected(self):
+        """Single-song stem render, IN PLACE: the job runs in the
+        background, this tab's status line narrates, and the compiled
+        plan refreshes on finish (stem styles + pins unlock) - no tab
+        switch (focus theft, user-reported)."""
+        i = self.set_list.currentRow()
+        if not (0 <= i < len(self.entries)):
+            return
+        t = self._entry_track(self.entries[i])
+        if t is None:
+            self.status.setText("that entry's track is missing from the "
+                                "library")
+            return
+        if getattr(t, "has_stems", False):
+            self.status.setText(f"'{t.title[:30]}' already has stems - "
+                                "re-rendering anyway")
+        self.planner.render_stems(t, on_status=self.status.setText)
 
     def _remove_entry(self):
         i = self.set_list.currentRow()
@@ -3346,18 +3820,140 @@ class SetTab(QWidget):
         self.recompile()
 
     def _seam_selected(self, _row=None):
-        """Feed the seam inspector from the selected ↳ seam line; any other
-        row (or a stale index after an edit) clears it."""
+        """Feed the seam inspector + transition options from the selected
+        ↳ seam line; any other row (or a stale index) clears them."""
         item = self.plan_list.currentItem()
         idx = item.data(Qt.ItemDataRole.UserRole) if item else None
         slots = (self.compiled or {}).get("slots") or []
         if idx is None or not (0 <= idx < len(slots) - 1):
             self.seam_inspector.clear()
+            self.style_opts.clear()
             return
         s = slots[idx]
         self.seam_inspector.set_seam(s["track"], slots[idx + 1]["track"],
                                      s.get("transition"),
                                      s.get("seam_info"))
+        self._update_style_options(idx)
+
+    def _update_style_options(self, idx):
+        """One row per style for the seam slots[idx] -> slots[idx+1]:
+        chosen/pinned marker, dice-odds share, or the gate that removed
+        it. Data straight from the compiled plan's diag - the same record
+        the armed log carries at night."""
+        self.style_opts.clear()
+        slots = (self.compiled or {}).get("slots") or []
+        if not (0 <= idx < len(slots) - 1):
+            return
+        p = slots[idx].get("transition") or {}
+        diag = p.get("diag") or {}
+        menu = diag.get("menu") or {}
+        gated = diag.get("gated") or {}
+        fade_reason = diag.get("fade_reason")
+        pin_rec = diag.get("style_pin") or {}
+        entry_in = slots[idx + 1]["entry"]
+        pin = entry_in.get("style_override")
+        chosen = p.get("style")
+        total = sum(menu.values()) or 1.0
+
+        def add(text, style_key, color=None):
+            it = QListWidgetItem(text, self.style_opts)
+            it.setData(Qt.ItemDataRole.UserRole, idx)
+            it.setData(Qt.ItemDataRole.UserRole + 1, style_key)
+            if color:
+                it.setForeground(color)
+            return it
+
+        if pin_rec and not pin_rec.get("honored"):
+            add(f"⚠ pin '{pin_rec.get('want')}' refused "
+                f"({pin_rec.get('why_not')}) - plays {chosen}", "__info__",
+                QColor(255, 170, 100))
+        add(("→ " if pin is None else "  ") + "auto (let the dice roll)",
+            "__auto__")
+        # Per-style predicted quality: the seam's physics through each
+        # style's exposure profile (style_rating). Playable styles sort
+        # best-first; the odds stay so you can see quality and dice
+        # disagree (a great-rated style the theme rarely rolls = pin it).
+        from tools.dj.planner.copilot import STYLES
+        si = slots[idx].get("seam_info") or {}
+        a_t, b_t = slots[idx]["track"], slots[idx + 1]["track"]
+
+        def q(st):
+            v = style_rating(si, p, a_t, b_t, st)
+            return f"q {v:.2f} " + chr(9601 + int(v * 7 + 0.5))
+
+        # ▤ marks the styles that PLAY THROUGH STEMS on this seam (which
+        # sides have files decides which styles qualify); the duck note
+        # shows when a blend will sidestep a vocal-over-vocal clash.
+        _STEM_SIDES = {"stem_drum_swap": "ab", "stem_bass_swap": "ab",
+                       "drum_bridge": "ab", "acapella_out": "a",
+                       "melody_carry": "a", "acapella_in": "b"}
+        a_has = getattr(a_t, "has_stems", False)
+        b_has = getattr(b_t, "has_stems", False)
+
+        def stem_mark(st):
+            need = _STEM_SIDES.get(st)
+            if not need:
+                return ""
+            ok = (("a" not in need or a_has)
+                  and ("b" not in need or b_has))
+            return "▤" if ok else ""
+
+        duck = bool(p.get("duck_vocal_a"))
+        rows = []
+        for st in STYLES:
+            mark = "▶" if st == chosen else ("📌" if st == pin else " ")
+            if st in menu:
+                extra = ""
+                if stem_mark(st):
+                    extra = " ▤stems"
+                elif duck and st == chosen:
+                    extra = " ▤duck"
+                rows.append((0, -style_rating(si, p, a_t, b_t, st),
+                             f"{mark} {st:16s} {q(st)}  "
+                             f"{100.0 * menu[st] / total:3.0f}% odds"
+                             + extra,
+                             st, None))
+            elif st == "long_fade":
+                note = (f"forced ({fade_reason})" if fade_reason
+                        else "pin only (deliberate fade)")
+                rows.append((1, 0.0, f"{mark} {st:16s} {q(st)}  {note}",
+                             st, None if fade_reason
+                             else QColor(150, 150, 160)))
+            elif st in gated:
+                rows.append((2, 0.0,
+                             f"{mark} {st:16s} q  -    gated: {gated[st]}",
+                             st, QColor(150, 150, 160)))
+            elif fade_reason:
+                rows.append((3, 0.0, f"{mark} {st:16s} q  -    "
+                             f"unavailable (fade forced: {fade_reason})",
+                             st, QColor(150, 150, 160)))
+            else:
+                rows.append((3, 0.0, f"{mark} {st:16s} q  -    "
+                             "not in this theme's menu",
+                             st, QColor(150, 150, 160)))
+        for _grp, _neg, text, st, color in sorted(rows,
+                                                  key=lambda r: r[:2]):
+            add(text, st, color)
+
+    def _style_option_clicked(self, item):
+        style = item.data(Qt.ItemDataRole.UserRole + 1)
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if style == "__info__" or idx is None:
+            return
+        slots = (self.compiled or {}).get("slots") or []
+        if not (0 <= idx < len(slots) - 1):
+            return
+        entry_in = slots[idx + 1]["entry"]     # same dict as in self.entries
+        want = None if style == "__auto__" else style
+        if entry_in.get("style_override") == want:
+            return                             # no-op click
+        self._snapshot_undo()
+        entry_in["style_override"] = want
+        self._rebuild()
+        self.recompile()                       # reselects this seam after
+        self.status.setText(
+            f"seam pinned to {want} - audition to hear it" if want
+            else "pin cleared - the dice roll again")
 
     def _update_strip(self, result):
         theme = self.theme()
@@ -3928,9 +4524,9 @@ class NightsTab(QWidget):
         left.addWidget(self.night_list, 1)
         h.addLayout(left, 2)
         right = QVBoxLayout()
-        right.addWidget(QLabel(
+        right.addWidget(_no_width_floor(QLabel(
             "Measured seams (engine verdicts; red = rough by the same bar "
-            "that charges pair memory):"))
+            "that charges pair memory):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
             ["out → in", "style", "verdict", "flam (beats)", "hole (s)"])
@@ -3963,6 +4559,10 @@ class NightsTab(QWidget):
             line = (f"{d[:4]}-{d[4:6]}-{d[6:]}  {s['hours']:4.1f}h  "
                     f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
                     f"{s['rough']:2d} rough  {s['skips']:3d} skips")
+            if s.get("starved"):
+                line += (f"  ⚠{s['starved']} starved"
+                         + (f" ({s['starved_stem']} on stem seams)"
+                            if s.get("starved_stem") else ""))
             if s["themes"]:
                 line += "  [" + "/".join(s["themes"][:4]) + "]"
             it = QListWidgetItem(line, self.night_list)
@@ -4009,6 +4609,9 @@ class Planner(QMainWindow):
         self.db = LibraryDB(music_dir)
         self.library = []            # SELECTABLE tracks (excluded removed)
         self.library_all = []        # everything, for the library browser
+        self._stem_proc = None       # ONE stem-render subprocess, planner-wide
+        self._stem_job = None        # (track_id, title, on_status, on_done)
+        self._stem_queue = []        # waiting (track, model, cb, cb) FIFO
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -4034,6 +4637,24 @@ class Planner(QMainWindow):
         self.library_tab.openAnalysis.connect(self._open_analysis)
         self.library_tab.addTracks.connect(self.set_tab.add_tracks)
         self.set_tab.planCompiled.connect(self.mix_tab.set_plan)
+
+        # WINDOW WIDTH FLOOR: QTabWidget's minimum is the MAX over every
+        # page, and a QComboBox's default size hint grows with its LONGEST
+        # item - track titles, setlist names and folder paths were pinning
+        # the whole window wider than a monitor (same failure the
+        # narrative editor fixed 2026-07-26). Cap every combo's hint; they
+        # still stretch with their layouts.
+        for combo in self.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy
+                .AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+
+        # Planner-wide background-job readout (bottom status bar): what
+        # the stem renderer is doing and what's waiting in its queue -
+        # visible from EVERY tab, no focus changes.
+        self.stem_status = _no_width_floor(QLabel(""))
+        self.statusBar().addPermanentWidget(self.stem_status, 1)
 
         self.reload_library()
         self.set_tab.refresh_setlists()
@@ -4107,6 +4728,109 @@ class Planner(QMainWindow):
         else:
             self.set_tab._suggest_timer.start(600)   # opener suggestions
 
+    # ---- stem rendering: one background job, callable from ANY tab ------
+    def render_stems(self, track, model=None, on_status=None, on_done=None):
+        """Render ONE track's stems in a background subprocess WITHOUT
+        stealing focus - the caller passes callbacks and stays where it
+        is. One job runs at a time (demucs owns the GPU); further requests
+        QUEUE and start automatically as each render finishes. Returns
+        True when the job started or was queued."""
+        if self._stem_proc is not None:
+            running = self._stem_job[0] if self._stem_job else None
+            if track.id == running or any(
+                    t.id == track.id for t, *_ in self._stem_queue):
+                if on_status:
+                    on_status(f"'{track.title[:30]}' is already "
+                              "rendering/queued")
+                return False
+            self._stem_queue.append((track, model, on_status, on_done))
+            if on_status:
+                on_status(f"queued '{track.title[:30]}' for stems "
+                          f"(#{len(self._stem_queue)} in line)")
+            self._update_stem_status()
+            return True
+        from lib.dj import vocals
+        if not vocals.available():
+            if on_status:
+                on_status("stem renderer unavailable - pip install -r "
+                          "requirements-dj-vocals.txt (torch + demucs)")
+            return False
+        model = model or self.analysis_tab.stem_model_box.currentText()
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(self._stem_out)
+        proc.finished.connect(self._stem_done)
+        proc.start(sys.executable,
+                   [os.path.join(_REPO_ROOT, "tools", "dj", "dj_stems.py"),
+                    "--dir", self.music_dir, "--track", str(track.id),
+                    "--model", model])
+        self._stem_proc = proc
+        self._stem_job = (track.id, track.title, on_status, on_done)
+        if on_status:
+            on_status(f"separating '{track.title[:30]}' ({model})... "
+                      "loading model")
+        self._update_stem_status("loading model")
+        self.analysis_tab._sync_stem_row()
+        return True
+
+    def _update_stem_status(self, line=""):
+        """The status-bar readout: current render + waiting queue."""
+        if self._stem_proc is None and not self._stem_queue:
+            self.stem_status.setText("")
+            return
+        cur = self._stem_job[1][:28] if self._stem_job else "?"
+        txt = f"▤ stems: rendering '{cur}'"
+        if line:
+            txt += f" - {line[:60]}"
+        if self._stem_queue:
+            txt += ("  ·  queued: " + ", ".join(
+                t.title[:18] for t, *_ in self._stem_queue[:4]))
+            if len(self._stem_queue) > 4:
+                txt += f" +{len(self._stem_queue) - 4} more"
+        self.stem_status.setText(txt)
+
+    def _stem_out(self):
+        if self._stem_proc is None or self._stem_job is None:
+            return
+        data = bytes(self._stem_proc.readAllStandardOutput()).decode(
+            "utf-8", "replace")
+        _tid, title, on_status, _cb = self._stem_job
+        for line in data.splitlines():
+            line = line.strip()
+            if line and not line.startswith("PROGRESS"):
+                if on_status:
+                    on_status(f"separating '{title[:24]}': {line[:70]}")
+                self._update_stem_status(line)
+
+    def _stem_done(self, code, *_a):
+        self._stem_proc = None
+        tid, title, on_status, on_done = self._stem_job
+        self._stem_job = None
+        from lib.dj.stems import has_stems as _hs
+        ok = code == 0 and _hs(self.music_dir, tid)
+        for t in self.library_all or self.library:
+            if t.id == tid:
+                t.has_stems = ok or getattr(t, "has_stems", False)
+        self.library_tab.table.viewport().update()   # ✓ column
+        if on_status:
+            on_status(f"stems for '{title[:30]}': "
+                      + ("rendered ✓" if ok else f"failed (exit {code}) - "
+                         "see console"))
+        if on_done:
+            on_done(tid, ok)
+        self.analysis_tab._sync_stem_row()
+        # Fresh stems change what the style gates allow: a pinned stem
+        # style that compiled as "refused (no_stems)" must clear on its
+        # own, not wait for a manual edit (user-reported).
+        if ok and self.set_tab.entries:
+            self.set_tab._rebuild()          # ▤ column in the set list
+            self.set_tab.recompile()
+        if self._stem_queue:                 # next in line starts itself
+            nt, nm, ns, nd = self._stem_queue.pop(0)
+            self.render_stems(nt, model=nm, on_status=ns, on_done=nd)
+        else:
+            self._update_stem_status()       # clears the readout
+
     def reload_night_data(self, force=False):
         """Parse logs/dj_*.jsonl into night_logs + per-pair verdicts (the
         Set tab's 'flammed live' badges). Cached - the logs only change
@@ -4137,9 +4861,11 @@ class Planner(QMainWindow):
         if self.library_tab._mood_proc is not None:
             self.library_tab._mood_proc.kill()
             self.library_tab._mood_proc.waitForFinished(2000)
+        self._stem_queue = []    # BEFORE the kill: finished-signal fires
         for proc in (self.library_tab._structure_proc,
                      self.library_tab._stems_proc,
-                     self.library_tab._pipe_proc):
+                     self.library_tab._pipe_proc,
+                     self._stem_proc):
             if proc is not None:
                 proc.kill()
                 proc.waitForFinished(2000)

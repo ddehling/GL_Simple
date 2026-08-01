@@ -248,6 +248,40 @@ def main():
               len(chain) >= 1 and any(t.id == b112 for t in chain),
               f"chain={[round(t.bpm) for t in chain]} score={score:.3f}")
 
+        # -- new stem styles script their stem automation --------------------------
+        from lib.dj.brain import Brain as _Brain
+        br3 = _Brain(lib, theme, seed=1)
+        a3, b3 = by_id[ids[0]], by_id[ids[1]]
+        in3 = b3.mix_ins[0]["time_s"] if b3.mix_ins else 0.0
+        base3 = {"rate": 1.0, "in_s": in3, "pair_score": 0.2,
+                 "cand_id": b3.id, "pitch_st": 0, "a_rate": 1.0, "diag": {}}
+        for st3, nmin in (("stem_bass_swap", 3), ("drum_bridge", 3),
+                          ("acapella_in", 2), ("melody_carry", 1)):
+            plan3 = dict(base3, style=st3, beats=16, tail_beats=16,
+                         out_s=a3.nearest_phrase(a3.duration_s * 0.6))
+            ev3, sw3, b03 = br3.preview_events(plan3, a3, b3)
+            n3 = sum(1 for e in ev3 if e["cmd"] == "stem_gains")
+            check(f"{st3} scripts stem automation",
+                  n3 >= nmin and sw3 > b03,
+                  f"{n3} stem_gains events, swap>{'blend' if sw3 > b03 else 'BAD'}")
+        plan3 = dict(base3, style="long_blend", beats=32,
+                     out_s=a3.nearest_phrase(a3.duration_s * 0.6),
+                     duck_vocal_a=True)
+        ev3, _sw, _b0 = br3.preview_events(plan3, a3, b3)
+        duck_ev = [e for e in ev3 if e["cmd"] == "stem_gains"
+                   and e["deck"] == "a"
+                   and e["gains"].get("vocals") == 0.0]
+        check("vocal duck scripts A's vocal stem out", bool(duck_ev),
+              f"{len(duck_ev)} duck events")
+        # Gates: every stem style refuses politely on a stem-less library.
+        pplan3 = SL.compile_plan(lib, [
+            {"track_id": ids[2], "pin_type": "anchor"},
+            {"track_id": ids[0], "pin_type": "suggestion",
+             "style_override": "drum_bridge"}], theme)
+        check("drum_bridge gated without stems",
+              any("no_stems" in w for w in pplan3["warnings"]),
+              f"warnings={pplan3['warnings']}")
+
         # -- target_play_s survives the DB round-trip ------------------------------
         sid2 = SL.create_setlist(db, "timed", theme="groove")
         SL.save_entries(db, sid2, [
@@ -382,6 +416,25 @@ def main():
             seam_info_ok = all(
                 s["seam_info"] is not None for s in compiled["slots"][:-1])
             alts = st._slot_alternatives(0)
+            # Transition options panel: every style listed with odds or a
+            # gate reason for the first seam; clicking a style row pins it.
+            from PyQt6.QtCore import Qt as _Qt
+            _role = _Qt.ItemDataRole.UserRole + 1
+            st._update_style_options(0)
+            opts_ok = st.style_opts.count() >= 10
+            row = next((st.style_opts.item(i)
+                        for i in range(st.style_opts.count())
+                        if st.style_opts.item(i).data(_role) == "long_fade"),
+                       None)
+            if row is not None:
+                st._style_option_clicked(row)
+                opts_pin_ok = (compiled["slots"][1]["entry"]
+                               .get("style_override") == "long_fade")
+                st._undo_edit()
+                if st._worker is not None:      # let the recompile land
+                    st._worker.wait(20000)      # before the window closes
+            else:
+                opts_pin_ok = False
             st.set_list.setCurrentRow(0)
             n_before = len(st.entries)
             st._insert_bridge()      # 122 -> 126 is mixable; may no-op
@@ -399,6 +452,10 @@ def main():
             check("v3 repair affordances compute",
                   isinstance(alts, list) and bridge_ran,
                   f"{len(alts)} alternatives for slot 0")
+            check("transition options panel lists + pins styles",
+                  opts_ok and opts_pin_ok,
+                  f"{st.style_opts.count()} rows, pin round-trip "
+                  f"{opts_pin_ok}")
             check("mix timeline seams + envelopes",
                   n_seams == 1 and env_ok, f"{n_seams} seams, env={env_ok}")
             check("waveform pyramid built", wave_ok,

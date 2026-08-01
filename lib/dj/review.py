@@ -138,6 +138,14 @@ def night_summary(nights):
             "skips": c.get("skip", 0),
             "aborts": c.get("abort", 0),
             "bailouts": c.get("flam_bailout", 0),
+            # audible ring underruns (audio_starved events carry counts),
+            # split by whether stem machinery was active - the "do stems
+            # cause skips" answer, per night.
+            "starved": sum(int(e.get("n") or 0) for e in evs
+                           if e.get("event") == "audio_starved"),
+            "starved_stem": sum(int(e.get("n") or 0) for e in evs
+                                if e.get("event") == "audio_starved"
+                                and e.get("stem_style")),
             "themes": list(dict.fromkeys(
                 e.get("theme") for e in evs
                 if e.get("event") == "theme" and e.get("theme"))),

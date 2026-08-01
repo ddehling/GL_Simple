@@ -104,7 +104,6 @@ class WebController:
         # Global modifiers — multiplicative scalers (0.0–2.0, default 1.0)
         self.global_modifiers = {
             "weather_intensity": 1.0,
-            "effect_speed": 1.0,
             "audio_sensitivity": 1.0,
             "brightness": 1.0,
             "gamma": 2.0,
@@ -121,11 +120,6 @@ class WebController:
                 "label": "Weather Intensity",
                 "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
                 "description": "Scales dramatic weather effects (rain, wind, lightning, etc.)"
-            },
-            "effect_speed": {
-                "label": "Effect Speed",
-                "min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0,
-                "description": "Scales animation and transition timing"
             },
             "audio_sensitivity": {
                 "label": "Audio Sensitivity",
@@ -1280,26 +1274,38 @@ class WebController:
         def handle_set_switch_timer(data):
             """Arm / retarget / cancel the timed weather-set switch.
 
-            {hours: 0..6, target: set_name}. hours == 0 cancels. A changed
-            hour count restarts the countdown; a changed target while the
-            same hour count is armed retargets without restarting.
+            {hours: 0..6 | 'setlist', target: set_name}. hours == 0
+            cancels. A changed hour count restarts the countdown; a
+            changed target while the same mode is armed retargets without
+            restarting. 'setlist' fires when the DJ's loaded setlist
+            finishes instead of on a clock.
             """
             data = data or {}
-            try:
-                hours = int(data.get('hours', 0))
-            except (TypeError, ValueError):
-                return
+            hours = data.get('hours', 0)
+            if hours != 'setlist':
+                try:
+                    hours = int(hours)
+                except (TypeError, ValueError):
+                    return
             target = data.get('target')
             with self._dict_lock:
-                if hours <= 0:
+                if hours == 0 or (isinstance(hours, int) and hours <= 0):
                     self._set_switch_timer = None
                     return
                 available = self.control_dict.get('available_sets', [])
-                if hours > 6 or target not in available:
+                if (isinstance(hours, int) and hours > 6) \
+                        or target not in available:
                     return
                 t = self._set_switch_timer
                 if t and t['hours'] == hours:
                     t['target'] = target
+                elif hours == 'setlist':
+                    dj = self.control_dict.get('dj_info') or {}
+                    self._set_switch_timer = {
+                        'hours': 'setlist', 'target': target, 'end': None,
+                        # arm-time state: a setlist already loaded counts
+                        # as seen; else wait for one to load, THEN finish.
+                        'seen': bool(dj.get('setlist'))}
                 else:
                     self._set_switch_timer = {
                         'hours': hours, 'target': target,
@@ -1415,18 +1421,30 @@ class WebController:
             while self._emitter_running:
                 now = time.time()
 
-                # Timed set switch: fire when the countdown reaches zero.
+                # Timed set switch: fire on the countdown, or - in
+                # 'setlist' mode - the moment the DJ's loaded setlist
+                # finishes (its name leaves the status while the DJ is
+                # still active; pool completion clears it the same way).
                 with self._dict_lock:
                     t = self._set_switch_timer
-                    if t and now >= t['end']:
+                    fire = False
+                    if t and t['hours'] == 'setlist':
+                        dj = self.control_dict.get('dj_info') or {}
+                        if dj.get('setlist'):
+                            t['seen'] = True
+                        elif t.get('seen') and dj.get('active'):
+                            fire = True
+                    elif t and t.get('end') and now >= t['end']:
+                        fire = True
+                    if fire:
                         self._set_switch_timer = None
                         if t['target'] in self.control_dict.get(
                                 'available_sets', []):
                             self.control_dict['request_weather_set'] = \
                                 t['target']
                             self._values_cache = None
-                            print(f"[WebController] Set-switch timer fired: "
-                                  f"-> {t['target']}")
+                            print(f"[WebController] Set-switch timer fired "
+                                  f"({t['hours']}): -> {t['target']}")
 
                 # Push state updates at 5 Hz
                 if now - last_state_push >= state_interval:
@@ -1459,8 +1477,10 @@ class WebController:
                                 "set_timer": (
                                     {"hours": self._set_switch_timer['hours'],
                                      "target": self._set_switch_timer['target'],
-                                     "remaining_s": max(
-                                         0.0, self._set_switch_timer['end'] - now)}
+                                     "remaining_s": (max(
+                                         0.0, self._set_switch_timer['end'] - now)
+                                         if self._set_switch_timer.get('end')
+                                         else None)}
                                     if self._set_switch_timer else None),
                                 "brightness_limiting_factor": self.control_dict.get('brightness_limiting_factor', 1.0),
                                 "active_effects": list(self.control_dict.get('active_effects', [])),
