@@ -37,6 +37,15 @@ _LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 # The rateable style vocabulary for the filter combo: theme keys plus the
 # styles plan_transition defaults in when a theme dict predates them.
 _BALANCE = "(balance coverage)"
+# Track-slots (both sides of a seam) excluded from re-selection. ~40 seams
+# of history: enough that nothing recurs while you still remember it,
+# small enough to leave the candidate pool healthy.
+_VETO_WINDOW = 80
+# Share of seams that get a coverage pin. The rest are the brain's own
+# choice - forcing a starved style onto an arbitrary pair rates WORSE
+# than letting the brain pick (measured: 0.26 vs 0.35 mean verdict), so
+# the lab buys evidence on some seams and stays representative on others.
+_PIN_SHARE = 0.45
 _STYLES = sorted(set(get_theme("groove").style_weights) | {
     "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
     "acapella_in", "melody_carry", "phrase_cut", "spinback_cut",
@@ -315,11 +324,13 @@ class SeamLabTab(QWidget):
         whether it is broken everywhere or only on loose grids. This only
         affects what the lab generates - the live night's own style dice
         are untouched."""
+        if self.rng.random() > _PIN_SHARE:
+            return None                  # let the brain choose this one
         counts = self._style_counts or {}
         pool = [(k, counts.get(k, 0)) for k in _STYLES
                 if k not in self._style_dead] or \
                [(k, counts.get(k, 0)) for k in _STYLES]
-        weights = [1.0 / (1.0 + n) ** 1.5 for _k, n in pool]
+        weights = [1.0 / (1.0 + n) for _k, n in pool]
         r = self.rng.random() * sum(weights)
         for (k, _n), w in zip(pool, weights):
             r -= w
@@ -335,16 +346,16 @@ class SeamLabTab(QWidget):
         if self._next is not None:
             return                       # one pre-rendered seam is plenty
         self._ensure_brain()
-        # Recycle only once most of the library has been heard, keeping a
-        # tail so nothing repeats across the reset either.
-        lib_n = max(len(self.planner.library), 1)
-        if len(set(self._recent)) > 0.7 * lib_n:
-            keep = max(40, lib_n // 10)
-            self._recent = self._recent[-keep:]
-            self.status.setText(f"heard most of the library - recycling, "
-                                f"keeping the last {keep} tracks excluded")
-        used = set(self._recent)
-        tail = set(self._recent[-max(20, lib_n // 12):])
+        # ROLLING veto window, not the whole session. Vetoing every track
+        # heard starves choose_next: the eligible pool for a given outgoing
+        # track is already narrowed by tempo and key, so a session-long
+        # veto strips most of it and the brain settles for worse and worse
+        # partners (measured over 92 rated seams: mean pair score fell
+        # 0.31 -> 0.26 and the verdict mean fell 0.40 -> 0.22 across the
+        # session). A window still kills the near-repeats that prompted
+        # this - those were within a handful of seams.
+        used = set(self._recent[-_VETO_WINDOW:])
+        tail = set(self._recent[-20:])
         self._gen = _GenWorker(self.planner.db, self.brain,
                                self.planner.library, self.rng,
                                self._want_style(), used, tail)

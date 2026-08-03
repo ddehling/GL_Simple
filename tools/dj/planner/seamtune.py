@@ -227,7 +227,7 @@ def knob_findings(rows, min_n=MIN_KNOB_N):
         lo, hi = RANGES[k]
         n = len(obs)
         if n < min_n:
-            out.append({"knob": k, "n": n, "thin": True,
+            out.append({"knob": k, "n": n, "thin": True, "status": "collecting",
                         "default": TUNE_DEFAULTS[k]})
             continue
         xs = np.array([o[0] for o in obs])
@@ -260,8 +260,12 @@ def knob_findings(rows, min_n=MIN_KNOB_N):
         if fit and "peak" in fit:
             pk, pse = fit["peak"], fit["peak_se"]
             peak_v, peak_se_v = lo + pk * (hi - lo), pse * (hi - lo)
-            usable = (0.02 <= pk <= 0.98 and pse < 0.30
-                      and _gain(pk, cur_x, fit) >= MIN_GAIN)
+            identified = 0.02 <= pk <= 0.98 and pse < 0.30
+            usable = identified and _gain(pk, cur_x, fit) >= MIN_GAIN
+            if identified and not usable:
+                # The peak IS located, there is just nothing worth gaining
+                # by chasing it. That is converged, not "no effect".
+                why = "settled"
             if usable:
                 if pk - CI_K * pse > cur_x:
                     target, why = lo + (pk - CI_K * pse) * (hi - lo), "peak"
@@ -285,7 +289,11 @@ def knob_findings(rows, min_n=MIN_KNOB_N):
         w = np.clip(ys - ys.mean(), 0.0, None)
         vals = np.array([o[2] for o in obs])
         suggest = float((vals * w).sum() / w.sum()) if w.sum() > 0 else None
+        status = ("collecting" if fit is None else
+                  "settled" if why == "settled" else
+                  "moving" if target is not None else "no effect")
         out.append({"knob": k, "n": n, "r": r_xy, "se": se,
+                    "status": status,
                     "solid": target is not None,
                     "default": TUNE_DEFAULTS[k], "suggest": suggest,
                     "current": cur, "target": target, "why": why,
@@ -395,9 +403,57 @@ def report_html(rows):
                      f"<td style='color:{col}'>{arrow} "
                      f"(r={k['r']:+.2f})</td><td>{sug}</td></tr>")
         h.append("</table>")
-    if thin:
-        h.append(f"<p style='color:{DIM_C}'>Still collecting: " + " · ".join(
-            f"{k['knob']} {k['n']}/{MIN_KNOB_N}" for k in thin) + "</p>")
+    # CONVERGENCE: where every knob stands, so progress is watchable
+    # rather than inferred. The bar is MIN_FIT_N - the point at which a
+    # response surface with error bars can be fitted at all - not the
+    # lower bar at which a direction becomes merely reportable.
+    by_status = {}
+    for k in ks:
+        by_status.setdefault(k.get("status", "collecting"), []).append(k)
+    settled, moving = by_status.get("settled", []), by_status.get("moving", [])
+    noeff, coll = by_status.get("no effect", []), by_status.get("collecting", [])
+    h.append(
+        f"<p><b>Convergence</b> &nbsp;"
+        f"<span style='color:{GOOD_C}'>{len(settled)} settled</span> · "
+        f"{len(moving)} still moving · {len(noeff)} no effect found · "
+        f"<span style='color:{DIM_C}'>{len(coll)} collecting</span></p>")
+    if settled or moving:
+        h.append("<table width='100%' cellspacing='0' cellpadding='2'>"
+                 f"<tr style='color:{DIM_C}'><td width='22%'><i>knob</i></td>"
+                 f"<td width='10%' align='right'><i>seams</i></td>"
+                 f"<td width='26%'><i>best value ± CI</i></td>"
+                 f"<td><i>state</i></td></tr>")
+        for k in sorted(settled + moving, key=lambda d: -d["n"]):
+            pk, pse = k.get("peak"), k.get("peak_se")
+            est = (f"{pk:.3g} ± {pse:.2g}" if pk is not None
+                   else "<i>trend to an end</i>")
+            st = ("<span style='color:%s'>settled</span>" % GOOD_C
+                  if k["status"] == "settled" else
+                  f"moving → {k['target']:.3g}")
+            h.append(f"<tr><td>{k['knob']}</td>"
+                     f"<td align='right' style='color:{DIM_C}'>{k['n']}</td>"
+                     f"<td>{est}</td><td>{st} "
+                     f"<span style='color:{DIM_C}'>(now "
+                     f"{k.get('current', 0):.3g})</span></td></tr>")
+        h.append("</table>")
+    if coll or thin:
+        need = MIN_FIT_N
+        seen_k = {}                      # thin entries are also "collecting"
+        for k in coll + thin:
+            seen_k[k["knob"]] = max(seen_k.get(k["knob"], 0), k["n"])
+        prog = sorted(seen_k.items(), key=lambda kv: -kv[1])[:10]
+        h.append(f"<p style='color:{DIM_C}'>Collecting (need {need} seams "
+                 f"each to fit): " + " · ".join(
+                     f"{nm} {c}/{need}" for nm, c in prog) + "</p>")
+    hist = tuning.history(6)
+    if hist:
+        bits = []
+        for entry in hist:
+            for c in entry.get("changes", [])[:3]:
+                bits.append(f"{c['knob']} {c['was']:g}→{c['now']:g}")
+        if bits:
+            h.append(f"<p style='color:{DIM_C}'>Recent moves: "
+                     + " · ".join(bits[:8]) + "</p>")
     if not ks:
         h.append(f"<p style='color:{DIM_C}'>No jittered seams rated yet. "
                  f"Each lab seam nudges {N_PER_SEAM} execution knobs off "
