@@ -168,6 +168,23 @@ def apply_findings(findings, defaults, ranges, now=None):
         return changed
 
 
+def set_value(knob, value, why=""):
+    """Set one knob directly - the one-at-a-time probe's way in, as
+    opposed to apply_findings' statistical route."""
+    with _LOCK:
+        doc = _read_doc()
+        vals = dict(doc.get("values") or {})
+        was = vals.get(knob)
+        vals[knob] = round(float(value), 4)
+        doc["values"] = vals
+        doc.setdefault("history", []).append(
+            {"t": time.time(), "changes": [
+                {"knob": knob, "was": was, "now": vals[knob], "why": why}]})
+        doc["history"] = doc["history"][-200:]
+        _write(doc)
+        return vals[knob]
+
+
 def history(limit=12):
     return list(reversed((_read_doc().get("history") or [])[-limit:]))
 

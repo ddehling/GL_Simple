@@ -37,6 +37,45 @@ _LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 # The rateable style vocabulary for the filter combo: theme keys plus the
 # styles plan_transition defaults in when a theme dict predates them.
 _BALANCE = "(balance coverage)"
+_MODE_SEAM = "Rate the seam"
+_MODE_PROBE = "Probe one parameter"
+# Button slots, reused by both modes so the row never rebuilds.
+_BUTTONS = ("a", "b", "c", "d", "skip")
+_LABELS = {
+    _MODE_SEAM: {
+        "a": ("👍 Good (1)", "good",
+              "Sounded like a DJ. Teaches the cross-night pair / class / "
+              "style memory the live selection reads."),
+        "b": ("😐 Passable (2)", "passable",
+              "Not rough, not memorable. Counted in the totals; steers "
+              "nothing."),
+        "c": ("👎 Bad (3)", "bad",
+              "Rough seam. Leans the memory away from this pair, its "
+              "feature class and this style."),
+        "d": ("", None, ""),
+        "skip": ("⏭ Skip (4)", "skip", "No verdict - advance without "
+                 "guessing."),
+    },
+    _MODE_PROBE: {
+        "a": ("👍 Better (1)", "good",
+              "The change described above IMPROVES the seam. The baseline "
+              "moves halfway toward the tested value and re-checks."),
+        "b": ("👎 Worse (2)", "bad",
+              "The change makes it worse. Two of these in both directions "
+              "and the parameter is called settled."),
+        "c": ("🤷 Can't tell (3)", "cant_tell",
+              "No audible difference. The MOST useful answer: the next "
+              "test of this parameter uses a bigger change, and if even "
+              "the extreme is inaudible the parameter is parked as "
+              "imperceptible (its range may be too tight to matter)."),
+        "d": ("❓ Don't get it (4)", "dont_get_it",
+              "The description doesn't tell you what to listen for. Two "
+              "of these and the parameter is parked as needing a better "
+              "explanation - the fault is the wording, not you."),
+        "skip": ("⏭ Skip (5)", "skip", "Wasn't listening - no answer "
+                 "recorded."),
+    },
+}
 # Track-slots (both sides of a seam) excluded from re-selection. ~40 seams
 # of history: enough that nothing recurs while you still remember it,
 # small enough to leave the candidate pool healthy.
@@ -61,10 +100,14 @@ class _GenWorker(QThread):
     status = pyqtSignal(str)
 
     def __init__(self, db, brain, library, rng, want_style, used_ids,
-                 relaxed_ids):
+                 relaxed_ids, probe_mode=False, baseline=None,
+                 probe_doc=None):
         super().__init__()
         self.db, self.brain, self.library = db, brain, library
         self.rng, self.want_style = rng, want_style
+        self.probe_mode = probe_mode     # pick ONE parameter to test
+        self.baseline = baseline or {}   # knob values in force
+        self.probe_doc = probe_doc       # staircase state (read-only here)
         self.used_ids = used_ids         # every track heard this session
         self.relaxed_ids = relaxed_ids   # just the recent tail, as a fallback
 
@@ -96,17 +139,33 @@ class _GenWorker(QThread):
                     plan = self.brain.plan_transition(
                         cur, cand, meta, after_s=after_s,
                         force_style=self.want_style)
-                    # SUBTLE VARIANT OF THE BASELINE: nudge a couple of the
-                    # execution knobs at random. The nudge is independent
-                    # of the music, so across enough seams the verdicts
-                    # separate the knob from the pair - no repeated
-                    # renders of the same seam required.
-                    from tools.dj.planner.seamtune import (apply_plan_knobs,
-                                                           sample_tune)
-                    plan["tune"] = sample_tune(
-                        plan["style"], self.rng,
-                        duck=bool(plan.get("duck_vocal_a")))
-                    apply_plan_knobs(plan)   # beats_scale lives in the plan
+                    from tools.dj.planner.seamtune import (RANGES,
+                                                            apply_plan_knobs,
+                                                            knobs_for)
+                    # ONE parameter, or none. Random multi-knob jitter is
+                    # gone: measurement showed a whole-seam verdict cannot
+                    # separate simultaneous variables at any realistic
+                    # rating volume.
+                    #
+                    # The probe is chosen HERE, after the style is known,
+                    # and only from knobs that style's automation actually
+                    # reads. Choosing it earlier probed things like the
+                    # brake length on a long_fade - inaudible by
+                    # construction, which the staircase would have read as
+                    # "imperceptible" and parked a knob that was simply
+                    # never exercised.
+                    probe = None
+                    if self.probe_mode:
+                        from tools.dj.planner import seamprobe
+                        usable = {k: RANGES[k] for k in knobs_for(
+                            plan["style"], bool(plan.get("duck_vocal_a")))
+                            if k in RANGES}
+                        probe = seamprobe.next_probe(
+                            usable, self.baseline, doc=self.probe_doc,
+                            rng=self.rng)
+                    if probe is not None:
+                        plan["tune"] = {probe["knob"]: probe["value"]}
+                        apply_plan_knobs(plan)   # beats_scale lives in plan
                     self.status.emit(
                         f"rendering {plan['style']}: {cur.title[:22]} -> "
                         f"{cand.title[:22]}...")
@@ -114,6 +173,7 @@ class _GenWorker(QThread):
                     info = {}            # exact automation, for the scope
                     audio = render_seam(self.db, cur, cand, plan, info=info)
                     self.ready.emit({"a": cur, "b": cand,
+                                     "probe": probe,
                                      "plan": info.get("plan", plan),
                                      "after_s": after_s, "audio": audio,
                                      "info": info,
@@ -148,6 +208,7 @@ class SeamLabTab(QWidget):
         self._ended = False              # playback hit the scope's end
         self._style_counts = {}          # style -> ratings so far
         self._style_dead = set()         # asked for repeatedly, never landed
+        self.probe = None                # parameter under test, probe mode
 
         v = QVBoxLayout(self)
 
@@ -161,6 +222,19 @@ class SeamLabTab(QWidget):
             "choice and the style dice exactly like a live night.")
         self.theme_box.currentTextChanged.connect(self._reset_brain)
         row.addWidget(self.theme_box)
+        row.addWidget(QLabel("Mode:"))
+        self.mode_box = QComboBox()
+        self.mode_box.addItems([_MODE_PROBE, _MODE_SEAM])
+        self.mode_box.setToolTip(
+            f"{_MODE_PROBE} — hold every setting at its baseline, move "
+            "exactly ONE, and say which one moved so you can judge that "
+            "rather than the seam as a whole. Four answers; 'can't tell' "
+            "is the one that drives the search.\n\n"
+            f"{_MODE_SEAM} — the plain treadmill: no parameter is "
+            "touched, and your verdict teaches the pair / style / "
+            "condition memory the live engine selects with.")
+        self.mode_box.currentTextChanged.connect(self._mode_changed)
+        row.addWidget(self.mode_box)
         row.addWidget(QLabel("Style:"))
         self.style_box = QComboBox()
         self.style_box.addItems([_BALANCE, "(brain's choice)"])
@@ -216,29 +290,34 @@ class SeamLabTab(QWidget):
         self._head_timer.timeout.connect(self._tick_playhead)
         self._head_timer.start()
 
+        # WHAT IS BEING TESTED - only meaningful in probe mode, where the
+        # whole point is that you know which single thing moved.
+        self.probe_lbl = QLabel("")
+        self.probe_lbl.setWordWrap(True)
+        self.probe_lbl.setStyleSheet(
+            "QLabel { background: palette(highlight); color: palette("
+            "highlighted-text); border-radius: 5px; padding: 9px;"
+            " font-size: 14px; }")
+        self.probe_lbl.hide()
+        v.addWidget(self.probe_lbl)
+        # What the LAST answer did. Separate from the status line, which
+        # is immediately overwritten by "rendering the next seam".
+        self.note_lbl = QLabel("")
+        self.note_lbl.setWordWrap(True)
+        self.note_lbl.setStyleSheet("color: #7a8b99; padding: 0 4px;")
+        v.addWidget(self.note_lbl)
+
         row = QHBoxLayout()
         self.rate_btns = {}
-        for verdict, label, tip in (
-                ("good", "👍 Good (1)",
-                 "Sounded like a DJ. Also teaches the cross-night pair/"
-                 "class/style memory the live selection reads."),
-                ("passable", "😐 Passable (2)",
-                 "Not rough, not memorable. Logged for the dataset; "
-                 "steers nothing."),
-                ("bad", "👎 Bad (3)",
-                 "Rough seam. Also leans the cross-night memory away "
-                 "from this pair, its class, and this style."),
-                ("skip", "⏭ Skip (4)",
-                 "No verdict (interrupted, not listening) - advance "
-                 "without polluting the dataset with a guess.")):
-            b = QPushButton(label)
-            b.setToolTip(tip)
+        for verdict in _BUTTONS:
+            b = QPushButton("")
             b.setEnabled(False)
             b.setMinimumHeight(44)
             b.clicked.connect(lambda _, w=verdict: self._rate(w))
             self.rate_btns[verdict] = b
             row.addWidget(b)
         v.addLayout(row)
+        self._relabel_buttons()
 
         self.status = QLabel("")
         v.addWidget(self.status)
@@ -265,11 +344,11 @@ class SeamLabTab(QWidget):
         v.addWidget(self.learn_lbl, 1)
         self._refresh_learning()
 
-        for key, verdict in (("1", "good"), ("2", "passable"),
-                             ("3", "bad"), ("4", "skip")):
+        for key, slot in (("1", "a"), ("2", "b"), ("3", "c"),
+                          ("4", "d"), ("5", "skip")):
             sc = QShortcut(QKeySequence(key), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            sc.activated.connect(lambda w=verdict: self._rate(w))
+            sc.activated.connect(lambda w=slot: self._rate(w))
         sc = QShortcut(QKeySequence("R"), self)
         sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc.activated.connect(self._replay)
@@ -311,7 +390,28 @@ class SeamLabTab(QWidget):
         self.start_btn.setText("⏸ Pause session")
         self._pump()
 
+    def _mode(self):
+        return self.mode_box.currentText()
+
+    def _relabel_buttons(self):
+        spec = _LABELS[self._mode()]
+        for slot, b in self.rate_btns.items():
+            label, verdict, tip = spec[slot]
+            b.setText(label)
+            b.setToolTip(tip)
+            b.setVisible(bool(label))
+
+    def _mode_changed(self, *_):
+        self._relabel_buttons()
+        self.probe_lbl.setVisible(self._mode() == _MODE_PROBE)
+        self.style_box.setEnabled(self._mode() == _MODE_SEAM)
+        self._refresh_learning()
+
     def _want_style(self):
+        if self._mode() == _MODE_PROBE:
+            # A probe must isolate ONE variable; pinning a style on top
+            # would confound the answer with a style change.
+            return None
         s = self.style_box.currentText()
         if s == _BALANCE:
             return self._starved_style()
@@ -356,9 +456,18 @@ class SeamLabTab(QWidget):
         # this - those were within a handful of seams.
         used = set(self._recent[-_VETO_WINDOW:])
         tail = set(self._recent[-20:])
+        probe_mode = self._mode() == _MODE_PROBE
+        baseline, probe_doc = {}, None
+        if probe_mode:
+            from tools.dj.planner import seamprobe
+            from lib.dj import tuning
+            from lib.dj.brain import TUNE_DEFAULTS
+            baseline = tuning.current(TUNE_DEFAULTS)
+            probe_doc = seamprobe.load()
         self._gen = _GenWorker(self.planner.db, self.brain,
                                self.planner.library, self.rng,
-                               self._want_style(), used, tail)
+                               self._want_style(), used, tail,
+                               probe_mode, baseline, probe_doc)
         self._gen.status.connect(self.status.setText)
         self._gen.ready.connect(self._seam_ready)
         self._gen.failed.connect(self._seam_failed)
@@ -406,6 +515,16 @@ class SeamLabTab(QWidget):
             f"{plan.get('pitch_st', 0) or 0:+g} st · armed at "
             f"{seam['after_s']:.0f}s of {a.duration_s:.0f}s · "
             f"{len(seam['audio']) / RATE:.0f}s render")
+        self.probe = seam.get("probe")
+        if self.probe:
+            self.probe_lbl.setText(
+                f"<b>Listen for one thing:</b> {self.probe['description']}"
+                f" &nbsp;<span style='opacity:0.75'>({self.probe['knob']} "
+                f"{self.probe['baseline']:g} → {self.probe['value']:g}"
+                f", trial {self.probe['trials'] + 1})</span>")
+            self.probe_lbl.show()
+        else:
+            self.probe_lbl.setVisible(False)
         self.strip.set_seam(a, b, seam.get("info"), seam["after_s"],
                             len(seam["audio"]) / RATE)
         self.planner.claim_playback("seamlab")
@@ -508,16 +627,55 @@ class SeamLabTab(QWidget):
         self.learn_lbl.setHtml(html)
         self.learn_lbl.verticalScrollBar().setValue(pos)   # keep the view
 
+    def _answer_probe(self, seam, verdict, listened):
+        """Fold one parameter answer into the staircase, and apply the
+        baseline move if the answer earned one."""
+        probe = seam.get("probe")
+        if probe is None or verdict == "skip":
+            return
+        from tools.dj.planner import seamprobe
+        from tools.dj.planner.seamtune import RANGES
+        from lib.dj import tuning
+        from lib.dj.brain import TUNE_DEFAULTS
+        try:
+            doc, note = seamprobe.record(probe, verdict, RANGES)
+            moves = seamprobe.pending_moves(doc)
+            for knob, val in moves.items():
+                tuning.set_value(knob, val,
+                                 why=f"probe: {verdict} at {probe['value']:g}")
+                seamprobe.reopen(doc, knob)
+            if note:
+                self.note_lbl.setText("→ " + note)
+            elif moves:
+                self.note_lbl.setText("→ baseline updated: " + ", ".join(
+                    f"{k} → {v:g}" for k, v in moves.items()))
+            else:
+                self.note_lbl.setText(
+                    f"→ noted ({probe['knob']}, "
+                    f"{probe['trials'] + 1} answer"
+                    f"{'s' if probe['trials'] else ''} so far)")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.status.setText(f"could not record the answer: {e}")
+
     # ---- rating ----------------------------------------------------------
-    def _rate(self, verdict):
+    def _rate(self, slot):
+        """`slot` is a button position; what it MEANS depends on the mode."""
         seam = self._current
-        if seam is None or not self.rate_btns[verdict].isEnabled():
+        spec = _LABELS[self._mode()]
+        if seam is None or slot not in spec:
+            return
+        _label, verdict, _tip = spec[slot]
+        if verdict is None or not self.rate_btns[slot].isEnabled():
             return
         a, b, plan = seam["a"], seam["b"], seam["plan"]
         listened = self.player.time_s()
         self.player.pause()
-        self._tally[verdict] += 1
-        if verdict != "skip":
+        self._tally[verdict] = self._tally.get(verdict, 0) + 1
+        if self._mode() == _MODE_PROBE:
+            self._answer_probe(seam, verdict, listened)
+        elif verdict != "skip":
             rec = {"t": time.time(), "verdict": verdict,
                    "a_id": a.id, "a_title": a.title,
                    "b_id": b.id, "b_title": b.title,
@@ -563,7 +721,7 @@ class SeamLabTab(QWidget):
                     f.write(json.dumps(rec) + "\n")
             except Exception as e:
                 self.status.setText(f"could not log rating: {e}")
-        if verdict in ("good", "bad"):
+        if verdict in ("good", "bad") and self._mode() == _MODE_SEAM:
             # The same cross-night memory the live thumbs teach - pair,
             # feature class AND per-style taste (passable stays neutral).
             try:
@@ -579,22 +737,9 @@ class SeamLabTab(QWidget):
             b_.setEnabled(False)
         self.replay_btn.setEnabled(False)
         t = self._tally
-        self.tally_lbl.setText(
-            f"session: 👍 {t['good']}   😐 {t['passable']}   "
-            f"👎 {t['bad']}   ⏭ {t['skip']}")
+        self.tally_lbl.setText("session: " + "   ".join(
+            f"{k} {v}" for k, v in sorted(t.items()) if v))
         if verdict != "skip":
-            # FOLD THE VERDICT INTO THE BASELINE: any knob whose randomised
-            # evidence now clears 2 sigma moves a damped step toward what
-            # the good seams used. This is the point where rating changes
-            # how the engine actually mixes.
-            try:
-                from tools.dj.planner import seamstats, seamtune
-                for ch in seamtune.learn(seamstats.read_ratings()):
-                    self.status.setText(
-                        f"learned: {ch['knob']} {ch['was']} → {ch['now']} "
-                        f"(r={ch['r']:+.2f}, n={ch['n']})")
-            except Exception as e:
-                print(f"[seamlab] tuning update failed: {e}")
             self._refresh_learning()     # the dataset just grew
         if self._next is not None:
             nxt, self._next = self._next, None

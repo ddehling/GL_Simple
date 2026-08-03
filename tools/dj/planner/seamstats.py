@@ -437,6 +437,12 @@ def report_html(sm, brain=None):
                     "dozen seams and it will start telling you which "
                     "styles and which conditions are failing.</p>")
         try:
+            from tools.dj.planner import seamprobe
+            from tools.dj.planner.seamtune import RANGES
+            head += seamprobe.report_html(RANGES)
+        except Exception:
+            pass
+        try:
             from tools.dj.planner import seamtune
             head += seamtune.report_html(sm.get("rows") or [])
         except Exception:
@@ -632,6 +638,13 @@ def report_html(sm, brain=None):
         h.append("</table>")
 
     # -- the execution model ------------------------------------------------
+    try:
+        from tools.dj.planner import seamprobe
+        from tools.dj.planner.seamtune import RANGES
+        h.append(seamprobe.report_html(RANGES))
+    except Exception as e:
+        h.append(f"<p style='color:{DIM_C}'>probe panel unavailable: "
+                 f"{e}</p>")
     try:
         from tools.dj.planner import seamtune
         h.append(seamtune.report_html(sm.get("rows") or []))
