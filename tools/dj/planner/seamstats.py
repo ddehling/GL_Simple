@@ -481,7 +481,145 @@ def analyze(rows, library=None):
             "hard": hard[:6], "easy": easy[:6]}
 
 
+# ---------------------------------------------------------- observations ---
+def observations(sm, brain=None, probe_doc=None):
+    """Plain-language findings, strongest first.
+
+    Two kinds, and the label matters: a PROBE result is causal (one
+    parameter moved at random against a fixed baseline), a PATTERN is
+    observational (the brain chose those conditions, so the arrow could
+    point either way). Everything carries the evidence behind it."""
+    out = []
+
+    # -- causal: what the one-at-a-time probes concluded -------------------
+    if probe_doc is not None:
+        try:
+            from tools.dj.planner import seamprobe
+            from tools.dj.planner.seamtune import RANGES
+            from lib.dj import tuning
+            from lib.dj.brain import TUNE_DEFAULTS
+            base = tuning.current(TUNE_DEFAULTS)
+            for k, st in sorted(probe_doc.get("knobs", {}).items()):
+                n = st.get("trials", 0)
+                if st.get("status") == "settled":
+                    out.append(("causal", 3,
+                                f"<b>{k}</b> is right where it is — moving "
+                                f"it either way made things worse "
+                                f"({n} trials)."))
+                elif st.get("status") == "imperceptible":
+                    out.append(("causal", 2,
+                                f"<b>{k}</b> made no audible difference "
+                                f"anywhere in its range ({n} trials). "
+                                f"Either it does not matter, or its range "
+                                f"is too narrow to matter — worth widening "
+                                f"if you think it should."))
+                elif st.get("status") == "unclear":
+                    out.append(("causal", 1,
+                                f"<b>{k}</b> could not be judged — the "
+                                f"description did not say what to listen "
+                                f"for. That is a wording problem to fix."))
+            moved = {k: v for k, v in base.items()
+                     if abs(v - TUNE_DEFAULTS[k]) > 1e-9}
+            for k, v in sorted(moved.items()):
+                out.append(("causal", 4,
+                            f"<b>{k}</b> moved from {TUNE_DEFAULTS[k]:g} to "
+                            f"<b>{v:g}</b> because you preferred it there. "
+                            f"The live engine mixes with the new value."))
+        except Exception:
+            pass
+
+    if not sm.get("n"):
+        return out
+
+    base_share, base_n, _ = sm["baseline"]
+    # -- patterns: style, condition, song character ------------------------
+    CHAR = {"energy move", "mood move", "intensity move", "vocal move",
+            "incoming danceability", "incoming character",
+            "rhythm density move", "mood-bucket move", "genre",
+            "key mode", "era gap"}
+    for f in sm["findings"][:10]:
+        lift, n, share = f["lift"], f["n"], f["share"]
+        strength = 3 if n >= 20 else (2 if n >= 10 else 1)
+        word = "better" if lift > 0 else "worse"
+        kind = ("song" if f["group"] in CHAR
+                else "style" if f["feature"] == "style" else "mech")
+        tail = (f"than your {_pct(base_share)} baseline"
+                if kind == "style" else "than average")
+        out.append((kind, strength,
+                    f"<b>{_esc(f['bucket'])}</b> — {_pct(share)} good over "
+                    f"{n}, {abs(lift)*100:.0f} points {word} {tail}."))
+
+    # -- a style's own weak spot ------------------------------------------
+    for s in sm["styles"]:
+        if s["n"] >= MIN_BUCKET and s["fails"]:
+            e = s["fails"][0]
+            out.append(("style", 2 if s["n"] >= 10 else 1,
+                        f"<b>{s['style']}</b> is not bad everywhere — it "
+                        f"falls down on <b>{_esc(e['bucket'])}</b> "
+                        f"({_pct(e['share'])} of {e['n']}) while averaging "
+                        f"{_pct(s['share'])} overall."))
+
+    # -- specific material -------------------------------------------------
+    if sm.get("hard"):
+        e = sm["hard"][0]
+        out.append(("track", 1,
+                    f"<b>{e['title'][:40]}</b> keeps producing rough seams "
+                    f"({e['good']} good of {e['n']}). Worth a listen — it "
+                    f"may be a grid or key problem on that track."))
+    if sm.get("refused"):
+        out.append(("gate", 1,
+                    f"{sm['refused']} of {sm['pins']} style pins were "
+                    f"refused by the safety gates — those techniques never "
+                    f"got to play, so nothing was learned about them."))
+    if sm.get("quick_bad"):
+        out.append(("mech", 1,
+                    f"{sm['quick_bad']} bad calls came inside 8 seconds — "
+                    f"those failures are audible immediately, which usually "
+                    f"means the entry, not the blend."))
+    out.sort(key=lambda o: -o[1])
+    return out
+
+
+def _obs_html(sm, brain):
+    """Observations, first thing in the panel - the point of the dataset."""
+    try:
+        from tools.dj.planner import seamprobe
+        doc = seamprobe.load()
+    except Exception:
+        doc = None
+    obs = observations(sm, brain, doc)
+    if not obs:
+        return (f"<p style='color:{DIM_C}'>No observations yet — nothing "
+                f"has enough evidence behind it to be worth saying.</p>")
+    KIND = {"causal": ("measured", GOOD_C),
+            "style": ("style", None), "song": ("song choice", None),
+            "mech": ("mechanics", None), "track": ("track", None),
+            "gate": ("gates", None)}
+    h = ["<h4 style='margin:4px 0 2px'>What the ratings say</h4>"
+         f"<p style='color:{DIM_C};margin:0 0 5px'>"
+         f"<span style='color:{GOOD_C}'>measured</span> = a parameter moved "
+         f"on its own against a fixed baseline, so it is cause and effect. "
+         f"Everything else is a pattern in seams the brain chose, so it "
+         f"shows what goes together, not what causes what.</p>"
+         "<ul style='margin:2px 0 6px 16px'>"]
+    for kind, strength, text in obs[:12]:
+        label, col = KIND.get(kind, (kind, None))
+        tag = (f"<span style='color:{col or DIM_C}'>[{label}]</span> ")
+        dim = "" if strength >= 2 else f" <span style='color:{DIM_C}'>"                                        f"(provisional)</span>"
+        h.append(f"<li style='margin:2px 0'>{tag}{text}{dim}</li>")
+    h.append("</ul>")
+    return "".join(h)
+
+
 # ------------------------------------------------------------------ html ---
+def _esc(t):
+    """Bucket labels contain < and > ("(<=16 beats)", "(<15ms)"). Rich
+    text eats those as tags - measured: "short blend (<=16 beats)"
+    rendered as "short blend (" and the rest vanished."""
+    return (str(t).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
 def _pct(x):
     return f"{x * 100:.0f}%"
 
@@ -515,6 +653,7 @@ def report_html(sm, brain=None):
                     "here becomes the dataset this panel reads. Rate a few "
                     "dozen seams and it will start telling you which "
                     "styles and which conditions are failing.</p>")
+        head = _obs_html(sm, brain) + head
         try:
             from tools.dj.planner import seamprobe
             from tools.dj.planner.seamtune import RANGES
@@ -530,8 +669,10 @@ def report_html(sm, brain=None):
     base, base_n, _tot = sm["baseline"]
     c = sm["counts"]
     style_mem = getattr(brain, "style_memory", {}) or {}
+    _obs = _obs_html(sm, brain)
     cond_mem = getattr(brain, "style_cond_memory", {}) or {}
     h = []
+    h.append(_obs)
     h.append(
         f"<p><b>{sm['n']} seams rated</b> over {len(sm['sessions'])} "
         f"session day{'s' if len(sm['sessions']) != 1 else ''} &nbsp; "
@@ -550,7 +691,7 @@ def report_html(sm, brain=None):
         h.append("<table width='100%' cellspacing='0' cellpadding='2'>")
         for f in bad_f:
             h.append(
-                f"<tr><td width='42%'>{f['bucket']}"
+                f"<tr><td width='42%'>{_esc(f['bucket'])}"
                 f"<span style='color:{DIM_C}'> — {f['group']}</span></td>"
                 f"<td width='14%' align='right'><b style='color:{BAD_C}'>"
                 f"{_pct(f['share'])}</b> good</td>"
@@ -568,7 +709,7 @@ def report_html(sm, brain=None):
         h.append("<table width='100%' cellspacing='0' cellpadding='2'>")
         for f in good_f:
             h.append(
-                f"<tr><td width='42%'>{f['bucket']}"
+                f"<tr><td width='42%'>{_esc(f['bucket'])}"
                 f"<span style='color:{DIM_C}'> — {f['group']}</span></td>"
                 f"<td width='14%' align='right'><b style='color:{GOOD_C}'>"
                 f"{_pct(f['share'])}</b> good</td>"
@@ -608,12 +749,12 @@ def report_html(sm, brain=None):
         if s["works"]:
             detail.append(
                 f"<span style='color:{GOOD_C}'>works when</span> " +
-                " · ".join(f"{e['bucket']} {_pct(e['share'])} of {e['n']}"
+                " · ".join(f"{_esc(e['bucket'])} {_pct(e['share'])} of {e['n']}"
                            for e in s["works"]))
         if s["fails"]:
             detail.append(
                 f"<span style='color:{BAD_C}'>fails when</span> " +
-                " · ".join(f"{e['bucket']} {_pct(e['share'])} of {e['n']}"
+                " · ".join(f"{_esc(e['bucket'])} {_pct(e['share'])} of {e['n']}"
                            for e in s["fails"]))
         if not detail:
             detail.append(
@@ -641,7 +782,7 @@ def report_html(sm, brain=None):
                      f"</td><td></td></tr>")
             continue
         w = s["worst"]
-        note = (f"{w['bucket']} → {_pct(w['share'])} of {w['n']}"
+        note = (f"{_esc(w['bucket'])} → {_pct(w['share'])} of {w['n']}"
                 if w else f"<span style='color:{DIM_C}'>no clear "
                           f"pattern</span>")
         h.append(
