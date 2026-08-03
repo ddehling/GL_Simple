@@ -45,6 +45,35 @@ def log_path():
         "seam_lab_ratings.jsonl")
 
 
+def cohort_path():
+    return os.path.join(os.path.dirname(log_path()), "seam_cohorts.json")
+
+
+def suspect_before():
+    """Ratings older than this were collected under a configuration since
+    found to be broken, and are excluded from the CHOICE-level statistics
+    (styles, conditions, context model).
+
+    They are NOT excluded from the knob analysis: the execution nudge is
+    randomised independently of pair and style, so a bad sampling config
+    added noise to those seams but no bias to the nudge/verdict relation -
+    throwing that evidence away would cost real listening for nothing.
+
+    Recorded as a timestamp rather than by rewriting the log, so nothing
+    is lost if a rating lands while this is being set."""
+    try:
+        with open(cohort_path(), encoding="utf-8") as f:
+            return float(json.load(f).get("suspect_before") or 0.0)
+    except (OSError, ValueError, TypeError):
+        return 0.0
+
+
+def mark_suspect_before(ts, note=""):
+    os.makedirs(os.path.dirname(cohort_path()), exist_ok=True)
+    with open(cohort_path(), "w", encoding="utf-8") as f:
+        json.dump({"suspect_before": float(ts), "note": note}, f, indent=2)
+
+
 def read_ratings(path=None):
     """Every logged verdict, oldest first. Missing/corrupt lines skipped."""
     path = path or log_path()
@@ -318,10 +347,18 @@ def coverage(rows):
 
 
 def analyze(rows, library=None):
-    """Everything the panel needs, as plain data."""
+    """Everything the panel needs, as plain data.
+
+    Choice-level statistics use only the trustworthy cohort; the knob
+    analysis (seamtune) is handed the FULL set separately."""
     if not rows:
         return {"n": 0}
-    rs = enrich(rows, library)
+    rs_all = enrich(rows, library)
+    cut = suspect_before()
+    rs = [r for r in rs_all if not cut or (r.get("t") or 0) >= cut]
+    excluded = len(rs_all) - len(rs)
+    if not rs:
+        return {"n": 0, "excluded": excluded, "rows": rs_all}
     base = _rate(rs)
     counts = {v: sum(1 for r in rs if r["verdict"] == v)
               for v in ("good", "passable", "bad")}
@@ -355,7 +392,8 @@ def analyze(rows, library=None):
         else:
             k = v or "unstamped"
         eras[k] = eras.get(k, 0) + 1
-    return {"n": len(rs), "counts": counts, "baseline": base, "rows": rs,
+    return {"n": len(rs), "counts": counts, "baseline": base,
+            "rows": rs_all, "excluded": excluded,
             "eras": eras,
             "findings": findings(rs), "styles": styles,
             "sessions": sessions(rs), "coverage": coverage(rs),
@@ -381,10 +419,29 @@ def _thin(n):
 def report_html(sm, brain=None):
     """The bottom pane. Sections in order of what you'd act on first."""
     if not sm.get("n"):
-        return ("<p>No ratings logged yet — every verdict you give here "
-                "becomes the dataset this panel reads. Rate a few dozen "
-                "seams and it will start telling you which styles and "
-                "which conditions are failing.</p>")
+        if sm.get("excluded"):
+            # There ARE ratings, just none in the trustworthy cohort. The
+            # knob section still has evidence and must not be dropped.
+            head = (f"<p><b>{sm['excluded']} ratings held back.</b> They "
+                    f"were collected under a sampling configuration since "
+                    f"found to starve the candidate pool, so their style "
+                    f"and condition statistics reflect that rather than "
+                    f"your taste. Rate under the fixed configuration and "
+                    f"this fills in again.<br><span style='color:{DIM_C}'>"
+                    f"Their execution-knob evidence is still counted below "
+                    f"— that nudge is randomised independently of pair and "
+                    f"style.</span></p>")
+        else:
+            head = ("<p>No ratings logged yet — every verdict you give "
+                    "here becomes the dataset this panel reads. Rate a few "
+                    "dozen seams and it will start telling you which "
+                    "styles and which conditions are failing.</p>")
+        try:
+            from tools.dj.planner import seamtune
+            head += seamtune.report_html(sm.get("rows") or [])
+        except Exception:
+            pass
+        return head
     base, base_n, _tot = sm["baseline"]
     c = sm["counts"]
     style_mem = getattr(brain, "style_memory", {}) or {}
@@ -581,6 +638,17 @@ def report_html(sm, brain=None):
     except Exception as e:
         h.append(f"<p style='color:{DIM_C}'>execution model "
                  f"unavailable: {e}</p>")
+
+    # -- excluded cohort -----------------------------------------------------
+    if sm.get("excluded"):
+        h.append(
+            f"<p style='color:{DIM_C}'><b>{sm['excluded']} earlier ratings "
+            f"are excluded</b> from everything above: they were collected "
+            f"under a sampling configuration since found to starve the "
+            f"candidate pool, which depressed seam quality independently "
+            f"of taste. They are still used for the execution knobs below "
+            f"— the nudge there is randomised independently of pair and "
+            f"style, so those seams carry noise but no bias.</p>")
 
     # -- engine eras ---------------------------------------------------------
     eras = sm.get("eras") or {}
