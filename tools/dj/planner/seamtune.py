@@ -150,6 +150,17 @@ def _fit_peak(xs, ys):
     return out
 
 
+def styles_reading(knob):
+    """Which styles' automation actually reads this knob - the reverse of
+    knobs_for. Used to steer a probe session toward the styles that carry
+    the least-answered parameters, so coverage does not simply follow
+    whatever the brain happens to pick."""
+    out = [st for st in _BY_STYLE if knob in knobs_for(st, duck=True)]
+    if knob in _BLEND or knob in ("duck_depth", "duck_beats"):
+        out += [s for s in _DUCKERS if s not in out]
+    return sorted(set(out))
+
+
 def knobs_for(style, duck=False):
     """Knobs whose value this style's automation actually reads. Jittering
     one a style never looks at would log a nudge that provably did nothing

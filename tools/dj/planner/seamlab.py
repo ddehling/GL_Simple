@@ -457,16 +457,35 @@ class SeamLabTab(QWidget):
         used = set(self._recent[-_VETO_WINDOW:])
         tail = set(self._recent[-20:])
         probe_mode = self._mode() == _MODE_PROBE
-        baseline, probe_doc = {}, None
+        baseline, probe_doc, want = {}, None, self._want_style()
         if probe_mode:
             from tools.dj.planner import seamprobe
+            from tools.dj.planner.seamtune import RANGES, styles_reading
             from lib.dj import tuning
             from lib.dj.brain import TUNE_DEFAULTS
             baseline = tuning.current(TUNE_DEFAULTS)
             probe_doc = seamprobe.load()
+            # UNBIASED COVERAGE: choose the least-answered knob FIRST, then
+            # ask for a style that reads it. Left to the brain's own style
+            # dice, the blend family would answer its knobs many times over
+            # while echo, spinback and loop-roll knobs were never exercised
+            # at all. The pin still goes through the real gates, so an
+            # unsuitable pair simply falls back and the worker picks a
+            # probe from whatever style actually played.
+            openk = seamprobe.open_knobs(RANGES, probe_doc)
+            if openk:
+                fewest = min(seamprobe.trials_of(probe_doc, k)
+                             for k in openk)
+                target = self.rng.choice(
+                    [k for k in openk
+                     if seamprobe.trials_of(probe_doc, k) == fewest])
+                cands = [st for st in styles_reading(target)
+                         if st not in self._style_dead]
+                if cands:
+                    want = self.rng.choice(cands)
         self._gen = _GenWorker(self.planner.db, self.brain,
                                self.planner.library, self.rng,
-                               self._want_style(), used, tail,
+                               want, used, tail,
                                probe_mode, baseline, probe_doc)
         self._gen.status.connect(self.status.setText)
         self._gen.ready.connect(self._seam_ready)

@@ -148,6 +148,50 @@ def enrich(rows, library=None):
                                                        False)))
             if d.get(f"title_{side}") is None:
                 d[f"title_{side}"] = r.get(f"{side}_title") or t.title
+        # SONG CHARACTER, not seam mechanics. Everything above describes
+        # how the two tracks were STITCHED; these describe what kind of
+        # track the DJ moved INTO. The scorer already uses these features
+        # with hand-set weights - nothing until now checked them against a
+        # verdict, so "what kind of song works next" was unmeasured.
+        if ta is not None and tb is not None:
+            def _g(t, name):
+                v = getattr(t, name, None)
+                return None if v is None else float(v)
+
+            for name, field in (("energy", "energy_rank"),
+                                ("drive", "drive_rank"),
+                                ("valence", "ml_valence"),
+                                ("arousal", "ml_arousal"),
+                                ("dance", "danceability"),
+                                ("density", "rhythm_density")):
+                va, vb = _g(ta, field), _g(tb, field)
+                if va is not None and vb is not None:
+                    d[f"d_{name}"] = vb - va
+                if vb is not None:
+                    d[f"b_{name}"] = vb
+            ax_a = getattr(ta, "axes_rank", None) or {}
+            ax_b = getattr(tb, "axes_rank", None) or {}
+            for ax in ("vocal", "hypnotic"):
+                if ax in ax_a and ax in ax_b:
+                    d[f"d_{ax}"] = float(ax_b[ax]) - float(ax_a[ax])
+                    d[f"b_{ax}"] = float(ax_b[ax])
+            ga = getattr(ta, "genre_set", None) or set()
+            gb = getattr(tb, "genre_set", None) or set()
+            if ga and gb:
+                d["genre_shared"] = len(ga & gb) > 0
+            ya, yb = getattr(ta, "year", None), getattr(tb, "year", None)
+            if ya and yb:
+                d["year_gap"] = abs(int(ya) - int(yb))
+            ka, kb = getattr(ta, "key_mode", None), getattr(tb, "key_mode", None)
+            if ka and kb:
+                d["mode_change"] = (ka != kb)
+            # Where each track sits in the chill / groove / peak picture.
+            for side, t in (("a", ta), ("b", tb)):
+                mh = getattr(t, "mood_hist", None) or {}
+                if mh:
+                    d[f"mood_{side}"] = max(mh, key=mh.get)
+            if d.get("mood_a") and d.get("mood_b"):
+                d["mood_move"] = f"{d['mood_a']}→{d['mood_b']}"
         d["key_fit"] = _camelot_compat(d.get("camelot_a"),
                                        d.get("camelot_b"))
         if d.get("bpm_a") and d.get("bpm_b") and d.get("rate"):
@@ -212,6 +256,41 @@ FEATURES = [
       else "no stems")),
     ("theme", "theme", lambda r: r.get("theme")),
     ("engine", "stretch engine", lambda r: r.get("engine")),
+
+    # --- WHAT KIND OF SONG the DJ moved into, rather than how it mixed ---
+    ("d_energy", "energy move", lambda r: _band(
+        r.get("d_energy"), [-0.12, 0.12],
+        ["drops energy", "holds energy", "lifts energy"])),
+    ("d_valence", "mood move", lambda r: _band(
+        r.get("d_valence"), [-0.10, 0.10],
+        ["goes darker", "holds the mood", "goes brighter"])),
+    ("d_arousal", "intensity move", lambda r: _band(
+        r.get("d_arousal"), [-0.10, 0.10],
+        ["calms down", "holds intensity", "winds up"])),
+    ("d_vocal", "vocal move", lambda r: _band(
+        r.get("d_vocal"), [-0.15, 0.15],
+        ["into an instrumental", "similar vocal weight",
+         "into a vocal track"])),
+    ("b_dance", "incoming danceability", lambda r: _band(
+        r.get("b_dance"), [0.33, 0.66],
+        ["into a low-danceability track", "into a mid-danceability track",
+         "into a high-danceability track"])),
+    ("b_hypnotic", "incoming character", lambda r: _band(
+        r.get("b_hypnotic"), [0.4, 0.7],
+        ["into a busy/eventful track", "into a mid-hypnotic track",
+         "into a hypnotic track"])),
+    ("d_density", "rhythm density move", lambda r: _band(
+        r.get("d_density"), [-0.15, 0.15],
+        ["into a sparser groove", "similar density",
+         "into a denser groove"])),
+    ("mood_move", "mood-bucket move", lambda r: r.get("mood_move")),
+    ("genre", "genre", lambda r: None if r.get("genre_shared") is None
+     else ("shares a genre" if r["genre_shared"] else "crosses genre")),
+    ("mode", "key mode", lambda r: None if r.get("mode_change") is None
+     else ("major/minor switch" if r["mode_change"] else "same mode")),
+    ("era", "era gap", lambda r: _band(
+        r.get("year_gap"), [5, 15],
+        ["same era", "5-15 years apart", "15+ years apart"])),
 ]
 
 

@@ -190,6 +190,10 @@ def _ks(doc, knob):
         "edge_cant": 0, "unclear": 0, "trials": 0, "moved": 0.0})
 
 
+def trials_of(doc, knob):
+    return doc["knobs"].get(knob, {}).get("trials", 0)
+
+
 def status_of(doc, knob):
     return doc["knobs"].get(knob, {}).get("status", "testing")
 
