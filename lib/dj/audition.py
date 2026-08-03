@@ -11,10 +11,17 @@ import numpy as np
 RATE = 44100
 
 
-def render_seam(db, a, b, plan, status=None):
+def render_seam(db, a, b, plan, status=None, info=None):
     """Render the seam a -> b for a compiled `plan` dict. Returns a float32
     stereo ndarray. `status(text)` optional progress callback. Raises on
-    decode/automation failure - callers present the error their own way."""
+    decode/automation failure - callers present the error their own way.
+
+    Pass a dict as `info` to receive the EXACT automation behind the audio
+    (the planner's seam scope draws from it, so the picture can't drift
+    from the render): {"events", "plan" (with no_return_at stamped),
+    "t0_clock" (submix clock of render second 0), "cue_a", "blend_at",
+    "swap_at"} - clocks are submix samples; subtract t0_clock for render
+    time."""
     from lib.audio_engine import AudioEngine
     from lib.dj.brain import Brain
     from lib.dj.features import decode_file_stereo
@@ -63,6 +70,13 @@ def render_seam(db, a, b, plan, status=None):
     sub.post_many(events)
     if status:
         status("rendering seam...")
+    if info is not None:
+        # sub.clock is where the collected audio begins (the priming read
+        # above already advanced it) - the anchor that turns event clocks
+        # into render seconds.
+        info.update({"events": events, "plan": plan, "t0_clock": sub.clock,
+                     "cue_a": cue_a, "blend_at": blend_at,
+                     "swap_at": swap_at})
     total = pre + (swap_at - blend_at) / RATE + 25.0
     out = [np.frombuffer(gen.send(4410), dtype=np.float32).reshape(-1, 2)
            for _ in range(int(total * RATE) // 4410)]

@@ -2,6 +2,17 @@
 
 OpenGL-based DMX lighting control system with real-time GPU shader effects, audio-reactive visuals, weather simulation, and a web control panel. Designed for live event visualization and art installations.
 
+## Engine / Project Split
+
+This repo (`GL_Simple`) is the **engine only** — rendering, scheduling, audio, DMX, web UI, geometry. It is project-agnostic. Everything specific to one art piece (its shaders, weather sets, event map, media, fixture layout) lives in a separate private repo named `GL_Simple_<id>`, cloned into `projects/<id>/` by the setup script:
+
+| Repo | Path | Holds |
+|---|---|---|
+| `GL_Simple` | (this repo) | Engine code, shared utilities, `deploy/catalog.yaml` |
+| `GL_Simple_<id>` | `projects/<id>/` (gitignored clone) | `project.yaml`, `event_map.py`, `weather_params.py`, `interaction.py`, `shaders/`, `media/` |
+
+The active project is chosen by `config.yaml`'s `project:` field, overridden per-machine by `active_project.yaml` (gitignored) or at launch with `--project <id>`. Full details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ---
 
 ## Table of Contents
@@ -74,9 +85,11 @@ Key packages: `glfw`, `PyOpenGL`, `numpy`, `scipy`, `opencv-python`, `sounddevic
 
 ## Configuration
 
-Main settings live in `config.yaml` at the project root:
+`config.yaml` at the repo root holds **machine-local** settings only — hardware and network for the physical machine (it survives project switches):
 
 ```yaml
+project: fan          # Default active project (fallback; see below)
+
 display:
   width: 128          # LED strips (framebuffer columns)
   height: 300         # LEDs per strip (framebuffer rows)
@@ -84,19 +97,24 @@ display:
   headless: false     # true = no desktop window, web preview only
 
 audio:
-  device_name: "TONOR"  # Mic device (run tools/editors/sound_editor.py to find yours)
+  enabled: true
+  source: "linein"      # linein | loopback | internal | microphone
+  device_name: "TONOR"  # Mic device when source: microphone (run tools/editors/sound_editor.py to find yours)
 
 web:
   enabled: true
   port: 5000
-  admin_password: "admin123"
 ```
 
-If `config.yaml` is missing, the app starts with these defaults.
+If `config.yaml` is missing, the app starts with defaults.
 
-**DMX universes and fixtures**: edit files in `config/`.
+**Project settings** (fixture layout, receivers, geometry, weather sets, event map) live under `projects/<id>/` — see `project.yaml`, `weather_params.py`, and `event_map.py` in the active project's directory, NOT in this repo.
 
-**Weather set / state defaults**: configured in `Stories_OGL.py` (search for `DEFAULT_WEATHER_SET`).
+**Active project selection**: `config.yaml`'s `project:` field is the tracked default. Per-machine override goes in `active_project.yaml` (gitignored, written by `bin/setup.*`). One-off: `python Stories_OGL.py --project <id>`.
+
+**DMX receivers**: defined in the active project's `project.yaml` (`receivers:` block). The `dmx.receivers` list in `config.yaml` is a legacy fallback only.
+
+**Default weather set**: exported as `DEFAULT_WEATHER_SET` from the active project's `weather_params.py`.
 
 ### Linux-Specific Setup
 
@@ -117,14 +135,7 @@ sudo apt-get install portaudio19-dev
 
 ### Available Weather Sets
 
-| Set | States | Season Speed | Transition Speed | Vibe |
-|-----|--------|-------------|-----------------|------|
-| **Peaceful Forest** (default) | clear, light_rain, foggy, firefly, mushroom, bloom, leaves | 1.0x (30 min/yr) | 0.8x (~5 min) | Gentle, natural |
-| **Storm World** | windy_night, heavy_rain, thunderstorm, foggy, spooky | 1.5x (20 min/yr) | 1.5x (~2.7 min) | Intense, dramatic |
-| **Desert Realm** | clear, sandstorm, volcano, windy_night | 0.5x (60 min/yr) | 0.6x (~6.7 min) | Harsh, alien |
-| **Ethereal Mist** | heavy_fog, foggy, spooky, mushroom, firefly | 0.7x (43 min/yr) | 0.5x (~8 min) | Mysterious |
-| **Cosmic Night** | clear, asteroid, windy_night | 2.0x (15 min/yr) | 2.0x (~2 min) | Celestial |
-| **Full Spectrum** | All 15 states | 1.0x | 1.0x | Maximum variety |
+Weather sets are **defined per project** in `projects/<id>/weather_params.py` (`WEATHER_SETS` dict) — the engine has no built-in set list. The Fan project, for example, currently ships sets including Peaceful Forest, Storm World, Desert Realm, Cosmic Night, Ocean, Cyberpunk, Bartiki, Beloved, Club, FyneWynz, and Full Spectrum. Browse the active project's sets live at `http://localhost:5000/weather_sets`.
 
 ### Set Parameters
 
@@ -150,7 +161,7 @@ Each set only transitions between its own states. If a state's normal transition
 
 ### Adding a New Set in Code
 
-Edit `lib/weather_params.py`:
+Edit the active project's `projects/<id>/weather_params.py` (the engine-level `lib/weather_params.py` only provides shared defaults and fallback types — project modules override it at runtime):
 
 ```python
 WEATHER_SETS = {
@@ -167,7 +178,7 @@ WEATHER_SETS = {
 }
 ```
 
-Then update `web/templates/weather_sets.html` to add its icon and description card.
+New sets appear in the web UI automatically (with a generic 📦 icon). Optionally add a custom icon in `web/templates/weather_sets.html`.
 
 ### Weather State Parameters
 
@@ -194,7 +205,7 @@ A visual browser-based editor is available at `http://localhost:5000/weather_edi
 1. Select a set from the left panel
 2. Click a weather state tab to edit its parameters
 3. Click **Validate** to check for errors before saving
-4. Click **Save Changes** — this overwrites `lib/weather_params.py` (a backup is created at `.backup`)
+4. Click **Save Changes** — this overwrites the active project's `projects/<id>/weather_params.py` (a backup is created alongside at `.backup`)
 5. **Restart the application** for changes to take effect
 
 **Creating a new weather state:**
@@ -414,8 +425,8 @@ soundengine.play_oneshot(Path("media/sounds/thunder.wav"), volume=1.0)
 To wire a short sound into the event map (so it can be scheduled like a shader effect):
 
 ```python
-# In EnvironmentalSystem.__init__, add to self.event_map:
-"thunder_crack": lambda: (audio_thunder_crack, {"volume": 1.0})
+# In the active project's event_map.py, add to EVENT_MAP:
+"thunder_crack": (audio_thunder_crack, {"volume": 1.0}),
 
 # Wrapper function (same pattern as shader effects):
 def audio_thunder_crack(state, outstate, volume=1.0):
@@ -453,10 +464,11 @@ def audio_storm_narration(state, outstate, filepath="narration.wav", volume=1.0)
 Register and schedule exactly like a shader effect:
 
 ```python
-"storm_narration": lambda: (audio_storm_narration, {"filepath": "storm_voice.wav"})
+# In the project's event_map.py:
+"storm_narration": (audio_storm_narration, {"filepath": "storm_voice.wav"}),
 
-# In weather preset:
-"on_transition_events": [("storm_narration", 60, 0)]
+# In a weather preset in the project's weather_params.py:
+"on_transition_events": [("storm_narration", 60)]
 ```
 
 ### Supported audio formats
@@ -469,16 +481,19 @@ WAV, FLAC, OGG Vorbis, MP3 — all streamed chunk-by-chunk via miniaudio for `St
 
 Events are defined by name in a central map and referenced by name in weather configuration — no hardcoded `if` chains needed.
 
-### Event Map (in `Stories_OGL.py`)
+### Event Map (in the project's `event_map.py`)
+
+Each project declares its effect catalog as an `EVENT_MAP` dict in `projects/<id>/event_map.py`. At startup the engine merges it over `core/default_events.py`'s `DEFAULT_EVENT_MAP` (universal features like `narrative_player` and `sound_pool` every project gets for free); project entries win on key collision.
 
 ```python
-self.event_map = {
-    # Simple event
-    "stars":          lambda: fx.shader_stars,
-    # Event with parameters
-    "firefly":        lambda: (fx.shader_firefly, {"squish_top_width": 0.1}),
-    "falling_leaves": lambda: (fx.shader_falling_leaves, {"squish_top_width": self.scale}),
-    "fog":            lambda: (fx.shader_fog, {"strength": 0.0, "color": (0.7, 0.7, 0.8)}),
+from renderer import effects as fx   # resolves to the active project's shaders/
+
+EVENT_MAP = {
+    "stars":          (fx.shader_stars, {}),
+    "firefly":        (fx.shader_firefly, {"squish_top_width": 0.1}),
+    "fog":            (fx.shader_fog, {"strength": 0.0, "color": (0.7, 0.7, 0.8)}),
+    # Optional 3rd element: per-entry meta, e.g. target a specific canvas group
+    "leaf_column":    (fx.shader_falling_leaves, {}, {"group": "leaves"}),
 }
 ```
 
@@ -497,20 +512,21 @@ When a set activates, all existing events are cancelled and the background event
 
 ### On-Transition Events
 
-Triggered when a specific weather state becomes active. Defined per state in `WEATHER_PRESETS`:
+Triggered when a specific weather state becomes active. Defined per state in `WEATHER_PRESETS` (in the project's `weather_params.py`):
 
 ```python
 WeatherState.SANDSTORM: {
-    "on_transition_events": [("sandstorm_event", 100, 0)],
-    # Format: (event_name, duration_seconds, frame_id)
+    "on_transition_events": [("sandstorm_event", 100)],
+    # Format: (event_name, duration_seconds, start_delay_seconds=0, frame_id=0)
 }
 
-# Multiple events:
+# Multiple events, staggered:
 WeatherState.THUNDERSTORM: {
     "on_transition_events": [
-        ("lightning_event", 120, 0),
-        ("heavy_rain_particles", 150, 0),
-        ("thunder_rumble", 90, 1),   # Secondary display
+        ("lightning_event", 120),
+        ("heavy_rain_particles", 150),
+        ("thunder_rumble", 90, 20),      # Starts 20 s after the transition
+        ("skyline_flash", 60, 0, 1),     # Explicit frame_id (canvas index)
     ],
 }
 ```
@@ -519,19 +535,19 @@ Events run for their specified duration and are automatically cleaned up.
 
 ### Adding a New Event
 
-1. **Add to event_map** in `EnvironmentalSystem.__init__()`:
+1. **Add to `EVENT_MAP`** in the project's `projects/<id>/event_map.py`:
    ```python
-   "my_effect": lambda: (fx.shader_my_effect, {"intensity": 0.8}),
+   "my_effect": (fx.shader_my_effect, {"intensity": 0.8}),
    ```
 
-2. **Reference by name** in set config (background) or weather preset (on-transition):
+2. **Reference by name** in the project's `weather_params.py` — set config (background) or weather preset (on-transition):
    ```python
    "background_events": ["clouds", "my_effect"]
    # or
-   "on_transition_events": [("my_effect", 60, 0)]
+   "on_transition_events": [("my_effect", 60)]
    ```
 
-No changes to `transition_to_weather()` needed.
+No engine changes needed — `Stories_OGL.py` stays project-agnostic.
 
 ### Helper Method
 
@@ -557,9 +573,9 @@ Ensure Python is installed and on PATH. Verify with `python --version`. Restart 
 Run `pip install -r requirements.txt` with the venv activated. Or re-run `bin\windows-install.ps1` / `./bin/linux-install.sh`.
 
 ### Audio device not found
-- Run `sound_editor.py` to list available devices
-- Update the device name at line 40 of `Stories_OGL.py`
-- Remove the `device_name` parameter to use the system default
+- Run `tools/editors/sound_editor.py` to list available devices
+- Update the `audio:` section of `config.yaml` (`source`, `device_name`)
+- Clear `device_name` to use the system default
 
 ### PortAudio errors on Linux
 ```bash
@@ -571,16 +587,16 @@ Update graphics drivers. GPU must support OpenGL 3.3+ (or OpenGL ES 3.1 on Raspb
 
 ### Performance issues
 - Close other GPU-intensive applications
-- Reduce magnification in `Stories_OGL.py` (lines 22–25)
-- Set `enable_web_control = False` to disable Flask overhead
+- Reduce `display.magnification` in `config.yaml`
+- Set `web.enabled: false` in `config.yaml` to disable Flask overhead
 
 ### Port 5000 already in use
-Change the port at line 57 of `Stories_OGL.py`, or close whatever is using 5000.
+Change `web.port` in `config.yaml`, or close whatever is using 5000.
 
 ### Weather editor won't save
 - Click **Validate** first — fix any reported errors
-- Ensure write permissions on `lib/`
-- Restore from backup: `lib/weather_params.py.backup`
+- Ensure write permissions on `projects/<id>/`
+- Restore from backup: `projects/<id>/weather_params.py.backup`
 
 ### Web controls not updating
 - Check browser console (F12) for JS errors
@@ -603,14 +619,20 @@ Check terminal for "Weather set change queued". The change applies on the next w
 
 ### Adding a Shader Effect
 
-1. Create a new file in `renderer/effects/` that extends `ShaderEffect` from `base.py`
-2. Name the wrapper function with `shader_` prefix and the class with `Effect` suffix — they are auto-discovered
-3. See `docs/shader_info.txt` for the full guide covering: depth/alpha blending system, horizontal wrapping, event wrapper pattern, fade in/out, audio reactivity, and a complete template
+1. Create a new file in the active project's `projects/<id>/shaders/` that extends `ShaderEffect` from `renderer/effects/base.py`. Content shaders never go in `renderer/effects/` — that folder is engine infrastructure only (base class + universal features like the narrative player).
+2. Name the wrapper function with `shader_` prefix and the class with `Effect` suffix — project shaders are auto-discovered and injected into the `renderer.effects` namespace at startup
+3. Register it in the project's `event_map.py` so weather config can reference it by name
+4. See `docs/shader_info.txt` for the full guide covering: depth/alpha blending system, horizontal wrapping, event wrapper pattern, fade in/out, audio reactivity, and a complete template
 
 ### Project Structure
 
 ```
 Stories_OGL.py              # Entry point — wires everything together
+core/
+  project.py                # Project loader — resolves projects/<id>/project.yaml
+  shader_loader.py          # Imports the active project's shaders into renderer.effects
+  default_events.py         # DEFAULT_EVENT_MAP — universal events every project inherits
+  geometry/                 # Geometry providers (fan, multi_object)
 lib/
   ambient_audio.py          # Cross-fade ambient track controller
   audio_analyzer.py         # Microphone capture and frequency analysis
@@ -618,14 +640,17 @@ lib/
   dmx_sender.py             # sACN/E1.31 DMX pixel sender
   event_scheduler.py        # Pure timed event queue and shared state dict
   midi_controller.py        # Korg nanoKontrol2 MIDI integration
-  weather_params.py         # Weather states, presets, and set configs
-  weather_set.py            # Active set, event map, and per-set config access
+  weather_params.py         # Shared weather defaults + fallback types (projects override)
+  weather_set.py            # Active set, event map ownership, per-set config access
   weather_state.py          # State interpolation and seasonal transitions
+  interaction.py            # Per-weather-set web interaction panels (spec + validation)
+  dj/                       # Autonomous DJ subsystem (see docs/DJ_README.md)
 renderer/
   shader_renderer.py        # GLFW window + OpenGL rendering loop + display modes
   fan_geometry.py           # Pure-numpy fan/polar geometry (shared by GL and web)
-  effects/                  # 40+ individual shader effect modules
+  effects/                  # Engine infrastructure ONLY — no visual content here
     base.py                 # ShaderEffect base class
+    narrative_player.py     # + sound_pool.py, celestial_bodies.py: universal features
 engine/
   render_pipeline.py        # Hardware integration: renderer + audio + DMX + per-frame loop
 web/
@@ -633,11 +658,20 @@ web/
   templates/                # Flask HTML templates (control, editor, preview, admin)
   static/js/preview.js      # WebGL2 live preview client
   static/css/preview.css    # Preview page styles
-config/                     # DMX universe and fixture definitions (Unit*.txt)
+projects/                   # Per-project clones (gitignored) — each is its own repo
+  <id>/
+    project.yaml            # Groups, receivers, geometry, brightness/fps limits
+    event_map.py            # EVENT_MAP: effect catalog for this project
+    weather_params.py       # This project's weather sets, states, presets
+    interaction.py          # Interaction-panel hook (optional)
+    shaders/                # This project's content shaders
+    media/                  # This project's audio/images
+deploy/                     # catalog.yaml: project id -> repo URL (read by bin/setup.*)
+config/                     # Legacy DMX fixture files (Unit*.txt)
 tools/                      # dj_planner.py, narrative_editor_v2_qt.py, layout_editor.py at the top
                             # level; dj/, editors/, tests/, hardware/, media/ below it
-media/sounds/               # Ambient audio files
-media/images/               # Image assets
+media/sounds/               # Shared ambient audio files (usable by any project)
+media/images/               # Shared image assets
 docs/                       # Documentation
 bin/                        # Setup and launch scripts
 ```

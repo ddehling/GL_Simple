@@ -258,7 +258,7 @@ for s in range(40):
     styles[plan["style"]] = styles.get(plan["style"], 0) + 1
 check("plan stamps rhythm terms", plan.get("rhythm") is not None
       and plan["rhythm"]["kick_agreement"] < 0.4)
-open_low = styles.get("long_blend", 0) + styles.get("bassline_layer", 0)
+open_low = styles.get("long_blend", 0)
 check("kick clash avoids open-low styles",
       open_low <= 0.2 * sum(styles.values()), str(styles))
 tw = ghost(waltz, 3, "waltz")

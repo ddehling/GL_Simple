@@ -116,15 +116,17 @@ _STYLE_EXPOSURE = {
     "loop_roll_exit": (0.5, 0.7,  0.8,  0.6),
     "echo_out":      (0.3,  0.3,  0.3,  0.7),
     "cut_at_drop":   (0.1,  0.1,  0.1,  1.0),
-    "double_drop":   (0.4,  0.9,  0.6,  1.0),
     "loop_build":    (0.3,  0.7,  0.5,  0.9),
-    "bassline_layer": (0.7, 1.0,  0.7,  0.8),
     "stem_drum_swap": (0.5, 0.2,  0.4,  0.5),
     "acapella_out":  (1.0,  0.1,  0.2,  0.4),
     "stem_bass_swap": (0.5, 0.1,  0.6,  0.3),
     "drum_bridge":   (0.05, 0.9,  0.7,  0.8),
     "acapella_in":   (1.0,  0.1,  0.2,  0.4),
     "melody_carry":  (0.9,  0.2,  0.3,  0.3),
+    "phrase_cut":    (0.05, 0.05, 0.05, 1.0),
+    "spinback_cut":  (0.0,  0.05, 0.05, 0.9),
+    "loop_in":       (0.4,  0.5,  0.6,  0.8),
+    "breakdown_swap": (0.6, 0.3,  0.4,  0.4),
 }
 
 
@@ -206,8 +208,7 @@ def seam_tooltip(a, b, plan, si):
         if rt.get("meter_clash"):
             issues.append("meter clash")
         if rt.get("kick_agreement", 1.0) < 0.35:
-            (issues if style in ("long_blend", "bassline_layer",
-                                 "double_drop", "loop_build")
+            (issues if style in ("long_blend", "loop_build")
              else cautions).append("kick patterns")
         if rt.get("swing_delta", 0.0) > 0.055:
             cautions.append("swing")
@@ -4624,6 +4625,12 @@ class Planner(QMainWindow):
         self.tabs.addTab(self.analysis_tab, "Analysis")
         self.tabs.addTab(self.set_tab, "Set")
         self.tabs.addTab(self.mix_tab, "Mix")
+        # Seam Lab: generate brain-planned seams, play, rate good/
+        # passable/bad - a rating treadmill that feeds seam_feedback and
+        # logs/seam_lab_ratings.jsonl.
+        from tools.dj.planner.seamlab import SeamLabTab
+        self.seamlab_tab = SeamLabTab(self)
+        self.tabs.addTab(self.seamlab_tab, "Seam Lab")
         self.tabs.addTab(self.nights_tab, "Nights")
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
@@ -4676,6 +4683,8 @@ class Planner(QMainWindow):
                 self.library_tab.stop_playback()
             elif owner == "seam":
                 self.set_tab.seam_player.close()
+            elif owner == "seamlab":
+                self.seamlab_tab.stop_playback()
             elif owner == "preview":
                 self.mix_tab.preview.stop()
             elif owner == "discover":
@@ -4686,7 +4695,8 @@ class Planner(QMainWindow):
 
     def stop_all_playback(self):
         """ANY stop button stops ANY playing."""
-        for o in ("analysis", "library", "seam", "preview", "discover"):
+        for o in ("analysis", "library", "seam", "seamlab", "preview",
+                  "discover"):
             self._stop_owner(o)
         self._pb_owner = None
 
@@ -4873,6 +4883,11 @@ class Planner(QMainWindow):
         self.library_tab._pipe_total = 0
         if self.set_tab._op is not None and self.set_tab._op.isRunning():
             self.set_tab._op.wait(3000)      # a beam search can't be killed
+        self.seamlab_tab._session = False
+        self.seamlab_tab.stop_playback()
+        if self.seamlab_tab._gen is not None \
+                and self.seamlab_tab._gen.isRunning():
+            self.seamlab_tab._gen.wait(10000)   # a render can't be killed
         if self.discover_tab is not None:
             self.discover_tab.close()
         super().closeEvent(ev)

@@ -37,9 +37,9 @@ from lib.dj.themes import get_theme
 
 MUSIC = "C:/Users/ddehl/Desktop/Devel/music"
 
-SPECTACLE = ("double_drop", "cut_at_drop", "stem_drum_swap", "acapella_out")
-PUNCHY = ("cut_at_drop", "double_drop", "loop_build", "loop_roll_exit",
-          "echo_out", "bassline_layer", "stem_drum_swap")
+SPECTACLE = ("loop_build", "cut_at_drop", "stem_drum_swap", "acapella_out")
+PUNCHY = ("cut_at_drop", "loop_build", "loop_roll_exit",
+          "echo_out", "stem_drum_swap")
 
 
 class SimClock:

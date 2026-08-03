@@ -462,8 +462,8 @@ the param in weather presets has no visible effect.
 
 For the param to also flow from weather presets through to outstate:
 5. **Add to the project's `OUTSTATE_PUBLISH` table** (in `projects/<id>/weather_params.py`): include `"my_param": 0.0` (or a `lambda params, season, t: ...` for derived values). The engine (`lib/weather_state.py get_state_output`) only publishes the generic core — fog/wind/rain/stars/ambient_light — so a realm param that isn't in the project table NEVER reaches outstate.
-6. **Add to `lib/weather_params.py` `PARAMETER_DEFINITIONS`**: type/step entry
-7. **Add to `lib/weather_params.py` `DEFAULT_WEATHER_PARAMS`**: default value
+6. **Add to the project's `PARAMETER_DEFINITIONS`** (in `projects/<id>/weather_params.py`): type/step entry
+7. **Add to the project's `DEFAULT_WEATHER_PARAMS`** (same file): default value
 8. **Add to the relevant set's `allowed_parameters`**: so it's editable in that set
 
 ## Time-based Animation — NEVER multiply u_time by a varying uniform

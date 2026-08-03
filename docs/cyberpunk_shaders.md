@@ -471,13 +471,13 @@ For each cyberpunk state, this lists the shaders that produce visible output
 
 ## Files
 
-- Shader implementations: [renderer/effects/cyber_*.py](../renderer/effects/) plus
-  [signal_carrier.py](../renderer/effects/signal_carrier.py),
-  [dread_perimeter.py](../renderer/effects/dread_perimeter.py),
-  [yearning_gravity.py](../renderer/effects/yearning_gravity.py),
-  [defiance_inversion.py](../renderer/effects/defiance_inversion.py),
-  [dissolution_drift.py](../renderer/effects/dissolution_drift.py),
-  [velocity_streaks.py](../renderer/effects/velocity_streaks.py)
+- Shader implementations: [projects/fan/shaders/cyber_*.py](../projects/fan/shaders/) plus
+  [signal_carrier.py](../projects/fan/shaders/signal_carrier.py),
+  [dread_perimeter.py](../projects/fan/shaders/dread_perimeter.py),
+  [yearning_gravity.py](../projects/fan/shaders/yearning_gravity.py),
+  [defiance_inversion.py](../projects/fan/shaders/defiance_inversion.py),
+  [dissolution_drift.py](../projects/fan/shaders/dissolution_drift.py),
+  [velocity_streaks.py](../projects/fan/shaders/velocity_streaks.py)
 - Event-map registration: [projects/fan/event_map.py](../projects/fan/event_map.py)
 - State presets + parameters: [projects/fan/weather_params.py](../projects/fan/weather_params.py)
 - Narrative-variable source: [renderer/effects/narrative_player.py](../renderer/effects/narrative_player.py)

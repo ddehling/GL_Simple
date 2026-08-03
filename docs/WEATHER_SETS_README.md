@@ -5,47 +5,11 @@ The weather set system allows you to create mutually exclusive collections of we
 
 ## Available Weather Sets
 
-### 🌲 Peaceful Forest (Default)
-- **States**: clear, light_rain, foggy, firefly, mushroom, bloom, leaves
-- **Season Speed**: 1.0x (30 min = 1 year)
-- **Season Extremity**: 1.0x (normal seasonal influence)
-- **Transition Speed**: 0.8x (slower, ~5 min between weather changes)
-- **Vibe**: Gentle, natural, contemplative
+Weather sets are **defined per project** in the active project's `projects/<id>/weather_params.py` (`WEATHER_SETS` dict) — the engine ships no set list of its own. The default set is that file's `DEFAULT_WEATHER_SET`.
 
-### ⛈️ Storm World
-- **States**: windy_night, heavy_rain, thunderstorm, foggy, spooky
-- **Season Speed**: 1.5x (20 min = 1 year)
-- **Season Extremity**: 0.5x (less seasonal variation)
-- **Transition Speed**: 1.5x (faster, ~2.7 min between changes)
-- **Vibe**: Intense, dramatic, energetic
+The Fan project, for example, currently defines: `peaceful_forest` (default), `storm_world`, `desert_realm`, `cosmic_night`, `ocean`, `cyberpunk`, `bartiki`, `beloved`, `club`, `fynewynz`, `full_spectrum`, and `test`.
 
-### 🏜️ Desert Realm
-- **States**: clear, sandstorm, volcano, windy_night
-- **Season Speed**: 0.5x (60 min = 1 year)
-- **Season Extremity**: 2.0x (extreme seasonal swings)
-- **Transition Speed**: 0.6x (very slow, ~6.7 min between changes)
-- **Vibe**: Harsh, alien, stark
-
-### 🌫️ Ethereal Mist
-- **States**: heavy_fog, foggy, spooky, mushroom, firefly
-- **Season Speed**: 0.7x (43 min = 1 year)
-- **Season Extremity**: 1.5x (strong seasonal influence)
-- **Transition Speed**: 0.5x (very slow, ~8 min between changes)
-- **Vibe**: Mysterious, dreamlike, otherworldly
-
-### 🌌 Cosmic Night
-- **States**: clear, asteroid, windy_night
-- **Season Speed**: 2.0x (15 min = 1 year)
-- **Season Extremity**: 1.0x (normal seasonal influence)
-- **Transition Speed**: 2.0x (fast, ~2 min between changes)
-- **Vibe**: Celestial, dynamic, cosmic
-
-### 🌈 Full Spectrum
-- **States**: All 15 weather states
-- **Season Speed**: 1.0x
-- **Season Extremity**: 1.0x
-- **Transition Speed**: 1.0x
-- **Vibe**: Maximum variety, unpredictable
+To see the active project's sets with their states and descriptions, open `http://localhost:5000/weather_sets` or read the project's `weather_params.py` directly.
 
 ## Web Interface
 
@@ -105,7 +69,7 @@ The weather set system allows you to create mutually exclusive collections of we
 
 ## Adding New Sets
 
-Edit `lib/weather_params.py`:
+Edit the active project's `projects/<id>/weather_params.py` (not the engine's `lib/weather_params.py` — that only provides shared defaults, and project modules override it at runtime):
 
 ```python
 WEATHER_SETS = {
@@ -120,7 +84,7 @@ WEATHER_SETS = {
 }
 ```
 
-Update `templates/weather_sets.html` to add icon and description.
+New sets appear in the web UI automatically (generic 📦 icon); optionally add a custom icon in `web/templates/weather_sets.html`. Sets can also be created in the browser-based weather editor (`/weather_editor`), which saves back to the project's `weather_params.py`.
 
 ## Integration with Nightly Programs
 

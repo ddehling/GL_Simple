@@ -24,8 +24,8 @@ from lib.dj.rhythm import seam_rhythm, tempo_mult_for
 # Styles whose blend runs BOTH tracks' low end open at some point - the
 # ones a kick-pattern clash actually bites. bass_swap/stem_drum_swap keep
 # one low bed at a time; cut_at_drop never overlaps; fades opt out.
-_LOW_OPEN_STYLES = ("long_blend", "loop_roll_exit", "double_drop",
-                    "loop_build", "bassline_layer", "drum_bridge")
+_LOW_OPEN_STYLES = ("long_blend", "loop_roll_exit",
+                    "loop_build", "drum_bridge")
 
 
 def _make_edge(brain):
@@ -219,8 +219,7 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             # urgent exit makes. Drop-anchored styles keep their drop (the
             # exit IS the drop; moving it breaks the style's premise).
             if (e.get("target_play_s")
-                    and plan["style"] not in ("cut_at_drop", "double_drop",
-                                              "loop_build")
+                    and plan["style"] not in ("cut_at_drop", "loop_build")
                     and plan["out_s"] > in_s + tp + 45.0):
                 forced = t.nearest_phrase(in_s + tp)
                 plan["out_s"] = min(max(forced, in_s + 40.0),
@@ -302,7 +301,8 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
                                      "filter_sweep", "loop_roll_exit",
                                      "stem_drum_swap", "acapella_out",
                                      "stem_bass_swap", "drum_bridge",
-                                     "acapella_in", "melody_carry") \
+                                     "acapella_in", "melody_carry",
+                                     "loop_in", "breakdown_swap") \
                 else 0.0
             play -= blend_wall * (a_r - 1.0)  # blend runs at meeting tempo
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]

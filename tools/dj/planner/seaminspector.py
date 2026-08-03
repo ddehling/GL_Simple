@@ -56,8 +56,8 @@ class SeamInspector(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumHeight(150)
-        self.setMaximumHeight(190)
+        self.setMinimumHeight(170)
+        self.setMaximumHeight(215)
         self.a = self.b = None
         self.plan = {}
         self.si = {}
@@ -71,6 +71,8 @@ class SeamInspector(QWidget):
         self.a, self.b = a, b
         self.plan = plan or {}
         self.si = seam_info or {}
+        rt = self.si.get("rhythm") or {}
+        self.setToolTip(_chip_text(rt) if rt else "")   # numbers on hover
         self.update()
 
     # -- painting ----------------------------------------------------------
@@ -184,9 +186,9 @@ class SeamInspector(QWidget):
         p.setPen(TXT_HI)
         style = self.plan.get("style", "?")
         rate = self.plan.get("rate", 1.0)
-        p.drawText(pad, 14, f"{self.b.title[:34]}  (in{b_reg}, "
-                            f"{'as heard at seam' if rt else 'no signature'})"
-                            f"    {style} @ rate {rate:.3f}")
+        p.drawText(pad, 14,
+                   f"{self.b.title[:26]}  (in{b_reg})   {style}"
+                   f" @ {rate:.3f}")
         if sig_a is None or sig_b is None:
             p.setPen(TXT)
             p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
@@ -217,7 +219,47 @@ class SeamInspector(QWidget):
         self._draw_grid_lines(p, a_rect)
         low_b = self._draw_pattern_block(p, sig_b, b_rect, mult, rot)
         low_a = self._draw_pattern_block(p, sig_a, a_rect)
-        self._draw_beat_lane(p, lane, sig_a, sig_b)
+        fl = rt.get("flam_ms")
+        if fl is not None and 15.0 <= fl <= 80.0:
+            # Only show the beat microscope when there IS a flam story -
+            # an always-on lane of cryptic ticks read as noise (user).
+            self._draw_beat_lane(p, lane, sig_a, sig_b)
+        else:
+            p.setPen(OK if fl is not None and fl < 15.0 else TXT)
+            p.drawText(QRectF(x0, lane.y(), bw, lane.height()),
+                       Qt.AlignmentFlag.AlignCenter,
+                       "drum hits lock cleanly" if fl is not None
+                       and fl < 15.0 else "")
+
+        # WHAT AM I LOOKING AT: per-row instrument labels (color-matched
+        # to the bars), beat numbers along B's grid (2 bars = 8 beats),
+        # and a microscope caption - the picture should explain itself.
+        f0 = p.font()
+        f = p.font()
+        f.setPointSizeF(max(f.pointSizeF() - 1.5, 6.0))
+        p.setFont(f)
+        for rect in (b_rect, a_rect):
+            y = rect.y()
+            for name, color, frac in (("hat", HIGH, 0.20),
+                                      ("snr", MID, 0.25),
+                                      ("kick", LOW, 0.55)):
+                rh = rect.height() * frac
+                p.setPen(color)
+                p.drawText(QRectF(rect.x() + 2, y, 30, rh),
+                           Qt.AlignmentFlag.AlignLeft
+                           | Qt.AlignmentFlag.AlignVCenter, name)
+                y += rh
+        p.setFont(f0)
+        # Plain-language verdict, top right, colored like the chips.
+        sc = rt.get("score")
+        if sc is not None:
+            word = ("grooves lock" if sc >= 0.6 else
+                    "half-agree (short blend)" if sc >= 0.45 else
+                    "grooves fight (style must hide it)")
+            p.setPen(OK if sc >= 0.6 else
+                     MID if sc >= 0.45 else CLASH)
+            p.drawText(QRectF(0, 2, w - pad, 14),
+                       Qt.AlignmentFlag.AlignRight, f"● {word}")
 
         # Low-band contradictions: one track slams a 16th the other leaves
         # empty, in the rows a blend would layer. Marked between the blocks.
@@ -233,10 +275,18 @@ class SeamInspector(QWidget):
                                int(x + sw / 2), int(lane.y() + 3))
 
         p.setPen(TXT_HI)
-        p.drawText(pad, int(a_rect.y() + block_h + 13),
-                   f"{self.a.title[:34]}  (out{a_reg})")
-        col = OK if rt.get("score", 1.0) >= 0.6 else CLASH
-        p.setPen(col if rt else TXT)
-        p.drawText(pad + 240, int(a_rect.y() + block_h + 13),
-                   _chip_text(rt) if rt else "")
+        a_title = f"{self.a.title[:26]}  (out{a_reg})"
+        p.drawText(pad, int(a_rect.y() + block_h + 13), a_title)
+        # PLAIN-WORDS LEGEND instead of the raw numbers line (those moved
+        # to the tooltip): every color on the picture, named. Starts
+        # AFTER the measured title width - fixed offsets overlapped it.
+        lx = pad + 16 + p.fontMetrics().horizontalAdvance(a_title)
+        ly = int(a_rect.y() + block_h + 5)
+        for color, label in ((LOW, "kick"), (MID, "snare"), (HIGH, "hats"),
+                             (CLASH, "kick mismatch"),
+                             (FLAM, "flam (two kicks ~30ms apart)")):
+            p.fillRect(lx, ly, 8, 8, color)
+            p.setPen(TXT)
+            p.drawText(lx + 11, ly + 8, label)
+            lx += 22 + p.fontMetrics().horizontalAdvance(label)
         p.end()

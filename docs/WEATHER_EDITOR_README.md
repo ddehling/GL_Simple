@@ -45,9 +45,9 @@ Each weather state has numerous configurable parameters:
 
 ### 💾 Save & Validation
 - **Validate**: Click "Validate" to check data integrity without saving
-- **Save Changes**: Overwrites `weather_params.py` (creates backup first)
+- **Save Changes**: Overwrites the active project's `projects/<id>/weather_params.py` (creates backup first)
 - **Unsaved Changes Warning**: Browser warns before closing with unsaved work
-- **Automatic Backup**: Original file saved as `weather_params.py.backup`
+- **Automatic Backup**: Original file saved as `projects/<id>/weather_params.py.backup`
 
 ## Workflow
 
@@ -100,8 +100,11 @@ Each weather state has numerous configurable parameters:
 - **Weather Sets**: Collections of weather states with their own characteristics
 
 ### File Location
-- Original: `lib/weather_params.py`
-- Backup: `lib/weather_params.py.backup`
+The editor reads and saves the **active project's** weather module:
+- Original: `projects/<id>/weather_params.py`
+- Backup: `projects/<id>/weather_params.py.backup` (created on every save)
+
+(The engine-level `lib/weather_params.py` only provides shared defaults — saving there would be silently overridden by the project module at runtime, so the editor always targets the project file.)
 
 ## Parameter Reference
 
@@ -130,13 +133,14 @@ Each weather state has numerous configurable parameters:
 
 **Changes not saving**:
 - Click "Validate" first to check for errors
-- Check you have write permissions to lib/ folder
+- Check you have write permissions to the `projects/<id>/` folder
 - Review error messages in status bar
+- Note: the editor refuses saves that would blank a set's `allowed_parameters` (guardrail against destructive saves) — edit `weather_params.py` directly if you really mean to clear them
 
 **Application doesn't reflect changes**:
 - Restart Stories_OGL.py after saving
-- Check that weather_params.py was actually updated
-- Restore from backup if needed
+- Check that `projects/<id>/weather_params.py` was actually updated
+- Restore from `projects/<id>/weather_params.py.backup` if needed
 
 ## Tips
 

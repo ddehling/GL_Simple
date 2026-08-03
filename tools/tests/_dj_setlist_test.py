@@ -264,6 +264,20 @@ def main():
             check(f"{st3} scripts stem automation",
                   n3 >= nmin and sw3 > b03,
                   f"{n3} stem_gains events, swap>{'blend' if sw3 > b03 else 'BAD'}")
+        # Non-stem additions: cut family + loop entry script sanely too.
+        for st3 in ("phrase_cut", "spinback_cut", "loop_in",
+                    "breakdown_swap"):
+            plan3 = dict(base3, style=st3, beats=16,
+                         out_s=a3.nearest_phrase(a3.duration_s * 0.6))
+            ev3, sw3, b03 = br3.preview_events(plan3, a3, b3)
+            kinds = {e["cmd"] for e in ev3}
+            ok3 = len(ev3) > 4 and sw3 > b03
+            if st3 == "spinback_cut":
+                ok3 = ok3 and "brake" in kinds
+            if st3 == "loop_in":
+                ok3 = ok3 and "loop" in kinds and "clear_loop" in kinds
+            check(f"{st3} scripts a sane transition", ok3,
+                  f"{len(ev3)} events, cmds={sorted(kinds)[:8]}")
         plan3 = dict(base3, style="long_blend", beats=32,
                      out_s=a3.nearest_phrase(a3.duration_s * 0.6),
                      duck_vocal_a=True)

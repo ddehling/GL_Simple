@@ -727,9 +727,9 @@ Ultra-rare events with high visual impact, tied to seasonal timing or very low p
 - Consider GPU memory for texture assets
 
 ### Integration Points:
-- Background events added to `event_map` in Stories_OGL.py
+- Background events added to `EVENT_MAP` in `projects/fan/event_map.py`
 - Scheduled via `_initialize_weather_set_events()`
-- Temporary events triggered in `random_events()` method
+- Temporary events triggered via the project's `random_events` hook (`projects/fan/random_events.py`)
 - Weather state transitions can trigger specific events
 - Audio synchronized through existing `soundengine`
 

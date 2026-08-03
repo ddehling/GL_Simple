@@ -13,7 +13,10 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 14              # v14: setlists.total_s/arc_json (compiled
+SCHEMA_VERSION = 15              # v15: seam_feedback.ver (engine
+                                 # fingerprint, so evidence from
+                                 # different engine eras stays separable)
+#                                 v14: setlists.total_s/arc_json (compiled
                                  #      set duration + arc, honored live) +
                                  #      tracks.bpm_source/bpm_scan/
                                  #      bpm_verified_at (live tempo verify
@@ -111,7 +114,8 @@ CREATE TABLE IF NOT EXISTS seam_feedback (
     style TEXT,
     up INTEGER NOT NULL,                -- 1 thumbs-up / 0 thumbs-down
     at REAL NOT NULL,
-    source TEXT NOT NULL DEFAULT 'user' -- 'user' thumbs | 'auto' assessment
+    source TEXT NOT NULL DEFAULT 'user', -- 'user' thumbs | 'auto' assessment
+    ver TEXT                            -- engine fingerprint (lib/dj/version)
 );
 CREATE INDEX IF NOT EXISTS idx_seam_fb ON seam_feedback(a_id, b_id);
 CREATE TABLE IF NOT EXISTS play_history (
@@ -244,6 +248,11 @@ class LibraryDB:
                 if have_sl and col not in have_sl:
                     self.conn.execute(
                         f"ALTER TABLE setlists ADD COLUMN {col} {typ}")
+            have_fb = {r[1] for r in
+                       self.conn.execute("PRAGMA table_info(seam_feedback)")}
+            if have_fb and "ver" not in have_fb:            # v15
+                self.conn.execute(
+                    "ALTER TABLE seam_feedback ADD COLUMN ver TEXT")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -631,11 +640,21 @@ class LibraryDB:
         self.conn.commit()
         return cur.lastrowid
 
-    def add_seam_feedback(self, a_id, b_id, style, up, source="user"):
+    def add_seam_feedback(self, a_id, b_id, style, up, source="user",
+                          ver=None):
+        # `ver` stamps WHICH ENGINE produced the seam this verdict judged
+        # (lib/dj/version). Without it, evidence from before a transition
+        # change is indistinguishable from evidence after it.
+        if ver is None:
+            try:
+                from lib.dj.version import tag
+                ver = tag()
+            except Exception:
+                ver = None
         self.conn.execute(
-            "INSERT INTO seam_feedback (a_id, b_id, style, up, at, source)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (a_id, b_id, style, 1 if up else 0, time.time(), source))
+            "INSERT INTO seam_feedback (a_id, b_id, style, up, at, source,"
+            " ver) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (a_id, b_id, style, 1 if up else 0, time.time(), source, ver))
         self.conn.commit()
 
     def seam_feedback_rows(self, days=90.0):

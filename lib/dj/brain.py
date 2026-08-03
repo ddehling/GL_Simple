@@ -20,6 +20,7 @@ import numpy as np
 
 from lib.dj import stretch_engine_name
 from lib.dj.features import _finite, hardness_raw
+from lib.dj import tuning as _tuning
 from lib.dj.rhythm import (prep_signature, rhythm_terms, seam_rhythm,
                            tempo_mult_for)
 from lib.dj.themes import adapt_theme
@@ -27,7 +28,7 @@ from lib.dj.themes import adapt_theme
 RATE = 44100
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
-          "bassline_layer", "double_drop", "loop_build", "long_fade",
+          "loop_build", "long_fade",
           "stem_drum_swap", "acapella_out")
 STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
 # Rate-gradient speeds. Both were tuned in the WSOLA era when a tempo ramp
@@ -493,6 +494,104 @@ def _title_root(title):
     return re.sub(r"\s+", " ", t).strip(" -_")
 
 
+# EVIDENCE WEIGHT for the broad memories (style, feature class). Without
+# it a handful of votes moved a multiplier as far as a hundred would:
+# measured 2026-08-02 on the real feedback table, phrase_cut sat at the
+# 0.60 FLOOR on five votes while long_fade - the can't-beat-match FALLBACK
+# - was the only boosted style. That is a rich-get-richer collapse: a
+# penalised style gets chosen less, so it never earns the evidence that
+# would clear it, and the night drifts toward wall-to-wall fades. Pull the
+# raw multiplier back toward neutral in proportion to how much evidence
+# stands behind it; a genuinely bad style still gets there, it just has to
+# earn it. Pair memory is deliberately NOT shrunk - "these two exact songs
+# clashed" is strong evidence from one hearing.
+_SHRINK_K = 8.0
+
+_COND_RT_MEMO = {}                  # (a_id, b_id) -> rhythm terms
+
+# LEARNABLE EXECUTION KNOBS. Each was a hand-picked constant inside
+# build_events; naming them lets the lab jitter one seam at a time and
+# learn the direction each wants to move, WITHOUT repeating a pair - the
+# jitter is independent of the music, so across enough seams it separates
+# from it. Defaults reproduce the previous behaviour exactly.
+TUNE_DEFAULTS = {
+    "swap_pos": 0.5,        # where the swap sits between blend start/end
+    "swap_beats_long": 6.0,  # crossfade width, staged long blend
+    "swap_beats": 4.0,      # crossfade width, single-swap styles
+    "b_mid0_hot": 0.3,      # B's entry mid shelf when A's mids are busy
+    "b_mid0": 0.45,         # B's entry mid shelf otherwise
+    "b_high0_hot": 0.7,     # B's entry high shelf when A's highs are busy
+    "b_high0": 1.0,         # B's entry high shelf otherwise
+    "b_high0_long": 0.5,    # ...capped this low on a staged long blend
+    "b_mid0_long": 0.3,
+    "trim_cap": 1.41,       # quiet-intro entry trim ceiling (+3 dB)
+    "fade_recede": 0.5,     # long_fade: level A recedes to
+    "fade_lead_a": 8.0,     # long_fade: A starts receding this early
+    "fade_lead_b": 4.0,     # long_fade: B arrives this early
+    "fade_b_stage1": 0.6,   # long_fade: B's "present" level before full
+    "fade_b_ramp1": 3.5,    # long_fade: seconds to reach it
+    "fade_b_ramp2": 8.0,    # long_fade: seconds from there to full
+    "fade_out_ramp": 5.0,   # long_fade: A's final fade length
+    "fade_stop_lead": 6.0,  # long_fade: A stops this long after the seam
+    "stage1_gain": 0.92,    # staged blend: B's stage-1 level (x entry trim)
+    "stage1_frac": 0.35,    # staged blend: fraction of the span to reach it
+    "high_swap_at": 0.22,   # staged blend: when the highs start migrating
+    "beats_scale": 1.0,     # global multiplier on the planned blend length
+    "pre_dip_at": 0.5,      # staged blend: when A starts its glide down
+    "pre_dip_gain": 0.85,   # ...and the level it glides to
+    "exit_res": 8.0,        # beats of A reserved after the swap
+    "exit_res_long": 16.0,
+    "duck_depth": 0.0,      # vocal duck: A's vocal stem level
+    "duck_beats": 2.0,      # ...over this many beats
+    "echo_lead_beats": 12.0,   # echo_out: B arrives this many beats early
+    "echo_b_gain": 0.9,     # echo_out: B's level under the tail
+    "echo_delay_beats": 0.75,  # echo_out: delay time (dotted eighth)
+    "echo_feedback": 0.62,
+    "echo_wet": 0.8,
+    "echo_tail_s": 2.5,     # echo_out: how long the tail rings on
+    "spinback_s": 1.4,      # spinback_cut: platter wind-down length
+    "brake_s": 0.9,         # phrase_cut's optional brake, when it fires
+    "brake_chance": 0.5,    # ...how often it fires
+    "roll_shrink1": 16.0,   # loop_roll_exit: beats before the first halving
+    "roll_shrink2": 24.0,   # ...and the second
+}
+
+
+def _shrink(v_raw, votes, lo, hi):
+    """Evidence-proportional multiplier: neutral at no votes, approaching
+    the raw value as votes accumulate past _SHRINK_K."""
+    n = max(float(votes), 0.0)
+    return max(lo, min(hi, 1.0 + (v_raw - 1.0) * n / (n + _SHRINK_K)))
+
+
+def seam_conditions(a, b, rt=None):
+    """The handful of conditions a style's competence is learned PER.
+
+    This is what turns "phrase_cut is bad" (which can only ever delete the
+    style) into "phrase_cut is bad on LOOSE GRIDS" (which tells the engine
+    when to reach for it and tells a human what to fix). Deliberately
+    coarse - each bucket has to collect enough votes to mean something
+    within a few sessions."""
+    out = []
+    conf = min(getattr(a, "bpm_conf", 0.0) or 0.0,
+               getattr(b, "bpm_conf", 0.0) or 0.0)
+    out.append("grid:precise" if conf >= 0.7 else "grid:loose")
+    kc = camelot_compat(getattr(a, "camelot", None),
+                        getattr(b, "camelot", None))
+    out.append("key:good" if kc >= 0.9 else
+               "key:ok" if kc >= 0.55 else "key:clash")
+    if rt:
+        s = rt.get("score")
+        if s is not None:
+            out.append("groove:lock" if s >= 0.6 else
+                       "groove:half" if s >= 0.45 else "groove:fight")
+        f = rt.get("flam_ms")
+        if f is not None:
+            out.append("flam:lock" if f < 15.0 else
+                       "flam:risk" if f <= 80.0 else "flam:far")
+    return tuple(out)
+
+
 class Brain:
     def __init__(self, library, theme, seed=None, stretch_max=STRETCH_MAX):
         self.library = list(library)
@@ -572,6 +671,7 @@ class Brain:
         self.pair_memory = {}           # (a_id,b_id) -> cross-night multiplier
         self.class_memory = {}          # (key,off,conf) bucket -> multiplier
         self.style_memory = {}          # style -> cross-night multiplier
+        self.style_cond_memory = {}     # (style, condition) -> multiplier
         self._rhythm_cache = {}         # (a_id,b_id,mult) -> rhythm score
 
     @staticmethod
@@ -641,18 +741,73 @@ class Brain:
         self.class_memory = {}
         for k, (u, d) in cls.items():
             if u + d >= 3.0:
-                v = max(0.75, min(1.25,
-                                  (1.04 ** min(u, 8)) * (0.93 ** min(d, 8))))
+                v = _shrink((1.04 ** min(u, 8)) * (0.93 ** min(d, 8)),
+                            u + d, 0.75, 1.25)
                 if abs(v - 1.0) > 0.01:
                     self.class_memory[k] = v
         self.style_memory = {}
         for s, (u, d) in sty.items():
             if u + d >= 3.0:
-                v = max(0.6, min(1.4,
-                                 (1.06 ** min(u, 8)) * (0.90 ** min(d, 8))))
+                v = _shrink((1.06 ** min(u, 8)) * (0.90 ** min(d, 8)),
+                            u + d, 0.6, 1.4)
                 if abs(v - 1.0) > 0.01:
                     self.style_memory[s] = v
+        # CONDITIONAL COMPETENCE: the same votes re-aggregated per (style,
+        # condition). This is the memory that can IMPROVE a style instead
+        # of retiring it - a technique that fails on loose grids but works
+        # on precise ones keeps its place in the box and gets reached for
+        # where it belongs, and the planner panel can say so in words.
+        cnd = {}
+        for r in rows:
+            a, b = by_id.get(r["a_id"]), by_id.get(r["b_id"])
+            if a is None or b is None or not r.get("style"):
+                continue
+            ck = (r["a_id"], r["b_id"])
+            rt = _COND_RT_MEMO.get(ck)
+            if rt is None:
+                try:                 # the plan's rate is not stored; the
+                    rt = seam_rhythm(a, b, 1.0) or {}   # tempo read is
+                except Exception:                       # near enough for
+                    rt = {}                             # a coarse bucket
+                _COND_RT_MEMO[ck] = rt
+            w = 0.5 if (r["source"] or "user") == "auto" else 1.0
+            up = 1 if r["up"] else 0
+            for c in seam_conditions(a, b, rt):
+                k2 = (r["style"], c)
+                u, d = cnd.get(k2, (0.0, 0.0))
+                cnd[k2] = (u + w * up, d + w * (1 - up))
+        self.style_cond_memory = {}
+        for k2, (u, d) in cnd.items():
+            if u + d >= 3.0:
+                v = _shrink((1.06 ** min(u, 8)) * (0.90 ** min(d, 8)),
+                            u + d, 0.6, 1.4)
+                if abs(v - 1.0) > 0.01:
+                    self.style_cond_memory[k2] = v
         return len(self.pair_memory)
+
+    def style_multiplier(self, style, conds):
+        """What the memory says about `style` FOR THESE CONDITIONS.
+
+        Conditional evidence leads when it exists (it describes this seam);
+        the global average is only a weak prior, and is halved when no
+        conditional evidence applies - a global drawn from situations that
+        do not hold here should not condemn the style here.
+
+        A style that is bad in EVERY condition still lands at the bottom of
+        the same 0.6-1.4 band the flat memory always used: this localises
+        blame, it does not protect anything."""
+        g = self.style_memory.get(style, 1.0)
+        terms = [self.style_cond_memory[(style, c)] for c in conds
+                 if (style, c) in self.style_cond_memory]
+        if terms:
+            prod = 1.0
+            for t in terms:
+                prod *= t
+            cond = prod ** (1.0 / len(terms))     # geometric mean
+            v = (cond ** 0.75) * (g ** 0.25)
+        else:
+            v = 1.0 + (g - 1.0) * 0.5
+        return max(0.6, min(1.4, v))
 
     def set_flavor(self, flavor):
         self.flavor = dict(flavor or {})
@@ -1575,37 +1730,23 @@ class Brain:
         ahead = [t for t in drops if t >= after_s]
         return min(ahead) if ahead else min(drops)
 
-    def _bass_loop(self, track, before_s, after_s=0.0):
-        """Best loop in `track` to isolate as a repeating groove bed: a
-        bass-heavy, low-vocal, repetitive loop before the exit. Only loops
-        AHEAD of `after_s` qualify - a loop behind the live playhead would
-        compile to already-past events (the whole transition fires at once
-        and the loop window never wraps)."""
-        best = None
-        for l in track.loops:
-            if l["start_s"] >= before_s or l["start_s"] < after_s:
-                continue
-            sec = track.section_at(l["start_s"] + 1.0)
-            if sec is None:
-                continue
-            if sec.get("vocalness", 1.0) > 0.5:
-                continue
-            score = (l.get("score", 0.0) * (0.4 + sec.get("bass_share", 0.3))
-                     * (0.5 + 0.5 * sec.get("repetitiveness", 0.0)))
-            if best is None or score > best[0]:
-                best = (score, l)
-        return best[1] if best else None
-
     # -- transition planning -----------------------------------------------------
     def plan_transition(self, cur, cand, meta, after_s=None, arc=None,
-                        force_style=None):
+                        force_style=None, test_gates=False):
         """Resolve style + timing. Returns a plan dict (see build_events).
         `arc` (0..1, optional) couples style choice to the night's energy
         position - valleys breathe, the climb commits, the peak spends the
         spectacle tier. `force_style` (a planner style pin) collapses the
         dice roll to that style - but only if every safety gate left it on
         the menu; a gated-off pin falls back to the normal roll and the
-        refusal is recorded in the plan's diag (style_pin.honored)."""
+        refusal is recorded in the plan's diag (style_pin.honored).
+
+        `test_gates` (OFFLINE USE - the Seam Lab) lets a pin through a
+        gate that is a tuned THRESHOLD rather than a structural
+        requirement, so the threshold can be judged by ear instead of
+        taken on faith. The override is recorded in diag['gate_test'].
+        Never set this on a live night: the gates are there because the
+        thresholds are mostly right."""
         pair = meta.get("pair") if meta else None
         if pair is None or (after_s is not None
                             and pair["out_s"] < after_s):
@@ -1631,19 +1772,23 @@ class Brain:
         rt_sure = rt is not None and rt.get("conf", 0.0) >= 0.5
 
         # Style menu, gated by analysis confidence. Weighted by tonight's
-        # thumbs (style_fb) AND cross-night learned style taste
-        # (style_memory, from persisted seam feedback).
+        # thumbs (style_fb) AND cross-night learned style taste - which is
+        # read FOR THIS SEAM'S CONDITIONS (grid/key/groove/flam), not as a
+        # flat per-style verdict, so a technique that struggles on loose
+        # grids is still reached for when the grids are precise.
+        conds = seam_conditions(cur, cand, rt)
         weights = {k: w * self.style_fb.get(k, 1.0)
-                   * self.style_memory.get(k, 1.0)
+                   * self.style_multiplier(k, conds)
                    for k, w in self.theme.style_weights.items()}
         # PERSONA: signature-move bias + the theatricality scale on the
         # whole punchy accent tier. Menu weighting only - every confidence/
         # flam/vocal gate below still zeroes what it zeroes for everyone.
         pers = self.persona
         if pers.style_bias or pers.theatrics != 1.0:
-            _accent = ("cut_at_drop", "double_drop", "loop_build",
-                       "loop_roll_exit", "echo_out", "bassline_layer",
-                       "stem_drum_swap", "drum_bridge", "acapella_in")
+            _accent = ("cut_at_drop", "loop_build",
+                       "loop_roll_exit", "echo_out",
+                       "stem_drum_swap", "drum_bridge", "acapella_in",
+                       "phrase_cut", "spinback_cut", "loop_in")
             for k in list(weights):
                 w = weights[k] * pers.style_bias.get(k, 1.0)
                 if k in _accent:
@@ -1654,10 +1799,12 @@ class Brain:
         # inert without tools/dj/dj_stems.py output on disk).
         for k, dflt in (("stem_drum_swap", 0.3), ("acapella_out", 0.2),
                         ("stem_bass_swap", 0.3), ("drum_bridge", 0.2),
-                        ("acapella_in", 0.15), ("melody_carry", 0.2)):
+                        ("acapella_in", 0.15), ("melody_carry", 0.2),
+                        ("phrase_cut", 0.25), ("spinback_cut", 0.15),
+                        ("loop_in", 0.2), ("breakdown_swap", 0.2)):
             if k not in weights:
                 weights[k] = (dflt * self.style_fb.get(k, 1.0)
-                              * self.style_memory.get(k, 1.0))
+                              * self.style_multiplier(k, conds))
         # GATE ATTRIBUTION: every style that gets ZEROED below records which
         # gate did it. Without this the only observable was the outcome -
         # four styles carried 93% of 560 real seams and nothing said whether
@@ -1666,12 +1813,43 @@ class Brain:
         # here down, so the record is complete by construction; it rides the
         # plan into the `armed` log line for tools/dj/dj_review.py --gates.
         gated = {}
+        gated_all = {}              # style -> EVERY reason it was killed
 
         def kill(styles, reason):
             for k in ((styles,) if isinstance(styles, str) else styles):
                 if weights.get(k, 0.0) > 0.0:
                     gated.setdefault(k, reason)
+                # EVERY reason, including ones recorded after the weight
+                # already hit zero: `gated` keeps the first for the gate
+                # report, but an override must see them all or it can let
+                # a style through a threshold while a STRUCTURAL kill it
+                # never saw still stands (measured: loop_build killed by
+                # kick_offset then by no_drop_in_A, overridden on the
+                # first, crashed on the missing drop).
+                gated_all.setdefault(k, set()).add(reason)
                 weights[k] = 0.0
+        # Reasons a pin MAY override under test_gates. These are tuned
+        # THRESHOLDS - somebody's estimate of where a technique starts to
+        # sound bad - and a threshold nobody is allowed to cross can never
+        # be shown wrong. Everything absent from this set is structural
+        # (no stems, no drop, no breakdown to blend over): overriding
+        # those doesn't test a belief, it builds a plan out of parts that
+        # aren't there.
+        testable = ("grid_conf<0.7", "cut_needs_grid_conf>=0.8",
+                    "grid_conf<0.5", "downbeat_conf", "kick_offset>28ms",
+                    "key_fit<0.8", "anti_streak", "kick_clash",
+                    "swing_clash", "meter_clash", "half_time")
+
+        # RETIRED (2000-pair audit + live record, 2026-08-02):
+        # cut_at_drop reached 2% of menus, won 0/2000 rolls, and measured
+        # 2/5 rough live - phrase_cut does its job without the drop
+        # dependency (choreography kept so old pinned sets degrade
+        # politely: a pin shows 'refused (retired)'). bassline_layer
+        # (10% of menus, 3 live plays ever) and double_drop (the fx
+        # one-shot holdout; loop_build carries the drop spectacle) are
+        # REMOVED outright - the kill keeps their old pins refusing
+        # politely, the choreography is gone.
+        kill(("cut_at_drop", "bassline_layer", "double_drop"), "retired")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
@@ -1687,9 +1865,10 @@ class Brain:
         # ARC-COUPLED PACING: valleys lean into the long workhorse blends,
         # the climb favors decisive single-swaps, the peak unlocks the
         # punchy tier. Dynamics get SHAPE instead of uniform dice noise.
-        _punchy = ("cut_at_drop", "double_drop", "loop_build",
-                   "loop_roll_exit", "echo_out", "bassline_layer",
-                   "stem_drum_swap", "drum_bridge", "acapella_in")
+        _punchy = ("cut_at_drop", "loop_build",
+                   "loop_roll_exit", "echo_out",
+                   "stem_drum_swap", "drum_bridge", "acapella_in",
+                   "phrase_cut", "spinback_cut", "loop_in")
         moment = False
         if arc is not None:
             if arc < 0.35:
@@ -1721,7 +1900,7 @@ class Brain:
                 # not removed - if every spectacle style is gated off by
                 # grid confidence or a missing drop, the blend still
                 # carries the seam, which is the correct fallback.
-                for k in ("double_drop", "cut_at_drop", "stem_drum_swap",
+                for k in ("loop_build", "cut_at_drop", "stem_drum_swap",
                           "acapella_out", "acapella_in", "drum_bridge"):
                     weights[k] = weights.get(k, 0) * 12.0
                 for k in ("long_blend", "bass_swap", "filter_sweep"):
@@ -1742,6 +1921,7 @@ class Brain:
                  "dual_bend_blend_only")
         fade_reason = None
         rolled = False              # did a style dice roll actually happen?
+        gate_tested = None          # threshold this seam was let through
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
             # a beat-matched blend there is inaudible as such and just
@@ -1758,8 +1938,9 @@ class Brain:
             # at conf ~0.6 the stored grid itself wobbles 25-50ms
             # (measured on the real library) and the seam audibly flams.
             if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
-                kill(("cut_at_drop", "double_drop", "echo_out",
-                      "bassline_layer"), "grid_conf<0.7")
+                kill(("cut_at_drop", "echo_out",
+                      "phrase_cut", "spinback_cut",
+                      "loop_in"), "grid_conf<0.7")
             # cut_at_drop earns a STRICTER bar than the rest of its tier.
             # Measured over 560 logged seams (tools/dj/dj_review.py): median
             # flam 0.247 beats against 0.061-0.068 for every blend style
@@ -1784,9 +1965,9 @@ class Brain:
             # audible ~25ms. loop_roll_exit joined the list: the roll
             # repeats material, which showcases the flam.
             if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028:
-                kill(("cut_at_drop", "double_drop", "echo_out",
-                      "bassline_layer", "loop_build", "loop_roll_exit"),
-                     "kick_offset>28ms")
+                kill(("cut_at_drop", "echo_out",
+                      "loop_build", "loop_roll_exit",
+                      "loop_in"), "kick_offset>28ms")
             # GROOVE-AWARE STYLE STEERING (rhythm signatures, trusted
             # grids only). Selection already leaned away from these pairs;
             # when one plays anyway (setlist order, thin pool), pick the
@@ -1796,8 +1977,7 @@ class Brain:
                     # Contradicting kick patterns: never run both lows
                     # open. The one-low-bed styles carry the seam.
                     # drum_bridge IS two exposed kicks - worst offender.
-                    for k in ("long_blend", "bassline_layer",
-                              "double_drop", "loop_build", "drum_bridge"):
+                    for k in ("long_blend", "loop_build", "drum_bridge"):
                         weights[k] = weights.get(k, 0.0) * 0.15
                     for k in ("bass_swap", "stem_drum_swap",
                               "stem_bass_swap", "cut_at_drop"):
@@ -1808,8 +1988,7 @@ class Brain:
                     # stem_drum_swap does exactly that; drum_bridge keeps
                     # BOTH percussion beds - it showcases the clash.
                     for k in ("long_blend", "filter_sweep",
-                              "loop_roll_exit", "bassline_layer",
-                              "drum_bridge"):
+                              "loop_roll_exit", "drum_bridge"):
                         weights[k] = weights.get(k, 0.0) * 0.3
                     weights["stem_drum_swap"] = \
                         weights.get("stem_drum_swap", 0.0) * 2.0
@@ -1818,8 +1997,7 @@ class Brain:
                     # Machine-gun near-misses: the short punchy styles
                     # expose them raw (same reasoning as the groove-offset
                     # gate above, measured one level finer).
-                    for k in ("cut_at_drop", "double_drop", "echo_out",
-                              "bassline_layer", "loop_build"):
+                    for k in ("cut_at_drop", "echo_out", "loop_build"):
                         weights[k] = weights.get(k, 0.0) * 0.3
             # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
             # mix-ins qualifies, not just the best-scoring pair's (gating on
@@ -1835,19 +2013,6 @@ class Brain:
             loop_ok = any(l["start_s"] < pair["out_s"] for l in cur.loops)
             if not loop_ok:
                 kill("loop_roll_exit", "no_loop_before_exit")
-            # bassline_layer needs a bass-heavy, low-vocal loop in A that is
-            # still AHEAD of the playhead when the transition arms.
-            if self._bass_loop(cur, pair["out_s"],
-                               after_s=after_s or 0.0) is None:
-                kill("bassline_layer", "no_bass_loop_in_A")
-            # double_drop aligns A's drop onset with B's drop onset (the
-            # drop boundary IS a downbeat, so this works even where the
-            # global downbeat_offset is uncertain); the sync snap handles
-            # beat phase. Needs a drop in each track.
-            a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
-            b_drop = self._drop_after(cand, cand.duration_s * 0.15)
-            if a_drop is None or b_drop is None:
-                kill("double_drop", "no_drop_in_A_or_B")
             # loop_build stutters A into its own drop as a tension build,
             # then B cuts in on the drop. Needs a drop in A to build toward.
             if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
@@ -1906,10 +2071,33 @@ class Brain:
             # KEY CLASH is drum_bridge's home turf: both tracks strip to
             # percussion while the harmony resets - boost it exactly where
             # everything harmonic struggles.
-            if weights.get("drum_bridge", 0.0) > 0.0 \
-                    and camelot_compat(cur.camelot, cand.camelot) < 0.5:
-                weights["drum_bridge"] *= 2.5
+            if camelot_compat(cur.camelot, cand.camelot) < 0.5:
+                # Key clash: the harmonic-reset styles are the honest
+                # answers - percussion bridge (stems) or spinback (none).
+                if weights.get("drum_bridge", 0.0) > 0.0:
+                    weights["drum_bridge"] *= 2.5
+                if weights.get("spinback_cut", 0.0) > 0.0:
+                    weights["spinback_cut"] *= 2.0
+            # breakdown_swap needs the sections to exist: A must have a
+            # breakdown ahead of the exit region, B a build to enter on.
+            bd_a = next((s for s in (cur.sections or [])
+                         if s["kind"] == "breakdown"
+                         and s["end_s"] > (after_s or 0.0)), None)
+            bl_b = next((s for s in (cand.sections or [])
+                         if s["kind"] == "build"), None)
+            if bd_a is None or bl_b is None:
+                kill("breakdown_swap", "no_breakdown_or_build")
             weights["long_fade"] = 0.0
+            # GATE UNDER TEST: a pin refused only by a tuned threshold is
+            # let through so the threshold itself can be rated. Structural
+            # refusals (no stems, no drop, retired) still stand.
+            reasons = gated_all.get(force_style) or set()
+            if test_gates and force_style \
+                    and weights.get(force_style, 0.0) <= 0.0 \
+                    and reasons and all(r in testable for r in reasons):
+                weights[force_style] = 1.0
+                gate_tested = ", ".join(sorted(reasons))
+                gated.pop(force_style, None)
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if not menu:
                 menu = [("bass_swap", 1.0)]
@@ -1944,7 +2132,8 @@ class Brain:
             if both_pt or both_sec:
                 if getattr(cur, "has_stems", False) and style in (
                         "long_blend", "bass_swap", "filter_sweep",
-                        "stem_bass_swap", "melody_carry"):
+                        "stem_bass_swap", "melody_carry", "loop_in",
+                        "breakdown_swap"):
                     duck_vocal = True
                 else:
                     style = "long_fade"
@@ -1969,6 +2158,10 @@ class Brain:
                 "menu": ({k: round(w, 3) for k, w in weights.items()
                           if w > 0} if rolled else {}),
                 "fade_reason": fade_reason}
+        if gate_tested:
+            # Which threshold this seam was allowed to cross, so the
+            # verdict can be read as evidence about that threshold.
+            diag["gate_test"] = gate_tested
         if force_style:
             # Planned-set pin outcome: honored, or refused by which gate.
             diag["style_pin"] = {
@@ -1979,7 +2172,7 @@ class Brain:
 
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
         self.recent_styles = (self.recent_styles + [style])[-4:]
-        if moment and style in ("double_drop", "cut_at_drop",
+        if moment and style in ("loop_build", "cut_at_drop",
                                 "stem_drum_swap", "acapella_out"):
             self.last_moment_t = time.time()
 
@@ -1989,12 +2182,13 @@ class Brain:
         # (echo/cut) are accents, weighted rare in themes - a night of
         # 8-second slams reads harsh and amateur (user-confirmed).
         beats = {"long_blend": 64, "bass_swap": 32, "cut_at_drop": 16,
-                 "loop_roll_exit": 32, "bassline_layer": 16,
-                 "double_drop": 16, "loop_build": 16, "long_fade": 0,
+                 "loop_roll_exit": 32, "loop_build": 16, "long_fade": 0,
                  "filter_sweep": 32, "echo_out": 8,
                  "stem_drum_swap": 32, "acapella_out": 32,
                  "stem_bass_swap": 32, "drum_bridge": 16,
-                 "acapella_in": 32, "melody_carry": 32}[style]
+                 "acapella_in": 32, "melody_carry": 32,
+                 "phrase_cut": 16, "spinback_cut": 16,
+                 "loop_in": 32, "breakdown_swap": 32}[style]
         if style == "long_blend":
             # LENGTH VARIETY: the workhorse mostly runs 64 beats; some of
             # the time it stretches to a 96-beat marathon (still a
@@ -2017,6 +2211,14 @@ class Brain:
                 and ((rt is not None and rt.get("score", 1.0) < 0.45)
                      or d_off_p > 0.025):
             beats = 32
+        # LEARNED BLEND LENGTH: a global multiplier on however many beats
+        # the rules above arrived at, snapped back to a whole bar. This is
+        # the one execution knob that lives in the plan rather than in
+        # build_events, because the audition pre-roll and the drawn
+        # timeline both size themselves from plan["beats"].
+        _bs = _tuning.value("beats_scale", TUNE_DEFAULTS["beats_scale"])
+        if abs(_bs - 1.0) > 1e-6:
+            beats = max(8, int(round(beats * _bs / 4.0)) * 4)
         if style == "loop_build":
             # Exit ON A's drop; the stutter build fills the bars before it.
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
@@ -2027,24 +2229,21 @@ class Brain:
                     "pair_score": pair["score"], "cand_id": cand.id,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
                     "diag": diag}
-        if style == "double_drop":
-            # A exits on ITS drop; B is cued so its drop lands on the same
-            # beat. out_s/in_s become the two drop onsets.
-            a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
-            b_drop = self._drop_after(cand, cand.duration_s * 0.15)
-            out_s = cur.nearest_downbeat(a_drop)
-            in_s = cand.nearest_downbeat(b_drop)
-            plan = {"style": style, "rate": rate, "out_s": out_s,
-                    "in_s": in_s, "beats": beats, "rhythm": rt,
-                    "pair_score": pair["score"], "cand_id": cand.id,
-                    "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
-                    "diag": diag}
-            return plan
         # Blend-family styles anchor to PHRASE boundaries (16/32 beats) when
         # the hypermeter was confidently detected - the blend then completes
         # where the music breathes. Drop-anchored styles keep the drop.
         out_s = cur.nearest_phrase(pair["out_s"])
         in_s = cand.nearest_phrase(pair["in_s"])
+        if style == "breakdown_swap" and bd_a is not None \
+                and bl_b is not None:
+            # Blend over A's BREAKDOWN carrying B's BUILD: exit a phrase
+            # into the breakdown, enter at the build's start - the drop
+            # that follows is the payoff.
+            out_s = cur.nearest_phrase(min(
+                bd_a["start_s"] + 8 * cur.period_s,
+                max(bd_a["end_s"] - 4 * cur.period_s,
+                    bd_a["start_s"])))
+            in_s = cand.nearest_phrase(bl_b["start_s"])
         if style == "cut_at_drop":
             # Enter at B's best PRE-DROP point (the style's whole premise),
             # not the generic pair in-point.
@@ -2059,6 +2258,8 @@ class Brain:
                 "duck_vocal_a": duck_vocal,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
                     "diag": diag}
+        if arc is not None:
+            plan["arc"] = round(arc, 3)   # riser gating in the fade path
         # VARISPEED MEET-IN-THE-MIDDLE: with the varispeed engine pitch rides
         # tempo, so a single-sided match puts the whole pitch shift on B.
         # Split the bend across BOTH decks instead - A ramps to a_rate before
@@ -2080,13 +2281,6 @@ class Brain:
             # all land exactly on the grid (elapsed beats stay multiples of
             # the shrinking span).
             plan["loop_start_s"] = max(0.0, out_s - 16 * cur.period_s)
-        if style == "bassline_layer":
-            loop = self._bass_loop(cur, pair["out_s"],
-                                   after_s=after_s or 0.0)
-            beats_len = loop["beats"] if loop["beats"] in (8, 16) else 8
-            plan["loop_start_s"] = cur.nearest_downbeat(loop["start_s"])
-            plan["loop_beats"] = beats_len
-            plan["layer_beats"] = 16          # bars both tracks play together
         if style in ("acapella_out", "melody_carry"):
             plan["tail_beats"] = 16   # A's exposed vocal/melody rides B
         return plan
@@ -2158,7 +2352,22 @@ class Brain:
         """Compile a plan into submix events. `snapshot` is submix telemetry;
         `active`/`incoming` are deck names; `cur`/`cand` TrackInfos.
 
-        Returns (events, swap_at_clock, blend_start_clock)."""
+        Returns (events, swap_at_clock, blend_start_clock).
+
+        TUNABLE EXECUTION: `plan["tune"]` may override the geometry and EQ
+        constants below by name (see TUNE_DEFAULTS). Every one of them was
+        a hand-picked number; exposing them lets the Seam Lab jitter them
+        per seam and learn which way each one wants to move. Absent or
+        empty, every value is exactly the old constant."""
+        tune = plan.get("tune") or {}
+
+        def K(name):
+            # Per-seam override (the lab's jitter) > LEARNED value > the
+            # original constant. This is where a rating finally changes
+            # how the engine mixes.
+            if name in tune:
+                return float(tune[name])
+            return float(_tuning.value(name, TUNE_DEFAULTS[name]))
         tel = snapshot["decks"][active]
         clock = snapshot["clock"]
         rate_a = max(tel["rate"], 1e-6)
@@ -2204,11 +2413,12 @@ class Brain:
             # the boundary), so v3's hold-A-past-the-seam dug a -23 dB
             # hole. Recede through A's final LOUD phrase instead, get B
             # half-up by the boundary, and let A leave just after it.
-            A0 = max(S0 - int(8.0 * RATE), now_guard)
-            B0 = max(S0 - int(4.0 * RATE), A0)
+            A0 = max(S0 - int(K("fade_lead_a") * RATE), now_guard)
+            B0 = max(S0 - int(K("fade_lead_b") * RATE), A0)
             ev += [
-                {"at": A0, "cmd": "gain", "deck": active, "value": 0.5,
-                 "ramp_s": 8.0},
+                {"at": A0, "cmd": "gain", "deck": active,
+                 "value": K("fade_recede"),
+                 "ramp_s": K("fade_lead_a")},
                 {"at": B0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
                 {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
@@ -2219,15 +2429,20 @@ class Brain:
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
                 # Arrive in two stages: present quickly, full gently.
-                {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.6,
-                 "ramp_s": 3.5},
-                {"at": B0 + int(3.5 * RATE), "cmd": "gain",
-                 "deck": incoming, "value": 1.0, "ramp_s": 8.0},
+                {"at": B0, "cmd": "gain", "deck": incoming,
+                 "value": K("fade_b_stage1"),
+                 "ramp_s": K("fade_b_ramp1")},
+                {"at": B0 + int(K("fade_b_ramp1") * RATE), "cmd": "gain",
+                 "deck": incoming, "value": 1.0,
+                 "ramp_s": K("fade_b_ramp2")},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": 5.0},
-                {"at": S0 + int(6.0 * RATE), "cmd": "stop",
+                 "ramp_s": K("fade_out_ramp")},
+                {"at": S0 + int(K("fade_stop_lead") * RATE), "cmd": "stop",
                  "deck": active},
             ]
+            # (A riser-through-the-dip variant was tried and REMOVED
+            # 2026-08-02: synthesized whooshes read as cheesy - user. The
+            # fade stays clean; drama comes from the music, brake or echo.)
             plan["no_return_at"] = S0        # A starts leaving at the seam
             return ev, S0 + int(6.0 * RATE), A0
 
@@ -2237,7 +2452,8 @@ class Brain:
             # tail decays over B, which arrives beat-locked underneath -
             # the clean way to LEAVE a track without a long fade.
             S_out = clock_at(plan["out_s"])
-            lead = int(12 * cand.period_s / rate_b * RATE)
+            lead = int(K("echo_lead_beats") * cand.period_s / rate_b
+                       * RATE)
             S0 = max(S_out - lead, now_guard)
             cue_b = max(0.0, plan["in_s"] - (S_out - S0) / RATE * rate_b)
             ev += [
@@ -2249,29 +2465,37 @@ class Brain:
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},
                 {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.9,
+                {"at": S0, "cmd": "gain", "deck": incoming,
+                 "value": K("echo_b_gain"),
                  "ramp_s": max((S_out - S0) / RATE, 0.1)},
                 # The throw: dotted-eighth echo engages one beat out.
                 {"at": S_out - int(beat_out * RATE), "cmd": "echo",
                  "deck": active, "active": True,
-                 "delay_s": 0.75 * beat_out, "feedback": 0.62, "wet": 0.8},
+                 "delay_s": K("echo_delay_beats") * beat_out,
+                 "feedback": K("echo_feedback"),
+                 "wet": K("echo_wet")},
                 {"at": S_out, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": 0.03},
                 {"at": S_out, "cmd": "eq", "deck": incoming, "low": 1.0,
                  "mid": 1.0, "ramp_s": 0.25},
                 {"at": S_out, "cmd": "gain", "deck": incoming, "value": 1.0,
                  "ramp_s": 2 * beat_out},
-                {"at": S_out + int(2.5 * RATE), "cmd": "stop",
+                {"at": S_out + int(K("echo_tail_s") * RATE), "cmd": "stop",
                  "deck": active},
-                {"at": S_out + int(2.5 * RATE), "cmd": "end_sync"},
+                {"at": S_out + int(K("echo_tail_s") * RATE),
+                 "cmd": "end_sync"},
             ]
-            swap_at = S_out + int(2.5 * RATE)
+            swap_at = S_out + int(K("echo_tail_s") * RATE)
             plan["no_return_at"] = S_out - int(beat_out * RATE)  # echo throw
             self._glide_home(ev, incoming, rate_b, swap_at)
             return ev, swap_at, S0
 
-        if style == "cut_at_drop":
-            # The cut lands on B's drop downbeat; B rides in underneath first.
+        if style in ("cut_at_drop", "phrase_cut", "spinback_cut"):
+            # The cut lands on B's drop downbeat (cut_at_drop) or a shared
+            # phrase boundary (phrase_cut - the open-format slam for music
+            # WITHOUT drops; spinback_cut - the platter dies backward-
+            # feeling into a cold slam, total harmonic reset); B rides in
+            # underneath first.
             S_cut = clock_at(plan["out_s"])
             # 16 B-beats of run-up, measured in OUTPUT time (period/rate) so
             # the launch lands 16 matched beats before the cut, not 16 source
@@ -2304,18 +2528,19 @@ class Brain:
             ]
             # Half the time, A leaves with a vinyl BRAKE into the drop
             # instead of a plain cut - the platter winds down through the
-            # last bar and B's drop slams in.
-            if self.rng.random() < 0.5:
-                ev.append({"at": S_cut - int(0.9 * RATE), "cmd": "brake",
-                           "deck": active, "duration_s": 0.9})
-            # Riser through the run-in, landing exactly on the cut.
-            from lib.dj import fx as _fx
-            rise_s = min((S_cut - S0) / RATE, 8.0)
-            if rise_s >= 1.0:              # clamped run-ins can be ~zero
-                ev.append({"at": S_cut - int(rise_s * RATE),
-                           "cmd": "fx_play",
-                           "samples": _fx.make_riser(rise_s, gain=0.16),
-                           "gain": 1.0})
+            # last bar and B's drop slams in. spinback_cut ALWAYS brakes,
+            # longer - the dying platter IS the style.
+            if style == "spinback_cut":
+                _sb = K("spinback_s")
+                ev.append({"at": S_cut - int(_sb * RATE), "cmd": "brake",
+                           "deck": active, "duration_s": _sb})
+            elif self.rng.random() < K("brake_chance"):
+                _br = K("brake_s")
+                ev.append({"at": S_cut - int(_br * RATE), "cmd": "brake",
+                           "deck": active, "duration_s": _br})
+            # (The synthesized riser into the cut was REMOVED 2026-08-02:
+            # user verdict - cheesy. The brake and the cold landing carry
+            # the moment on the music alone.)
             swap_at = S_cut + int(0.5 * RATE)
             plan["no_return_at"] = S_cut - int(1.2 * RATE)   # covers the brake
             self._glide_home(ev, incoming, rate_b, swap_at)
@@ -2375,135 +2600,18 @@ class Brain:
                 {"at": out, "cmd": "clear_loop", "deck": active},
                 {"at": out, "cmd": "end_sync"},
             ]
-            # Production polish: riser under the shrinking loop, impact ON
-            # the drop it releases into.
-            from lib.dj import fx as _fx
-            rise_s = min((S_drop - S0) / RATE, 8.0)
-            if rise_s >= 1.0:
-                ev.append({"at": S_drop - int(rise_s * RATE),
-                           "cmd": "fx_play",
-                           "samples": _fx.make_riser(rise_s, gain=0.16),
-                           "gain": 1.0})
-            ev.append({"at": S_drop, "cmd": "fx_play",
-                       "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
+            # (Riser + impact "production polish" REMOVED 2026-08-02:
+            # synthesized FX at transitions read as cheesy - user. The
+            # shrinking loop is its own build; the drop is its own impact.)
             plan["no_return_at"] = S_drop        # the loop releases into it
             self._glide_home(ev, incoming, rate_b, out)
             return ev, out, S0
 
-        if style == "double_drop":
-            # Align B's drop onset to A's drop onset: B runs in for 16 beats
-            # bass-cut (build tension under A), both drops HIT together for 4
-            # bars of full-range double-drop, then A exits and B rides on.
-            run_in = 16
-            S_drop = clock_at(plan["out_s"])            # A's drop moment
-            b_period = cand.period_s
-            S0 = max(S_drop - int(run_in * b_period / rate_b * RATE),
-                     now_guard)
-            # B's drop must land ON S_drop whatever run-in survives.
-            cue_b = max(0.0, plan["in_s"]
-                        - (S_drop - S0) / RATE * rate_b)
-            both = S_drop + int(16 * beat_out * RATE)   # 4 bars of both
-            out = both + int(4 * beat_out * RATE)
-            ev += [
-                {"at": S0, "cmd": "cue", "deck": incoming, "time_s": cue_b},
-                {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
-                {"at": S0, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "mid": 0.7, "high": 0.8, "ramp_s": 0.05},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
-                 "ramp_s": 0.05},
-                {"at": S0, "cmd": "start", "deck": incoming},
-                {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.85,
-                 "ramp_s": run_in * beat_out},
-                # THE DROP: both full-range for 4 bars.
-                {"at": S_drop, "cmd": "eq", "deck": incoming, "low": 1.0,
-                 "mid": 1.0, "high": 1.0, "ramp_s": 0.06},
-                {"at": S_drop, "cmd": "gain", "deck": incoming, "value": 1.0,
-                 "ramp_s": 0.06},
-                # A ducks and drops its low so two kicks don't muddy or clip
-                # (B is the star of the double drop); keeps some body. The
-                # low cut is fast (no dual kick) but the GAIN duck rides
-                # down over 2 beats, masked by B's drop - an instant -6 dB
-                # duck at the drop reads as a level lurch (measured 7 dB).
-                {"at": S_drop, "cmd": "eq", "deck": active, "low": 0.0,
-                 "mid": 0.6, "ramp_s": 0.15},
-                {"at": S_drop, "cmd": "gain", "deck": active, "value": 0.5,
-                 "ramp_s": 2 * beat_out},
-                # Hand over: A leaves, B's already full.
-                {"at": both, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": 4 * beat_out},
-                {"at": out, "cmd": "stop", "deck": active},
-                {"at": out, "cmd": "end_sync"},
-                # Glue the run-in overlap: duck B on A's kicks until the drop.
-                {"at": S0, "cmd": "duck", "on": True, "depth": 0.2},
-                {"at": S_drop, "cmd": "duck", "on": False},
-            ]
-            from lib.dj import fx as _fx
-            rise_s = min((S_drop - S0) / RATE, 8.0)
-            if rise_s >= 1.0:
-                ev.append({"at": S_drop - int(rise_s * RATE),
-                           "cmd": "fx_play",
-                           "samples": _fx.make_riser(rise_s, gain=0.16),
-                           "gain": 1.0})
-            ev.append({"at": S_drop, "cmd": "fx_play",
-                       "samples": _fx.make_impact(gain=0.26), "gain": 1.0})
-            plan["no_return_at"] = S_drop        # both drops hit together
-            self._glide_home(ev, incoming, rate_b, out)
-            return ev, out, S0
-
-        if style == "bassline_layer":
-            # Isolate A's groove as a looping bed and play B OVER it for an
-            # extended stretch - two tracks genuinely playing together, not
-            # a crossfade. A loops with mids/highs pulled out (its bassline +
-            # kick repeat); B enters beat-locked with its bass cut, riding on
-            # top with its melody/vocal/hats; after layer_beats the low end
-            # hands over (A's loop releases, B's bass returns).
-            ls = plan["loop_start_s"]
-            loop_beats = plan["loop_beats"]
-            layer = plan["layer_beats"]
-            S0 = clock_at(ls)                 # engage the loop at its start
-            if S0 < now_guard:
-                # The chosen loop is already behind the playhead (armed
-                # late). Rebase: loop the next grid-aligned window ahead -
-                # same groove family in practice, and every event stays in
-                # the future.
-                ls = cur.nearest_downbeat(tel["time_s"] + 2 * cur.period_s)
-                while clock_at(ls) < now_guard:
-                    ls += 4 * cur.period_s
-                S0 = clock_at(ls)
-            bar = 4 * beat_out
-            enter = S0 + int(loop_beats * beat_out * RATE)  # B in after 1 pass
-            hand = enter + int(layer * beat_out * RATE)     # hand off the low
-            out = hand + int(8 * beat_out * RATE)
-            ev += [
-                {"at": S0, "cmd": "loop", "deck": active, "start_s": ls,
-                 "end_s": ls + loop_beats * cur.period_s},
-                {"at": S0, "cmd": "eq", "deck": active, "high": 0.0,
-                 "mid": 0.2, "low": 1.0, "ramp_s": bar},
-                {"at": enter, "cmd": "cue", "deck": incoming,
-                 "time_s": plan["in_s"]},
-                {"at": enter, "cmd": "rate", "deck": incoming, "value": rate_b},
-                {"at": enter, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "mid": 1.0, "high": 1.0, "ramp_s": 0.05},
-                {"at": enter, "cmd": "gain", "deck": incoming, "value": 0.0,
-                 "ramp_s": 0.05},
-                {"at": enter, "cmd": "start", "deck": incoming},
-                {"at": enter, "cmd": "sync", "slave": incoming,
-                 "master": active},
-                {"at": enter, "cmd": "gain", "deck": incoming, "value": 1.0,
-                 "ramp_s": 8 * beat_out},
-                # Hand the low end over: B's bass returns as A's loop leaves.
-                {"at": hand, "cmd": "eq", "deck": incoming, "low": 1.0,
-                 "ramp_s": bar},
-                {"at": hand, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": 4 * beat_out},
-                {"at": out, "cmd": "stop", "deck": active},
-                {"at": out, "cmd": "clear_loop", "deck": active},
-                {"at": out, "cmd": "end_sync"},
-            ]
-            plan["no_return_at"] = hand          # the low-end handover
-            self._glide_home(ev, incoming, rate_b, out)
-            return ev, out, S0
+        # (double_drop and bassline_layer were REMOVED 2026-08-02 with
+        # their choreography: double_drop was the last fx_play one-shot
+        # holdout - the nextdrop MOMENT in system.py owns the synced-drop
+        # spectacle now, on the music alone - and bassline_layer won 3
+        # rolls in 2000. Old pins refuse politely via the retired kill.)
 
         # Clean bass-swap EQ blend (long_blend / bass_swap / loop_roll_exit).
         # The golden rule: ONLY ONE BASSLINE AT A TIME. The incoming track
@@ -2535,7 +2643,7 @@ class Brain:
                        "ramp_s": ramp_wall})
         else:
             S0 = max(end - int(nb * beat_out * RATE), now_guard)
-        mid = (S0 + end) // 2
+        mid = S0 + int((end - S0) * K("swap_pos"))
         half = (end - S0) / RATE / 2.0
         long_stage = style == "long_blend"
         # EXIT RESERVATION: how much of the blend the swap can NEVER eat.
@@ -2545,7 +2653,7 @@ class Brain:
         # two-stage exit dropped -9 dB in ~2s and the workhorse blend
         # "slammed down" (user-heard, 2026-07-22). The staged long blend
         # reserves a quarter of its span; the decisive styles keep 8.
-        exit_res = 16 if long_stage else 8
+        exit_res = K("exit_res_long") if long_stage else K("exit_res")
         # Never swap the bass into a BASSLESS stretch of B: cutting A's low
         # while B enters on intro atmosphere collapses the mix floor ~8 dB
         # (measured). Time the swap to where B's content actually carries
@@ -2570,6 +2678,15 @@ class Brain:
             mid = min(max(mid, S0 + int(k * beat_out * RATE),
                           S0 + int(4 * beat_out * RATE)),
                       max(end - int(exit_res * beat_out * RATE), S0 + 1))
+        else:
+            # B NEVER gets bassy - no section after in_s carries real
+            # bass, so there is no good moment to hand it the low end.
+            # The halfway default here cut A's low with NOTHING arriving
+            # to replace it: a measured 42 dB low-end hole for seconds
+            # (spectral QA, 'Grand Bazaar' -> 'Faina'', 2026-08-02).
+            # Swap as LATE as the exit reservation allows instead - A's
+            # bass carries the room until its exit fade must begin.
+            mid = max(end - int(exit_res * beat_out * RATE), S0 + 1)
         # VOCAL-PHRASE AWARENESS: the swap is the loudest EQ moment of the
         # blend - never land it on a sung line. Scan 4-beat slots from the
         # bass-ready point; take the first where BOTH decks are vocal-free
@@ -2597,8 +2714,10 @@ class Brain:
         # crossfades low AND mid decisively, A keeps only a shadow of its
         # mids through its exit fade.
         sec_a = cur.section_at(plan["out_s"] - 1.0) or {}
-        b_mid0 = 0.3 if sec_a.get("mid_share", 0.33) > 0.42 else 0.45
-        b_high0 = 0.7 if sec_a.get("high_share", 0.25) > 0.30 else 1.0
+        b_mid0 = (K("b_mid0_hot") if sec_a.get("mid_share", 0.33) > 0.42
+                  else K("b_mid0"))
+        b_high0 = (K("b_high0_hot") if sec_a.get("high_share", 0.25) > 0.30
+                   else K("b_high0"))
         # LONG_BLEND = the STAGED MIGRATION (the classic technique): the
         # beats run together at near-full presence for bars, then the HIGH
         # END hands over subtly, and only then the mid/bass commitment.
@@ -2609,11 +2728,11 @@ class Brain:
         # style variety. (long_stage defined above the swap clamp - the
         # exit reservation depends on it.)
         if long_stage:
-            b_high0 = min(b_high0, 0.5)     # enter carved; highs migrate later
+            b_high0 = min(b_high0, K("b_high0_long"))   # enter carved
             # B rides the long dual at near-FULL gain (that's the point),
             # so its mid shelf must sit lower than the ramping-gain case
             # or the shelf x 0.92 puts a second melody under A for bars.
-            b_mid0 = min(b_mid0, 0.3)
+            b_mid0 = min(b_mid0, K("b_mid0_long"))
         # Harmonic clash makes overlap unforgivable: with incompatible
         # keys (after any pitch-shift rescue), B's melody waits until A is
         # essentially gone before opening.
@@ -2625,7 +2744,7 @@ class Brain:
         # step; 4 beats stays decisive but spreads it. The staged long
         # blend widens to 6 - by then the highs have already migrated, so
         # the swap is the SECOND move, not the whole transition.
-        swap_beats = 6 if long_stage else 4
+        swap_beats = K("swap_beats_long") if long_stage else K("swap_beats")
         # STEM_DRUM_SWAP / DRUM_BRIDGE enter on the DRUMS STEM alone: the
         # stems already strip B's bassline/melody/vocals, so the EQ carve
         # would only gut the drums themselves. Low sits at 0.55 (two
@@ -2654,7 +2773,7 @@ class Brain:
                 intro = sum(curve[i0:i1]) / (i1 - i0)
                 med = sorted(curve)[len(curve) // 2]
                 if intro > 0.05 and med > intro:
-                    b_trim = min(med / intro, 1.41)       # cap +3 dB
+                    b_trim = min(med / intro, K("trim_cap"))
         ev += [
             {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
             {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
@@ -2684,8 +2803,9 @@ class Brain:
             # VOCAL DUCK: two sung passages overlap - A's voice steps
             # aside for the blend instead of the whole seam fading.
             ev.append({"at": S0, "cmd": "stem_gains", "deck": active,
-                       "gains": {"vocals": 0.0, "drums": 1.0, "bass": 1.0,
-                                 "other": 1.0}, "ramp_s": 2 * beat_out})
+                       "gains": {"vocals": K("duck_depth"), "drums": 1.0,
+                                 "bass": 1.0, "other": 1.0},
+                       "ramp_s": K("duck_beats") * beat_out})
         if long_stage:
             span_s = (end - S0) / RATE
             # Stage 1 - BEATS TOGETHER: B rises to near-full presence over
@@ -2693,14 +2813,15 @@ class Brain:
             # one bassline / one melody), instead of still creeping up
             # when the swap arrives.
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
-                       "value": 0.92 * b_trim, "ramp_s": 0.35 * span_s})
+                       "value": K("stage1_gain") * b_trim,
+                       "ramp_s": K("stage1_frac") * span_s})
             ev.append({"at": mid, "cmd": "gain", "deck": incoming,
                        "value": b_trim, "ramp_s": 4 * beat_out})
             # Stage 2 - THE SUBTLE HIGH SWAP: hats/air hand over across 12
             # beats, ending before the earliest possible swap (the EQ ramp
             # clock is shared per deck - overlapping ramps stretch each
             # other).
-            hi_at = S0 + int(0.22 * (end - S0))
+            hi_at = S0 + int(K("high_swap_at") * (end - S0))
             ev.append({"at": hi_at, "cmd": "eq", "deck": incoming,
                        "high": 1.0, "ramp_s": 12 * beat_out})
             ev.append({"at": hi_at, "cmd": "eq", "deck": active,
@@ -2710,15 +2831,28 @@ class Brain:
             # the handover reads as one continuous slope instead of full-
             # presence-then-cliff (B is already riding at 0.92 with highs
             # migrating - the room never thins).
-            pre = S0 + int(0.5 * (end - S0))
+            pre = S0 + int(K("pre_dip_at") * (end - S0))
             if pre < mid:
                 ev.append({"at": pre, "cmd": "gain", "deck": active,
-                           "value": 0.85,
+                           "value": K("pre_dip_gain"),
                            "ramp_s": max((mid - pre) / RATE, 2 * beat_out)})
         else:
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
                        "value": b_trim, "ramp_s": half})
-        ev += [
+        if style == "drum_bridge":
+            # The generic low/mid handover GUTTED the bridge: A's drums
+            # minus lows minus mids is a transient shadow, and the room
+            # emptied for 8 beats ('everything dropped' - user, Vagrant ->
+            # Undress). A percussion break needs BOTH kits full-bodied:
+            # keep mids/highs open, split the low end instead of cutting.
+            ev += [
+                {"at": mid, "cmd": "eq", "deck": active, "low": 0.45,
+                 "mid": 1.0, "high": 1.0, "ramp_s": swap_beats * beat_out},
+                {"at": mid, "cmd": "eq", "deck": incoming, "low": 0.75,
+                 "mid": 1.0, "high": 1.0, "ramp_s": swap_beats * beat_out},
+            ]
+        else:
+            ev += [
             # Stage 3 - the swap downbeat: low AND mid hand over.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
              "mid": 0.25, "ramp_s": swap_beats * beat_out},
@@ -2731,6 +2865,19 @@ class Brain:
             {"at": mid_open_at, "cmd": "eq", "deck": incoming, "mid": 1.0,
              "ramp_s": (4 if key_ok else 8) * beat_out},
         ]
+        if style == "loop_in":
+            # B enters LOOPING its first bar under A - the stutter builds
+            # tension - tightens to half a bar, then releases into the
+            # full track at the swap.
+            lp = 4 * cand.period_s
+            ev += [
+                {"at": S0, "cmd": "loop", "deck": incoming,
+                 "start_s": plan["in_s"], "end_s": plan["in_s"] + lp},
+                {"at": S0 + int(16 * beat_out * RATE), "cmd": "loop",
+                 "deck": incoming, "start_s": plan["in_s"],
+                 "end_s": plan["in_s"] + lp / 2.0},
+                {"at": mid, "cmd": "clear_loop", "deck": incoming},
+            ]
         if style == "stem_drum_swap":
             # The swap opens B's full stem set with its bass/EQ arrival,
             # and A collapses to its DRUMS stem - what survives A's EQ
@@ -2750,13 +2897,19 @@ class Brain:
             # harmonic content gone (the key-clash rescue), then B opens
             # its full mix and takes the floor.
             bridge = int(plan.get("bridge_beats", 8) * beat_out * RATE)
+            # B's full mix opens TWO BEATS BEFORE the bridge ends, so the
+            # room refills while A's drums are still carrying - the
+            # handoff overlaps instead of leaving a gap.
+            reopen = mid + bridge - int(2 * beat_out * RATE)
             ev += [
                 {"at": mid, "cmd": "stem_gains", "deck": active,
                  "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
                            "vocals": 0.0}, "ramp_s": swap_beats * beat_out},
-                {"at": mid + bridge, "cmd": "stem_gains", "deck": incoming,
+                {"at": reopen, "cmd": "stem_gains", "deck": incoming,
                  "gains": {"drums": 1.0, "bass": 1.0, "other": 1.0,
                            "vocals": 1.0}, "ramp_s": 4 * beat_out},
+                {"at": reopen, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "mid": 1.0, "high": 1.0, "ramp_s": 4 * beat_out},
             ]
         elif style == "stem_bass_swap":
             # The swap trades the actual BASS STEMS - one bassline at all
@@ -2823,7 +2976,7 @@ class Brain:
             # lands.
             bridge = int(plan.get("bridge_beats", 8) * beat_out * RATE)
             ev += [
-                {"at": mid, "cmd": "gain", "deck": active, "value": 0.85,
+                {"at": mid, "cmd": "gain", "deck": active, "value": 0.9,
                  "ramp_s": 2 * beat_out},
                 {"at": mid + bridge, "cmd": "gain", "deck": active,
                  "value": 0.0, "ramp_s": 4 * beat_out},
@@ -2871,11 +3024,11 @@ class Brain:
             ev += [
                 {"at": S0, "cmd": "loop", "deck": active,
                  "start_s": ls, "end_s": ls + 16 * cur.period_s},
-                {"at": S0 + int(16 * beat_out * RATE), "cmd": "loop",
-                 "deck": active, "start_s": ls,
+                {"at": S0 + int(K("roll_shrink1") * beat_out * RATE),
+                 "cmd": "loop", "deck": active, "start_s": ls,
                  "end_s": ls + 8 * cur.period_s},
-                {"at": S0 + int(24 * beat_out * RATE), "cmd": "loop",
-                 "deck": active, "start_s": ls,
+                {"at": S0 + int(K("roll_shrink2") * beat_out * RATE),
+                 "cmd": "loop", "deck": active, "start_s": ls,
                  "end_s": ls + 4 * cur.period_s},
             ]
         stop_at = end + int(4 * beat_out * RATE)

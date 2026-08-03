@@ -64,4 +64,4 @@ and works well for ambient.
 | `lib/audio_engine.py` | `_Track.read()` outputs `(n, CHANNELS)` via mono upmix |
 | `lib/audio_engine.py` | `play_ambient` / `schedule_event` accept `channel_gains` or `zone` |
 | `Stories_OGL.py` | Pass `channel_gains` / `zone` when calling `play_ambient` |
-| `lib/weather_params.py` | Add `zone` or `channel_gains` to per-state params |
+| `projects/<id>/weather_params.py` | Add `zone` or `channel_gains` to per-state params |

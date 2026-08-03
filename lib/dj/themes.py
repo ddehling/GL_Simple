@@ -40,12 +40,12 @@ class Theme:
     # they fired 7 and 9 times in 560 seams - not "rare accent", closer to
     # never, and a 30-seam night saw none of them at all. Raised to a tier
     # where a night gets one or two, still an order of magnitude under the
-    # blends. cut_at_drop and double_drop stay at the bottom: spectacle
-    # moves whose job is the engineered moment, and in cut_at_drop's case
-    # the only technique the measurements actually indict.
+    # blends. cut_at_drop stays at the bottom: a spectacle move whose job
+    # is the engineered moment, and the only technique the measurements
+    # actually indict. (bassline_layer and double_drop removed 2026-08-02.)
     style_weights: dict = field(default_factory=lambda: {
         "long_blend": 1.7, "bass_swap": 1.2, "cut_at_drop": 0.08,
-        "loop_roll_exit": 0.30, "bassline_layer": 0.20, "double_drop": 0.08,
+        "loop_roll_exit": 0.30,
         "loop_build": 0.28, "long_fade": 0.3,
         "filter_sweep": 0.6, "echo_out": 0.26,
         # Stem styles (inert until tools/dj/dj_stems.py has rendered stems):
@@ -156,7 +156,7 @@ BUILTIN_THEMES = {t.name: t for t in [
           mood_weights={"chill": 1.0, "ambient": 0.6, "groove": 0.4},
           style_weights={"long_blend": 1.5, "bass_swap": 0.8,
                          "cut_at_drop": 0.0, "loop_roll_exit": 0.15,
-                         "bassline_layer": 0.15, "long_fade": 0.8,
+                         "long_fade": 0.8,
                          "filter_sweep": 0.7, "echo_out": 0.3},
           dance_target=0.3,
           # SPARSE AND BRIGHT is chill_evening's own corner - room music
@@ -178,8 +178,7 @@ BUILTIN_THEMES = {t.name: t for t in [
           spectral_lean="bass",
           style_weights={"long_blend": 1.2, "bass_swap": 1.3,
                          "cut_at_drop": 0.25, "loop_roll_exit": 0.25,
-                         "bassline_layer": 0.3, "double_drop": 0.25,
-                         "loop_build": 0.25, "long_fade": 0.1,
+                         "loop_build": 0.4, "long_fade": 0.1,
                          "filter_sweep": 0.7, "echo_out": 0.25},
           dance_target=0.85,
           # peak_heavy is the SPECTACLE peak: the biggest, most dynamic

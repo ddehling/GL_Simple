@@ -348,7 +348,7 @@ def e2e_test(keep_wav):
               f"{total_s/60:.0f} min: {' -> '.join(p[:14] for p in plays)}")
         check("styles are beat-matched",
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
-                        "cut_at_drop", "bassline_layer", "double_drop",
+                        "cut_at_drop",
                         "loop_build", "filter_sweep", "echo_out")
                   for s, urgent in armed_styles if not urgent),
               f"styles: {[(s + ' (urgent)' if u else s) for s, u in armed_styles]}")

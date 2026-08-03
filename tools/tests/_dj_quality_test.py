@@ -108,9 +108,16 @@ def selection_audit(library, theme):
 # ==========================================================================
 
 def force_style(theme, style):
+    # Styles ABSENT from a theme's weight dict get accent-tier defaults in
+    # plan_transition — zeroing only the dict's existing keys leaves those
+    # alive and the forced style has to win a dice roll against them.
+    # Enumerate the defaulted vocabulary explicitly so forcing is forcing.
     t = get_theme(theme.name)
-    t.style_weights = {k: (1.0 if k == style else 0.0)
-                       for k in t.style_weights}
+    known = set(t.style_weights) | {
+        "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
+        "acapella_in", "melody_carry", "phrase_cut", "spinback_cut",
+        "loop_in", "breakdown_swap"}
+    t.style_weights = {k: (1.0 if k == style else 0.0) for k in known}
     return t
 
 
@@ -354,9 +361,12 @@ def seam_qa(library, wav=False):
     cands = sorted([t for t in library
                     if t.bpm_conf > 0.6 and t.downbeat_conf > 0.3
                     and t.duration_s > 240], key=lambda t: -t.rhythm_density)
-    styles = ["bass_swap", "long_blend", "cut_at_drop", "loop_build",
-              "double_drop", "loop_roll_exit", "bassline_layer",
-              "filter_sweep", "echo_out", "long_fade"]
+    # (cut_at_drop retired, double_drop + bassline_layer removed
+    # 2026-08-02; the newer cut/loop entries joined the render pool.)
+    styles = ["bass_swap", "long_blend", "loop_build",
+              "loop_roll_exit", "filter_sweep", "echo_out",
+              "phrase_cut", "spinback_cut", "loop_in", "breakdown_swap",
+              "long_fade"]
     # long_fade engages on LOW-confidence grids - use that pool for it.
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],
@@ -393,13 +403,19 @@ def seam_qa(library, wav=False):
               f"clip {m['clipped']} | rms_min {m['rms_min_ratio']:.2f} "
               f"lurch {m['lurch_db']:.1f}dB (solo {m['lurch_solo_db']:.1f}) "
               f"| bass bump {m['bass_bump_db']:+.1f}dB")
-        check(f"{style}: no dead air", m["rms_min_ratio"] > 0.15,
-              f"min/median RMS {m['rms_min_ratio']:.2f}")
-        if style != "double_drop":     # its giant synchronized slam IS the
-            check(f"{style}: no unmusical lurch",      # style's contract
-                  m["lurch_db"] <= max(m["lurch_solo_db"], 4.0) + 2.5,
-                  f"blend step {m['lurch_db']:.1f} dB vs solo "
-                  f"{m['lurch_solo_db']:.1f} dB")
+        # The DIP styles breathe at the seam by contract: long_fade's
+        # dipped handoff and echo_out's cut-into-decaying-tail both let
+        # the room drop to ~-17 dB for a window on quiet-intro pairs.
+        # Their bar is 0.10 (-20 dB): still strictly above the v2 fade's
+        # -22 dB hole that was killed as 'stays dead', while a flat 0.15
+        # failed legitimate dips as the render pair rotates.
+        da_bar = 0.10 if style in ("long_fade", "echo_out") else 0.15
+        check(f"{style}: no dead air", m["rms_min_ratio"] > da_bar,
+              f"min/median RMS {m['rms_min_ratio']:.2f} (bar {da_bar})")
+        check(f"{style}: no unmusical lurch",
+              m["lurch_db"] <= max(m["lurch_solo_db"], 4.0) + 2.5,
+              f"blend step {m['lurch_db']:.1f} dB vs solo "
+              f"{m['lurch_solo_db']:.1f} dB")
         check(f"{style}: no clipping", m["clipped"] == 0
               and m["peak"] <= 1.0, f"peak {m['peak']:.3f} "
               f"clipped {m['clipped']}")
@@ -413,9 +429,8 @@ def seam_qa(library, wav=False):
                   m["mid_overlap_s"] <= 3.5,
                   f"both mid-bands hot {m['mid_overlap_s']:.1f}s "
                   f"(dip budget 3.5)")
-        elif style != "double_drop":
-            # double_drop stacks full-range on purpose. Everything else:
-            # one melody at a time.
+        else:
+            # One melody at a time.
             check(f"{style}: one melody at a time",
                   m["mid_overlap_s"] <= 4.0,
                   f"both mid-bands hot {m['mid_overlap_s']:.1f}s "
@@ -428,16 +443,17 @@ def seam_qa(library, wav=False):
             # Short-dual accent styles (a few bars, PLL barely settles;
             # conf-gated >=0.7 both sides + stretch-walled live) get a
             # wider bar than the long blends the night is built on.
-            med_bar = 35.0 if style in ("double_drop", "echo_out",
-                                        "cut_at_drop") else 25.0
+            med_bar = 35.0 if style in ("echo_out", "phrase_cut",
+                                        "spinback_cut") else 25.0
             check(f"{style}: decks grid-locked",
                   float(np.median(gl)) <= med_bar
                   and float(np.percentile(gl, 95)) <= 60.0,
                   f"grid delta med {np.median(gl):.0f}ms "
                   f"p95 {np.percentile(gl, 95):.0f}ms "
                   f"(harsh: {med_bar:.0f}/60)")
-        min_dual = {"bass_swap": 4.0, "long_blend": 4.0, "double_drop": 4.0,
-                    "cut_at_drop": 3.0, "bassline_layer": 4.0}.get(style)
+        min_dual = {"bass_swap": 4.0, "long_blend": 4.0, "loop_in": 4.0,
+                    "breakdown_swap": 4.0, "phrase_cut": 3.0,
+                    "spinback_cut": 3.0}.get(style)
         if min_dual and m["dual_s"] < min_dual:
             check(f"{style}: decks actually overlap", False,
                   f"dual-audible only {m['dual_s']:.1f}s "

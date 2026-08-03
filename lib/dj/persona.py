@@ -54,9 +54,10 @@ PERSONAS = {p.name: p for p in [
             p96=0.60, play_len_x=1.30,
             key_strictness=1.6, explore=0.7, vocal_pull=-0.3),
     # Moments early and often, punchy tier up, shorter records; the
-    # signature is the synced double drop.
+    # signature is the loop-build into the drop (double_drop retired
+    # 2026-08-02 - the nextdrop MOMENT owns the synced-drop spectacle).
     Persona("showman", "big moments, short records, drops on drops",
-            style_bias={"double_drop": 2.0},
+            style_bias={"loop_build": 2.0},
             theatrics=1.9, moment_cooldown_x=0.55,
             p96=0.15, play_len_x=0.80,
             key_strictness=0.75, vocal_pull=0.15),

@@ -231,4 +231,4 @@ scale = r / mid_r
 
 - `renderer/fan_coords.py` — GLSL string constants + Python `FanCoords` class
 - `renderer/fan_geometry.py` — Physical constants (`PHYSICAL_INNER_FT`, `PHYSICAL_OUTER_FT`), display-mode geometry
-- `renderer/effects/test_fan_coords.py` — Visual test effect (rectangular grid in physical space)
+- `projects/fan/shaders/test_fan_coords.py` — Visual test effect (rectangular grid in physical space)

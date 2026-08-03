@@ -125,7 +125,7 @@ def main():
         t = sl[k]["track"]
         tr = sl[k]["transition"]
         # drop-anchored styles exit ON the drop by design - also DJ canon
-        if tr["style"] in ("loop_build", "double_drop"):
+        if tr["style"] == "loop_build":
             continue
         if t.phrase_beats <= 0 or t.phrase_conf < 0.1:
             continue

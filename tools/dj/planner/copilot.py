@@ -37,9 +37,10 @@ HISTORY_MAX_MSGS = 40            # trim old turns; the set state is re-read
 # The full transition-style menu (mirrors brain.plan_transition's beats
 # table) - the vocabulary pin_style validates against.
 STYLES = ("long_blend", "bass_swap", "filter_sweep", "loop_roll_exit",
-          "echo_out", "cut_at_drop", "double_drop", "loop_build",
-          "bassline_layer", "stem_drum_swap", "acapella_out",
+          "echo_out", "loop_build",
+          "stem_drum_swap", "acapella_out",
           "stem_bass_swap", "drum_bridge", "acapella_in", "melody_carry",
+          "phrase_cut", "spinback_cut", "loop_in", "breakdown_swap",
           "long_fade")
 
 
@@ -522,7 +523,7 @@ roll at night. Pinning locks it - through the REAL gates, so an \
 impossible pin (stem styles need "stems" on BOTH tracks - see the stems \
 flag in track rows; cut_at_drop needs strong grids and a pre-drop entry) \
 is refused with a warning and the fallback plays. Pin sparingly: for a \
-moment the user asked for (a double_drop at the peak), or to force \
+moment the user asked for (a loop_build into the peak drop), or to force \
 long_fade/bass_swap across a seam night_history says flams.
 
 PERSISTENCE: save_set stores the set; push_to_live saves AND loads it \
