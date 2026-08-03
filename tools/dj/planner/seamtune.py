@@ -104,6 +104,50 @@ RANGES = {
 
 N_PER_SEAM = 2          # knobs nudged at once - few enough to attribute
 MIN_KNOB_N = 12         # below this a knob's direction is not reportable
+MIN_FIT_N = 25          # a 3-parameter fit with usable error bars needs this
+T_CRIT = 2.0            # significance bar for curvature / slope
+CI_K = 2.0              # move only to the CI edge nearest the current value
+MIN_GAIN = 0.05         # predicted verdict-score gain below which a move is
+                        # not worth making - the guard that stops noise from
+                        # nudging a knob that has no real effect
+
+
+def _fit_peak(xs, ys):
+    """Quadratic response surface with error bars.
+
+    Returns {b1, b2, t1, t2} and, when the curvature is significantly
+    concave, {peak, peak_se} - the peak location in normalised units and
+    its standard error by the delta method. The error bar is the whole
+    point: it is what lets the caller move only when the peak is
+    demonstrably somewhere other than where the knob already sits, and
+    what makes the process stop when it is not."""
+    n = len(xs)
+    if n < MIN_FIT_N or n - 3 < 5:
+        return None
+    X = np.column_stack([np.ones(n), xs, xs ** 2])
+    try:
+        XtX_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return None
+    beta = XtX_inv @ X.T @ ys
+    resid = ys - X @ beta
+    sigma2 = float(resid @ resid) / (n - 3)
+    if sigma2 <= 0:
+        return None
+    cov = sigma2 * XtX_inv
+    b1, b2 = float(beta[1]), float(beta[2])
+    se1 = math.sqrt(max(float(cov[1, 1]), 1e-18))
+    se2 = math.sqrt(max(float(cov[2, 2]), 1e-18))
+    out = {"b1": b1, "b2": b2, "t1": b1 / se1, "t2": b2 / se2}
+    if b2 < 0 and out["t2"] < -T_CRIT:
+        peak = -b1 / (2.0 * b2)
+        # delta method: Var(-b1/2b2) from the covariance of (b1, b2)
+        g = np.array([0.0, -1.0 / (2.0 * b2), b1 / (2.0 * b2 * b2)])
+        var = float(g @ cov @ g)
+        if var >= 0:
+            out["peak"] = float(peak)
+            out["peak_se"] = math.sqrt(var)
+    return out
 
 
 def knobs_for(style, duck=False):
@@ -116,25 +160,26 @@ def knobs_for(style, duck=False):
     return ks
 
 
-def sample_tune(style, rng=None, width=0.5, duck=False):
-    """A subtle variant of the CURRENT baseline for one seam.
+def sample_tune(style, rng=None, duck=False):
+    """One seam's nudge: {knob: value}, sampled across the knob's whole
+    (deliberately narrow) range.
 
-    Centred on whatever the knob is worth today - the original constant
-    at first, the learned value once evidence has moved it - so search
-    keeps happening around the moving baseline instead of re-exploring
-    the whole range forever. Always clipped to the absolute range."""
+    NOT re-centred on the learned baseline. Centring exploration on the
+    current value was tried and fails: the explored span collapses toward
+    the baseline, the response curve is then only sampled over a sliver,
+    the peak stops being identifiable, and the baseline wanders on a noisy
+    estimate (measured: settles 0.06 off a known optimum, or freezes early
+    if the step is damped to stop the wander). A fixed design keeps the
+    estimate consistent, so it is the ESTIMATE that converges - which is
+    what makes the baseline settle."""
     rng = rng or random
     pool = [k for k in knobs_for(style, duck) if k in RANGES]
     if not pool:
         return {}
-    base = tuning.current(TUNE_DEFAULTS)
     out = {}
     for k in rng.sample(pool, min(N_PER_SEAM, len(pool))):
         lo, hi = RANGES[k]
-        cur = float(base.get(k, TUNE_DEFAULTS[k]))
-        half = (hi - lo) * width / 2.0
-        out[k] = round(min(hi, max(lo, rng.uniform(cur - half,
-                                                   cur + half))), 4)
+        out[k] = round(rng.uniform(lo, hi), 4)
     return out
 
 
@@ -176,8 +221,10 @@ def knob_findings(rows, min_n=MIN_KNOB_N):
                 continue
             per.setdefault(k, []).append(((float(v) - lo) / (hi - lo), s,
                                           float(v)))
+    base = tuning.current(TUNE_DEFAULTS)
     out = []
     for k, obs in per.items():
+        lo, hi = RANGES[k]
         n = len(obs)
         if n < min_n:
             out.append({"knob": k, "n": n, "thin": True,
@@ -190,20 +237,59 @@ def knob_findings(rows, min_n=MIN_KNOB_N):
                         "default": TUNE_DEFAULTS[k]})
             continue
         r_xy = float(np.corrcoef(xs, ys)[0, 1])
+        # Standard error of the correlation, for an honest "is this real".
+        se = math.sqrt(max(1.0 - r_xy ** 2, 1e-9) / max(n - 2, 1))
+        # RESPONSE SURFACE, not an online step. Fit the whole sample, get
+        # an error bar on the peak, and move only to the near edge of that
+        # interval - so the knob advances only as far as the evidence
+        # actually supports, and STOPS on its own once the interval covers
+        # where it already sits. Convergence is a property of the estimate
+        # tightening, not of any step-size schedule.
+        cur = float(base.get(k, TUNE_DEFAULTS[k]))
+        cur_x = (cur - lo) / (hi - lo)
+        fit = _fit_peak(xs, ys)
+        target = why = None
+        peak_v = peak_se_v = None
+        def _gain(x_to, x_from, ft):
+            """Predicted verdict-score improvement from moving. The
+            intercept cancels, so this is just the fitted curve's rise."""
+            return ((ft["b1"] * x_to + ft["b2"] * x_to ** 2)
+                    - (ft["b1"] * x_from + ft["b2"] * x_from ** 2))
+
+        usable = False
+        if fit and "peak" in fit:
+            pk, pse = fit["peak"], fit["peak_se"]
+            peak_v, peak_se_v = lo + pk * (hi - lo), pse * (hi - lo)
+            usable = (0.02 <= pk <= 0.98 and pse < 0.30
+                      and _gain(pk, cur_x, fit) >= MIN_GAIN)
+            if usable:
+                if pk - CI_K * pse > cur_x:
+                    target, why = lo + (pk - CI_K * pse) * (hi - lo), "peak"
+                elif pk + CI_K * pse < cur_x:
+                    target, why = lo + (pk + CI_K * pse) * (hi - lo), "peak"
+                else:
+                    why = "settled"       # interval already covers current
+        if target is None and not usable and fit \
+                and abs(r_xy) > 2.5 * se and abs(r_xy) >= 0.15:
+            # No usable interior peak (none, convex, or outside the range)
+            # but a clear monotone trend: the best value available IS an end
+            # of the range. Direction from the CORRELATION, not from b1 - on
+            # a convex rising response b1 can be negative while the curve
+            # rises throughout, which pointed this the wrong way.
+            end_x = 1.0 if r_xy > 0 else 0.0
+            if _gain(end_x, cur_x, fit) >= MIN_GAIN:
+                target, why = (hi if r_xy > 0 else lo), "monotone"
         # Score-weighted centre of the tried values: where the good ones
         # actually sat. Weight above the mean score only, so bad seams
         # pull nothing rather than pulling backwards.
         w = np.clip(ys - ys.mean(), 0.0, None)
         vals = np.array([o[2] for o in obs])
         suggest = float((vals * w).sum() / w.sum()) if w.sum() > 0 else None
-        # Standard error of a correlation, for an honest "is this real".
-        se = math.sqrt(max(1.0 - r_xy ** 2, 1e-9) / max(n - 2, 1))
-        # 2.5 sigma AND a floor on the effect size: a dozen knobs are
-        # tested every update, so a plain 2-sigma bar produces a steady
-        # trickle of false movers (measured: trim_cap drifted on noise).
         out.append({"knob": k, "n": n, "r": r_xy, "se": se,
-                    "solid": abs(r_xy) > 2.5 * se and abs(r_xy) >= 0.12,
+                    "solid": target is not None,
                     "default": TUNE_DEFAULTS[k], "suggest": suggest,
+                    "current": cur, "target": target, "why": why,
+                    "peak": peak_v, "peak_se": peak_se_v,
                     "mean_score": float(ys.mean()), "thin": False})
     out.sort(key=lambda d: (d.get("thin", False), -abs(d.get("r", 0.0))))
     return out
@@ -325,20 +411,26 @@ def report_html(rows):
     base = tuning.current(TUNE_DEFAULTS)
     moved = {k: v for k, v in base.items()
              if abs(v - TUNE_DEFAULTS[k]) > 1e-6}
+    if not tuning.AUTO_APPLY:
+        h.append(
+            f"<p style='color:{BAD_C}'><b>Auto-apply is OFF</b> — the "
+            f"engine is mixing with the original constants and anything "
+            f"below is only a proposal.</p>")
     if moved:
         h.append("<p><b>Baseline the engine now mixes with</b> "
-                 f"<span style='color:{DIM_C}'>(learned, damped "
-                 f"{int(tuning.STEP * 100)}% per update; live and lab both "
+                 f"<span style='color:{DIM_C}'>(learned; live and lab both "
                  f"read it)</span><br>" + " · ".join(
                      f"<b>{k}</b> {TUNE_DEFAULTS[k]:g} → "
                      f"<span style='color:{GOOD_C}'>{v:g}</span>"
                      for k, v in sorted(moved.items())) + "</p>")
-    else:
+    elif tuning.AUTO_APPLY:
         h.append(f"<p style='color:{DIM_C}'>Baseline is still every "
-                 f"original constant — no knob has cleared 2 sigma yet. "
-                 f"When one does it moves {int(tuning.STEP * 100)}% of the "
-                 f"way toward the evidence, and both the lab and the live "
-                 f"engine start mixing with the new value.</p>")
+                 f"original constant. A knob moves once its fit places a "
+                 f"better value outside the confidence interval around "
+                 f"where it sits, and the predicted gain clears "
+                 f"{MIN_GAIN:.0%} of a verdict — then it moves only to the "
+                 f"near edge of that interval, and stops when the interval "
+                 f"catches up.</p>")
 
     fm = feature_model(rows)
     h.append("<h4 style='margin:8px 0 2px'>What a good seam looks like "

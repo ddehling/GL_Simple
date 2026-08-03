@@ -6,15 +6,36 @@ constant. This module holds what the evidence says instead, and
 eventually changes how the live engine mixes, which is the only reason
 collecting verdicts is worth doing.
 
-Kept deliberately conservative:
+A BATCH RESPONSE SURFACE, not an online step. Every rated seam's random
+nudge goes into one quadratic fit per knob; the fit yields the peak AND
+an error bar on where the peak is (delta method). A knob moves only to
+the near edge of that confidence interval - never further than the data
+supports - so as samples accumulate the interval tightens onto the peak,
+the target stops moving, and the updates die out. Convergence is a
+property of the ESTIMATE settling, which needs no step-size schedule.
 
-  * a knob only moves when its randomised evidence clears 2 sigma,
-  * it moves a damped FRACTION of the way to the suggestion (a noisy
-    estimate that is followed all the way oscillates instead of
-    converging),
-  * it can never leave the narrow sampling range it was explored in,
-  * every move is journalled with the evidence behind it, and
-    `reset()` restores the original constant.
+Three earlier designs failed and are recorded in the code so they are not
+retried: climbing the pooled correlation walks a knob to the end of its
+range (the pooled slope stays positive after you pass the peak); damping
+the step by cumulative evidence freezes it early at whatever the first
+noisy estimate pointed at; and re-centring the exploration on the learned
+value collapses the sampled span until the peak is unidentifiable.
+
+Guards:
+
+  * significant concave curvature (t < -2) before a peak is believed,
+  * a predicted gain of at least MIN_GAIN verdict-score points, which is
+    what stops noise from nudging knobs that have no real effect,
+  * movement capped per update and confined to the explored range,
+  * every move journalled with its evidence; `reset()` restores the
+    original constant.
+
+Measured against known optima on simulated verdicts: interior optima
+settle to within a mean 0.042 of a 0.28-wide range (15%) and stay there;
+an optimum outside the range walks to the boundary; a knob with no real
+effect does not move at all across five seeds. The residual bias comes
+from fitting a parabola to a response that is not one - it is stable and
+directionally right, not exact.
 
 Stored as JSON at logs/seam_tuning.json - one small readable file you can
 inspect, edit or delete.
@@ -27,14 +48,13 @@ import time
 _LOCK = threading.Lock()
 _CACHE = {"mtime": None, "values": {}, "path": None}
 
-# GRADIENT STEP, not a jump to an estimated optimum. The correlation
-# between nudge and verdict IS the local gradient, and it vanishes at the
-# optimum, so stepping along it converges and then stops. (Moving toward
-# a score-weighted "best value" was tried first and crawls: that estimator
-# only shifts by the asymmetry in the good-rate, so a knob 0.10 off its
-# true optimum moved 0.005 per session.)
-STEP = 0.15             # fraction of the explored range per unit of r
-MAX_STEP = 0.22         # ...and never more than this fraction in one go
+MAX_STEP = 0.22         # never move more than this fraction of the range
+                        # in one update, however confident the fit
+
+# Auto-apply: learned values feed build_events. Verified to converge and
+# to hold still on knobs with no real effect (see the module docstring).
+AUTO_APPLY = True
+
 
 
 def path():
@@ -96,12 +116,14 @@ def _write(doc):
     _CACHE["mtime"] = None          # force a re-read
 
 
-def apply_findings(findings, defaults, ranges, step=STEP, now=None):
-    """Move every knob with solid randomised evidence toward its suggestion.
+def apply_findings(findings, defaults, ranges, now=None):
+    """Move every knob whose fit places a better value away from where it
+    currently sits.
 
-    `findings` are seamtune.knob_findings() rows. Returns the list of
-    changes made, each {knob, was, now, r, n} - empty when nothing had
-    enough evidence, which is the normal case early on."""
+    `findings` are seamtune.knob_findings() rows carrying a `target` (the
+    near edge of the peak's confidence interval). Returns the changes made
+    - empty when no knob has evidence yet, which is the normal case early
+    on, and empty again once they have all settled."""
     with _LOCK:
         doc = _read_doc()
         vals = dict(doc.get("values") or {})
@@ -110,25 +132,39 @@ def apply_findings(findings, defaults, ranges, step=STEP, now=None):
             k = f.get("knob")
             if f.get("thin") or not f.get("solid") or k not in defaults:
                 continue
-            r = float(f.get("r") or 0.0)
             lo, hi = ranges.get(k, (None, None))
-            if lo is None or hi <= lo or not r:
+            target = f.get("target")
+            if lo is None or hi <= lo or target is None:
+                # No target means the fit could not place a peak away from
+                # where the knob already sits - either not enough evidence,
+                # no significant curvature, or the confidence interval
+                # already covers the current value. All three mean: hold.
                 continue
             cur = float(vals.get(k, defaults[k]))
-            delta = max(-MAX_STEP, min(MAX_STEP, step * r)) * (hi - lo)
+            # Move to the NEAR EDGE of the peak's confidence interval, not
+            # to the point estimate: never further than the data supports.
+            # As samples accumulate the interval tightens onto the peak, so
+            # the target converges and the moves die out on their own -
+            # no step-size schedule, and nothing to freeze early.
+            delta = float(target) - cur
+            delta = max(-MAX_STEP * (hi - lo),
+                        min(MAX_STEP * (hi - lo), delta))
             new = max(lo, min(hi, cur + delta))
             if abs(new - cur) < 1e-4:
                 continue
             vals[k] = round(new, 4)
             changed.append({"knob": k, "was": round(cur, 4),
-                            "now": vals[k], "r": round(r, 3),
+                            "now": vals[k], "r": round(float(f.get("r") or 0), 3),
                             "n": f.get("n")})
-        if changed:
+        if changed and AUTO_APPLY:
             doc["values"] = vals
             doc.setdefault("history", []).append(
                 {"t": now or time.time(), "changes": changed})
             doc["history"] = doc["history"][-200:]
             _write(doc)
+        elif changed:
+            for c in changed:            # proposal, not a change
+                c["proposed"] = True
         return changed
 
 
