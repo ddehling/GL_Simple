@@ -1,35 +1,33 @@
-"""One-at-a-time parameter probing against a known baseline.
+"""One-parameter probing by ABSOLUTE judgment, not comparison.
 
-The statistical approach this replaces asked you to rate whole seams
-while several things varied at once, and inferred each parameter's effect
-from the correlation. It cannot work at human rating volumes: the
-pair-to-pair variance swamps a knob's effect, and measurement showed even
-3,377 samples of one knob failed to identify a strong effect.
+The first design asked "better or worse than the baseline?" - which
+quietly assumes you remember what the baseline sounded like, on a
+DIFFERENT pair of songs. Nobody can do that honestly, and a 10% shift is
+far below what survives in memory across seams.
 
-This asks a different question. Hold every parameter at the baseline,
-move exactly ONE, say out loud what was moved and in which direction, and
-ask about THAT. Four answers, and the third is the valuable one:
+What a person CAN answer from a single listen is an absolute question
+about this seam, in plain words:
 
-  good           - the change is an improvement; the baseline moves
-  bad            - the change is worse; the baseline is better here
-  can't tell     - below your threshold at this size; TEST BIGGER
-  don't get it   - the question is not meaningful; stop asking it
+    Where did the handover land?    too late / about right / too early
+    How long was the blend?         too long / about right / too short
+    The incoming track's entry?     too loud / about right / too quiet
 
-"Can't tell" is what makes this converge. It measures the just-noticeable
-difference directly instead of inferring it, and it drives the staircase:
-imperceptible changes grow until they are perceptible or until the
-parameter's whole range is exhausted - which is itself the finding that
-the range is too tight, or that the parameter does not matter.
+Each answer is a direct constraint on the knob: "too late" means the
+value is above where it should be, whatever the baseline was. The search
+keeps an interval of still-plausible values per knob, probes inside it,
+and shrinks it with each directional answer (damped, so one mistaken
+answer cannot exclude the truth). "About right" votes accumulate; enough
+of them settles the knob at their centre. There is nothing to remember
+between seams.
 
-A knob stops being tested when it is:
+The other answers keep their old meanings: "can't tell" means the seam
+never made the attribute audible (persistent -> parked imperceptible);
+"don't get it" means the question is badly worded (parked unclear - a
+wording bug, and it says so).
 
-  SETTLED       - worse in BOTH directions at sizes you could perceive,
-                  so the baseline is a local optimum
-  IMPERCEPTIBLE - indistinguishable even at the edge of its range
-  UNCLEAR       - the question did not land; needs a better description
-  IMPROVED      - moved, and the new value now needs re-confirming
-
-Expect on the order of 6-12 trials per knob rather than thousands.
+Only the PRIORITY knobs are asked about: 39 questions is too many to
+answer honestly, and most deferred knobs have measurable consequences -
+tools/dj/dj_knobsweep.py estimates those from rendered audio instead.
 """
 import json
 import os
@@ -37,114 +35,112 @@ import time
 
 from lib.dj.brain import TUNE_DEFAULTS
 
-# How a change SOUNDS, per knob: (raise it, lower it). Written for
-# someone listening to the seam, not reading the code - if a description
-# does not tell you what to listen for, the answer will be "don't get it"
-# and that is a bug in the description, not in the listener.
-DESCRIPTIONS = {
-    "swap_pos": ("the bass/melody handover happens LATER in the blend",
-                 "the handover happens EARLIER in the blend"),
-    "swap_beats": ("the handover is SPREAD over more beats (gentler)",
-                   "the handover is more ABRUPT"),
-    "swap_beats_long": ("the handover is SPREAD over more beats (gentler)",
-                        "the handover is more ABRUPT"),
-    "trim_cap": ("a quiet incoming track is pushed LOUDER on entry",
-                 "a quiet incoming track is left QUIETER on entry"),
-    "b_mid0": ("the incoming track's MIDS are more open on entry",
-               "the incoming track's MIDS are more scooped on entry"),
-    "b_mid0_hot": ("the incoming MIDS are more open when the outgoing "
-                   "track is mid-heavy",
-                   "the incoming MIDS are more scooped when the outgoing "
-                   "track is mid-heavy"),
-    "b_mid0_long": ("the incoming MIDS are more open through a long blend",
-                    "the incoming MIDS are more scooped through a long blend"),
-    "b_high0": ("the incoming track's HIGHS/air are more open on entry",
-                "the incoming track's HIGHS are rolled off on entry"),
-    "b_high0_hot": ("the incoming HIGHS are more open when the outgoing "
-                    "track is bright",
-                    "the incoming HIGHS are rolled off when the outgoing "
-                    "track is bright"),
-    "b_high0_long": ("the incoming HIGHS are more open through a long blend",
-                     "the incoming HIGHS are rolled off through a long blend"),
-    "stage1_gain": ("the incoming track rides LOUDER under the outgoing "
-                    "one before the swap",
-                    "the incoming track rides QUIETER under the outgoing "
-                    "one before the swap"),
-    "stage1_frac": ("the incoming track takes LONGER to reach its riding "
-                    "level", "the incoming track reaches its riding level "
-                    "FASTER"),
-    "high_swap_at": ("the hats/air hand over LATER",
-                     "the hats/air hand over EARLIER"),
-    "beats_scale": ("the whole blend is LONGER",
-                    "the whole blend is SHORTER"),
-    "pre_dip_at": ("the outgoing track starts easing down LATER",
-                   "the outgoing track starts easing down EARLIER"),
-    "pre_dip_gain": ("the outgoing track eases down LESS before the swap",
-                     "the outgoing track eases down MORE before the swap"),
-    "exit_res": ("the outgoing track hangs around LONGER after the swap",
-                 "the outgoing track leaves SOONER after the swap"),
-    "exit_res_long": ("the outgoing track hangs around LONGER after a long "
-                      "blend", "the outgoing track leaves SOONER after a "
-                      "long blend"),
-    "duck_depth": ("the outgoing VOCAL is ducked less (more of it survives)",
-                   "the outgoing VOCAL is ducked harder (more of it "
-                   "disappears)"),
-    "duck_beats": ("the vocal duck fades in more SLOWLY",
-                   "the vocal duck snaps in more QUICKLY"),
-    "fade_recede": ("on a fade, the outgoing track stays LOUDER as the new "
-                    "one arrives",
-                    "on a fade, the outgoing track drops FURTHER back as "
-                    "the new one arrives"),
-    "fade_lead_a": ("on a fade, the outgoing track starts receding EARLIER",
-                    "on a fade, the outgoing track starts receding LATER"),
-    "fade_lead_b": ("on a fade, the incoming track arrives EARLIER",
-                    "on a fade, the incoming track arrives LATER"),
-    "fade_b_stage1": ("on a fade, the incoming track arrives more PRESENT",
-                      "on a fade, the incoming track arrives further BACK"),
-    "fade_b_ramp1": ("on a fade, the incoming track takes LONGER to become "
-                     "present", "on a fade, the incoming track becomes "
-                     "present FASTER"),
-    "fade_b_ramp2": ("on a fade, the incoming track takes LONGER to reach "
-                     "full", "on a fade, the incoming track reaches full "
-                     "FASTER"),
-    "fade_out_ramp": ("on a fade, the outgoing track's final fade is LONGER",
-                      "on a fade, the outgoing track's final fade is FASTER"),
-    "fade_stop_lead": ("on a fade, the outgoing track lingers LONGER before "
-                       "stopping", "on a fade, the outgoing track stops "
-                       "SOONER"),
-    "echo_lead_beats": ("on an echo exit, the incoming track arrives EARLIER "
-                        "under the tail",
-                        "on an echo exit, the incoming track arrives LATER"),
-    "echo_b_gain": ("on an echo exit, the incoming track sits LOUDER under "
-                    "the tail", "on an echo exit, the incoming track sits "
-                    "QUIETER under the tail"),
-    "echo_delay_beats": ("the echo repeats are FURTHER apart",
-                         "the echo repeats are CLOSER together"),
-    "echo_feedback": ("the echo repeats last LONGER (more repeats)",
-                      "the echo repeats die away FASTER"),
-    "echo_wet": ("the echo is LOUDER against the dry signal",
-                 "the echo is more SUBTLE"),
-    "echo_tail_s": ("the echo tail rings on LONGER before the deck stops",
-                    "the echo tail is cut SHORTER"),
-    "spinback_s": ("the spinback wind-down is SLOWER/longer",
-                   "the spinback is a QUICKER snap"),
-    "brake_s": ("the brake into the cut is SLOWER/longer",
-                "the brake into the cut is QUICKER"),
-    "brake_chance": ("a brake happens MORE often on this style",
-                     "a brake happens LESS often on this style"),
-    "roll_shrink1": ("the loop roll waits LONGER before halving",
-                     "the loop roll halves SOONER"),
-    "roll_shrink2": ("the loop roll waits LONGER before halving again",
-                     "the loop roll halves again SOONER"),
+# knob -> (question, "too much" answer, "too little" answer).
+# The "too much" answer ALWAYS corresponds to the knob being too HIGH.
+QUESTIONS = {
+    "beats_scale": ("How long did the blend feel?",
+                    "Too long / dragged", "Too short / rushed"),
+    "swap_pos": ("Where did the bass/melody handover land in the blend?",
+                 "Too late", "Too early"),
+    "fade_recede": ("During the fade, how present was the OUTGOING track "
+                    "while the new one arrived?",
+                    "Hung on too loud", "Dropped away too far"),
+    "fade_b_stage1": ("On the fade, how did the INCOMING track arrive?",
+                      "Too loud / barged in", "Too far back / timid"),
+    "trim_cap": ("How was the incoming track's entry level?",
+                 "Too loud", "Too quiet"),
+    "b_mid0": ("The incoming track's mids (melody/voice) on entry?",
+               "Too open - melodies clashed", "Too scooped - sounded thin"),
+    "stage1_gain": ("How loud did the incoming track ride UNDER the "
+                    "outgoing one before the swap?",
+                    "Too loud - fought the outgoing track",
+                    "Too quiet - blend felt empty"),
+    "high_swap_at": ("When did the hats/air hand over?",
+                     "Too late", "Too early"),
+    "pre_dip_gain": ("The outgoing track's level just before the swap?",
+                     "Stayed too loud", "Dipped too much"),
+    # Deferred knobs keep questions too - they are asked only if promoted.
+    "swap_beats": ("How abrupt was the handover itself?",
+                   "Too drawn out", "Too abrupt"),
+    "swap_beats_long": ("How abrupt was the handover on this long blend?",
+                        "Too drawn out", "Too abrupt"),
+    "fade_lead_a": ("When did the outgoing track start receding?",
+                    "Too early - it left before the seam",
+                    "Too late - the fade felt sudden"),
+    "fade_lead_b": ("When did the incoming track arrive on the fade?",
+                    "Too early", "Too late"),
+    "fade_b_ramp1": ("How fast did the incoming track become present?",
+                     "Too slow", "Too fast"),
+    "fade_b_ramp2": ("How fast did the incoming track reach full level?",
+                     "Too slow", "Too fast"),
+    "fade_out_ramp": ("The outgoing track's final fade?",
+                      "Too long", "Too abrupt"),
+    "fade_stop_lead": ("How long did the outgoing track linger after the "
+                       "seam?", "Too long", "Cut off too soon"),
+    "b_mid0_hot": ("Against a mid-heavy outgoing track, the incoming "
+                   "mids?", "Too open - clashed", "Too scooped - thin"),
+    "b_mid0_long": ("Through the long blend, the incoming mids?",
+                    "Too open - clashed", "Too scooped - thin"),
+    "b_high0": ("The incoming track's highs on entry?",
+                "Too bright", "Too dull"),
+    "b_high0_hot": ("Against a bright outgoing track, the incoming highs?",
+                    "Too bright", "Too dull"),
+    "b_high0_long": ("Through the long blend, the incoming highs?",
+                     "Too bright", "Too dull"),
+    "stage1_frac": ("How quickly did the incoming track reach its riding "
+                    "level?", "Too slow", "Too fast"),
+    "pre_dip_at": ("When did the outgoing track start easing down?",
+                   "Too late", "Too early"),
+    "exit_res": ("After the swap, the outgoing track hung around...",
+                 "Too long", "Left too abruptly"),
+    "exit_res_long": ("After the long blend, the outgoing track hung "
+                      "around...", "Too long", "Left too abruptly"),
+    "duck_depth": ("How much of the outgoing vocal survived the duck?",
+                   "Too much - voices clashed", "Too little - felt gutted"),
+    "duck_beats": ("How fast did the vocal duck come in?",
+                   "Too slow", "Too snappy"),
+    "echo_lead_beats": ("On the echo exit, when did the incoming track "
+                        "arrive?", "Too early", "Too late"),
+    "echo_b_gain": ("Under the echo tail, the incoming track sat...",
+                    "Too loud", "Too quiet"),
+    "echo_delay_beats": ("The echo repeats were spaced...",
+                         "Too far apart", "Too close together"),
+    "echo_feedback": ("The echo repeats lasted...",
+                      "Too long", "Died too fast"),
+    "echo_wet": ("The echo against the dry signal was...",
+                 "Too loud", "Too subtle"),
+    "echo_tail_s": ("The echo tail rang on...",
+                    "Too long", "Cut too short"),
+    "spinback_s": ("The spinback wind-down was...",
+                   "Too slow/long", "Too quick"),
+    "brake_s": ("The brake into the cut was...",
+                "Too slow/long", "Too quick"),
+    "brake_chance": ("Brakes on this style happen...",
+                     "Too often", "Not often enough"),
+    "roll_shrink1": ("The loop roll's first halving came...",
+                     "Too late", "Too soon"),
+    "roll_shrink2": ("The loop roll's second halving came...",
+                     "Too late", "Too soon"),
 }
 
-VERDICTS = ("good", "bad", "cant_tell", "dont_get_it")
+VERDICTS = ("too_much", "right", "too_little", "cant_tell", "dont_get_it")
 
-START_FRAC = 0.25      # first deviation, as a fraction of the knob's range
-GROW = 1.7             # multiply the deviation after "can't tell"
-CONFIRM = 2            # consistent answers needed to call a direction
-UNCLEAR_STOP = 2       # "don't get it" answers before parking a knob
-EDGE_STOP = 2          # "can't tell" at the range edge before parking
+# WORTH A HUMAN'S EAR - see module docstring. Everything else is deferred
+# to the machine sweep unless promote()d.
+PRIORITY = (
+    "beats_scale", "swap_pos", "fade_recede", "fade_b_stage1", "trim_cap",
+    "b_mid0", "stage1_gain", "high_swap_at", "pre_dip_gain",
+)
+
+RIGHT_STOP = 2         # "about right" votes to settle a knob
+CANT_STOP = 3          # "can't tell" votes to park as imperceptible
+UNCLEAR_STOP = 2       # "don't get it" votes to park as unclear
+SHRINK = 0.6           # how far a directional answer pulls its bound in
+                       # (damped: one wrong answer cannot exclude the truth)
+MIN_WIDTH = 0.18       # settle when the plausible interval is this narrow
+                       # (fraction of the knob's range)
+APPLY_MIN = 0.08       # only move the live value if the settled estimate
+                       # differs from it by at least this much of the range
 
 
 def state_path():
@@ -157,11 +153,11 @@ def load():
     try:
         with open(state_path(), encoding="utf-8") as f:
             doc = json.load(f)
-            if isinstance(doc, dict):
+            if isinstance(doc, dict) and "knobs" in doc:
                 return doc
     except (OSError, ValueError):
         pass
-    return {"knobs": {}, "trials": []}
+    return {"knobs": {}, "trials": [], "promoted": []}
 
 
 def save(doc):
@@ -173,223 +169,217 @@ def save(doc):
     os.replace(tmp, p)
 
 
-_FRESH = {"frac": START_FRAC, "status": "testing", "dir": 1,
-          "bad_up": 0, "bad_down": 0, "good": 0, "cant": 0,
-          "edge_cant": 0, "unclear": 0, "trials": 0, "moved": 0.0}
+def _fresh(lo, hi):
+    return {"status": "testing", "lo": lo, "hi": hi, "rights": [],
+            "cant": 0, "unclear": 0, "trials": 0, "applied": None}
 
 
-def _peek(doc, knob):
-    """Read-only view - safe to call from the render thread."""
-    return doc["knobs"].get(knob) or dict(_FRESH)
-
-
-def _ks(doc, knob):
-    return doc["knobs"].setdefault(knob, {
-        "frac": START_FRAC, "status": "testing", "dir": 1,
-        "bad_up": 0, "bad_down": 0, "good": 0, "cant": 0,
-        "edge_cant": 0, "unclear": 0, "trials": 0, "moved": 0.0})
-
-
-def trials_of(doc, knob):
-    return doc["knobs"].get(knob, {}).get("trials", 0)
+def _peek(doc, knob, ranges):
+    st = doc["knobs"].get(knob)
+    if st is None:
+        lo, hi = ranges[knob]
+        st = _fresh(lo, hi)
+    return st
 
 
 def status_of(doc, knob):
     return doc["knobs"].get(knob, {}).get("status", "testing")
 
 
+def trials_of(doc, knob):
+    return doc["knobs"].get(knob, {}).get("trials", 0)
+
+
 def open_knobs(ranges, doc=None):
-    """Knobs still worth asking about."""
+    """Knobs still worth asking a HUMAN about: the priority tier plus
+    anything promote()d. The rest belong to the machine sweep."""
     doc = doc or load()
+    promoted = set(doc.get("promoted") or [])
     return [k for k in ranges
-            if k in DESCRIPTIONS and status_of(doc, k) == "testing"]
+            if k in QUESTIONS and status_of(doc, k) == "testing"
+            and (k in PRIORITY or k in promoted)]
+
+
+def promote(knob, doc=None):
+    """Ask about a deferred knob after all - e.g. when the machine sweep
+    found its metrics flat and taste is the only arbiter left."""
+    doc = doc or load()
+    doc.setdefault("promoted", [])
+    if knob not in doc["promoted"]:
+        doc["promoted"].append(knob)
+    save(doc)
+    return doc
 
 
 def next_probe(ranges, baseline, knob=None, doc=None, rng=None):
-    """Choose the next single-parameter probe.
-
-    Returns {knob, value, baseline, direction, frac, description} or None
-    when every knob has been parked."""
+    """The next single-parameter probe: render at the middle of the
+    still-plausible interval (with a little jitter so repeats are not
+    identical). Returns {knob, value, question, too_much, too_little,
+    trials} or None when nothing is left to ask."""
     doc = doc or load()
     pool = open_knobs(ranges, doc)
     if not pool:
         return None
+    import random as _r
+    rng = rng or _r
     if knob is None:
-        import random as _r
-        rng = rng or _r
-        # Fewest trials first, so attention spreads instead of grinding
-        # one knob to death while others are untouched.
-        fewest = min(_peek(doc, k)["trials"] for k in pool)
-        knob = rng.choice([k for k in pool
-                           if _peek(doc, k)["trials"] == fewest])
-    st = _peek(doc, knob)
-    lo, hi = ranges[knob]
-    base = float(baseline.get(knob, TUNE_DEFAULTS[knob]))
-    span = hi - lo
-    d = st["frac"] * span * (1 if st["dir"] > 0 else -1)
-    value = max(lo, min(hi, base + d))
-    at_edge = abs(value - (hi if d > 0 else lo)) < 1e-9
-    up, down = DESCRIPTIONS[knob]
-    return {"knob": knob, "value": round(value, 4), "baseline": base,
-            "direction": 1 if value >= base else -1,
-            "frac": st["frac"], "at_edge": at_edge,
-            "description": up if value > base else down,
+        fewest = min(trials_of(doc, k) for k in pool)
+        knob = rng.choice([k for k in pool if trials_of(doc, k) == fewest])
+    st = _peek(doc, knob, ranges)
+    lo, hi = st["lo"], st["hi"]
+    span = ranges[knob][1] - ranges[knob][0]
+    mid = (lo + hi) / 2.0
+    value = mid + rng.uniform(-0.15, 0.15) * max(hi - lo, 0.05 * span)
+    value = max(ranges[knob][0], min(ranges[knob][1], value))
+    q, too_much, too_little = QUESTIONS[knob]
+    return {"knob": knob, "value": round(value, 4),
+            "question": q, "too_much": too_much, "too_little": too_little,
             "trials": st["trials"]}
 
 
 def record(probe, verdict, ranges, doc=None, now=None):
-    """Fold one answer in. Returns (doc, note) - note is a human line
-    describing what the answer changed, or "" when nothing changed."""
+    """Fold one absolute judgment in. Returns (doc, note)."""
     doc = doc or load()
     knob = probe["knob"]
-    st = _ks(doc, knob)
-    lo, hi = ranges[knob]
-    span = hi - lo
+    st = doc["knobs"].setdefault(knob, _fresh(*ranges[knob]))
+    r_lo, r_hi = ranges[knob]
+    span = r_hi - r_lo
+    v = float(probe["value"])
     st["trials"] += 1
     doc["trials"].append({"t": now or time.time(), "knob": knob,
-                          "value": probe["value"], "base": probe["baseline"],
-                          "frac": probe["frac"], "verdict": verdict})
+                          "value": v, "verdict": verdict})
     doc["trials"] = doc["trials"][-2000:]
     note = ""
+
+    def settle():
+        est = (sum(st["rights"]) / len(st["rights"]) if st["rights"]
+               else (st["lo"] + st["hi"]) / 2.0)
+        st["status"] = "settled"
+        cur = _current_value(knob)
+        if abs(est - cur) >= APPLY_MIN * span:
+            _apply(knob, est)
+            st["applied"] = round(est, 4)
+            return (f"{knob}: settled at {est:g} (was {cur:g}) - the "
+                    f"engine now mixes with it")
+        return (f"{knob}: settled - where it already is ({cur:g}) sits "
+                f"inside what you called right")
 
     if verdict == "dont_get_it":
         st["unclear"] += 1
         if st["unclear"] >= UNCLEAR_STOP:
             st["status"] = "unclear"
-            note = (f"{knob}: parked - the description isn't landing, so "
-                    f"the answers wouldn't mean anything")
+            note = (f"{knob}: parked - the question isn't landing, so the "
+                    f"answers wouldn't mean anything. The wording needs "
+                    f"fixing, not your ears.")
     elif verdict == "cant_tell":
         st["cant"] += 1
-        if probe["at_edge"]:
-            st["edge_cant"] += 1
-            if st["edge_cant"] >= EDGE_STOP:
-                st["status"] = "imperceptible"
-                note = (f"{knob}: parked - inaudible even at the edge of "
-                        f"its range. Either it doesn't matter, or the "
-                        f"range is too tight to matter.")
-            else:
-                st["dir"] = -st["dir"]
+        if st["cant"] >= CANT_STOP:
+            st["status"] = "imperceptible"
+            note = (f"{knob}: parked - {st['cant']} seams never made this "
+                    f"audible. Probably not worth tuning by ear.")
+    elif verdict == "right":
+        st["rights"].append(v)
+        if len(st["rights"]) >= RIGHT_STOP:
+            note = settle()
         else:
-            st["frac"] = min(st["frac"] * GROW, 1.0)
-            note = (f"{knob}: no difference heard - trying a bigger change "
-                    f"({st['frac']*100:.0f}% of its range)")
-    elif verdict == "bad":
-        key = "bad_up" if probe["direction"] > 0 else "bad_down"
-        st[key] += 1
-        if st["bad_up"] >= CONFIRM and st["bad_down"] >= CONFIRM:
-            st["status"] = "settled"
-            note = (f"{knob}: settled - worse in BOTH directions at sizes "
-                    f"you could hear, so the current value is right")
+            note = f"{knob}: noted as about right at {v:g}"
+    elif verdict in ("too_much", "too_little"):
+        # A direct constraint: the correct value lies below (too_much) or
+        # above (too_little) the probed one. Pull that bound in, damped.
+        if verdict == "too_much":
+            st["hi"] = min(st["hi"], v + (1 - SHRINK) * (st["hi"] - v))
         else:
-            st["dir"] = -st["dir"]          # try the other side
-            note = f"{knob}: worse that way - trying the other direction"
-    elif verdict == "good":
-        st["good"] += 1
-        # Move the baseline halfway to the value that was preferred, then
-        # keep probing around the NEW baseline. Halfway, not all the way:
-        # one listen is one data point.
-        base = float(probe["baseline"])
-        new = max(lo, min(hi, base + 0.5 * (probe["value"] - base)))
-        st["moved"] = round(new, 4)
-        st["bad_up"] = st["bad_down"] = 0     # the old verdicts were about
-        st["frac"] = START_FRAC               # a different baseline
-        st["status"] = "improved"
-        note = (f"{knob}: better that way - baseline {base:g} → {new:g}, "
-                f"will re-check around the new value")
+            st["lo"] = max(st["lo"], v - (1 - SHRINK) * (v - st["lo"]))
+        if st["hi"] - st["lo"] <= MIN_WIDTH * span:
+            note = settle()
+        else:
+            note = (f"{knob}: narrowing - now searching "
+                    f"{st['lo']:g}..{st['hi']:g}")
     save(doc)
     return doc, note
 
 
-def pending_moves(doc=None):
-    """{knob: new_value} for knobs whose baseline the answers moved."""
-    doc = doc or load()
-    return {k: v["moved"] for k, v in doc["knobs"].items()
-            if v.get("moved") and v.get("status") == "improved"}
+def _current_value(knob):
+    from lib.dj import tuning
+    return float(tuning.value(knob, TUNE_DEFAULTS[knob]))
 
 
-def reopen(doc, knob):
-    """After a moved baseline is applied, resume testing around it."""
-    st = _ks(doc, knob)
-    st["status"] = "testing"
-    st["moved"] = 0.0
-    save(doc)
-    return doc
-
-
-_GOOD_C, _BAD_C, _DIM_C = "#2e8b57", "#c0392b", "#8a8f98"
-_STATE_TEXT = {
-    "settled": ("done", _GOOD_C,
-                "worse both ways — current value is right"),
-    "imperceptible": ("done", _DIM_C,
-                      "inaudible across its whole range — either it does "
-                      "not matter, or the range is too tight to matter"),
-    "unclear": ("parked", _BAD_C,
-                "the description did not land — needs rewording before "
-                "asking again"),
-    "improved": ("moved", _GOOD_C, "baseline moved; re-checking"),
-    "testing": ("testing", None, ""),
-    "untested": ("not started", _DIM_C, ""),
-}
-
-
-def report_html(ranges, doc=None):
-    """The probe panel: what is finished, what is still being asked."""
-    sm = summary(ranges, doc)
-    h = [f"<h4 style='margin:8px 0 2px'>Parameter probes &nbsp;"
-         f"<span style='font-weight:normal;color:{_DIM_C}'>one at a time, "
-         f"against the baseline</span></h4>"]
-    c = sm["counts"]
-    h.append(
-        f"<p><b>{sm['done']} of {sm['total']} answered</b> &nbsp; "
-        f"<span style='color:{_GOOD_C}'>{c.get('settled',0)} settled</span> · "
-        f"{c.get('imperceptible',0)} imperceptible · "
-        f"<span style='color:{_BAD_C}'>{c.get('unclear',0)} need rewording"
-        f"</span> · {c.get('testing',0)+c.get('untested',0)} still open</p>")
-    done = [r for r in sm["rows"]
-            if r["status"] in ("settled", "imperceptible", "unclear")]
-    if done:
-        h.append("<table width='100%' cellspacing='0' cellpadding='2'>")
-        for r in sorted(done, key=lambda r: r["status"]):
-            word, col, why = _STATE_TEXT[r["status"]]
-            h.append(f"<tr><td width='24%'>{r['knob']}</td>"
-                     f"<td width='12%' style='color:{col}'>{word}</td>"
-                     f"<td width='10%' align='right' style='color:{_DIM_C}'>"
-                     f"{r['trials']} trials</td><td>{why}</td></tr>")
-        h.append("</table>")
-    live = [r for r in sm["rows"] if r["status"] in ("testing", "improved")
-            and r["trials"]]
-    if live:
-        h.append(f"<p style='color:{_DIM_C}'>In progress: " + " · ".join(
-            f"{r['knob']} ({r['trials']})" for r in
-            sorted(live, key=lambda r: -r["trials"])[:10]) + "</p>")
-    if sm["done"] == sm["total"] and sm["total"]:
-        h.append(f"<p style='color:{_GOOD_C}'><b>Every parameter has been "
-                 f"answered.</b> Nothing further to test unless you widen a "
-                 f"range or reword a parked description.</p>")
-    return "".join(h)
+def _apply(knob, value):
+    from lib.dj import tuning
+    tuning.set_value(knob, value, why="probe: absolute judgments")
 
 
 def summary(ranges, doc=None):
-    """Counts + per-knob lines for the panel."""
     doc = doc or load()
+    promoted = set(doc.get("promoted") or [])
     rows = []
     for k in sorted(ranges):
-        if k not in DESCRIPTIONS:
+        if k not in QUESTIONS:
             continue
         st = doc["knobs"].get(k)
+        active = k in PRIORITY or k in promoted
         if not st:
-            rows.append({"knob": k, "status": "untested", "trials": 0})
+            rows.append({"knob": k, "trials": 0,
+                         "status": "untested" if active else "deferred"})
             continue
         rows.append({"knob": k, "status": st["status"],
-                     "trials": st["trials"], "frac": st.get("frac"),
-                     "good": st.get("good", 0),
-                     "bad": st.get("bad_up", 0) + st.get("bad_down", 0),
-                     "cant": st.get("cant", 0),
-                     "moved": st.get("moved") or None})
+                     "trials": st["trials"],
+                     "applied": st.get("applied")})
     counts = {}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     done = sum(counts.get(s, 0) for s in
                ("settled", "imperceptible", "unclear"))
+    active_total = sum(1 for r in rows if r["status"] != "deferred")
     return {"rows": rows, "counts": counts, "done": done,
-            "total": len(rows)}
+            "total": active_total,
+            "deferred": counts.get("deferred", 0)}
+
+
+_GOOD_C, _BAD_C, _DIM_C = "#2e8b57", "#c0392b", "#8a8f98"
+_STATE_TEXT = {
+    "settled": ("done", _GOOD_C, "answered"),
+    "imperceptible": ("done", _DIM_C, "never audible - left alone"),
+    "unclear": ("parked", _BAD_C, "question needs rewording"),
+    "testing": ("asking", None, ""),
+    "untested": ("queued", _DIM_C, ""),
+}
+
+
+def report_html(ranges, doc=None):
+    doc = doc or load()
+    sm = summary(ranges, doc)
+    h = [f"<h4 style='margin:8px 0 2px'>Parameter questions &nbsp;"
+         f"<span style='font-weight:normal;color:{_DIM_C}'>absolute "
+         f"judgments - nothing to remember between seams</span></h4>"]
+    c = sm["counts"]
+    h.append(
+        f"<p><b>{sm['done']} of {sm['total']} answered</b> &nbsp; "
+        f"<span style='color:{_GOOD_C}'>{c.get('settled', 0)} settled"
+        f"</span> · {c.get('imperceptible', 0)} never audible · "
+        f"<span style='color:{_BAD_C}'>{c.get('unclear', 0)} need "
+        f"rewording</span> &nbsp;·&nbsp; <span style='color:{_DIM_C}'>"
+        f"{sm['deferred']} deferred to the machine sweep "
+        f"(tools/dj/dj_knobsweep.py)</span></p>")
+    interesting = [r for r in sm["rows"] if r["status"] not in
+                   ("deferred", "untested")]
+    if interesting:
+        h.append("<table width='100%' cellspacing='0' cellpadding='2'>")
+        for r in sorted(interesting,
+                        key=lambda r: (r["status"] != "settled",
+                                       -r["trials"])):
+            word, col, why = _STATE_TEXT.get(r["status"],
+                                             (r["status"], None, ""))
+            extra = (f" → <b>{r['applied']:g}</b> applied"
+                     if r.get("applied") else "")
+            h.append(f"<tr><td width='24%'>{r['knob']}</td>"
+                     f"<td width='12%' style='color:{col or ''}'>{word}"
+                     f"</td><td width='10%' align='right' "
+                     f"style='color:{_DIM_C}'>{r['trials']} asked</td>"
+                     f"<td>{why}{extra}</td></tr>")
+        h.append("</table>")
+    if sm["done"] == sm["total"] and sm["total"]:
+        h.append(f"<p style='color:{_GOOD_C}'><b>Every question is "
+                 f"answered.</b> Promote a deferred knob if the machine "
+                 f"sweep leaves one to taste.</p>")
+    return "".join(h)

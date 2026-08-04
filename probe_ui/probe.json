@@ -1,0 +1,47 @@
+{
+  "knobs": {
+    "fade_b_stage1": {
+      "applied": null,
+      "cant": 0,
+      "hi": 0.66188,
+      "lo": 0.42,
+      "rights": [
+        0.5598
+      ],
+      "status": "testing",
+      "trials": 2,
+      "unclear": 0
+    },
+    "swap_pos": {
+      "applied": null,
+      "cant": 1,
+      "hi": 0.64,
+      "lo": 0.36,
+      "rights": [],
+      "status": "testing",
+      "trials": 1,
+      "unclear": 0
+    }
+  },
+  "promoted": [],
+  "trials": [
+    {
+      "knob": "fade_b_stage1",
+      "t": 1785806135.307392,
+      "value": 0.5598,
+      "verdict": "right"
+    },
+    {
+      "knob": "fade_b_stage1",
+      "t": 1785806149.3607354,
+      "value": 0.5698,
+      "verdict": "too_much"
+    },
+    {
+      "knob": "swap_pos",
+      "t": 1785806168.3831778,
+      "value": 0.4781,
+      "verdict": "cant_tell"
+    }
+  ]
+}

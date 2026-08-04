@@ -40,7 +40,7 @@ _BALANCE = "(balance coverage)"
 _MODE_SEAM = "Rate the seam"
 _MODE_PROBE = "Probe one parameter"
 # Button slots, reused by both modes so the row never rebuilds.
-_BUTTONS = ("a", "b", "c", "d", "skip")
+_BUTTONS = ("a", "b", "c", "d", "e", "skip")
 _LABELS = {
     _MODE_SEAM: {
         "a": ("👍 Good (1)", "good",
@@ -53,26 +53,31 @@ _LABELS = {
               "Rough seam. Leans the memory away from this pair, its "
               "feature class and this style."),
         "d": ("", None, ""),
+        "e": ("", None, ""),
         "skip": ("⏭ Skip (4)", "skip", "No verdict - advance without "
                  "guessing."),
     },
+    # Probe mode asks an ABSOLUTE question about this seam alone -
+    # nothing to remember from any previous seam. Slots a and c are
+    # relabelled per probe with the knob's own words (e.g. "Too late" /
+    # "Too early").
     _MODE_PROBE: {
-        "a": ("👍 Better (1)", "good",
-              "The change described above IMPROVES the seam. The baseline "
-              "moves halfway toward the tested value and re-checks."),
-        "b": ("👎 Worse (2)", "bad",
-              "The change makes it worse. Two of these in both directions "
-              "and the parameter is called settled."),
-        "c": ("🤷 Can't tell (3)", "cant_tell",
-              "No audible difference. The MOST useful answer: the next "
-              "test of this parameter uses a bigger change, and if even "
-              "the extreme is inaudible the parameter is parked as "
-              "imperceptible (its range may be too tight to matter)."),
-        "d": ("❓ Don't get it (4)", "dont_get_it",
-              "The description doesn't tell you what to listen for. Two "
-              "of these and the parameter is parked as needing a better "
-              "explanation - the fault is the wording, not you."),
-        "skip": ("⏭ Skip (5)", "skip", "Wasn't listening - no answer "
+        "a": ("⬆ Too much (1)", "too_much",
+              "The attribute in the question overshot - the value should "
+              "be LOWER. A direct constraint; no comparison needed."),
+        "b": ("✔ About right (2)", "right",
+              "This seam sounded right in the questioned respect. Enough "
+              "of these settles the knob where you kept saying so."),
+        "c": ("⬇ Too little (3)", "too_little",
+              "The attribute undershot - the value should be HIGHER."),
+        "d": ("🤷 Can't tell (4)", "cant_tell",
+              "This seam never made the attribute audible. Persistent "
+              "can't-tells park the knob as not worth tuning by ear."),
+        "e": ("❓ Don't get it (5)", "dont_get_it",
+              "The question doesn't say what to listen for. Twice and it "
+              "is parked as needing rewording - the fault is the wording, "
+              "not you."),
+        "skip": ("⏭ Skip (6)", "skip", "Wasn't listening - nothing "
                  "recorded."),
     },
 }
@@ -344,11 +349,10 @@ class SeamLabTab(QWidget):
         v.addWidget(self.learn_lbl, 1)
         self._refresh_learning()
 
-        for key, slot in (("1", "a"), ("2", "b"), ("3", "c"),
-                          ("4", "d"), ("5", "skip")):
-            sc = QShortcut(QKeySequence(key), self)
+        for i in range(1, 7):
+            sc = QShortcut(QKeySequence(str(i)), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            sc.activated.connect(lambda w=slot: self._rate(w))
+            sc.activated.connect(lambda k=i: self._rate_key(k))
         sc = QShortcut(QKeySequence("R"), self)
         sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc.activated.connect(self._replay)
@@ -537,13 +541,20 @@ class SeamLabTab(QWidget):
         self.probe = seam.get("probe")
         if self.probe:
             self.probe_lbl.setText(
-                f"<b>Listen for one thing:</b> {self.probe['description']}"
-                f" &nbsp;<span style='opacity:0.75'>({self.probe['knob']} "
-                f"{self.probe['baseline']:g} → {self.probe['value']:g}"
-                f", trial {self.probe['trials'] + 1})</span>")
+                f"<b>{self.probe['question']}</b> &nbsp;"
+                f"<span style='opacity:0.75'>({self.probe['knob']} at "
+                f"{self.probe['value']:g}, ask #{self.probe['trials'] + 1}"
+                f")</span>")
             self.probe_lbl.show()
+            # The knob's own words on the directional buttons.
+            self.rate_btns["a"].setText(
+                f"⬆ {self.probe['too_much']} (1)")
+            self.rate_btns["c"].setText(
+                f"⬇ {self.probe['too_little']} (3)")
         else:
             self.probe_lbl.setVisible(False)
+            if self._mode() == _MODE_PROBE:
+                self._relabel_buttons()
         self.strip.set_seam(a, b, seam.get("info"), seam["after_s"],
                             len(seam["audio"]) / RATE)
         self.planner.claim_playback("seamlab")
@@ -647,36 +658,29 @@ class SeamLabTab(QWidget):
         self.learn_lbl.verticalScrollBar().setValue(pos)   # keep the view
 
     def _answer_probe(self, seam, verdict, listened):
-        """Fold one parameter answer into the staircase, and apply the
-        baseline move if the answer earned one."""
+        """Fold one absolute judgment into the search. record() applies a
+        settled value to the live tuning itself."""
         probe = seam.get("probe")
         if probe is None or verdict == "skip":
             return
         from tools.dj.planner import seamprobe
         from tools.dj.planner.seamtune import RANGES
-        from lib.dj import tuning
-        from lib.dj.brain import TUNE_DEFAULTS
         try:
-            doc, note = seamprobe.record(probe, verdict, RANGES)
-            moves = seamprobe.pending_moves(doc)
-            for knob, val in moves.items():
-                tuning.set_value(knob, val,
-                                 why=f"probe: {verdict} at {probe['value']:g}")
-                seamprobe.reopen(doc, knob)
+            _doc, note = seamprobe.record(probe, verdict, RANGES)
             if note:
                 self.note_lbl.setText("→ " + note)
-            elif moves:
-                self.note_lbl.setText("→ baseline updated: " + ", ".join(
-                    f"{k} → {v:g}" for k, v in moves.items()))
-            else:
-                self.note_lbl.setText(
-                    f"→ noted ({probe['knob']}, "
-                    f"{probe['trials'] + 1} answer"
-                    f"{'s' if probe['trials'] else ''} so far)")
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.status.setText(f"could not record the answer: {e}")
+
+    def _rate_key(self, k):
+        """Number key k presses the k-th VISIBLE button, so the labels'
+        numbers always match whatever mode is active."""
+        spec = _LABELS[self._mode()]
+        visible = [slot for slot in _BUTTONS if spec[slot][0]]
+        if 1 <= k <= len(visible):
+            self._rate(visible[k - 1])
 
     # ---- rating ----------------------------------------------------------
     def _rate(self, slot):

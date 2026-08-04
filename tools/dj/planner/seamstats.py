@@ -502,22 +502,27 @@ def observations(sm, brain=None, probe_doc=None):
             for k, st in sorted(probe_doc.get("knobs", {}).items()):
                 n = st.get("trials", 0)
                 if st.get("status") == "settled":
-                    out.append(("causal", 3,
-                                f"<b>{k}</b> is right where it is — moving "
-                                f"it either way made things worse "
-                                f"({n} trials)."))
+                    ap = st.get("applied")
+                    if ap is not None:
+                        out.append(("causal", 4,
+                                    f"<b>{k}</b> settled at <b>{ap:g}</b> "
+                                    f"from your answers ({n} asked) — the "
+                                    f"engine now mixes with it."))
+                    else:
+                        out.append(("causal", 3,
+                                    f"<b>{k}</b> is fine where it is — "
+                                    f"your answers put the right zone on "
+                                    f"top of the current value "
+                                    f"({n} asked)."))
                 elif st.get("status") == "imperceptible":
                     out.append(("causal", 2,
-                                f"<b>{k}</b> made no audible difference "
-                                f"anywhere in its range ({n} trials). "
-                                f"Either it does not matter, or its range "
-                                f"is too narrow to matter — worth widening "
-                                f"if you think it should."))
+                                f"<b>{k}</b>: {st.get('cant', 0)} seams "
+                                f"never made it audible — not worth tuning "
+                                f"by ear; the machine sweep can have it."))
                 elif st.get("status") == "unclear":
                     out.append(("causal", 1,
                                 f"<b>{k}</b> could not be judged — the "
-                                f"description did not say what to listen "
-                                f"for. That is a wording problem to fix."))
+                                f"question needs rewording."))
             moved = {k: v for k, v in base.items()
                      if abs(v - TUNE_DEFAULTS[k]) > 1e-9}
             for k, v in sorted(moved.items()):
