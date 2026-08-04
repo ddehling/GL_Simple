@@ -35,4 +35,4 @@ fi
 
 echo "[gpio] Raspberry Pi detected and GPIO libs missing - installing gpiozero + lgpio into the venv..."
 "$PY" -m pip install gpiozero lgpio \
-    || echo "[gpio] install failed (offline?); image-display buttons fall back to number keys until this succeeds"
+    || echo "[gpio] install failed (offline?); the image-display button falls back to the SPACE bar until this succeeds"
