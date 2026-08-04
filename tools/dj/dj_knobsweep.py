@@ -470,12 +470,25 @@ def sweep_priority_knob(db, lib, knob, rng, log=print):
     best = min(scores, key=scores.get)
     spread = max(scores.values()) - min(scores.values())
     near_def = min(scores, key=lambda v: abs(v - default))
-    flat = spread < FLAT_DB
-    log(f"     -> best {best} (spread {spread:.2f}"
-        + (" FLAT - genuinely a taste call; ask the human"
-           if flat else f", default-ish scores {scores[near_def]}") + ")")
+    # FLAT is judged RELATIVELY as well as absolutely: on fades the
+    # deliberate dip puts a huge constant (~120) under every score, and a
+    # 2-point monotone drift cleared the absolute bar while meaning ~2%
+    # (measured: fade_recede/fade_b_stage1, both monotone artifacts of
+    # the hole metric penalising the style's own design). And identical
+    # scores at every value mean the knob was never EXERCISED by these
+    # seams, which is "unmeasured", not "no effect".
+    rel = spread / max(min(scores.values()), 1e-9)
+    exercised = spread > 1e-9
+    flat = (spread < FLAT_DB) or (rel < 0.10)
+    tag = ("NEVER EXERCISED by these seams - needs seams that hit this "
+           "code path" if not exercised else
+           " FLAT - genuinely a taste call; ask the human" if flat else
+           f", default-ish scores {scores[near_def]}")
+    log(f"     -> best {best} (spread {spread:.2f}, rel {rel * 100:.0f}% "
+        + tag + ")")
     return {"knob": knob, "scores": {str(k): v for k, v in scores.items()},
             "best": best, "default": default, "flat": flat,
+            "exercised": exercised, "rel": round(rel, 4),
             "spread": round(spread, 3), "priority": True,
             "gain_vs_default": round(scores[near_def] - scores[best], 3)}
 
