@@ -37,12 +37,17 @@ _LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 # The rateable style vocabulary for the filter combo: theme keys plus the
 # styles plan_transition defaults in when a theme dict predates them.
 _BALANCE = "(balance coverage)"
-_MODE_SEAM = "Rate the seam"
-_MODE_PROBE = "Probe one parameter"
+# There is no mode to choose. Every seam is either a plain rating or -
+# while open questions remain - occasionally carries ONE question about
+# itself; the buttons say which. _PROBE_SHARE of seams ask, the rest
+# rate, and once every question is answered it is all plain ratings.
+_KIND_SEAM = "seam"
+_KIND_PROBE = "probe"
+_PROBE_SHARE = 0.4
 # Button slots, reused by both modes so the row never rebuilds.
 _BUTTONS = ("a", "b", "c", "d", "e", "skip")
 _LABELS = {
-    _MODE_SEAM: {
+    _KIND_SEAM: {
         "a": ("👍 Good (1)", "good",
               "Sounded like a DJ. Teaches the cross-night pair / class / "
               "style memory the live selection reads."),
@@ -61,7 +66,7 @@ _LABELS = {
     # nothing to remember from any previous seam. Slots a and c are
     # relabelled per probe with the knob's own words (e.g. "Too late" /
     # "Too early").
-    _MODE_PROBE: {
+    _KIND_PROBE: {
         "a": ("⬆ Too much (1)", "too_much",
               "The attribute in the question overshot - the value should "
               "be LOWER. A direct constraint; no comparison needed."),
@@ -234,34 +239,10 @@ class SeamLabTab(QWidget):
             "choice and the style dice exactly like a live night.")
         self.theme_box.currentTextChanged.connect(self._reset_brain)
         row.addWidget(self.theme_box)
-        row.addWidget(QLabel("Mode:"))
-        self.mode_box = QComboBox()
-        self.mode_box.addItems([_MODE_PROBE, _MODE_SEAM])
-        self.mode_box.setToolTip(
-            f"{_MODE_PROBE} — hold every setting at its baseline, move "
-            "exactly ONE, and say which one moved so you can judge that "
-            "rather than the seam as a whole. Four answers; 'can't tell' "
-            "is the one that drives the search.\n\n"
-            f"{_MODE_SEAM} — the plain treadmill: no parameter is "
-            "touched, and your verdict teaches the pair / style / "
-            "condition memory the live engine selects with.")
-        self.mode_box.currentTextChanged.connect(self._mode_changed)
-        row.addWidget(self.mode_box)
-        row.addWidget(QLabel("Style:"))
-        self.style_box = QComboBox()
+        self.style_box = QComboBox()      # kept for tests/power use,
         self.style_box.addItems([_BALANCE, "(brain's choice)"])
-        self.style_box.addItems(_STYLES)
-        self.style_box.setToolTip(
-            "What style each generated seam attempts.\n\n"
-            f"{_BALANCE} (default) — bias hard toward the styles with the "
-            "least evidence. You cannot learn WHY a style fails, or where "
-            "it works, from four seams; left to the brain's own dice the "
-            "rare styles stay rare and stay unexplained.\n\n"
-            "(brain's choice) — the distribution a real night produces.\n\n"
-            "A named style pins every seam to it. Pins and balance picks "
-            "both go through the REAL gates: when a pair can't carry the "
-            "style the fallback plays, and the log records wanted vs got.")
-        row.addWidget(self.style_box)
+        self.style_box.addItems(_STYLES)  # hidden: selection is automatic
+        self.style_box.hide()
         self.start_btn = QPushButton("▶ Start session")
         self.start_btn.setToolTip(
             "Generate seams one after another: the next one renders while "
@@ -401,28 +382,22 @@ class SeamLabTab(QWidget):
         self.start_btn.setText("⏸ Pause session")
         self._pump()
 
-    def _mode(self):
-        return self.mode_box.currentText()
+    def _kind(self):
+        """What the CURRENT seam asks of the user - a question, or a plain
+        rating. Decided per seam; the user never chooses."""
+        if self._current is not None and self._current.get("probe"):
+            return _KIND_PROBE
+        return _KIND_SEAM
 
-    def _relabel_buttons(self):
-        spec = _LABELS[self._mode()]
+    def _relabel_buttons(self, kind=_KIND_SEAM):
+        spec = _LABELS[kind]
         for slot, b in self.rate_btns.items():
             label, verdict, tip = spec[slot]
             b.setText(label)
             b.setToolTip(tip)
             b.setVisible(bool(label))
 
-    def _mode_changed(self, *_):
-        self._relabel_buttons()
-        self.probe_lbl.setVisible(self._mode() == _MODE_PROBE)
-        self.style_box.setEnabled(self._mode() == _MODE_SEAM)
-        self._refresh_learning()
-
     def _want_style(self):
-        if self._mode() == _MODE_PROBE:
-            # A probe must isolate ONE variable; pinning a style on top
-            # would confound the answer with a style change.
-            return None
         s = self.style_box.currentText()
         if s == _BALANCE:
             return self._starved_style()
@@ -467,9 +442,13 @@ class SeamLabTab(QWidget):
         # this - those were within a handful of seams.
         used = set(self._recent[-_VETO_WINDOW:])
         tail = set(self._recent[-20:])
-        probe_mode = self._mode() == _MODE_PROBE
+        # NO MODE: while open questions remain, _PROBE_SHARE of seams
+        # carry one; the rest are plain ratings. When the questions run
+        # out, every seam is a plain rating - the roster shrinking is the
+        # only thing that changes the mix.
         baseline, probe_doc, want = {}, None, self._want_style()
-        if probe_mode:
+        probe_mode = False
+        if self.rng.random() < _PROBE_SHARE:
             from tools.dj.planner import seamprobe
             from tools.dj.planner.seamtune import RANGES, styles_reading
             from lib.dj import tuning
@@ -484,6 +463,7 @@ class SeamLabTab(QWidget):
             # unsuitable pair simply falls back and the worker picks a
             # probe from whatever style actually played.
             openk = seamprobe.open_knobs(RANGES, probe_doc)
+            probe_mode = bool(openk)
             if openk:
                 fewest = min(seamprobe.trials_of(probe_doc, k)
                              for k in openk)
@@ -546,7 +526,11 @@ class SeamLabTab(QWidget):
             f"{seam['after_s']:.0f}s of {a.duration_s:.0f}s · "
             f"{len(seam['audio']) / RATE:.0f}s render")
         self.probe = seam.get("probe")
+        # The seam decides what the buttons mean: a question seam shows
+        # the question and its answers, a plain seam shows Good/Passable/
+        # Bad. The user never chooses a mode.
         if self.probe:
+            self._relabel_buttons(_KIND_PROBE)
             self.probe_lbl.setText(
                 f"<b>{self.probe['question']}</b> &nbsp;"
                 f"<span style='opacity:0.75'>({self.probe['knob']} at "
@@ -558,16 +542,8 @@ class SeamLabTab(QWidget):
                 f"⬆ {self.probe['too_much']} (1)")
             self.rate_btns["c"].setText(
                 f"⬇ {self.probe['too_little']} (3)")
-        elif self._mode() == _MODE_PROBE:
-            # Retries exhausted without landing a style that carries an
-            # open question. Say so instead of showing answer buttons
-            # that would silently record nothing.
-            self._relabel_buttons()
-            self.probe_lbl.setText(
-                "No open question fits this seam's style — listen if you "
-                "like, then Skip.")
-            self.probe_lbl.show()
         else:
+            self._relabel_buttons(_KIND_SEAM)
             self.probe_lbl.setVisible(False)
         self.strip.set_seam(a, b, seam.get("info"), seam["after_s"],
                             len(seam["audio"]) / RATE)
@@ -576,9 +552,8 @@ class SeamLabTab(QWidget):
         self.player.play()
         self._ended = False
         self._played_at = time.time()
-        probe_dead = self._mode() == _MODE_PROBE and self.probe is None
-        for slot, b_ in self.rate_btns.items():
-            b_.setEnabled(not probe_dead or slot == "skip")
+        for b_ in self.rate_btns.values():
+            b_.setEnabled(True)
         self.replay_btn.setEnabled(True)
         n = sum(self._tally.values())
         self.status.setText(f"playing - rate to advance ({n} rated this "
@@ -691,17 +666,18 @@ class SeamLabTab(QWidget):
 
     def _rate_key(self, k):
         """Number key k presses the k-th VISIBLE button, so the labels'
-        numbers always match whatever mode is active."""
-        spec = _LABELS[self._mode()]
+        numbers always match what THIS seam is asking."""
+        spec = _LABELS[self._kind()]
         visible = [slot for slot in _BUTTONS if spec[slot][0]]
         if 1 <= k <= len(visible):
             self._rate(visible[k - 1])
 
     # ---- rating ----------------------------------------------------------
     def _rate(self, slot):
-        """`slot` is a button position; what it MEANS depends on the mode."""
+        """`slot` is a button position; what it MEANS depends on whether
+        this seam carries a question or is a plain rating."""
         seam = self._current
-        spec = _LABELS[self._mode()]
+        spec = _LABELS[self._kind()]
         if seam is None or slot not in spec:
             return
         _label, verdict, _tip = spec[slot]
@@ -711,7 +687,7 @@ class SeamLabTab(QWidget):
         listened = self.player.time_s()
         self.player.pause()
         self._tally[verdict] = self._tally.get(verdict, 0) + 1
-        if self._mode() == _MODE_PROBE:
+        if seam.get("probe"):
             self._answer_probe(seam, verdict, listened)
         elif verdict != "skip":
             rec = {"t": time.time(), "verdict": verdict,
@@ -759,7 +735,7 @@ class SeamLabTab(QWidget):
                     f.write(json.dumps(rec) + "\n")
             except Exception as e:
                 self.status.setText(f"could not log rating: {e}")
-        if verdict in ("good", "bad") and self._mode() == _MODE_SEAM:
+        if verdict in ("good", "bad") and not seam.get("probe"):
             # The same cross-night memory the live thumbs teach - pair,
             # feature class AND per-style taste (passable stays neutral).
             try:
