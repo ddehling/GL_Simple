@@ -100,10 +100,13 @@ def build_seams(db, lib, knob, rng):
     while len(out) < N_SEAMS and tries < 300:
         tries += 1
         cur = rng.choice(lib)
-        if cur.duration_s < 150:
+        # 150s floor as before; 420s CAP is new - decoded float32 stereo
+        # is ~21 MB/min per track, and long-track pairs were a driver of
+        # the memory spike that lagged the machine (2026-08-03).
+        if not (150 <= cur.duration_s <= 420):
             continue
         cand, meta = brain.choose_next(cur, 0.6, cur.bpm)
-        if cand is None:
+        if cand is None or cand.duration_s > 420:
             continue
         want = rng.choice(styles)
         plan = brain.plan_transition(cur, cand, meta,
@@ -136,6 +139,9 @@ def sweep_knob(db, lib, knob, rng, log=print):
             apply_plan_knobs(p)
             audio = render_seam(db, a, b, p)
             tot += badness(metrics(audio))
+            del audio
+            import gc
+            gc.collect()
         scores[v] = round(tot / len(seams), 3)
         log(f"     {knob}={v:<8} badness {scores[v]}")
     best = min(scores, key=scores.get)
@@ -152,7 +158,19 @@ def sweep_knob(db, lib, knob, rng, log=print):
             "gain_vs_default": round(scores[near_def] - scores[best], 3)}
 
 
+def _be_nice():
+    """Below-normal CPU priority: the sweep is a background chore and must
+    never lag the desktop again."""
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetPriorityClass(
+            ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
+    except Exception:
+        pass
+
+
 def main():
+    _be_nice()
     ap = argparse.ArgumentParser()
     ap.add_argument("--music", required=True)
     ap.add_argument("--knob")
@@ -274,12 +292,20 @@ def render_tapped(db, a, b, plan):
         {"cmd": "load", "deck": "b", "samples": sb, "grid": b.grid,
          "gain_db": b.gain_db, "cue_s": plan["in_s"]},
     ])
-    for deck, t, arr in (("a", a, sa), ("b", b, sb)):
-        if getattr(t, "has_stems", False):
-            st = load_stems(db.music_root, t.id, expected_len=len(arr))
-            if st:
-                sub.post({"cmd": "attach_stems", "deck": deck,
-                          "stems": st})
+    # Stems quadruple a deck's memory (4 full-length stem arrays). Only
+    # attach them when the plan actually drives stem gains - otherwise
+    # they are dead weight that helped exhaust RAM.
+    needs_stems = plan.get("duck_vocal_a") or "stem" in plan.get(
+        "style", "") or plan.get("style") in ("drum_bridge", "acapella_in",
+                                              "acapella_out",
+                                              "melody_carry")
+    if needs_stems:
+        for deck, t, arr in (("a", a, sa), ("b", b, sb)):
+            if getattr(t, "has_stems", False):
+                st = load_stems(db.music_root, t.id, expected_len=len(arr))
+                if st:
+                    sub.post({"cmd": "attach_stems", "deck": deck,
+                              "stems": st})
     gen = engine._mixer()
     next(gen)
     gen.send(256)
@@ -318,6 +344,16 @@ def render_tapped(db, a, b, plan):
             j = min(i + len(blk), len(buf))
             buf[i:j] += blk[:j - i]
         decks[nm] = buf
+    # Teardown: the generator and submix keep the decoded tracks (and any
+    # stems) alive; close and drop them NOW rather than at some later GC,
+    # or 20 renders per knob accumulate gigabytes of dead buffers.
+    try:
+        gen.close()
+    except Exception:
+        pass
+    del taps, out, sa, sb, sub, engine, gen
+    import gc
+    gc.collect()
     return mix, decks, {"blend_s": (blend_at - t0) / RATE,
                         "swap_s": (swap_at - t0) / RATE}
 
@@ -426,6 +462,9 @@ def sweep_priority_knob(db, lib, knob, rng, log=print):
             mix, decks, marks = render_tapped(db, a, b, p)
             tot += (priority_badness(knob, mix, decks, marks)
                     + badness(metrics(mix)))
+            del mix, decks
+            import gc
+            gc.collect()
         scores[v] = round(tot / len(seams), 3)
         log(f"     {knob}={v:<8} badness {scores[v]}")
     best = min(scores, key=scores.get)
