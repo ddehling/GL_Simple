@@ -154,6 +154,13 @@ def load():
         with open(state_path(), encoding="utf-8") as f:
             doc = json.load(f)
             if isinstance(doc, dict) and "knobs" in doc:
+                # MIGRATION: entries from the abandoned better/worse
+                # design (no interval bounds) answered a question nobody
+                # could honestly answer - drop that state, keep the raw
+                # trial log for the record.
+                for k in [k for k, v in doc["knobs"].items()
+                          if "lo" not in v]:
+                    del doc["knobs"][k]
                 return doc
     except (OSError, ValueError):
         pass
@@ -190,14 +197,51 @@ def trials_of(doc, knob):
     return doc["knobs"].get(knob, {}).get("trials", 0)
 
 
+def sweep_verdicts():
+    """{knob: verdict} from the machine sweep results, where verdict is
+    'machine_set' (a decisive measured optimum - no need to ask a human),
+    'unreachable' (identical scores at every value: the rendered seams
+    never exercised the knob, so a human seam probably wouldn't either),
+    or 'taste' (measured and flat - genuinely the listener's call).
+
+    Recomputed from the RAW scores rather than trusting the stored flat
+    flag: early runs used an absolute spread bar that let a ~2% monotone
+    drift on a fade's huge constant baseline read as signal."""
+    out = {}
+    logs = os.path.dirname(state_path())
+    for fname in ("knob_sweep_priority.json", "knob_sweep.json"):
+        try:
+            with open(os.path.join(logs, fname), encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for r in doc.get("results", []):
+            scores = [float(v) for v in (r.get("scores") or {}).values()]
+            if len(scores) < 2:
+                continue
+            spread = max(scores) - min(scores)
+            rel = spread / max(min(scores), 1e-9)
+            if spread <= 1e-9:
+                out[r["knob"]] = "unreachable"
+            elif spread >= 0.8 and rel >= 0.10:
+                out[r["knob"]] = "machine_set"
+            else:
+                out[r["knob"]] = "taste"
+    return out
+
+
 def open_knobs(ranges, doc=None):
-    """Knobs still worth asking a HUMAN about: the priority tier plus
-    anything promote()d. The rest belong to the machine sweep."""
+    """Knobs still worth asking a HUMAN about: the priority tier (plus
+    anything promote()d), minus whatever the machine sweep has already
+    resolved or shown to be unreachable. The roster SHRINKS as sweep
+    results land - only genuine taste calls remain."""
     doc = doc or load()
     promoted = set(doc.get("promoted") or [])
+    sv = sweep_verdicts()
     return [k for k in ranges
             if k in QUESTIONS and status_of(doc, k) == "testing"
-            and (k in PRIORITY or k in promoted)]
+            and (k in PRIORITY or k in promoted)
+            and sv.get(k, "taste") == "taste"]
 
 
 def promote(knob, doc=None):
@@ -312,12 +356,21 @@ def _apply(knob, value):
 def summary(ranges, doc=None):
     doc = doc or load()
     promoted = set(doc.get("promoted") or [])
+    sv = sweep_verdicts()
     rows = []
     for k in sorted(ranges):
         if k not in QUESTIONS:
             continue
         st = doc["knobs"].get(k)
         active = k in PRIORITY or k in promoted
+        # The machine's word outranks the queue: a measured optimum or an
+        # unreachable knob is not a question any more.
+        if active and st is None and sv.get(k) == "machine_set":
+            rows.append({"knob": k, "trials": 0, "status": "machine_set"})
+            continue
+        if active and st is None and sv.get(k) == "unreachable":
+            rows.append({"knob": k, "trials": 0, "status": "unreachable"})
+            continue
         if not st:
             rows.append({"knob": k, "trials": 0,
                          "status": "untested" if active else "deferred"})
@@ -330,9 +383,12 @@ def summary(ranges, doc=None):
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     done = sum(counts.get(s, 0) for s in
                ("settled", "imperceptible", "unclear"))
-    active_total = sum(1 for r in rows if r["status"] != "deferred")
+    active_total = sum(1 for r in rows if r["status"] not in
+                       ("deferred", "machine_set", "unreachable"))
     return {"rows": rows, "counts": counts, "done": done,
             "total": active_total,
+            "machine": counts.get("machine_set", 0),
+            "unreachable": counts.get("unreachable", 0),
             "deferred": counts.get("deferred", 0)}
 
 
@@ -343,6 +399,11 @@ _STATE_TEXT = {
     "unclear": ("parked", _BAD_C, "question needs rewording"),
     "testing": ("asking", None, ""),
     "untested": ("queued", _DIM_C, ""),
+    "machine_set": ("measured", _GOOD_C,
+                    "the sweep found a decisive optimum - not asked"),
+    "unreachable": ("skipped", _DIM_C,
+                    "the sweep could not exercise it; a listening seam "
+                    "would not either"),
 }
 
 
@@ -354,13 +415,15 @@ def report_html(ranges, doc=None):
          f"judgments - nothing to remember between seams</span></h4>"]
     c = sm["counts"]
     h.append(
-        f"<p><b>{sm['done']} of {sm['total']} answered</b> &nbsp; "
+        f"<p><b>{sm['done']} of {sm['total']} answered</b> "
+        f"<span style='color:{_DIM_C}'>(only genuine taste calls are "
+        f"asked)</span> &nbsp; "
         f"<span style='color:{_GOOD_C}'>{c.get('settled', 0)} settled"
         f"</span> · {c.get('imperceptible', 0)} never audible · "
         f"<span style='color:{_BAD_C}'>{c.get('unclear', 0)} need "
         f"rewording</span> &nbsp;·&nbsp; <span style='color:{_DIM_C}'>"
-        f"{sm['deferred']} deferred to the machine sweep "
-        f"(tools/dj/dj_knobsweep.py)</span></p>")
+        f"machine: {sm['machine']} measured, {sm['unreachable']} "
+        f"unreachable, {sm['deferred']} in its queue</span></p>")
     interesting = [r for r in sm["rows"] if r["status"] not in
                    ("deferred", "untested")]
     if interesting:

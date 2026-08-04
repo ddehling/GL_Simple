@@ -39,6 +39,10 @@ N_VALUES = 5           # points across the knob's range
 N_SEAMS = 4            # fixed seams rendered per point
 FLAT_DB = 0.8          # score spread below this = "metrics can't decide"
 APPLY_MARGIN = 0.5     # winner must beat the default by this to --apply
+THROTTLE_S = 2.0       # breathing pause between renders: the sweep must
+                       # coexist with a desktop in use (a stutter episode
+                       # 2026-08-03 tracked to system starvation under
+                       # back-to-back decode/render churn)
 
 
 def metrics(x):
@@ -142,6 +146,7 @@ def sweep_knob(db, lib, knob, rng, log=print):
             del audio
             import gc
             gc.collect()
+            time.sleep(THROTTLE_S)
         scores[v] = round(tot / len(seams), 3)
         log(f"     {knob}={v:<8} badness {scores[v]}")
     best = min(scores, key=scores.get)
@@ -465,6 +470,7 @@ def sweep_priority_knob(db, lib, knob, rng, log=print):
             del mix, decks
             import gc
             gc.collect()
+            time.sleep(THROTTLE_S)
         scores[v] = round(tot / len(seams), 3)
         log(f"     {knob}={v:<8} badness {scores[v]}")
     best = min(scores, key=scores.get)
