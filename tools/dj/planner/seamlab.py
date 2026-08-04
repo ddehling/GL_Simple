@@ -168,6 +168,13 @@ class _GenWorker(QThread):
                         probe = seamprobe.next_probe(
                             usable, self.baseline, doc=self.probe_doc,
                             rng=self.rng)
+                        if probe is None and attempt < 6:
+                            # The landed style carries no open question
+                            # (e.g. a gate refused the pinned style and
+                            # the fallback was phrase_cut/echo_out).
+                            # Rendering it would waste a listen - pick
+                            # another pair while attempts remain.
+                            continue
                     if probe is not None:
                         plan["tune"] = {probe["knob"]: probe["value"]}
                         apply_plan_knobs(plan)   # beats_scale lives in plan
@@ -551,10 +558,17 @@ class SeamLabTab(QWidget):
                 f"⬆ {self.probe['too_much']} (1)")
             self.rate_btns["c"].setText(
                 f"⬇ {self.probe['too_little']} (3)")
+        elif self._mode() == _MODE_PROBE:
+            # Retries exhausted without landing a style that carries an
+            # open question. Say so instead of showing answer buttons
+            # that would silently record nothing.
+            self._relabel_buttons()
+            self.probe_lbl.setText(
+                "No open question fits this seam's style — listen if you "
+                "like, then Skip.")
+            self.probe_lbl.show()
         else:
             self.probe_lbl.setVisible(False)
-            if self._mode() == _MODE_PROBE:
-                self._relabel_buttons()
         self.strip.set_seam(a, b, seam.get("info"), seam["after_s"],
                             len(seam["audio"]) / RATE)
         self.planner.claim_playback("seamlab")
@@ -562,8 +576,9 @@ class SeamLabTab(QWidget):
         self.player.play()
         self._ended = False
         self._played_at = time.time()
-        for b_ in self.rate_btns.values():
-            b_.setEnabled(True)
+        probe_dead = self._mode() == _MODE_PROBE and self.probe is None
+        for slot, b_ in self.rate_btns.items():
+            b_.setEnabled(not probe_dead or slot == "skip")
         self.replay_btn.setEnabled(True)
         n = sum(self._tally.values())
         self.status.setText(f"playing - rate to advance ({n} rated this "
