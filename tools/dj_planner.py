@@ -4631,6 +4631,12 @@ class Planner(QMainWindow):
         from tools.dj.planner.seamlab import SeamLabTab
         self.seamlab_tab = SeamLabTab(self)
         self.tabs.addTab(self.seamlab_tab, "Seam Lab")
+        # Beat Check: render a real seam through the engine and DRAW the
+        # band-separated waveforms + measured kick ticks of both decks on
+        # one axis - visual ground truth for the beat matching.
+        from tools.dj.planner.beatcheck import BeatCheckTab
+        self.beatcheck_tab = BeatCheckTab(self)
+        self.tabs.addTab(self.beatcheck_tab, "Beat Check")
         self.tabs.addTab(self.nights_tab, "Nights")
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
@@ -4888,6 +4894,7 @@ class Planner(QMainWindow):
         if self.seamlab_tab._gen is not None \
                 and self.seamlab_tab._gen.isRunning():
             self.seamlab_tab._gen.wait(10000)   # a render can't be killed
+        self.beatcheck_tab.shutdown()    # waits its render worker too
         if self.discover_tab is not None:
             self.discover_tab.close()
         super().closeEvent(ev)
