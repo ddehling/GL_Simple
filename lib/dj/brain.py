@@ -2031,16 +2031,47 @@ class Brain:
             # grids only). Selection already leaned away from these pairs;
             # when one plays anyway (setlist order, thin pool), pick the
             # technique that hides the clash instead of exposing it.
+            # KICKS MUST INTERLEAVE ONE-TO-ONE, or drums never overlap
+            # (2026-08-04, user: "you're matching the wrong part of the
+            # music... I hear a double beat"; measured in rendered audio -
+            # a half-time pair blended at 3.2x kick density). A half or
+            # double tempo READ means the densities cannot match by
+            # construction; contradicting kick patterns mean they do not
+            # in practice. Neither is a styling problem - EQ carves
+            # basslines, not kick transients - so these are hard vetoes,
+            # not weight leans. The pair keeps the fade, the cut and the
+            # acapella paths.
+            _overlap = ("long_blend", "bass_swap", "filter_sweep",
+                        "stem_bass_swap", "melody_carry",
+                        "breakdown_swap", "stem_drum_swap", "drum_bridge")
+            # BEAT POWER (2026-08-04): grid confidence measures whether a
+            # lattice FITS; it never asked whether the music actually
+            # thumps on it. 38% of this library carries confident grids
+            # over diffuse grooves - beat-matching those is matching air,
+            # sample-perfect sync and an audible mess ("the beats are
+            # fundamentally off... I hear a double beat"). Overlapped
+            # drums require BOTH tracks to concentrate low-band attack on
+            # their own beats (lib/dj/beatpower.py, measured from the raw
+            # audio). Unmeasured tracks pass - the scan fills in.
+            from lib.dj import beatpower as _bp
+            for t, side in ((cur, "A"), (cand, "B")):
+                if _bp.blendable(t.id) is False:
+                    kill(_overlap, f"no_beat_power_{side}")
             if rt_sure:
+                if abs(rt.get("mult", 1.0) - 1.0) > 1e-6:
+                    kill(_overlap, "tempo_multiple_read")
                 if rt["kick_agreement"] < 0.35:
-                    # Contradicting kick patterns: never run both lows
-                    # open. The one-low-bed styles carry the seam.
-                    # drum_bridge IS two exposed kicks - worst offender.
-                    for k in ("long_blend", "loop_build", "drum_bridge"):
-                        weights[k] = weights.get(k, 0.0) * 0.15
-                    for k in ("bass_swap", "stem_drum_swap",
-                              "stem_bass_swap", "cut_at_drop"):
-                        weights[k] = weights.get(k, 0.0) * 1.5
+                    kill(_overlap, "kick_clash")
+            else:
+                # No trusted signatures: screen on what IS stored. Tempo
+                # classes an octave apart force a multiple read, and a
+                # 1.8x kick-density gap doubles beats even at 1:1 tempo.
+                ratio = cur.bpm / max(cand.bpm, 1e-6)
+                if ratio > 1.43 or ratio < 0.70:
+                    kill(_overlap, "tempo_multiple_read")
+                da, db_ = cur.rhythm_density, cand.rhythm_density
+                if da > 0 and db_ > 0 and max(da / db_, db_ / da) >= 1.8:
+                    kill(_overlap, "kick_density_mismatch")
                 if rt["swing_delta"] > 0.055:
                     # Swung vs straight flams every offbeat for the whole
                     # overlap; only removing one percussion bed fixes it.

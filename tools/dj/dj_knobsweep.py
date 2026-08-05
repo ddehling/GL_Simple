@@ -325,16 +325,21 @@ def render_tapped(db, a, b, plan):
     # block is recorded WITH the submix clock it was read at and scattered
     # into place afterwards.
     taps = {"a": [], "b": []}
+    pos_trace = {"a": [], "b": []}       # (render clock, source seconds)
     t0 = sub.clock
     for _nm, _d in sub.decks.items():
-        def _wrap(orig, nm):
+        def _wrap(orig, nm, dk):
             def f(n):
                 blk = orig(n)
                 taps[nm].append((sub.clock,
                                  np.asarray(blk, dtype=np.float32)))
+                try:
+                    pos_trace[nm].append((sub.clock, dk.source_time_s()))
+                except Exception:
+                    pass
                 return blk
             return f
-        _d.read = _wrap(_d.read, _nm)
+        _d.read = _wrap(_d.read, _nm, _d)
     total = pre + (swap_at - blend_at) / RATE + 25.0
     out = [np.frombuffer(gen.send(4410), dtype=np.float32).reshape(-1, 2)
            for _ in range(int(total * RATE) // 4410)]
@@ -360,7 +365,11 @@ def render_tapped(db, a, b, plan):
     import gc
     gc.collect()
     return mix, decks, {"blend_s": (blend_at - t0) / RATE,
-                        "swap_s": (swap_at - t0) / RATE}
+                        "swap_s": (swap_at - t0) / RATE,
+                        "pos": {nm: [((c - t0) / RATE, p)
+                                     for c, p in tr]
+                                for nm, tr in pos_trace.items()},
+                        "t0": t0}
 
 
 def _bands(x, hop=0.25):
