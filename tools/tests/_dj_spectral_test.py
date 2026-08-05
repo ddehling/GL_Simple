@@ -126,8 +126,7 @@ def force_style(theme, style):
     t = get_theme(theme.name)
     known = set(t.style_weights) | {
         "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
-        "acapella_in", "melody_carry", "phrase_cut",
-        "breakdown_swap"}
+        "acapella_in", "melody_carry", "phrase_cut"}
     t.style_weights = {k: (1.0 if k == style else 0.0) for k in known}
     return t
 
@@ -366,7 +365,7 @@ def render_seam(library, cur, style, seed=7, wav=False):
 # Styles where the low end is actually contested. The fade/cut families
 # (no dual low by construction) belong to the quality gate, not here.
 STYLES = ["long_blend", "bass_swap", "stem_bass_swap", "filter_sweep",
-          "drum_bridge", "breakdown_swap"]
+          "drum_bridge"]
 
 
 def seam_spectra(library, styles, wav=False):

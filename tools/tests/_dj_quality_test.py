@@ -365,8 +365,10 @@ def seam_qa(library, wav=False):
     # 2026-08-02; the newer cut/loop entries joined the render pool.)
     # (loop family + spinback_cut retired 2026-08-04, user verdict on
     # the roll/slowdown mechanics.)
+    # breakdown_swap benched 2026-08-04 (drop/EQ-restore stacking slam;
+    # see brain.py kill note) - back in this list when the fix lands.
     styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
-              "phrase_cut", "breakdown_swap", "long_fade"]
+              "phrase_cut", "long_fade"]
     # long_fade engages on LOW-confidence grids - use that pool for it.
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],

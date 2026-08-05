@@ -1876,6 +1876,13 @@ class Brain:
         # lurching 7.8 dB. Drop arrivals belong to the nextdrop MOMENT,
         # on the music alone.
         kill(("loop_roll_exit", "loop_in", "loop_build"), "retired")
+        # BENCHED pending a choreography fix (2026-08-04): breakdown_swap
+        # restores B's low+mid exactly at the swap, which the style
+        # deliberately parks just before B's drop - EQ restore and drop
+        # onset stack into a gate-measured 9.1 dB slam on pairs that pass
+        # every material screen. Fix = complete the restore >=4 beats
+        # pre-drop; until then the style stays off the menu.
+        kill("breakdown_swap", "benched_lurch_fix_pending")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
@@ -2057,6 +2064,39 @@ class Brain:
             for t, side in ((cur, "A"), (cand, "B")):
                 if _bp.blendable(t.id) is False:
                     kill(_overlap, f"no_beat_power_{side}")
+            # BAND-AWARE STYLE ELIGIBILITY (user, 2026-08-04: "different
+            # portions of the frequency bands can also mismatch - that's
+            # why different mix styles exist"). Each style overlaps a
+            # known set of bands; in any overlapped band, RHYTHMIC over
+            # DIFFUSE is the smear the ear rejects (one track articulates
+            # the lattice, the other washes over it). Both-rhythmic is
+            # normal DJ material (hats over hats) - the alignment gates
+            # above govern that - and both-diffuse is an ambient wash.
+            # Activates per-track as the --bands scan lands; unmeasured
+            # bands pass.
+            _style_bands = {
+                "long_blend": ("mid", "high"), "bass_swap": ("mid", "high"),
+                "filter_sweep": ("mid", "high"),
+                "stem_bass_swap": ("mid", "high"),
+                "melody_carry": ("mid", "high"),
+                "breakdown_swap": ("mid", "high"),
+                "stem_drum_swap": ("low", "mid", "high"),
+                "drum_bridge": ("low", "mid", "high"),
+            }
+            # A exits, B enters: judge each track's bands in the REGION
+            # the blend actually overlaps.
+            ba_ = _bp.band_scores(cur.id, region="out")
+            bb_ = _bp.band_scores(cand.id, region="in")
+            if ba_ and bb_:
+                for st_, bands_ in _style_bands.items():
+                    for bd in bands_:
+                        va, vb = ba_.get(bd), bb_.get(bd)
+                        if va is None or vb is None:
+                            continue
+                        hi_, lo_ = max(va, vb), min(va, vb)
+                        if hi_ >= 1.5 and lo_ < 1.2:
+                            kill(st_, f"band_clash_{bd}")
+                            break
             if rt_sure:
                 if abs(rt.get("mult", 1.0) - 1.0) > 1e-6:
                     kill(_overlap, "tempo_multiple_read")
@@ -2177,6 +2217,23 @@ class Brain:
                          if s["kind"] == "build"), None)
             if bd_a is None or bl_b is None:
                 kill("breakdown_swap", "no_breakdown_or_build")
+            else:
+                # VIOLENT DYNAMICS stay solo (2026-08-04): a build whose
+                # crescendo jumps >~8 dB, or a breakdown that collapses
+                # that far, slams the blend however clean the sync is
+                # (gate-measured 9.1 dB blend step vs 5.3 solo; an A-side
+                # breakdown probed at an 11x collapse). The style wants a
+                # gentle hollow and a rising build, not cliffs.
+                def _dyn_ratio(track, sec_):
+                    curve = (track.row or {}).get("energy_curve") or []
+                    i0 = int(sec_["start_s"] * 2)
+                    i1 = min(int(sec_["end_s"] * 2) + 1, len(curve))
+                    if not curve or not (0 <= i0 < i1):
+                        return 1.0
+                    seg = curve[i0:i1]
+                    return max(seg) / max(min(seg), 1e-4)
+                if _dyn_ratio(cand, bl_b) > 2.5                         or _dyn_ratio(cur, bd_a) > 2.5:
+                    kill("breakdown_swap", "violent_dynamics")
             weights["long_fade"] = 0.0
             # GATE UNDER TEST: a pin refused only by a tuned threshold is
             # let through so the threshold itself can be rated. Structural

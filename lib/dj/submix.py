@@ -249,7 +249,14 @@ class DJSubmix:
         es -= es.mean()
         xc = np.correlate(em, es, mode="full")
         mid = len(es) - 1
-        half = max(int(0.25 * beat_s * ENV_FPS), 2)
+        # +/- a TENTH beat (2026-08-04): the quarter-beat window left
+        # room to lock a consistently-late bass stab and feed the
+        # integral a lie - measured as a -0.4% rate deficit and 5 ms/s
+        # beat drift on material that passed every content screen. At a
+        # tenth of a beat the correlator can only refine true kick
+        # alignment; anything further off is a different instrument, not
+        # a phase error.
+        half = max(int(0.10 * beat_s * ENV_FPS), 2)
         seg = xc[mid - half:mid + half + 1]
         if len(seg) < 3:
             return None
@@ -303,11 +310,22 @@ class DJSubmix:
             last = self._cal_last
             if last is not None:
                 dt = (now - last) / RATE
-                if 0.6 <= dt <= 12.0:
+                # CLEAN EVIDENCE ONLY (2026-08-04). Measured on trusted-
+                # grid pairs: the planned tempo ratios are RIGHT, yet
+                # decks rendered 0.2-0.7% slow with 3-6 ms/s beat drift -
+                # this block was rewriting base rate from short-dt snap
+                # errors that were PHASE artifacts (kick-bias snap, ramp
+                # settling, the silent-settle window), not drift. A real
+                # tempo error needs time to express itself: demand >=3s
+                # between snaps and cap the step at 0.5% - the half-beat
+                # flam class this was built for is now excluded from
+                # blends entirely by the grid-confidence wall, so gentle
+                # correction suffices.
+                if 3.0 <= dt <= 12.0:
                     corr = float(np.clip(-grid_err * beat_s / dt,
-                                         -0.02, 0.02))
+                                         -0.005, 0.005))
                     if abs(corr) > 0.0015 \
-                            and abs(self._cal_applied + corr) <= 0.05:
+                            and abs(self._cal_applied + corr) <= 0.01:
                         slave.rate *= (1.0 + corr)
                         self._cal_applied += corr
                         self._stat_cals += 1
@@ -333,7 +351,7 @@ class DJSubmix:
                 self._apll_err = 0.6 * prev + 0.4 * a
                 self._apll_i = float(np.clip(
                     self._apll_i + PLL_KI * self._apll_err * beat_s,
-                    -0.008, 0.008))
+                    -0.003, 0.003))
                 # PER-BEAT MICRO-FOLLOWING: absorb the measured PHASE error
                 # directly in the stretcher (click-free WSOLA cursor bias).
                 # TRUST GATES (both hard-won): (1) the correlation ring
