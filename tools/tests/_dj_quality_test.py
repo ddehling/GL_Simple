@@ -149,7 +149,7 @@ def render_seam(library, cur, style, wav=False):
     pre_roll = max(20.0, plan["beats"] * cur.period_s + 8.0)
     cue_a = max(cur.nearest_downbeat(plan["out_s"] - pre_roll), 0.0)
     sub.post({"cmd": "load", "deck": "a", "samples": a, "grid": cur.grid,
-              "gain_db": cur.gain_db, "cue_s": cue_a})
+              "track_id": cur.id, "gain_db": cur.gain_db, "cue_s": cue_a})
     sub.post({"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01})
     sub.post({"cmd": "start", "deck": "a"})
 
@@ -161,7 +161,8 @@ def render_seam(library, cur, style, wav=False):
                                       np.float32).reshape(-1, 2))
 
     sub.post({"cmd": "load", "deck": "b", "samples": b, "grid": cand.grid,
-              "gain_db": cand.gain_db, "cue_s": plan["in_s"]})
+              "track_id": cand.id, "gain_db": cand.gain_db,
+              "cue_s": plan["in_s"]})
     for _ in range(4):
         rendered.append(np.frombuffer(gen.send(BLOCK),
                                       np.float32).reshape(-1, 2))
@@ -173,6 +174,7 @@ def render_seam(library, cur, style, wav=False):
     beat = cur.period_s
     end_clock = swap_at + int(10.0 * RATE)
     lags, grid_lags, dual = [], [], 0.0
+    biases = []
     tel_log = []
     # PER-DECK MID-BAND TAP (250-2500 Hz - where melodies live): wrap each
     # deck's read so we can verify ONE MELODY AT A TIME in the actual
@@ -227,6 +229,8 @@ def render_seam(library, cur, style, wav=False):
                 bias = float(sy.get("bias_beats") or 0.0)
                 if sy.get("slave") == "a":
                     bias = -bias
+                if sy:
+                    biases.append(float(sy.get("bias_beats") or 0.0))
                 gd = (sub.decks["a"].beat_phase()
                       - sub.decks["b"].beat_phase() + bias + 0.5) % 1.0 - 0.5
                 grid_lags.append((dual, abs(gd) * beat * 1000))
@@ -268,6 +272,19 @@ def render_seam(library, cur, style, wav=False):
          "raw_lags": lags, "grid_lags": grid_lags,
          "peak": float(np.abs(mix).max()),
          "clipped": int((np.abs(mix) > 0.999).sum())}
+    # KICK-BIAS WIRING TRAP (2026-08-04): sync must offset the slave grid
+    # by exactly (slave music-phase - master music-phase), as computed by
+    # the brain and shipped in the sync event. A sign flip or a dropped
+    # event field DOUBLES the audible kick error while every grid metric
+    # stays green - assert the telemetry bias against the plan's record.
+    _pa = plan.get("phase_applied") or {}
+    m["bias_seen"] = float(np.median(biases)) if biases else None
+    m["bias_expected"] = (
+        None if not _pa
+        else float(np.clip(
+            _pa["b_ms"] / 1000.0 / max(cand.period_s, 1e-6)
+            - _pa["a_ms"] / 1000.0 / max(cur.period_s, 1e-6),
+            -0.25, 0.25)))    # mirror the brain's clip
 
     # Dead air / lurch on 0.5 s RMS windows (skip first 1 s).
     w = RATE // 2
@@ -453,6 +470,13 @@ def seam_qa(library, wav=False):
                   f"grid delta med {np.median(gl):.0f}ms "
                   f"p95 {np.percentile(gl, 95):.0f}ms "
                   f"(harsh: {med_bar:.0f}/60)")
+        if (m.get("bias_expected") is not None
+                and m.get("bias_seen") is not None
+                and style != "long_fade"):
+            check(f"{style}: kick bias wired (sign + value)",
+                  abs(m["bias_seen"] - m["bias_expected"]) <= 0.02,
+                  f"seen {m['bias_seen']:+.4f} beats vs expected "
+                  f"{m['bias_expected']:+.4f} (music-phase diff)")
         min_dual = {"bass_swap": 4.0, "long_blend": 4.0, "loop_in": 4.0,
                     "breakdown_swap": 4.0, "phrase_cut": 3.0,
                     "spinback_cut": 3.0}.get(style)

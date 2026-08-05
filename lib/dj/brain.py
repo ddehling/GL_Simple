@@ -2530,6 +2530,57 @@ class Brain:
             if name in tune:
                 return float(tune[name])
             return float(_tuning.value(name, TUNE_DEFAULTS[name]))
+
+        # KICK-TRUE ANCHORS (2026-08-04). out_s/in_s are grid-quantized,
+        # but the stored grid PHASE misses the audible kicks by ~48ms
+        # median in seam regions (see submix._sync_bias_beats). A cut
+        # scheduled on a grid beat therefore lands mid-flam, and B's cue
+        # opens ~50ms off its own downbeat - user-heard on every style,
+        # loudest on phrase_cut where nothing overlaps to blur it. Shift
+        # both anchors from lattice time to MUSIC time using the measured
+        # per-region offsets. Synced styles are unaffected on the B side
+        # (the snap re-anchors), cuts are fixed on both sides. Guarded:
+        # build_events may recompile a plan (abort/recall).
+        if "phase_applied" not in plan:
+            from lib.dj import beatpower as _bp
+            gf = plan.get("grid_fixed") or {}
+            off_a = 0.0 if gf.get("a") else \
+                _bp.phase_offset(cur.id, region="out",
+                                 at_s=plan["out_s"]) or 0.0
+            off_b = 0.0 if gf.get("b") else \
+                _bp.phase_offset(cand.id, region="in",
+                                 at_s=plan["in_s"]) or 0.0
+            plan["out_s"] += off_a
+            plan["in_s"] += off_b
+            plan["phase_applied"] = {"a_ms": round(off_a * 1000, 1),
+                                     "b_ms": round(off_b * 1000, 1)}
+        # ONE source of truth for the kick bias: computed HERE from the
+        # same offsets that shifted the anchors, and shipped inside the
+        # sync events. (v1 let the submix re-look-up the offsets by deck
+        # position; validation caught it landing on a different profile
+        # bucket than the anchors - a 25ms intended bias rendered as
+        # 151ms of kick error. Never two lookups for one seam.)
+        _pa = plan["phase_applied"]
+        sync_bias = float(np.clip(
+            _pa["b_ms"] / 1000.0 / max(cand.period_s, 1e-6)
+            - _pa["a_ms"] / 1000.0 / max(cur.period_s, 1e-6),
+            -0.25, 0.25))
+        # Audio-PLL stays ON for all pairs. Measured both ways on the
+        # weak-kick outlier pairs (2026-08-04): with the single-reading
+        # jump replaced by the 3-stable bar, the audio path IMPROVED
+        # them (97/65ms audio-off vs 74/52 audio-on) - on unstable-phase
+        # material the deck's actual output transients beat any stored
+        # lattice, corrected or not. The flag stays plumbed for future
+        # experiments; the real exposure on weak-agreement pairs is run-
+        # in loudness, handled below.
+        _rt = plan.get("rhythm") or {}
+        _ka = _rt.get("kick_agreement")
+        sync_audio = True
+        # Weak or unknown kick agreement: the cut styles' beat-matched
+        # run-in cannot truly lock (flam risk is material, not
+        # execution) - ride the incoming deck quieter until the cut so
+        # the overlap stays texture, not a competing beat.
+        runin_gain = 0.8 if (_ka is not None and _ka >= 0.5) else 0.5
         tel = snapshot["decks"][active]
         clock = snapshot["clock"]
         rate_a = max(tel["rate"], 1e-6)
@@ -2626,7 +2677,8 @@ class Brain:
                 {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},
-                {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
+                {"at": S0, "cmd": "sync", "slave": incoming, "master": active,
+                 "bias_beats": sync_bias, "audio_pll": sync_audio},
                 {"at": S0, "cmd": "gain", "deck": incoming,
                  "value": K("echo_b_gain"),
                  "ramp_s": max((S_out - S0) / RATE, 0.1)},
@@ -2676,8 +2728,10 @@ class Brain:
                 {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": S0, "cmd": "start", "deck": incoming},
-                {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
-                {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.8,
+                {"at": S0, "cmd": "sync", "slave": incoming, "master": active,
+                 "bias_beats": sync_bias, "audio_pll": sync_audio},
+                {"at": S0, "cmd": "gain", "deck": incoming,
+                 "value": runin_gain,
                  "ramp_s": 12 * cand.period_s},
                 {"at": S_cut, "cmd": "end_sync"},
                 {"at": S_cut, "cmd": "gain", "deck": active, "value": 0.0,
@@ -2747,7 +2801,7 @@ class Brain:
                 {"at": S_drop - int(8 * beat_out * RATE), "cmd": "start",
                  "deck": incoming},
                 {"at": S_drop - int(8 * beat_out * RATE), "cmd": "sync",
-                 "slave": incoming, "master": active},
+                 "slave": incoming, "master": active, "bias_beats": sync_bias, "audio_pll": sync_audio},
                 # THE DROP: release A's loop into it, B slams in full, A ducks.
                 {"at": S_drop, "cmd": "release_loop", "deck": active},
                 {"at": S_drop, "cmd": "eq", "deck": incoming, "low": 1.0,
@@ -2959,7 +3013,8 @@ class Brain:
             {"at": Sq, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
             {"at": Sq, "cmd": "start", "deck": incoming},
-            {"at": Sq, "cmd": "sync", "slave": incoming, "master": active},
+            {"at": Sq, "cmd": "sync", "slave": incoming, "master": active,
+                 "bias_beats": sync_bias, "audio_pll": sync_audio},
         ]
         if stem_entry:
             ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,

@@ -91,6 +91,92 @@ def blendable(track_id):
     return None if s is None else s >= BLEND_MIN
 
 
+def phase_offset(track_id, region="mid", at_s=None):
+    """Measured music-vs-grid offset in SECONDS for a track region, or
+    None when unmeasured or unreliable. Positive = the audible low-band
+    attacks land LATE relative to the stored grid.
+
+    Pass at_s (source seconds of the seam anchor) to select the NEAREST
+    measured region by POSITION - a seam forced mid-track (the lab, the
+    knob sweep) must not read the offset measured at the primary mix-out
+    100s away; phase is a local property. Without at_s, the region label
+    ('in'/'mid'/'out') selects, with 'mid' fallback.
+
+    This is the column the 2026-08-04 beat-match hunt ended on: stored
+    grids are periodically right (high confidence) but their PHASE misses
+    the actual kicks by ~48ms median in seam regions, with signs
+    differing per track - so grid-to-grid sync aligns lattices while the
+    ear hears flam. The sync bias consumes the DIFFERENCE of these
+    offsets to put kicks, not grids, in register."""
+    p = path()
+    try:
+        m = os.path.getmtime(p)
+    except OSError:
+        return None
+    if _CACHE.get("phase_mtime") != m:
+        try:
+            with open(p, encoding="utf-8") as f:
+                doc = json.load(f)
+            _CACHE["phase"] = {int(k): v.get("phase")
+                               for k, v in doc.get("scores", {}).items()
+                               if isinstance(v, dict) and v.get("phase")}
+            _CACHE["phase_mtime"] = m
+        except (OSError, ValueError):
+            return None
+    d = _CACHE.get("phase", {}).get(track_id)
+    if not d:
+        return None
+
+    def _ok(rec):
+        # Trust bar: enough beats with real attacks, and a consistent
+        # story. A wide IQR means the bucket has no single phase
+        # (organic/rubato) - correcting with its median is a coin flip.
+        return (rec is not None and rec.get("n", 0) >= 10
+                and rec.get("iqr", 999.0) <= 55.0)
+
+    prof = d.get("prof")
+    if prof is not None:
+        if at_s is None:
+            at_s = prof[len(prof) // 2]["at_s"]    # label-less: track body
+        pts = [(r["at_s"], r["ms"]) for r in prof if _ok(r)]
+        if not pts:
+            return None
+        # If the bucket AT this position was measured but failed the
+        # trust bar, the phase HERE is genuinely unstable (fill, break,
+        # rubato) - interpolating neighbors across it is a guess dressed
+        # as a measurement (validation: -44ms miss on exactly this case).
+        # Decline; no correction beats a wrong one.
+        for r in prof:
+            if abs(r["at_s"] - at_s) <= PROF_BUCKET_S / 2 and not _ok(r):
+                return None
+        xs = np.asarray([p[0] for p in pts])
+        nearest = float(np.min(np.abs(xs - at_s)))
+        if nearest > PROF_REACH_S:
+            return None       # nothing trustworthy near this position
+        # INTERPOLATE, don't stair-step: measured profiles are smooth
+        # RAMPS (~-0.44 ms/s on most of this library - the stored grid
+        # period is systematically ~0.04% off the music, a scanner tempo
+        # quantization artifact), so the local phase at a seam is the
+        # line through the neighboring buckets, not the nearest median.
+        return float(np.interp(at_s, xs,
+                               np.asarray([p[1] for p in pts]))) / 1000.0
+    # legacy labeled-region records (pre-profile format)
+    if at_s is not None:
+        best, dist = None, None
+        for rec in d.values():
+            if not _ok(rec) or rec.get("at_s") is None:
+                continue
+            dd = abs(rec["at_s"] - at_s)
+            if dist is None or dd < dist:
+                best, dist = rec, dd
+        if best is not None:
+            return best["ms"] / 1000.0
+    p_ = d.get(region) or d.get("mid")
+    if not _ok(p_):
+        return None
+    return p_["ms"] / 1000.0
+
+
 BANDS = {"low": ("lowpass", 110.0),
          "mid": ("bandpass", (250.0, 2000.0)),
          "high": ("highpass", 4000.0)}
@@ -179,6 +265,80 @@ def compute(track, db, bands=False):
     return round((on / n_on) / (off / n_off), 3)
 
 
+PROF_BUCKET_S = 20.0     # phase profile resolution along the track
+PROF_REACH_S = 30.0      # farthest a bucket may be from the asked position
+
+
+def compute_phase(track, db):
+    """DENSE music-vs-grid phase profile from the raw audio.
+
+    One full-track pass: low-band attack envelope, then for EVERY grid
+    beat find the strongest attack peak within +/-75ms (capped at 0.3
+    beat) and record peak_time - beat_time. Offsets are bucketed every
+    ~20s; each bucket keeps median/iqr/count. Returns
+    {"prof": [{"at_s", "ms", "iqr", "n"}, ...]}.
+
+    Dense on purpose (2026-08-04): the first cut measured 3 labeled
+    regions (in/mid/out) and validation immediately caught seams landing
+    60-100s from the nearest measurement, where the local phase had
+    drifted 40-90ms away - phase is a LOCAL property, so the profile
+    must cover wherever a seam can land. Same instrument that DIAGNOSED
+    the 48ms defect (rendered attacks vs trace-projected beats) applied
+    at the source, so correction and diagnosis can never disagree about
+    what a kick is."""
+    from lib.dj.features import decode_file_stereo
+    from scipy.signal import butter, sosfilt
+    try:
+        x = decode_file_stereo(db.abs(track.path))
+    except Exception:
+        return None
+    mono = x.mean(axis=1).astype(np.float32)
+    del x
+    sos = butter(4, 110.0, btype="lowpass", fs=RATE, output="sos")
+    env = np.abs(sosfilt(sos, mono)).astype(np.float32)
+    del mono
+    w = max(int(0.01 * RATE), 1)
+    env = np.convolve(env, np.ones(w, dtype=np.float32) / w, mode="same")
+    att = np.diff(env)
+    del env
+    att[att < 0] = 0.0
+
+    peaks = []                       # (beat_s, peak_value, offset_s)
+    for g in (track.grid or []):
+        per = g.get("period_s") or 0
+        if per <= 0:
+            continue
+        half = int(min(0.075, 0.3 * per) * RATE)
+        b = g["first_beat_s"]
+        if b < 0:
+            b += np.ceil(-b / per) * per
+        while b <= g["end_s"]:
+            i = int(b * RATE)
+            if i - half >= 0 and i + half < len(att):
+                wseg = att[i - half:i + half]
+                k = int(np.argmax(wseg))
+                peaks.append((b, float(wseg[k]), (k - half) / RATE))
+            b += per
+    del att
+    if len(peaks) < 24:
+        return None
+    ref = float(np.median([p for _, p, _ in peaks]))
+    prof = []
+    n_buckets = int(track.duration_s / PROF_BUCKET_S) + 1
+    for bi in range(n_buckets):
+        lo, hi = bi * PROF_BUCKET_S, (bi + 1) * PROF_BUCKET_S
+        offs = [o for b, p, o in peaks
+                if lo <= b < hi and p > 0 and p >= 0.3 * ref]
+        if len(offs) < 10:
+            continue
+        q1, q3 = np.percentile(offs, [25, 75])
+        prof.append({"at_s": round(lo + PROF_BUCKET_S / 2, 1),
+                     "ms": round(float(np.median(offs)) * 1000.0, 1),
+                     "iqr": round(float(q3 - q1) * 1000.0, 1),
+                     "n": len(offs)})
+    return {"prof": prof} if prof else None
+
+
 def _band_score(track, seg, lo, kind, freq):
     from scipy.signal import butter, sosfilt
     sos = butter(4, freq, btype=kind, fs=RATE, output="sos")
@@ -228,6 +388,9 @@ def main():
     ap.add_argument("--bands", action="store_true",
                     help="also fill per-band scores (for band-aware "
                          "style selection)")
+    ap.add_argument("--phase", action="store_true",
+                    help="also fill per-region music-vs-grid phase "
+                         "offsets (kick alignment bias)")
     args = ap.parse_args()
     try:
         import ctypes
@@ -252,16 +415,28 @@ def main():
     for i, t in enumerate(lib):
         key = str(t.id)
         have = done.get(key)
-        need_bands = args.bands and not isinstance(have, dict) or             (args.bands and isinstance(have, dict) and "bands" not in have)
-        if have is not None and not need_bands:
+        need_bands = args.bands and (not isinstance(have, dict)
+                                     or "bands" not in have)
+        need_phase = args.phase and (not isinstance(have, dict)
+                                     or "phase" not in have
+                                     or "prof" not in have["phase"])
+        if have is not None and not need_bands and not need_phase:
             continue
-        if args.bands:
-            b = compute(t, db, bands=True)
-            if b is not None:
-                sc = (have.get("score") if isinstance(have, dict)
-                      else have) or b.get("low")
-                done[key] = {"score": sc if sc is not None else b.get("low"),
-                             "bands": b}
+        if args.bands or args.phase:
+            rec = dict(have) if isinstance(have, dict) else \
+                ({"score": have} if have is not None else {"score": None})
+            if need_bands:
+                b = compute(t, db, bands=True)
+                if b is not None:
+                    rec["bands"] = b
+                    if rec.get("score") is None:
+                        rec["score"] = b.get("low")
+            if need_phase:
+                p = compute_phase(t, db)
+                if p is not None:
+                    rec["phase"] = p
+            if rec:
+                done[key] = rec
         else:
             s = compute(t, db)
             if s is not None:

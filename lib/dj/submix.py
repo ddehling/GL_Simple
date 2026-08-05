@@ -135,6 +135,10 @@ class DJSubmix:
             deck.load(e["samples"], e.get("track_id"), e.get("grid"),
                       e.get("gain_db", 0.0), e.get("kick_offset_s", 0.0),
                       e.get("pitch_st", 0.0), stems=e.get("stems"))
+            # Phase offsets (beatpower --phase) are measured against the
+            # DB grid; a live tempo-FIXED grid has its own phase, so the
+            # kick bias must not stack a stale offset onto it.
+            deck.grid_is_db = e.get("grid_is_db", True)
             if "cue_s" in e:
                 deck.cue(e["cue_s"])
         elif cmd == "attach_stems":
@@ -177,7 +181,8 @@ class DJSubmix:
         elif cmd == "jump":
             deck.jump_cut(e["time_s"])
         elif cmd == "sync":
-            self._sync = {"slave": e["slave"], "master": e["master"]}
+            self._sync = {"slave": e["slave"], "master": e["master"],
+                          "audio": e.get("audio_pll", True)}
             self._stat_resnaps = 0
             self._stat_nudges = 0
             self._stat_cals = 0
@@ -190,16 +195,23 @@ class DJSubmix:
             # then the transient PLL holds it through the blend.
             master = self.decks.get(e["master"])
             slave = self.decks.get(e["slave"])
+            self._sync_bias = 0.0
             if master and slave and master.playing and slave.playing \
                     and master.grid and slave.grid:
-                # Grid phase alignment: the grids are onset-locked (kick+hat
-                # transients), accurate to ~25ms - the right anchor for this
-                # genre. (Low-band audio alignment was tried and locks onto
-                # OFFBEAT bass stabs instead of kicks - worse, not better;
-                # kick_offset_s-biased alignment was tried 2026-07-13 and
-                # REVERTED for the same reason, see _sync_bias_beats.)
-                slave.phase_snap(master.beat_phase()
-                                 + self._sync_bias_beats(master, slave))
+                # Kick-aligned snap: grid phase plus the measured
+                # music-vs-grid bias (see _sync_bias_beats - the stored
+                # grid phase misses the audible kicks by ~48ms median, so
+                # plain grid alignment is lattice alignment, not music).
+                # The brain ships the bias in the event, computed from
+                # the SAME profile buckets that shifted the seam anchors
+                # (two independent lookups disagreed - 151ms error);
+                # _sync_bias_beats is only the fallback for sync events
+                # that carry none. Fixed once per sync session; the PLL
+                # holds the same target.
+                b = e.get("bias_beats")
+                self._sync_bias = (float(b) if b is not None else
+                                   self._sync_bias_beats(master, slave))
+                slave.phase_snap(master.beat_phase() + self._sync_bias)
         elif cmd == "end_sync":
             self._sync = None
             self._sync_bias = 0.0
@@ -212,25 +224,50 @@ class DJSubmix:
 
     @staticmethod
     def _sync_bias_beats(master, slave):
-        """OFF BY DEFAULT (DJ_KICK_ALIGN=1 to experiment). The idea was to
-        offset the slave's grid target by the kick-offset difference so the
-        KICKS land together - but kick_offset_s is a folded LOW-BAND energy
-        profile, and measured on the real library it is dominated by BASS
-        PLACEMENT, not kick-vs-grid skew (median |offset| = 196ms = 0.35
-        beats across 395 confident tracks; true grid skew is ~25ms). House
-        basslines live on the offbeat, so 'compensating' shifted whole
-        tracks up to a quarter beat to align bass stabs while pulling the
-        REAL kicks apart - user-heard as a mismatched double beat at
-        transitions (2026-07-13). Grid-phase alignment is the correct
-        anchor; groove-offset DIFFERENCES are handled in selection (lean +
-        precision-style gate), where a big difference means the pair's
-        groove feels clash and the punchy styles are vetoed."""
-        if os.environ.get("DJ_KICK_ALIGN", "0") not in ("1", "on"):
+        """Offset the slave's grid target so the MUSIC lands together.
+
+        The stored grids are periodically right (high confidence) but
+        their PHASE misses the audible kicks by ~48ms median in seam
+        regions (measured 2026-08-04: rendered low-band attacks vs
+        trace-projected beats; 17/20 deck-regions >25ms, signs differing
+        per track and side). Grid-to-grid sync therefore aligns LATTICES
+        while the ear hears flam - gates showed 5ms 'lock' over audible
+        double beats. beatpower --phase measures each track's
+        attack-peak-vs-grid offset per region (in/mid/out) from the raw
+        audio with the same instrument that exposed the defect; the
+        DIFFERENCE is the bias that puts kicks in register. Master plays
+        its exit, slave its intro, so regions are out/in.
+
+        History: a kick_offset_s bias was tried 2026-07-13 and REVERTED -
+        that scalar was a folded whole-track energy profile dominated by
+        BASS PLACEMENT (median 0.35-beat lies), not kick-vs-grid skew.
+        The per-region attack-peak median is a different instrument:
+        bounded +/-90ms search around each beat, IQR-gated, region-aware.
+        DJ_KICK_ALIGN=0 disables for A/B listening."""
+        if os.environ.get("DJ_KICK_ALIGN", "1") in ("0", "off"):
+            return 0.0
+        from lib.dj import beatpower as _bp
+        if master.track_id is None or slave.track_id is None:
+            return 0.0
+        if not (getattr(master, "grid_is_db", True)
+                and getattr(slave, "grid_is_db", True)):
+            return 0.0       # offsets don't apply to a live-fixed grid
+        # By POSITION, not role label: the lab and knob sweep force seams
+        # mid-track, where the offset measured at the primary mix points
+        # (often 100s away) does not apply - phase is a local property.
+        off_m = _bp.phase_offset(master.track_id, region="out",
+                                 at_s=master.source_time_s())
+        off_s = _bp.phase_offset(slave.track_id, region="in",
+                                 at_s=slave.source_time_s())
+        if off_m is None or off_s is None:
             return 0.0
         pm = master.beat_period_s() or 0.5
         ps = slave.beat_period_s() or 0.5
-        bias = slave.kick_offset_s / ps - master.kick_offset_s / pm
-        return float(np.clip(bias, -0.25, 0.25))
+        # Sign: phase_snap(master_phase + bias) parks the slave's GRID
+        # bias beats EARLY of the master's. Slave kicks land off_s after
+        # slave grid, master kicks off_m after master grid; kicks meet
+        # when bias = off_s - off_m (slave-minus-master, in beats).
+        return float(np.clip(off_s / ps - off_m / pm, -0.25, 0.25))
 
     def _audio_phase_err(self, master, slave, beat_s):
         """Beat-phase error measured from the two decks' ACTUAL output
@@ -290,9 +327,9 @@ class DJSubmix:
             return
         beat_s = master.beat_period_s() or 0.5
         # The PLL's target carries the kick-alignment bias (see
-        # _sync_bias_beats): zero error = the KICKS are in register.
-        bias = self._sync_bias_beats(master, slave)
-        self._sync_bias = bias                   # published in telemetry
+        # _sync_bias_beats, computed once at sync start): zero error =
+        # the KICKS are in register, not the grids.
+        bias = self._sync_bias
         grid_err = slave.beat_phase() - master.beat_phase() - bias
         grid_err = (grid_err + 0.5) % 1.0 - 0.5
         # If drift outruns the PLL while the slave is still fading in, snap
@@ -340,7 +377,12 @@ class DJSubmix:
         # a delayed position measurement driven by a rate: the INTEGRAL term
         # learns the true tempo-ratio bias (why grids drift at all) so the
         # proportional term only handles small residuals - no limit cycle.
-        if self.clock - self._apll_clock >= RATE // 4:
+        if self.clock - self._apll_clock >= RATE // 4 \
+                and cfg.get("audio", True):
+            # The brain turns the audio path OFF for weak-kick pairs
+            # (kick_agreement < 0.5): there the xcorr measures pattern
+            # offset, passes its own stability gates (patterns persist),
+            # and drags the deck off the kick-true grid+bias target.
             self._apll_clock = self.clock
             a = self._audio_phase_err(master, slave, beat_s)
             if a is not None:
@@ -380,12 +422,22 @@ class DJSubmix:
                     self._apll_hist = []
             else:
                 self._apll_err = None
+        _hist = getattr(self, "_apll_hist", [])
+        _stable3 = (len(_hist) == 3 and max(_hist) - min(_hist) < 0.07
+                    and (all(h > 0 for h in _hist)
+                         or all(h < 0 for h in _hist)))
         if self._apll_err is not None and abs(self._apll_err) > 0.05 \
-                and slave.gain < RESNAP_GAIN:
+                and slave.gain < RESNAP_GAIN and _stable3:
             # Still quiet? A large audio error is corrected by an inaudible
-            # JUMP (the PI slews ~12ms/s - a blend would end first).
+            # JUMP (the PI slews ~12ms/s - a blend would end first). Same
+            # stability bar as the audible nudge (2026-08-04): a SINGLE
+            # xcorr reading on swung/organic material measures rhythm-
+            # PATTERN offset, not kick flam, and one bad reading here was
+            # jumping the deck ~75ms OFF the kick-true target during the
+            # run-in (measured 83ms kick error on an 80bpm swing pair).
             slave.nudge_seconds(self._apll_err * beat_s)
             self._apll_err = None
+            self._apll_hist = []
             self._apll_i = 0.0
             slave.rate_trim = 0.0
             return

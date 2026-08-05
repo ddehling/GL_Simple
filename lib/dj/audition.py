@@ -45,11 +45,11 @@ def render_seam(db, a, b, plan, status=None, info=None):
     cue_a = a.nearest_downbeat(max(0.0, plan["out_s"] - pre))
     sub.post_many([
         {"cmd": "load", "deck": "a", "samples": sa, "grid": a.grid,
-         "gain_db": a.gain_db, "cue_s": cue_a},
+         "track_id": a.id, "gain_db": a.gain_db, "cue_s": cue_a},
         {"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01},
         {"cmd": "start", "deck": "a"},
         {"cmd": "load", "deck": "b", "samples": sb, "grid": b.grid,
-         "gain_db": b.gain_db, "cue_s": plan["in_s"]},
+         "track_id": b.id, "gain_db": b.gain_db, "cue_s": plan["in_s"]},
     ])
     # Attach stems when rendered so the STEM styles (and the vocal duck)
     # audition truthfully - without this, stem_gains no-op against a

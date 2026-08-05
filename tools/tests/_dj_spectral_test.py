@@ -79,7 +79,7 @@ def spectral_audit(library):
     check("shares vary across the library",
           bool(bass) and float(np.std(bass)) > 0.03,
           f"bass_share std {np.std(bass):.3f} "
-          f"(≈0 means the scan wrote defaults)" if bass else "none")
+          f"(~0 means the scan wrote defaults)" if bass else "none")
 
     # The blend's swap-floor logic ("never swap the bass into a bassless
     # stretch of B") reads section-level bass_share — if sections don't
@@ -172,7 +172,7 @@ def render_seam(library, cur, style, seed=7, wav=False):
     pre_roll = max(20.0, plan["beats"] * cur.period_s + 8.0)
     cue_a = max(cur.nearest_downbeat(plan["out_s"] - pre_roll), 0.0)
     sub.post({"cmd": "load", "deck": "a", "samples": a, "grid": cur.grid,
-              "gain_db": cur.gain_db, "cue_s": cue_a})
+              "track_id": cur.id, "gain_db": cur.gain_db, "cue_s": cue_a})
     sub.post({"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01})
     sub.post({"cmd": "start", "deck": "a"})
 
@@ -184,7 +184,8 @@ def render_seam(library, cur, style, seed=7, wav=False):
                                       np.float32).reshape(-1, 2))
 
     sub.post({"cmd": "load", "deck": "b", "samples": b, "grid": cand.grid,
-              "gain_db": cand.gain_db, "cue_s": plan["in_s"]})
+              "track_id": cand.id, "gain_db": cand.gain_db,
+              "cue_s": plan["in_s"]})
     for _ in range(4):
         rendered.append(np.frombuffer(gen.send(BLOCK),
                                       np.float32).reshape(-1, 2))
@@ -383,16 +384,27 @@ def seam_spectra(library, styles, wav=False):
         pool = cands
         if style in ("stem_bass_swap", "drum_bridge"):
             pool = [t for t in cands if getattr(t, "has_stems", False)]
-        for cur in pool[:40]:
-            try:
-                m = render_seam(library, cur, style, seed=7 + si, wav=wav)
-            except Exception as e:
-                print(f"  [FAIL] {style} render crashed on {cur.title[:30]}:"
-                      f" {type(e).__name__}: {e}")
-                failures.append(f"{style} crash")
-                m = None
-                break
-            if m:
+        # Scan WIDE before declaring a style unreachable (2026-08-04):
+        # the beat-power + band-clash gates made overlapped-drum pairs
+        # genuinely rare on this library (56% of tracks below the blend
+        # bar), and 40 tracks x 1 seed was reporting rarity as absence.
+        # Legality is checked before any decode, so the wide scan only
+        # costs plan compiles until a pair lands.
+        crashed = False
+        for seed in (7 + si, 47 + si, 87 + si):
+            for cur in pool[:120]:
+                try:
+                    m = render_seam(library, cur, style, seed=seed, wav=wav)
+                except Exception as e:
+                    print(f"  [FAIL] {style} render crashed on "
+                          f"{cur.title[:30]}: {type(e).__name__}: {e}")
+                    failures.append(f"{style} crash")
+                    m = None
+                    crashed = True
+                    break
+                if m:
+                    break
+            if m or crashed:
                 break
         if m is None:
             print(f"  [warn] {style}: no legal pair found in top candidates")

@@ -291,11 +291,11 @@ def render_tapped(db, a, b, plan):
     cue_a = a.nearest_downbeat(max(0.0, plan["out_s"] - pre))
     sub.post_many([
         {"cmd": "load", "deck": "a", "samples": sa, "grid": a.grid,
-         "gain_db": a.gain_db, "cue_s": cue_a},
+         "track_id": a.id, "gain_db": a.gain_db, "cue_s": cue_a},
         {"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01},
         {"cmd": "start", "deck": "a"},
         {"cmd": "load", "deck": "b", "samples": sb, "grid": b.grid,
-         "gain_db": b.gain_db, "cue_s": plan["in_s"]},
+         "track_id": b.id, "gain_db": b.gain_db, "cue_s": plan["in_s"]},
     ])
     # Stems quadruple a deck's memory (4 full-length stem arrays). Only
     # attach them when the plan actually drives stem gains - otherwise

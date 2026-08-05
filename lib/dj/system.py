@@ -1145,6 +1145,23 @@ class DJSystem:
                     self._log({"event": "tempo_writeback", **{
                         k: val[k] for k in
                         ("track_id", "bpm", "conf", "dev_pct")}})
+                    # The DB grid just changed: beat-power score and
+                    # phase offsets were measured against the OLD grid.
+                    # Drop the stale record so the next --phase/--bands
+                    # pass re-measures instead of biasing kicks with a
+                    # lie.
+                    try:
+                        from lib.dj import beatpower as _bp
+                        import json as _json
+                        with open(_bp.path(), encoding="utf-8") as f:
+                            _doc = _json.load(f)
+                        if _doc.get("scores", {}).pop(
+                                str(val["track_id"]), None) is not None:
+                            with open(_bp.path(), "w",
+                                      encoding="utf-8") as f:
+                                _json.dump(_doc, f)
+                    except (OSError, ValueError):
+                        pass
                 except Exception as e:
                     print(f"[DJ] tempo write-back failed: {e}")
 
@@ -1622,11 +1639,18 @@ class DJSystem:
                           # wrong-tempo grid is what the flam seams chased.
                           "grid": (fix["grid"] if fix
                                    else self.next_track.grid),
+                          "grid_is_db": not fix,
                           "gain_db": self.next_track.gain_db,
                           "kick_offset_s": self.next_track.kick_offset_s,
                           "pitch_st": plan.get("pitch_st", 0),
                           "cue_s": plan["in_s"],
                           "stems": stems_b})
+        # Kick-true anchors read beatpower phase offsets, which are
+        # measured against the DB grid - flag any side playing a
+        # live-FIXED grid so build_events leaves that side alone.
+        plan["grid_fixed"] = {
+            "a": self.current.id in self._grid_fix,
+            "b": self.next_track.id in self._grid_fix}
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,
             self.current, self.next_track)
