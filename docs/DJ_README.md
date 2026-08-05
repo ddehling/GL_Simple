@@ -169,7 +169,13 @@ dj:
   - `cut_at_drop` — hard cut on the incoming track's drop (retired
     2026-08-02: 0/2000 rolls, phrase_cut does its job; old pins refuse
     politely)
-  - `loop_roll_exit` — shrinking loop-roll outro
+  - `loop_roll_exit` — shrinking loop-roll outro (retired 2026-08-04
+    with `loop_in` and `loop_build` — user verdict on the whole roll
+    family: "I don't like the loop rolls at all"; the quality gate had
+    also caught loop_in lurching 7.8 dB. spinback_cut retired the same
+    day — the slowdown-into-cut mechanic reads "cheesy and overdone",
+    and phrase_cut's optional brake is off via the brake_chance knob.
+    Old pins for all of them refuse politely.)
   - `loop_build` — stutter a shrinking loop into A's drop to build tension,
     release exactly on the drop as B slams in
   - `long_fade` — fallback for low-confidence grids

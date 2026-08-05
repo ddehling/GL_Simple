@@ -115,8 +115,8 @@ def force_style(theme, style):
     t = get_theme(theme.name)
     known = set(t.style_weights) | {
         "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
-        "acapella_in", "melody_carry", "phrase_cut", "spinback_cut",
-        "loop_in", "breakdown_swap"}
+        "acapella_in", "melody_carry", "phrase_cut",
+        "breakdown_swap"}
     t.style_weights = {k: (1.0 if k == style else 0.0) for k in known}
     return t
 
@@ -363,10 +363,10 @@ def seam_qa(library, wav=False):
                     and t.duration_s > 240], key=lambda t: -t.rhythm_density)
     # (cut_at_drop retired, double_drop + bassline_layer removed
     # 2026-08-02; the newer cut/loop entries joined the render pool.)
-    styles = ["bass_swap", "long_blend", "loop_build",
-              "loop_roll_exit", "filter_sweep", "echo_out",
-              "phrase_cut", "spinback_cut", "loop_in", "breakdown_swap",
-              "long_fade"]
+    # (loop family + spinback_cut retired 2026-08-04, user verdict on
+    # the roll/slowdown mechanics.)
+    styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
+              "phrase_cut", "breakdown_swap", "long_fade"]
     # long_fade engages on LOW-confidence grids - use that pool for it.
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],

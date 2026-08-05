@@ -1850,6 +1850,19 @@ class Brain:
         # REMOVED outright - the kill keeps their old pins refusing
         # politely, the choreography is gone.
         kill(("cut_at_drop", "bassline_layer", "double_drop"), "retired")
+        # spinback_cut retired 2026-08-04: the platter wind-down IS the
+        # style, and the user's verdict on the slowdown-into-cut mechanic
+        # is "cheesy and overdone" (phrase_cut's optional brake is off for
+        # the same reason, via the brake_chance knob). phrase_cut carries
+        # the clean-cut job. Old pins refuse politely, as with cut_at_drop.
+        kill("spinback_cut", "retired")
+        # The LOOP-ROLL family retired the same day: "I don't like the
+        # loop rolls at all" (user). loop_roll_exit, loop_in and
+        # loop_build are all the same stutter-a-shrinking-loop trick worn
+        # three ways; the quality gate had also just caught loop_in
+        # lurching 7.8 dB. Drop arrivals belong to the nextdrop MOMENT,
+        # on the music alone.
+        kill(("loop_roll_exit", "loop_in", "loop_build"), "retired")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
