@@ -347,8 +347,12 @@ def e2e_test(keep_wav):
               f"{n_handovers} completed + {len(armed_styles)} armed in "
               f"{total_s/60:.0f} min: {' -> '.join(p[:14] for p in plays)}")
         check("styles are beat-matched",
+              # phrase_cut joined the allowed set 2026-08-04: pairs whose
+              # kick offsets exceed 28ms lose overlapped-drum styles (the
+              # bassline-mismatch fix) and legitimately play clean cuts -
+              # which ARE beat-matched (bar-aligned entry, sync'd launch).
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
-                        "cut_at_drop",
+                        "cut_at_drop", "phrase_cut",
                         "loop_build", "filter_sweep", "echo_out")
                   for s, urgent in armed_styles if not urgent),
               f"styles: {[(s + ' (urgent)' if u else s) for s, u in armed_styles]}")

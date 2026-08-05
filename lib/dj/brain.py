@@ -1237,6 +1237,19 @@ class Brain:
         s_rhythm = self._rhythm_fit(current, cand, rate)
         if self.persona.groove_tolerance != 1.0:
             s_rhythm = 1.0 - (1.0 - s_rhythm) / self.persona.groove_tolerance
+        # KICK-OFFSET FLAM LEAN (user-heard: "a bit too much flam",
+        # 2026-08-04). The sync is grid-primary, so two tracks whose kicks
+        # sit differently against their own grids flam by the offset
+        # difference for the whole overlap - and measurement showed 54% of
+        # chosen pairs sat past the 28ms audibility line, with the blend
+        # family exposed on 37% of all seams. A lean, not a veto (x0.6 at
+        # worst): half the library would be unreachable otherwise. Only
+        # confident grids vote - a shaky offset is not evidence.
+        if current is not None \
+                and min(current.bpm_conf or 0.0, cand.bpm_conf or 0.0) >= 0.7:
+            d_off = abs(current.kick_offset_s - cand.kick_offset_s)
+            if d_off > 0.028:
+                s_rhythm *= max(0.6, 1.0 - 6.0 * (d_off - 0.028))
         # PERSONA vocal pull: a soft lean toward (storyteller) or away from
         # (monk) singers, on the library-ranked vocal axis. +-0.35 at the
         # extremes - the same order as the theme's own axis leans, so the
@@ -1954,6 +1967,19 @@ class Brain:
                 kill(("cut_at_drop", "echo_out",
                       "phrase_cut", "spinback_cut",
                       "loop_in"), "grid_conf<0.7")
+                # 2026-08-04, user: "the beats are fundamentally off a
+                # lot of the time... I hear a double beat". Root cause:
+                # BLENDS were allowed down to conf 0.5, where the stored
+                # grid wobbles 25-50ms and the BPM itself can be wrong -
+                # a wrong tempo ratio drifts through the whole overlap as
+                # a periodic double beat NO PLL authority can hold (the
+                # gate measured one such pair at med 158ms / p95 331ms).
+                # No overlapped drums on a grid the analyzer doesn't
+                # trust: these pairs play the dipped fade or an acapella
+                # path until --refine-grids promotes their tracks.
+                kill(("long_blend", "bass_swap", "filter_sweep",
+                      "stem_bass_swap", "melody_carry", "breakdown_swap",
+                      "stem_drum_swap", "drum_bridge"), "grid_conf<0.7")
             # cut_at_drop earns a STRICTER bar than the rest of its tier.
             # Measured over 560 logged seams (tools/dj/dj_review.py): median
             # flam 0.247 beats against 0.061-0.068 for every blend style
@@ -1981,6 +2007,26 @@ class Brain:
                 kill(("cut_at_drop", "echo_out",
                       "loop_build", "loop_roll_exit",
                       "loop_in"), "kick_offset>28ms")
+            # OFFSET PAIRS -> NO OVERLAPPED DRUMS AT ALL (2026-08-04). The
+            # user was condemning perfectly good PAIRINGS because the
+            # blend exposed their bassline/kick mismatch - a >28ms offset
+            # is structural (the PLL locks transients, EQ carves
+            # basslines, but nothing can align two kick patterns that sit
+            # differently against their own grids; measured as a constant
+            # ~27-30ms grid residual that no settle time closes, and the
+            # 2026-07-22 double-beat complaint was a 31ms offset riding a
+            # long blend). ~23% of confident pairs. They keep phrase_cut,
+            # echo_out, the acapella paths and the fade - the PAIRING
+            # survives, played without overlapping drums. The screen sits
+            # at 20ms, not the 25-28ms audibility line: stored grids are
+            # themselves only ~25ms onset-accurate, and pairs whose stored
+            # offset read 26ms measured 27-48ms in rendered audio - the
+            # screen needs headroom for its own measurement error.
+            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.020:
+                kill(("long_blend", "bass_swap", "filter_sweep",
+                      "stem_bass_swap", "melody_carry", "breakdown_swap",
+                      "stem_drum_swap", "drum_bridge"),
+                     "kick_offset>20ms")
             # GROOVE-AWARE STYLE STEERING (rhythm signatures, trusted
             # grids only). Selection already leaned away from these pairs;
             # when one plays anyway (setlist order, thin pool), pick the
@@ -2224,6 +2270,21 @@ class Brain:
                 and ((rt is not None and rt.get("score", 1.0) < 0.45)
                      or d_off_p > 0.025):
             beats = 32
+        # PREDICTED-AUDIBLE FLAM -> HALVE THE EXPOSURE (user-heard "too
+        # much flam"). The 28ms kick-offset gate only ever protected the
+        # short-dual styles; blends were assumed safe behind EQ staging,
+        # which hides basslines but not percussive flam. Measured: 37% of
+        # seams carried a predicted-audible flam into a matched blend,
+        # nearly all at 28 beats of dual. 16 beats keeps the blend a
+        # blend while the two kick patterns coexist half as long.
+        if style in ("long_blend", "bass_swap", "filter_sweep",
+                     "stem_bass_swap", "melody_carry", "breakdown_swap",
+                     "stem_drum_swap", "drum_bridge"):
+            fl = (rt or {}).get("flam_ms")
+            fl_sure = (fl is not None and 15.0 <= fl <= 80.0
+                       and (rt or {}).get("conf", 0.0) >= 0.5)
+            if fl_sure or d_off_p > 0.028:
+                beats = min(beats, 16)
         # LEARNED BLEND LENGTH: a global multiplier on however many beats
         # the rules above arrived at, snapped back to a whole bar. This is
         # the one execution knob that lives in the plan rather than in
@@ -2787,16 +2848,30 @@ class Brain:
                 med = sorted(curve)[len(curve) // 2]
                 if intro > 0.05 and med > intro:
                     b_trim = min(med / intro, K("trim_cap"))
+        # SILENT SETTLE: launch + sync the incoming deck FOUR BEATS before
+        # anything is audible. The snap lands within the grids' own onset
+        # accuracy (~25-35ms) and the PLL needs a few bars to trim that to
+        # lock - with the audible blend starting at S0, its first bars
+        # rode the raw snap error as audible flam (user-heard "a bit too
+        # much flam" 2026-08-04; the flam-capped 16-beat blends then
+        # measured med 33ms grid delta because the unsettled head
+        # dominated). Four beats at gain zero puts the settling where
+        # nobody can hear it. Cue rolls back the same four beats so the
+        # musical entry still lands at in_s exactly at S0.
+        settle = int(8 * beat_out * RATE)
+        Sq = max(S0 - settle, now_guard)
+        cue_b = max(0.0, plan["in_s"]
+                    - (S0 - Sq) / RATE * rate_b)
         ev += [
-            {"at": S0, "cmd": "cue", "deck": incoming, "time_s": plan["in_s"]},
-            {"at": S0, "cmd": "rate", "deck": incoming, "value": rate_b},
+            {"at": Sq, "cmd": "cue", "deck": incoming, "time_s": cue_b},
+            {"at": Sq, "cmd": "rate", "deck": incoming, "value": rate_b},
             # Incoming: bass cut, mids shelved, highs carved - drums + air.
-            {"at": S0, "cmd": "eq", "deck": incoming, "low": b_low0,
+            {"at": Sq, "cmd": "eq", "deck": incoming, "low": b_low0,
              "mid": b_mid0, "high": b_high0, "ramp_s": 0.01},
-            {"at": S0, "cmd": "gain", "deck": incoming, "value": 0.0,
+            {"at": Sq, "cmd": "gain", "deck": incoming, "value": 0.0,
              "ramp_s": 0.01},
-            {"at": S0, "cmd": "start", "deck": incoming},
-            {"at": S0, "cmd": "sync", "slave": incoming, "master": active},
+            {"at": Sq, "cmd": "start", "deck": incoming},
+            {"at": Sq, "cmd": "sync", "slave": incoming, "master": active},
         ]
         if stem_entry:
             ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
