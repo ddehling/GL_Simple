@@ -2164,9 +2164,28 @@ class Brain:
             # fade (BLEND_MIN_EXIT). The symmetric 1.5 bar was the
             # single largest blend killer (22% of all seams) on exits
             # that were merely softening, not beatless.
+            # Region BY POSITION (2026-08-05): the 'out'/'in' band scores
+            # are measured at the PRIMARY mix points, but an urgent
+            # (skip) exit leaves mid-track - judging a mid-groove exit
+            # by the outro's diffuseness faded 7 of 9 skip seams in one
+            # sitting ("not beat matched at all" - it was a fade). When
+            # the actual anchor is far from the measured point, the
+            # track BODY ('mid', measured at the midpoint) is the
+            # closer evidence.
+            def _reg_for(track, at_s, kind):
+                try:
+                    pts = (track.mix_outs if kind == "out"
+                           else track.mix_ins)
+                    ref = pts[0]["time_s"] if pts else None
+                except Exception:
+                    ref = None
+                return kind if (ref is not None
+                                and abs(at_s - ref) <= 45.0) else "mid"
+            _reg_a = _reg_for(cur, pair["out_s"], "out")
+            _reg_b = _reg_for(cand, pair["in_s"], "in")
             for t, side, reg, bar in (
-                    (cur, "A", "out", _bp.BLEND_MIN_EXIT),
-                    (cand, "B", "in", _bp.BLEND_MIN)):
+                    (cur, "A", _reg_a, _bp.BLEND_MIN_EXIT),
+                    (cand, "B", _reg_b, _bp.BLEND_MIN)):
                 bs = _bp.band_scores(t.id, region=reg) or {}
                 evid = [v for v in (bs.get("low"),
                                     _bp.scores().get(t.id))
@@ -2240,8 +2259,8 @@ class Brain:
             }
             # A exits, B enters: judge each track's bands in the REGION
             # the blend actually overlaps.
-            ba_ = _bp.band_scores(cur.id, region="out")
-            bb_ = _bp.band_scores(cand.id, region="in")
+            ba_ = _bp.band_scores(cur.id, region=_reg_a)
+            bb_ = _bp.band_scores(cand.id, region=_reg_b)
             if ba_ and bb_:
                 for st_, bands_ in _style_bands.items():
                     for bd in bands_:
