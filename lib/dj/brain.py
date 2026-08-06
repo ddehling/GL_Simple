@@ -1046,6 +1046,20 @@ class Brain:
             self._rhythm_cache[key] = v
         return 0.78 + 0.22 * v
 
+    def _body_energy(self, track):
+        """Median section energy of a track's groove body (cached) - the
+        reference for 'is this exit still alive or already comedown'."""
+        cache = getattr(self, "_body_e_cache", None)
+        if cache is None:
+            cache = self._body_e_cache = {}
+        v = cache.get(track.id)
+        if v is None:
+            es = [s.get("energy") or 0.0 for s in (track.sections or [])
+                  if s.get("kind") not in ("intro", "outro")]
+            v = float(np.median(es)) if es else 0.0
+            cache[track.id] = v
+        return v
+
     def _pair_blendable(self, cur, cand):
         """Could this pair support an overlapped blend? The CHEAP mirror
         of the plan-time screens (cached file-backed lookups only, no
@@ -1069,6 +1083,21 @@ class Brain:
             if (t.bpm_conf or 0.0) < 0.7 \
                     and _bp.profile_coverage(t.id) < 0.6:
                 return False
+        # TEMPO SANITY (2026-08-05): a half/double-time pairing is a
+        # legitimate FOLLOW but never a blend - the gate caught the lean
+        # boosting a 160->85bpm pair into a "blend" whose grids can't
+        # lock 1:1 (170ms structural delta). Same wall as selection's
+        # stretch discipline.
+        ratio = cur.bpm / max(cand.bpm, 1e-6)
+        while ratio > 1.5:
+            ratio /= 2.0
+        while ratio < 0.67:
+            ratio *= 2.0
+        if not (0.945 <= ratio <= 1.058):
+            return False
+        if cur.bpm / max(cand.bpm, 1e-6) > 1.5 \
+                or cand.bpm / max(cur.bpm, 1e-6) > 1.5:
+            return False
         return True
 
     # -- selection -----------------------------------------------------------
@@ -1662,6 +1691,14 @@ class Brain:
             cur, [o["time_s"] for o in outs],
             cand, [ip[0]["time_s"] for ip in i_pre])
         best = None
+        # LEAVE WHILE THE MUSIC IS STILL ALIVE (2026-08-05, user: "the dj
+        # seems to like to go almost to the end to mix, but the tail of
+        # a lot of songs is often just empty comedown"). The analyzer's
+        # bookmarked mix-outs mostly sit at the END - past the comedown -
+        # so the night rode every outro into dead air before mixing.
+        # Score each exit by its section's energy AGAINST THE TRACK'S
+        # BODY: the last strong phrase boundary beats a tail bookmark.
+        _body_e = self._body_energy(cur)
         for oi, (o, sec_a, voc_a, ml_a) in enumerate(o_pre):
             if sec_a is None:
                 continue
@@ -1669,6 +1706,8 @@ class Brain:
             busy_a = sec_a.get("busyness") or 0.0
             ra = sec_a.get("rhythm_density") or 0.0
             ea = sec_a.get("energy") or 0.0
+            if _body_e > 0.2:
+                of *= 0.25 + 0.75 * min(ea / _body_e, 1.0)
             for ii, (i, sec_b, voc_b, ml_b, early_b) in enumerate(i_pre):
                 if sec_b is None:
                     continue
@@ -2137,6 +2176,18 @@ class Brain:
             _overlap = ("long_blend", "bass_swap", "filter_sweep",
                         "stem_bass_swap", "melody_carry",
                         "breakdown_swap", "stem_drum_swap", "drum_bridge")
+            # HARD STRETCH WALL AT PLAN TIME (2026-08-05). Selection's
+            # 5.5% wall is a relative lean - a tempo-outlier track with
+            # no better partners still pairs beyond it (a duplicate
+            # Swing Star analyzed at 79.7bpm paired with 85bpm at 6.2%
+            # stretch and rendered a 187ms-median wander; gate-caught
+            # three times before this landed). A blend's PLL cannot hold
+            # material stretched past the wall - the plan must refuse
+            # absolutely what selection only discourages. echo_out's
+            # beat-matched run-in is the same physics (its lock failed
+            # next, same pair, once the blends were walled).
+            if abs(rate - 1.0) > 0.055:
+                kill(_overlap + ("echo_out",), "stretch>5.5%")
             # BEAT POWER (2026-08-04): grid confidence measures whether a
             # lattice FITS; it never asked whether the music actually
             # thumps on it. 38% of this library carries confident grids
@@ -2183,6 +2234,17 @@ class Brain:
                                 and abs(at_s - ref) <= 45.0) else "mid"
             _reg_a = _reg_for(cur, pair["out_s"], "out")
             _reg_b = _reg_for(cand, pair["in_s"], "in")
+            # UNSTABLE PHASE = NO OVERLAPPED DRUMS (2026-08-05): a PATCHY
+            # profile - some trusted buckets amid wild ones (IQRs >100ms)
+            # - means the track's phase WANDERS. One clean anchor bucket
+            # can open the conf wall while the material drifts a quarter
+            # beat mid-blend (gate-measured: Swing Star -> Power Core,
+            # 187ms median wander, p95 357ms - no PLL holds swing).
+            # Coverage <0.6 with a profile present is that fingerprint.
+            for t, side in ((cur, "A"), (cand, "B")):
+                _cov = _bp.profile_coverage(t.id)
+                if 0.0 < _cov < 0.6:
+                    kill(_overlap, f"unstable_phase_{side}")
             for t, side, reg, bar in (
                     (cur, "A", _reg_a, _bp.BLEND_MIN_EXIT),
                     (cand, "B", _reg_b, _bp.BLEND_MIN)):
@@ -2865,9 +2927,14 @@ class Brain:
                 # Atmosphere may overlap; unsynced KICKS never do.
                 {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
                  "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
-                {"at": S0 + int(0.5 * K("fade_out_ramp") * _ug * RATE),
-                 "cmd": "eq", "deck": incoming, "low": 1.0,
-                 "ramp_s": max(2.0 * _ug, 0.8)},
+                # Lows return AS A exits (not after): A's final ramp has
+                # it receding through -8dB while B's kicks fade up - too
+                # quiet to clash, soon enough that the room never goes
+                # drumless-on-drumless ("the last mix was terrible" -
+                # comedown tail + dip + kickless arrival stacked into
+                # three kinds of empty).
+                {"at": S0, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "ramp_s": max(K("fade_out_ramp") * _ug, 1.2)},
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
