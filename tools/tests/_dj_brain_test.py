@@ -224,6 +224,27 @@ def unit_tests():
           and camelot_compat("8A", "8B") > camelot_compat("8A", "3B"),
           "identity=1.0, neighbour=0.9, relative > distant")
 
+    # TRAPDOOR REGRESSION (2026-08-05, user-caught in Beat Check): when
+    # every style is gated (conf 0.5-0.7 kills all blends AND all cuts,
+    # no stems), the empty-menu fallback used to be bass_swap - the most
+    # demanding overlap style handed to exactly the pairs that failed
+    # every gate, silently bypassing them all. It must be the fade.
+    td_cur = fake_track(9, 122.0, "8A")
+    td_cand = fake_track(10, 124.0, "8A")
+    td_cur.bpm_conf = 0.65
+    td_cand.bpm_conf = 0.65
+    tdb = Brain([td_cur, td_cand], theme, seed=2)
+    tdb.note_played(td_cur)
+    td_pick, td_meta = tdb.choose_next(td_cur, 0.6, td_cur.bpm)
+    td_style = None
+    if td_pick is not None:
+        td_plan = tdb.plan_transition(td_cur, td_pick, td_meta,
+                                      after_s=td_cur.duration_s * 0.5)
+        td_style = td_plan["style"]
+    check("all-gates-fail falls back to the fade, never a blend",
+          td_style == "long_fade",
+          f"conf 0.65/0.65 no-stems pair got: {td_style}")
+
 
 # --------------------------------------------------------------------------
 # Part 2: end-to-end autonomous set

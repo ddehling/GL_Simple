@@ -1970,7 +1970,22 @@ class Brain:
             # for the PLL to settle) demand STRONG grids on both sides -
             # at conf ~0.6 the stored grid itself wobbles 25-50ms
             # (measured on the real library) and the seam audibly flams.
-            if min(cur.bpm_conf, cand.bpm_conf) < 0.7:
+            # LOCAL GRID VERIFICATION outranks the global conf scalar
+            # (2026-08-05): a trusted phase-profile bucket at the seam
+            # anchor is direct MEASUREMENT that the grid locks the music
+            # there - 12+ beats with attack peaks on the lattice and a
+            # tight IQR verify both local period and phase (a 0.5% tempo
+            # error alone would smear a 20s bucket ~100ms and fail the
+            # trust bar). bpm_conf is a whole-track fit score; plenty of
+            # tracks score 0.5-0.7 globally while their groove sections
+            # are metronomic. Only when the seam's own neighborhood is
+            # UNVERIFIED does the conf wall stand.
+            from lib.dj import beatpower as _bpv
+            _local_ok = (
+                _bpv.phase_offset(cur.id, at_s=pair["out_s"]) is not None
+                and _bpv.phase_offset(cand.id,
+                                      at_s=pair["in_s"]) is not None)
+            if min(cur.bpm_conf, cand.bpm_conf) < 0.7 and not _local_ok:
                 kill(("cut_at_drop", "echo_out",
                       "phrase_cut", "spinback_cut",
                       "loop_in"), "grid_conf<0.7")
@@ -1983,7 +1998,8 @@ class Brain:
                 # gate measured one such pair at med 158ms / p95 331ms).
                 # No overlapped drums on a grid the analyzer doesn't
                 # trust: these pairs play the dipped fade or an acapella
-                # path until --refine-grids promotes their tracks.
+                # path until --refine-grids (or a verified local phase
+                # profile, above) promotes their tracks.
                 kill(("long_blend", "bass_swap", "filter_sweep",
                       "stem_bass_swap", "melody_carry", "breakdown_swap",
                       "stem_drum_swap", "drum_bridge"), "grid_conf<0.7")
@@ -2064,6 +2080,37 @@ class Brain:
             for t, side in ((cur, "A"), (cand, "B")):
                 if _bp.blendable(t.id) is False:
                     kill(_overlap, f"no_beat_power_{side}")
+            # A's EXIT MUST CARRY THROUGH THE OVERLAP (2026-08-05). The
+            # blend-floor scan takes max(A, B), so B's rise HIDES a
+            # collapsing A - the rendered result is a hole-then-slam
+            # (measured: Negev -> Neptunes bass_swap, A's pre-out
+            # breakdown fell 25 dB mid-overlap while B surged, a 6.6 dB
+            # mix lurch the floor scan waved through). If A's own energy
+            # curve dies to under 30% of its exit-start level inside the
+            # overlap span, the pair gets the fade - which is the
+            # arrangement A itself is performing.
+            _ea = Brain._energy_arr(cur)
+            _i0 = int((pair["out_s"] - 15.0) * 2)
+            _i1 = int(pair["out_s"] * 2)
+            if len(_ea) and 0 <= _i0 < _i1 <= len(_ea):
+                _seg = _ea[_i0:_i1]
+                _start = float(np.median(_seg[:6]))
+                if _start > 0.15 and len(_seg) > 6 \
+                        and float(np.min(_seg[6:])) < 0.3 * _start:
+                    kill(_overlap, "a_exit_collapses")
+            # ... and the exit must be a steady GROOVE. Measured 2026-08-05
+            # (Negev -> Neptunes): the pair scan parked out_s inside A's
+            # BREAKDOWN - stored broadband energy only sags 5 dB there, so
+            # the collapse screen above stays quiet, but the section has
+            # rhythm_density halving and the style's EQ migration guts
+            # what's left (rendered: A -25 dB mid-overlap, then B slams
+            # in +6.6 dB). An overlap needs a drum bed on BOTH sides for
+            # its whole span; a breakdown exit hands the room over with a
+            # lurch no choreography can hide.
+            _sx = cur.section_at(pair["out_s"] - 4.0) or {}
+            if _sx.get("kind") == "breakdown" \
+                    or (_sx.get("energy") or 1.0) < 0.35:
+                kill(_overlap, "a_exits_through_breakdown")
             # BAND-AWARE STYLE ELIGIBILITY (user, 2026-08-04: "different
             # portions of the frequency bands can also mismatch - that's
             # why different mix styles exist"). Each style overlaps a
@@ -2246,8 +2293,6 @@ class Brain:
                 gate_tested = ", ".join(sorted(reasons))
                 gated.pop(force_style, None)
             menu = [(s, w) for s, w in weights.items() if w > 0]
-            if not menu:
-                menu = [("bass_swap", 1.0)]
             if force_style == "long_fade":
                 # Operator pinned the deliberate fade - always available.
                 style = "long_fade"
@@ -2257,10 +2302,26 @@ class Brain:
                 # on the menu - safety gates outrank the pin.
                 style = force_style
                 rolled = True
-            else:
+            elif menu:
                 styles, ws = zip(*menu)
                 style = self.rng.choices(styles, weights=ws, k=1)[0]
                 rolled = True
+            else:
+                # EVERY style gated -> the deliberate fade, nothing else.
+                # The old fallback here was `bass_swap` - the MOST
+                # demanding overlap style handed to exactly the pairs
+                # that failed every gate. User-caught in Beat Check
+                # (2026-08-05, Birds Mind -> No Ending, conf 0.665):
+                # min-conf 0.5-0.7 kills all blends AND all cuts, this
+                # branch zeroes long_fade for the roll, no stems -> empty
+                # menu -> unmatched bass_swap, gates bypassed. ~9% of the
+                # library sits in that conf band, so roughly a sixth of
+                # all seams could fall through - and tightening the walls
+                # (2026-08-04) enlarged the trapdoor instead of closing
+                # it. A pair nothing is safe for gets the fade that was
+                # DESIGNED for unmixable pairs.
+                style = "long_fade"
+                fade_reason = "all_styles_gated"
 
         # NEVER BLEND TWO SUNG PASSAGES: the swap-slot scan protects the
         # swap beat, but if A exits THROUGH a vocal passage while B enters

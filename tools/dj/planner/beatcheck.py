@@ -37,8 +37,10 @@ ENV_HZ = 200                 # drawn envelope resolution (samples/sec)
 BANDS = (("low", "lowpass", 130.0),
          ("mid", "bandpass", (180.0, 2000.0)),
          ("high", "highpass", 4000.0))
-_STYLE_CHOICES = ["(brain's choice)", "bass_swap", "long_blend",
-                  "filter_sweep", "phrase_cut", "echo_out"]
+_LONG_TEST = "(long test blend)"
+_STYLE_CHOICES = [_LONG_TEST, "(brain's choice)", "bass_swap",
+                  "long_blend", "filter_sweep", "phrase_cut", "echo_out"]
+TEST_BEATS = 32              # long-test overlap: 8 measures of dual
 
 
 def _band_env(x, kind, freq):
@@ -68,23 +70,41 @@ class _CheckWorker(QThread):
 
     def run(self):
         try:
+            from lib.dj import beatpower as bp
+            long_test = self.want_style == _LONG_TEST
+            want = "long_blend" if long_test else self.want_style
             # Pinned styles can legitimately need many picks: the beat-
             # power/band gates make overlapped-drum pairs rare, and
             # legality is checked before any decode so retries are cheap.
-            for attempt in range(40):
+            for attempt in range(60):
                 cur = self.rng.choice(self.library)
                 if not (150 <= cur.duration_s <= 480):
+                    continue
+                # BEAT-HEAVY MATERIAL ONLY for the long test (user,
+                # 2026-08-05: "you keep picking weirdo ambient tracks") -
+                # judging beat matching needs beats. Both sides must
+                # clear the beat-power blend bar.
+                if long_test and bp.blendable(cur.id) is not True:
                     continue
                 self.status.emit(f"picking a partner for {cur.title[:28]}...")
                 cand, meta = self.brain.choose_next(cur, 0.6, cur.bpm)
                 if cand is None or cand.duration_s > 480:
                     continue
+                if long_test and bp.blendable(cand.id) is not True:
+                    continue
                 plan = self.brain.plan_transition(
                     cur, cand, meta,
                     after_s=cur.duration_s * self.rng.uniform(0.35, 0.65),
-                    force_style=self.want_style)
-                if self.want_style and plan["style"] != self.want_style:
+                    force_style=want, test_gates=bool(want))
+                if want and plan["style"] != want:
                     continue             # gates refused the pin - repick
+                if long_test and plan["style"] == "long_blend":
+                    # A one-measure overlap proves nothing (user, same
+                    # day: "you blend the beat over like a single
+                    # measure") - stretch the dual to 8 bars so the ear
+                    # and the ticks get time to agree or disagree.
+                    plan["beats"] = max(int(plan.get("beats") or 0),
+                                        TEST_BEATS)
                 self.status.emit(f"rendering {plan['style']}: "
                                  f"{cur.title[:22]} -> {cand.title[:22]}...")
                 from tools.dj.dj_knobsweep import render_tapped
