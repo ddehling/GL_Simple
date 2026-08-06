@@ -525,19 +525,25 @@ TUNE_DEFAULTS = {
     "b_high0_long": 0.5,    # ...capped this low on a staged long blend
     "b_mid0_long": 0.3,
     "trim_cap": 1.41,       # quiet-intro entry trim ceiling (+3 dB)
-    # Fade shape: v3, RESTORED (2026-08-05 late). One evening churned
-    # the fade through "sustained" (v4) and "tight cross" (v5) shapes,
-    # each validated on two seams and a pair of invented metrics - and
-    # v5 reproduced the fast handoff the user had ALREADY rejected in
-    # July ("songs slamming into each other"; tonight: "you have
-    # utterly ruined the long fade"). The v3 recede-and-breathe is the
-    # user's OWN shape, built from their feedback over weeks; it stays.
-    # The evening's real defects are fixed surgically without touching
-    # its character: kick-carve (no clashing kicks), quiet-intro trim
-    # (no craters), exit-energy scoring (no comedown tails), the anchor
-    # downbeat landing ON the boundary, tempo match within the wall,
-    # urgent compression on skips. LESSON: never redesign a taste-built
-    # shape from two seams of evidence - fix defects, keep character.
+    # Fade shape: v3, the user's own. One evening (2026-08-05) churned it
+    # through "sustained" (v4) and "tight cross" (v5), each validated on
+    # two seams and a pair of invented metrics; v5 reproduced the fast
+    # handoff the user had ALREADY rejected in July ("songs slamming into
+    # each other") and drew "you have utterly ruined the long fade".
+    # Everything from that evening is reverted EXCEPT two deltas the user
+    # asked for by name: the kick-carve ("the kick clash is terrible")
+    # and urgent compression on skips. Verified 2026-08-06 by diffing
+    # this block against 98e92ef: for a non-urgent fade the only
+    # behavioral difference from the known-good week-ago version is the
+    # kick-carve.
+    #
+    # DO NOT "improve" the overlap again without the user asking. Three
+    # separate attempts made it audibly worse, and the measurements that
+    # justified them were wrong: a 2026-08-06 study of 40 week-ago fades
+    # vs 40 current ones found the SAFE version had MORE rhythmic
+    # collision (density 7.4 vs 3.7, 90% both-sides-live vs 85%). What
+    # the ear objects to in a fade is not measured by any instrument in
+    # this repo yet - so changes here need ears, not numbers.
     "fade_recede": 0.5,     # long_fade: level A recedes to
     "fade_lead_a": 8.0,     # long_fade: A starts receding this early
     "fade_lead_b": 4.0,     # long_fade: B arrives this early
@@ -2940,53 +2946,36 @@ class Brain:
             # The deliberate fade keeps its breathing room; the urgent
             # one gets A out and B present in half the time.
             _ug = 0.45 if plan.get("urgent") else 1.0
-            # QUIET-INTRO TRIM FOR FADES (2026-08-05): the blend path has
-            # ridden quiet intros hot since July, but the fade never got
-            # the same move - B's sparse intro played at nominal fader
-            # and the room cratered -10..-13dB regardless of the fader
-            # curve (v4 shape measurements). Same energy-curve logic,
-            # slightly higher cap (fades carry no second groove to
-            # balance against); released as B's own body arrives.
-            fb_trim = 1.0
-            _curve = (cand.row or {}).get("energy_curve") or []
-            if _curve:
-                _i0 = int(plan["in_s"] * 2)
-                _i1 = min(_i0 + int(2 * 12), len(_curve))
-                if 0 <= _i0 < _i1:
-                    _intro = sum(_curve[_i0:_i1]) / (_i1 - _i0)
-                    _med = sorted(_curve)[len(_curve) // 2]
-                    if _intro > 0.05 and _med > _intro:
-                        fb_trim = min(_med / _intro, 1.7)
+            # THE FADE IS DELIBERATELY UNSYNCED, AND THAT IS ITS SAFETY
+            # (2026-08-06). Three "improvements" were reverted here after
+            # the user heard what they did ("I can hear things mismatch
+            # on the long fade"; a week earlier: "generic but safe"):
+            #   1. TEMPO MATCH within the stretch wall. Matching tempo
+            #      WITHOUT sync is the worst of both worlds: B's beats
+            #      hold a near-constant offset from A's for the entire
+            #      overlap - a sustained flam the ear locks onto. At
+            #      NATIVE tempo the two grids drift past each other and
+            #      no single relationship is audible long enough to
+            #      annoy. B plays at 1.0, always.
+            #   2. QUIET-INTRO TRIM. B's sparse intro sitting ~10dB
+            #      under A was MASKING its unsynced percussion; lifting
+            #      it (up to +4.6dB) made the mismatch plainly audible.
+            #      A crater at a dead tail is the accepted trade - that
+            #      is what "generic but safe" sounded like.
+            #   3. BOUNDARY-ALIGNED CUE. Landing B's anchor downbeat on
+            #      the seam only matters if the beats relate; unsynced,
+            #      it just re-picks which misaligned beats collide.
+            # B is cued at in_s SOUNDING at B0, native tempo, nominal
+            # fader. Do not re-add these without the user asking.
             A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
             B0 = max(S0 - int(K("fade_lead_b") * _ug * RATE), A0)
-            # BEAT-RESPECTFUL HANDOVER (2026-08-05, user on the first
-            # tight cross: "it just came real fast and didn't seem to
-            # match beats"). Two fixes: (1) B's kick-true anchor downbeat
-            # used to sound at B0 - 2.5s BEFORE the boundary - so the
-            # cross butted two misaligned beats; the cue now rolls back
-            # so in_s lands exactly ON the phrase boundary, where A's
-            # kick-true out_s also sits: the beats MEET at the handover.
-            # (2) When B's tempo is within the stretch wall, match it -
-            # no PLL, no claim of a blend, but a 2-3s cross at matched
-            # tempo with met downbeats reads as intentional instead of
-            # colliding. Outside the wall B keeps its own tempo (a fade
-            # is where tempo changes happen) and the met downbeat still
-            # softens the entry.
-            _fr = cur.bpm / max(cand.bpm, 1e-6)
-            while _fr > 1.5:
-                _fr /= 2.0
-            while _fr < 0.67:
-                _fr *= 2.0
-            rate_fb = _fr if 0.945 <= _fr <= 1.058 else 1.0
-            cue_fb = max(0.0, plan["in_s"] - (S0 - B0) / RATE * rate_fb)
             ev += [
                 {"at": A0, "cmd": "gain", "deck": active,
                  "value": K("fade_recede"),
                  "ramp_s": K("fade_lead_a") * _ug},
                 {"at": B0, "cmd": "cue", "deck": incoming,
-                 "time_s": cue_fb},
-                {"at": B0, "cmd": "rate", "deck": incoming,
-                 "value": rate_fb},
+                 "time_s": plan["in_s"]},
+                {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
                 # Mids/highs full from the first beat (a fade is not a
                 # carve - B's identity arrives whole), but the LOW waits
                 # until A has left (2026-08-05): a fade overlaps two
@@ -2995,8 +2984,6 @@ class Brain:
                 # rare when fades were rare, constant once they carried
                 # half the night ("the kick clash is terrible" - user).
                 # Atmosphere may overlap; unsynced KICKS never do.
-                # v3 character: mids/highs full from the first beat - a
-                # fade is not a carve; only the LOW waits (kick rule).
                 {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
                  "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
                 # Lows return AS A exits (not after): A's final ramp has
@@ -3011,27 +2998,19 @@ class Brain:
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
-                # Arrive in two stages: present quickly, full gently -
-                # both riding the quiet-intro trim, released as B's body
-                # arrives (~12s past the boundary).
+                # Arrive in two stages: present quickly, full gently.
+                # Nominal fader - no intro trim (see the regime note
+                # above: the quiet entry is what masks the mismatch).
                 {"at": B0, "cmd": "gain", "deck": incoming,
-                 "value": min(K("fade_b_stage1") * fb_trim, 1.0),
+                 "value": K("fade_b_stage1"),
                  "ramp_s": K("fade_b_ramp1") * _ug},
                 {"at": B0 + int(K("fade_b_ramp1") * _ug * RATE),
-                 "cmd": "gain", "deck": incoming, "value": fb_trim,
+                 "cmd": "gain", "deck": incoming, "value": 1.0,
                  "ramp_s": K("fade_b_ramp2") * _ug},
-                {"at": S0 + int(12.0 * RATE), "cmd": "gain",
-                 "deck": incoming, "value": 1.0, "ramp_s": 8.0},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": K("fade_out_ramp") * _ug},
                 {"at": S0 + int(K("fade_stop_lead") * RATE), "cmd": "stop",
                  "deck": active},
-            ]
-            # A matched-tempo fade glides B back to its own tempo once
-            # it owns the room (imperceptible ~0.4%/s).
-            self._glide_home(ev, incoming, rate_fb,
-                             S0 + int(K("fade_stop_lead") * RATE))
-            ev += [
             ]
             # (A riser-through-the-dip variant was tried and REMOVED
             # 2026-08-02: synthesized whooshes read as cheesy - user. The
