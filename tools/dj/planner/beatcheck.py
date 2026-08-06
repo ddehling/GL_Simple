@@ -72,21 +72,36 @@ class _CheckWorker(QThread):
         try:
             from lib.dj import beatpower as bp
             long_test = self.want_style == _LONG_TEST
-            want = "long_blend" if long_test else self.want_style
-            # Pinned styles can legitimately need many picks: the beat-
-            # power/band gates make overlapped-drum pairs rare, and
-            # legality is checked before any decode so retries are cheap.
-            for attempt in range(60):
+            want = None if long_test else self.want_style
+            # NO GATE OVERRIDES, EVER, IN THIS TAB (2026-08-05, learned
+            # the furious way): v1 pinned long_blend with test_gates=True
+            # and stretched beats after planning - which force-blended
+            # kick-clash/swing-clash pairs over unvetted material. The
+            # user was played seams the real engine would REFUSE, then
+            # (rightly) concluded the beat matching was garbage. This tab
+            # exists to judge what the engine actually does, so it may
+            # only render plans the engine would genuinely play:
+            # force_style still goes through every gate (refusal =
+            # repick), and the long test simply RETRIES until the brain
+            # itself plans a long overlapped blend on beat-heavy
+            # material. Legality is checked before any decode, so wide
+            # retries are cheap.
+            blends = ("long_blend", "bass_swap", "filter_sweep",
+                      "stem_bass_swap")
+            for attempt in range(300):
                 cur = self.rng.choice(self.library)
                 if not (150 <= cur.duration_s <= 480):
                     continue
-                # BEAT-HEAVY MATERIAL ONLY for the long test (user,
-                # 2026-08-05: "you keep picking weirdo ambient tracks") -
-                # judging beat matching needs beats. Both sides must
-                # clear the beat-power blend bar.
+                # Beat-heavy material only for the long test (user:
+                # "you keep picking weirdo ambient tracks") - judging
+                # beat matching needs beats on both sides.
                 if long_test and bp.blendable(cur.id) is not True:
                     continue
-                self.status.emit(f"picking a partner for {cur.title[:28]}...")
+                if attempt % 10 == 0:
+                    self.status.emit(
+                        f"looking for a genuine long blend... "
+                        f"({attempt} tries)" if long_test else
+                        f"picking a partner for {cur.title[:28]}...")
                 cand, meta = self.brain.choose_next(cur, 0.6, cur.bpm)
                 if cand is None or cand.duration_s > 480:
                     continue
@@ -95,16 +110,13 @@ class _CheckWorker(QThread):
                 plan = self.brain.plan_transition(
                     cur, cand, meta,
                     after_s=cur.duration_s * self.rng.uniform(0.35, 0.65),
-                    force_style=want, test_gates=bool(want))
+                    force_style=want)
                 if want and plan["style"] != want:
                     continue             # gates refused the pin - repick
-                if long_test and plan["style"] == "long_blend":
-                    # A one-measure overlap proves nothing (user, same
-                    # day: "you blend the beat over like a single
-                    # measure") - stretch the dual to 8 bars so the ear
-                    # and the ticks get time to agree or disagree.
-                    plan["beats"] = max(int(plan.get("beats") or 0),
-                                        TEST_BEATS)
+                if long_test and not (plan["style"] in blends
+                                      and int(plan.get("beats") or 0)
+                                      >= 16):
+                    continue             # not a real long overlap - repick
                 self.status.emit(f"rendering {plan['style']}: "
                                  f"{cur.title[:22]} -> {cand.title[:22]}...")
                 from tools.dj.dj_knobsweep import render_tapped
@@ -175,6 +187,28 @@ class _CheckWorker(QThread):
         if len(sa) >= 4 and len(sb) >= 4:
             k2k = float(np.median([np.min(np.abs(sb - x)) for x in sa])
                         ) * 1000.0
+        # Every render leaves a traceable row: "that seam sucked" must be
+        # answerable by name and number, not memory.
+        try:
+            import json
+            import time
+            log_p = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__))))), "logs",
+                "beatcheck.jsonl")
+            with open(log_p, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "t": time.time(), "a": cur.title, "b": cand.title,
+                    "a_id": cur.id, "b_id": cand.id,
+                    "style": plan["style"], "rate": round(plan["rate"], 4),
+                    "beats": plan.get("beats"),
+                    "out_s": round(plan["out_s"], 2),
+                    "in_s": round(plan["in_s"], 2),
+                    "k2k_ms": None if k2k is None else round(k2k, 1),
+                    "off_a_ms": round(offs["a"], 1),
+                    "off_b_ms": round(offs["b"], 1)}) + "\n")
+        except OSError:
+            pass
         return {"a": cur, "b": cand, "plan": plan, "mix": mix,
                 "marks": marks, "t0": t0, "t1": t1, "envs": envs,
                 "aud": aud, "ticks": ticks, "offs": offs, "k2k_ms": k2k}
