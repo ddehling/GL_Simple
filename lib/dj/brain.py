@@ -525,14 +525,22 @@ TUNE_DEFAULTS = {
     "b_high0_long": 0.5,    # ...capped this low on a staged long blend
     "b_mid0_long": 0.3,
     "trim_cap": 1.41,       # quiet-intro entry trim ceiling (+3 dB)
-    "fade_recede": 0.5,     # long_fade: level A recedes to
-    "fade_lead_a": 8.0,     # long_fade: A starts receding this early
-    "fade_lead_b": 4.0,     # long_fade: B arrives this early
-    "fade_b_stage1": 0.6,   # long_fade: B's "present" level before full
-    "fade_b_ramp1": 3.5,    # long_fade: seconds to reach it
-    "fade_b_ramp2": 8.0,    # long_fade: seconds from there to full
-    "fade_out_ramp": 5.0,   # long_fade: A's final fade length
-    "fade_stop_lead": 6.0,  # long_fade: A stops this long after the seam
+    # Fade shape v5: the TIGHT CROSS (2026-08-05, "how about better fade
+    # technique"). Measured on the user's own flagged seams, the fade's
+    # real failure was GROOVE RUB - two unsynced rhythm beds coexisting
+    # 5-7s ("not beat matched at all") - with the v3 dip's -9dB crater
+    # stacking on top. The tight cross halves the rub (3.2s/2.2s vs
+    # 6.8s/4.8s heard) and kills the crater (-0.1dB): A near-full to the
+    # phrase boundary, B (intro-trimmed) present in ~1.5s and full right
+    # after, kick-carve + mid-shelf through the short overlap.
+    "fade_recede": 0.82,    # long_fade: level A recedes to (-1.7dB)
+    "fade_lead_a": 4.0,     # long_fade: A starts receding this early
+    "fade_lead_b": 2.5,     # long_fade: B arrives this early
+    "fade_b_stage1": 0.85,  # long_fade: B's "present" level before full
+    "fade_b_ramp1": 1.5,    # long_fade: seconds to reach it
+    "fade_b_ramp2": 1.5,    # long_fade: seconds from there to full
+    "fade_out_ramp": 2.0,   # long_fade: A's final fade length
+    "fade_stop_lead": 3.0,  # long_fade: A stops this long after the seam
     "stage1_gain": 0.92,    # staged blend: B's stage-1 level (x entry trim)
     "stage1_frac": 0.35,    # staged blend: fraction of the span to reach it
     "high_swap_at": 0.22,   # staged blend: when the highs start migrating
@@ -2186,8 +2194,19 @@ class Brain:
             # absolutely what selection only discourages. echo_out's
             # beat-matched run-in is the same physics (its lock failed
             # next, same pair, once the blends were walled).
-            if abs(rate - 1.0) > 0.055:
-                kill(_overlap + ("echo_out",), "stretch>5.5%")
+            # CONDITIONAL (2026-08-05, same evening): the blanket wall
+            # immediately faded a clean 5.5-8% rescue-tier pair the user
+            # heard ("why isn't this resolved") - while Negev->Neptunes
+            # at 6.2% stretch measured 5.6ms kick-to-kick. Deep stretch
+            # is only fatal on RISKY material: swing, patchy phase, or
+            # a grid nobody verified. Steady verified tracks keep their
+            # rescue-tier blends.
+            _risky = ((rt or {}).get("swing_delta", 0.0) > 0.05
+                      or min(cur.bpm_conf, cand.bpm_conf) < 0.8
+                      or _bpv.profile_coverage(cur.id) < 0.8
+                      or _bpv.profile_coverage(cand.id) < 0.8)
+            if abs(rate - 1.0) > 0.055 and _risky:
+                kill(_overlap + ("echo_out",), "stretch>5.5%_risky")
             # BEAT POWER (2026-08-04): grid confidence measures whether a
             # lattice FITS; it never asked whether the music actually
             # thumps on it. 38% of this library carries confident grids
@@ -2908,6 +2927,23 @@ class Brain:
             # The deliberate fade keeps its breathing room; the urgent
             # one gets A out and B present in half the time.
             _ug = 0.45 if plan.get("urgent") else 1.0
+            # QUIET-INTRO TRIM FOR FADES (2026-08-05): the blend path has
+            # ridden quiet intros hot since July, but the fade never got
+            # the same move - B's sparse intro played at nominal fader
+            # and the room cratered -10..-13dB regardless of the fader
+            # curve (v4 shape measurements). Same energy-curve logic,
+            # slightly higher cap (fades carry no second groove to
+            # balance against); released as B's own body arrives.
+            fb_trim = 1.0
+            _curve = (cand.row or {}).get("energy_curve") or []
+            if _curve:
+                _i0 = int(plan["in_s"] * 2)
+                _i1 = min(_i0 + int(2 * 12), len(_curve))
+                if 0 <= _i0 < _i1:
+                    _intro = sum(_curve[_i0:_i1]) / (_i1 - _i0)
+                    _med = sorted(_curve)[len(_curve) // 2]
+                    if _intro > 0.05 and _med > _intro:
+                        fb_trim = min(_med / _intro, 1.7)
             A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
             B0 = max(S0 - int(K("fade_lead_b") * _ug * RATE), A0)
             ev += [
@@ -2925,8 +2961,12 @@ class Brain:
                 # rare when fades were rare, constant once they carried
                 # half the night ("the kick clash is terrible" - user).
                 # Atmosphere may overlap; unsynced KICKS never do.
+                # v4: mids lightly shelved while both songs are audible -
+                # at these SUSTAINED levels two unsynced melodies would
+                # fight; -1.4dB keeps B's identity present without the
+                # clash, opening fully at the boundary.
                 {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
+                 "mid": 0.85, "high": 1.0, "ramp_s": 0.01},
                 # Lows return AS A exits (not after): A's final ramp has
                 # it receding through -8dB while B's kicks fade up - too
                 # quiet to clash, soon enough that the room never goes
@@ -2934,17 +2974,22 @@ class Brain:
                 # comedown tail + dip + kickless arrival stacked into
                 # three kinds of empty).
                 {"at": S0, "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "mid": 1.0,
                  "ramp_s": max(K("fade_out_ramp") * _ug, 1.2)},
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
-                # Arrive in two stages: present quickly, full gently.
+                # Arrive in two stages: present quickly, full gently -
+                # both riding the quiet-intro trim, released as B's body
+                # arrives (~12s past the boundary).
                 {"at": B0, "cmd": "gain", "deck": incoming,
-                 "value": K("fade_b_stage1"),
+                 "value": min(K("fade_b_stage1") * fb_trim, 1.0),
                  "ramp_s": K("fade_b_ramp1") * _ug},
                 {"at": B0 + int(K("fade_b_ramp1") * _ug * RATE),
-                 "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "cmd": "gain", "deck": incoming, "value": fb_trim,
                  "ramp_s": K("fade_b_ramp2") * _ug},
+                {"at": S0 + int(12.0 * RATE), "cmd": "gain",
+                 "deck": incoming, "value": 1.0, "ramp_s": 8.0},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
                  "ramp_s": K("fade_out_ramp") * _ug},
                 {"at": S0 + int(K("fade_stop_lead") * RATE), "cmd": "stop",
