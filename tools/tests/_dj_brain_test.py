@@ -15,6 +15,7 @@ Usage:
     python tools/tests/_dj_brain_test.py            # ALL PASS gate
     python tools/tests/_dj_brain_test.py --wav      # keep logs/dj_e2e_set.wav
 """
+import json
 import os
 import shutil
 import sys
@@ -24,6 +25,12 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
+# HERMETIC: this test runs hand-built and synthetic fleets whose small
+# track ids collide with real library ids - without this, fake tracks
+# inherit real tracks' beat-power/phase records and lose their blends
+# to another song's score (caught 2026-08-05).
+os.environ["DJ_BEATPOWER_PATH"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "_no_beatpower.json")
 from lib.dj.brain import Brain, TrackInfo, camelot_compat
 from lib.dj.themes import Theme
 
@@ -45,15 +52,19 @@ def fake_track(tid, bpm, camelot, busy=0.3, vocal=0.2, artist="x",
                dur=300.0, energy_mood=None, busy_everywhere=False):
     period = 60.0 / bpm
     edge = 1.0 if busy_everywhere else 0.5
+    # rhythm_density mirrors what the real scanner stores per section
+    # (pair scoring reads it for the beaty flag - without it every fake
+    # seam counts as beatless and the fleet can only fade).
     sections = [
         {"kind": "intro", "start_s": 0.0, "end_s": 30.0, "energy": 0.3,
-         "busyness": busy, "vocalness": vocal, "boundary_strength": 0.5},
+         "busyness": busy, "vocalness": vocal, "boundary_strength": 0.5,
+         "rhythm_density": 2.0},
         {"kind": "groove", "start_s": 30.0, "end_s": dur - 40.0,
          "energy": 0.7, "busyness": busy, "vocalness": vocal,
-         "boundary_strength": 0.6},
+         "boundary_strength": 0.6, "rhythm_density": 4.0},
         {"kind": "outro", "start_s": dur - 40.0, "end_s": dur, "energy": 0.3,
          "busyness": busy * edge, "vocalness": vocal * edge,
-         "boundary_strength": 0.5},
+         "boundary_strength": 0.5, "rhythm_density": 2.0},
     ]
     mix_points = [
         {"kind": "in", "time_s": 30.0, "score": 0.5, "style_hint": "blend"},
@@ -307,6 +318,26 @@ def e2e_test(keep_wav):
         check("scan clean", s["scanned"] == 3 and s["errors"] == 0,
               f"scanned={s['scanned']} errors={s['errors']}")
 
+        # HERMETIC beat-power + phase profiles for the synthetic fleet:
+        # the synth tracks are metronomic four-on-floor by construction,
+        # so give them exactly the records the real scan would produce -
+        # strong beat power, zero-offset trusted phase buckets. Without
+        # this the kick_offset/no-phase screens (correct for unmeasured
+        # real tracks) bench every synthetic blend and the fleet can
+        # only fade.
+        from lib.dj.db import LibraryDB as _LDB
+        _db = _LDB(tmp)
+        _ids = [r["id"] for r in _db.conn.execute(
+            "SELECT id FROM tracks").fetchall()]
+        _prof = [{"at_s": 10.0 + 20.0 * k, "ms": 0.0, "iqr": 5.0, "n": 30}
+                 for k in range(8)]
+        _bp_path = os.path.join(tmp, "beat_power.json")
+        with open(_bp_path, "w", encoding="utf-8") as f:
+            json.dump({"t": 0, "scores": {
+                str(i): {"score": 2.5, "phase": {"prof": _prof}}
+                for i in _ids}}, f)
+        os.environ["DJ_BEATPOWER_PATH"] = _bp_path
+
         engine = AudioEngine()
         dj = DJSystem(tmp, engine=engine, theme="groove", seed=99,
                       threaded=False, log_dir=tmp)
@@ -348,7 +379,16 @@ def e2e_test(keep_wav):
                 # live system excuses urgent seams the same way in pair
                 # memory). Mark it so the beat-matched check skips it.
                 urgent = (skip_t is not None and skip_reacted is None)
-                armed_styles.append((st["style"], urgent))
+                _diag = (getattr(dj, "plan", None) or {}).get("diag") or {}
+                armed_styles.append((st["style"], urgent,
+                                     _diag.get("fade_reason")))
+                if st["style"] == "long_fade":
+                    # A fade on the synthetic fleet should be explainable
+                    # - print WHY so a regression here is diagnosable
+                    # from the log instead of re-instrumenting (2026-08-05).
+                    print(f"    [info] fade armed: "
+                          f"reason={_diag.get('fade_reason')} "
+                          f"gated={_diag.get('gated')}")
                 if urgent:
                     skip_reacted = t_now - skip_t
             prev_state = st["state"]
@@ -367,16 +407,20 @@ def e2e_test(keep_wav):
               and len(armed_styles) >= 3,
               f"{n_handovers} completed + {len(armed_styles)} armed in "
               f"{total_s/60:.0f} min: {' -> '.join(p[:14] for p in plays)}")
-        check("styles are beat-matched",
-              # phrase_cut joined the allowed set 2026-08-04: pairs whose
-              # kick offsets exceed 28ms lose overlapped-drum styles (the
-              # bassline-mismatch fix) and legitimately play clean cuts -
-              # which ARE beat-matched (bar-aligned entry, sync'd launch).
+        check("styles are beat-matched (or a JUSTIFIED fade)",
+              # phrase_cut retired 2026-08-05 (user: never heard a good
+              # one) - echo_out carries the clean-exit job. long_fade is
+              # accepted ONLY with a deliberate-fade reason attached
+              # (tempo clash / untrusted grid / beatless material); a
+              # fade with no reason - or the all_styles_gated fallback -
+              # still fails, so a trapdoor-class regression is caught.
               all(s in ("long_blend", "bass_swap", "loop_roll_exit",
-                        "cut_at_drop", "phrase_cut",
+                        "cut_at_drop",
                         "loop_build", "filter_sweep", "echo_out")
-                  for s, urgent in armed_styles if not urgent),
-              f"styles: {[(s + ' (urgent)' if u else s) for s, u in armed_styles]}")
+                  or (s == "long_fade" and fr in
+                      ("tempo_clash", "grid_conf<0.5", "beatless_seam"))
+                  for s, urgent, fr in armed_styles if not urgent),
+              f"styles: {[(s + ' (urgent)' if u else s) + (f'[{fr}]' if s == 'long_fade' else '') for s, u, fr in armed_styles]}")
         check("deck rates always clamped", rate_violations == 0,
               f"{rate_violations} telemetry samples outside 0.90..1.10")
         check("skip honored", skip_t is not None and skip_reacted is not None

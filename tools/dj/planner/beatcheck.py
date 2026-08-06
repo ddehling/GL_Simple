@@ -39,7 +39,7 @@ BANDS = (("low", "lowpass", 130.0),
          ("high", "highpass", 4000.0))
 _LONG_TEST = "(long test blend)"
 _STYLE_CHOICES = [_LONG_TEST, "(brain's choice)", "bass_swap",
-                  "long_blend", "filter_sweep", "phrase_cut", "echo_out"]
+                  "long_blend", "filter_sweep", "echo_out"]
 TEST_BEATS = 32              # long-test overlap: 8 measures of dual
 
 

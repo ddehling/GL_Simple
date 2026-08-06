@@ -1046,6 +1046,31 @@ class Brain:
             self._rhythm_cache[key] = v
         return 0.78 + 0.22 * v
 
+    def _pair_blendable(self, cur, cand):
+        """Could this pair support an overlapped blend? The CHEAP mirror
+        of the plan-time screens (cached file-backed lookups only, no
+        audio - score() runs this ~640x per pick): beat power at the
+        seam-relevant regions (asymmetric bars: B's intro must groove,
+        A's exit only hands off), and a trusted grid on both sides
+        (conf, or profile-verified). Used as a selection LEAN so the DJ
+        picks partners it can actually mix into - not as a gate."""
+        from lib.dj import beatpower as _bp
+        bs_b = _bp.band_scores(cand.id, region="in") or {}
+        ev_b = [v for v in (bs_b.get("low"), _bp.scores().get(cand.id))
+                if v is not None]
+        if ev_b and max(ev_b) < _bp.BLEND_MIN:
+            return False
+        bs_a = _bp.band_scores(cur.id, region="out") or {}
+        ev_a = [v for v in (bs_a.get("low"), _bp.scores().get(cur.id))
+                if v is not None]
+        if ev_a and max(ev_a) < _bp.BLEND_MIN_EXIT:
+            return False
+        for t in (cur, cand):
+            if (t.bpm_conf or 0.0) < 0.7 \
+                    and _bp.profile_coverage(t.id) < 0.6:
+                return False
+        return True
+
     # -- selection -----------------------------------------------------------
     def score(self, current, cand, arc_target, out_bpm, now=None,
               bpm_target=None, relax=False, allow_repeat=False):
@@ -1284,6 +1309,17 @@ class Brain:
         # bring in a loose-gridded track it really wants.
         s_conf = 0.75 + 0.25 * min(cand.bpm_conf, 1.0)
         total *= s_conf
+        # BLENDABILITY LEAN (2026-08-05). A live night played FIVE fades
+        # in a row ("holy shit this is bad" - user, skipping seam after
+        # seam): selection knew nothing about what decides blend-vs-fade
+        # (beat power, verified grids), so it happily chained partners
+        # the gates could only fade between. The DJ's craft is picking
+        # the next record so the MIX works - candidates this pair could
+        # genuinely blend into score full; fade-bound ones pay hard.
+        # Cheap (cached file-backed lookups only); not a hard filter, so
+        # an arc/flavor pick the night really wants can still win.
+        s_blend = 1.0 if self._pair_blendable(current, cand) else 0.45
+        total *= s_blend
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         # (Weight raised 0.45->0.60: at 0.45 a rise-theme night walked only
         # ~40% of its planned tempo climb - seam-quality terms outvoted it.)
@@ -1869,6 +1905,14 @@ class Brain:
         # the same reason, via the brake_chance knob). phrase_cut carries
         # the clean-cut job. Old pins refuse politely, as with cut_at_drop.
         kill("spinback_cut", "retired")
+        # phrase_cut retired 2026-08-05: "I have never heard a good
+        # phrase cut" (user) - after the grid-phase fix put every cut on
+        # the audible kick, so this is a verdict on the STYLE, not the
+        # timing. The open-format slam (A hard-cut, B full in 40ms) is
+        # simply wrong for this library's flowing material; a punctual
+        # slam is still a slam. echo_out keeps the leave-without-a-fade
+        # job with a musical exit. Old pins refuse politely.
+        kill("phrase_cut", "retired")
         # The LOOP-ROLL family retired the same day: "I don't like the
         # loop rolls at all" (user). loop_roll_exit, loop_in and
         # loop_build are all the same stutter-a-shrinking-loop trick worn
@@ -1939,6 +1983,24 @@ class Brain:
                 for k in ("long_blend", "bass_swap", "filter_sweep"):
                     weights[k] = weights.get(k, 0) * 0.25
         low_conf = (cur.bpm_conf < 0.5 or cand.bpm_conf < 0.5)
+        # PROFILE-VERIFIED GRID outranks the stale conf scalar
+        # (2026-08-05): bpm_conf is the ORIGINAL SCAN's whole-track fit
+        # score; the phase profile is a direct per-20s measurement of
+        # attacks locking the lattice (a wrong period smears a bucket
+        # ~100ms and fails its trust bar, so trusted buckets pin the
+        # local tempo too). When BOTH sides are trusted at the seam
+        # anchors AND >=60% of each track's buckets pass, the grid is
+        # measured-good and conf<0.5 was condemning it on stale
+        # evidence - these fades were 17% of ALL seams.
+        from lib.dj import beatpower as _bpv
+        _local_ok = (
+            _bpv.phase_offset(cur.id, at_s=pair["out_s"]) is not None
+            and _bpv.phase_offset(cand.id,
+                                  at_s=pair["in_s"]) is not None)
+        if low_conf and _local_ok \
+                and _bpv.profile_coverage(cur.id) >= 0.6 \
+                and _bpv.profile_coverage(cand.id) >= 0.6:
+            low_conf = False
         # A tempo-clash pair (user-ordered set beyond the stretch range,
         # rate fell back to 1.0) can NEVER beat-match - a "blend" there is
         # two grids sliding past each other. Deliberate fade, always.
@@ -1979,12 +2041,8 @@ class Brain:
             # trust bar). bpm_conf is a whole-track fit score; plenty of
             # tracks score 0.5-0.7 globally while their groove sections
             # are metronomic. Only when the seam's own neighborhood is
-            # UNVERIFIED does the conf wall stand.
-            from lib.dj import beatpower as _bpv
-            _local_ok = (
-                _bpv.phase_offset(cur.id, at_s=pair["out_s"]) is not None
-                and _bpv.phase_offset(cand.id,
-                                      at_s=pair["in_s"]) is not None)
+            # UNVERIFIED does the conf wall stand. (_local_ok computed
+            # above, before the low-conf fade branch, which uses it too.)
             if min(cur.bpm_conf, cand.bpm_conf) < 0.7 and not _local_ok:
                 kill(("cut_at_drop", "echo_out",
                       "phrase_cut", "spinback_cut",
@@ -2026,7 +2084,18 @@ class Brain:
             # 'State the Obvious', 2026-07-22) - percussive flam turns
             # audible ~25ms. loop_roll_exit joined the list: the roll
             # repeats material, which showcases the flam.
-            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028:
+            # OBSOLETE WHERE PHASE IS MEASURED (2026-08-05): "nothing can
+            # align two kick patterns that sit differently against their
+            # own grids" was true when sync could only lock grids - the
+            # phase-profile bias now measures where each track's music
+            # actually hits and aligns THAT (validated 2-17ms kick-to-
+            # kick on rendered seams). kick_offset_s is folded bass
+            # placement, and these two screens were benching ~23% of
+            # confident pairs on it. They stand only where the seam's
+            # local phase is UNMEASURED (_local_ok, same evidence rule
+            # as the conf wall).
+            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028 \
+                    and not _local_ok:
                 kill(("cut_at_drop", "echo_out",
                       "loop_build", "loop_roll_exit",
                       "loop_in"), "kick_offset>28ms")
@@ -2045,7 +2114,8 @@ class Brain:
             # themselves only ~25ms onset-accurate, and pairs whose stored
             # offset read 26ms measured 27-48ms in rendered audio - the
             # screen needs headroom for its own measurement error.
-            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.020:
+            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.020 \
+                    and not _local_ok:
                 kill(("long_blend", "bass_swap", "filter_sweep",
                       "stem_bass_swap", "melody_carry", "breakdown_swap",
                       "stem_drum_swap", "drum_bridge"),
@@ -2077,8 +2147,31 @@ class Brain:
             # their own beats (lib/dj/beatpower.py, measured from the raw
             # audio). Unmeasured tracks pass - the scan fills in.
             from lib.dj import beatpower as _bp
-            for t, side in ((cur, "A"), (cand, "B")):
-                if _bp.blendable(t.id) is False:
+            # REGION-AWARE (2026-08-05): the whole-track score samples
+            # ~30s at the MIDPOINT, but a blend overlaps A's EXIT with
+            # B's INTRO - a track that thumps where the seam actually
+            # plays was being benched by the wrong 30 seconds (this kill
+            # alone blocked 36% of all seams). Judge each side by its
+            # seam-relevant region's low-band score when measured; either
+            # instrument clearing the bar is evidence of a real beat bed
+            # there, and the phase-corrected sync + downstream gates
+            # handle the rest.
+            # ASYMMETRIC BARS (2026-08-05): B becomes the mix's
+            # foundation - its intro must carry a real groove
+            # (BLEND_MIN). A is LEAVING - it only needs enough pulse to
+            # hand off, and "A dissolves while B's groove takes over" is
+            # textbook mixing; only a truly beatless exit forces the
+            # fade (BLEND_MIN_EXIT). The symmetric 1.5 bar was the
+            # single largest blend killer (22% of all seams) on exits
+            # that were merely softening, not beatless.
+            for t, side, reg, bar in (
+                    (cur, "A", "out", _bp.BLEND_MIN_EXIT),
+                    (cand, "B", "in", _bp.BLEND_MIN)):
+                bs = _bp.band_scores(t.id, region=reg) or {}
+                evid = [v for v in (bs.get("low"),
+                                    _bp.scores().get(t.id))
+                        if v is not None]
+                if evid and max(evid) < bar:
                     kill(_overlap, f"no_beat_power_{side}")
             # A's EXIT MUST CARRY THROUGH THE OVERLAP (2026-08-05). The
             # blend-floor scan takes max(A, B), so B's rise HIDES a
@@ -2121,9 +2214,24 @@ class Brain:
             # above govern that - and both-diffuse is an ambient wash.
             # Activates per-track as the --bands scan lands; unmeasured
             # bands pass.
+            # STAGED GEOMETRY UPDATE (2026-08-05): the EQ-carved blends
+            # no longer RUN mids together - B's mid rides a 0.25-0.3
+            # shelf (~-11 dB) through the dual and the swap is a HANDOFF,
+            # so a rhythmic-vs-diffuse mid mismatch never stacks
+            # audibly. Their true simultaneous band is the HIGH end
+            # (B's highs enter half-open and migrate mid-blend). The
+            # mid clash still governs the styles that genuinely run
+            # mids together: melody_carry (carries A's melody stem over
+            # B) and the stem drum paths (full-bodied kits). This kill
+            # was blocking 15% of ALL seams on a mismatch the staging
+            # already hides.
             _style_bands = {
-                "long_blend": ("mid", "high"), "bass_swap": ("mid", "high"),
-                "filter_sweep": ("mid", "high"),
+                "long_blend": ("high",), "bass_swap": ("high",),
+                "filter_sweep": ("high",),
+                # stem_bass_swap enters WHOLE minus the bass stem - its
+                # mids are fully open from bar one, so the mid clash
+                # absolutely applies (dropping it admitted a pair that
+                # rendered a low-end hole, spectral 2026-08-05).
                 "stem_bass_swap": ("mid", "high"),
                 "melody_carry": ("mid", "high"),
                 "breakdown_swap": ("mid", "high"),
@@ -2159,7 +2267,7 @@ class Brain:
                 da, db_ = cur.rhythm_density, cand.rhythm_density
                 if da > 0 and db_ > 0 and max(da / db_, db_ / da) >= 1.8:
                     kill(_overlap, "kick_density_mismatch")
-                if rt["swing_delta"] > 0.055:
+                if rt is not None and rt["swing_delta"] > 0.055:
                     # Swung vs straight flams every offbeat for the whole
                     # overlap; only removing one percussion bed fixes it.
                     # stem_drum_swap does exactly that; drum_bridge keeps
@@ -2169,7 +2277,7 @@ class Brain:
                         weights[k] = weights.get(k, 0.0) * 0.3
                     weights["stem_drum_swap"] = \
                         weights.get("stem_drum_swap", 0.0) * 2.0
-                fl = rt.get("flam_ms")
+                fl = rt.get("flam_ms") if rt is not None else None
                 if fl is not None and 15.0 <= fl <= 80.0:
                     # Machine-gun near-misses: the short punchy styles
                     # expose them raw (same reasoning as the groove-offset
@@ -2282,6 +2390,18 @@ class Brain:
                 if _dyn_ratio(cand, bl_b) > 2.5                         or _dyn_ratio(cur, bd_a) > 2.5:
                     kill("breakdown_swap", "violent_dynamics")
             weights["long_fade"] = 0.0
+            # ECHO IS PUNCTUATION, NOT A WORKHORSE (2026-08-05, user:
+            # "you are way overusing echo out"). When every blend is
+            # gated, the menu used to hold only echo_out - it won those
+            # seams by DEFAULT, 40% of the night. For blend-less menus
+            # the deliberate fade rejoins the dice at 3x echo's weight:
+            # most such seams take the fade the material asked for, and
+            # the echo lands as an occasional accent.
+            if not any(weights.get(k, 0) > 0 for k in
+                       ("long_blend", "bass_swap", "filter_sweep",
+                        "stem_bass_swap", "melody_carry")):
+                weights["long_fade"] = 2.0 * max(
+                    weights.get("echo_out", 0.0), 0.4)
             # GATE UNDER TEST: a pin refused only by a tuned threshold is
             # let through so the threshold itself can be rated. Structural
             # refusals (no stems, no drop, retired) still stand.
@@ -2700,12 +2820,19 @@ class Brain:
             # the boundary), so v3's hold-A-past-the-seam dug a -23 dB
             # hole. Recede through A's final LOUD phrase instead, get B
             # half-up by the boundary, and let A leave just after it.
-            A0 = max(S0 - int(K("fade_lead_a") * RATE), now_guard)
-            B0 = max(S0 - int(K("fade_lead_b") * RATE), A0)
+            # URGENT (skip / mix-now) fades COMPRESS (2026-08-05): a skip
+            # means "move on" - the live log showed skip after skip each
+            # dragged the full 8s recede + slow arrival out of wherever
+            # the song happened to be ("now the fades are terrible").
+            # The deliberate fade keeps its breathing room; the urgent
+            # one gets A out and B present in half the time.
+            _ug = 0.45 if plan.get("urgent") else 1.0
+            A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
+            B0 = max(S0 - int(K("fade_lead_b") * _ug * RATE), A0)
             ev += [
                 {"at": A0, "cmd": "gain", "deck": active,
                  "value": K("fade_recede"),
-                 "ramp_s": K("fade_lead_a")},
+                 "ramp_s": K("fade_lead_a") * _ug},
                 {"at": B0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
                 {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
@@ -2718,12 +2845,12 @@ class Brain:
                 # Arrive in two stages: present quickly, full gently.
                 {"at": B0, "cmd": "gain", "deck": incoming,
                  "value": K("fade_b_stage1"),
-                 "ramp_s": K("fade_b_ramp1")},
-                {"at": B0 + int(K("fade_b_ramp1") * RATE), "cmd": "gain",
-                 "deck": incoming, "value": 1.0,
-                 "ramp_s": K("fade_b_ramp2")},
+                 "ramp_s": K("fade_b_ramp1") * _ug},
+                {"at": B0 + int(K("fade_b_ramp1") * _ug * RATE),
+                 "cmd": "gain", "deck": incoming, "value": 1.0,
+                 "ramp_s": K("fade_b_ramp2") * _ug},
                 {"at": S0, "cmd": "gain", "deck": active, "value": 0.0,
-                 "ramp_s": K("fade_out_ramp")},
+                 "ramp_s": K("fade_out_ramp") * _ug},
                 {"at": S0 + int(K("fade_stop_lead") * RATE), "cmd": "stop",
                  "deck": active},
             ]
@@ -2946,9 +3073,12 @@ class Brain:
         # together; every blend with room for it (>=24 beats) now rides
         # B near-full through the dual. Shorter blends keep the simple
         # ramp - their 12-beat high-migration wouldn't fit.
+        # (stem_bass_swap stays on its proven single-swap geometry: its
+        # bass is STEM-gated, and staging it measured a pair-dependent
+        # low-end hole - the stem restore and the staged gain/EQ moves
+        # fight over the handover moment. Rare style, old shape.)
         long_stage = style == "long_blend" or (
-            style in ("bass_swap", "filter_sweep", "stem_bass_swap")
-            and nb >= 24)
+            style in ("bass_swap", "filter_sweep") and nb >= 24)
         # EXIT RESERVATION: how much of the blend the swap can NEVER eat.
         # A's whole audible exit lives between the swap and the blend end,
         # and late-arriving bass in B (intro entries) plus the vocal-phrase
@@ -3133,8 +3263,16 @@ class Brain:
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
                        "value": K("stage1_gain") * b_trim,
                        "ramp_s": K("stage1_frac") * span_s})
+            # TRIM RELEASES AT THE BASS HANDOVER (2026-08-05): the hot
+            # entry trim exists to lift a CARVED, bass-less entry over
+            # A's outro. Once B's low opens, B is the mix's foundation
+            # and must sit at nominal - the trim riding ~18s past the
+            # handover measured as a +3.6 dB 'double bass' that was
+            # really B's own bass at +2.6 dB over its post-swap self
+            # (King of the Streets -> Fever Dream, gate-caught).
             ev.append({"at": mid, "cmd": "gain", "deck": incoming,
-                       "value": b_trim, "ramp_s": 4 * beat_out})
+                       "value": 1.0,
+                       "ramp_s": max(swap_beats, 4) * beat_out})
             # Stage 2 - THE SUBTLE HIGH SWAP: hats/air hand over across 12
             # beats, ending before the earliest possible swap (the EQ ramp
             # clock is shared per deck - overlapping ramps stretch each
@@ -3157,6 +3295,11 @@ class Brain:
         else:
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
                        "value": b_trim, "ramp_s": half})
+            # Same trim-release rule as the staged path: nominal once
+            # B's low opens at the swap.
+            ev.append({"at": mid, "cmd": "gain", "deck": incoming,
+                       "value": 1.0,
+                       "ramp_s": max(swap_beats, 4) * beat_out})
         if style == "drum_bridge":
             # The generic low/mid handover GUTTED the bridge: A's drums
             # minus lows minus mids is a transient shadow, and the room
@@ -3171,10 +3314,26 @@ class Brain:
             ]
         else:
             ev += [
-            # Stage 3 - the swap downbeat: low AND mid hand over.
+            # Stage 3 - the swap downbeat: low AND mid hand over. The low
+            # ramps are STAGGERED (2026-08-05): simultaneous linear
+            # crossfades put both basslines at ~70% mid-swap and bass-
+            # heavy pairs summed +3.6 dB (gate-measured, King of the
+            # Streets -> Fever Dream). A's low leaves on the downbeat;
+            # B's arrives from 40% in, so the overlap integral stays
+            # under the double-bass bar while the handoff still spreads.
             {"at": mid, "cmd": "eq", "deck": active, "low": 0.0,
              "mid": 0.25, "ramp_s": swap_beats * beat_out},
-            {"at": mid, "cmd": "eq", "deck": incoming, "low": 1.0,
+            # (stem styles skip the stagger: their B low is ALSO gated
+            # by the bass-stem restore at the swap - delaying the EQ on
+            # top measured as a low-end hole, spectral gate 2026-08-05.)
+            {"at": mid + (int(0.4 * swap_beats * beat_out * RATE)
+                          if style in ("long_blend", "bass_swap",
+                                       "filter_sweep") else 0),
+             "cmd": "eq", "deck": incoming, "low": 1.0,
+             "ramp_s": (0.6 if style in ("long_blend", "bass_swap",
+                                         "filter_sweep") else 1.0)
+             * swap_beats * beat_out},
+            {"at": mid, "cmd": "eq", "deck": incoming,
              "high": 1.0, "ramp_s": swap_beats * beat_out},
             # A key-clash-delayed mid open happens with B carrying the mix
             # alone - opening the shelf (up to +10 dB of mid band) over 4

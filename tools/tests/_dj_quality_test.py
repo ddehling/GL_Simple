@@ -85,17 +85,25 @@ def selection_audit(library, theme):
           f"median {np.median(rates)*100:.1f}% p95 "
           f"{np.percentile(rates, 95)*100:.1f}% max {max(rates)*100:.1f}% "
           f"(wall 5.5%, rescue clamp 8%)")
-    # long_fade share floor is set by the LIBRARY: any seam touching a
-    # low-confidence grid MUST fade (blending unmixable material is worse).
-    # This audit starts from EVERY track, so the floor is the low-conf
-    # share itself; beyond floor+margin means the machinery isn't engaging.
-    lc_share = sum(1 for t in library if t.bpm_conf < 0.5) / len(library)
-    fade_bar = max(0.30, lc_share + 0.28)
-    check("long_fade is the exception, not the rule",
-          fades <= n * fade_bar,
-          f"{fades}/{n} seams fall back to long_fade "
-          f"({fades/max(n,1)*100:.0f}%; bar {fade_bar*100:.0f}% = "
-          f"low-conf share {lc_share*100:.0f}% + 28)")
+    # REPERTOIRE GUARDS (rewritten 2026-08-05). The old check capped the
+    # fade share - but the user's taste decisions now ROUTE most
+    # unmixable pairs to the deliberate fade (echo demoted to
+    # punctuation: "you are way overusing echo out"), so a high fade
+    # share is policy, not failure. What must never regress:
+    # 1) BLENDS COLLAPSING - the trapdoor bug read as exactly that
+    #    (blend family ~5% because gated pairs leaked into fake
+    #    bass_swaps). The blend family must stay a real presence.
+    # 2) ECHO DOMINANCE - echo_out winning blend-less menus by default
+    #    was 40% of the night.
+    blend_n = sum(styles.get(k, 0) for k in
+                  ("long_blend", "bass_swap", "filter_sweep",
+                   "stem_bass_swap", "melody_carry"))
+    check("blend family is a real presence", blend_n >= n * 0.08,
+          f"{blend_n}/{n} seams plan an overlapped blend "
+          f"({blend_n/max(n,1)*100:.0f}%; floor 8%)")
+    check("echo stays punctuation", styles.get("echo_out", 0) <= n * 0.25,
+          f"{styles.get('echo_out', 0)}/{n} seams take echo_out "
+          f"({styles.get('echo_out', 0)/max(n,1)*100:.0f}%; cap 25%)")
     check("style variety actually used", len(styles) >= 4,
           f"{len(styles)} distinct styles chosen: {sorted(styles)}")
     check("pair scores not collapsed", np.median(scores) > 0.05,
@@ -384,8 +392,10 @@ def seam_qa(library, wav=False):
     # the roll/slowdown mechanics.)
     # breakdown_swap benched 2026-08-04 (drop/EQ-restore stacking slam;
     # see brain.py kill note) - back in this list when the fix lands.
+    # phrase_cut retired 2026-08-05 ("I have never heard a good phrase
+    # cut" - user); echo_out is the remaining cut style.
     styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
-              "phrase_cut", "long_fade"]
+              "long_fade"]
     # long_fade engages on LOW-confidence grids - use that pool for it.
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],

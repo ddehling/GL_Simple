@@ -25,10 +25,27 @@ import os
 import numpy as np
 
 RATE = 44100
-BLEND_MIN = 1.5        # both sides must clear this for overlapped drums
+# Bars lowered 2026-08-05 (were 1.5/1.2): they were set while sync could
+# only align GRIDS - blending borderline-groove material then smeared
+# ("matching air"). With kicks now measured and phase-locked (validated
+# 2-17ms on rendered seams) and the pattern screens (density mismatch,
+# 1:1 interleave, swing clash) still standing, the bars only need to
+# exclude genuinely beatless material. A week of over-gating turned
+# nights into fade marathons ("a week ago it was pretty good. now every
+# dj mix sucks" - user; the live log: five fades in a row).
+BLEND_MIN = 1.3        # the INCOMING side: it becomes the foundation
+BLEND_MIN_EXIT = 1.05  # the OUTGOING side: it only hands off
 
 
 def path():
+    # DJ_BEATPOWER_PATH: hermetic override for test harnesses. The
+    # synthetic-fleet e2e uses tiny track ids that COLLIDE with real
+    # library ids in the production file - its fake tracks inherited
+    # real tracks' scores and lost their blends to another song's beat
+    # power (caught 2026-08-05 when phrase_cut's retirement unmasked it).
+    env = os.environ.get("DJ_BEATPOWER_PATH")
+    if env:
+        return env
     return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "logs", "beat_power.json")
 
@@ -89,6 +106,29 @@ def blendable(track_id):
     """True / False / None (not yet measured - existing gates decide)."""
     s = scores().get(track_id)
     return None if s is None else s >= BLEND_MIN
+
+
+def profile_coverage(track_id):
+    """Fraction of a track's phase-profile buckets that pass the trust
+    bar - i.e. how much of the track has a MEASURED-good grid (attacks
+    on the lattice, consistent phase, which also pins the local period).
+    0.0 when unscanned. A high coverage outranks a stale whole-track
+    bpm_conf scalar: the profile is direct evidence, the scalar a fit
+    score from the original scan."""
+    p = path()
+    try:
+        m = os.path.getmtime(p)
+    except OSError:
+        return 0.0
+    if _CACHE.get("phase_mtime") != m:
+        phase_offset(track_id)           # refresh the shared cache
+    d = _CACHE.get("phase", {}).get(track_id)
+    prof = (d or {}).get("prof")
+    if not prof:
+        return 0.0
+    ok = sum(1 for r in prof
+             if r.get("n", 0) >= 10 and r.get("iqr", 999.0) <= 55.0)
+    return ok / len(prof)
 
 
 def phase_offset(track_id, region="mid", at_s=None):

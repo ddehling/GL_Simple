@@ -1651,6 +1651,9 @@ class DJSystem:
         plan["grid_fixed"] = {
             "a": self.current.id in self._grid_fix,
             "b": self.next_track.id in self._grid_fix}
+        # A skip's fade compresses (see the long_fade path) - a slow
+        # 8s recede on a "move on" press reads as the DJ ignoring you.
+        plan["urgent"] = bool(self._urgent_exit)
         events, swap_at, blend_at = self.brain.build_events(
             plan, self.submix.telemetry, self.active_deck, incoming,
             self.current, self.next_track)
