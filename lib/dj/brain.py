@@ -2414,10 +2414,23 @@ class Brain:
         # percussion transients, so a >25ms placement gap flams the whole
         # dual - keep the exposure to one phrase.
         d_off_p = abs(cur.kick_offset_s - cand.kick_offset_s)
+        # kick_offset_s is a folded whole-track energy profile dominated
+        # by BASS PLACEMENT (median 0.35-beat lies, see _sync_bias_beats
+        # history). When the seam's phase profile is measured on BOTH
+        # sides, kick placement is corrected by the sync bias and this
+        # scalar has nothing left to predict - blends were being halved
+        # and capped off stale data (user, 2026-08-05: "this is so
+        # fucking short"). Pattern-level evidence (rhythm score, flam_ms
+        # from the signatures) still shortens - phase correction aligns
+        # lattices to music, it cannot fix two different grooves.
+        from lib.dj import beatpower as _bpl
+        _pv = (_bpl.phase_offset(cur.id, at_s=pair["out_s"]) is not None
+               and _bpl.phase_offset(cand.id,
+                                     at_s=pair["in_s"]) is not None)
         if beats > 32 and style in ("long_blend", "bass_swap",
                                     "filter_sweep", "stem_bass_swap") \
                 and ((rt is not None and rt.get("score", 1.0) < 0.45)
-                     or d_off_p > 0.025):
+                     or (d_off_p > 0.025 and not _pv)):
             beats = 32
         # PREDICTED-AUDIBLE FLAM -> HALVE THE EXPOSURE (user-heard "too
         # much flam"). The 28ms kick-offset gate only ever protected the
@@ -2432,7 +2445,7 @@ class Brain:
             fl = (rt or {}).get("flam_ms")
             fl_sure = (fl is not None and 15.0 <= fl <= 80.0
                        and (rt or {}).get("conf", 0.0) >= 0.5)
-            if fl_sure or d_off_p > 0.028:
+            if fl_sure or (d_off_p > 0.028 and not _pv):
                 beats = min(beats, 16)
         # LEARNED BLEND LENGTH: a global multiplier on however many beats
         # the rules above arrived at, snapped back to a whole bar. This is
@@ -2922,7 +2935,20 @@ class Brain:
             S0 = max(end - int(nb * beat_out * RATE), now_guard)
         mid = S0 + int((end - S0) * K("swap_pos"))
         half = (end - S0) / RATE / 2.0
-        long_stage = style == "long_blend"
+        # STAGED BEATS-TOGETHER FOR EVERY REAL BLEND (2026-08-05). The
+        # staging comment below records that unstaged spans "perceptually
+        # collapsed to the ~4-beat swap crossfade" - and bass_swap/
+        # filter_sweep kept exactly that geometry in the name of style
+        # variety. The user heard precisely the predicted collapse ("it's
+        # literally 4 beats with most being reduced - this isn't how you
+        # are supposed to mix"). Variety between blend styles lives in
+        # the swap choreography, not in whether the beats actually run
+        # together; every blend with room for it (>=24 beats) now rides
+        # B near-full through the dual. Shorter blends keep the simple
+        # ramp - their 12-beat high-migration wouldn't fit.
+        long_stage = style == "long_blend" or (
+            style in ("bass_swap", "filter_sweep", "stem_bass_swap")
+            and nb >= 24)
         # EXIT RESERVATION: how much of the blend the swap can NEVER eat.
         # A's whole audible exit lives between the swap and the blend end,
         # and late-arriving bass in B (intro entries) plus the vocal-phrase
