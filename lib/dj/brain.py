@@ -2836,9 +2836,19 @@ class Brain:
                 {"at": B0, "cmd": "cue", "deck": incoming,
                  "time_s": plan["in_s"]},
                 {"at": B0, "cmd": "rate", "deck": incoming, "value": 1.0},
-                # Full-range from the first beat - a fade is not a carve.
-                {"at": B0, "cmd": "eq", "deck": incoming, "low": 1.0,
+                # Mids/highs full from the first beat (a fade is not a
+                # carve - B's identity arrives whole), but the LOW waits
+                # until A has left (2026-08-05): a fade overlaps two
+                # UNSYNCED tracks, and at similar tempos their kick
+                # drums phase against each other through the whole dip -
+                # rare when fades were rare, constant once they carried
+                # half the night ("the kick clash is terrible" - user).
+                # Atmosphere may overlap; unsynced KICKS never do.
+                {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
                  "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
+                {"at": S0 + int(0.5 * K("fade_out_ramp") * _ug * RATE),
+                 "cmd": "eq", "deck": incoming, "low": 1.0,
+                 "ramp_s": max(2.0 * _ug, 0.8)},
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
