@@ -77,14 +77,24 @@ def selection_audit(library, theme):
           f"min {min(scores):.3f}")
     check("brain finds a next track", no_pick <= len(library) * 0.05,
           f"{no_pick} tracks had no compatible successor")
-    # Stretch discipline: the selection wall sits at 5.5%; beyond it only
-    # dead-end rescues pass (soft x0.05), clamped at the physical 8%.
+    # Stretch discipline. The wall moved 8% -> 10% (2026-08-06, operator's
+    # call) and the 5.5% selection cliff now only applies to UNVERIFIED
+    # grids, so the distribution deliberately widened: measured on the
+    # real library the same day, median 1.1% / p95 7.4% / max 10.0%
+    # (was median 1.1% / p95 4.7% / max 7.4%).
+    # This is still a real gate, on two things that must never happen:
+    #   - MAX beyond the wall. 10.1% catches a plan asking for a rate
+    #     deck.set_rate would silently clamp (np.clip 0.90..1.10), which
+    #     is how a tempo bug hides - the deck obeys, the seam drifts.
+    #   - the TYPICAL seam creeping. Median stays tight; most of a night
+    #     is still near-native, the wide band is the exception the wall
+    #     exists to allow, not the new normal.
     check("stretch discipline",
-          np.median(rates) <= 0.02 and np.percentile(rates, 95) <= 0.06
-          and max(rates) <= 0.081,
+          np.median(rates) <= 0.03 and np.percentile(rates, 95) <= 0.085
+          and max(rates) <= 0.101,
           f"median {np.median(rates)*100:.1f}% p95 "
           f"{np.percentile(rates, 95)*100:.1f}% max {max(rates)*100:.1f}% "
-          f"(wall 5.5%, rescue clamp 8%)")
+          f"(wall 10%, verified-only past 5.5%)")
     # REPERTOIRE GUARDS (rewritten 2026-08-05). The old check capped the
     # fade share - but the user's taste decisions now ROUTE most
     # unmixable pairs to the deliberate fade (echo demoted to
@@ -191,6 +201,11 @@ def render_seam(library, cur, style, wav=False):
     _mid_sos = _butter(2, [250.0, 2500.0], btype="band", fs=RATE,
                        output="sos")
     mid_tap = {"a": [], "b": []}
+    # ...and the raw post-EQ/post-gain mono, CLOCK-PLACED (the mixer skips
+    # read() for a deck that is not playing, so plain appending would
+    # time-shift the late-starting deck to the render start). This is what
+    # perc_overlap needs: it must see the band carves and the fader.
+    deck_pcm = {"a": [], "b": []}
     _zi = {}
     for _nm, _d in sub.decks.items():
         _zi[_nm] = np.stack([sosfilt_zi(_mid_sos) * 0.0 for _ in range(2)])
@@ -204,6 +219,8 @@ def render_seam(library, cur, style, wav=False):
                                                  zi=_zi[nm][c])
                 mid_tap[nm].append((sub.clock,
                                     float(np.sqrt((filt ** 2).mean()))))
+                deck_pcm[nm].append(
+                    (sub.clock, blk.mean(axis=1).astype(np.float32)))
                 return blk
             return f
         _d.read = _wrap(_d.read, _nm)
@@ -370,6 +387,30 @@ def render_seam(library, cur, style, wav=False):
         0.25 for k in set(ba) & set(bb)
         if ba[k] > 0.4 * pa and bb[k] > 0.4 * pb), 2)
 
+    # ONE KICK AT A TIME: mid_overlap_s above asks the question on LEVEL,
+    # which is the right question for melodies. Percussion needs the same
+    # question asked on TRANSIENTS - and on a long_fade it is the ONLY
+    # rhythm question that means anything, because the decks were never
+    # matched (no sync event -> max_err_beats is 0.000 on every fade this
+    # repo has ever logged, so 160 of 165 logged 'clean' while the user
+    # was hearing kick clash).
+    from lib.dj.seamverify import perc_overlap
+
+    def _scatter(blocks):
+        buf = np.zeros(len(mono), dtype=np.float32)
+        for c, blk in blocks:
+            i = c - start_clock
+            if i < 0 or i >= len(buf):
+                continue
+            j = min(i + len(blk), len(buf))
+            buf[i:j] = blk[:j - i]
+        return buf
+    _po = perc_overlap(_scatter(deck_pcm["a"]), _scatter(deck_pcm["b"]),
+                       (blend_at - start_clock) / RATE,
+                       (swap_at - start_clock) / RATE + 6.0)
+    m["perc_kick_s"] = _po["kick_s"]
+    m["perc_hi_s"] = _po["perc_s"]
+
     if wav:
         from scipy.io import wavfile
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
@@ -394,23 +435,32 @@ def seam_qa(library, wav=False):
     # see brain.py kill note) - back in this list when the fix lands.
     # phrase_cut retired 2026-08-05 ("I have never heard a good phrase
     # cut" - user); echo_out is the remaining cut style.
+    # long_fade is rendered TWICE, because it has two populations and
+    # only one of them was ever tested. The conf<0.45 pool is the
+    # `grid_conf<0.5` fade: quiet, often beatless, and it passes every
+    # check trivially. But 88% of armed fades carry no fade_reason at all
+    # - they won the dice after the blends were gated, on RHYTHMIC pairs
+    # (median kick_agreement 0.874 over the logged nights). That is where
+    # "awful kick clashes" live, so it gets its own render off the
+    # beat-heavy pool.
     styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
-              "long_fade"]
-    # long_fade engages on LOW-confidence grids - use that pool for it.
+              "long_fade", "long_fade_beaty"]
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],
                         key=lambda t: -t.rhythm_density)
     got = {}
-    for style in styles:
+    for label in styles:
         m = None
-        pool = fade_cands if style == "long_fade" else cands
+        # `label` names the CASE, `style` the style actually planned.
+        style = "long_fade" if label.startswith("long_fade") else label
+        pool = fade_cands if label == "long_fade" else cands
         for cur in pool[:12]:
             try:
                 m = render_seam(library, cur, style, wav=wav)
             except Exception as e:
-                print(f"  [FAIL] {style} render crashed on {cur.title[:30]}: "
+                print(f"  [FAIL] {label} render crashed on {cur.title[:30]}: "
                       f"{type(e).__name__}: {e}")
-                failures.append(f"{style} crash")
+                failures.append(f"{label} crash")
                 m = None
                 break
             if m:
@@ -427,7 +477,7 @@ def seam_qa(library, wav=False):
                                             "spinback_cut") else 25.0
                 if gl and style != "long_fade" \
                         and float(np.median(gl)) > med_bar:
-                    print(f"  [FLAKY?] {style}: grid med "
+                    print(f"  [FLAKY?] {label}: grid med "
                           f"{np.median(gl):.0f}ms - re-rendering once")
                     m2 = render_seam(library, cur, style, wav=wav)
                     if m2:
@@ -438,14 +488,14 @@ def seam_qa(library, wav=False):
                             m = m2
                 break
         if m is None:
-            print(f"  [warn] {style}: no legal pair found in top candidates")
+            print(f"  [warn] {label}: no legal pair found in top candidates")
             continue
-        got[style] = m
+        got[label] = m
         lag = (f"lag settled med {m['lag_med']:.0f}ms max {m['lag_max']:.0f}ms"
                if m["lag_med"] is not None else "no settled dual window")
         if m["lag_early"] is not None:
             lag += f" (launch {m['lag_early']:.0f}ms)"
-        print(f"\n  {style}: {m['pair']}  rate={m['rate']:.3f}")
+        print(f"\n  {label}: {m['pair']}  rate={m['rate']:.3f}")
         if "worst_steps" in m:
             print(f"    worst steps (s after blend start, dB): "
                   f"{m['worst_steps']}  swap at +{m['swap_rel_s']}s")
@@ -454,6 +504,9 @@ def seam_qa(library, wav=False):
               f"clip {m['clipped']} | rms_min {m['rms_min_ratio']:.2f} "
               f"lurch {m['lurch_db']:.1f}dB (solo {m['lurch_solo_db']:.1f}) "
               f"| bass bump {m['bass_bump_db']:+.1f}dB")
+        print(f"    both decks live: kick {m['perc_kick_s']:.2f}s "
+              f"transient {m['perc_hi_s']:.2f}s "
+              f"| mid {m['mid_overlap_s']:.2f}s")
         # The DIP styles breathe at the seam by contract: long_fade's
         # dipped handoff and echo_out's cut-into-decaying-tail both let
         # the room drop to ~-17 dB for a window on quiet-intro pairs.
@@ -461,28 +514,44 @@ def seam_qa(library, wav=False):
         # -22 dB hole that was killed as 'stays dead', while a flat 0.15
         # failed legitimate dips as the render pair rotates.
         da_bar = 0.10 if style in ("long_fade", "echo_out") else 0.15
-        check(f"{style}: no dead air", m["rms_min_ratio"] > da_bar,
+        check(f"{label}: no dead air", m["rms_min_ratio"] > da_bar,
               f"min/median RMS {m['rms_min_ratio']:.2f} (bar {da_bar})")
-        check(f"{style}: no unmusical lurch",
+        check(f"{label}: no unmusical lurch",
               m["lurch_db"] <= max(m["lurch_solo_db"], 4.0) + 2.5,
               f"blend step {m['lurch_db']:.1f} dB vs solo "
               f"{m['lurch_solo_db']:.1f} dB")
-        check(f"{style}: no clipping", m["clipped"] == 0
+        check(f"{label}: no clipping", m["clipped"] == 0
               and m["peak"] <= 1.0, f"peak {m['peak']:.3f} "
               f"clipped {m['clipped']}")
-        check(f"{style}: no double bass", m["bass_bump_db"] < 3.5,
+        check(f"{label}: no double bass", m["bass_bump_db"] < 3.5,
               f"blend low-band bump {m['bass_bump_db']:+.1f} dB")
         if style == "long_fade":
             # The dipped handoff: the two songs may BOTH be loud for only
             # a moment - a 12s full-range wash on an unmixable pair was
             # exactly what 'terribly mixed' sounded like.
-            check("long_fade: overlap is a dip, not a wash",
+            check(f"{label}: overlap is a dip, not a wash",
                   m["mid_overlap_s"] <= 3.5,
                   f"both mid-bands hot {m['mid_overlap_s']:.1f}s "
                   f"(dip budget 3.5)")
+            # ONE KICK AT A TIME. The fade's decks are unsynced by
+            # design, so two live kick patterns cannot be "tightened" -
+            # they must not coexist. The low band is handed over as a
+            # baton at the seam instead of the two ramps crossing.
+            # BUDGET FROM MEASUREMENT, not from taste: over 10 rhythmic
+            # pairs A/B'd against the old crossing ramps, co-presence
+            # went mean 1.07s -> 0.40s (worst 2.75 -> 1.25). 1.5s sits
+            # above every measured post-fix seam and below the bad
+            # pre-fix ones, so it catches a regression to crossing ramps
+            # without flaking on the residual crossfade window. Renders
+            # here are not deterministic (+-0.25s on the same pair), so
+            # a tighter bar would be a coin flip, not a gate.
+            check(f"{label}: one kick at a time",
+                  m["perc_kick_s"] <= 1.5,
+                  f"both kick bands live {m['perc_kick_s']:.2f}s "
+                  f"(budget 1.5)")
         else:
             # One melody at a time.
-            check(f"{style}: one melody at a time",
+            check(f"{label}: one melody at a time",
                   m["mid_overlap_s"] <= 4.0,
                   f"both mid-bands hot {m['mid_overlap_s']:.1f}s "
                   f"(handover budget 4.0)")
@@ -496,7 +565,7 @@ def seam_qa(library, wav=False):
             # wider bar than the long blends the night is built on.
             med_bar = 35.0 if style in ("echo_out", "phrase_cut",
                                         "spinback_cut") else 25.0
-            check(f"{style}: decks grid-locked",
+            check(f"{label}: decks grid-locked",
                   float(np.median(gl)) <= med_bar
                   and float(np.percentile(gl, 95)) <= 60.0,
                   f"grid delta med {np.median(gl):.0f}ms "
@@ -505,7 +574,7 @@ def seam_qa(library, wav=False):
         if (m.get("bias_expected") is not None
                 and m.get("bias_seen") is not None
                 and style != "long_fade"):
-            check(f"{style}: kick bias wired (sign + value)",
+            check(f"{label}: kick bias wired (sign + value)",
                   abs(m["bias_seen"] - m["bias_expected"]) <= 0.02,
                   f"seen {m['bias_seen']:+.4f} beats vs expected "
                   f"{m['bias_expected']:+.4f} (music-phase diff)")
@@ -513,7 +582,7 @@ def seam_qa(library, wav=False):
                     "breakdown_swap": 4.0, "phrase_cut": 3.0,
                     "spinback_cut": 3.0}.get(style)
         if min_dual and m["dual_s"] < min_dual:
-            check(f"{style}: decks actually overlap", False,
+            check(f"{label}: decks actually overlap", False,
                   f"dual-audible only {m['dual_s']:.1f}s "
                   f"(need {min_dual:.0f})")
     check("style coverage rendered", len(got) >= 4,

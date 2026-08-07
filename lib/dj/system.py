@@ -65,7 +65,7 @@ def _intro_start(track):
 class DJSystem:
     def __init__(self, music_root, engine=None, theme="groove",
                  night_hours=6.0, autopilot=True, seed=None,
-                 stretch_max=1.08, log_dir=None, threaded=True,
+                 stretch_max=1.10, log_dir=None, threaded=True,
                  record=False, persona="auto"):
         self.music_root = music_root
         self.engine = engine
@@ -2571,14 +2571,24 @@ class DJSystem:
         loop = drums[a:b].astype(np.float32)
         if float(np.abs(loop).max()) < 0.05:
             return []                       # that stretch has no drums
-        span_s = min((swap_at - blend_at) / RATE + 2.0, 30.0)
+        # THE BED MUST BE GONE BY THE SEAM (2026-08-06). It was sized off
+        # swap_at, which for a fade is S0+6s - so the bed ran S0-8 to
+        # S0+8 with its 5s fade-out at S0+3..S0+8, tiling A's drums
+        # straight through B's percussion arrival AND for 2s after A
+        # itself had stopped. The docstring's "A is still the only groove
+        # in the room" stops being true at S0: past that the mechanism
+        # built to fill the dip was manufacturing a third unsynced kick
+        # pattern. Size it to A's half of the handoff and land the
+        # fade-out ON the seam.
+        seam_at = plan.get("seam_at") or swap_at
+        span_s = min((seam_at - blend_at) / RATE, 30.0)
         if span_s < 6.0:
             return []
         reps = int(np.ceil(span_s / max(8 * per, 0.5)))
         bed = np.tile(loop, (reps, 1))[:int(span_s * RATE)]
         n = len(bed)
         fi = int(min(2.0, span_s * 0.2) * RATE)
-        fo = int(min(5.0, span_s * 0.4) * RATE)
+        fo = int(min(4.0, span_s * 0.5) * RATE)
         env = np.ones(n, dtype=np.float32)
         env[:fi] = np.linspace(0.0, 1.0, fi, dtype=np.float32)
         env[n - fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)

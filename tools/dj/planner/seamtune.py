@@ -40,7 +40,8 @@ def learn(rows):
 # ignore plan["beats"] entirely (measured: 0/186 probes changed), so
 # offering it to them would log nudges that provably did nothing.
 _FADE = ("fade_recede", "fade_lead_a", "fade_lead_b", "fade_b_stage1",
-         "fade_b_ramp1", "fade_b_ramp2", "fade_out_ramp", "fade_stop_lead")
+         "fade_b_ramp1", "fade_b_ramp2", "fade_out_ramp", "fade_stop_lead",
+         "fade_a_low_out", "fade_b_low_in", "fade_a_high")
 _BLEND = ("swap_pos", "swap_beats_long", "swap_beats", "trim_cap",
           "b_mid0", "b_mid0_hot", "b_mid0_long",
           "b_high0", "b_high0_hot", "b_high0_long",
@@ -79,6 +80,9 @@ RANGES = {
     "fade_b_ramp2": (5.0, 12.0),
     "fade_out_ramp": (3.0, 8.0),
     "fade_stop_lead": (4.0, 9.0),
+    "fade_a_low_out": (0.6, 3.0),
+    "fade_b_low_in": (0.8, 5.0),
+    "fade_a_high": (0.35, 1.0),
     "stage1_gain": (0.80, 1.00),
     "stage1_frac": (0.22, 0.50),
     "high_swap_at": (0.12, 0.36),

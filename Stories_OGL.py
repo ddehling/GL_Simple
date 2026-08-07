@@ -78,7 +78,7 @@ def load_config(project_override: str | None = None):
         # otherwise) | rubberband-crisp | vari | wsola | pv. Applied at
         # startup via DJ_STRETCH_ENGINE.
         "dj": {"enabled": True, "music_dir": "", "theme": "groove",
-               "night_hours": 6.0, "stretch_max": 1.08, "record": False,
+               "night_hours": 6.0, "stretch_max": 1.10, "record": False,
                "stretch_engine": ""},
         "dmx": {"bind_ip": "", "receivers": [
             {"ip": "192.168.68.140", "columns": 32, "column_offset": 0},
@@ -2640,7 +2640,7 @@ class EnvironmentalSystem:
             engine=engine,
             theme=self.dj_cfg.get("theme", "groove"),
             night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
-            stretch_max=float(self.dj_cfg.get("stretch_max", 1.08)),
+            stretch_max=float(self.dj_cfg.get("stretch_max", 1.10)),
             record=bool(self.dj_cfg.get("record", False)),
             persona=str(self.dj_cfg.get("persona", "auto")))
         # Armed idle steering queues BEFORE start(): start() spawns the

@@ -30,7 +30,19 @@ RATE = 44100
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "loop_build", "long_fade",
           "stem_drum_swap", "acapella_out")
-STRETCH_MIN, STRETCH_MAX = 0.92, 1.08
+# TEMPO WALL. Widened 0.92-1.08 -> 0.90-1.10 (2026-08-06, operator's
+# call) on the strength of the beat-matching work: verified phase
+# profiles, kick-true anchors and the sync bias now hold a lock that the
+# 8% wall predates. 10% is not arbitrary - it is exactly where
+# deck.set_rate already clamps (deck.py, np.clip(target, 0.90, 1.10)),
+# so no plan can ask for a rate the deck would silently refuse, and the
+# soak test's 0.90..1.101 assertion still holds.
+# Reachable 1:1 pairs on the real library: ~35% -> ~40%.
+# Note the wall is only the OUTER limit. Deep stretch is still leaned
+# against by s_rate (Gaussian, sigma 0.045) and still HARD-GATED on
+# risky material at plan time (stretch>5.5%_risky) - widening here does
+# not hand a shaky grid an 10% blend.
+STRETCH_MIN, STRETCH_MAX = 0.90, 1.10
 # Rate-gradient speeds. Both were tuned in the WSOLA era when a tempo ramp
 # had NO pitch consequence; with the varispeed engine every gradient IS a
 # pitch glide, and glides (not static offsets) are what ears catch (user:
@@ -552,6 +564,27 @@ TUNE_DEFAULTS = {
     "fade_b_ramp2": 8.0,    # long_fade: seconds from there to full
     "fade_out_ramp": 5.0,   # long_fade: A's final fade length
     "fade_stop_lead": 6.0,  # long_fade: A stops this long after the seam
+    # ONE KICK AT A TIME (2026-08-06). Both knobs carve the OUTGOING
+    # track, which is what makes them safe: A is leaving and has already
+    # had its full presence, while B's identity must arrive whole and
+    # B's quiet entry is what masks the mismatch (see the regime note in
+    # build_events). Neither moves a gain event.
+    # The low-band baton pass, as two independently tunable halves. They
+    # share a default so the handover is complementary out of the box;
+    # separate knobs let the lab explore an asymmetric one (a gentler B
+    # arrival, say) and let a harness neutralize one side alone.
+    "fade_a_low_out": 1.2,  # long_fade: A's low leaves this fast
+    "fade_b_low_in": 1.2,   # long_fade: ...and B's arrives this fast
+    # A's air once B is in the room. DEFAULT 1.0 = OFF, and the default
+    # is a measurement, not caution: at 0.6 it moved transient
+    # co-presence by nothing on average (4.31 -> 4.25s over 4 pairs) and
+    # made it WORSE on one (6.25 -> 7.25s). Trimming the louder deck 4 dB
+    # does not move its transients out of the way, it moves them DOWN
+    # TOWARD the other deck's, so more of the overlap sits inside the
+    # ~12 dB window where both kits are audible. Killing transient clash
+    # needs a decisive cut, which costs A's character. Left as a knob for
+    # the lab to disprove me with ears.
+    "fade_a_high": 1.0,     # long_fade: A's air, once B is in the room
     "stage1_gain": 0.92,    # staged blend: B's stage-1 level (x entry trim)
     "stage1_frac": 0.35,    # staged blend: fraction of the span to reach it
     "high_swap_at": 0.22,   # staged blend: when the highs start migrating
@@ -1000,6 +1033,39 @@ class Brain:
         return max(pen * max(art, 0.25), 1e-4)
 
     # -- tempo ---------------------------------------------------------------
+    def _grid_verified(self, current, cand):
+        """Is this pair's beat matching MEASURED-good on both sides?
+
+        The cheap half of the plan-time `_risky` predicate: whole-track
+        grid confidence plus phase-profile coverage. Selection skips the
+        swing_delta term deliberately - it needs the pair's rhythm
+        signatures, which is real work per candidate, and the plan gate
+        re-checks the FULL predicate before any blend is built. The worst
+        case of that mismatch is a deep-stretch pair surviving selection
+        and then being faded at plan time, which is exactly what happened
+        to it before the wall widened.
+
+        Only called for candidates past 5.5%, so the profile lookups stay
+        off the hot path for the ordinary pick."""
+        if current is None:
+            return False
+        if min(current.bpm_conf or 0.0, cand.bpm_conf or 0.0) < 0.8:
+            return False
+        from lib.dj import beatpower as _bpv
+        # Candidate first (it varies, and it is the one that usually
+        # fails), then the outgoing track's coverage MEMOIZED - it is
+        # constant across a selection pass but the lookup stats the
+        # profile file every call, which is ~18us x every deep candidate.
+        # A background beatpower scan can leave this stale for at most
+        # one track's play time, on a soft selection lean.
+        if _bpv.profile_coverage(cand.id) < 0.8:
+            return False
+        memo = getattr(self, "_cov_cur", None)
+        if memo is None or memo[0] != current.id:
+            memo = self._cov_cur = (current.id,
+                                    _bpv.profile_coverage(current.id))
+        return memo[1] >= 0.8
+
     def rate_for(self, out_bpm, cand):
         """Best stretch rate to bring cand to out_bpm, allowing half/double
         time reads. Returns (rate, effective_bpm) or (None, 0)."""
@@ -1350,7 +1416,19 @@ class Brain:
         # STRETCH WALL: beyond ~5.5% the time-stretch is audible as feel
         # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
         # a dry pool may still cross it rather than strand the set.
-        s_wall = 0.05 if abs(math.log(rate)) > math.log(1.055) else 1.0
+        #
+        # CONDITIONAL ON A VERIFIED GRID (2026-08-06), the same rule the
+        # plan-time gate already uses: "deep stretch is only fatal on
+        # RISKY material" (see stretch>5.5%_risky). A blanket cliff here
+        # made the widened wall cosmetic - it is a 20x penalty, so a 6-8%
+        # candidate scored ~0.007 against a tempo-clean rival and could
+        # never win the finalist dice however good the pair was.
+        # Verified-grid pairs now face only the smooth s_rate lean;
+        # everything unverified keeps the old cliff exactly.
+        _deep = abs(math.log(rate)) > math.log(1.055)
+        s_wall = 1.0
+        if _deep and not self._grid_verified(current, cand):
+            s_wall = 0.05
         total *= s_wall
         # Confident grids keep the CHAIN mixable: a low-conf pick forces
         # long_fade on both its seams. Mild lean only - flavor can still
@@ -2986,15 +3064,60 @@ class Brain:
                 # Atmosphere may overlap; unsynced KICKS never do.
                 {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
                  "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
-                # Lows return AS A exits (not after): A's final ramp has
-                # it receding through -8dB while B's kicks fade up - too
-                # quiet to clash, soon enough that the room never goes
-                # drumless-on-drumless ("the last mix was terrible" -
+                # A GIVES UP ITS AIR AS B ARRIVES (2026-08-06). The carve
+                # above removes B's kick FUNDAMENTAL and nothing else -
+                # the 200 Hz LR4 split leaves B's beater click, snare and
+                # hats at unity, and those transients are what the ear
+                # locks onto (the PLL correlates exactly them; low-band
+                # envelopes were rejected for the job). So from the
+                # moment B is in the room, the DEPARTING track starts
+                # giving up its top end - a fade-out getting darker,
+                # which is what fade-outs do. A keeps its low until the
+                # seam, its mids, its melody and its voice.
+                # Carving A, never B: B's identity arrives whole and its
+                # quiet entry is the masking the regime note protects.
+                # Set fade_a_high to 1.0 to revert this exactly.
+                {"at": B0, "cmd": "eq", "deck": active,
+                 "high": K("fade_a_high"), "ramp_s": 2.0},
+                # Lows return AS A exits (not after), so the room never
+                # goes drumless-on-drumless ("the last mix was terrible" -
                 # comedown tail + dip + kickless arrival stacked into
-                # three kinds of empty).
+                # three kinds of empty). This timing is LOAD-BEARING: do
+                # not push it later.
+                # The original rationale here also claimed A was "too
+                # quiet to clash" by this point. It was not - A recedes
+                # to 0.5 and takes fade_out_ramp to reach zero, so the
+                # two low bands crossed at ~-10 dB with both kicks plainly
+                # audible. That is fixed on A's side below, not by moving
+                # this event.
+                # B's low rises on the SAME clock A's leaves (2026-08-06),
+                # so the low band crossfades instead of leaving a gap.
+                # Tied to fade_a_low_out rather than fade_out_ramp: A's
+                # kick was gone in 1.2s while B's took the full 5s to
+                # arrive, and the ~4s of missing low measured as a
+                # halved rms_min (0.39 -> 0.19 on Imagine -> Got to
+                # Change). B's low still STARTS at S0 and now reaches
+                # full sooner than it used to - earlier low end, not
+                # later, so the drumless-on-drumless warning above is
+                # respected by a wider margin than before.
                 {"at": S0, "cmd": "eq", "deck": incoming, "low": 1.0,
                  "mid": 1.0,
-                 "ramp_s": max(K("fade_out_ramp") * _ug, 1.2)},
+                 "ramp_s": max(K("fade_b_low_in") * _ug, 1.2)},
+                # A's KICK LEAVES BEFORE B's ARRIVES (2026-08-06). The
+                # line above and A's exit fade below used to ramp THROUGH
+                # each other across fade_out_ramp - A receding from 0.5,
+                # B rising from 0 - crossing around -10 dB with both kick
+                # fundamentals plainly audible for 2-3s ("we keep getting
+                # awful kick clashes"). Hand the low band over instead of
+                # crossing it: A's kick is gone in ~1.2s, by which point
+                # B's low is still under -17 dB.
+                # NOT by delaying B's low - that is the one thing the
+                # note below forbids (it emptied the room). The
+                # separation is won from A's side, and A's mids/highs
+                # keep carrying until its fade completes, so nothing goes
+                # drumless-on-drumless.
+                {"at": S0, "cmd": "eq", "deck": active, "low": 0.0,
+                 "ramp_s": K("fade_a_low_out") * _ug},
                 {"at": B0, "cmd": "gain", "deck": incoming, "value": 0.0,
                  "ramp_s": 0.01},
                 {"at": B0, "cmd": "start", "deck": incoming},
@@ -3016,6 +3139,11 @@ class Brain:
             # 2026-08-02: synthesized whooshes read as cheesy - user. The
             # fade stays clean; drama comes from the music, brake or echo.)
             plan["no_return_at"] = S0        # A starts leaving at the seam
+            # The seam clock itself, for anything that must not play past
+            # it - the percussion bed sizes its tail from this (its
+            # returned swap_at is S0+6s, which had it tiling A's drums
+            # straight through B's arrival).
+            plan["seam_at"] = S0
             return ev, S0 + int(6.0 * RATE), A0
 
         nb = plan["beats"]

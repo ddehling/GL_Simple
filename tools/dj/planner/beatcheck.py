@@ -39,7 +39,7 @@ BANDS = (("low", "lowpass", 130.0),
          ("high", "highpass", 4000.0))
 _LONG_TEST = "(long test blend)"
 _STYLE_CHOICES = [_LONG_TEST, "(brain's choice)", "bass_swap",
-                  "long_blend", "filter_sweep", "echo_out"]
+                  "long_blend", "filter_sweep", "echo_out", "long_fade"]
 TEST_BEATS = 32              # long-test overlap: 8 measures of dual
 
 
@@ -187,6 +187,13 @@ class _CheckWorker(QThread):
         if len(sa) >= 4 and len(sb) >= 4:
             k2k = float(np.median([np.min(np.abs(sb - x)) for x in sa])
                         ) * 1000.0
+        # PERCUSSION CO-PRESENCE. On a beat-matched style k2k is the
+        # headline; on an UNSYNCED one (long_fade) it is meaningless - two
+        # free-running decks have no single kick delta, it drifts. What
+        # can still be wrong there is that both kits are audible at once,
+        # which is what this measures and what the ear objects to.
+        from lib.dj.seamverify import perc_overlap
+        po = perc_overlap(decks["a"], decks["b"], blend_s, swap_s + 6.0)
         # Every render leaves a traceable row: "that seam sucked" must be
         # answerable by name and number, not memory.
         try:
@@ -205,13 +212,16 @@ class _CheckWorker(QThread):
                     "out_s": round(plan["out_s"], 2),
                     "in_s": round(plan["in_s"], 2),
                     "k2k_ms": None if k2k is None else round(k2k, 1),
+                    "perc_kick_s": po["kick_s"],
+                    "perc_hi_s": po["perc_s"],
                     "off_a_ms": round(offs["a"], 1),
                     "off_b_ms": round(offs["b"], 1)}) + "\n")
         except OSError:
             pass
         return {"a": cur, "b": cand, "plan": plan, "mix": mix,
                 "marks": marks, "t0": t0, "t1": t1, "envs": envs,
-                "aud": aud, "ticks": ticks, "offs": offs, "k2k_ms": k2k}
+                "aud": aud, "ticks": ticks, "offs": offs, "k2k_ms": k2k,
+                "perc": po}
 
 
 class _BandCanvas(QWidget):
@@ -474,11 +484,21 @@ class BeatCheckTab(QWidget):
         self.play_btn.setEnabled(True)
         self.play_btn.setText("Play")
         k2k = data["k2k_ms"]
+        perc = data.get("perc") or {}
         if data["plan"]["style"] == "long_fade":
             # Fades are not beat-matched BY DESIGN (the pair failed the
-            # blend gates) - reporting their kick delta as a defect
-            # would teach exactly the wrong lesson.
-            k2k_txt = "long_fade: decks are not beat-matched by design"
+            # blend gates) - reporting their kick delta as a defect would
+            # teach exactly the wrong lesson, so it stays informational.
+            # The number that IS a defect on a fade is co-presence: two
+            # free-running kits audible at once. Suppressing the whole
+            # line (v1) left the style with no measurement at all, which
+            # is how 165 logged fades all came back 'clean'.
+            k2k_txt = (
+                f"unsynced by design · kick overlap "
+                f"{perc.get('kick_s', 0.0):.2f}s · transient overlap "
+                f"{perc.get('perc_s', 0.0):.2f}s"
+                + (f" · k2k {k2k:.0f}ms (informational)"
+                   if k2k is not None else ""))
         elif k2k is not None:
             k2k_txt = f"kick-to-kick (overlap) median {k2k:.1f} ms"
         else:

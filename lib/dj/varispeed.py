@@ -11,7 +11,8 @@ the log-distance; see Brain.plan_transition varispeed split), so a typical
 3-4% gap is under a fifth of a semitone per song.
 
 Implementation: streaming 4-point Catmull-Rom interpolation over the deck's
-fetch() pull - full quality for DJ-sized rates (0.92..1.08), vectorized,
+fetch() pull - full quality for DJ-sized rates (0.90..1.10, the wall in
+brain.STRETCH_MIN/MAX), vectorized,
 far cheaper than either keylock engine.
 
 Same pull interface as WSOLAStretcher (drop-in): fetch(pos, n) -> (n, ch)

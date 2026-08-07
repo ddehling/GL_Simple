@@ -58,12 +58,12 @@ dj:
   music_dir: ""        # empty = <repo_parent>/music
   theme: groove        # chill_evening / groove / peak_heavy / wind_down / all_night
   night_hours: 6.0     # all_night arc length
-  stretch_max: 1.08
+  stretch_max: 1.10     # outer tempo wall; config can only TIGHTEN it
 ```
 
 ## How it stays musical
 
-- Track selection couples SONG choice to MIX quality: tempo fit (≤8%
+- Track selection couples SONG choice to MIX quality: tempo fit (≤10%
   stretch, half/double-time reads), Camelot compatibility, energy vs the
   theme's arc, recency — AND section-pair mixability: transitions land on
   detected structure boundaries, and two busy/vocal sections never blend
@@ -124,10 +124,11 @@ dj:
   (key fit × groove-offset gap × grid confidence) and per-style memory,
   so one night's lesson steers every future seam of that kind, not just
   the exact same two tracks.
-- **Learned execution tuning** (2026-08-02, `lib/dj/tuning.py`). 39 constants
+- **Learned execution tuning** (2026-08-02, `lib/dj/tuning.py`). 41 constants
   inside `build_events` — swap position and crossfade width, B's entry
   EQ shelves, the entry-trim ceiling, blend length, `long_fade`'s recede
-  level and two-stage arrival, `echo_out`'s delay/feedback/wet/tail, the
+  level, two-stage arrival and its two A-side carves
+  (`fade_a_low_out`, `fade_a_high`), `echo_out`'s delay/feedback/wet/tail, the
   spinback and brake lengths, the vocal-duck depth, the loop-roll shrink
   schedule, the pre-swap dip, the exit reservation — are now named knobs
   (`brain.TUNE_DEFAULTS`) instead of literals. `build_events` resolves each
@@ -180,7 +181,21 @@ dj:
     Old pins for all of them refuse politely.)
   - `loop_build` — stutter a shrinking loop into A's drop to build tension,
     release exactly on the drop as B slams in
-  - `long_fade` — fallback for low-confidence grids
+  - `long_fade` — fallback for low-confidence grids. Its decks are
+    unsynced by design, so it enforces ONE KICK AT A TIME by band
+    instead: B enters with its low closed, and at the seam the low band
+    is handed over as a baton (A's low out and B's in on the same
+    `fade_a_low_out` clock) rather than crossed — the two kick
+    fundamentals used to ramp through each other at ~-10 dB for 2-3 s.
+    The carve is always applied to the DEPARTING track; B's identity
+    arrives whole and its quiet entry is what masks the mismatch.
+    Measured by `perc_overlap` (`lib/dj/seamverify.py`), the only rhythm
+    instrument that means anything on unsynced decks — kick clash 1.19 s
+    → 0.25 s mean over four rhythmic pairs. `_dj_quality_test.py` gates
+    it on both fade populations. (`fade_a_high`, an air shelf on A,
+    exists as a knob but defaults OFF: measured, trimming the louder
+    deck moved its transients *toward* the other's rather than out of
+    the way, and co-presence got slightly worse.)
   (`bassline_layer` and `double_drop` were removed 2026-08-02 — 3 live
   plays ever, and the fx one-shot holdout respectively; the nextdrop
   MOMENT owns the synced-drop spectacle, on the music alone.)

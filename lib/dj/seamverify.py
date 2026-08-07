@@ -33,6 +33,12 @@ Two instruments, both pure arithmetic on known quantities:
   DECK ALIGNMENT (dual span): every A-beat's distance to the nearest
       B-beat, in render time. Median within flam tolerance = matched.
       A wrong tempo MULTIPLE shows up here as a sawtooth of deltas.
+
+  PERCUSSION CO-PRESENCE (perc_overlap, 2026-08-06): how long BOTH decks
+      are percussively live at once. Unlike the two above it makes no
+      claim about alignment, so it is the one instrument that means
+      something on an UNSYNCED seam - i.e. on long_fade, the style every
+      other measurement in this repo exempts by name.
 """
 import numpy as np
 
@@ -41,6 +47,10 @@ FLAM_S = 0.035
 CONC_MIN = 1.30         # beat-power concentration below this = no beat
 ALIGN_MED_S = 0.030     # median beat delta beyond this = misaligned
 ALIGN_HIT = 0.80        # fraction of beats within FLAM_S required
+PERC_KICK_HZ = 130.0            # kick fundamental
+PERC_BAND_HZ = (1000.0, 5000.0)  # beater click, snare crack, hats
+PERC_BIN_S = 0.25
+PERC_MASK = 0.25        # clash = quieter kit within ~12 dB of the louder
 
 
 def _beats_in_span(track, s_lo, s_hi):
@@ -104,6 +114,124 @@ def _concentration(deck_audio, beat_render_ts, lo_s, hi_s):
         i = int(b * RATE)
         at.append(float(np.max(env[max(i - w, 0):i + w])))
     return float(np.mean(at) / (np.mean(env) + 1e-12))
+
+
+def _transient_env(mono, band, sr=RATE, hop_s=0.005):
+    """Positive-difference transient envelope of one band, at 5 ms frames.
+
+    The POSITIVE DIFFERENCE of a smoothed envelope is this codebase's own
+    definition of a transient - the submix PLL correlates exactly this
+    (deck.py: "the POSITIVE DIFFERENCE of two decks' rings, i.e. their
+    TRANSIENTS"), and low-band ENVELOPES were explicitly rejected there
+    for the job. Reusing it means this instrument and the PLL agree about
+    what a kick is."""
+    from scipy.signal import butter, sosfilt
+    if isinstance(band, tuple):
+        sos = butter(4, list(band), btype="band", fs=sr, output="sos")
+    else:
+        sos = butter(4, band, btype="lowpass", fs=sr, output="sos")
+    y = sosfilt(sos, np.asarray(mono, dtype=np.float64))
+    w = max(int(0.010 * sr), 1)
+    env = np.convolve(np.abs(y), np.ones(w) / w, mode="same")
+    hop = max(int(hop_s * sr), 1)
+    n = len(env) // hop * hop
+    if n < 2 * hop:
+        return np.zeros(0), hop / sr
+    frames = env[:n].reshape(-1, hop).max(axis=1)
+    return np.maximum(np.diff(frames), 0.0), hop / sr
+
+
+def _held_bins(t, frame_s, bin_s, hold_s):
+    """Per-bin peak transient, held forward across a beat.
+
+    BIN, THEN COMPARE. A transient envelope is spiky - one or two frames
+    per hit - so comparing two decks frame-by-frame answers "never
+    together" even for two kits hammering over each other.
+
+    HOLD. A kick every 0.5 s makes a deck percussively live for the whole
+    half second, not for the 5 ms of the hit. Without a hold a steady
+    pattern reads as ~50% duty and the two decks' duty cycles interact,
+    so the measurement would track the tempo ratio instead of whether
+    both kits are audible. The hold carries the VALUE, not a flag,
+    because the comparison below is about relative level."""
+    per_bin = max(int(round(bin_s / frame_s)), 1)
+    m = len(t) // per_bin * per_bin
+    if m < per_bin:
+        return np.zeros(0)
+    bins = t[:m].reshape(-1, per_bin).max(axis=1)
+    out = bins.copy()
+    for i in range(1, max(int(round(hold_s / bin_s)), 1)):
+        out[i:] = np.maximum(out[i:], bins[:-i])
+    return out
+
+
+def _clash_s(ta, tb, frame_s, t0, t1, bin_s, mask_ratio, hold_s=0.5,
+             floor_frac=0.15):
+    """Seconds inside [t0, t1] where two percussion beds are BOTH
+    audible - i.e. the quieter one is not masked by the louder.
+
+    MASKING, NOT SELF-RELATIVE LEVEL. The obvious rule (each deck against
+    its own peak, as mid_overlap_s uses) is wrong here and was measured
+    wrong: it works on a blend, where both decks sit near full, but a
+    fade's outgoing deck is RECEDING. At 0.25 gain A is below 40% of its
+    own solo peak, so a self-relative rule scores it "not playing" while
+    it is plainly audible at -12 dB against a quiet incoming track - the
+    instrument would excuse exactly the deck whose kick is the problem.
+
+    What decides whether two kicks clash is how far apart they are from
+    EACH OTHER: within ~12 dB (mask_ratio 0.25) the quieter one is still
+    heard as a competing pulse. `floor_frac` keeps near-silent stretches
+    out of it - two inaudible kits are not a clash."""
+    if not len(ta) or not len(tb):
+        return 0.0
+    ha = _held_bins(ta, frame_s, bin_s, hold_s)
+    hb = _held_bins(tb, frame_s, bin_s, hold_s)
+    n = min(len(ha), len(hb))
+    if n == 0:
+        return 0.0
+    ha, hb = ha[:n], hb[:n]
+    louder = np.maximum(ha, hb)
+    quieter = np.minimum(ha, hb)
+    ref = float(np.percentile(louder, 95))
+    if ref <= 1e-9:
+        return 0.0
+    idx = np.arange(n) * bin_s
+    clash = ((quieter > mask_ratio * louder) & (louder > floor_frac * ref)
+             & (idx >= t0) & (idx <= t1))
+    return float(clash.sum() * bin_s)
+
+
+def perc_overlap(deck_a, deck_b, t0, t1, bin_s=PERC_BIN_S,
+                 mask_ratio=PERC_MASK):
+    """How long two decks are percussively live AT THE SAME TIME, in
+    seconds, over the render window [t0, t1].
+
+    `deck_a`/`deck_b` are post-EQ, post-gain per-deck renders (n, ch) -
+    they must be post-EQ or the measurement cannot see a band carve, and
+    post-gain or it cannot see the fader.
+
+    Returns {"kick_s", "perc_s"}: co-presence below 130 Hz (two kick
+    drums) and in 1-5 kHz (beater click, snare, hats). Kept SEPARATE
+    because they have separate cures - a low-band handover fixes the
+    first, only a shelf or a different in-point touches the second.
+
+    This is the missing instrument for long_fade. A fade emits no `sync`
+    event, so max_err_beats is 0.000 on every fade ever logged and the
+    live assessor can only ever call it clean or hole; kick-to-kick
+    distance is meaningless on decks that were never matched. Co-presence
+    is the thing that is actually wrong, and it needs no shared grid."""
+    out = {"kick_s": 0.0, "perc_s": 0.0}
+    for key, band in (("kick_s", PERC_KICK_HZ), ("perc_s", PERC_BAND_HZ)):
+        env = []
+        for d in (deck_a, deck_b):
+            x = np.asarray(d, dtype=np.float64)
+            if x.ndim > 1:
+                x = x.mean(axis=1)
+            env.append(_transient_env(x, band))
+        (ta, fs_a), (tb, _fs_b) = env
+        out[key] = round(_clash_s(ta, tb, fs_a, t0, t1, bin_s,
+                                  mask_ratio), 2)
+    return out
 
 
 def verify_seam(decks, marks, a_track, b_track):
