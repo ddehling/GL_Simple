@@ -18,6 +18,12 @@ import numpy as np
 import miniaudio
 from pathlib import Path
 
+# DEFAULT device/mix rate. The engine's ACTUAL rate is per-instance
+# (``AudioEngine(sample_rate=...)``, ``engine.sample_rate``) so different
+# projects can run at different rates — WoL's masters are 48 kHz, Fan's
+# library and the whole DJ stack are 44.1 kHz. This constant is only the
+# fallback for callers that don't specify one; nothing outside this module
+# reads it, so track/ring maths below all go through the instance rate.
 SAMPLE_RATE   = 44100
 CHANNELS      = 2
 FORMAT        = miniaudio.SampleFormat.FLOAT32
@@ -38,6 +44,9 @@ CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
 RING_TARGET_MS   = 400        # how far ahead we render = the jitter we absorb
 RING_CAPACITY_MS = 700        # ring size; > target so the producer has room
 RENDER_BLOCK     = 2048       # frames per producer pass (~46ms)
+# Ring sizes are FRAME counts, so they depend on the rate — derived per
+# instance in AudioEngine (self._ring_target / _ring_capacity) and re-derived
+# by set_sample_rate. These module-level values are the 44.1 kHz defaults.
 RING_TARGET   = SAMPLE_RATE * RING_TARGET_MS // 1000
 RING_CAPACITY = SAMPLE_RATE * RING_CAPACITY_MS // 1000
 
@@ -51,7 +60,8 @@ class _MemTrack:
 
     def __init__(self, samples: np.ndarray, path: Path, *, volume: float = 1.0,
                  duration: float = 0.0, is_narrative: bool = False,
-                 fade_in: float = 0.0, is_soundpool: bool = False):
+                 fade_in: float = 0.0, is_soundpool: bool = False,
+                 rate: int = SAMPLE_RATE):
         self.is_ambient   = False
         self.is_narrative = is_narrative
         self.is_soundpool = is_soundpool
@@ -59,7 +69,10 @@ class _MemTrack:
         self._path        = path
         self.volume       = volume
         self._pos         = 0
-        self._fade_in_frames  = int(fade_in * SAMPLE_RATE)
+        # Rate of the samples we were handed == the engine's rate, since
+        # schedule_event decoded them at it. All frame maths below uses it.
+        self._rate        = int(rate)
+        self._fade_in_frames  = int(fade_in * self._rate)
         self._fading_out  = False
         self._fade_out_frames = 0
         self._fade_out_pos    = 0
@@ -71,7 +84,7 @@ class _MemTrack:
 
     def fade_out(self, duration: float):
         self._fading_out      = True
-        self._fade_out_frames = max(1, int(duration * SAMPLE_RATE))
+        self._fade_out_frames = max(1, int(duration * self._rate))
         self._fade_out_pos    = 0
 
     def read(self, n_frames: int):
@@ -116,7 +129,8 @@ class _Track:
     def __init__(self, path: Path, *, loop: bool = False, skip: float = 0.0,
                  fade_in: float = 0.0, volume: float = 1.0,
                  duration: float = 0.0, loop_length: float = 0.0,
-                 is_ambient: bool = False, is_narrative: bool = False):
+                 is_ambient: bool = False, is_narrative: bool = False,
+                 rate: int = SAMPLE_RATE):
         self.is_ambient       = is_ambient
         self.is_narrative     = is_narrative
         self.is_soundpool     = False   # soundpool clips are always _MemTracks
@@ -125,12 +139,15 @@ class _Track:
         self._loop            = loop
         self._skip            = skip
         self.volume           = volume
+        # Set BEFORE _open(): the stream is opened at this rate, so miniaudio
+        # resamples the file to it on the fly.
+        self._rate            = int(rate)
         self._gen             = self._open(skip)
         self._buf             = np.zeros((0, CHANNELS), dtype=np.float32)
-        self._fade_in_frames  = int(fade_in * SAMPLE_RATE)
-        self._max_frames      = int(duration * SAMPLE_RATE) if duration > 0 else 0
+        self._fade_in_frames  = int(fade_in * self._rate)
+        self._max_frames      = int(duration * self._rate) if duration > 0 else 0
         # loop_length: if >0, restart from skip every N seconds instead of at EOF.
-        self._loop_frames     = int(loop_length * SAMPLE_RATE) if loop_length > 0 else 0
+        self._loop_frames     = int(loop_length * self._rate) if loop_length > 0 else 0
         self._pos             = 0   # monotonic total frames (drives fade-in and duration cap only)
         self._loop_pos        = 0   # position within the current ARI window (resets on each loop)
         self._fading_out      = False
@@ -145,14 +162,14 @@ class _Track:
             str(self._path),
             output_format=FORMAT,
             nchannels=CHANNELS,
-            sample_rate=SAMPLE_RATE,
+            sample_rate=self._rate,
             frames_to_read=CHUNK_FRAMES,
-            seek_frame=int(skip * SAMPLE_RATE),
+            seek_frame=int(skip * self._rate),
         )
 
     def fade_out(self, duration: float):
         self._fading_out      = True
-        self._fade_out_frames = max(1, int(duration * SAMPLE_RATE))
+        self._fade_out_frames = max(1, int(duration * self._rate))
         self._fade_out_pos    = 0
         self._loop            = False
 
@@ -170,7 +187,7 @@ class _Track:
         # becomes primary.
         if self._loop_frames > 0:
             remaining = self._loop_frames - self._loop_pos
-            xfade_frames = int(self._ARI_XFADE_SEC * SAMPLE_RATE)
+            xfade_frames = int(self._ARI_XFADE_SEC * self._rate)
 
             if remaining <= 0:
                 # Loop boundary reached.
@@ -233,7 +250,7 @@ class _Track:
         # ARI crossfade blend: if a next-loop stream is open, read from it
         # and mix into the current chunk with a linear crossfade ramp.
         if self._xfade_gen is not None and self._loop_frames > 0:
-            xfade_frames = int(self._ARI_XFADE_SEC * SAMPLE_RATE)
+            xfade_frames = int(self._ARI_XFADE_SEC * self._rate)
             remaining_in_loop = self._loop_frames - self._loop_pos
             # How far into the crossfade window are we? (0 = just entered, 1 = done)
             xf_pos = xfade_frames - remaining_in_loop
@@ -302,7 +319,14 @@ class AudioEngine:
     FADE_IN  = 5.0   # seconds
     FADE_OUT = 5.0   # seconds
 
-    def __init__(self):
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        # Device + mix rate for THIS engine. Per-project (see
+        # project.yaml ``audio.sample_rate``); switchable at runtime via
+        # set_sample_rate() so a project swap can change it without a
+        # restart. Every track built by the mixer inherits it.
+        self.sample_rate = int(sample_rate)
+        self._ring_target = self.sample_rate * RING_TARGET_MS // 1000
+        self._ring_capacity = self.sample_rate * RING_CAPACITY_MS // 1000
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
         self._device = None
         self.master_volume = 1.0    # scales all audio output
@@ -339,7 +363,7 @@ class AudioEngine:
         # layer their sounds over the mix). Set by Stories_OGL._dj_start.
         self.oneshots_muted = False
         # Optional monitor tap: a callable(buf) invoked with each mixed output
-        # block (shape (frames, CHANNELS) float32 @ SAMPLE_RATE) on the audio
+        # block (shape (frames, CHANNELS) float32 @ self.sample_rate) on the audio
         # thread. Lets the audio analyzer react to the show's OWN output (the
         # "internal" source) without a device. None = no tap (zero cost).
         self._monitor_tap = None
@@ -349,7 +373,7 @@ class AudioEngine:
         self._cb_count = 0
         self._cb_starved = 0
         self._cb_short_frames = 0
-        self._cb_min_depth = RING_CAPACITY
+        self._cb_min_depth = self._ring_capacity
         self._cb_last_warn = 0.0
         # Render-ahead ring (see RING_TARGET_MS). Written by the producer
         # thread, read by the device callback; _ring_w / _ring_r are
@@ -371,7 +395,7 @@ class AudioEngine:
         return {"callbacks": self._cb_count,
                 "starved": self._cb_starved,
                 "short_frames": self._cb_short_frames,
-                "min_depth_ms": self._cb_min_depth * 1000.0 / SAMPLE_RATE}
+                "min_depth_ms": self._cb_min_depth * 1000.0 / self.sample_rate}
 
     def render_lead_frames(self):
         """How far AHEAD of the speakers the renderer currently is, in
@@ -412,7 +436,7 @@ class AudioEngine:
         while not self._ring_stop.is_set():
             with self._ring_lock:
                 depth = self._ring_w - self._ring_r
-            if depth >= RING_TARGET:
+            if depth >= self._ring_target:
                 # Full enough; nap briefly rather than spin (which would
                 # burn a core and hold the GIL for no reason).
                 self._ring_stop.wait(0.004)
@@ -424,8 +448,8 @@ class AudioEngine:
             chunk = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
             n = len(chunk)
             with self._ring_lock:
-                w = self._ring_w % RING_CAPACITY
-                k = min(n, RING_CAPACITY - w)
+                w = self._ring_w % self._ring_capacity
+                k = min(n, self._ring_capacity - w)
                 self._ring[w:w + k] = chunk[:k]
                 if k < n:
                     self._ring[:n - k] = chunk[k:]
@@ -445,8 +469,8 @@ class AudioEngine:
                 depth = self._ring_w - self._ring_r
                 n = min(required, depth)
                 if n > 0:
-                    r = self._ring_r % RING_CAPACITY
-                    k = min(n, RING_CAPACITY - r)
+                    r = self._ring_r % self._ring_capacity
+                    k = min(n, self._ring_capacity - r)
                     out[:k] = self._ring[r:r + k]
                     if k < n:
                         out[k:n] = self._ring[:n - k]
@@ -475,7 +499,10 @@ class AudioEngine:
             tap = self._monitor_tap
             if tap is not None:
                 try:
-                    tap(out)
+                    # Pass the rate we are actually mixing at — the analyzer
+                    # resamples to its own fixed target, and this engine's
+                    # rate is per-project and can change at runtime.
+                    tap(out, self.sample_rate)
                 except Exception:
                     pass
             required = yield out.tobytes()
@@ -500,7 +527,7 @@ class AudioEngine:
         if sys.getswitchinterval() > 0.0005:
             sys.setswitchinterval(0.0005)
 
-        self._ring = np.zeros((RING_CAPACITY, CHANNELS), dtype=np.float32)
+        self._ring = np.zeros((self._ring_capacity, CHANNELS), dtype=np.float32)
         self._ring_w = self._ring_r = 0
         self._ring_stop.clear()
         self._producer = threading.Thread(target=self._render_ahead,
@@ -509,22 +536,99 @@ class AudioEngine:
         # PRE-FILL before the device opens: starting with an empty ring
         # would hand the DAC a ring-target's worth of silence (and count
         # every one of those blocks as an underrun).
-        deadline = time.perf_counter() + 5.0
+        prefill_start = time.perf_counter()
+        deadline = prefill_start + 5.0
         while time.perf_counter() < deadline:
             with self._ring_lock:
-                if self._ring_w - self._ring_r >= RING_TARGET:
+                if self._ring_w - self._ring_r >= self._ring_target:
                     break
             time.sleep(0.01)
+        # start() runs on the caller's thread — the main render thread when a
+        # project swap changes the rate — so a slow prefill stalls the show.
+        # Normal is ~the ring target (400 ms); anything near the 5 s deadline
+        # means the producer could not keep up and should be visible.
+        prefill = time.perf_counter() - prefill_start
+        if prefill > 1.0:
+            print(f"[AudioEngine] ring prefill took {prefill:.2f}s "
+                  f"(expected ~{RING_TARGET_MS / 1000:.1f}s)")
 
         self._device = miniaudio.PlaybackDevice(
             output_format=FORMAT,
             nchannels=CHANNELS,
-            sample_rate=SAMPLE_RATE,
+            sample_rate=self.sample_rate,
             buffersize_msec=200,
         )
         gen = self._device_feed()
         next(gen)   # advance to first yield so miniaudio can send(framecount)
         self._device.start(gen)
+
+    def set_sample_rate(self, rate: int) -> bool:
+        """Switch the device + mix rate at runtime. Returns True if the
+        engine is running at ``rate`` when this returns.
+
+        Used by project swap: WoL runs at 48 kHz, Fan (and the whole DJ
+        stack) at 44.1. A no-op when the rate already matches, so same-rate
+        swaps cost nothing and never interrupt audio.
+
+        This STOPS ALL AUDIO. Every track lives inside the _mixer generator,
+        which dies with the producer thread, so the caller is expected to
+        have faded things out already (Stories_OGL's swap does) and to
+        re-start whatever should be playing afterwards.
+        """
+        rate = int(rate)
+        if rate == self.sample_rate:
+            return True
+        prev = self.sample_rate
+        print(f"[AudioEngine] sample rate {prev} -> {rate} Hz")
+
+        # Invalidate decodes in flight BEFORE stopping: they were decoded at
+        # the OLD rate and would otherwise be posted to the new mixer and
+        # play at the wrong pitch. Same guard stop_all uses.
+        self._stop_gen += 1
+        self.stop()
+
+        # Commands already queued carry old-rate payloads (an "oneshot_mem"
+        # holds decoded samples). The queue survives stop/start, so the new
+        # mixer would consume them — drop them.
+        dropped = self._drain_cmds()
+        if dropped:
+            print(f"[AudioEngine]   dropped {dropped} queued command(s) "
+                  f"built for {prev} Hz")
+
+        def _apply(r):
+            self.sample_rate = r
+            self._ring_target = r * RING_TARGET_MS // 1000
+            self._ring_capacity = r * RING_CAPACITY_MS // 1000
+            self._cb_min_depth = self._ring_capacity
+
+        _apply(rate)
+        try:
+            self.start()
+            return True
+        except Exception as e:
+            # The old device is already closed, so failing here means
+            # silence for the rest of the run. Fall back to the rate we
+            # know worked rather than leave the show mute.
+            print(f"[AudioEngine] device would not open at {rate} Hz ({e}); "
+                  f"falling back to {prev} Hz")
+            _apply(prev)
+            try:
+                self.start()
+            except Exception as e2:
+                print(f"[AudioEngine] FALLBACK ALSO FAILED ({e2}) - "
+                      f"audio is now stopped")
+            return False
+
+    def _drain_cmds(self) -> int:
+        """Discard every pending mixer command. Returns how many were tossed."""
+        n = 0
+        try:
+            while True:
+                self._cmds.get_nowait()
+                n += 1
+        except queue.Empty:
+            pass
+        return n
 
     def stop(self):
         # Device first: once it is closed nothing reads the ring, so the
@@ -579,12 +683,16 @@ class AudioEngine:
         if self.oneshots_muted:
             return key            # DJ owns the soundtrack; key stays valid
         gen = self._stop_gen      # captured BEFORE the async decode
+        # Decode at the rate that is current NOW. If set_sample_rate lands
+        # while this decode is in flight it bumps _stop_gen, so the post
+        # below is dropped rather than handing the new mixer old-rate audio.
+        rate = self.sample_rate
 
         def _decode_and_queue():
             try:
                 decoded = miniaudio.decode_file(
                     str(p), output_format=FORMAT,
-                    nchannels=CHANNELS, sample_rate=SAMPLE_RATE)
+                    nchannels=CHANNELS, sample_rate=rate)
                 # Copy raw bytes first to own the memory independently of
                 # miniaudio's C buffer, preventing GC race conditions
                 raw_bytes = bytes(decoded.samples)
@@ -651,8 +759,9 @@ class AudioEngine:
                                 t.fade_out(fo)
                         tracks[f"ambient_{path.name}_{time.monotonic():.6f}"] = _Track(
                             path, loop=True, skip=skip,
-                            fade_in=fi, loop_length=ari, is_ambient=True)
-                        print(f"[AudioEngine] Ambient → {path.name}")
+                            fade_in=fi, loop_length=ari, is_ambient=True,
+                            rate=self.sample_rate)
+                        print(f"[AudioEngine] Ambient -> {path.name}")
 
                     elif kind == "stop_ambient":
                         _, fo = cmd
@@ -680,12 +789,13 @@ class AudioEngine:
                         # tuple, silently overwriting a still-playing track.
                         tracks[key] = _MemTrack(
                             samples, path, volume=vol, duration=dur,
-                            is_narrative=narr, fade_in=fade_in, is_soundpool=sp)
+                            is_narrative=narr, fade_in=fade_in, is_soundpool=sp,
+                            rate=self.sample_rate)
                         if not narr:
-                            track_dur = len(samples) / SAMPLE_RATE
+                            track_dur = len(samples) / self.sample_rate
                             finish_at = time.strftime(
                                 "%H:%M:%S", time.localtime(time.time() + track_dur))
-                            print(f"[AudioEngine] Oneshot ▶ {path.name}  "
+                            print(f"[AudioEngine] Oneshot > {path.name}  "
                                   f"dur={track_dur:.2f}s  finishes ~{finish_at}")
 
                     elif kind == "attach":

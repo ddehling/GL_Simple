@@ -39,7 +39,8 @@ class RenderPipeline:
                  magnification: int = 1, headless: bool = False,
                  dmx_bind_ip: str = "", geometry_provider=None,
                  group_ids: list | None = None,
-                 emulator=None):
+                 emulator=None,
+                 audio_sample_rate: int = 44100):
         self._scheduler = EventScheduler()
         self.should_exit = False
         self._cleaned_up = False
@@ -88,8 +89,11 @@ class RenderPipeline:
         print(f"[RenderPipeline] {mode} shader renderer initialized")
 
         # --- Audio ---
-        engine = sound.ThreadedAudioEngine()
+        # Per-project device rate (project.yaml ``audio.sample_rate``).
+        # Switched at runtime by Stories_OGL on project swap.
+        engine = sound.ThreadedAudioEngine(sample_rate=audio_sample_rate)
         engine.start()
+        print(f"[RenderPipeline] audio engine @ {engine.sample_rate} Hz")
         state['soundengine'] = engine
 
         # --- DMX / sACN ---

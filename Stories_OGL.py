@@ -300,6 +300,7 @@ class EnvironmentalSystem:
             geometry_provider=self.geometry_provider,
             group_ids=group_ids,
             emulator=emu,
+            audio_sample_rate=self.project.audio_sample_rate,
         )
         self._emulator = emu
 
@@ -1370,6 +1371,30 @@ class EnvironmentalSystem:
                 engine.stop_ambient()
             except Exception as e:
                 print(f"[Project]   stop_ambient error (ignoring): {e}")
+
+            # Audio device rate follows the project (project.yaml
+            # audio.sample_rate). A no-op when the two projects share a rate,
+            # so the common swap costs nothing. Done AFTER the teardown above
+            # and BEFORE the new set's events are scheduled, because the
+            # rate switch drops every track and the new set's
+            # transition_to_weather is what starts the next ambient.
+            new_rate = int(getattr(new_project, "audio_sample_rate", 44100))
+            if int(getattr(engine, "sample_rate", 44100)) != new_rate:
+                # The DJ stack hardcodes 44.1 kHz throughout (lib/dj/*), and
+                # its submix is mounted as a single track — at any other
+                # device rate it plays detuned. Stop it before switching.
+                if getattr(self, "_dj", None) is not None and self._dj.active \
+                        and new_rate != 44100:
+                    print(f"[Project]   stopping DJ: it requires 44100 Hz, "
+                          f"'{new_project.id}' runs at {new_rate} Hz")
+                    try:
+                        self._dj_stop()
+                    except Exception as e:
+                        print(f"[Project]   DJ stop error (ignoring): {e}")
+                try:
+                    engine.set_sample_rate(new_rate)
+                except Exception as e:
+                    print(f"[Project]   sample-rate switch failed (ignoring): {e}")
 
         renderer = self.scheduler._shader_renderer
         for vp in renderer.viewports:
@@ -2622,6 +2647,15 @@ class EnvironmentalSystem:
         from lib.dj import resolve_music_dir
         from lib.dj.system import DJSystem
         engine = self.scheduler.state.get("soundengine")
+        # Every module in lib/dj hardcodes RATE = 44100, and the submix is
+        # mounted as one track, so at any other device rate the whole mix
+        # plays detuned. Refuse rather than ship a subtly wrong show.
+        eng_rate = int(getattr(engine, "sample_rate", 44100)) if engine else 44100
+        if eng_rate != 44100:
+            print(f"[DJ] not starting: the DJ requires a 44100 Hz audio engine, "
+                  f"but '{self.project.id}' runs at {eng_rate} Hz "
+                  f"(project.yaml audio.sample_rate)")
+            return
         # FULL soundtrack takeover BEFORE the DJ mounts its submix (queue
         # order matters: this stop_all must precede the attach or it would
         # fade the DJ's own track). stop_ambient alone left long ONESHOTS

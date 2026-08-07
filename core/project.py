@@ -53,6 +53,12 @@ class Project:
     # bandwidth-limited DDP receivers can dial FPS down without
     # affecting other pieces.
     target_fps: float | None = None
+    # Audio device + mix rate, from project.yaml's ``audio.sample_rate``.
+    # Per-project because the source material differs: WoL's Elements
+    # masters are 48 kHz, while Fan's library — and every module in the DJ
+    # stack, which hardcodes 44100 — is 44.1. The engine switches to this
+    # on project swap. Defaults to 44100 for projects without the key.
+    audio_sample_rate: int = 44100
 
     @property
     def root(self) -> Path:
@@ -222,6 +228,25 @@ def load_project(project_id: str) -> Project:
     fps = raw.get("target_fps")
     target_fps = float(fps) if fps is not None else None
 
+    # audio.sample_rate — restricted to the two rates the engine is known to
+    # run cleanly. Anything else is a typo far more often than an intent, and
+    # a wrong value here silently detunes the whole show, so refuse it loudly
+    # and fall back rather than propagate it.
+    audio_cfg = raw.get("audio") or {}
+    if not isinstance(audio_cfg, dict):
+        audio_cfg = {}
+    sr = audio_cfg.get("sample_rate", 44100)
+    try:
+        audio_sample_rate = int(sr)
+    except (TypeError, ValueError):
+        audio_sample_rate = 44100
+        print(f"[Project] {pid}: audio.sample_rate={sr!r} is not a number; "
+              f"using 44100")
+    if audio_sample_rate not in (44100, 48000):
+        print(f"[Project] {pid}: audio.sample_rate={audio_sample_rate} is not "
+              f"44100 or 48000; using 44100")
+        audio_sample_rate = 44100
+
     return Project(
         id=pid,
         display_name=raw.get("display_name", pid),
@@ -232,4 +257,5 @@ def load_project(project_id: str) -> Project:
         raw=raw,
         brightness_limit=brightness_limit,
         target_fps=target_fps,
+        audio_sample_rate=audio_sample_rate,
     )

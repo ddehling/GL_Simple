@@ -440,14 +440,21 @@ class MicrophoneAnalyzer:
                 "gate": round(self._gate, 3),
                 "noise_floor": round(self._noise_floor, 5)}
 
-    def feed(self, stereo_buf):
+    def feed(self, stereo_buf, src_rate=None):
         """Internal-source tap target. Called from the AudioEngine audio thread
-        with its mixed output (frames, CHANNELS) @ 44100. No-op unless the
-        'internal' source is active, so the engine can keep the tap wired
-        permanently and we simply ignore it when another source is selected."""
+        with its mixed output (frames, CHANNELS) at ``src_rate``. No-op unless
+        the 'internal' source is active, so the engine can keep the tap wired
+        permanently and we simply ignore it when another source is selected.
+
+        ``src_rate`` MUST be the engine's actual rate, which is per-project
+        (WoL 48 kHz, Fan 44.1) and can change at runtime on a project swap.
+        Getting it wrong doesn't break the audio — it silently shifts every
+        FFT bin and tempo reading, so the visuals react to the wrong
+        frequencies. Defaults to this analyzer's own target rate for older
+        callers that pass only the buffer."""
         if self._active_source != "internal":
             return
-        self._ingest(self._to_target(stereo_buf, 44100))
+        self._ingest(self._to_target(stereo_buf, int(src_rate or self.RATE)))
 
     def analyze_audio(self):
         while self.running:
