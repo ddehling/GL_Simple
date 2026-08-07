@@ -43,6 +43,16 @@ SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
 WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
                                  # the end of the current track unarmed
 WD_LOOP_S = 15.0                 # ...and buys time with a safety loop here
+EXIT_MAX_FRAC = 0.72             # ceiling the drawn play budget may ask of
+                                 # a record, as a fraction of its length
+                                 # (see _draw_exit). The theme budgets are
+                                 # absolute seconds; this is what keeps
+                                 # them from exceeding the song. SCALED by
+                                 # the persona's play_len_x, or it flattens
+                                 # every persona to one play length.
+EXIT_HARD_MAX_FRAC = 0.85        # ...and the ceiling on THAT: even the
+                                 # most patient persona stops before the
+                                 # tail a record has nothing left in.
 
 
 def _persona_menu():
@@ -2502,8 +2512,33 @@ class DJSystem:
                    + 0.25 * (1.0 - heat))
         # PERSONA pacing: monk lets records breathe ~1.3x, showman rotates
         # ~0.8x. Neutral is exactly the legacy draw.
-        self._exit_played = (theme.min_play_s + frac * span) \
+        drawn = (theme.min_play_s + frac * span) \
             * getattr(self.brain.persona, "play_len_x", 1.0)
+        # NEVER ASK FOR MORE OF A RECORD THAN IT HAS (2026-08-07). The
+        # theme budgets are absolute seconds and predate any measurement of
+        # this library: groove's valley draw medians 330s against a median
+        # track of 332s, and wind_down's 240-540s asks for 93% of a
+        # six-minute record. That is what pushed after_s past every exit
+        # candidate and rode songs into their comedown. Cap it against the
+        # track actually playing; the arc/persona shaping above is
+        # untouched, it just cannot exceed the record any more.
+        # THE CAP RIDES THE PERSONA TOO. A flat ceiling applied AFTER
+        # play_len_x silently flattened the pacing lever: on every
+        # long-budget theme it bound 89-98% of draws and put monk (1.30x),
+        # storyteller (1.10x), purist and neutral on the SAME median play
+        # length - monk measured +0.0% vs neutral on wind_down, and the
+        # monk/showman spread collapsed 1.62x -> 1.22x. That is the dead-
+        # lever failure the hardness axis already taught us (see
+        # features.hardness_raw). Scaling the ceiling keeps monk's breathe
+        # and showman's rotation; EXIT_HARD_MAX_FRAC still bounds both, so
+        # even the most patient persona cannot ride a record into its
+        # comedown the way the uncapped budget did.
+        if self.current is not None and self.current.duration_s > 0:
+            cap = EXIT_MAX_FRAC * getattr(self.brain.persona,
+                                          "play_len_x", 1.0)
+            drawn = min(drawn, self.current.duration_s
+                        * min(cap, EXIT_HARD_MAX_FRAC))
+        self._exit_played = drawn
 
     def _predecode(self, track):
         """Start decoding `track` on a background daemon thread so the whole

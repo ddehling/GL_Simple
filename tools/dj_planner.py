@@ -4637,6 +4637,13 @@ class Planner(QMainWindow):
         from tools.dj.planner.beatcheck import BeatCheckTab
         self.beatcheck_tab = BeatCheckTab(self)
         self.tabs.addTab(self.beatcheck_tab, "Beat Check")
+        # Exit Compare: WHERE the DJ leaves a track, drawn on the song -
+        # candidates, the play-budget floor that hides them, and the
+        # current vs proposed exit with their blend windows, either
+        # audible on demand.
+        from tools.dj.planner.exitcompare import ExitCompareTab
+        self.exit_tab = ExitCompareTab(self)
+        self.tabs.addTab(self.exit_tab, "Exit Compare")
         self.tabs.addTab(self.nights_tab, "Nights")
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
@@ -4691,6 +4698,8 @@ class Planner(QMainWindow):
                 self.set_tab.seam_player.close()
             elif owner == "seamlab":
                 self.seamlab_tab.stop_playback()
+            elif owner == "exitcompare":
+                self.exit_tab.stop_playback()
             elif owner == "preview":
                 self.mix_tab.preview.stop()
             elif owner == "discover":
@@ -4702,7 +4711,7 @@ class Planner(QMainWindow):
     def stop_all_playback(self):
         """ANY stop button stops ANY playing."""
         for o in ("analysis", "library", "seam", "seamlab", "preview",
-                  "discover"):
+                  "discover", "exitcompare"):
             self._stop_owner(o)
         self._pb_owner = None
 

@@ -27,6 +27,14 @@ from lib.dj.themes import adapt_theme
 
 RATE = 44100
 
+# How much EARLINESS the play-time budget tolerates in best_pair, in
+# seconds of exponential decay. The budget is a preference, not a filter
+# (see best_pair): an exit this far below the drawn budget keeps ~37% of
+# its score, so it still wins when the on-time alternatives are dead.
+# Smaller = the budget's pacing wins more often and exits ride later;
+# larger = exit quality wins more often and records play shorter.
+BUDGET_TAU_S = 60.0
+
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "loop_build", "long_fade",
           "stem_drum_swap", "acapella_out")
@@ -1701,8 +1709,20 @@ class Brain:
     def best_pair(self, cur, cand, after_s=None):
         """Best (A-exit, B-entry) combination, or None. Never lets two
         busy/vocal sections blend over each other."""
-        outs = [o for o in cur.mix_outs
-                if after_s is None or o["time_s"] >= after_s]
+        # THE PLAY-TIME BUDGET IS A PREFERENCE, NOT A FILTER (2026-08-07).
+        # As a filter this deleted every candidate below after_s - and
+        # Theme.min_play_s/max_play_s are ABSOLUTE seconds with no idea how
+        # long the record is, so on the real library groove's valley draw
+        # medians 330s against a median track of 332s: the budget asks for
+        # ~99% of the song. Nothing survived on 25% of seams and
+        # plan_transition fell back to `duration - 35s`, which is the
+        # comedown by construction - the user heard it as "songs mix out
+        # deep into their comedown, just noodling around for a while".
+        # Measured over 360 seams: fallback 25% -> 0%, exits landing past
+        # the track's last groove section 19.2% -> 9.4%, at a cost of a
+        # median 3% of track length in play time. Earliness is now paid
+        # for in the score (BUDGET_TAU_S) instead of being fatal.
+        outs = list(cur.mix_outs)
         if not outs:
             return None
         # How good a section is to mix OUT of / IN to. The golden rule of
@@ -1800,6 +1820,13 @@ class Brain:
             if sec_a is None:
                 continue
             of = out_fit(sec_a, voc_a, ml_a)
+            # What leaving EARLY costs (see the `outs` comment above): a
+            # candidate below the drawn budget stays on the table, decaying
+            # with how early it is, so a good exit ~a minute early can beat
+            # a dead one that merely lands on time.
+            bud = 1.0
+            if after_s is not None and o["time_s"] < after_s:
+                bud = math.exp(-(after_s - o["time_s"]) / BUDGET_TAU_S)
             busy_a = sec_a.get("busyness") or 0.0
             ra = sec_a.get("rhythm_density") or 0.0
             ea = sec_a.get("energy") or 0.0
@@ -1832,7 +1859,7 @@ class Brain:
                 # collapsing to ~0 (which would zero the whole selection).
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
                          * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp
-                         * (0.25 + 0.75 * min(hole / 0.25, 1.0)))
+                         * (0.25 + 0.75 * min(hole / 0.25, 1.0)) * bud)
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),
