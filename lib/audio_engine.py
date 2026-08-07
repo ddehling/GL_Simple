@@ -174,9 +174,10 @@ class _Track:
         self._loop            = False
 
     # Duration of the crossfade applied at ARI loop boundaries (seconds).
-    # During this window the tail of the current loop fades out linearly
-    # while the beginning of the next loop fades in, producing a smooth
-    # overlap identical to what weather-state transitions get.
+    # During this window the tail of the current loop fades out while the
+    # beginning of the next loop fades in, on an equal-power (sin/cos) ramp —
+    # see the blend in read(). The weather-state transition fades
+    # (_fade_in_frames / _fade_out_frames) are still linear.
     _ARI_XFADE_SEC = 3.0
 
     def read(self, n_frames: int):
@@ -269,13 +270,26 @@ class _Track:
                 xf_chunk = self._xfade_buf[:xf_n]
                 self._xfade_buf = self._xfade_buf[xf_n:]
 
-                # Linear crossfade ramp: current fades 1→0, next fades 0→1.
+                # EQUAL-POWER crossfade ramp (sin/cos quarter-wave).
+                # The two streams here are DIFFERENT audio from the same file
+                # (the tail of the ARI window vs the head at _skip), so they
+                # are uncorrelated and sum in POWER, not amplitude. A linear
+                # amplitude ramp gives a**2 + (1-a)**2, which bottoms out at
+                # 0.5 mid-fade — a -3 dB sag on every loop (measured -1.9 dB
+                # mean / -3.5 dB worst on two different ambient beds). sin/cos
+                # holds sin**2 + cos**2 = 1 exactly, and unlike a sqrt ramp it
+                # has zero slope at both ends so it joins the un-faded audio
+                # either side without a kink.
+                # NOTE: correct here precisely BECAUSE the streams are
+                # uncorrelated. Do not copy this to a fade between two copies
+                # of the SAME phase-aligned signal — that case wants linear.
                 t_start = max(0, xf_pos) / max(1, xfade_frames)
                 t_end   = max(0, xf_pos + xf_n) / max(1, xfade_frames)
                 t_start = min(t_start, 1.0)
                 t_end   = min(t_end, 1.0)
-                ramp_in  = np.linspace(t_start, t_end, xf_n, dtype=np.float32)[:, np.newaxis]
-                ramp_out = 1.0 - ramp_in
+                t        = np.linspace(t_start, t_end, xf_n, dtype=np.float32)[:, np.newaxis]
+                ramp_in  = np.sin(t * (np.pi / 2.0))
+                ramp_out = np.cos(t * (np.pi / 2.0))
 
                 chunk[:xf_n] = chunk[:xf_n] * ramp_out + xf_chunk * ramp_in
 
@@ -818,13 +832,34 @@ class AudioEngine:
             sp_vol = self.soundpool_volume
             for key, track in tracks.items():
                 try:
-                    chunk = track.read(required_frames)
+                    # _Track.read() is allowed to return a SHORT chunk: at an
+                    # ARI loop boundary it caps the read at the frames left in
+                    # the window (see `n_frames = min(n_frames, remaining)`).
+                    # Reading once and mixing chunk[:len(chunk)] left the rest
+                    # of the block as ZEROS — digital silence in the output at
+                    # every single loop boundary. Harmless when the block was
+                    # the device buffer (2-9 ms), but the render-ahead ring
+                    # fixed it at RENDER_BLOCK=2048 and the hole became 25-45 ms:
+                    # clearly audible as a blip in any looping ambient bed.
+                    # Keep reading until the block is full or the track ends.
+                    parts, need = [], required_frames
+                    while need > 0:
+                        part = track.read(need)
+                        if part is None or len(part) == 0:
+                            break
+                        parts.append(part)
+                        need -= len(part)
+                        if track.done:
+                            break
+                    chunk = np.concatenate(parts) if parts else None
                 except Exception:
                     dead.append(key)
                     continue
-                if chunk is None or track.done:
-                    dead.append(key)
-                else:
+                # Mix whatever we got BEFORE reaping. The old order tested
+                # `track.done` first and dropped the chunk entirely, so a
+                # final short read that arrives together with done=True was
+                # discarded rather than played.
+                if chunk is not None and len(chunk):
                     if track.is_narrative:
                         narr_buf[:len(chunk)] += chunk * narr_vol
                     elif track.is_ambient:
@@ -841,6 +876,8 @@ class AudioEngine:
                         other_buf[:len(chunk)] += chunk * sp_vol
                     else:
                         other_buf[:len(chunk)] += chunk
+                if chunk is None or track.done:
+                    dead.append(key)
             for key in dead:
                 del tracks[key]
 
