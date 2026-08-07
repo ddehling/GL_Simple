@@ -1545,7 +1545,14 @@ class EnvironmentalSystem:
         # cleanup hook can drop stale routes if duplication starts to
         # matter.
         self._call_button_router_hook()
-        self._initialize_weather_set_events()
+        try:
+            self._apply_startup_weather(swap=True)
+        except Exception as e:
+            # Never let a weather-seeding failure leave the swapped-in
+            # project with no background events on the canvas.
+            print(f"[Project] startup weather pick failed on swap ({e}); "
+                  f"falling back to background events only")
+            self._initialize_weather_set_events()
 
         # Receiver boot-resilience: drop any rebuild the watcher queued for the
         # OLD project, then (re)start it for the new one so its late-arriving
@@ -1769,6 +1776,74 @@ class EnvironmentalSystem:
                 print(f"[WEATHER]   '{event_name}' targets unknown group "
                       f"{target_group!r}; falling back to frame_id={frame_id}")
         return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
+
+    def _apply_startup_weather(self, swap: bool = False) -> None:
+        """Put the active project on a weather state that belongs to its set.
+
+        Reads project.yaml's ``startup_weather_set`` / ``startup_weather_state``
+        and, failing those, seeds a state from whatever set is active.
+
+        MUST run after any rebuild of ``self.weather_state``. A fresh
+        ``WeatherStateController`` built without ``initial_weather`` falls back
+        to the enum's CLEAR (see lib/weather_state.py) — which on Fan is a
+        FOREST state. It also starts at ``progress = 1.0`` with
+        ``current_weather == target_weather``, so ``update()`` early-returns
+        every frame and NOTHING ever corrects weather_params. Until the first
+        random state change the project runs on that borrowed state's values:
+        that is how bartiki, whose own states never define it, inherited
+        ``Aurora_probability: 0.5`` from forest CLEAR after a project swap and
+        spawned an aurora across the BART map. ``__init__`` dodged this only
+        because the ``__main__`` startup block applied startup_weather_set
+        afterwards — a path the swap never took.
+        """
+        startup_set = self.project.raw.get("startup_weather_set")
+        startup_state = self.project.raw.get("startup_weather_state")
+
+        initial_weather = None
+        if startup_state:
+            try:
+                initial_weather = self._weather_state_enum(startup_state)
+            except (ValueError, KeyError):
+                print(f"[Project] startup_weather_state '{startup_state}' is not "
+                      f"in this project's WeatherState enum; ignoring")
+
+        if startup_set and not self.weather_set.is_valid_set(startup_set):
+            print(f"[Project] startup_weather_set '{startup_set}' is not a set "
+                  f"in this project; falling back to "
+                  f"'{self.weather_set.current_set}'")
+            startup_set = None
+
+        # A declared startup set that isn't the active one: change_weather_set
+        # does the whole job (cancel + reschedule events, snap the state).
+        if startup_set and startup_set != self.weather_set.current_set:
+            self.change_weather_set(startup_set, immediate=True,
+                                    initial_weather=initial_weather)
+            return
+
+        # Otherwise we're already on the right set and only need a valid state.
+        set_states = self.weather_set.get_set_states()
+        if not set_states:
+            print(f"[WEATHER] Set '{self.weather_set.current_set}' declares no "
+                  f"states; leaving {self.weather_state.current_weather.value} in place")
+            return
+
+        if initial_weather is not None and initial_weather in set_states:
+            new_weather = initial_weather
+        elif not swap and self.weather_state.current_weather in set_states:
+            # Boot, and the constructor's guess happens to belong to this
+            # set — events are already scheduled by __init__, leave it be.
+            return
+        else:
+            new_weather = np.random.choice(set_states)
+
+        # On a swap the caller replaced this method's old
+        # _initialize_weather_set_events() call, so do it here. On boot
+        # __init__ already did it.
+        if swap:
+            self._initialize_weather_set_events()
+            print(f"[WEATHER] Seeding '{self.weather_set.current_set}' with: "
+                  f"{new_weather.value}")
+        self.transition_to_weather(new_weather, transition_duration=0.01)
 
     def transition_to_weather(self, new_weather, transition_duration: float = 10.0):
         """Start a transition to a new weather state"""
@@ -2885,22 +2960,14 @@ if __name__ == "__main__":
     #   startup_weather_state: name of a state in that set; the controller
     #                          transitions to it on launch. Falls back to a
     #                          random pick from the set's states if absent.
-    _startup_set = env_system.project.raw.get("startup_weather_set")
-    _startup_state = env_system.project.raw.get("startup_weather_state")
-    if _startup_set:
-        try:
-            _initial_weather = (
-                env_system._weather_state_enum(_startup_state)
-                if _startup_state else None
-            )
-            env_system.change_weather_set(
-                _startup_set,
-                immediate=True,
-                initial_weather=_initial_weather,
-            )
-        except Exception as _e:
-            print(f"[Project] startup weather pick failed ({_e}); "
-                  f"using project default")
+    # Shared with the project-swap path (_swap_project_unsafe) so a swap
+    # lands on the same state a cold boot would, instead of leaving the
+    # freshly built WeatherStateController on its CLEAR fallback.
+    try:
+        env_system._apply_startup_weather()
+    except Exception as _e:
+        print(f"[Project] startup weather pick failed ({_e}); "
+              f"using project default")
     # Frame pacing: read the per-project target FPS from env_system on
     # every iteration so a project swap re-paces the loop without
     # restart. ``env_system.frame_time`` is set by ``_compute_frame_time``
