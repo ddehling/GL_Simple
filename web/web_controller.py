@@ -1130,7 +1130,7 @@ class WebController:
                       'nudge', 'pulse', 'next_id', 'setlist', 'setlist_pool',
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
                       'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort',
-                      'persona'}
+                      'persona', 'layer'}
 
         def queue_dj_action(data):
             """Validate + clamp one DJ control action and queue it for the
@@ -1172,6 +1172,13 @@ class WebController:
             elif action == 'moment':
                 arg = arg if arg in ('drop', 'spinback', 'stall',
                                      'nextdrop') else 'drop'
+            elif action == 'layer':
+                # Optional loop label from the picker; None = let the
+                # engine take the best-fitting one. Press with a layer
+                # already riding = kill it (DJSystem._do_layer toggles).
+                if arg is not None and (not isinstance(arg, str)
+                                        or len(arg) > 120):
+                    return False
             elif action == 'arc':
                 if not isinstance(arg, list):
                     return False

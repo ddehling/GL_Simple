@@ -50,7 +50,13 @@ class DJSubmix:
     is_soundpool = False
 
     def __init__(self):
-        self.decks = {"a": Deck("a"), "b": Deck("b")}
+        # A and B are the transition pair; C is the LOOP LAYER - a
+        # percussion bed ridden under whatever A/B are doing (see
+        # DJSystem._do_layer). It is never chosen as active_deck or as a
+        # sync slave, so every "b" if active == "a" else "a" swap in
+        # system.py is blind to it; read() and _snapshot() iterate the
+        # dict, so it mixes and reports with no other change.
+        self.decks = {"a": Deck("a"), "b": Deck("b"), "c": Deck("c")}
         self._q = SimpleQueue()
         self.clock = 0           # output frames rendered since attach
         self.mix_gain = 1.0

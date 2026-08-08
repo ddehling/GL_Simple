@@ -81,3 +81,70 @@ def render_seam(db, a, b, plan, status=None, info=None):
     out = [np.frombuffer(gen.send(4410), dtype=np.float32).reshape(-1, 2)
            for _ in range(int(total * RATE) // 4410)]
     return np.concatenate(out, axis=0)
+
+
+def render_layer(db, track, prep, at_s, bars, gain, lead_s=6.0, tail_s=4.0,
+                 with_layer=True, status=None):
+    """Render `track` from just before `at_s` with a LOOP LAYER riding on
+    deck C - the offline twin of DJSystem._do_layer, for auditioning.
+
+    `prep` is a lib.dj.looplayer.prepare() result. `with_layer=False`
+    renders the identical span with deck C silent, so the two can be
+    A/B'd: same track, same window, same everything but the bed.
+
+    Returns a float32 stereo ndarray. The event shape here MUST track
+    _do_layer's (mount now, transport on the downbeat, fade in/out over
+    LAYER_FADE_BARS) or the audition stops predicting the live sound.
+    """
+    from lib.audio_engine import AudioEngine
+    from lib.dj.features import decode_file_stereo
+    from lib.dj.submix import DJSubmix
+    from lib.dj.system import LAYER_FADE_BARS
+
+    period = max(float(getattr(track, "period_s", 0.5) or 0.5), 0.15)
+    start = max(track.nearest_downbeat(max(at_s - lead_s, 0.0)), 0.0)
+    if status:
+        status("decoding...")
+    samples = decode_file_stereo(db.abs(track.path))
+    engine = AudioEngine()
+    sub = DJSubmix()
+    engine.attach_track("dj", sub)
+    sub.post_many([
+        {"cmd": "load", "deck": "a", "samples": samples,
+         "track_id": track.id, "grid": track.grid,
+         "gain_db": getattr(track, "gain_db", 0.0), "cue_s": start},
+        {"cmd": "gain", "deck": "a", "value": 1.0, "ramp_s": 0.01},
+        {"cmd": "start", "deck": "a"},
+    ])
+    gen = engine._mixer()
+    next(gen)
+    gen.send(256)                       # prime, as render_seam does
+    t0 = sub.clock
+
+    span = bars * 4 * period            # deck A runs at rate 1.0 here
+    fade = min(LAYER_FADE_BARS * 4 * period, span * 0.4)
+    at = t0 + int(max(at_s - start, 0.0) * RATE)
+    end = at + int(span * RATE)
+    if with_layer:
+        sub.post_many([
+            {"cmd": "load", "deck": "c", "samples": prep["samples"],
+             "cue_s": 0.0, "gain_db": 0.0, "grid": []},
+            {"cmd": "loop", "deck": "c", "start_s": 0.0,
+             "end_s": prep["loop_s"]},
+            {"cmd": "rate", "deck": "c", "value": prep["rate"]},
+            {"cmd": "gain", "deck": "c", "value": 0.0, "ramp_s": 0.001},
+        ])
+        sub.post_many([
+            {"at": at, "cmd": "start", "deck": "c"},
+            {"at": at, "cmd": "gain", "deck": "c", "value": gain,
+             "ramp_s": fade},
+            {"at": end - int(fade * RATE), "cmd": "gain", "deck": "c",
+             "value": 0.0, "ramp_s": fade},
+            {"at": end, "cmd": "stop", "deck": "c"},
+        ])
+    if status:
+        status("rendering layer..." if with_layer else "rendering dry...")
+    total = (at_s - start) + span + tail_s
+    out = [np.frombuffer(gen.send(4410), dtype=np.float32).reshape(-1, 2)
+           for _ in range(int(total * RATE) // 4410)]
+    return np.concatenate(out, axis=0)

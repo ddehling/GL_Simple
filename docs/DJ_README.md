@@ -200,6 +200,51 @@ dj:
   plays ever, and the fx one-shot holdout respectively; the nextdrop
   MOMENT owns the synced-drop spectacle, on the music alone.)
   Styles are gated by per-track analysis confidence and theme weights.
+- **LOOP LAYER — BUILT, THEN SHELVED 2026-08-08.** A percussion bed
+  ridden UNDER the playing track on **deck C**. The capability is intact
+  and tested; only the two controls are hidden. Operator verdict: *"the
+  bed loop isn't clean... it's also not particularly impressive."*
+  - **What exists** (all still live): `Deck("c")` in `DJSubmix.decks`;
+    `lib/dj/looplayer.py` (loop sourcing); `DJSystem.layer()` /
+    `_do_layer` / `_cancel_layer` / `_layer_tick` +
+    `LAYER_BARS`/`LAYER_GAIN`/`LAYER_FADE_BARS`; `layer` in the web
+    `DJ_ACTIONS` whitelist and the `Stories_OGL` bridge;
+    `audition.render_layer`; gate `tools/tests/_dj_layer_test.py`.
+  - **What is hidden**: the `◍ LAYER` button on `/dj`, and the **Layer
+    Lab** tab (`tools/dj/planner/layerlab.py`, file kept). Both are
+    three-line restores, marked in place.
+  - **Why it was shelved**: the loop material. Sources were a
+    `db.loops_for()` point sliced from a track's demucs **drums stem**,
+    or a curated `media/loops/*.wav` DJ tool (BPM in the filename). Only
+    the first was ever exercised, because `media/loops/` was empty — and
+    demucs drums are bleedy, carry the original room and reverb tails,
+    and were never mixed to sit under other music. A real DJ tool is
+    dry, single-instrument and mixed with a hole in it. **The feature was
+    never tested with the material it was designed for.**
+  - **What was measured** (so nobody re-derives it): the reported click
+    is NOT the loop wrap — max sample step at the wrap is 0.00065 against
+    a 99.9th-percentile step of 0.065 elsewhere in the same loop, 100x
+    below its own transients, unchanged by any crossfade. Remaining
+    suspects are artefacts inside the drum stem (which recur once per
+    loop and read the same way) and slices that are simply not musically
+    seamless. Separately: **total-mix RMS is the wrong instrument for
+    judging an added layer** — a bed 13 dB down moves summed RMS by
+    ~0.2 dB, which says nothing about audibility; measure the layer's own
+    level against the track instead (`wet - dry`).
+  - **If it is revived**: put real DJ tools in `media/loops/` first
+    (Beatport's "DJ Tools" genre, Splice, Loopmasters, or bounce 8 good
+    bars of a drum stem yourself). Then consider carving the bed —
+    high-pass ~200-300 Hz so it adds percussion above the track's low end
+    instead of fighting the kick, and/or sidechain it to the master's
+    kick (`Deck.filter` and the submix `duck` already exist). Phase 2
+    (persistent across seams, autonomous selection) was never started.
+  - **Rules that must survive any revival**, both learned elsewhere in
+    this file: drums only (anything pitched clashes in key with what it
+    rides under), and never a bed built from the song it plays under —
+    four operator moments were retired in a day because "the payoff was
+    still the same song". It also must never run over an armed seam
+    (`_do_moment`: "layering anything on top of it read as garbage every
+    time it was tried"); `_arm` calls `_cancel_layer` for exactly that.
 - Incoming deck launches bar-aligned from the DB grid, stretched to the
   running tempo, then a PLL trims ±0.3% on measured beat-phase error;
   after the handover the new track glides back to its natural tempo.

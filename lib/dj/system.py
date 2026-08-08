@@ -43,6 +43,12 @@ SET_CYCLE_S = 90 * 60.0          # non-all-night themes loop their arc here
 WATCHDOG_S = 20.0                # continuity watchdog wakes this close to
                                  # the end of the current track unarmed
 WD_LOOP_S = 15.0                 # ...and buys time with a safety loop here
+# LOOP LAYER (deck C). A percussion bed ridden under the playing track.
+LAYER_BARS = 16                  # how long a bounded bed rides
+LAYER_FADE_BARS = 2              # in and out, so it arrives and leaves musically
+LAYER_GAIN = 0.35                # bed level. looplayer normalises its buffers
+                                 # to 0.7 peak, so this lands ~0.25 in the mix -
+                                 # under the track, not beside it.
 EXIT_MAX_FRAC = 0.72             # ceiling the drawn play budget may ask of
                                  # a record, as a fraction of its length
                                  # (see _draw_exit). The theme budgets are
@@ -144,6 +150,13 @@ class DJSystem:
         self._moment_denied = None   # (flavor, why, wall_t): last refusal,
                                      # surfaced on the panel button - a
                                      # silent refusal reads as a dead button
+        self._layer_txn = None       # LOOP LAYER (deck C): its txn tag, so a
+                                     # second press or an arming seam recalls
+                                     # every event that has not fired yet
+        self._layer_until = 0        # submix clock the bed stops on its own
+        self._layer_label = None     # what is riding, for the panel
+        self._layer_denied = None    # (why, wall_t) - refuse visibly, as
+                                     # the moment button does
         self._decoded = {}           # track_id -> stereo samples (RAM cache)
         self._decoded_order = []
         self._decoding = set()
@@ -859,6 +872,17 @@ class DJSystem:
                               if self._moment_clock > self.submix.clock
                               else None),
             "autopilot": self.autopilot,
+            # LOOP LAYER: what is riding under the track, and how much
+            # longer. None = nothing on deck C.
+            "layer": ({"label": self._layer_label,
+                       "left_s": round(max(
+                           (self._layer_until - self.submix.clock) / RATE,
+                           0.0), 1)}
+                      if self._layer_txn else None),
+            "layer_denied": ({"why": self._layer_denied[0],
+                              "age_s": round(time.time()
+                                             - self._layer_denied[1], 1)}
+                             if self._layer_denied else None),
             # Which SET_CYCLE_S window we're in: history entries carry
             # their own "cyc" so the night canvas shows exactly the
             # tracks of the CURRENT window (0m..now).
@@ -1125,6 +1149,8 @@ class DJSystem:
                 self._horizon_key = None
             elif kind == "moment" and self.state in ("playing", "armed")                     and self.current is not None:
                 self._do_moment(val or "drop")
+            elif kind == "layer":
+                self._do_layer(val)
             elif kind == "seam_fb":
                 if self._last_style:
                     self.brain.seam_feedback(self._last_style, val)
@@ -1179,6 +1205,7 @@ class DJSystem:
             self._refresh_setlist_names()
             self._refresh_tags()
 
+        self._layer_tick()
         if self.state == "idle":
             self._start_first()
         elif self.state == "playing":
@@ -1672,6 +1699,10 @@ class DJSystem:
         # flight has to be recalled first, or its restore (or worse, its
         # hole) fires in the middle of the blend.
         self._cancel_moment("armed")
+        # ...and the loop layer with it: a seam script owns both decks, and
+        # a third percussion bed riding over the handover is precisely what
+        # _do_moment refuses to allow.
+        self._cancel_layer("armed")
         # Tag the whole script as one transaction so _do_abort can recall
         # every not-yet-fired event with a single cancel.
         self._txn_id += 1
@@ -2042,6 +2073,182 @@ class DJSystem:
 
     def _other(self, deck):
         return "b" if deck == "a" else "a"
+
+    # -- loop layer (deck C) ---------------------------------------------------
+    def layer(self, spec=None):
+        """LOOP LAYER: ride a percussion bed under the playing track.
+
+        `spec` is an optional label from `layer_options()`; without one the
+        best-fitting loop is taken. A second press kills it. The bed lives
+        on deck C, which the A/B transition machinery never selects, so it
+        is genuinely a third layer rather than a borrowed deck."""
+        with self._lock:
+            self._pending.append(("layer", spec))
+
+    def layer_options(self, limit=12):
+        """What could ride under the current track right now - for the
+        panel's picker. Read-only; safe from any thread."""
+        cur = self.current
+        if cur is None or self.brain is None:
+            return []
+        tel = (self.submix.telemetry or {}).get("decks", {})
+        rate = float((tel.get(self.active_deck) or {}).get("rate") or 1.0)
+        target = self._true_bpm(cur) * max(rate, 1e-6)
+        ex = {cur.id}
+        if self.next_track is not None:
+            ex.add(self.next_track.id)
+        try:
+            from lib.dj import looplayer
+            cands = looplayer.candidates(
+                self.db, self.brain.library, target, exclude_ids=ex,
+                music_root=self.db.music_root, limit=limit)
+        except Exception as e:
+            print(f"[DJ] layer_options failed: {e}")
+            return []
+        return [{"label": c["label"], "kind": c["kind"],
+                 "bpm": round(c["bpm"], 1),
+                 "stretch_pct": round((c["rate"] - 1.0) * 100.0, 2)}
+                for c in cands]
+
+    def _layer_skip(self, why):
+        """Refuse a layer press LOUDLY - same contract as _moment_skip."""
+        self._layer_denied = (why, time.time())
+        self._log({"event": "layer_skipped", "why": why})
+
+    def _do_layer(self, spec=None):
+        """Mount a loop on deck C and ride it for LAYER_BARS, then leave.
+
+        Two rules, both learned the hard way elsewhere in this file:
+        never layer over an armed seam (_do_moment: "layering anything on
+        top of it read as garbage every time it was tried"), and never
+        build the bed out of the song it plays under (_do_moment again:
+        four gestures died because "the payoff was still the same song").
+        The second is enforced by excluding the playing track from the
+        candidate list, the first by refusing here AND by _arm calling
+        _cancel_layer before it takes the decks."""
+        if self._layer_txn:
+            self._cancel_layer("toggle")          # second press = kill
+            return
+        if self.state == "armed":
+            self._layer_skip("mix in progress")
+            return
+        pos = self._pos_s()
+        tel = (self.submix.telemetry or {}).get("decks", {})
+        dk = tel.get(self.active_deck) or {}
+        if pos is None or self.current is None or not dk.get("playing"):
+            self._layer_skip("no deck up")
+            return
+        rate = max(float(dk.get("rate") or 1.0), 1e-6)
+        cur = self.current
+        period = max(float(cur.period_s or 0.5), 0.15)   # SOURCE s per beat
+        beat = period / rate                             # OUTPUT s per beat
+        target_bpm = self._true_bpm(cur) * rate
+
+        ex = {cur.id}
+        if self.next_track is not None:
+            ex.add(self.next_track.id)
+        from lib.dj import looplayer
+        cands = looplayer.candidates(self.db, self.brain.library, target_bpm,
+                                     exclude_ids=ex,
+                                     music_root=self.db.music_root)
+        if spec:
+            cands = [c for c in cands if c["label"] == spec] or cands
+        prep = None
+        for c in cands[:6]:              # first one that actually loads
+            prep = looplayer.prepare(c, self.db, self.db.music_root)
+            if prep is not None:
+                break
+        if prep is None:
+            self._layer_skip("no usable loop at this tempo")
+            return
+
+        # THE BED MUST FIT INSIDE THIS TRACK, and inside the runway before
+        # the next seam gets armed - _arm would cancel it mid-ride, which
+        # is a fade-out the operator did not ask for.
+        span_out = LAYER_BARS * 4 * beat
+        fade = LAYER_FADE_BARS * 4 * beat
+        left_out = (cur.duration_s - pos) / rate
+        room = left_out - PLAN_LEAD_S - 2.0 * beat
+        if room < 6.0 * beat:
+            self._layer_skip("too close to the end")
+            return
+        span_out = max(min(span_out, room), 4.0 * beat)
+        fade = min(fade, span_out * 0.4)
+
+        t_in = cur.nearest_downbeat(pos + 2.0 * period)   # SOURCE seconds
+        if t_in <= pos:
+            t_in = cur.nearest_downbeat(pos + 6.0 * period)
+        at = self.submix.clock + int(max((t_in - pos) / rate, 0.05) * RATE)
+        end = at + int(span_out * RATE)
+
+        self._txn_id += 1
+        txn = self._txn_id
+        # Mount NOW (cheap, but not free - keep it off the musical moment)
+        # and let only the transport land on the downbeat.
+        self.submix.post_many([
+            {"cmd": "load", "deck": "c", "samples": prep["samples"],
+             "cue_s": 0.0, "gain_db": 0.0, "grid": []},
+            {"cmd": "loop", "deck": "c", "start_s": 0.0,
+             "end_s": prep["loop_s"]},
+            {"cmd": "rate", "deck": "c", "value": prep["rate"]},
+            {"cmd": "gain", "deck": "c", "value": 0.0, "ramp_s": 0.001},
+        ])
+        ev = [
+            {"at": at, "cmd": "start", "deck": "c"},
+            {"at": at, "cmd": "gain", "deck": "c", "value": LAYER_GAIN,
+             "ramp_s": fade},
+            {"at": end - int(fade * RATE), "cmd": "gain", "deck": "c",
+             "value": 0.0, "ramp_s": fade},
+            {"at": end, "cmd": "stop", "deck": "c"},
+            {"at": end, "cmd": "unload", "deck": "c"},
+        ]
+        for e in ev:
+            e["txn"] = txn
+        self.submix.post_many(ev)
+        self._layer_txn = txn
+        self._layer_until = end
+        self._layer_label = prep["label"]
+        self._log({"event": "layer", "label": prep["label"],
+                   "kind": prep["kind"], "bpm": round(prep["bpm"], 1),
+                   "rate": round(prep["rate"], 4),
+                   "bars": round(span_out / (4 * beat), 1),
+                   "gain": LAYER_GAIN,
+                   "under": cur.title})
+
+    def _cancel_layer(self, why="cancel"):
+        """Recall the bed and silence deck C. Called on a second press and
+        by _arm - a seam owns both decks, and a bed left running over one
+        is the exact thing the moment path refuses."""
+        if not self._layer_txn:
+            return
+        beat = 0.5
+        if self.current is not None:
+            beat = max(float(self.current.period_s or 0.5), 0.15)
+        self.submix.post({"cmd": "cancel", "txn": self._layer_txn})
+        # Queue order is preserved, so these land after the cancel and
+        # take the deck down however far the ride had got.
+        out = max(min(2.0 * beat, 1.5), 0.25)
+        self.submix.post_many([
+            {"cmd": "gain", "deck": "c", "value": 0.0, "ramp_s": out},
+            {"at": self.submix.clock + int((out + 0.25) * RATE),
+             "cmd": "stop", "deck": "c"},
+            {"at": self.submix.clock + int((out + 0.25) * RATE),
+             "cmd": "unload", "deck": "c"},
+        ])
+        self._log({"event": "layer_cancel", "why": why,
+                   "label": self._layer_label})
+        self._layer_txn = None
+        self._layer_until = 0
+        self._layer_label = None
+
+    def _layer_tick(self):
+        """Forget a bed that has run its course, so the next press starts a
+        new one instead of reading as a kill."""
+        if self._layer_txn and self._layer_until and \
+                self.submix.clock > self._layer_until + RATE // 2:
+            self._layer_txn = None
+            self._layer_until = 0
+            self._layer_label = None
 
     def _cancel_moment(self, why="cancel"):
         """Recall a txn-tagged MOMENT and put the deck back. The one

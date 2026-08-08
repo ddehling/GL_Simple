@@ -2553,6 +2553,11 @@ class EnvironmentalSystem:
                         self._dj.set_arc_waypoints(arg or [])
                     elif action == 'moment':
                         self._dj.moment(str(arg or 'drop'))
+                    elif action == 'layer':
+                        # None = engine picks the best-fitting loop; a
+                        # label pins one from layer_options(). Pressing
+                        # while a bed rides kills it.
+                        self._dj.layer(str(arg) if arg else None)
                     elif action == 'mix_now':
                         self._dj.mix_now()
                     elif action == 'abort':
