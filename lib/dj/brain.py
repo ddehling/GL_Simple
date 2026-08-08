@@ -35,6 +35,17 @@ RATE = 44100
 # larger = exit quality wins more often and records play shorter.
 BUDGET_TAU_S = 60.0
 
+# GATE BARS, named so the Gate Check panel can show what a seam was judged
+# against without re-typing the numbers (lib/dj/gateprobe.py reads these).
+# Changing one here changes both the gate and what the panel reports.
+KICK_SCREEN_BLEND_S = 0.020   # overlapped-drum styles: max kick-placement
+                              # delta, sits below the ~25ms audibility line
+                              # on purpose (stored grids are themselves only
+                              # ~25ms onset-accurate)
+KICK_SCREEN_CUT_S = 0.028     # ...and for the short-dual cut/echo/loop tier
+BAND_CLASH_HI = 1.5           # one side this rhythmic in a band...
+BAND_CLASH_LO = 1.2           # ...against the other below this = a clash
+
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "loop_build", "long_fade",
           "stem_drum_swap", "acapella_out")
@@ -409,6 +420,41 @@ def load_library(db):
 # --------------------------------------------------------------------------
 # Key compatibility (Camelot wheel)
 # --------------------------------------------------------------------------
+
+def _kick_delta_s(a, b, rate=1.0):
+    """How far apart the two tracks' kicks sit against their grids AS THEY
+    WILL SOUND, in seconds.
+
+    `kick_offset_s` is folded bass placement measured at each track's
+    NATURAL tempo, but B is stretched to meet A: b's offset occupies
+    `kick_offset_s / rate` of wall time once it plays. Comparing the raw
+    stored values (which every kick screen did until 2026-08-07) judges
+    the pair at a tempo neither deck is playing - measured over 700 real
+    seams it shifts the delta by a median 1.9ms (p95 11.1ms) and flips
+    the 20ms screen's verdict on 6.6% of them, in both directions.
+
+    Expressed in A's timebase, so it is independent of how the varispeed
+    dual-bend splits the stretch across the decks: that split scales both
+    sides by sqrt(rate) and cannot change which side is early. Under
+    keylock (the rubberband engine) a_rate is 1.0 and this is exact.
+
+    CIRCULAR (2026-08-07). kick_offset_s is a BEAT PHASE - features.
+    measure_kick_offset folds the envelope onto ((t - first_beat) /
+    period) % 1.0 and wraps the result to [-p/2, p/2). Subtracting two
+    such phases linearly can report most of a beat for placements that are
+    actually adjacent: measured on the real library, Visitors -> Activation
+    read 317.6ms linearly and 133.7ms the short way round. Once B is
+    stretched to A's tempo both share A's period, so the distance is
+    modulo that."""
+    ka = a.kick_offset_s or 0.0
+    kb = (b.kick_offset_s or 0.0) / (rate or 1.0)
+    d = abs(ka - kb)
+    p = getattr(a, "period_s", 0.0) or 0.0
+    if p > 0:
+        d %= p
+        d = min(d, p - d)
+    return d
+
 
 def camelot_compat(c1, c2):
     if not c1 or not c2:
@@ -2050,7 +2096,26 @@ class Brain:
         testable = ("grid_conf<0.7", "cut_needs_grid_conf>=0.8",
                     "grid_conf<0.5", "downbeat_conf", "kick_offset>28ms",
                     "key_fit<0.8", "anti_streak", "kick_clash",
-                    "swing_clash", "meter_clash", "half_time")
+                    "swing_clash", "meter_clash", "half_time",
+                    # ADDED 2026-08-07 after measuring what the stack
+                    # costs JOINTLY. long_blend carries the highest weight
+                    # in the groove theme (1.7) and reaches the dice on
+                    # 19% of seams - not out-rolled, gated out by eleven
+                    # conjunctive screens. The three biggest are these,
+                    # ~30% of seams between them, and none of them was
+                    # reachable from the Seam Lab, so nobody could ever
+                    # hear whether their thresholds are right. All three
+                    # are TUNED BARS on present evidence, never structural
+                    # (each short-circuits when the measurement is
+                    # missing: band_clash skips on None, no_beat_power
+                    # needs a non-empty `evid`, the kick screen compares
+                    # two stored offsets) - so they belong here by the
+                    # rule stated above: a threshold nobody may cross can
+                    # never be shown wrong. Every band is listed because
+                    # the override needs EVERY reason to be testable.
+                    "band_clash_low", "band_clash_mid", "band_clash_high",
+                    "no_beat_power_A", "no_beat_power_B",
+                    "kick_offset>20ms")
 
         # RETIRED (2000-pair audit + live record, 2026-08-02):
         # cut_at_drop reached 2% of menus, won 0/2000 rolls, and measured
@@ -2257,7 +2322,7 @@ class Brain:
             # confident pairs on it. They stand only where the seam's
             # local phase is UNMEASURED (_local_ok, same evidence rule
             # as the conf wall).
-            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.028 \
+            if _kick_delta_s(cur, cand, rate) > KICK_SCREEN_CUT_S \
                     and not _local_ok:
                 kill(("cut_at_drop", "echo_out",
                       "loop_build", "loop_roll_exit",
@@ -2277,10 +2342,24 @@ class Brain:
             # themselves only ~25ms onset-accurate, and pairs whose stored
             # offset read 26ms measured 27-48ms in rendered audio - the
             # screen needs headroom for its own measurement error.
-            if abs(cur.kick_offset_s - cand.kick_offset_s) > 0.020 \
+            # NOT THE PLAIN BLENDS (2026-08-07, Gate Check verdicts). Rated
+            # by ear on 16 distinct seams it refused: 13 sounded fine, 3
+            # sounded bad - and the three bad ones measured 23.1 / 24.0 /
+            # 29.3ms while everything from 42ms to 186ms sounded FINE (bad
+            # median 24.0ms vs fine median 44.4ms). Above 30ms: 9 pairs,
+            # none bad. The screen's premise - bigger delta is worse - is
+            # backwards for this quantity, and in hindsight obviously so:
+            # this measures BASS PLACEMENT (median 0.35 beats, see
+            # features.measure_kick_offset), so a large delta means one
+            # track's bass is offbeat and the two read as separate
+            # rhythmic layers, while 20-35ms is the flam zone where two
+            # hits fuse into one smeared event. A window there is a
+            # hypothesis, not a gate: the 15-30ms band is 3 bad / 4 fine
+            # on this data, a coin flip. The stem/mid-running styles keep
+            # the screen - unrated, and they overlap whole kits.
+            if _kick_delta_s(cur, cand, rate) > KICK_SCREEN_BLEND_S \
                     and not _local_ok:
-                kill(("long_blend", "bass_swap", "filter_sweep",
-                      "stem_bass_swap", "melody_carry", "breakdown_swap",
+                kill(("stem_bass_swap", "melody_carry", "breakdown_swap",
                       "stem_drum_swap", "drum_bridge"),
                      "kick_offset>20ms")
             # GROOVE-AWARE STYLE STEERING (rhythm signatures, trusted
@@ -2388,7 +2467,25 @@ class Brain:
                                     _bp.scores().get(t.id))
                         if v is not None]
                 if evid and max(evid) < bar:
-                    kill(_overlap, f"no_beat_power_{side}")
+                    # THE A-SIDE BAR DOES NOT GOVERN THE PLAIN BLENDS
+                    # (2026-08-07, Gate Check verdicts). Rated by ear on 8
+                    # distinct seams it refused: 6 sounded fine, 2 sounded
+                    # bad (p~0.001 against a 20%-false-alarm baseline). And
+                    # it is not a mis-set bar - every seam it fired on
+                    # measured 0.87-1.01 against the 1.05 exit bar, and the
+                    # "bad" ones (1.01, 0.98, 1.01) sit INSIDE the range of
+                    # the "fine" ones, so no threshold sorts them. A is the
+                    # deck LEAVING: it only has to hand off, and the EQ
+                    # staging carves its low end at the swap anyway.
+                    # The B-side bar stands untouched - B becomes the
+                    # foundation, a different claim, and it has no verdicts
+                    # against it. The stem styles keep both: they run whole
+                    # kits together where A's groove still has to hold up.
+                    _victims = (tuple(s for s in _overlap
+                                      if s not in ("long_blend", "bass_swap",
+                                                   "filter_sweep"))
+                                if side == "A" else _overlap)
+                    kill(_victims, f"no_beat_power_{side}")
                 # echo_out BEAT-MATCHES ITS RUN-IN into B, but had no
                 # B-side beat requirement at all - syncing into a
                 # beatless track locks onto NOTHING (gate-measured twice
@@ -2449,9 +2546,20 @@ class Brain:
             # B) and the stem drum paths (full-bodied kits). This kill
             # was blocking 15% of ALL seams on a mismatch the staging
             # already hides.
+            # BAND CLASH NO LONGER GOVERNS THE PLAIN BLENDS (2026-08-07,
+            # Gate Check verdicts). long_blend/bass_swap/filter_sweep were
+            # screened on the HIGH band alone; rated by ear on 11 solo
+            # seams it refused, 9 sounded fine and 2 sounded bad (p~2e-5).
+            # The measurement does not discriminate anywhere near the bar:
+            # a 0.24-vs-8.34 mismatch was fine and a 1.00-vs-3.08 was bad,
+            # so loosening 1.5/1.2 would not sort them either - there is no
+            # threshold on this quantity that matches the ear. Their true
+            # simultaneous band is the high end and B's highs enter half
+            # open (see the staging note below), which is evidently enough.
+            # The styles that genuinely run mids or full kits together keep
+            # the screen; those were never rated and their premise is
+            # different.
             _style_bands = {
-                "long_blend": ("high",), "bass_swap": ("high",),
-                "filter_sweep": ("high",),
                 # stem_bass_swap enters WHOLE minus the bass stem - its
                 # mids are fully open from bar one, so the mid clash
                 # absolutely applies (dropping it admitted a pair that
@@ -2473,7 +2581,7 @@ class Brain:
                         if va is None or vb is None:
                             continue
                         hi_, lo_ = max(va, vb), min(va, vb)
-                        if hi_ >= 1.5 and lo_ < 1.2:
+                        if hi_ >= BAND_CLASH_HI and lo_ < BAND_CLASH_LO:
                             kill(st_, f"band_clash_{bd}")
                             break
             if rt_sure:
@@ -2709,6 +2817,16 @@ class Brain:
         diag = {"gated": gated,
                 "menu": ({k: round(w, 3) for k, w in weights.items()
                           if w > 0} if rolled else {}),
+                # The anchors the GATES were evaluated at, before the
+                # phrase snap and the kick-true offset moved out_s/in_s.
+                # phase_offset() is time-bucketed, so re-checking a gate
+                # at the plan's final anchors can land in a different
+                # bucket and disagree with what actually happened
+                # (measured: 9 of 152 seams). Anything re-deriving a gate
+                # verdict - lib/dj/gateprobe.py, the gate report - has to
+                # use these, not out_s/in_s.
+                "pair_out_s": round(float(pair["out_s"]), 3),
+                "pair_in_s": round(float(pair["in_s"]), 3),
                 "fade_reason": fade_reason}
         if gate_tested:
             # Which threshold this seam was allowed to cross, so the
@@ -2757,7 +2875,7 @@ class Brain:
         # EQ staging hides the second BASSLINE, not the second set of
         # percussion transients, so a >25ms placement gap flams the whole
         # dual - keep the exposure to one phrase.
-        d_off_p = abs(cur.kick_offset_s - cand.kick_offset_s)
+        d_off_p = _kick_delta_s(cur, cand, rate)
         # kick_offset_s is a folded whole-track energy profile dominated
         # by BASS PLACEMENT (median 0.35-beat lies, see _sync_bias_beats
         # history). When the seam's phase profile is measured on BOTH

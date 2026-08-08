@@ -4644,6 +4644,21 @@ class Planner(QMainWindow):
         from tools.dj.planner.exitcompare import ExitCompareTab
         self.exit_tab = ExitCompareTab(self)
         self.tabs.addTab(self.exit_tab, "Exit Compare")
+        # Gate Check: put ONE screen on trial - a seam it refused, the
+        # numbers it was judged on, and two buttons. The screens block
+        # ~30% of all seams between them and had no route to being
+        # shown wrong until now.
+        from tools.dj.planner.gatecheck import GateCheckTab
+        self.gate_tab = GateCheckTab(self)
+        self.tabs.addTab(self.gate_tab, "Gate Check")
+        # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
+        # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
+        # engine capability is intact; only the tab is unregistered.
+        # Re-enable by restoring these three lines:
+        #   from tools.dj.planner.layerlab import LayerLabTab
+        #   self.layer_tab = LayerLabTab(self)
+        #   self.tabs.addTab(self.layer_tab, "Layer Lab")
+        self.layer_tab = None
         self.tabs.addTab(self.nights_tab, "Nights")
         # Discover (Beatport) is optional - only if the module imports.
         self.discover_tab = None
@@ -4700,6 +4715,8 @@ class Planner(QMainWindow):
                 self.seamlab_tab.stop_playback()
             elif owner == "exitcompare":
                 self.exit_tab.stop_playback()
+            elif owner == "gatecheck":
+                self.gate_tab.stop_playback()
             elif owner == "preview":
                 self.mix_tab.preview.stop()
             elif owner == "discover":
@@ -4711,7 +4728,7 @@ class Planner(QMainWindow):
     def stop_all_playback(self):
         """ANY stop button stops ANY playing."""
         for o in ("analysis", "library", "seam", "seamlab", "preview",
-                  "discover", "exitcompare"):
+                  "discover", "exitcompare", "gatecheck"):
             self._stop_owner(o)
         self._pb_owner = None
 

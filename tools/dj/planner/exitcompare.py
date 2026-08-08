@@ -63,11 +63,16 @@ class ExitLanes(QWidget):
         super().__init__()
         self.setMinimumHeight(300)
         self.seam = None
+        self.simple = False
         self.playhead = None              # seconds into the render, or None
         self._render_span = None          # (t0_a, t1_a) of A covered by audio
 
-    def set_seam(self, seam):
+    def set_seam(self, seam, simple=False):
+        """`simple` drops the exit-budget layer (hatch, candidate ticks,
+        the second exit line) and draws just the songs and where the seam
+        lands - what the Gate Check panel needs, same picture otherwise."""
         self.seam = seam
+        self.simple = simple
         self.playhead = None
         self.update()
 
@@ -131,7 +136,7 @@ class ExitLanes(QWidget):
         # the whole point of the picture - when the block covers the good
         # candidates, that IS the bug. DARKEN rather than tint: a red wash
         # over half the lane just reads as background.
-        aft = s["cur"]["after_s"]
+        aft = None if self.simple else s["cur"]["after_s"]
         xf = None
         if aft and aft > 0:
             xf = self._t2x(aft, dur)
@@ -159,9 +164,12 @@ class ExitLanes(QWidget):
         # diagnosis in one glance.
         mx = max([o["score"] for o in a.mix_outs] or [1.0]) or 1.0
         base = body_top + body_h - 6
-        p.setPen(QPen(QColor(CAND.red(), CAND.green(), CAND.blue(), 90), 1))
-        p.drawLine(55, int(base), int(self._t2x(dur, dur)), int(base))
-        for o in a.mix_outs:
+        if self.simple:
+            mx = None
+        if mx is not None:
+            p.setPen(QPen(QColor(CAND.red(), CAND.green(), CAND.blue(), 90), 1))
+            p.drawLine(55, int(base), int(self._t2x(dur, dur)), int(base))
+        for o in (() if mx is None else a.mix_outs):
             x = self._t2x(o["time_s"], dur)
             hh = 10 + 34 * (o["score"] / mx)
             killed = xf is not None and x < xf
@@ -179,8 +187,9 @@ class ExitLanes(QWidget):
                        f"{aft/dur*100:.0f}% →")
 
         # the two exits
-        for key, col, label in (("cur", CUR, "before"),
-                                ("new", NEW, "now")):
+        lanes = ((("cur", NEW, "seam"),) if self.simple
+                 else (("cur", CUR, "before"), ("new", NEW, "now")))
+        for key, col, label in lanes:
             self._draw_exit(p, s, key, col, label, dur, body_top, body_h)
 
         # Playhead, mapped from render time back onto A's own timeline.
