@@ -47,15 +47,24 @@ class EventScheduler:
         once — e.g. the WoL rain/theme shaders that paint both the Sky
         strips and the Ground arcs. Without the frame_id in the key the
         second group's copy was silently dropped.
+
+        ``allow_duplicates=True`` opts an individual call out of the check,
+        for effects that are safe to run as several concurrent instances —
+        each gets its own effect object from ``add_effect``, so the copies
+        don't share state. Only pass it for effects whose wrapper stores
+        everything in its own ``state``/effect instance; a wrapper holding
+        module-level or class-level state would have its copies fight.
+        Popped before the kwargs reach the action.
         """
+        allow_duplicates = kwargs.pop('allow_duplicates', False)
         frame_id = kwargs.get('frame_id', None)
 
         def _is_dup(event) -> bool:
             return (event.action == action
                     and event.state.get('frame_id', None) == frame_id)
 
-        if any(_is_dup(e) for e in self.active_events) or \
-           any(_is_dup(e) for e in self.event_queue):
+        if not allow_duplicates and (any(_is_dup(e) for e in self.active_events) or
+                                     any(_is_dup(e) for e in self.event_queue)):
             action_name = action.__name__ if hasattr(action, '__name__') else str(action)
             print(f"[EventScheduler] Skipping duplicate event: {action_name} "
                   f"on frame {frame_id} (already running or queued)")

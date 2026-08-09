@@ -1792,7 +1792,8 @@ class EnvironmentalSystem:
 
         print(f"[WEATHER] Background events initialized for '{self.weather_set.current_set}'")
     
-    def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float, frame_id: int = 0):
+    def _schedule_event_from_map(self, event_name: str, start_time: float, duration: float,
+                                 frame_id: int = 0, allow_duplicates: bool = False):
         """Schedule an event from the event map.
 
         If the event_map entry includes a ``{"group": "..."}`` meta dict,
@@ -1816,7 +1817,10 @@ class EnvironmentalSystem:
             else:
                 print(f"[WEATHER]   '{event_name}' targets unknown group "
                       f"{target_group!r}; falling back to frame_id={frame_id}")
-        return self.scheduler.schedule_event(start_time, duration, effect_func, frame_id=frame_id, **params)
+        return self.scheduler.schedule_event(start_time, duration, effect_func,
+                                             frame_id=frame_id,
+                                             allow_duplicates=allow_duplicates,
+                                             **params)
 
     def _apply_startup_weather(self, swap: bool = False) -> None:
         """Put the active project on a weather state that belongs to its set.
@@ -2432,11 +2436,17 @@ class EnvironmentalSystem:
                 # Per-set dwell time; 60 s when the set doesn't specify.
                 duration = float(self.weather_set.get_current_set_config()
                                  .get("random_event_duration", 60))
+                # Sets whose random events are safe as concurrent copies
+                # (desert cacti) opt out of the duplicate drop — otherwise a
+                # long residence time silently caps the realized spawn rate.
+                allow_dup = bool(self.weather_set.get_current_set_config()
+                                 .get("random_event_allow_duplicates", False))
                 print(f"   🎲 Seasonal event triggered: {event_name} "
                       f"(season: {self.season:.3f}, "
                       f"{position_note}, "
                       f"{duration:.0f}s)")
-                self._schedule_event_from_map(event_name, 0, duration, frame_id=0)
+                self._schedule_event_from_map(event_name, 0, duration, frame_id=0,
+                                              allow_duplicates=allow_dup)
 
         # ---- project-specific hook ----
         hook = self.project.load_hook("random_events")

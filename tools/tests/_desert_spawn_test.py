@@ -65,8 +65,11 @@ class _StubEnv:
         self.dropped = collections.Counter()    # lost to the duplicate check
         self.busy_until = collections.defaultdict(float)
         self.now = 0.0                          # sim seconds
+        self.live: list[float] = []             # expiry times of live spawns
+        self.peak = 0                           # max concurrent
 
-    def _schedule_event_from_map(self, name, start, duration, frame_id=0):
+    def _schedule_event_from_map(self, name, start, duration, frame_id=0,
+                                 allow_duplicates=False):
         # Confirm the name really resolves to an effect before counting it:
         # a typo'd entry would otherwise inflate the rate silently.
         if self.weather_set.resolve_event(name) is None:
@@ -74,13 +77,18 @@ class _StubEnv:
             return None
         self.rolled[name] += 1
         # Model EventScheduler's duplicate drop (lib/event_scheduler.py:41):
-        # the SAME action already active on the SAME frame is skipped. With
-        # long residence times this silently caps the realized rate, so a
-        # roll only counts as a spawn if that cactus isn't already on screen.
-        if self.now < self.busy_until[(name, frame_id)]:
+        # the SAME action already active on the SAME frame is skipped unless
+        # the caller opted out. With long residence times that check silently
+        # caps the realized rate, so a roll only counts as a spawn if that
+        # cactus isn't already on screen -- or duplicates are allowed.
+        if not allow_duplicates and self.now < self.busy_until[(name, frame_id)]:
             self.dropped[name] += 1
             return None
         self.busy_until[(name, frame_id)] = self.now + duration
+        # Track concurrency so we can report how crowded the dunes get.
+        self.live.append(self.now + duration)
+        self.live = [t for t in self.live if t > self.now]
+        self.peak = max(self.peak, len(self.live))
         self.fired[name] += 1
         return None
 
@@ -137,6 +145,7 @@ def run(hours: float, seed: int = 0):
         union *= (1.0 - b)
     print(f"\nmean cacti on screen : {mean_count:.2f}")
     print(f"at least one visible : {1 - union:.0%} of the time")
+    print(f"peak concurrent      : {env.peak}")
 
     unresolved = {k: v for k, v in env.fired.items() if k.startswith("UNRESOLVED")}
     if unresolved:
