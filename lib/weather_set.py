@@ -109,6 +109,17 @@ class WeatherSetManager:
         cfg = self.get_current_set_config()
         return cfg.get("random_events", []), cfg.get("random_event_rate", 0.0001)
 
+    def get_random_event_seasonal(self) -> bool:
+        """Whether random-event picking is locked to the season cycle.
+
+        True (the default) keeps the historical behaviour: the entry whose
+        slot sits nearest the current season wins outright, so each event
+        owns 1/N of the cycle and the rest are impossible meanwhile. A set
+        that wants every entry live at all hours sets this False and gets a
+        uniform pick.
+        """
+        return bool(self.get_current_set_config().get("random_event_seasonal", True))
+
     def get_season_speed(self) -> float:
         return self.get_current_set_config().get("season_speed", 1.0)
 
