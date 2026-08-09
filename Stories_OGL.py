@@ -1256,7 +1256,48 @@ class EnvironmentalSystem:
             return_port=return_port,
         )
 
+        # PER-RECEIVER EMPHASIS. A receiver may declare ``gain:`` in
+        # project.yaml to sit brighter (or quieter) than the rest of the
+        # piece — WoL uses it to push the central sculpture forward. The
+        # gain is resolved to a per-ROW vector per group here (a strip's
+        # canvas row is its strip_idx) and applied by the render pipeline
+        # BEFORE the brightness limiter, so the limiter still sees the
+        # true total and the power budget is unchanged: emphasis comes out
+        # of the rest of the piece rather than on top of it.
+        row_gain: dict = {}
+        for rx in receivers_list:
+            if not isinstance(rx, dict):
+                continue
+            try:
+                g = float(rx.get("gain", 1.0))
+            except (TypeError, ValueError):
+                continue
+            if g == 1.0:
+                continue
+            for s in rx.get("strips", []) or []:
+                gid = s.get("group", "main")
+                dims = group_dims.get(gid)
+                if dims is None:
+                    continue
+                vec = row_gain.setdefault(
+                    gid, _np.ones(dims[0], dtype=_np.float32))
+                row = int(s.get("row", s.get("strip_idx", 0)))
+                if 0 <= row < len(vec):
+                    vec[row] = g
+        for gid, v in list(row_gain.items()):
+            rows = [int(i) for i in _np.nonzero(v != 1.0)[0]]
+            if not rows:
+                # A gain was declared but none of its strips landed inside
+                # this group's height — drop it rather than ship a no-op
+                # vector (and index into an empty selection).
+                row_gain.pop(gid)
+                continue
+            print(f"[Emphasis] {gid}: rows {rows} x"
+                  f"{', x'.join(f'{v[r]:.2f}' for r in sorted(set(rows))[:1])}"
+                  f" (of {len(v)} rows)")
+
         st = self.scheduler.state
+        st["row_gain"] = row_gain or None
         st["project"] = self.project
         st["strips_by_group"] = strips_by_group
         st["strips_by_object"] = strips_by_object
@@ -2376,17 +2417,24 @@ class EnvironmentalSystem:
             randcheck = np.random.random()
             if randcheck < random_event_rate:
                 num_events = len(random_events)
-                event_positions = np.linspace(0, 1, num_events, endpoint=False)
-                seasonal_distances = np.abs(event_positions - self.season)
-                seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
-                closest_index = np.argmin(seasonal_distances)
+                if self.weather_set.get_random_event_seasonal():
+                    event_positions = np.linspace(0, 1, num_events, endpoint=False)
+                    seasonal_distances = np.abs(event_positions - self.season)
+                    seasonal_distances = np.minimum(seasonal_distances, 1 - seasonal_distances)
+                    closest_index = np.argmin(seasonal_distances)
+                    position_note = f"position: {event_positions[closest_index]:.3f}"
+                else:
+                    # Season-agnostic set: every entry stays possible at any
+                    # hour instead of owning 1/N of the cycle.
+                    closest_index = int(np.random.randint(num_events))
+                    position_note = "uniform"
                 event_name = random_events[closest_index]
                 # Per-set dwell time; 60 s when the set doesn't specify.
                 duration = float(self.weather_set.get_current_set_config()
                                  .get("random_event_duration", 60))
                 print(f"   🎲 Seasonal event triggered: {event_name} "
                       f"(season: {self.season:.3f}, "
-                      f"position: {event_positions[closest_index]:.3f}, "
+                      f"{position_note}, "
                       f"{duration:.0f}s)")
                 self._schedule_event_from_map(event_name, 0, duration, frame_id=0)
 

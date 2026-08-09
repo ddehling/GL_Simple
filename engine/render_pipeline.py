@@ -231,6 +231,14 @@ class RenderPipeline:
                 frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
             else:
                 frame_corrected = frame_rgb.astype(np.float32)
+            # Per-receiver emphasis (project.yaml ``gain:`` on a receiver,
+            # resolved to per-row vectors by Stories_OGL). Applied BEFORE
+            # the limiter on purpose: the limiter then sees the true total,
+            # so a boosted node takes its extra brightness out of the
+            # piece's shared power budget instead of on top of it.
+            rg = (self.state.get("row_gain") or {}).get(gid)
+            if rg is not None and len(rg) == frame_corrected.shape[0]:
+                frame_corrected = frame_corrected * rg[:, None, None]
             frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
             corrected[gid] = frame_corrected
 
