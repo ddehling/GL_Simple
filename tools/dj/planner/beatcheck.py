@@ -134,94 +134,105 @@ class _CheckWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
     def _measure(self, cur, cand, plan, mix, decks, marks):
-        from lib.dj import beatpower as bp
-        from lib.dj.seamverify import _beats_in_span, _render_times
-        blend_s, swap_s = marks["blend_s"], marks["swap_s"]
-        t0 = max(0.0, blend_s - 6.0)
-        t1 = min(len(mix) / RATE, swap_s + 10.0)
-        i0, i1 = int(t0 * RATE), int(t1 * RATE)
+        # Thin wrapper: the measurement uses no worker state, so it lives
+        # as a module function that any caller with a tapped render can
+        # use (tools/dj/planner/lab.py's shared worker does).
+        return measure_bands(cur, cand, plan, mix, decks, marks)
 
-        envs = {}
-        aud = {}
-        for deck in ("a", "b"):
-            seg = decks[deck][i0:i1]
-            envs[deck] = {name: _band_env(seg, kind, freq)
-                          for name, kind, freq in BANDS}
-            # Audibility mask at ENV_HZ: beat ticks are only drawn where
-            # the deck is actually sounding - ticks marching through a
-            # faded-out deck's silence are noise, not information.
-            step = RATE // ENV_HZ
-            mono = np.abs(seg.mean(axis=1))
-            n = len(mono) // step * step
-            e = mono[:n].reshape(-1, step).max(axis=1)
-            w = max(int(0.5 * ENV_HZ), 1)
-            k = np.ones(w) / w
-            smooth = np.convolve(e, k, mode="same")
-            aud[deck] = (smooth > 0.04 * (float(smooth.max()) or 1.0))
 
-        ticks = {}
-        offs = {}
-        for deck, track, anchor in (("a", cur, plan["out_s"]),
-                                    ("b", cand, plan["in_s"])):
-            trace = marks["pos"][deck]
-            grid_r = np.array([])
-            kick_r = np.array([])
-            off = bp.phase_offset(track.id, at_s=anchor) or 0.0
-            if len(trace) >= 2:
-                s_lo = min(p[1] for p in trace)
-                s_hi = max(p[1] for p in trace)
-                beats = _beats_in_span(track, s_lo, s_hi)
-                if len(beats):
-                    grid_r = _render_times(beats, trace)
-                    kick_r = _render_times(beats + off, trace)
-            ticks[deck] = {"grid": grid_r, "kick": kick_r}
-            offs[deck] = off * 1000.0
+def measure_bands(cur, cand, plan, mix, decks, marks):
+    """Band envelopes + measured/stored kick ticks for a TAPPED render.
 
-        # Headline: measured kick-to-kick during the overlap (the number
-        # the eye should agree with).
-        ka = ticks["a"]["kick"]
-        kb = ticks["b"]["kick"]
-        sa = ka[(ka >= blend_s) & (ka <= swap_s)]
-        sb = kb[(kb >= blend_s) & (kb <= swap_s)]
-        k2k = None
-        if len(sa) >= 4 and len(sb) >= 4:
-            k2k = float(np.median([np.min(np.abs(sb - x)) for x in sa])
-                        ) * 1000.0
-        # PERCUSSION CO-PRESENCE. On a beat-matched style k2k is the
-        # headline; on an UNSYNCED one (long_fade) it is meaningless - two
-        # free-running decks have no single kick delta, it drifts. What
-        # can still be wrong there is that both kits are audible at once,
-        # which is what this measures and what the ear objects to.
-        from lib.dj.seamverify import perc_overlap
-        po = perc_overlap(decks["a"], decks["b"], blend_s, swap_s + 6.0)
-        # Every render leaves a traceable row: "that seam sucked" must be
-        # answerable by name and number, not memory.
-        try:
-            import json
-            import time
-            log_p = os.path.join(os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.dirname(
-                    os.path.abspath(__file__))))), "logs",
-                "beatcheck.jsonl")
-            with open(log_p, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "t": time.time(), "a": cur.title, "b": cand.title,
-                    "a_id": cur.id, "b_id": cand.id,
-                    "style": plan["style"], "rate": round(plan["rate"], 4),
-                    "beats": plan.get("beats"),
-                    "out_s": round(plan["out_s"], 2),
-                    "in_s": round(plan["in_s"], 2),
-                    "k2k_ms": None if k2k is None else round(k2k, 1),
-                    "perc_kick_s": po["kick_s"],
-                    "perc_hi_s": po["perc_s"],
-                    "off_a_ms": round(offs["a"], 1),
-                    "off_b_ms": round(offs["b"], 1)}) + "\n")
-        except OSError:
-            pass
-        return {"a": cur, "b": cand, "plan": plan, "mix": mix,
-                "marks": marks, "t0": t0, "t1": t1, "envs": envs,
-                "aud": aud, "ticks": ticks, "offs": offs, "k2k_ms": k2k,
-                "perc": po}
+    `mix`, `decks`, `marks` are exactly what dj_knobsweep.render_tapped
+    returns. The result is the dict _BandCanvas.set_data consumes."""
+    from lib.dj import beatpower as bp
+    from lib.dj.seamverify import _beats_in_span, _render_times
+    blend_s, swap_s = marks["blend_s"], marks["swap_s"]
+    t0 = max(0.0, blend_s - 6.0)
+    t1 = min(len(mix) / RATE, swap_s + 10.0)
+    i0, i1 = int(t0 * RATE), int(t1 * RATE)
+
+    envs = {}
+    aud = {}
+    for deck in ("a", "b"):
+        seg = decks[deck][i0:i1]
+        envs[deck] = {name: _band_env(seg, kind, freq)
+                      for name, kind, freq in BANDS}
+        # Audibility mask at ENV_HZ: beat ticks are only drawn where
+        # the deck is actually sounding - ticks marching through a
+        # faded-out deck's silence are noise, not information.
+        step = RATE // ENV_HZ
+        mono = np.abs(seg.mean(axis=1))
+        n = len(mono) // step * step
+        e = mono[:n].reshape(-1, step).max(axis=1)
+        w = max(int(0.5 * ENV_HZ), 1)
+        k = np.ones(w) / w
+        smooth = np.convolve(e, k, mode="same")
+        aud[deck] = (smooth > 0.04 * (float(smooth.max()) or 1.0))
+
+    ticks = {}
+    offs = {}
+    for deck, track, anchor in (("a", cur, plan["out_s"]),
+                                ("b", cand, plan["in_s"])):
+        trace = marks["pos"][deck]
+        grid_r = np.array([])
+        kick_r = np.array([])
+        off = bp.phase_offset(track.id, at_s=anchor) or 0.0
+        if len(trace) >= 2:
+            s_lo = min(p[1] for p in trace)
+            s_hi = max(p[1] for p in trace)
+            beats = _beats_in_span(track, s_lo, s_hi)
+            if len(beats):
+                grid_r = _render_times(beats, trace)
+                kick_r = _render_times(beats + off, trace)
+        ticks[deck] = {"grid": grid_r, "kick": kick_r}
+        offs[deck] = off * 1000.0
+
+    # Headline: measured kick-to-kick during the overlap (the number
+    # the eye should agree with).
+    ka = ticks["a"]["kick"]
+    kb = ticks["b"]["kick"]
+    sa = ka[(ka >= blend_s) & (ka <= swap_s)]
+    sb = kb[(kb >= blend_s) & (kb <= swap_s)]
+    k2k = None
+    if len(sa) >= 4 and len(sb) >= 4:
+        k2k = float(np.median([np.min(np.abs(sb - x)) for x in sa])
+                    ) * 1000.0
+    # PERCUSSION CO-PRESENCE. On a beat-matched style k2k is the
+    # headline; on an UNSYNCED one (long_fade) it is meaningless - two
+    # free-running decks have no single kick delta, it drifts. What
+    # can still be wrong there is that both kits are audible at once,
+    # which is what this measures and what the ear objects to.
+    from lib.dj.seamverify import perc_overlap
+    po = perc_overlap(decks["a"], decks["b"], blend_s, swap_s + 6.0)
+    # Every render leaves a traceable row: "that seam sucked" must be
+    # answerable by name and number, not memory.
+    try:
+        import json
+        import time
+        log_p = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))))), "logs",
+            "beatcheck.jsonl")
+        with open(log_p, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "t": time.time(), "a": cur.title, "b": cand.title,
+                "a_id": cur.id, "b_id": cand.id,
+                "style": plan["style"], "rate": round(plan["rate"], 4),
+                "beats": plan.get("beats"),
+                "out_s": round(plan["out_s"], 2),
+                "in_s": round(plan["in_s"], 2),
+                "k2k_ms": None if k2k is None else round(k2k, 1),
+                "perc_kick_s": po["kick_s"],
+                "perc_hi_s": po["perc_s"],
+                "off_a_ms": round(offs["a"], 1),
+                "off_b_ms": round(offs["b"], 1)}) + "\n")
+    except OSError:
+        pass
+    return {"a": cur, "b": cand, "plan": plan, "mix": mix,
+            "marks": marks, "t0": t0, "t1": t1, "envs": envs,
+            "aud": aud, "ticks": ticks, "offs": offs, "k2k_ms": k2k,
+            "perc": po}
 
 
 class _BandCanvas(QWidget):

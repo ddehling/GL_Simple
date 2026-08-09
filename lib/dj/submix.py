@@ -168,7 +168,10 @@ class DJSubmix:
         elif cmd == "release_loop":
             deck.release_loop()
         elif cmd == "gain":
-            deck.set_gain(e["value"], e.get("ramp_s", 0.05))
+            # curve: "linear" (default) or "power" for the constant-power
+            # crossfade law - see Deck.set_gain.
+            deck.set_gain(e["value"], e.get("ramp_s", 0.05),
+                          e.get("curve", "linear"))
         elif cmd == "eq":
             deck.eq.set_gains(e.get("low"), e.get("mid"), e.get("high"),
                               e.get("ramp_s", 0.05))

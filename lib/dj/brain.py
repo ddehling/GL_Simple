@@ -322,6 +322,51 @@ class TrackInfo:
         return r if r is not None else self._raw_drive()
 
 
+# CROSSFADE LAW. A gain ramp this long or longer is a musical FADE and
+# gets the constant-power curve; anything shorter is a cut, a de-click or
+# a level set, and stays linear.
+#
+# Measured 2026-08-08 on real long blends: the two decks are uncorrelated
+# in every band, |rho| < 0.06 - including the low band, because beat
+# ALIGNMENT is not waveform CORRELATION. Uncorrelated signals add as
+# power, so two linear ramps crossing at 0.5 amplitude land at
+# 0.25 + 0.25 = -3.01 dB. The constant-power curve (Deck._ramp_gain)
+# interpolates g^2 instead, so the pair holds its level across the cross.
+#
+# Applied as a post-pass over the finished event list rather than at each
+# of the ~30 gain sites, so a new style cannot forget to opt in. An event
+# that sets "curve" explicitly keeps what it asked for.
+_POWER_RAMP_MIN_S = 1.0
+# ...and ONLY for styles where the two decks genuinely overlap. A solo
+# fade to silence (long_fade, echo_out, the cut styles) is heard on its
+# own, where constant-power is the wrong shape: sqrt(1-u) sits 3 dB above
+# linear at the halfway point and then drops away steeply, so a lone
+# outro would hang and then fall off a cliff.
+_POWER_STYLES = frozenset((
+    "long_blend", "bass_swap", "filter_sweep", "stem_bass_swap",
+    "stem_drum_swap", "drum_bridge", "breakdown_swap", "melody_carry",
+    "acapella_in", "acapella_out", "loop_in"))
+
+
+def _apply_fade_curve(ev, style):
+    """Mark the long gain ramps of an OVERLAPPED blend as constant-power.
+
+    Measured 2026-08-08: on the blends sampled this moved the mid-blend
+    level by less than 0.2 dB, because the automation staggers the two
+    fades rather than crossing them - deck A is already 7.5 dB down two
+    seconds into an 11 s blend while B is still 15 dB below its final
+    level. The curve is still the correct law for the stretch where they
+    DO overlap; it is simply not what causes the mid-blend sag. That is a
+    timing question between fade_out_ramp and fade_b_ramp1/2.
+    """
+    if style not in _POWER_STYLES:
+        return
+    for e in ev:
+        if (e.get("cmd") == "gain" and "curve" not in e
+                and float(e.get("ramp_s", 0.0)) >= _POWER_RAMP_MIN_S):
+            e["curve"] = "power"
+
+
 def load_library(db):
     """Hydrate every playable track from the DB into TrackInfo objects."""
     out = []
@@ -3687,6 +3732,24 @@ class Brain:
                        "ramp_s": K("duck_beats") * beat_out})
         if long_stage:
             span_s = (end - S0) / RATE
+            # KNOWN DEFECT, 16-BEAT BLENDS (found 2026-08-08, NOT fixed -
+            # fixing it changes how those seams sound and wants ears, per
+            # the tuning note above). When the swap lands at the blend
+            # start, `mid` == S0 (+/- a sample), so the ramp to 1.0 below
+            # REPLACES this stage-1 ramp in the same instant - set_gain
+            # overwrites any pending ramp. B then arrives at full
+            # immediately instead of riding under A, and stage1_gain /
+            # stage1_frac are dead knobs on those seams.
+            #
+            # Measured over 40 planned long_blends: stage-1 survives 17.2s
+            # at 64 beats and 25.4s at 96, but 0.000s on every one of the
+            # four 16-beat seams. 36/40 are healthy; the collapse is
+            # confined to the short end.
+            #
+            # If fixed: either skip this event when `mid` is within a beat
+            # of S0, or keep the swap off the blend start so a short blend
+            # still gets a staged entry. Either way, A/B it by ear first.
+            #
             # Stage 1 - BEATS TOGETHER: B rises to near-full presence over
             # the first third and RIDES there (drums+air under A, EQ keeps
             # one bassline / one melody), instead of still creeping up
@@ -3948,6 +4011,7 @@ class Brain:
                {"at": stop_at, "cmd": "end_sync"},
                {"at": stop_at, "cmd": "clear_loop", "deck": active}]
         self._glide_home(ev, incoming, rate_b, stop_at)
+        _apply_fade_curve(ev, style)
         return ev, stop_at, S0
 
     def preview_events(self, plan, cur, cand):

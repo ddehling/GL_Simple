@@ -4625,32 +4625,26 @@ class Planner(QMainWindow):
         self.tabs.addTab(self.analysis_tab, "Analysis")
         self.tabs.addTab(self.set_tab, "Set")
         self.tabs.addTab(self.mix_tab, "Mix")
-        # Seam Lab: generate brain-planned seams, play, rate good/
-        # passable/bad - a rating treadmill that feeds seam_feedback and
-        # logs/seam_lab_ratings.jsonl.
-        from tools.dj.planner.seamlab import SeamLabTab
-        self.seamlab_tab = SeamLabTab(self)
-        self.tabs.addTab(self.seamlab_tab, "Seam Lab")
-        # Beat Check: render a real seam through the engine and DRAW the
-        # band-separated waveforms + measured kick ticks of both decks on
-        # one axis - visual ground truth for the beat matching.
-        from tools.dj.planner.beatcheck import BeatCheckTab
-        self.beatcheck_tab = BeatCheckTab(self)
-        self.tabs.addTab(self.beatcheck_tab, "Beat Check")
-        # Exit Compare: WHERE the DJ leaves a track, drawn on the song -
-        # candidates, the play-budget floor that hides them, and the
-        # current vs proposed exit with their blend windows, either
-        # audible on demand.
-        from tools.dj.planner.exitcompare import ExitCompareTab
-        self.exit_tab = ExitCompareTab(self)
-        self.tabs.addTab(self.exit_tab, "Exit Compare")
-        # Gate Check: put ONE screen on trial - a seam it refused, the
-        # numbers it was judged on, and two buttons. The screens block
-        # ~30% of all seams between them and had no route to being
-        # shown wrong until now.
-        from tools.dj.planner.gatecheck import GateCheckTab
-        self.gate_tab = GateCheckTab(self)
-        self.tabs.addTab(self.gate_tab, "Gate Check")
+        # Lab: ONE seam, rendered once, seen through three lenses -
+        # Scope (what the blend does), Beat (per-deck bands + measured
+        # kicks) and Exit (where the track is left, vs the old engine) -
+        # plus the good/passable/bad rating treadmill that feeds
+        # seam_feedback and logs/seam_lab_ratings.jsonl.
+        #
+        # Replaced four tabs on 2026-08-08 (Seam Lab, Beat Check, Exit
+        # Compare, Gate Check). They shared a spine - pick a seam, render,
+        # play - and differed only in what they drew, so each held its own
+        # seam and nothing seen in one could be checked against another.
+        # Gate Check's trial loop was retired rather than ported: its
+        # verdicts had already done their job (they retired the 20ms kick
+        # screen - see tools/tests/_dj_kickdelta_test.py), and
+        # lib/dj/gateprobe.py plus logs/gate_ratings.jsonl are still on
+        # disk if it is ever wanted back. Seam Lab's single-knob probe
+        # staircase went the same way; tools/dj/planner/seamprobe.py
+        # remains.
+        from tools.dj.planner.lab import LabTab
+        self.lab_tab = LabTab(self)
+        self.tabs.addTab(self.lab_tab, "Lab")
         # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
         # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
         # engine capability is intact; only the tab is unregistered.
@@ -4711,12 +4705,8 @@ class Planner(QMainWindow):
                 self.library_tab.stop_playback()
             elif owner == "seam":
                 self.set_tab.seam_player.close()
-            elif owner == "seamlab":
-                self.seamlab_tab.stop_playback()
-            elif owner == "exitcompare":
-                self.exit_tab.stop_playback()
-            elif owner == "gatecheck":
-                self.gate_tab.stop_playback()
+            elif owner == "lab":
+                self.lab_tab.stop_playback()
             elif owner == "preview":
                 self.mix_tab.preview.stop()
             elif owner == "discover":
@@ -4727,8 +4717,8 @@ class Planner(QMainWindow):
 
     def stop_all_playback(self):
         """ANY stop button stops ANY playing."""
-        for o in ("analysis", "library", "seam", "seamlab", "preview",
-                  "discover", "exitcompare", "gatecheck"):
+        for o in ("analysis", "library", "seam", "lab", "preview",
+                  "discover"):
             self._stop_owner(o)
         self._pb_owner = None
 
@@ -4915,12 +4905,8 @@ class Planner(QMainWindow):
         self.library_tab._pipe_total = 0
         if self.set_tab._op is not None and self.set_tab._op.isRunning():
             self.set_tab._op.wait(3000)      # a beam search can't be killed
-        self.seamlab_tab._session = False
-        self.seamlab_tab.stop_playback()
-        if self.seamlab_tab._gen is not None \
-                and self.seamlab_tab._gen.isRunning():
-            self.seamlab_tab._gen.wait(10000)   # a render can't be killed
-        self.beatcheck_tab.shutdown()    # waits its render worker too
+        # A render can't be killed, so shutdown waits it out.
+        self.lab_tab.shutdown()
         if self.discover_tab is not None:
             self.discover_tab.close()
         super().closeEvent(ev)

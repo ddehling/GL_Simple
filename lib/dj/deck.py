@@ -260,10 +260,44 @@ class Deck:
         self.stretch.seek(int(time_s * RATE))
         self._fade_in = 192
 
-    def set_gain(self, target, ramp_s=0.05):
+    def set_gain(self, target, ramp_s=0.05, curve="linear"):
+        """Ramp the deck's gain to `target` over `ramp_s`.
+
+        `curve` picks how the gain moves between the endpoints:
+
+          "linear"  amplitude moves at a constant rate. Right for a gain
+                    move heard ON ITS OWN - a fade to silence, a duck, a
+                    brake - where a constant-rate amplitude change is what
+                    reads as smooth.
+          "power"   interpolate in the POWER domain instead. Two decks
+                    trading with this curve sum to CONSTANT POWER, so an
+                    uncorrelated crossfade holds its level rather than
+                    sagging in the middle.
+
+        Why "power" exists (measured 2026-08-08): the two decks in a blend
+        are uncorrelated - |rho| < 0.06 across low/mid/high on real seams,
+        including the low band, because beat ALIGNMENT is not waveform
+        CORRELATION. Uncorrelated signals add as power, so a linear
+        crossfade lands at 0.25 + 0.25 = -3.01 dB at the midpoint, which
+        is the dip you hear. See lib/dj/brain.py's blend automation for
+        who opts in.
+        """
         ramp_s = max(ramp_s, 1e-3)
-        self._gain_ramp = (float(target),
-                           abs(float(target) - self.gain) / ramp_s)
+        self._gain_ramp = {"g0": float(self.gain), "g1": float(target),
+                           "dur": float(ramp_s), "t": 0.0,
+                           "curve": str(curve)}
+
+    @staticmethod
+    def _ramp_gain(r, u):
+        """Gain at fraction `u` (scalar or array, 0..1) through ramp `r`."""
+        g0, g1 = r["g0"], r["g1"]
+        if r["curve"] == "power":
+            # sqrt of the linear interpolation of g^2. For a 0->1 / 1->0
+            # pair this is sqrt(u) and sqrt(1-u), whose powers sum to
+            # exactly 1 throughout - and unlike sin/cos it stays correct
+            # for arbitrary endpoints (a partial duck, a blend to 0.4).
+            return np.sqrt(np.maximum((1.0 - u) * g0 * g0 + u * g1 * g1, 0.0))
+        return g0 + (g1 - g0) * u
 
     def set_rate(self, target, ramp_s=0.0):
         target = float(np.clip(target, 0.90, 1.10))
@@ -503,20 +537,22 @@ class Deck:
         self._feed_env(block)                    # pre-EQ/gain rhythm tap
         block = self.eq.process(block)
         block = self.filter.process(block)
-        g0 = self.gain
         if self._gain_ramp is not None:
-            target, speed = self._gain_ramp
-            step = speed * dt
-            if abs(target - self.gain) <= step:
-                self.gain = target
+            # Progress-based, not step-based: the curve needs to know HOW
+            # FAR through the ramp it is, which a per-block step toward the
+            # target cannot tell it.
+            r = self._gain_ramp
+            t0, t1 = r["t"], min(r["t"] + n / RATE, r["dur"])
+            r["t"] = t1
+            u = np.linspace(t0 / r["dur"], t1 / r["dur"], n)
+            ramp = self._ramp_gain(r, u)
+            block = block * ramp[:, None]
+            self.gain = float(ramp[-1]) if n else self.gain
+            if t1 >= r["dur"]:
+                self.gain = r["g1"]      # land exactly, no drift
                 self._gain_ramp = None
-            else:
-                self.gain += step if target > self.gain else -step
-        if g0 == self.gain:
-            if self.gain != 1.0:
-                block = block * self.gain
-        else:
-            block = block * np.linspace(g0, self.gain, n)[:, None]
+        elif self.gain != 1.0:
+            block = block * self.gain
         # Echo sits AFTER the gain stage: cut the deck and the captured
         # tail keeps ringing over the incoming track (the echo-out exit).
         if self.echo.active:

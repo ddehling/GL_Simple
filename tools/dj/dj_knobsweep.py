@@ -268,12 +268,18 @@ def main():
 # variance cancels - the machine's A/B.
 # ===========================================================================
 
-def render_tapped(db, a, b, plan):
+def render_tapped(db, a, b, plan, info=None):
     """audition.render_seam plus full per-deck post-EQ taps.
 
     Returns (mix, decks, marks): mix (n,2) float32; decks {"a": (n,2),
     "b": (n,2)} aligned sample-for-sample with mix; marks {"blend_s",
-    "swap_s"} in render seconds."""
+    "swap_s"} in render seconds.
+
+    Pass a dict as `info` to also receive the automation behind the mix,
+    in the SAME shape audition.render_seam fills: {"events", "plan",
+    "t0_clock", "cue_a", "blend_at", "swap_at"}. That lets one tapped
+    render drive the seam scope as well as the per-deck views, instead of
+    rendering the same seam twice through two different renderers."""
     from lib.audio_engine import AudioEngine
     from lib.dj.brain import Brain
     from lib.dj.features import decode_file_stereo
@@ -318,6 +324,12 @@ def render_tapped(db, a, b, plan):
     events, swap_at, blend_at = brain.build_events(
         plan, sub.telemetry, "a", "b", a, b)
     sub.post_many(events)
+    if info is not None:
+        # Same contract as audition.render_seam's info, so the seam scope
+        # can draw a tapped render without knowing which renderer made it.
+        # t0_clock is stamped below, once the tap loop has read sub.clock.
+        info.update({"events": events, "plan": plan, "cue_a": cue_a,
+                     "blend_at": blend_at, "swap_at": swap_at})
 
     # CLOCK-PLACED taps: the mixer skips read() for a deck that is not
     # playing, so appending blocks time-shifts the late-starting deck to
@@ -327,6 +339,8 @@ def render_tapped(db, a, b, plan):
     taps = {"a": [], "b": []}
     pos_trace = {"a": [], "b": []}       # (render clock, source seconds)
     t0 = sub.clock
+    if info is not None:
+        info["t0_clock"] = t0
     for _nm, _d in sub.decks.items():
         def _wrap(orig, nm, dk):
             def f(n):

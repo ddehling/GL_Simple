@@ -305,6 +305,22 @@ Sims (not pass/fail — they print distributions you read):
 
 ## Gotchas (hard-won)
 
+- OPEN DEFECT — 16-BEAT `long_blend` LOSES ITS STAGED ENTRY. `set_gain`
+  replaces any pending ramp, so when the swap lands at the blend start
+  (`mid` == S0) the stage-1 event is overwritten in the same sample and B
+  arrives at full instead of riding under A; `stage1_gain` / `stage1_frac`
+  do nothing there. Measured over 40 planned blends: stage-1 lives 17.2s
+  at 64 beats and 25.4s at 96, but **0.000s on all four 16-beat seams**.
+  Not fixed — see the note at the `long_stage` branch in `brain.py`, and
+  A/B any fix by ear rather than by trough depth.
+- A CROSSFADE'S DIP IS NOT ALWAYS THE FADE LAW. The decks are genuinely
+  uncorrelated (|rho| < 0.06 in every band — beat *alignment* is not
+  waveform *correlation*), so linear ramps should cost 3 dB at the cross
+  and `Deck.set_gain(curve="power")` now interpolates g² for overlapped
+  styles. Measured gain: **±0.2 dB**, because the automation staggers the
+  two fades rather than crossing them. The mid-blend sag is spectral —
+  B enters bass-cut and mid-shelved while A's low hands over — and that
+  carve is deliberate.
 - ONE NaN POISONS A WHOLE PERCENTILE. `np.percentile` over a list holding a
   single NaN returns NaN, every `value >= NaN` is False, and the tag
   vanishes library-wide. Ten near-silent tracks with a NaN energy axis
