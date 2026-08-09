@@ -124,3 +124,6 @@ glsign/*
 # Claude Code per-machine settings (permissions allowlist etc.)
 .claude/settings.local.json
 logs/
+# Contact sheets written by the tools/tests/_*_visual_harness.py gates
+_wyne_frames/
+_storm_frames/
