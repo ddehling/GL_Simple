@@ -68,7 +68,13 @@ from projects.fan.shaders.storm_lightning import shader_storm_lightning
 from projects.fan.shaders.storm_thunder import shader_storm_thunder
 from projects.fan.shaders.storm_moonshaft import shader_storm_moonshaft
 from projects.fan.shaders.storm_moonbow import shader_storm_moonbow
+from functools import partial
 from projects.fan.shaders.stars import shader_stars
+
+# Mirrors the set's "storm_stars" event_map entry: star visibility comes
+# from the state's starryness alone, with no day/night gate.
+_storm_stars = partial(shader_stars, num_stars=3500, audio_sensitivity=0,
+                       drift_x=0.3, ignore_season=True)
 
 # Mirrors WEATHER_SETS["storm_world"]["background_events"]. Order is
 # irrelevant - the canvas sorts by z_centroid - but any NEW storm layer must
@@ -86,16 +92,17 @@ WRAPPERS = [
     ("storm_thunder", shader_storm_thunder),
     ("storm_moonshaft", shader_storm_moonshaft),
     ("storm_moonbow", shader_storm_moonbow),
-    ("stars", shader_stars),
+    ("stars", _storm_stars),
 ]
 
 # The storm block of the project output map (projects/fan/weather_params.py).
 # Any NEW storm param must be listed here or the harness renders with it at
 # its default while the app shows it working.
-STORM_PARAMS = ["rain_speed", "rain_angle", "rain_vortex", "rain_color",
-                "cloud_darkness", "cloud_type", "window_streaks", "thunder",
-                "moonshaft", "storm_tint", "mist_density", "color_band",
-                "puddle_density", "moonbow_intensity"]
+STORM_PARAMS = ["rain_speed", "rain_angle", "rain_vortex", "rain_grain",
+                "rain_color", "cloud_darkness", "cloud_type",
+                "window_streaks", "thunder", "moonshaft", "sky_band", "storm_tint",
+                "mist_density", "color_band", "puddle_density",
+                "moonbow_intensity"]
 
 # Core params lib/weather_state.py publishes under a different name, or
 # derives. Handled explicitly in outstate_for_state().
@@ -239,13 +246,12 @@ def metrics(img):
 
 def base_outstate(renderer):
     out = {'shader_renderer': renderer, 'frame_id': 0}
+    # Seed from the project's own output map so a param whose "off" value
+    # isn't zero (rain_grain, rain_speed, cloud_*) starts where the app
+    # would start it, not at 0.
     for k in STORM_PARAMS:
-        out[k] = wp.PROJECT_OUTPUTS.get(k, 0.0) if hasattr(wp, 'PROJECT_OUTPUTS') else 0.0
+        out[k] = wp.OUTSTATE_PUBLISH.get(k, 0.0)
     out['storm_tint'] = [0.26, 0.30, 0.44]
-    out['rain_color'] = None
-    out['rain_speed'] = 1.0
-    out['cloud_darkness'] = 0.5
-    out['cloud_type'] = 0.4
     for k in CORE_PASSTHROUGH:
         out[k] = 0.0
     out['rain'] = 0.0
@@ -286,8 +292,17 @@ def outstate_for_state(state_name, renderer):
 
 
 def render_case(label, out_mutator, out_dir, canvas_fbo, skip=None):
-    """Render one case. `skip` drops a layer by name (the --drop mode)."""
-    wrappers = [w for w in WRAPPERS if w[0] != skip]
+    """Render one case. `skip` drops layers by name - one name, or an
+    iterable of them. Dropping the backdrop (storm_sky, storm_clouds) is how
+    a foreground layer gets measured on its own: cov and p95 for a whole
+    storm scene are set by the sky, so a change to the rain is nearly
+    invisible in the composite numbers even when the rain changed a lot.
+    """
+    if skip is None:
+        skip = ()
+    elif isinstance(skip, str):
+        skip = (skip,)
+    wrappers = [w for w in WRAPPERS if w[0] not in skip]
     canvas = StubCanvas()
     canvas.fbo = canvas_fbo
     renderer = StubRenderer(canvas)
