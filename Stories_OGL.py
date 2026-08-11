@@ -42,6 +42,9 @@ from renderer.effects.celestial_bodies import CELESTIAL_BODIES
 from renderer import effects as fx
 from web.web_controller import WebController
 from core.project import load_project, list_projects
+from core.correction import (
+    NEUTRAL_GAIN, SYSTEM as CORRECTION_SYSTEM, build_correction_plans,
+)
 from core.shader_loader import load_project_shaders
 
 def load_config(project_override: str | None = None):
@@ -540,6 +543,20 @@ class EnvironmentalSystem:
             )
             # Sync initial set name now that WeatherSetManager is ready
             self.web_controller.set("current_weather_set", self.weather_set.current_set)
+            # Re-scale the Brightness Limit slider to THIS project's PSU
+            # budget: max, default and current value all become the
+            # project's declared ceiling, so the piece boots at full
+            # budget and the slider can only take it down from there.
+            # Two reasons this must happen here rather than being a fixed
+            # schema number: ``send_variables`` copies the slider into
+            # ``state["brightness_limit"]`` every frame, so an unseeded
+            # slider silently overwrites the project's ceiling with the
+            # web default (WoL declares 0.4 and ran at 0.1); and a slider
+            # whose max exceeds the budget lets a mis-drag over-draw the
+            # supplies.
+            if self.project.brightness_limit is not None:
+                self.web_controller.set_project_ceiling(
+                    "brightness_limit", self.project.brightness_limit)
             # Per-weather-set interaction panels (the web UI's generic
             # interaction tab). Projects that declare no ``interaction``
             # hook get no tab on any set.
@@ -1256,48 +1273,33 @@ class EnvironmentalSystem:
             return_port=return_port,
         )
 
-        # PER-RECEIVER EMPHASIS. A receiver may declare ``gain:`` in
-        # project.yaml to sit brighter (or quieter) than the rest of the
-        # piece — WoL uses it to push the central sculpture forward. The
-        # gain is resolved to a per-ROW vector per group here (a strip's
-        # canvas row is its strip_idx) and applied by the render pipeline
-        # BEFORE the brightness limiter, so the limiter still sees the
-        # true total and the power budget is unchanged: emphasis comes out
-        # of the rest of the piece rather than on top of it.
-        row_gain: dict = {}
-        for rx in receivers_list:
-            if not isinstance(rx, dict):
-                continue
-            try:
-                g = float(rx.get("gain", 1.0))
-            except (TypeError, ValueError):
-                continue
-            if g == 1.0:
-                continue
-            for s in rx.get("strips", []) or []:
-                gid = s.get("group", "main")
-                dims = group_dims.get(gid)
-                if dims is None:
-                    continue
-                vec = row_gain.setdefault(
-                    gid, _np.ones(dims[0], dtype=_np.float32))
-                row = int(s.get("row", s.get("strip_idx", 0)))
-                if 0 <= row < len(vec):
-                    vec[row] = g
-        for gid, v in list(row_gain.items()):
-            rows = [int(i) for i in _np.nonzero(v != 1.0)[0]]
-            if not rows:
-                # A gain was declared but none of its strips landed inside
-                # this group's height — drop it rather than ship a no-op
-                # vector (and index into an empty selection).
-                row_gain.pop(gid)
-                continue
-            print(f"[Emphasis] {gid}: rows {rows} x"
-                  f"{', x'.join(f'{v[r]:.2f}' for r in sorted(set(rows))[:1])}"
-                  f" (of {len(v)} rows)")
+        # PER-RECEIVER CORRECTION. A receiver may declare ``gain:`` (sit
+        # brighter or quieter than the rest of the piece — WoL uses it to
+        # push the central sculpture forward) and ``gamma:`` (correct
+        # itself independently of the web control panel's Gamma slider —
+        # a box whose LEDs or diffuser read darker than its neighbours).
+        # Both resolve here — once per project load — to canvas regions
+        # off the receiver_idx atlas, so they land on exactly the pixels
+        # that box drives whether its strips are rows (WoL), columns (Fan)
+        # or arbitrary polylines. The render pipeline applies them BEFORE
+        # the brightness limiter — the limiter still sees the true total,
+        # so emphasis comes out of the piece's shared power budget rather
+        # than on top of it. Built from ``project_receivers`` rather than
+        # the network-filtered ``receivers_list`` so a box's correction is
+        # a property of the box, not of whether mDNS resolved it at boot.
+        correction_plans = build_correction_plans(project_receivers,
+                                                  group_metadata)
+        for gid, plan in correction_plans.items():
+            for px, gamma, gain in plan.summary():
+                bits = []
+                if gamma != CORRECTION_SYSTEM:
+                    bits.append(f"gamma {gamma:.2f} (not the slider)")
+                if gain != NEUTRAL_GAIN:
+                    bits.append(f"gain x{gain:.2f}")
+                print(f"[Correction] {gid}: {px} px — {', '.join(bits)}")
 
         st = self.scheduler.state
-        st["row_gain"] = row_gain or None
+        st["correction_plans"] = correction_plans or None
         st["project"] = self.project
         st["strips_by_group"] = strips_by_group
         st["strips_by_object"] = strips_by_object
@@ -1561,8 +1563,15 @@ class EnvironmentalSystem:
             self.scheduler.brightness_setpoint = new_project.brightness_limit
             self.scheduler.state["brightness_limit"] = new_project.brightness_limit
             if self.web_controller is not None:
-                self.web_controller.set("brightness_limit",
-                                        new_project.brightness_limit)
+                # Re-scale the slider to the NEW project's budget — its
+                # max moves too, so swapping from a piece with a generous
+                # ceiling to a tighter one can't leave the slider parked
+                # somewhere the new rig's supplies can't take. Must go to
+                # the global modifiers, not control_dict: send_variables
+                # reads the slider back into state every frame, so a value
+                # parked in control_dict is read by nobody.
+                self.web_controller.set_project_ceiling(
+                    "brightness_limit", new_project.brightness_limit)
             print(f"[Project] brightness_limit = {new_project.brightness_limit}")
 
         # Per-project target FPS. Main loop re-reads

@@ -6,7 +6,8 @@ objects + their canvases:
   * Objects   — labeled positions on the composite preview canvas
   * Groups    — rendering surfaces (id, width, height) shared across strips
   * Strips    — (group, strip_idx, length, polyline, receiver) tuples
-  * Receivers — physical hardware addresses (host/ip + protocol)
+  * Receivers — physical hardware addresses (host/ip + protocol) plus
+                per-box output correction (gain emphasis, gamma override)
 
 Run::
 
@@ -69,6 +70,10 @@ from PyQt6.QtWidgets import (
 )
 
 from core.project import list_projects
+from core.correction import (
+    MIN_OVERRIDE as GAMMA_MIN_OVERRIDE, NEUTRAL_GAIN, SYSTEM as GAMMA_SYSTEM,
+    parse_gain, parse_gamma,
+)
 from lib.emulator_broadcaster import (
     decode_message, STAGE_RAW, STAGE_CORRECTED,
 )
@@ -605,6 +610,14 @@ class BoxSpec:
     ip: Optional[str] = None
     host: Optional[str] = None
     protocol: str = "ddp"
+    # Output-correction knobs, both per-box, both from project.yaml's
+    # receiver entry. ``gain`` scales this box's brightness relative to
+    # the piece (1.0 = no emphasis, 0 mutes it). ``gamma`` overrides the
+    # web control panel's system Gamma slider for this box alone; 0
+    # (anything under 0.01) means "follow the slider" and shows as
+    # "System". See core/correction.py.
+    gain: float = NEUTRAL_GAIN
+    gamma: float = GAMMA_SYSTEM
 
     def label(self) -> str:
         addr = self.host or self.ip or "—"
@@ -1244,6 +1257,8 @@ def load_doc(project_id: str) -> LayoutDoc:
             ip=rx.get("ip"),
             host=rx.get("host"),
             protocol=str(rx.get("protocol", "ddp")),
+            gain=parse_gain(rx.get("gain", NEUTRAL_GAIN)),
+            gamma=parse_gamma(rx.get("gamma", GAMMA_SYSTEM)),
         ))
     # Passive objects (multi_object only): objects in geometry.yaml that have
     # no matching receiver — append them as receiver-less boxes so they
@@ -1451,6 +1466,12 @@ def save_doc(doc: LayoutDoc) -> None:
                 entry["host"] = b.host
             entry["protocol"] = b.protocol
             entry["object_id"] = b.object_id
+            # Both correction knobs are always emitted, even at their
+            # neutral values: the point of the fields is that an operator
+            # reading project.yaml can see, per box, that the knob exists
+            # and where this box currently sits.
+            entry["gain"] = float(b.gain)
+            entry["gamma"] = float(b.gamma)
             entry["strips"] = []  # filled in next
             box_to_rx_idx[box_idx] = len(receivers_yaml_proto)
             receivers_yaml_proto.append(entry)
@@ -1607,13 +1628,16 @@ class BoxesModel(_BaseModel):
     columns are inert (not editable, not displayed in the canvas) but
     still present so the table schema is uniform across projects.
     """
-    HEADERS = ["object_id", "name", "x", "y", "ip", "host", "protocol"]
+    HEADERS = ["object_id", "name", "x", "y", "ip", "host", "protocol",
+               "gain", "gamma"]
+    COL_GAIN = 7
+    COL_GAMMA = 8
 
     def rowCount(self, parent=QModelIndex()):
         return len(self.doc.boxes)
 
     def columnCount(self, parent=QModelIndex()):
-        return 7
+        return len(self.HEADERS)
 
     def headerData(self, section, orient, role=Qt.ItemDataRole.DisplayRole):
         if role == Qt.ItemDataRole.DisplayRole and orient == Qt.Orientation.Horizontal:
@@ -1638,6 +1662,28 @@ class BoxesModel(_BaseModel):
             if c == 4: return b.ip or ""
             if c == 5: return b.host or ""
             if c == 6: return b.protocol
+            if c in (self.COL_GAIN, self.COL_GAMMA):
+                if not (b.ip or b.host):
+                    return "—"     # passive object: no wire output at all
+                if c == self.COL_GAIN:
+                    return f"{b.gain:.2f}"
+                # "System" is the honest label for 0 — it says the box
+                # tracks the control panel's Gamma slider rather than
+                # implying it renders at gamma 0.
+                if b.gamma < GAMMA_MIN_OVERRIDE:
+                    return "System"
+                return f"{b.gamma:.2f}"
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if c == self.COL_GAIN:
+                return ("Brightness emphasis for this box, relative to the "
+                        "rest of the piece. 1.00 = no emphasis, 0 mutes it. "
+                        "Applied before the brightness limiter, so a boosted "
+                        "box takes its extra light out of the shared power "
+                        "budget rather than on top of it.")
+            if c == self.COL_GAMMA:
+                return ("Gamma exponent for this box only. 'System' (0) "
+                        "follows the web control panel's Gamma slider; any "
+                        "value >= 0.01 overrides it for this box's pixels.")
         return None
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
@@ -1667,6 +1713,22 @@ class BoxesModel(_BaseModel):
                 if v not in ("sacn", "ddp"):
                     return False
                 b.protocol = v
+            elif c == self.COL_GAIN:
+                v = str(value).strip().lower()
+                if v in ("", "-", "—"):
+                    b.gain = NEUTRAL_GAIN
+                else:
+                    b.gain = parse_gain(float(v))
+            elif c == self.COL_GAMMA:
+                # Accept the word this cell displays, an empty cell, or a
+                # number. Anything that isn't a number is rejected rather
+                # than silently reset, so a fat-fingered entry doesn't
+                # quietly drop a box back onto the system slider.
+                v = str(value).strip().lower()
+                if v in ("", "system", "-", "—"):
+                    b.gamma = GAMMA_SYSTEM
+                else:
+                    b.gamma = parse_gamma(float(v))
         except (TypeError, ValueError):
             return False
         self.dataChanged.emit(index, index)
@@ -1678,6 +1740,13 @@ class BoxesModel(_BaseModel):
         # Position columns inert when the project has no spatial layout
         if c in (2, 3) and not self._is_position_meaningful():
             return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        # Gain and gamma are receiver properties — a passive object (no
+        # ip/host) writes no receiver entry, so editing them there would
+        # be a silent no-op on save.
+        if c in (self.COL_GAIN, self.COL_GAMMA) and index.isValid():
+            b = self.doc.boxes[index.row()]
+            if not (b.ip or b.host):
+                return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         return (Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 | Qt.ItemFlag.ItemIsEditable)
 

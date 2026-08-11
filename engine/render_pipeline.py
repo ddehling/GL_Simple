@@ -16,6 +16,7 @@ import cv2
 
 import lib.audio_engine as sound
 import lib.dmx_sender as imdmx
+from core.correction import apply_correction
 from renderer.shader_renderer import ShaderRenderer
 from lib.event_scheduler import EventScheduler
 
@@ -220,6 +221,12 @@ class RenderPipeline:
         frames to each DMX sender so it can extract per-strip from the right
         group canvas."""
         gamma = float(self.state.get("web_gamma", 2.0))
+        # Per-receiver correction plans (project.yaml ``gamma:`` / ``gain:``
+        # on a receiver, resolved to canvas regions at project load; the
+        # lookup tables inside rebuild themselves when the slider above
+        # moves). Empty for projects that correct nothing — those groups
+        # take a plain whole-canvas lookup. See core/correction.py.
+        plans = self.state.get("correction_plans") or {}
 
         corrected: dict = {}
         for i, gid in enumerate(self.group_ids):
@@ -227,18 +234,12 @@ class RenderPipeline:
             if frame is None:
                 continue
             frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
-            if gamma != 1:
-                frame_corrected = np.power(frame_rgb / 255.0, gamma) * 255.0
-            else:
-                frame_corrected = frame_rgb.astype(np.float32)
-            # Per-receiver emphasis (project.yaml ``gain:`` on a receiver,
-            # resolved to per-row vectors by Stories_OGL). Applied BEFORE
-            # the limiter on purpose: the limiter then sees the true total,
-            # so a boosted node takes its extra brightness out of the
-            # piece's shared power budget instead of on top of it.
-            rg = (self.state.get("row_gain") or {}).get(gid)
-            if rg is not None and len(rg) == frame_corrected.shape[0]:
-                frame_corrected = frame_corrected * rg[:, None, None]
+            # Gamma + per-box gain, in one pass. Both land BEFORE the
+            # limiter on purpose: the limiter then sees the true total, so
+            # a boosted node takes its extra brightness out of the piece's
+            # shared power budget instead of on top of it.
+            frame_corrected = apply_correction(frame_rgb, gamma,
+                                               plans.get(gid))
             frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
             corrected[gid] = frame_corrected
 
@@ -265,10 +266,22 @@ class RenderPipeline:
         """Scale frame down if total brightness exceeds the setpoint.
 
         Uses exponential smoothing on the divisor to prevent flickering.
+
+        The setpoint is a PSU budget, so this is the last line of defence
+        for it: whatever the runtime value says, it is clamped to
+        ``brightness_setpoint`` — the ceiling the active project declared.
+        The web slider is already range-limited to the same number, but
+        that guard lives in a different process boundary (an API caller,
+        a stale value carried across a project swap, a future control
+        surface) and over-drawing the supplies is not a recoverable
+        mistake. Anything may take the piece DOWN; nothing may raise it.
         """
         cfg = self.brightness_config
         state = self.brightness_state[frame_index]
-        setpoint = float(self.state.get("brightness_limit", self.brightness_setpoint))
+        setpoint = min(
+            float(self.state.get("brightness_limit", self.brightness_setpoint)),
+            float(self.brightness_setpoint),
+        )
 
         height, width = frame_corrected.shape[:2]
         sum_of_weights = cfg['red_factor'] + cfg['green_factor'] + cfg['blue_factor']

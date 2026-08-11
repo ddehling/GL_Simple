@@ -137,9 +137,21 @@ class WebController:
                 "description": "Output gamma correction exponent (applied before brightness limiter)"
             },
             "brightness_limit": {
+                # SAFETY CEILING — this max is a hardware guard, not a UI
+                # preference. Above the active piece's declared budget the
+                # PSUs are over-drawn, so the slider must not be able to
+                # go there: a fat-fingered drag has to stop at the safe
+                # value. ``max`` is therefore rewritten per project at
+                # boot and on swap (set_project_ceiling), to exactly that
+                # project's ``brightness_limit:`` — Fan 0.1, WoL 0.4. The
+                # 0.1 here is the conservative fallback for a project that
+                # declares nothing, matching RenderPipeline's own default.
+                # The API clamps every write to this range, and the render
+                # pipeline clamps again against the project value, so no
+                # single mistake can raise the ceiling.
                 "label": "Brightness Limit",
                 "min": 0.0, "max": 0.1, "step": 0.005, "default": 0.1,
-                "description": "Power limiter threshold (0.1 = safe max). Lower values cap output harder to save power"
+                "description": "Power limiter threshold, as a fraction of full-scale output. The maximum is the active project's PSU budget and cannot be exceeded from here; lower values cap output harder to save power"
             },
             "master_volume": {
                 "label": "Master Volume",
@@ -1691,7 +1703,59 @@ class WebController:
         with self._dict_lock:
             self.control_dict[key] = value
         self._values_cache = None  # Invalidate cache
-    
+
+    def set_global_modifier(self, name, value, make_default=False) -> bool:
+        """Move a global modifier (a control-panel slider) from code.
+
+        Global modifiers live in their own dict, NOT in ``control_dict``
+        — ``set()`` cannot reach them, and a value written to the wrong
+        dict is read by nobody.
+
+        ``make_default`` also rewrites the schema default, which is what
+        the panel's "reset" restores to. Pass it when the value IS the
+        right resting position for the active project — otherwise a reset
+        would drop the piece back to whatever the last project wanted.
+
+        Clamps to the modifier's schema and returns False for an unknown
+        name.
+        """
+        schema = self.global_modifier_schema.get(name)
+        if schema is None:
+            return False
+        value = max(schema["min"], min(schema["max"], float(value)))
+        with self._dict_lock:
+            self.global_modifiers[name] = value
+            if make_default:
+                schema["default"] = value
+        self._values_cache = None
+        return True
+
+    def set_project_ceiling(self, name, ceiling) -> bool:
+        """Re-scale a slider to the active project's hardware limit.
+
+        Some sliders are guards rather than preferences —
+        ``brightness_limit`` is a PSU budget, and above it the supplies
+        are over-drawn. The safe value differs per piece (Fan 0.1, Weight
+        of Light 0.4), so the slider's ``max`` follows the project rather
+        than being one number for every rig: the operator can drag freely
+        and still cannot leave the safe range.
+
+        Sets max, default and current value to ``ceiling``, so the piece
+        boots at its full budget and every later write — REST, socket, or
+        code — is clamped to it. Call on boot and on every project swap.
+        """
+        schema = self.global_modifier_schema.get(name)
+        if schema is None:
+            return False
+        ceiling = max(schema["min"], float(ceiling))
+        with self._dict_lock:
+            schema["max"] = ceiling
+            schema["default"] = ceiling
+            self.global_modifiers[name] = ceiling
+        self._values_cache = None
+        return True
+
+
     def __getitem__(self, key):
         """Allow dictionary-style access."""
         with self._dict_lock:
