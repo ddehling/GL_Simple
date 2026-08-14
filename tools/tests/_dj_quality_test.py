@@ -681,6 +681,11 @@ def seam_qa(library, wav=False):
     # stochastically at depth 12 on a run whose code hadn't touched it,
     # and unlike the rare styles it has no structural pool to aid the
     # search with.
+    # KNOWN INTERMITTENT: breakdown_swap missed 1 run in 3 on
+    # 2026-08-14 with UNCHANGED code and passed on rerun - same
+    # unfound plan/render nondeterminism as the [FLAKY?] grid note
+    # above. If this check fails on a style the diff never touched,
+    # rerun once before digging.
     required = set(styles) - {"echo_out"}
     check("style coverage rendered", required <= set(got),
           f"rendered {sorted(got)} of {styles}"

@@ -3024,6 +3024,19 @@ class Brain:
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
                 kill("cut_at_drop", "downbeat_conf")
+            # BAR TRUTH IS drum_bridge's PREMISE (2026-08-14). The bridge
+            # interleaves two bare rhythm skeletons for 8+ beats with all
+            # harmonic cover stripped - beat-level lock can be perfect
+            # (rendered: 4ms grid delta) while a wrong downbeat estimate
+            # offsets the PATTERNS by a beat or two, snare against kick,
+            # which the ear reads as "beat matching isn't working"
+            # (operator, Entertain Us -> Organa Baumel: downbeat_conf
+            # 0.20 / 0.25, the two least bar-sure tracks imaginable,
+            # interleaved naked). Both sides must know where the bar is.
+            # 0.3 is a first bar set from that one seam - it is in the
+            # `testable` set, so Gate Check can rate it.
+            if (cur.downbeat_conf < 0.3 or cand.downbeat_conf < 0.3):
+                kill("drum_bridge", "downbeat_conf")
             # Short-dual precision styles (a few bars of overlap, no time
             # for the PLL to settle) demand STRONG grids on both sides -
             # at conf ~0.6 the stored grid itself wobbles 25-50ms
@@ -3542,16 +3555,22 @@ class Brain:
                     and kf_precise < 0.8:
                 # A's melodic bed sustains under B - key fit IS the premise.
                 kill("melody_carry", "key_fit<0.8")
-            # KEY CLASH is drum_bridge's home turf: both tracks strip to
-            # percussion while the harmony resets - boost it exactly where
-            # everything harmonic struggles.
-            if camelot_compat(cur.camelot, cand.camelot) < 0.5:
-                # Key clash: the harmonic-reset styles are the honest
-                # answers - percussion bridge (stems) or spinback (none).
-                if weights.get("drum_bridge", 0.0) > 0.0:
-                    weights["drum_bridge"] *= 2.5
-                if weights.get("spinback_cut", 0.0) > 0.0:
-                    weights["spinback_cut"] *= 2.0
+            # (The KEY-CLASH x2.5 BOOST for drum_bridge lived here from
+            # its birth until 2026-08-14 - "both tracks strip to
+            # percussion while the harmony resets", so clash-key pairs
+            # were STEERED into bridges. The theory's flagship seam
+            # (Entertain Us -> Organa Baumel, key fit 0.30, four camelot
+            # steps) was rated "fairly bad" by the operator the first
+            # time it played live. The theory ignores what the loop-
+            # layer post-mortem already measured: demucs drum stems are
+            # bleedy - tonal content rides them, so the old key keeps
+            # sounding through the bridge and the alien key lands on its
+            # tail. The boost is gone: drum_bridge stays AVAILABLE at
+            # any key the other gates allow, it just competes on merit
+            # instead of being handed the worst-key pairs. Whether a
+            # hard key FLOOR is also warranted is a Lab question - one
+            # seam does not set a bar. spinback_cut's twin boost went
+            # with it (retired style, the weight was already zero).
             # breakdown_swap needs the sections to exist: A must have a
             # breakdown ahead of the exit region, B a build to enter on.
             bd_a = next((s for s in (cur.sections or [])
