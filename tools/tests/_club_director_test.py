@@ -2,9 +2,13 @@
 
 Simulates the scheduler contract with scripted energy/build/drop signals
 and asserts: heat/profile-table coverage, graph-respecting energy
-corrections, phrase-aligned cuts, no churn in matched rooms, drop
-snap-cuts with duration override, one-shot gating by floor heat, build
-hold + tension, drop slam, and percentile self-calibration.
+corrections, phrase-aligned cuts, no corrective churn in matched rooms,
+drop snap-cuts with duration override, one-shot gating by floor heat,
+build hold + tension, drop slam, percentile self-calibration, and the
+visit-aware drift takeover (the director owns ALL room movement now -
+the engine's Switch_rate roll is frozen every frame, and the director's
+own drift roll must keep traveling instead of recycling the transition
+graph's local cliques).
 
 Note: the night-arc bias means exact target-heat values vary with the
 wall clock (by up to +-0.25); assertions are behavioral with slack.
@@ -12,8 +16,11 @@ wall clock (by up to +-0.25); assertions are behavioral with slack.
 Usage: python tools/tests/_club_director_test.py
 """
 import os
+import random
 import sys
 import time
+
+random.seed(20260813)   # drift roll timing/picks deterministic per run
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
@@ -89,10 +96,18 @@ t, reqs, _, _ = run(120.0, state, out, energy=0.6)
 check("cold room corrected", len(reqs) >= 1 and SCENE_HEAT[reqs[0][1]] > 0.3,
       f"requests={[(round(a,1), b) for a, b in reqs[:3]]}")
 
-# 2. Matched room -> no churn.
+# 2. Matched room -> no CORRECTIVE churn. The visit-aware drift still
+#    roams (it replaced the engine's Switch_rate roll 1:1), but never as
+#    an energy correction.
 state, out = fresh('club_orbitarium')
 t, reqs, _, _ = run(120.0, state, out, energy=0.40)
-check("matched room left alone", len(reqs) == 0, f"requests={reqs}")
+notes = " | ".join(j['msg'] for j in state['_journal'])
+check("matched room: no corrections",
+      'stepping up' not in notes and 'easing down' not in notes
+      and 'stepped up' not in notes and 'cooled down' not in notes,
+      f"journal={notes[-200:]}")
+check("drift roams the matched room", len(reqs) >= 1,
+      f"requests={[(round(a, 1), b) for a, b in reqs]}")
 
 # 3. Phrase alignment: with a confident beat grid, the correction waits
 # for the 16-beat wrap instead of firing at the 15s mismatch mark.
@@ -106,7 +121,8 @@ check("correction is phrase-aligned",
 # 4. Drop in a cold room with a hot floor -> SNAP cut (short duration).
 state, out = fresh('club_mindblob')
 t, reqs, events, durs = run(60.0, state, out, energy=0.45)
-check("no churn while warming", len(reqs) == 0, f"requests={reqs}")
+check("warming: only gentle drift, no snaps or corrections",
+      all(d is None for d in durs), f"requests={reqs} durations={durs}")
 out['current_weather_state'] = 'club_pearl'
 t, reqs2, events2, durs2 = run(4.0, state, out, energy=0.45,
                                drop_at=t + 1.0, t0=t)
@@ -166,12 +182,13 @@ check("every leaned pick stays molten",
       f"moves={[m.replace('club_', '') for m in all_moves]}")
 check("leaned wander rotates rooms", len(set(all_moves)) >= 2,
       f"{len(set(all_moves))} distinct rooms in 5min")
-# Release: the freeze stops being refreshed.
+# Release: the hold PERSISTS - the director owns drift for the whole
+# night now, leaned or not (the engine roll stays frozen).
 out['club_theme'] = ''
 t, _, _, _ = run(5.0, state, out, energy=0.5, t0=t)
-check("release unfreezes drift",
-      out.get('_transition_hold_until', 0.0) < time.time() + 3.5,
-      "hold_until no longer refreshed after release")
+check("hold persists after release (director owns all drift)",
+      out.get('_transition_hold_until', 0.0) > time.time() - 1.0,
+      f"hold_until={out.get('_transition_hold_until', 0.0):.0f}")
 
 # 9. Silence hush: the music stopping dims every pattern level toward
 #    embers over a few seconds; sound returning wakes the room fast.
@@ -242,7 +259,8 @@ check("dj drop-eta pre-arms the room",
       f"dest={state.get('_drop_dest')}")
 
 # ---- DJ swap choreography: the move matches the seam's character ---------
-def _handover(style, energy=0.5, room="club_runway", last_jump=-1e9):
+def _handover(style, energy=0.5, room="club_runway", last_jump=-1e9,
+              room_since=None):
     state, out = fresh(room)
     out['dj_active'] = True
     out['dj_swap_eta'] = 3.0
@@ -252,7 +270,9 @@ def _handover(style, energy=0.5, room="club_runway", last_jump=-1e9):
     out['dj_swap_eta'] = None             # the handover landed
     out['dj_style'] = style
     state['_last_jump_t'] = last_jump     # -1e9 = ancient (refresh due)
-    state['_room_since'] = last_jump      # room age drives the refresh
+    # Room age drives the refresh; keep it separately settable so the
+    # "fresh room" case is fresh for the DRIFT roll too.
+    state['_room_since'] = last_jump if room_since is None else room_since
     _, reqs, _, durs = run(1.0, state, out, energy=energy)
     return reqs, durs
 
@@ -266,7 +286,7 @@ check("blend handover glides (no snap)",
       len(reqs) == 1 and durs[0] == 12.0,
       f"reqs={reqs} durs={durs}")
 
-reqs, durs = _handover('long_fade', last_jump=-58.0)
+reqs, durs = _handover('long_fade', last_jump=-58.0, room_since=2.0)
 check("fresh room: long fade rides in place", len(reqs) == 0,
       f"reqs={reqs} durs={durs}")
 
@@ -276,6 +296,24 @@ reqs, durs = _handover('long_fade', last_jump=-1e9)
 check("stale room: fade handover freshens with a glide",
       len(reqs) == 1 and durs[0] == 12.0,
       f"reqs={reqs} durs={durs}")
+
+# 12. CLIQUE RESISTANCE: parked at matched heat in the molten corner of
+#     the transition graph (hearth/geyser/furnace/smoke_machine list each
+#     other), the visit-aware drift must keep TRAVELING - the blind
+#     engine roll it replaced recycled that clique for whole stretches
+#     ('do they churn between a small number of rooms' - yes, it did).
+state, out = fresh('club_hearth')
+t, reqs, _, _ = run(600.0, state, out, energy=0.30)
+walk = [r for _, r in reqs]
+check("drift keeps rolling at engine cadence", len(walk) >= 8,
+      f"{len(walk)} moves in 10min")
+check("drift walk is diverse, not a clique",
+      len(set(walk)) >= min(len(walk), 6),
+      f"{len(set(walk))} distinct rooms in {len(walk)} moves: "
+      f"{[w.replace('club_', '') for w in walk]}")
+pingpong = sum(1 for i in range(2, len(walk)) if walk[i] == walk[i - 2])
+check("no A-B-A ping-pong", pingpong <= 1,
+      f"{pingpong} immediate revisits in {len(walk)} moves")
 
 print()
 if failures:
