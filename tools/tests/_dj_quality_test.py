@@ -163,12 +163,22 @@ def force_style(theme, style):
     # plan_transition — zeroing only the dict's existing keys leaves those
     # alive and the forced style has to win a dice roll against them.
     # Enumerate the defaulted vocabulary explicitly so forcing is forcing.
+    # sorted(): THIS WAS THE HASHSEED LEAK (2026-08-14). Iterating the
+    # raw SET put the weights dict — and therefore plan_transition's
+    # menu list — in per-process hash order, so the seeded style dice
+    # drew a DIFFERENT element under different PYTHONHASHSEEDs: the
+    # same Calexico -> Tarantula search planned breakdown_swap under
+    # hash seeds 5/17 and long_fade under 0/11/23/42, which is exactly
+    # the "render nondeterminism, source not yet found" (2026-08-05)
+    # and this gate's intermittent coverage misses. Sets never feed
+    # ordered structures that meet an RNG.
     t = get_theme(theme.name)
     known = set(t.style_weights) | {
         "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
         "acapella_in", "melody_carry", "phrase_cut",
         "breakdown_swap"}
-    t.style_weights = {k: (1.0 if k == style else 0.0) for k in known}
+    t.style_weights = {k: (1.0 if k == style else 0.0)
+                       for k in sorted(known)}
     return t
 
 
@@ -200,8 +210,18 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
         cand, meta = brain.choose_next(cur, 0.6, cur.bpm)
     if cand is None:
         return None
+    # force_style PIN, not just themed weights (2026-08-14): the themed
+    # weights still leave long_fade's 0.8 dice presence on every menu,
+    # so a LEGAL plan for the style under test lost ~45% of its rolls -
+    # and which rolls it lost depended on the menu's dict order, which
+    # force_style used to build from a raw SET. That pair of facts was
+    # this gate's intermittent style-coverage misses (and the wider
+    # "render nondeterminism"): hash order flipped whether the one
+    # findable pair won its roll. The pin removes the dice entirely -
+    # safety gates still outrank it, so an illegal pair still refuses.
     plan = brain.plan_transition(cur, cand, meta,
                                  after_s=cur.duration_s * 0.45,
+                                 force_style=style,
                                  allow_benched=allow_benched)
     if plan["style"] != style:
         return None                       # gates said no (no drop/loop/...)

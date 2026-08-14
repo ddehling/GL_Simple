@@ -317,7 +317,8 @@ class DJSystem:
                 for tag in set(t.all_tags):
                     counts[tag] = counts.get(tag, 0) + 1
             vocab = [(tag, counts.get(tag, 0), True) for tag in
-                     sorted(user_names, key=lambda k: -counts.get(k, 0))]
+                     sorted(user_names,
+                            key=lambda k: (-counts.get(k, 0), k))]
             genre_top = sorted(
                 ((g, counts.get(g, 0)) for g in genre_names
                  if g not in user_names),
