@@ -1808,7 +1808,21 @@ class Brain:
         # operator's chips and the theme always outrank it.
         s_pers = 1.0
         if self.persona.vocal_pull:
-            v = cand.axes.get("vocal", 0.5)
+            # RANKED, as the comment above always claimed and the code did
+            # not (fixed 2026-08-13). It read the RAW demucs fraction,
+            # whose median on this library is 0.0 - 57% of tracks are
+            # wholly instrumental - so (2v-1) was -1.0 for most of the
+            # library and the pull became a flat scalar that ordered
+            # nothing. Measured across a night: storyteller 0.055, monk
+            # 0.053, neutral 0.055 - a lever moving three thousandths.
+            # The rank spreads the same material over 0..1, which is what
+            # the theme's own vocal target already uses. (The RAW value
+            # stays what the vocal-CLASH gates read - _vocal_at, the
+            # acapella premise - those need absolute presence, not an
+            # ordering.)
+            v = cand.axes_rank.get("vocal")
+            if v is None:
+                v = cand.axes.get("vocal", 0.5)
             s_pers = 1.0 + 0.35 * self.persona.vocal_pull \
                 * (2.0 * (v if v is not None else 0.5) - 1.0)
         # PERSONA exploration widens the selection dice (neutral 0.9..1.1).
@@ -2153,6 +2167,21 @@ class Brain:
                     if abs(o["time_s"] - exclude_out_s) > 2.0]
         if not outs:
             return None
+        # PERSONA PACING REACHES THE EXIT (2026-08-13). play_len_x scaled
+        # only the drawn BUDGET, which is a floor - and shortening a floor
+        # WIDENS the unpenalised region above it, so showman rode records
+        # exactly as far as monk (measured 3.34 vs 3.47 min against a 62%
+        # ask; the simulator's old 3.26-vs-5.50 spread was its own artefact
+        # - it advanced by the budget rather than the planned exit). The
+        # lever has to move the LATE side too: a patient persona tolerates
+        # overrunning its budget, an impatient one does not.
+        _plx = float(getattr(self.persona, "play_len_x", 1.0) or 1.0)
+        _late_tau = LATE_TAU_S * _plx
+        # ...and it may pull the hard ceiling IN, never past it: the 0.85 is
+        # a safety about what a record has left, not a taste knob, so monk's
+        # 1.30 clamps back to it while showman's 0.80 genuinely leaves
+        # earlier.
+        _hard_frac = min(EXIT_LATE_HARD_FRAC * _plx, EXIT_LATE_HARD_FRAC)
         # How good a section is to mix OUT of / IN to. The golden rule of
         # melodic-house mixing: bring the new track's INTRO (drums, no lead)
         # in over the old track's OUTRO/breakdown, so two lead melodies never
@@ -2259,12 +2288,11 @@ class Brain:
                 # LATE COSTS TOO (2026-08-13, see LATE_TAU_S). Without this
                 # the budget was a floor with nothing above it and the
                 # scorer rode every record into its last groove.
-                bud = math.exp(-(o["time_s"] - after_s) / LATE_TAU_S)
+                bud = math.exp(-(o["time_s"] - after_s) / _late_tau)
             # ...and past the hard fraction the record has nothing left to
             # leave ON. Not a lean - a refusal, the way the constant in
             # system.py always described itself.
-            if cur.duration_s > 0 \
-                    and o["time_s"] > EXIT_LATE_HARD_FRAC * cur.duration_s:
+            if cur.duration_s > 0 and o["time_s"] > _hard_frac * cur.duration_s:
                 continue
             busy_a = sec_a.get("busyness") or 0.0
             ra = sec_a.get("rhythm_density") or 0.0

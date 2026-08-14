@@ -54,18 +54,35 @@ PERSONAS = {p.name: p for p in [
             p96=0.60, play_len_x=1.30,
             key_strictness=1.6, explore=0.7, vocal_pull=-0.3),
     # Moments early and often, punchy tier up, shorter records; the
-    # signature is the loop-build into the drop (double_drop retired
-    # 2026-08-02 - the nextdrop MOMENT owns the synced-drop spectacle).
+    # signature is the hard cut onto the incoming drop.
+    # (The signature was loop_build until 2026-08-13, by which point that
+    # style had been retired for nine days - so showman's entire
+    # style_bias was multiplying a weight that kill() zeroed on every
+    # seam. cut_at_drop was reinstated the same week and is what the
+    # tagline literally describes; double_drop went 2026-08-02, the
+    # nextdrop MOMENT owns the synced-drop spectacle.)
     Persona("showman", "big moments, short records, drops on drops",
-            style_bias={"loop_build": 2.0},
+            style_bias={"cut_at_drop": 2.0},
             theatrics=1.9, moment_cooldown_x=0.55,
             p96=0.15, play_len_x=0.80,
             key_strictness=0.75, vocal_pull=0.15),
     # Harmonic journeys: strictest keys of all, surgical single-bassline
     # handoffs, spectacle declined in favor of a clean modulation.
+    # SEPARATED FROM MONK 2026-08-13. Measured over 3x6h nights, purist
+    # differed from NEUTRAL on exactly one axis - key coherence 83.6% vs
+    # 71.0% - and that signature was indistinguishable from monk's 84.3%.
+    # Everything else (p96, play_len_x, moment_cooldown_x) sat at the
+    # neutral default, so "the purist" was a night nobody could pick out
+    # of a lineup that already contained monk.
+    # Its own line says SURGICAL: short decisive swaps, not marathons, and
+    # spectacle declined for a clean modulation. p96 down and the moment
+    # cooldown up say that in the levers, and they are exactly where monk
+    # goes the other way (0.60 / 1.6) - so the two tidy-key personas now
+    # differ on how they SPEND that tidiness.
     Persona("purist", "clean key journeys, surgical swaps",
             style_bias={"bass_swap": 1.8},
-            theatrics=0.8, p96=0.35,
+            theatrics=0.8, moment_cooldown_x=1.35,
+            p96=0.18, play_len_x=0.95,
             key_strictness=2.2, explore=0.8),
     # Range over pocket: exploration up, groove-lean softened, tempo
     # window blurred at the edges - and the deliberate palate-cleanser
@@ -73,17 +90,31 @@ PERSONAS = {p.name: p for p in [
     # (First sim pass read too close to neutral: explore 1.8 / widen 1.10
     # barely moved the histograms, and widening REDUCED fades - more of the
     # library became reachable. These values measured distinct.)
+    # (style_bias was loop_roll_exit until 2026-08-13 - retired 2026-08-04,
+    # so for nine days this persona's signature multiplied a weight kill()
+    # zeroed on every seam. It stayed measurably distinct anyway, on
+    # explore/key_strictness: lowest key coherence of any persona at 62.9%
+    # against neutral's 71.0%. filter_sweep is the technique that fits what
+    # it actually does - a sweep is how you bridge two records that do not
+    # share a pocket, which is this persona's whole premise.)
     Persona("crate_digger", "range over pocket - expect a curveball",
-            style_bias={"loop_roll_exit": 1.3},
+            style_bias={"filter_sweep": 1.6},
             theatrics=1.1, p96=0.25, play_len_x=0.90,
             key_strictness=0.45, explore=2.6,
             groove_tolerance=2.0, bpm_widen=1.18),
     # Voices staged as entrances: stem styles up, vocal tracks clustered
     # into acts, bigger breathing room around a singer.
+    # long_blend ADDED 2026-08-13: both stem signatures are gated on
+    # rendered stems, which ~42% of the library has, and those styles are
+    # 1-5% of seams even then - so this persona's entire technique bias
+    # was inert on most nights and its identity rested on vocal_pull,
+    # which was itself dead until the same day. A voice needs ROOM, and
+    # the long blend is the only room-making style that always exists.
     Persona("storyteller", "the voices carry the night",
-            style_bias={"acapella_out": 2.2, "stem_drum_swap": 1.8},
+            style_bias={"acapella_out": 2.2, "stem_drum_swap": 1.8,
+                        "long_blend": 1.3},
             theatrics=1.1, moment_cooldown_x=0.9,
-            p96=0.45, play_len_x=1.10,
+            p96=0.55, play_len_x=1.10,
             key_strictness=1.2, vocal_pull=0.5),
 ]}
 

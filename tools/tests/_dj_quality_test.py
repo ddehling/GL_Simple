@@ -49,9 +49,37 @@ def check(name, cond, detail):
 # Part 1: selection audit
 # ==========================================================================
 
+def persona_bias_audit(reachable):
+    """Every persona's SIGNATURE must point at a style that can be played.
+
+    This has silently broken twice. showman's style_bias was loop_build
+    for nine days after that style was retired, and crate_digger's was
+    loop_roll_exit for the same nine - so both personas' defining move
+    multiplied a weight kill() zeroed on every seam, and both still LOOKED
+    fine because their other levers carried them. A style_bias naming a
+    dead style is not a small bug: it is the persona's whole identity
+    quietly doing nothing, and nothing else in the engine notices.
+
+    `reachable` is the set of styles the selection audit saw ON A MENU -
+    a reachability claim, not a luck claim, so a legitimately rare style
+    still counts as long as the engine offered it at least once.
+    """
+    from lib.dj.persona import PERSONAS
+    dead = []
+    for p in PERSONAS.values():
+        for style in (p.style_bias or {}):
+            if style not in reachable:
+                dead.append(f"{p.name}:{style}")
+    check("persona signatures point at playable styles", not dead,
+          f"dead style_bias targets: {dead}" if dead
+          else f"all {sum(len(p.style_bias or {}) for p in PERSONAS.values())}"
+               f" targets reachable")
+
+
 def selection_audit(library, theme):
     print("\n=== selection audit: brain choice from every library track ===")
     styles, rates, scores = {}, [], []
+    reachable = set()
     no_pick = 0
     fades = 0
     for i, cur in enumerate(library):
@@ -63,6 +91,10 @@ def selection_audit(library, theme):
             continue
         plan = brain.plan_transition(cur, cand, meta,
                                      after_s=cur.duration_s * 0.45)
+        # What the DICE were offered, not just what won - a style biased by
+        # a persona needs only to be reachable for the bias to mean
+        # something.
+        reachable.update((plan.get("diag") or {}).get("menu") or {})
         styles[plan["style"]] = styles.get(plan["style"], 0) + 1
         rates.append(abs(plan["rate"] - 1.0))
         scores.append(plan["pair_score"])
@@ -77,6 +109,7 @@ def selection_audit(library, theme):
           f"min {min(scores):.3f}")
     check("brain finds a next track", no_pick <= len(library) * 0.05,
           f"{no_pick} tracks had no compatible successor")
+    persona_bias_audit(reachable)
     # Stretch discipline. The wall moved 8% -> 10% (2026-08-06, operator's
     # call) and the 5.5% selection cliff now only applies to UNVERIFIED
     # grids, so the distribution deliberately widened: measured on the

@@ -40,6 +40,13 @@ MUSIC = "C:/Users/ddehl/Desktop/Devel/music"
 SPECTACLE = ("loop_build", "cut_at_drop", "stem_drum_swap", "acapella_out")
 PUNCHY = ("cut_at_drop", "loop_build", "loop_roll_exit",
           "echo_out", "stem_drum_swap")
+# The engineered-moment cooldown, mirrored from brain.plan_transition so
+# the sim can tell a moment that FIRED from one that LANDED. (Retyped
+# rather than imported because it is inline there; if that ever changes,
+# import it - a second copy of a bar is exactly what gateprobe warns
+# against.)
+MOMENT_COOLDOWN_S = 2400.0
+MOMENT_ARC = 0.82
 
 
 class SimClock:
@@ -84,8 +91,22 @@ def run_night(library, theme_name, persona, hours, seed):
                                        now=SimClock.t + play_s)
         if cand is None:
             break
+        # THE MOMENT MACHINERY, observed rather than guessed (2026-08-13).
+        # This used to score a "moment" as `style in SPECTACLE and arc >=
+        # 0.82`, which never touches moment_cooldown_x - so the one lever
+        # the metric was named after was invisible to it, and a persona
+        # that merely played MORE tracks scored more moments. Measured:
+        # raising purist's cooldown to make landmarks RARER moved the old
+        # column 3.3 -> 7.0, in the wrong direction, purely on seam count.
+        # brain stamps last_moment_t only when a spectacle style actually
+        # WINS a fired moment, so the stamp is the landmark and the
+        # predicate below is the attempt.
+        _lm = brain.last_moment_t
+        _fired = (arc >= MOMENT_ARC and (SimClock.t - _lm)
+                  > MOMENT_COOLDOWN_S * persona.moment_cooldown_x)
         plan = brain.plan_transition(cur, cand, meta, arc=arc,
                                      after_s=entry_s + play_s)
+        _landed = brain.last_moment_t != _lm
         # Realized play = where the seam leaves, minus where we came in.
         play_s = max(plan.get("out_s", entry_s + play_s) - entry_s, 30.0)
         SimClock.t += play_s
@@ -96,7 +117,8 @@ def run_night(library, theme_name, persona, hours, seed):
             "key_compat": kc, "arc": arc, "play_s": play_s,
             "eff_bpm": (meta or {}).get("eff_bpm", cand.bpm),
             "vocal": v if v is not None else 0.5,
-            "moment": plan["style"] in SPECTACLE and arc >= 0.82,
+            "moment": _landed,
+            "moment_try": _fired,
             "clash_fade": bool((meta or {}).get("tempo_clash")),
             # How deep into the record it actually left - the quantity the
             # budget was assumed to control and does not.
@@ -145,8 +167,14 @@ def summarize(name, all_seams, nights):
             [s["eff_bpm"] for s in all_seams])), 1),
         "vocal_mean": round(float(np.mean(
             [s["vocal"] for s in all_seams])), 3),
+        # LANDED (a spectacle style won a fired moment and stamped the
+        # cooldown) vs TRIED (the peak+cooldown predicate was true). The
+        # gap between them is how often the moment machinery reaches for a
+        # landmark and gets a workhorse instead.
         "moments_per_night": round(sum(
             1 for s in all_seams if s["moment"]) / nights, 1),
+        "moment_tries_per_night": round(sum(
+            1 for s in all_seams if s["moment_try"]) / nights, 1),
     }
 
 
@@ -185,7 +213,7 @@ def main():
             "blend96_pct", "mean_blend_beats", "mean_play_min",
             "exit_frac_med",
             "key_close_pct", "key_clash_pct", "bpm_std", "vocal_mean",
-            "moments_per_night"]
+            "moment_tries_per_night", "moments_per_night"]
     print("\n" + " | ".join(f"{c:>16}" for c in cols))
     for r in rows:
         print(" | ".join(f"{str(r.get(c, '-')):>16}" for c in cols))
