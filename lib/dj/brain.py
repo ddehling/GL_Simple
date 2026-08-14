@@ -1028,8 +1028,28 @@ TUNE_DEFAULTS = {
     # fade-to-darkness, not a mute. Clash pairs only - a fade against
     # an ambient B keeps A's melody to the end, exactly as before.
     "fade_a_mid_out": 2.5,  # long_fade: A's mids leave this fast on clash
-    "fade_clash_ka": 0.6,   # long_fade: carve when kick_agreement < this
-                            # (set <= 0 to disable the clash carve)
+    # The carve TRIGGER is rhythm DENSITY on both sides, not
+    # kick_agreement (2026-08-14, second revision same day). The first
+    # trigger was kick_agreement < 0.6 - "the patterns will fight" -
+    # and it was rated wrong within hours: As the Day Rises ->
+    # Pulsacions measured ka 0.991, carve stood down, and the operator
+    # heard "really bad overlapped beats". On an UNSYNCED fade, pattern
+    # agreement is not safety - two near-identical kick/perc lines at
+    # 122.9 vs 120.9 bpm drift through EVERY phase relationship during
+    # the dual, and identical-patterns-phasing is the classic
+    # trainwreck, worse than different patterns interleaving. The real
+    # risk factor is simply two dense rhythm beds coexisting, whatever
+    # their patterns. Density is per-track and stored, so this also
+    # closes the loose-grid hole the ka trigger had (grid_conf<0.5
+    # fades carried untrusted rhythm predictions and got no carve -
+    # exactly the fades most likely to need one). At this library's
+    # distribution (p5 0.93, median 1.75) the floor of 1.0 exempts
+    # only genuinely sparse/ambient sides - the baton is the NORM for
+    # dance-material fades now, which is what three ear reports in one
+    # day said it should be.
+    "fade_clash_density": 1.0,  # long_fade: carve when BOTH sides'
+                                # rhythm_density >= this (set high to
+                                # disable the clash carve)
     "fade_clash_lead_x": 0.5,  # long_fade: clash pairs shrink B's lead
                                # (co-presence is TIME x depth; EQ can
                                # only touch half the percussion band)
@@ -4188,19 +4208,24 @@ class Brain:
             #     identity and stays whole by design.
             # So the lever that remains is TIME, exactly as
             # perc_overlap's own note predicts ("a shelf or a different
-            # in-point"): on predicted-clash pairs B's entry moves
-            # closer to the seam (fade_clash_lead_x), its high waits
-            # with its low, and at S0 the top end is handed over on the
-            # baton clocks while A's mids leave decisively.
-            # Evidence-gated: no rhythm measurement, no carve - an
-            # ambient/sparse B keeps today's arrive-whole entry.
-            _rt = plan.get("rhythm") or {}
-            _ka = _rt.get("kick_agreement")
-            _clash = (_ka is not None and _rt.get("conf", 0.0) >= 0.5
-                      and _ka < K("fade_clash_ka"))
+            # in-point"): on clash pairs B's entry moves closer to the
+            # seam (fade_clash_lead_x), its high waits with its low,
+            # and at S0 the top end is handed over on the baton clocks
+            # while A's mids leave decisively. The TRIGGER is rhythm
+            # DENSITY on both sides - see the fade_clash_density knob
+            # note for why kick_agreement was the wrong question on
+            # unsynced decks (rated wrong the day it shipped: identical
+            # patterns PHASING are the trainwreck, not a mismatch).
+            # Evidence-gated per track: no density measurement, no
+            # carve - an ambient/sparse side keeps the arrive-whole
+            # entry.
+            _da = getattr(cur, "rhythm_density", None)
+            _db_ = getattr(cand, "rhythm_density", None)
+            _clash = (_da is not None and _db_ is not None
+                      and min(_da, _db_) >= K("fade_clash_density"))
             if _clash:
-                plan.setdefault("diag", {})["fade_clash_carve"] = round(
-                    _ka, 3)
+                plan.setdefault("diag", {})["fade_clash_carve"] = [
+                    round(_da, 2), round(_db_, 2)]
             A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
             B0 = max(S0 - int(K("fade_lead_b") * _ug
                               * (K("fade_clash_lead_x") if _clash else 1.0)
