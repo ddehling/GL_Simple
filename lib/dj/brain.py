@@ -599,6 +599,11 @@ def load_library(db):
         if root:
             for t in out:
                 t.has_stems = has_stems(root, t.id)
+                # ...and remember where to LOOK, so a session that
+                # outlives a stem render can re-check (see
+                # Brain._stems_refresh - 11 tracks rendered mid-session
+                # on 2026-08-12 stayed False until restart).
+                t._music_root = root
     except Exception:
         pass
     return out
@@ -2677,6 +2682,28 @@ class Brain:
         self._drop_near_cache[track.id] = near
         return picked
 
+    @staticmethod
+    def _stems_refresh(track):
+        """Re-stat the stems dir for a track whose load-time has_stems
+        stamp says False, and flip the stamp when the files have since
+        appeared. The cheap half of fixing the stale-stamp problem: a
+        session that outlives a stem render sees the new stems on the
+        next planned seam. (True never re-checks - stems are not
+        deleted out from under a live night, and the planner's own
+        delete action runs in-process and can restamp if it ever needs
+        to.)"""
+        root = getattr(track, "_music_root", None)
+        if not root:
+            return False
+        try:
+            from lib.dj.stems import has_stems as _hs
+            if _hs(root, track.id):
+                track.has_stems = True
+                return True
+        except Exception:
+            pass
+        return False
+
     def _drop_near_entries(self, track):
         """Near-miss drop entries for the `cut_drop_shape` trial:
         [(downbeat_s, step, [failed strict bars])], strongest first.
@@ -3525,8 +3552,15 @@ class Brain:
             if self._drop_after(cur, pair["out_s"] - 8 * cur.period_s) is None:
                 kill("loop_build", "no_drop_in_A")
             # STEM STYLES need pre-rendered stems on disk (dj_stems.py).
-            a_stems = getattr(cur, "has_stems", False)
-            b_stems = getattr(cand, "has_stems", False)
+            # The stamp is load-time; a False re-checks the disk here so
+            # a mid-session stem render unlocks the styles on the very
+            # next seam instead of after a restart (2026-08-12: 11
+            # tracks rendered mid-session stayed False all night). Only
+            # False tracks pay the stat, and True never re-checks.
+            a_stems = getattr(cur, "has_stems", False) \
+                or self._stems_refresh(cur)
+            b_stems = getattr(cand, "has_stems", False) \
+                or self._stems_refresh(cand)
             if not (a_stems and b_stems):
                 kill(("stem_drum_swap", "stem_bass_swap", "drum_bridge"),
                      "no_stems")

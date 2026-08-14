@@ -148,6 +148,18 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
         tracks.append((t, e))
 
     offset = 0.0
+    # TIMING-PROMISE LEDGER (2026-08-14). The play-hint forcing below
+    # used to allow each hinted slot 45s of overshoot grace
+    # independently - and the graces COMPOUND: four slots at +20..45s
+    # each landed a 240s anchor 94s late (caught by _dj_setlist_test
+    # after 0e045ee's exit rebalance made best_pair favor deeper exits
+    # on sparse-mix-out material). A timing promise is cumulative by
+    # nature, so the grace is now a shared budget: overshoot spent by
+    # an early slot is not available to later ones, and once the set is
+    # behind schedule, later hinted slots SHAVE (bounded, a quarter of
+    # their own hint) to claw back toward the anchor. Resets at each
+    # timed anchor - a landed anchor's error is history.
+    promise_drift = 0.0
     # The OPENER enters at its EARLIEST mix-in, not its best-SCORING one:
     # mix_ins are ranked by seam score, and a mid-song winner opened the
     # set minutes deep - on tracks whose best in-point sits near the tail
@@ -216,12 +228,22 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             # An EXPLICIT play hint (the anchor timing solver) is a timing
             # promise, not a suggestion: if the chosen seam overshoots it,
             # force the exit onto the nearest phrase - same trade the live
-            # urgent exit makes. Drop-anchored styles keep their drop (the
-            # exit IS the drop; moving it breaks the style's premise).
+            # urgent exit makes. The grace is CUMULATIVE (see the
+            # promise-drift ledger above the loop): slack an earlier slot
+            # spent is gone, and a set already behind shaves later hinted
+            # exits (bounded) to land the anchor. loop_build alone keeps
+            # its exit: it builds A's loop into A's OWN drop at out_s, so
+            # moving out_s breaks the style's premise. cut_at_drop's drop
+            # is B's ENTRY (in_s rides out_s in wall time), so its exit
+            # can honor the promise like any blend.
+            if e.get("target_offset_min"):
+                promise_drift = 0.0     # anchor landed - fresh ledger
+            _grace = max(0.0, 45.0 - max(promise_drift, 0.0))
+            _shave = min(max(promise_drift, 0.0), 0.25 * tp)
             if (e.get("target_play_s")
-                    and plan["style"] not in ("cut_at_drop", "loop_build")
-                    and plan["out_s"] > in_s + tp + 45.0):
-                forced = t.nearest_phrase(in_s + tp)
+                    and plan["style"] != "loop_build"
+                    and plan["out_s"] > in_s + tp + _grace):
+                forced = t.nearest_phrase(in_s + tp - _shave)
                 plan["out_s"] = min(max(forced, in_s + 40.0),
                                     max(t.duration_s - 30.0, in_s + 40.0))
                 if plan["style"] == "loop_roll_exit":
@@ -292,6 +314,10 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
             # ...and the blend itself runs at a_rate: source consumed over
             # the blend = blend_wall*a_rate, wall = blend_wall.
             play = max(plan["out_s"] - in_s - skew - exit_skew, 40.0)
+            if e.get("target_play_s"):
+                # Feed the promise ledger with the REALIZED span, so the
+                # next hinted slot knows how far the set has drifted.
+                promise_drift += play - tp
             # Blend-family overlaps play BEFORE the seam: by the time the
             # boundary (A's out point) arrives, B has already consumed the
             # blend's worth of source. slot["in_s"] is the AT-SEAM source

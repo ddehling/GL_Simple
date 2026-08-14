@@ -697,24 +697,16 @@ def seam_qa(library, wav=False):
     # EVERY listed style must actually render - "no legal pair" plus a
     # >=4 floor let cut_at_drop (2026-08-13) and then breakdown_swap
     # (2026-08-14, the day it was un-benched) sit in the list and never
-    # be tested. echo_out alone keeps a pass: it was observed to miss
-    # stochastically at depth 12 on a run whose code hadn't touched it,
-    # and unlike the rare styles it has no structural pool to aid the
-    # search with.
-    # KNOWN INTERMITTENT, MECHANISM FOUND 2026-08-14 EVENING: plan
-    # outcomes depend on PYTHONHASHSEED. The same pair (Calexico ->
-    # Tarantula, breakdown_swap search, seed-7 brain, identical data)
-    # plans breakdown_swap under some process hash seeds and long_fade
-    # under others (seeds 0-3 all: long_fade, rate 1.0176) - a
-    # string-keyed set/dict iteration order leaks into planning
-    # somewhere, and per-process hash randomization turns it into the
-    # long-standing "render nondeterminism, source not yet found"
-    # ([FLAKY?] note above) plus this check's intermittent misses.
-    # Until the leak site is found and sorted(): if this check fails on
-    # a style the diff never touched, rerun once before digging. Do NOT
-    # pin PYTHONHASHSEED as a fix - a pinned seed can deterministically
-    # LOSE a style's only findable pair.
-    required = set(styles) - {"echo_out"}
+    # be tested.
+    # (The intermittent misses this check used to show - breakdown_swap
+    # 1-run-in-3, echo_out at depth 12 - were BOTH the hashseed dice
+    # bug: force_style() iterated a raw SET into the weights dict, so a
+    # LEGAL plan's menu order followed per-process hash order and the
+    # seeded roll could lose to long_fade's 0.8 floor. Fixed 2026-08-14
+    # evening: sorted(known) + render_seam pins the style, no roll at
+    # all. echo_out's exemption went with it - every listed style is
+    # required now, and a miss is a real finding, not a flake.)
+    required = set(styles)
     check("style coverage rendered", required <= set(got),
           f"rendered {sorted(got)} of {styles}"
           + (f" - MISSING {sorted(required - set(got))}"
