@@ -76,7 +76,18 @@ _BDSWAP_RESTORE_CLEAR_BEATS = 4.0
 # which is why the style kept cutting into songs that never dropped
 # (operator, 2026-08-12: "giving me songs that aren't dropping"). The
 # style's whole premise is the slam, so it now requires a measured one.
-_CUT_DROP_MIN_STEP = 1.8
+# RATED BY EAR 2026-08-14 (25 cut_drop_shape Gate Check trials): the
+# strict bars (step 1.8 / land 0.65 / run-up 0.55 / kick 1.15x) were
+# wrong 20/25 - refused seams sounded fine at the ~20% background bad
+# rate, and NO measured quantity separated the 5 bad from the 20 fine
+# (bad step range 1.67-5.33 inside fine 1.40-6.72, bad KICK median 0.95
+# with a fine seam at 0.06, bad entries off DEEPER dips). step solo:
+# 0/5 right. Sixth per-track scalar family rated non-predictive. The
+# bars moved to the FLOORS of the rated band - below them nothing was
+# ever rendered, so there is no verdict to loosen on - and the kick
+# kill came off entirely (rated across its whole range). Solo tallies
+# were thin (3-5 per bar); operator acted on the joint count.
+_CUT_DROP_MIN_STEP = 1.5
 _CUT_DROP_WIN_BEATS = 8.0
 # ...and RECALL: where we are allowed to look for one. The style used to
 # enter only at a `pre_drop` MIX-IN hint, and mix-in points are proposed
@@ -94,18 +105,36 @@ _CUT_DROP_SCAN_BEATS = 4.0       # scan resolution
 # at the same moment - which reads as a bug long before it reads as rare.
 # Loosening to 1.8/60 gives 63 tracks at identical verdict agreement. No
 # setting in the sweep separated good from bad, so the strictness was
-# buying nothing; see the note on _CUT_DROP_MIN_POWER_X.)
+# buying nothing - and the 2026-08-14 ear rating above then showed the
+# strictness was actively wrong.)
 # SHAPE, not just size. A ratio cannot tell a drop from a rise - quiet ->
-# mid scores the same as breakdown -> slam. Measured on the first version
-# of this scan: the before-level was a genuine dip (med 0.25 of the
-# track's own p95) but 49% of entries LANDED below 0.65 of peak and beat
-# power did not rise at all (x1.02, falling on 32%), i.e. the kick never
-# came back - which is the whole event. drop_moments() had the landing
-# condition right (energy >= 0.65 of peak); dropping it when the label was
-# replaced by a measurement was a regression.
-_CUT_DROP_MIN_AFTER = 0.65       # ...the drop must LAND hot
-_CUT_DROP_MAX_BEFORE = 0.55      # ...off something genuinely down
-_CUT_DROP_MIN_POWER_X = 1.15     # ...and the kick must actually return
+# mid scores the same as breakdown -> slam. These landed at 0.65/0.55 by
+# construction; the 2026-08-14 rating (see _CUT_DROP_MIN_STEP) moved
+# them to the floors of the heard band. The KICK-RETURN kill
+# (power >= 1.15x the dip) is GONE from the same rating: it was the
+# least-wrong bar (2/5 solo right) but still sorted nothing - a fine
+# seam measured x0.06 and a bad one x0.95. drop_kick_levels() remains a
+# MEASUREMENT (gateprobe row, cutdrop test) so the number stays next to
+# every verdict; do not re-promote it to a kill without a new rating.
+# (Its history is itself a lesson: the first read sampled power_at()
+# +/-4 beats against a 20s-bucketed profile - below the instrument's
+# resolution, ~1.75x implicit bar, 482 of 1923 candidates killed. Fixed
+# to bucket-resolution dip->landing the same day the rating then
+# retired the bar. Same defect class as the v1 beat-power trap.)
+_CUT_DROP_MIN_AFTER = 0.50       # ...the drop must LAND hot
+_CUT_DROP_MAX_BEFORE = 0.65      # ...off something genuinely down
+# NEAR-MISS band for the Gate Check trial (`cut_drop_shape`): entries
+# that clear these floors but fail >=1 strict bar above are cached
+# separately so a pinned trial seam can be HEARD and the strict bars
+# rated by ear. The floors keep the trial honest - below them the entry
+# is unlikely to be a drop by any argument, so rendering it would rate
+# little. The 2026-08-14 round rated the 1.5/0.50/0.65 band and the
+# bars moved to its floors; these floors open the NEXT unheard band so
+# the new bars stay testable ("a threshold nobody may cross can never
+# be shown wrong").
+_CUT_DROP_TRIAL_MIN_STEP = 1.25
+_CUT_DROP_TRIAL_MIN_AFTER = 0.40
+_CUT_DROP_TRIAL_MAX_BEFORE = 0.75
 KICK_SCREEN_BLEND_S = 0.020   # overlapped-drum styles: max kick-placement
                               # delta, sits below the ~25ms audibility line
                               # on purpose (stored grids are themselves only
@@ -681,6 +710,27 @@ def drop_levels(track, at_s):
             sum(curve[j0:j1]) / (j1 - j0) / peak)
 
 
+def drop_kick_levels(track_id, db_s):
+    """(dip, landing) beat power around a drop downbeat, or None for
+    either side that has no measurement. Module-level and public for the
+    same reason drop_levels is: the cutdrop test and gateprobe must read
+    the SAME windows the gate enforces, never recompute them.
+
+    Read at the dense profile's OWN resolution (PROF_BUCKET_S buckets,
+    linearly interpolated - see the note above _CUT_DROP_MIN_AFTER). The
+    dip is the QUIETEST the kick got across the bucket before the drop,
+    because that is what "the kick returns" returns from - a point read
+    20s early lands on the tail of the previous groove and calls the
+    return a wash. The landing is read half a bucket past the downbeat,
+    the nearest position where the interpolated line is past the step."""
+    from lib.dj import beatpower as _bp
+    dips = [_bp.power_at(track_id, max(db_s - o, 0.0))
+            for o in (5.0, 10.0, 15.0, _bp.PROF_BUCKET_S)]
+    dips = [p for p in dips if p is not None]
+    return (min(dips) if dips else None,
+            _bp.power_at(track_id, db_s + _bp.PROF_BUCKET_S / 2))
+
+
 def audition_pools(library, style, trial_gate=""):
     """(a_pool, b_veto_ids) for auditioning `style`: the tracks that can
     STRUCTURALLY serve each side, so a search does not spend its whole
@@ -729,7 +779,15 @@ def audition_pools(library, style, trial_gate=""):
         # own a drop that measurably hits - the mix-in hint this used to
         # ask for lives in the intro, not where the drops are. The conf bar
         # drops out when it is itself on trial; the drop never does,
-        # because no verdict conjures one.
+        # because no verdict conjures one. When the SHAPE bars are on
+        # trial the scan floor drops to the trial tier for the same
+        # reason the conf bar does: pre-filtering at the strict step bar
+        # would remove exactly the near-miss tracks the trial exists to
+        # hear.
+        _step_bar = (_CUT_DROP_TRIAL_MIN_STEP
+                     if (trial_gate or "").startswith("cut_drop_shape")
+                     else _CUT_DROP_MIN_STEP)
+
         def _a(t):
             return t.bpm_conf >= 0.7 * _conf_bar
 
@@ -741,7 +799,7 @@ def audition_pools(library, style, trial_gate=""):
             stop = t.duration_s - _CUT_DROP_RUNWAY_S
             while at < stop:
                 s = drop_step(t, at)
-                if s is not None and s >= _CUT_DROP_MIN_STEP:
+                if s is not None and s >= _step_bar:
                     return True
                 at += _CUT_DROP_SCAN_BEATS * per
             return False
@@ -1080,6 +1138,7 @@ class Brain:
         self.style_cond_memory = {}     # (style, condition) -> multiplier
         self._rhythm_cache = {}         # (a_id,b_id,mult) -> rhythm score
         self._drop_entry_cache = {}     # track id -> [(downbeat_s, step)]
+        self._drop_near_cache = {}      # track id -> [(db_s, step, tags)]
 
     @staticmethod
     def _pair_class(a, b):
@@ -2437,27 +2496,26 @@ class Brain:
         per = max(track.period_s, 0.3)
         if not ((track.row or {}).get("energy_curve") or []):
             self._drop_entry_cache[track.id] = []
+            self._drop_near_cache[track.id] = []
             return []
 
-        def _levels(at):
-            return drop_levels(track, at)
-
-        out, seen = [], []
+        out = []
         t = max(_CUT_DROP_SCAN_FROM, 8 * per)
         stop = track.duration_s - _CUT_DROP_RUNWAY_S
         step_s = _CUT_DROP_SCAN_BEATS * per
         while t < stop:
             s = drop_step(track, t)
-            if s is not None and s >= _CUT_DROP_MIN_STEP:
+            # Collected at the TRIAL floor: candidates between the floors
+            # and the strict bars feed the near-miss cache below, so the
+            # Gate Check trial has something to render.
+            if s is not None and s >= _CUT_DROP_TRIAL_MIN_STEP:
                 out.append((t, s))
             t += step_s
-        # One entry per drop: keep the strongest in each 16-beat
-        # neighbourhood, else a single slam yields six near-identical
-        # candidates and crowds out the track's other drops.
-        picked = []
-        for at, s in sorted(out, key=lambda r: -r[1]):
-            if any(abs(at - p) <= 16 * per for p in seen):
-                continue
+        # Evaluate each candidate ONCE, then select in two passes - the
+        # near-miss tier must never influence which strict entries win
+        # their 16-beat neighbourhood.
+        evals = []
+        for at, s_raw in sorted(out, key=lambda r: -r[1]):
             # The run-in is B playing UNDER A - a vocal there fights A's
             # outro, and the mix-in hints had already been vetted for it.
             if self._vocal_at(track, max(at - 8 * per, 0.0)) >= 0.5:
@@ -2465,31 +2523,101 @@ class Brain:
             db = track.nearest_downbeat(at)
             if db <= 0 or db >= track.duration_s - _CUT_DROP_RUNWAY_S:
                 continue
+            # THE LATTICE UNDER THE CUT MUST BE THE TRACK'S METER. Stored
+            # grids are SEGMENTED, and a breakdown can carry a garbage
+            # segment the scanner itself distrusted while the track-level
+            # bpm_conf stays high (found 2026-08-14: Red Lotus, conf
+            # 0.99, whose 220-240s segment claims 72.46 bpm at score
+            # 0.25 between solid 107.9 segments - the cut's run-in AND
+            # its "downbeat" were scheduled on that fiction, and the
+            # render gate measured a 159ms sawtooth grid delta as the
+            # deck synced to beats that do not exist). A cut hard-
+            # schedules on the lattice with no dual for the PLL to hide
+            # the lie, so both the landing and the run-in start must sit
+            # in a segment whose bpm IS the track's meter. 5% also
+            # rejects half/double-time segments, whose bars are the
+            # wrong LENGTH for the 16-beat run-in. Structural, not a
+            # taste bar: the quantity is the scanner's own segment
+            # tempo, and no ear verdict can make a 72-bpm lattice
+            # describe 108-bpm music.
+            _bad_seg = False
+            for _t in (db, max(db - 16 * per, 0.0)):
+                for _sg in (track.grid or []):
+                    if _sg["start_s"] <= _t <= _sg["end_s"]:
+                        if abs(_sg["bpm"] / max(track.bpm, 1e-6)
+                               - 1.0) > 0.05:
+                            _bad_seg = True
+                        break
+            if _bad_seg:
+                continue
             # JUDGE THE SEAM WHERE IT PLAYS. The scan steps every 4 beats
             # and the landing then snaps to a downbeat, which slides both
             # measurement windows by up to two beats - so the shape has to
             # be re-tested at `db`, not at the scan position that found it.
-            lv = _levels(db)
-            if lv is None or lv[1] < _CUT_DROP_MIN_AFTER \
-                    or lv[0] > _CUT_DROP_MAX_BEFORE:
+            lv = drop_levels(track, db)
+            if lv is None:
                 continue
-            s = drop_step(track, db) or s
-            # THE KICK HAS TO COME BACK. Broadband energy rising is a
-            # swell; a drop is the drums returning, which is what beat
-            # power measures. Evidence-gated in the house style: None on
-            # either side means no measurement, never a penalty - and a
-            # breakdown deep enough to have no scored bucket is exactly
-            # where power_at says it would rather not guess.
-            from lib.dj import beatpower as _bpp
-            pb = _bpp.power_at(track.id, max(db - 4 * per, 0.0))
-            pa = _bpp.power_at(track.id, db + 4 * per)
-            if (pb is not None and pa is not None
-                    and pa < _CUT_DROP_MIN_POWER_X * pb):
+            # (The kick-return kill that used to run here - beat power
+            # rising across the drop - was rated away 2026-08-14: see
+            # the note above _CUT_DROP_MIN_AFTER. drop_kick_levels()
+            # still measures it for the gateprobe row and the cutdrop
+            # test; it just no longer refuses anything.)
+            s_db = drop_step(track, db) or s_raw
+            evals.append((at, s_raw, db, s_db, lv))
+
+        def _tags(s_db, lv):
+            """Which STRICT bars this candidate fails ([] = strict pass).
+            Every bar is judged at the SNAPPED DOWNBEAT - the seam that
+            plays - not the scan position that found the candidate. The
+            first version enforced the step bar at the scan position and
+            recorded the downbeat's value in the plan, so entries could
+            play at x1.71 against an enforced x1.8 (caught by
+            _dj_cutdrop_test, which judges where it plays)."""
+            t = []
+            if s_db < _CUT_DROP_MIN_STEP:
+                t.append("step")
+            if lv[1] < _CUT_DROP_MIN_AFTER:
+                t.append("after")
+            if lv[0] > _CUT_DROP_MAX_BEFORE:
+                t.append("before")
+            return t
+
+        # One entry per drop: keep the strongest in each 16-beat
+        # neighbourhood, else a single slam yields six near-identical
+        # candidates and crowds out the track's other drops.
+        picked, seen = [], []
+        for at, s_raw, db, s_db, lv in evals:
+            if any(abs(at - p) <= 16 * per for p in seen):
+                continue
+            if _tags(s_db, lv):
                 continue
             seen.append(at)
-            picked.append((db, s))
+            picked.append((db, s_db))
+        # Near-miss pass: strict failures inside the trial floors, spaced
+        # away from the strict picks AND each other. [(db, step, tags)].
+        near, near_seen = [], list(seen)
+        for at, s_raw, db, s_db, lv in evals:
+            if any(abs(at - p) <= 16 * per for p in near_seen):
+                continue
+            tags = _tags(s_db, lv)
+            if not tags:
+                continue
+            if lv[1] < _CUT_DROP_TRIAL_MIN_AFTER \
+                    or lv[0] > _CUT_DROP_TRIAL_MAX_BEFORE:
+                continue
+            near_seen.append(at)
+            near.append((db, s_db, tags))
         self._drop_entry_cache[track.id] = picked
+        self._drop_near_cache[track.id] = near
         return picked
+
+    def _drop_near_entries(self, track):
+        """Near-miss drop entries for the `cut_drop_shape` trial:
+        [(downbeat_s, step, [failed strict bars])], strongest first.
+        Filled by the same scan as _drop_entries."""
+        if track.id not in self._drop_near_cache:
+            self._drop_entries(track)
+        return self._drop_near_cache.get(track.id, [])
 
     def _drop_after(self, track, after_s):
         """First DROP MOMENT (energy slams up at a boundary) at/after
@@ -2651,7 +2779,18 @@ class Brain:
                     # survivor `stretch>5.5%_echo` is NOT listed - it is
                     # unrated, and the render gate says it is load-bearing.)
                     "no_beat_power_A", "no_beat_power_B",
-                    "kick_offset>20ms")
+                    "kick_offset>20ms",
+                    # ADDED 2026-08-14: cut_at_drop's strict entry-shape
+                    # bars (step/after/before), fired only when B holds
+                    # a near-miss inside the trial floors - so the
+                    # override never invents a drop, it promotes one the
+                    # tuned bars refused. "No drop at all" stays
+                    # structural as no_real_drop_in_B. Rated the same
+                    # day (25 trials, wrong 20): bars moved to the rated
+                    # band's floors, kick kill removed. Still listed
+                    # because the NEW bars are unrated - the trial now
+                    # serves the next unheard band.
+                    "cut_drop_shape")
 
         # RETIRED (2000-pair audit + live record, 2026-08-02):
         # cut_at_drop reached 2% of menus, won 0/2000 rolls, and measured
@@ -2710,17 +2849,14 @@ class Brain:
         # lurching 7.8 dB. Drop arrivals belong to the nextdrop MOMENT,
         # on the music alone.
         kill(("loop_roll_exit", "loop_in", "loop_build"), "retired")
-        # BENCHED pending a choreography fix (2026-08-04): breakdown_swap
-        # restores B's low+mid exactly at the swap, which the style
-        # deliberately parks just before B's drop - EQ restore and drop
-        # onset stack into a gate-measured 9.1 dB slam on pairs that pass
-        # every material screen. Fix = complete the restore >=4 beats
-        # pre-drop; until then the style stays off the menu.
-        # Moved to the AUDITION bench 2026-08-12 (same hatch cut_at_drop
-        # used): still off every live menu, but the Lab can plan it so the
-        # fix can be measured and then heard.
-        if not allow_benched:
-            kill("breakdown_swap", "benched_lurch_fix_pending")
+        # breakdown_swap UN-BENCHED 2026-08-14. Benched 2026-08-04 when
+        # its EQ restore stacked on B's drop (9.1 dB slam); the
+        # 2026-08-13 rebuild picks the build whose drop actually arrives
+        # and clears the restore >=4 beats before it (lurch 3.3 dB
+        # median, 0/5 failing). Heard 2026-08-14 via the audition bench:
+        # 12 good / 1 passable / 1 bad on 14 Lab seams - the bench's
+        # stated exit (measured, then heard) is met, so no kill remains.
+        # (The allow_benched hatch stays for whatever gets benched next.)
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
@@ -2811,6 +2947,7 @@ class Brain:
         fade_reason = None
         rolled = False              # did a style dice roll actually happen?
         gate_tested = None          # threshold this seam was let through
+        cut_trial_tags = None       # cut_drop_shape trial: bars failed
         # cut_at_drop's vetted entry - set by the gate below when it runs,
         # and NEEDED at plan time, so it cannot live only in that scope.
         cut_pd, cut_step = None, 0.0
@@ -3274,6 +3411,13 @@ class Brain:
             _entries = self._drop_entries(cand)
             if _entries:
                 cut_pd, cut_step = _entries[0]
+            elif self._drop_near_entries(cand):
+                # B has a candidate drop inside the trial floors that the
+                # strict shape bars refused - a TUNED refusal, so it gets
+                # its own testable reason instead of hiding inside the
+                # structural "no drop at all". The trial override below
+                # supplies the near-miss entry when this is crossed.
+                kill("cut_at_drop", "cut_drop_shape")
             else:
                 kill("cut_at_drop", "no_real_drop_in_B")
             # (loop_roll_exit rolls the 16 beats just before out_s - its
@@ -3463,6 +3607,17 @@ class Brain:
                 weights[force_style] = 1.0
                 gate_tested = ", ".join(sorted(reasons))
                 gated.pop(force_style, None)
+                if force_style == "cut_at_drop" and cut_pd is None \
+                        and "cut_drop_shape" in reasons:
+                    # The trial crossed the shape bars, so the entry the
+                    # bars refused is what plays: B's strongest near-miss.
+                    # Its failed-bar tags ride diag (stamped with
+                    # gate_test below) so per-bar tallies fall out of the
+                    # ratings log.
+                    _near = self._drop_near_entries(cand)
+                    if _near:
+                        cut_pd, cut_step, _tags = _near[0]
+                        cut_trial_tags = list(_tags)
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if force_style == "long_fade":
                 # Operator pinned the deliberate fade - always available.
@@ -3551,6 +3706,10 @@ class Brain:
             # Which threshold this seam was allowed to cross, so the
             # verdict can be read as evidence about that threshold.
             diag["gate_test"] = gate_tested
+            if cut_trial_tags:
+                # ...and for cut_drop_shape, WHICH strict bars the played
+                # entry failed - per-bar tallies fall out of the log.
+                diag["cut_drop_trial"] = cut_trial_tags
         if force_style:
             # Planned-set pin outcome: honored, or refused by which gate.
             diag["style_pin"] = {

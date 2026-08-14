@@ -15,7 +15,10 @@ Read-only: nothing here influences a plan.
 """
 from lib.dj import beatpower as _bp
 from lib.dj.brain import (BAND_CLASH_HI, BAND_CLASH_LO, KICK_SCREEN_BLEND_S,
-                          KICK_SCREEN_CUT_S, _kick_delta_s)
+                          KICK_SCREEN_CUT_S, _CUT_DROP_MAX_BEFORE,
+                          _CUT_DROP_MIN_AFTER, _CUT_DROP_MIN_STEP,
+                          _kick_delta_s, drop_kick_levels, drop_levels,
+                          drop_step)
 
 # Which styles each screen takes off the menu (mirrors brain's kill lists).
 _OVERLAP = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap",
@@ -156,6 +159,44 @@ def probe(a, b, plan):
     # longer has is worse than no probe. What still bounds stretch is the
     # deck's own [0.90, 1.10] clip and rate_for's 6% per-side cap, neither
     # of which is a rateable threshold.)
+
+    # -- cut_at_drop entry shape (2026-08-14) -----------------------------
+    # Only meaningful when the seam IS a cut: the row judges B's entry as
+    # a drop, and on any other style in_s is not claiming to be one. The
+    # anchor is plan["in_s"] itself, NOT the pre-snap pair anchor - the
+    # cut enters exactly at the vetted (or trial near-miss) downbeat.
+    if plan.get("style") == "cut_at_drop":
+        db = plan.get("in_s", 0.0)
+        step = drop_step(b, db)
+        lv = drop_levels(b, db)
+        pb, pa = drop_kick_levels(b.id, db)
+        if step is None or lv is None:
+            rows.append(_row("cut_drop_shape", False, "no energy curve",
+                             "—", ("cut_at_drop",),
+                             skipped="entry shape unmeasurable"))
+        else:
+            fails = []
+            if step < _CUT_DROP_MIN_STEP:
+                fails.append("step")
+            if lv[1] < _CUT_DROP_MIN_AFTER:
+                fails.append("after")
+            if lv[0] > _CUT_DROP_MAX_BEFORE:
+                fails.append("before")
+            # Kick dip->landing is MEASUREMENT ONLY: its kill was rated
+            # away 2026-08-14 (fine at x0.06, bad at x0.95 - sorts
+            # nothing). It stays in the detail so every future verdict
+            # keeps the number beside it.
+            kick = (f"kick {pb:.2f}->{pa:.2f} (x{pa / max(pb, 1e-3):.2f})"
+                    if pb is not None and pa is not None
+                    else "kick not measured")
+            rows.append(_row(
+                "cut_drop_shape", bool(fails),
+                (f"entry @{db:.0f}s  step x{step:.2f}  "
+                 f"run-up {lv[0]:.2f} -> lands {lv[1]:.2f} of p95  {kick}"
+                 + (f"   FAILS: {', '.join(fails)}" if fails else "")),
+                (f"step ≥ {_CUT_DROP_MIN_STEP}, land ≥ "
+                 f"{_CUT_DROP_MIN_AFTER}, run-up ≤ {_CUT_DROP_MAX_BEFORE}"),
+                ("cut_at_drop",)))
     return rows
 
 
@@ -172,13 +213,19 @@ def gate_styles(gate):
     if gate.startswith("band_clash_"):
         band = gate.rsplit("_", 1)[-1]
         return tuple(s for s, bands in _STYLE_BANDS.items() if band in bands)
+    if gate.startswith("cut_drop_shape"):
+        return ("cut_at_drop",)
     return ()
 
 
 def gate_names():
     """Screens a Gate Check session can put on trial, most-costly first
     (measured share of seams they kill, 2026-08-07; stretch measured
-    2026-08-12)."""
+    2026-08-12). cut_drop_shape was rated 2026-08-14 (25 trials, wrong
+    20 times): the bars moved to the rated band's floors and the kick
+    kill came off. It stays listed because the NEW bars are themselves
+    unrated - the trial now serves the next unheard band (step
+    1.25-1.5, land 0.40-0.50, run-up 0.65-0.75)."""
     return ["band_clash_high", "no_beat_power_A", "kick_offset>20ms",
             "no_beat_power_B", "band_clash_mid", "band_clash_low",
-            "kick_offset>28ms"]
+            "kick_offset>28ms", "cut_drop_shape"]

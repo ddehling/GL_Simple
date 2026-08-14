@@ -39,10 +39,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 
 import numpy as np
 
-from lib.dj import beatpower as bp
 from lib.dj.brain import (_CUT_DROP_MAX_BEFORE, _CUT_DROP_MIN_AFTER,
-                          _CUT_DROP_MIN_STEP, Brain, drop_levels, drop_step,
-                          load_library)
+                          _CUT_DROP_MIN_STEP, Brain, drop_kick_levels,
+                          drop_levels, drop_step, load_library)
 from lib.dj.db import LibraryDB
 from lib.dj.themes import get_theme
 
@@ -97,14 +96,18 @@ def main():
         lv = levels(cand, at)
         if lv is None:
             continue
-        per = max(cand.period_s, 0.3)
+        # Kick levels come from the ENGINE's own windows (drop_kick_levels
+        # reads the dense profile at its bucket resolution) - a +/-4-beat
+        # read here would re-create the below-resolution defect the engine
+        # just shed and fail honest entries.
+        pw_b, pw_a = drop_kick_levels(cand.id, at)
         rows.append({
             "pair": f"{cur.title[:20]} -> {cand.title[:20]}",
             "step": drop_step(cand, at) or 0.0,
             "before": lv[0], "after": lv[1],
             "pos": at / max(cand.duration_s, 1e-6),
-            "pw_b": bp.power_at(cand.id, max(at - 4 * per, 0.0)),
-            "pw_a": bp.power_at(cand.id, at + 4 * per),
+            "pw_b": pw_b,
+            "pw_a": pw_a,
         })
 
     if not rows:
@@ -132,21 +135,34 @@ def main():
     check("every entry comes off a real dip",
           bool((bf <= _CUT_DROP_MAX_BEFORE).all()),
           f"loudest run-up {bf.max():.2f} (bar {_CUT_DROP_MAX_BEFORE})")
-    # RECALL: the failure mode was every entry sitting in the intro. A
-    # median past a third of the track is the cheap witness that the scan
-    # reaches where drops actually live.
-    check("entries reach past the intro region",
-          float(np.median(pos)) > 0.33,
-          f"median entry at {np.median(pos):.2f} of the track "
-          f"(pre_drop hints sat at 0.20)")
+    # RECALL: the failure mode was CONFINEMENT - the pre_drop mix-in
+    # hints put 61% of entries in the first quarter and none past three
+    # quarters. Witness that signature, not a median: a median bar
+    # measures how strict the shape bars are, not where the scan can
+    # reach, and it broke spuriously when the 2026-08-14 rating lowered
+    # the bars (more early REAL drops qualified; the same rating showed
+    # position does not predict the verdict - bad median 0.44 vs fine
+    # 0.33, fine seams heard from 0.07 to 0.80).
+    check("entries reach the back half of tracks",
+          bool((pos > 0.5).any()),
+          f"deepest entry at {pos.max():.2f} of the track "
+          f"(pre_drop hints never passed 0.75)")
+    check("entries are not intro-bound",
+          float((pos < 0.25).mean()) < 0.6,
+          f"{100 * float((pos < 0.25).mean()):.0f}% inside the first "
+          f"quarter (pre_drop hints: 61%)")
     if pw:
+        # INFORMATIONAL since 2026-08-14: the kick-return KILL was rated
+        # away (25 Gate Check trials - a fine seam measured x0.06, a bad
+        # one x0.95, no threshold sorts them), so the engine no longer
+        # enforces a bar here and neither does this gate. The number
+        # stays printed because any future re-rating starts from it.
         ratio = np.array([a / max(b, 1e-3) for b, a in pw])
-        check("the kick comes back",
-              bool((ratio >= 1.0).all()),
-              f"worst beat-power ratio x{ratio.min():.2f} over "
-              f"{len(pw)} measured entries (med x{np.median(ratio):.2f})")
+        print(f"  [info] kick dip->landing ratio: min x{ratio.min():.2f} "
+              f"med x{np.median(ratio):.2f} over {len(pw)} measured "
+              f"entries (no bar - kill rated away 2026-08-14)")
     else:
-        print("  [warn] no beat-power measurements - kick check skipped")
+        print("  [warn] no beat-power measurements on any entry")
 
     print()
     for r in sorted(rows, key=lambda r: r["step"])[:5]:

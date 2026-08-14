@@ -169,9 +169,40 @@ dj:
   launch — the incoming deck's phase is instantly aligned to the playing
   track, then a PLL holds it, ±1.2% authority):
   - `long_blend` / `bass_swap` — staged-EQ blends (highs→mids→bass swap)
-  - `cut_at_drop` — hard cut on the incoming track's drop (retired
-    2026-08-02: 0/2000 rolls, phrase_cut does its job; old pins refuse
-    politely)
+  - `cut_at_drop` — hard cut on the incoming track's drop. Retired
+    2026-08-02, reinstated 2026-08-12 after the retirement's evidence
+    (flam 0.247 beats) was re-measured post-grid-phase-fix at 0.017 —
+    rebuilt to enter at B's strongest MEASURED drop (`_drop_entries`
+    scans B's own energy curve; the old `pre_drop` mix-in hints sat in
+    the intro). 2026-08-14, two rounds: first the kick-return check was
+    found reading the beat-power profile below its 20 s bucket
+    resolution — it silently killed most real drops (6% of the library
+    passed while 85% of tracks carry labelled drops; operator: "drops
+    seem common... the system thinks they don't happen often") — fixed
+    via `drop_kick_levels` (dip→landing at bucket resolution, 21%
+    pass). Then the operator rated 25 `cut_drop_shape` Gate Check
+    trials: the strict shape bars were wrong 20/25 and no measured
+    quantity separated bad from fine, so the bars moved to the rated
+    band's floors (step 1.5, land 0.50, run-up 0.65) and the kick kill
+    came off entirely (fine at ×0.06, bad at ×0.95 — measurement only
+    now). The wider reach then exposed a real defect the render gate
+    caught: stored grids are SEGMENTED, and a breakdown can carry a
+    garbage segment (72 bpm at score 0.25 inside a conf-0.99 track)
+    that the cut's run-in and landing get scheduled on — deterministic
+    159 ms grid sawtooth. Entries whose landing or run-in sit in a
+    segment >5% off the track's meter are now structurally skipped.
+    **72% of the library is cut-eligible** (was 6%). The trial stays in
+    the Lab's Gate box serving the next unheard band (step 1.25–1.5)
+    since the new bars are themselves unrated
+  - `breakdown_swap` — blend over A's breakdown carrying B's build; the
+    drop that follows is the payoff. Benched 2026-08-04 (EQ restore
+    stacked on B's drop, 9.1 dB slam), rebuilt 2026-08-13 (entry takes
+    the build whose drop actually ARRIVES within 4–40 beats; the
+    restore clears it by ≥4 beats — lurch 3.3 dB median), un-benched
+    2026-08-14 after 12/14 good in the Lab. Note its payoff drop is
+    label-vouched (`drop_moments`), and 24% of payoffs measure below
+    ×1.25 on the energy curve — if live nights hear "where was the
+    drop?", the measured-step vet is the ready lever (rate first)
   - `loop_roll_exit` — shrinking loop-roll outro (retired 2026-08-04
     with `loop_in` and `loop_build` — user verdict on the whole roll
     family: "I don't like the loop rolls at all"; the quality gate had

@@ -35,9 +35,16 @@ MAX_TOOL_TURNS = 24              # runaway-loop backstop per user message
 HISTORY_MAX_MSGS = 40            # trim old turns; the set state is re-read
 
 # The full transition-style menu (mirrors brain.plan_transition's beats
-# table) - the vocabulary pin_style validates against.
-STYLES = ("long_blend", "bass_swap", "filter_sweep", "loop_roll_exit",
-          "echo_out", "loop_build",
+# table) - the vocabulary pin_style validates against. This tuple ALSO
+# feeds the Set tab's "Transition options" box and its pin context menu,
+# so a style absent here is invisible and unpinnable everywhere even
+# when the compiled plan offers it. cut_at_drop was dropped at its
+# 2026-08-02 retirement and nobody restored it at the 2026-08-12
+# reinstatement - caught by the operator two days later ("I don't see
+# cut_at_drop as an option"). The retired styles stay listed on
+# purpose: their rows show the 'retired' gate instead of vanishing.
+STYLES = ("long_blend", "bass_swap", "cut_at_drop", "filter_sweep",
+          "loop_roll_exit", "echo_out", "loop_build",
           "stem_drum_swap", "acapella_out",
           "stem_bass_swap", "drum_bridge", "acapella_in", "melody_carry",
           "phrase_cut", "spinback_cut", "loop_in", "breakdown_swap",

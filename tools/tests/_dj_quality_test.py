@@ -173,16 +173,22 @@ def force_style(theme, style):
 
 
 def render_seam(library, cur, style, wav=False, allow_benched=False,
-                pair=None):
+                pair=None, b_veto=None):
     """Arm one brain-planned transition exactly like DJSystem does and
     render it offline. Returns (metrics dict | None if style not legal).
 
     `allow_benched` is for AUDITION PROBES only - it lets a style that is
     off the live menu pending a listen be rendered and measured. The gate
     below never passes it: a benched style must not be able to satisfy the
-    gate's own coverage check."""
+    gate's own coverage check.
+
+    `b_veto` narrows choose_next's B side to structurally viable partners
+    (audition_pools' veto set, the same aid the Lab uses) - a SEARCH aid,
+    never a gate: every screen still runs on whatever gets picked."""
     theme = force_style(get_theme("groove"), style)
     brain = Brain(library, theme, seed=7)
+    if b_veto:
+        brain.veto_ids = set(b_veto)
     brain.note_played(cur)
     if pair is not None:
         # AUDITION PROBES supply their own (cand, meta): a style rare enough
@@ -483,8 +489,11 @@ def seam_qa(library, wav=False):
     # notices.)
     # (loop family + spinback_cut retired 2026-08-04, user verdict on
     # the roll/slowdown mechanics.)
-    # breakdown_swap benched 2026-08-04 (drop/EQ-restore stacking slam;
-    # see brain.py kill note) - back in this list when the fix lands.
+    # breakdown_swap benched 2026-08-04 (drop/EQ-restore stacking slam),
+    # rebuilt 2026-08-13 (entry takes the build whose drop ARRIVES, the
+    # restore clears it; lurch 3.3 dB median), un-benched 2026-08-14
+    # after 12/14 good in the Lab - so it renders here again: the
+    # restore-vs-drop timing is exactly what this gate measures.
     # phrase_cut retired 2026-08-05 ("I have never heard a good phrase
     # cut" - user); echo_out is the remaining cut style.
     # long_fade is rendered TWICE, because it has two populations and
@@ -496,7 +505,8 @@ def seam_qa(library, wav=False):
     # "awful kick clashes" live, so it gets its own render off the
     # beat-heavy pool.
     styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
-              "cut_at_drop", "long_fade", "long_fade_beaty"]
+              "cut_at_drop", "breakdown_swap", "long_fade",
+              "long_fade_beaty"]
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],
                         key=lambda t: -t.rhythm_density)
@@ -512,11 +522,24 @@ def seam_qa(library, wav=False):
         # BOTH sides AND a pre_drop entry in B, which leaves ~15% of pairs
         # structurally eligible. At 12 it silently reported "no legal pair"
         # and the coverage check passed anyway - the style was in the list
-        # and never actually rendered.
-        depth = 90 if label == "cut_at_drop" else 12
-        for cur in pool[:depth]:
+        # and never actually rendered. breakdown_swap got the same
+        # treatment 2026-08-14 the day it was un-benched (same silent
+        # warn on its first gated run), PLUS the audition_pools A-side
+        # aid: its A must own a breakdown section, which a
+        # rhythm-density-sorted pool has no reason to surface in 90
+        # tries. The pools are a search aid, never a gate - render_seam
+        # still runs every screen (and imports the pool rules from the
+        # engine, so they cannot drift).
+        depth = 90 if label in ("cut_at_drop", "breakdown_swap") else 12
+        pool_l, b_veto = pool, None
+        if label == "breakdown_swap":
+            from lib.dj.brain import audition_pools
+            a_pool, b_veto = audition_pools(library, style)
+            ids = {t.id for t in a_pool}
+            pool_l = [t for t in pool if t.id in ids] or pool
+        for cur in pool_l[:depth]:
             try:
-                m = render_seam(library, cur, style, wav=wav)
+                m = render_seam(library, cur, style, wav=wav, b_veto=b_veto)
             except Exception as e:
                 print(f"  [FAIL] {label} render crashed on {cur.title[:30]}: "
                       f"{type(e).__name__}: {e}")
@@ -539,7 +562,8 @@ def seam_qa(library, wav=False):
                         and float(np.median(gl)) > med_bar:
                     print(f"  [FLAKY?] {label}: grid med "
                           f"{np.median(gl):.0f}ms - re-rendering once")
-                    m2 = render_seam(library, cur, style, wav=wav)
+                    m2 = render_seam(library, cur, style, wav=wav,
+                                     b_veto=b_veto)
                     if m2:
                         gl2 = [l for d, l in m2["grid_lags"] if d > 2.0]
                         if gl2 and np.median(gl2) < np.median(gl):
@@ -645,8 +669,18 @@ def seam_qa(library, wav=False):
             check(f"{label}: decks actually overlap", False,
                   f"dual-audible only {m['dual_s']:.1f}s "
                   f"(need {min_dual:.0f})")
-    check("style coverage rendered", len(got) >= 4,
-          f"rendered {sorted(got)} of {styles}")
+    # EVERY listed style must actually render - "no legal pair" plus a
+    # >=4 floor let cut_at_drop (2026-08-13) and then breakdown_swap
+    # (2026-08-14, the day it was un-benched) sit in the list and never
+    # be tested. echo_out alone keeps a pass: it was observed to miss
+    # stochastically at depth 12 on a run whose code hadn't touched it,
+    # and unlike the rare styles it has no structural pool to aid the
+    # search with.
+    required = set(styles) - {"echo_out"}
+    check("style coverage rendered", required <= set(got),
+          f"rendered {sorted(got)} of {styles}"
+          + (f" - MISSING {sorted(required - set(got))}"
+             if not required <= set(got) else ""))
     return got
 
 
