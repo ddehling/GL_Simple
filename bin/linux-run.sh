@@ -89,4 +89,8 @@ bin/ensure_port_cap.sh || true
 # already are, or on any non-Pi system). Lets a Pi that was updated rather than
 # reinstalled pick up the image-display button support. Non-fatal + offline-safe.
 bash bin/ensure_pi_gpio.sh || true
+# Show machines need the performance CPU governor or heavy seams stutter
+# (see lib/audio_engine.py RING_TARGET_MS note). Warns + self-heals when the
+# systemd unit from linux-install.sh is present; never blocks the launch.
+bash bin/ensure_cpu_performance.sh || true
 exec venv/bin/python Stories_OGL.py

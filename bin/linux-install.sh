@@ -488,6 +488,35 @@ else
     echo "      [cap] could not install setcap sudoers rule; port-80 self-heal will need a manual setcap after python upgrades"
 fi
 
+# Hold the CPU governor at `performance` on show machines. The default
+# powersave governor let stem-dual seams outrun the audio render ring on
+# the N150 box (multi-second stutter after transitions, 2026-08-14 - see
+# the RING_TARGET_MS note in lib/audio_engine.py). A tiny enabled systemd
+# unit re-asserts it on every boot; bin/ensure_cpu_performance.sh warns at
+# launch if a machine somehow lost it. Skipped where there is no cpufreq
+# (VMs, containers) or no systemd (macOS).
+if [ -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ] \
+        && command -v systemctl >/dev/null 2>&1; then
+    sudo tee /etc/systemd/system/cpu-performance.service >/dev/null <<'UNIT'
+[Unit]
+Description=Hold CPU governor at performance (audio render headroom)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $g; done"
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if sudo systemctl daemon-reload \
+            && sudo systemctl enable --now cpu-performance.service >/dev/null 2>&1; then
+        echo "      [cpu] governor held at performance (cpu-performance.service enabled)"
+    else
+        echo "      [cpu] could not enable cpu-performance.service; set the governor manually:"
+        echo "            sudo cpupower frequency-set -g performance"
+    fi
+fi
+
 # ---------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------
