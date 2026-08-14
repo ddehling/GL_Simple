@@ -333,6 +333,7 @@ depth-based approach — new club effects must too.
 | 0.48 | club_chaser | chaser_level | marquee chase dots, one step/beat |
 | 0.45 | club_kick_flare | kick_flare_level | star-burst rays on each kick |
 | 0.47 | club_spirograph | spirograph_level | MilkDrop Wire Spirograph port: counter-rotating roses, petal count snaps per bar |
+| 0.44 | club_digital_flame | flame_level | Krash 'Digital Flame' port: quantized fire wall licking outward from the hub. CPU column sim carries a HEIGHT and a HEAT per column - height is what you see, heat is how recently a kick fed that column, so a burst separates from the resting ember bed by hue (amber vs deep red) and not by brightness alone. Cell gutters + a low bed keep it sparse-bright |
 | 0.40 | club_shockwave | shockwave_level | bass rings in real feet |
 | 0.38 | club_fountain | fountain_level | ballistic particles erupting on kicks, gravity pulls them home |
 | 0.35 | club_tesla | tesla_level | branching hub-to-rim lightning on hard kicks + treble corona |
