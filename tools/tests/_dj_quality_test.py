@@ -681,11 +681,19 @@ def seam_qa(library, wav=False):
     # stochastically at depth 12 on a run whose code hadn't touched it,
     # and unlike the rare styles it has no structural pool to aid the
     # search with.
-    # KNOWN INTERMITTENT: breakdown_swap missed 1 run in 3 on
-    # 2026-08-14 with UNCHANGED code and passed on rerun - same
-    # unfound plan/render nondeterminism as the [FLAKY?] grid note
-    # above. If this check fails on a style the diff never touched,
-    # rerun once before digging.
+    # KNOWN INTERMITTENT, MECHANISM FOUND 2026-08-14 EVENING: plan
+    # outcomes depend on PYTHONHASHSEED. The same pair (Calexico ->
+    # Tarantula, breakdown_swap search, seed-7 brain, identical data)
+    # plans breakdown_swap under some process hash seeds and long_fade
+    # under others (seeds 0-3 all: long_fade, rate 1.0176) - a
+    # string-keyed set/dict iteration order leaks into planning
+    # somewhere, and per-process hash randomization turns it into the
+    # long-standing "render nondeterminism, source not yet found"
+    # ([FLAKY?] note above) plus this check's intermittent misses.
+    # Until the leak site is found and sorted(): if this check fails on
+    # a style the diff never touched, rerun once before digging. Do NOT
+    # pin PYTHONHASHSEED as a fix - a pinned seed can deterministically
+    # LOSE a style's only findable pair.
     required = set(styles) - {"echo_out"}
     check("style coverage rendered", required <= set(got),
           f"rendered {sorted(got)} of {styles}"

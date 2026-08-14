@@ -174,6 +174,15 @@ class LibraryDB:
 
     def __init__(self, music_root, db_path=None):
         self.music_root = os.path.abspath(music_root)
+        # beat_power.json lives WITH this library (see beatpower.
+        # set_music_root) - the ids it is keyed by come from this DB, so
+        # the file must travel with it. Local import: beatpower pulls in
+        # scipy and db must stay importable without it.
+        try:
+            from lib.dj import beatpower as _bp
+            _bp.set_music_root(self.music_root)
+        except Exception:
+            pass
         self.db_path = db_path or os.path.join(self.music_root, DB_FILENAME)
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         # check_same_thread=False: DJSystem builds the library cache on the

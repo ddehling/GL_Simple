@@ -37,6 +37,26 @@ BLEND_MIN = 1.3        # the INCOMING side: it becomes the foundation
 BLEND_MIN_EXIT = 1.05  # the OUTGOING side: it only hands off
 
 
+_MUSIC_ROOT = None
+
+
+def set_music_root(root):
+    """beat_power.json LIVES WITH THE LIBRARY IT DESCRIBES (2026-08-14).
+
+    It used to live in the repo's logs/ - a per-machine, gitignored
+    artifact keyed by track ids from the library DB that DOES sync with
+    the music folder. The playing machine therefore had the DB but NO
+    beat_power.json at all, and the whole precision stack (kick-true
+    anchors, phase interpolation, the local grid_conf standdown, dense
+    beat power) was silently inert on the one machine that plays music -
+    diagnosed 2026-08-14 after a day of "bad beat matching" reports
+    that no local render could reproduce. The file now sits next to the
+    DB it is keyed to, so the operator's own music sync carries it.
+    Called by LibraryDB.__init__ - the one place that knows the root."""
+    global _MUSIC_ROOT
+    _MUSIC_ROOT = root
+
+
 def path():
     # DJ_BEATPOWER_PATH: hermetic override for test harnesses. The
     # synthetic-fleet e2e uses tiny track ids that COLLIDE with real
@@ -46,6 +66,10 @@ def path():
     env = os.environ.get("DJ_BEATPOWER_PATH")
     if env:
         return env
+    if _MUSIC_ROOT:
+        return os.path.join(_MUSIC_ROOT, "beat_power.json")
+    # Legacy repo-logs location: only reachable before any LibraryDB
+    # exists (no DJ tool touches beatpower before opening the library).
     return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "logs", "beat_power.json")
 
