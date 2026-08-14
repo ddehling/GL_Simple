@@ -41,8 +41,23 @@ CHUNK_FRAMES  = 1024   # frames per stream_file read; buffered in _Track
 # punching a hole in the output. The cost is latency: a control action
 # (skip, cue, a scheduled DJ event) is heard RING_TARGET_MS later than
 # before, on top of the device's own buffer.
-RING_TARGET_MS   = 400        # how far ahead we render = the jitter we absorb
-RING_CAPACITY_MS = 700        # ring size; > target so the producer has room
+#
+# 400/700 -> 1200/2000 (2026-08-14): the 400ms cushion was sized for the
+# R3 stretch cost alone. A STEM dual (two decks, each pre-mixing four
+# stem buffers before its stretcher) plus the sync PLL, on the same
+# N150 now ALSO running the fan project's GL/web/DMX threads and a
+# browser at load average 4.7 on 4 cores, drained the whole ring twice
+# in one afternoon set - measured in logs/dj_20260814.jsonl as
+# audio_starved n=9 then n=14 bracketing a stem_drum_swap swap
+# ("stuttered several times for multiple seconds" - operator), with a
+# third burst on a plain bass_swap at peak box load. The deeper ring
+# buys ~1.2s of producer deficit before a hole reaches the speakers;
+# skips and scheduled events are heard that much later, which a live
+# room tolerates far better than dropouts. If control latency ever
+# matters more, the right upgrade is flushing the ring on skip, not
+# shrinking the cushion.
+RING_TARGET_MS   = 1200       # how far ahead we render = the jitter we absorb
+RING_CAPACITY_MS = 2000       # ring size; > target so the producer has room
 RENDER_BLOCK     = 2048       # frames per producer pass (~46ms)
 # Ring sizes are FRAME counts, so they depend on the rate — derived per
 # instance in AudioEngine (self._ring_target / _ring_capacity) and re-derived
