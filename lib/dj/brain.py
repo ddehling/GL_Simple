@@ -731,6 +731,30 @@ def drop_kick_levels(track_id, db_s):
             _bp.power_at(track_id, db_s + _bp.PROF_BUCKET_S / 2))
 
 
+def off_meter_span(track, lo_s, hi_s, tol=0.05):
+    """True when any stored-grid SEGMENT overlapping [lo_s, hi_s] claims
+    a bpm more than `tol` off the track's nominal meter.
+
+    Stored grids are segmented, and the scanner can emit a segment
+    through a breakdown that describes nothing (found 2026-08-14: a
+    conf-0.99 track whose 220-240s segment claims 72.46 bpm at score
+    0.25 between solid 107.9 segments). Every sync layer OBEYS the
+    stored lattice - the PLL locks it, the phrase snap lands on it - so
+    where the lattice is fiction, the decks hold a lock the music
+    audibly walks away from ("both beatlines... well out of phase" -
+    operator, on a hypnotic-heavy night; 38% of the library carries at
+    least one such segment, median 11% of the track). 5% also catches
+    half/double-time segments, whose bars are the wrong LENGTH.
+    Same defect class the cut entry guard in _drop_entries covers;
+    module-level so gateprobe/tests read the SAME rule."""
+    for sg in (track.grid or []):
+        if sg["end_s"] < lo_s or sg["start_s"] > hi_s:
+            continue
+        if abs(sg["bpm"] / max(track.bpm, 1e-6) - 1.0) > tol:
+            return True
+    return False
+
+
 def audition_pools(library, style, trial_gate=""):
     """(a_pool, b_veto_ids) for auditioning `style`: the tracks that can
     STRUCTURALLY serve each side, so a search does not spend its whole
@@ -987,6 +1011,28 @@ TUNE_DEFAULTS = {
     # arrival, say) and let a harness neutralize one side alone.
     "fade_a_low_out": 1.2,  # long_fade: A's low leaves this fast
     "fade_b_low_in": 1.2,   # long_fade: ...and B's arrives this fast
+    # ONE BEAT PATTERN AT A TIME (2026-08-14). The baton above hands
+    # over the KICK, but a fade between two rhythm-dense tracks still
+    # plays both PERCUSSION lines - snares, toms, mid-hats live in A's
+    # mids, which deliberately carry until the exit fade completes -
+    # free-running through each other for the dual ("both beatlines
+    # over each other, well out of phase" - operator, hypnotic-heavy
+    # night where nearly every fade pair measured rhythm-dense with
+    # predicted kick_agreement 0.1-0.5: the planner PREDICTED each
+    # clash and the fade path never consumed the number). When the
+    # seam's own rhythm prediction says the patterns fight
+    # (kick_agreement < 0.6 at conf >= 0.5 - evidence-gated, no
+    # measurement means no carve), A's mids leave on their own clock
+    # from the seam instead of riding the gain fade. Slower than the
+    # low baton on purpose: mids also carry A's melody, and this is a
+    # fade-to-darkness, not a mute. Clash pairs only - a fade against
+    # an ambient B keeps A's melody to the end, exactly as before.
+    "fade_a_mid_out": 2.5,  # long_fade: A's mids leave this fast on clash
+    "fade_clash_ka": 0.6,   # long_fade: carve when kick_agreement < this
+                            # (set <= 0 to disable the clash carve)
+    "fade_clash_lead_x": 0.5,  # long_fade: clash pairs shrink B's lead
+                               # (co-presence is TIME x depth; EQ can
+                               # only touch half the percussion band)
     # A's air once B is in the room. DEFAULT 1.0 = OFF, and the default
     # is a measurement, not caution: at 0.6 it moved transient
     # co-presence by nothing on average (4.31 -> 4.25s over 4 pairs) and
@@ -2951,13 +2997,29 @@ class Brain:
         # cut_at_drop's vetted entry - set by the gate below when it runs,
         # and NEEDED at plan time, so it cannot live only in that scope.
         cut_pd, cut_step = None, 0.0
-        if low_conf or not pair.get("beaty", True):
-            # No confident grid, or the best seam is BEATLESS on one side:
-            # a beat-matched blend there is inaudible as such and just
-            # smears - do a deliberate clean fade on the phrase instead.
+        # THE LATTICE UNDER THE OVERLAP MUST BE THE TRACK'S METER
+        # (2026-08-14, blend-side twin of the cut entry guard - see
+        # off_meter_span). The windows cover where the synced styles
+        # actually play both decks: A from just before its exit through
+        # the longest dual, B from its run-in through the same. A fade
+        # never claims sync, so it is the honest style here - and the
+        # fade's own clash carve (fade_a_mid_out) knows these pairs
+        # fight. If the night logs show this reason often, the next
+        # investment is teaching best_pair to MOVE the anchors off the
+        # bad span instead of conceding the blend.
+        _off_meter = (off_meter_span(cur, pair["out_s"] - 5.0,
+                                     pair["out_s"] + 30.0)
+                      or off_meter_span(cand, pair["in_s"] - 5.0,
+                                        pair["in_s"] + 30.0))
+        if low_conf or _off_meter or not pair.get("beaty", True):
+            # No confident grid, a fictitious grid segment under the
+            # overlap, or the best seam is BEATLESS on one side: a
+            # beat-matched blend there is inaudible as such (or locks a
+            # lie) and just smears - deliberate clean fade on the phrase.
             style = "long_fade"
             fade_reason = ("tempo_clash" if (meta or {}).get("tempo_clash")
                            else "grid_conf<0.5" if low_conf
+                           else "off_meter_segment" if _off_meter
                            else "beatless_seam")
         else:
             if (cur.downbeat_conf < 0.15 or cand.downbeat_conf < 0.15):
@@ -4089,8 +4151,41 @@ class Brain:
             #      it just re-picks which misaligned beats collide.
             # B is cued at in_s SOUNDING at B0, native tempo, nominal
             # fader. Do not re-add these without the user asking.
+            # ONE BEAT PATTERN AT A TIME (2026-08-14). The low baton
+            # below hands over the KICK, but a fade between two
+            # rhythm-dense tracks still played both PERCUSSION lines -
+            # B's hats/click arrive at full EQ under A's still-full kit,
+            # free-running through each other from B0 ("both beatlines
+            # over each other, well out of phase" - operator, on a
+            # hypnotic-heavy night whose fades all measured predicted
+            # kick_agreement 0.1-0.5: the planner predicted every clash
+            # and the fade path never consumed the number). Measured on
+            # rendered clash pairs, in three attempts:
+            #   - carving A's mids AFTER the seam moved perc co-presence
+            #     by nothing: the clash lives BEFORE the seam;
+            #   - closing B's HIGH at entry moved it barely: the EQ
+            #     splits at 2500 Hz and half the percussion band
+            #     (snare body, 1-2.5k) rides B's MID, which is also its
+            #     identity and stays whole by design.
+            # So the lever that remains is TIME, exactly as
+            # perc_overlap's own note predicts ("a shelf or a different
+            # in-point"): on predicted-clash pairs B's entry moves
+            # closer to the seam (fade_clash_lead_x), its high waits
+            # with its low, and at S0 the top end is handed over on the
+            # baton clocks while A's mids leave decisively.
+            # Evidence-gated: no rhythm measurement, no carve - an
+            # ambient/sparse B keeps today's arrive-whole entry.
+            _rt = plan.get("rhythm") or {}
+            _ka = _rt.get("kick_agreement")
+            _clash = (_ka is not None and _rt.get("conf", 0.0) >= 0.5
+                      and _ka < K("fade_clash_ka"))
+            if _clash:
+                plan.setdefault("diag", {})["fade_clash_carve"] = round(
+                    _ka, 3)
             A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
-            B0 = max(S0 - int(K("fade_lead_b") * _ug * RATE), A0)
+            B0 = max(S0 - int(K("fade_lead_b") * _ug
+                              * (K("fade_clash_lead_x") if _clash else 1.0)
+                              * RATE), A0)
             ev += [
                 {"at": A0, "cmd": "gain", "deck": active,
                  "value": K("fade_recede"),
@@ -4106,8 +4201,11 @@ class Brain:
                 # rare when fades were rare, constant once they carried
                 # half the night ("the kick clash is terrible" - user).
                 # Atmosphere may overlap; unsynced KICKS never do.
+                # (On predicted-clash pairs the HIGH waits with it - the
+                # percussion baton above.)
                 {"at": B0, "cmd": "eq", "deck": incoming, "low": 0.0,
-                 "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
+                 "mid": 1.0, "high": 0.0 if _clash else 1.0,
+                 "ramp_s": 0.01},
                 # A GIVES UP ITS AIR AS B ARRIVES (2026-08-06). The carve
                 # above removes B's kick FUNDAMENTAL and nothing else -
                 # the 200 Hz LR4 split leaves B's beater click, snare and
@@ -4179,6 +4277,20 @@ class Brain:
                 {"at": S0 + int(K("fade_stop_lead") * RATE), "cmd": "stop",
                  "deck": active},
             ]
+            if _clash:
+                # THE PERCUSSION BATON'S SEAM HALF (see the note above
+                # A0): B's high arrives on the low-baton clock as A's
+                # whole kit leaves - high fast with the low, mids on
+                # their own slightly gentler clock (they also carry A's
+                # melody; this is a fade-to-darkness, not a mute).
+                ev += [
+                    {"at": S0, "cmd": "eq", "deck": incoming, "high": 1.0,
+                     "ramp_s": max(K("fade_b_low_in") * _ug, 1.2)},
+                    {"at": S0, "cmd": "eq", "deck": active, "high": 0.0,
+                     "ramp_s": K("fade_a_low_out") * _ug},
+                    {"at": S0, "cmd": "eq", "deck": active, "mid": 0.0,
+                     "ramp_s": K("fade_a_mid_out") * _ug},
+                ]
             # (A riser-through-the-dip variant was tried and REMOVED
             # 2026-08-02: synthesized whooshes read as cheesy - user. The
             # fade stays clean; drama comes from the music, brake or echo.)

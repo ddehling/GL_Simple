@@ -222,7 +222,18 @@ dj:
     arrives whole and its quiet entry is what masks the mismatch.
     Measured by `perc_overlap` (`lib/dj/seamverify.py`), the only rhythm
     instrument that means anything on unsynced decks — kick clash 1.19 s
-    → 0.25 s mean over four rhythmic pairs. `_dj_quality_test.py` gates
+    → 0.25 s mean over four rhythmic pairs. 2026-08-14, the PERCUSSION
+    baton: on predicted-clash pairs (seam kick_agreement < 0.6 at conf
+    ≥ 0.5 — evidence-gated) B's entry moves closer to the seam
+    (`fade_clash_lead_x`), enters with its high closed, and the top end
+    is handed over on the baton clocks at the seam while A's mids leave
+    decisively — perc co-presence halved (2.5→1.25 s, 4.75→2.25 s) on
+    rendered clash pairs. EQ alone couldn't do it: the 2500 Hz
+    crossover leaves half the percussion band inside B's identity mids,
+    so the lever is TIME. Separately, seams whose overlap crosses an
+    off-meter GRID SEGMENT (the fictitious-lattice defect) divert to
+    the fade with `fade_reason: off_meter_segment` (~12% of seams) —
+    a blend there would lock a lie. `_dj_quality_test.py` gates
     it on both fade populations. (`fade_a_high`, an air shelf on A,
     exists as a knob but defaults OFF: measured, trimming the louder
     deck moved its transients *toward* the other's rather than out of

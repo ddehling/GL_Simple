@@ -173,7 +173,7 @@ def force_style(theme, style):
 
 
 def render_seam(library, cur, style, wav=False, allow_benched=False,
-                pair=None, b_veto=None):
+                pair=None, b_veto=None, tune=None):
     """Arm one brain-planned transition exactly like DJSystem does and
     render it offline. Returns (metrics dict | None if style not legal).
 
@@ -205,6 +205,11 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
                                  allow_benched=allow_benched)
     if plan["style"] != style:
         return None                       # gates said no (no drop/loop/...)
+    if tune:
+        # AUDITION PROBES ONLY: per-seam knob overrides, the same K()
+        # channel the Lab's jitter uses - lets an A/B render the same
+        # seam with a knob on vs off. The gate itself never passes this.
+        plan["tune"] = dict(tune)
 
     a = F.decode_file_stereo(os.path.join(MUSIC, cur.path))
     b = F.decode_file_stereo(os.path.join(MUSIC, cand.path))
