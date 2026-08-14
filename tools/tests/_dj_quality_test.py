@@ -139,17 +139,31 @@ def force_style(theme, style):
     return t
 
 
-def render_seam(library, cur, style, wav=False):
+def render_seam(library, cur, style, wav=False, allow_benched=False,
+                pair=None):
     """Arm one brain-planned transition exactly like DJSystem does and
-    render it offline. Returns (metrics dict | None if style not legal)."""
+    render it offline. Returns (metrics dict | None if style not legal).
+
+    `allow_benched` is for AUDITION PROBES only - it lets a style that is
+    off the live menu pending a listen be rendered and measured. The gate
+    below never passes it: a benched style must not be able to satisfy the
+    gate's own coverage check."""
     theme = force_style(get_theme("groove"), style)
     brain = Brain(library, theme, seed=7)
     brain.note_played(cur)
-    cand, meta = brain.choose_next(cur, 0.6, cur.bpm)
+    if pair is not None:
+        # AUDITION PROBES supply their own (cand, meta): a style rare enough
+        # that this function's own choose_next never lands it cannot be
+        # measured otherwise, and "too rare to sample" must not be
+        # indistinguishable from "sounds fine".
+        cand, meta = pair
+    else:
+        cand, meta = brain.choose_next(cur, 0.6, cur.bpm)
     if cand is None:
         return None
     plan = brain.plan_transition(cur, cand, meta,
-                                 after_s=cur.duration_s * 0.45)
+                                 after_s=cur.duration_s * 0.45,
+                                 allow_benched=allow_benched)
     if plan["style"] != style:
         return None                       # gates said no (no drop/loop/...)
 
@@ -427,8 +441,13 @@ def seam_qa(library, wav=False):
     cands = sorted([t for t in library
                     if t.bpm_conf > 0.6 and t.downbeat_conf > 0.3
                     and t.duration_s > 240], key=lambda t: -t.rhythm_density)
-    # (cut_at_drop retired, double_drop + bassline_layer removed
-    # 2026-08-02; the newer cut/loop entries joined the render pool.)
+    # (double_drop + bassline_layer removed 2026-08-02; the newer cut/loop
+    # entries joined the render pool. cut_at_drop REJOINED 2026-08-12 when
+    # it came off the bench - it is the only style that hard-cuts with no
+    # overlap, so it is the one whose grid lock nothing else can cover for,
+    # and it now also carries the outgoing tempo ramp: if the meet-in-the-
+    # middle ever mistimes, the cut misses the drop and this render is what
+    # notices.)
     # (loop family + spinback_cut retired 2026-08-04, user verdict on
     # the roll/slowdown mechanics.)
     # breakdown_swap benched 2026-08-04 (drop/EQ-restore stacking slam;
@@ -444,7 +463,7 @@ def seam_qa(library, wav=False):
     # "awful kick clashes" live, so it gets its own render off the
     # beat-heavy pool.
     styles = ["bass_swap", "long_blend", "filter_sweep", "echo_out",
-              "long_fade", "long_fade_beaty"]
+              "cut_at_drop", "long_fade", "long_fade_beaty"]
     fade_cands = sorted([t for t in library
                          if t.bpm_conf < 0.45 and t.duration_s > 240],
                         key=lambda t: -t.rhythm_density)
@@ -454,7 +473,15 @@ def seam_qa(library, wav=False):
         # `label` names the CASE, `style` the style actually planned.
         style = "long_fade" if label.startswith("long_fade") else label
         pool = fade_cands if label == "long_fade" else cands
-        for cur in pool[:12]:
+        # SEARCH DEPTH FOLLOWS HOW RARE THE STYLE'S GATES MAKE IT. Twelve
+        # candidates is plenty for the workhorses, and finds nothing at all
+        # for cut_at_drop: it is the only style requiring bpm_conf>=0.8 on
+        # BOTH sides AND a pre_drop entry in B, which leaves ~15% of pairs
+        # structurally eligible. At 12 it silently reported "no legal pair"
+        # and the coverage check passed anyway - the style was in the list
+        # and never actually rendered.
+        depth = 90 if label == "cut_at_drop" else 12
+        for cur in pool[:depth]:
             try:
                 m = render_seam(library, cur, style, wav=wav)
             except Exception as e:

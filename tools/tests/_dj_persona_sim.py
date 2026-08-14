@@ -67,14 +67,28 @@ def run_night(library, theme_name, persona, hours, seed):
         return []
     brain.note_played(cur, when=0.0)
     seams = []
+    entry_s = 0.0          # where the CURRENT record was entered
     while SimClock.t < total:
         arc = brain.theme.arc_target(SimClock.t / total)
+        # THE BUDGET IS NOT THE PLAY LENGTH (fixed 2026-08-13). This loop
+        # used to advance the clock by the drawn budget, which assumes the
+        # record leaves when the budget says. It does not: the budget only
+        # sets `after_s`, a FLOOR, and best_pair then picks the exit. For a
+        # year the scorer had no late bound at all, so a live showman night
+        # measured a median exit at 0.90 of the record while this simulator
+        # reported it rotating 20% faster than neutral - the persona
+        # pacing spread it published was an artefact of its own model.
+        # Draw the budget, plan, then advance by the exit that was PLANNED.
         play_s = _draw_exit(brain, arc)
-        SimClock.t += play_s
-        cand, meta = brain.choose_next(cur, arc, cur.bpm, now=SimClock.t)
+        cand, meta = brain.choose_next(cur, arc, cur.bpm,
+                                       now=SimClock.t + play_s)
         if cand is None:
             break
-        plan = brain.plan_transition(cur, cand, meta, arc=arc)
+        plan = brain.plan_transition(cur, cand, meta, arc=arc,
+                                     after_s=entry_s + play_s)
+        # Realized play = where the seam leaves, minus where we came in.
+        play_s = max(plan.get("out_s", entry_s + play_s) - entry_s, 30.0)
+        SimClock.t += play_s
         kc = camelot_compat(cur.camelot, cand.camelot)
         v = cand.axes.get("vocal", 0.5)
         seams.append({
@@ -84,10 +98,15 @@ def run_night(library, theme_name, persona, hours, seed):
             "vocal": v if v is not None else 0.5,
             "moment": plan["style"] in SPECTACLE and arc >= 0.82,
             "clash_fade": bool((meta or {}).get("tempo_clash")),
+            # How deep into the record it actually left - the quantity the
+            # budget was assumed to control and does not.
+            "exit_frac": (plan.get("out_s", 0.0) / cur.duration_s
+                          if cur.duration_s else 0.0),
         })
         SimClock.t += plan.get("beats", 0) * 60.0 / max(cur.bpm, 60.0)
         brain.note_played(cand, when=SimClock.t)
         cur = cand
+        entry_s = plan.get("in_s", 0.0) or 0.0
     return seams
 
 
@@ -118,6 +137,8 @@ def summarize(name, all_seams, nights):
             [s["beats"] for s in all_seams])), 1),
         "mean_play_min": round(float(np.mean(
             [s["play_s"] for s in all_seams])) / 60.0, 2),
+        "exit_frac_med": round(float(np.median(
+            [s["exit_frac"] for s in all_seams])), 2),
         "key_close_pct": round(100.0 * float((kc >= 0.9).mean()), 1),
         "key_clash_pct": round(100.0 * float((kc < 0.55).mean()), 1),
         "bpm_std": round(float(np.std(
@@ -162,6 +183,7 @@ def main():
 
     cols = ["persona", "tracks_per_night", "punchy_pct", "fade_pct",
             "blend96_pct", "mean_blend_beats", "mean_play_min",
+            "exit_frac_med",
             "key_close_pct", "key_clash_pct", "bpm_std", "vocal_mean",
             "moments_per_night"]
     print("\n" + " | ".join(f"{c:>16}" for c in cols))
