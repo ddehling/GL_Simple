@@ -19,7 +19,7 @@ import time
 import numpy as np
 
 from lib.dj import stretch_engine_name
-from lib.dj.features import _finite, hardness_raw
+from lib.dj.features import _finite, drop_moments, hardness_raw
 from lib.dj import tuning as _tuning
 from lib.dj.rhythm import (prep_signature, rhythm_terms, seam_rhythm,
                            tempo_mult_for)
@@ -34,10 +34,78 @@ RATE = 44100
 # Smaller = the budget's pacing wins more often and exits ride later;
 # larger = exit quality wins more often and records play shorter.
 BUDGET_TAU_S = 60.0
+# ...and how much LATENESS it tolerates (2026-08-13). For a year the
+# budget only penalised leaving EARLY: an exit past it scored a flat 1.0,
+# so nothing anywhere bounded how late a seam could land. EXIT_MAX_FRAC
+# and EXIT_HARD_MAX_FRAC bound the BUDGET, and the budget is only a floor
+# - `after_s` refuses candidates below it and the scorer then took the
+# best-fitting out point in the entire rest of the record.
+#
+# Measured on the night of 2026-08-13 (showman, 10 seams): the median exit
+# landed at 0.90 of the record, 6 of 10 past the "absolute" 0.85 ceiling,
+# and twice inside the outro - one at section energy 0.34 (operator: "it
+# rolls into the fucking outro"). It also made play_len_x a DEAD LEVER:
+# shortening a persona's budget only lowers the floor, which WIDENS the
+# unpenalised late region, so showman rode records exactly as far as monk.
+#
+# Deliberately gentler than the early side (90s vs 60s): the early decay
+# exists so a good exit a minute early can beat a dead one on time, and
+# that argument runs both ways. The HARD fraction is the backstop the
+# system's EXIT_HARD_MAX_FRAC always claimed to be - it now applies to
+# the exit itself, not just to the budget that suggests one.
+LATE_TAU_S = 90.0
+EXIT_LATE_HARD_FRAC = 0.85
 
 # GATE BARS, named so the Gate Check panel can show what a seam was judged
 # against without re-typing the numbers (lib/dj/gateprobe.py reads these).
 # Changing one here changes both the gate and what the panel reports.
+# breakdown_swap's entry window: how far after B's build start its drop may
+# sit and still count as "the build leads to it". 4 beats is the floor -
+# closer than that and B enters essentially ON the drop, with nothing to
+# ride. 40 beats is a blend (32) plus a phrase of grace.
+_BDSWAP_DROP_MIN_BEATS = 4.0
+_BDSWAP_DROP_MAX_BEATS = 40.0
+# ...and the clearance the low/mid restore must keep from that drop, so the
+# EQ move and the drop onset are heard as two events, not one slam.
+_BDSWAP_RESTORE_CLEAR_BEATS = 4.0
+# cut_at_drop: how hard B's drop must actually HIT, as an energy ratio
+# across the entry on the dense curve. drop_moments() labels a boundary
+# from SECTION MEANS (>0.25 jump, landing >=0.65 of peak) - that is the
+# segmenter's opinion, not the music's. Measured over 1534 labelled drops
+# on this library: median x1.57, and 13% have no audible step at all,
+# which is why the style kept cutting into songs that never dropped
+# (operator, 2026-08-12: "giving me songs that aren't dropping"). The
+# style's whole premise is the slam, so it now requires a measured one.
+_CUT_DROP_MIN_STEP = 1.8
+_CUT_DROP_WIN_BEATS = 8.0
+# ...and RECALL: where we are allowed to look for one. The style used to
+# enter only at a `pre_drop` MIX-IN hint, and mix-in points are proposed
+# where you would bring a track IN - measured on this library, 61% of them
+# sit in the first quarter of the song and none past three quarters, while
+# the real >=x2.0 step-ups have a median position of 0.47. The door was in
+# the wrong part of the building, which is why the style kept entering on
+# a gentle intro build. B's own curve is scanned instead.
+_CUT_DROP_SCAN_FROM = 20.0       # skip the intro proper
+_CUT_DROP_RUNWAY_S = 60.0        # ...and leave this much of B left to ride
+_CUT_DROP_SCAN_BEATS = 4.0       # scan resolution
+# (step 2.0 -> 1.8 and runway 120 -> 60 on 2026-08-13, swept against the
+# night's 17 labelled entries: at 2.0/120 only 37 of 982 tracks could serve
+# as B with ONE usable entry each, so the style repeated the same few songs
+# at the same moment - which reads as a bug long before it reads as rare.
+# Loosening to 1.8/60 gives 63 tracks at identical verdict agreement. No
+# setting in the sweep separated good from bad, so the strictness was
+# buying nothing; see the note on _CUT_DROP_MIN_POWER_X.)
+# SHAPE, not just size. A ratio cannot tell a drop from a rise - quiet ->
+# mid scores the same as breakdown -> slam. Measured on the first version
+# of this scan: the before-level was a genuine dip (med 0.25 of the
+# track's own p95) but 49% of entries LANDED below 0.65 of peak and beat
+# power did not rise at all (x1.02, falling on 32%), i.e. the kick never
+# came back - which is the whole event. drop_moments() had the landing
+# condition right (energy >= 0.65 of peak); dropping it when the label was
+# replaced by a measurement was a regression.
+_CUT_DROP_MIN_AFTER = 0.65       # ...the drop must LAND hot
+_CUT_DROP_MAX_BEFORE = 0.55      # ...off something genuinely down
+_CUT_DROP_MIN_POWER_X = 1.15     # ...and the kick must actually return
 KICK_SCREEN_BLEND_S = 0.020   # overlapped-drum styles: max kick-placement
                               # delta, sits below the ~25ms audibility line
                               # on purpose (stored grids are themselves only
@@ -58,9 +126,11 @@ STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
 # soak test's 0.90..1.101 assertion still holds.
 # Reachable 1:1 pairs on the real library: ~35% -> ~40%.
 # Note the wall is only the OUTER limit. Deep stretch is still leaned
-# against by s_rate (Gaussian, sigma 0.045) and still HARD-GATED on
-# risky material at plan time (stretch>5.5%_risky) - widening here does
-# not hand a shaky grid an 10% blend.
+# against by s_rate (Gaussian, sigma 0.045) and capped per side at 6% by
+# rate_for. It was ALSO hard-gated at plan time by stretch>5.5%_risky
+# until 2026-08-13, when 13 ear trials rated that gate right zero times
+# and it came off - so this widening is finally reachable rather than
+# nominal (it had been capping 72% of deep pairs at 5.5% for a week).
 STRETCH_MIN, STRETCH_MAX = 0.90, 1.10
 # Rate-gradient speeds. Both were tuned in the WSOLA era when a tempo ramp
 # had NO pitch consequence; with the varispeed engine every gradient IS a
@@ -73,6 +143,9 @@ STRETCH_MIN, STRETCH_MAX = 0.90, 1.10
 # constant - a divergent hardcoded rate there drifted slot boundaries.
 GLIDE_PER_S = 0.0008             # post-transition rate->1.0 glide speed
 ARATE_RAMP_PER_S = 0.0008        # outgoing deck's pre-blend meet-tempo ramp
+DEEP_ENTRIES = True              # entry candidates past the analyzer's 45%
+                                 # cap (TrackInfo derives them from stored
+                                 # sections at load; see the block there)
 
 
 # --------------------------------------------------------------------------
@@ -185,6 +258,46 @@ class TrackInfo:
             self.mix_outs = [{"kind": "out", "time_s": c["time_s"],
                               "score": 1.0, "style_hint": c.get("label")
                               or "blend"} for c in user_outs]
+        # DEEP ENTRIES (2026-08-12). find_mix_points only bookmarks "in"
+        # candidates in the first 45% of a track, so the back half of
+        # every record was unreachable as an entry BY CONSTRUCTION -
+        # measured on this library that discards 39.4% of all
+        # entry-quality material (543 sections of the same kind/vocal/
+        # busyness profile and boundary strength as the eligible ones:
+        # post-breakdown re-entries, second drops, late grooves). The
+        # protections the cap stood in for all live in best_pair and are
+        # better informed there: in_fit scores section kind + ML label,
+        # vocals are walked point-accurate, and the earliness lean
+        # (early_b, e^-(t-20)/120) already pays a deep entry down ~50%
+        # at 3 minutes - so depth wins only when everything shallow is
+        # genuinely worse. Same scoring formula as the analyzer's pass;
+        # derived from stored sections at LOAD so no rescan is needed.
+        # Guards: never past the outro, and >=90s of record must remain
+        # (system._draw_exit budgets against the REMAINDER from entry).
+        # The stored primary stays at [0] - beatpower's labeled regions,
+        # the rhythm anchors and gateprobe's region_for all key on it.
+        if DEEP_ENTRIES and not user_ins and self.duration_s > 0 \
+                and self.sections:
+            deep = []
+            for i, s in enumerate(self.sections):
+                t0 = s.get("start_s") or 0.0
+                if i == 0 or t0 < self.duration_s * 0.45:
+                    continue
+                if s.get("kind") == "outro":
+                    continue
+                if self.duration_s - t0 < 90.0:
+                    continue
+                strength = max(s.get("boundary_strength") or 0.05, 0.05)
+                quiet = 1.0 - 0.7 * (s.get("busyness") or 0.0)
+                deep.append({"kind": "in", "time_s": round(t0, 3),
+                             "score": round(strength * quiet, 3),
+                             "style_hint": "blend", "deep": True})
+            if deep and self.mix_ins:
+                head, rest = self.mix_ins[0], self.mix_ins[1:]
+                self.mix_ins = [head] + sorted(
+                    rest + deep, key=lambda p: -p["score"])
+            elif deep:
+                self.mix_ins = sorted(deep, key=lambda p: -p["score"])
 
     @property
     def all_tags(self):
@@ -522,6 +635,148 @@ def camelot_compat(c1, c2):
     return 0.3
 
 
+def drop_step(track, at_s, beats=_CUT_DROP_WIN_BEATS):
+    """How hard the music actually steps up across `at_s`, as an energy
+    ratio on the dense curve (after/before, +/-`beats`). None when the
+    track carries no curve.
+
+    This is the INDEPENDENT check on a labelled drop: drop_moments() reads
+    section means, so it answers "did the segmenter see a boundary", and
+    this answers "does it hit". They disagree often enough to matter -
+    13% of labelled drops measure no audible step at all."""
+    curve = (track.row or {}).get("energy_curve") or []
+    if not curve:
+        return None
+    w = max(beats * getattr(track, "period_s", 0.5), 4.0)
+    i0, i1 = int(max(at_s - w, 0.0) * 2), min(int(at_s * 2), len(curve))
+    j0, j1 = int(at_s * 2), min(int((at_s + w) * 2), len(curve))
+    if i1 - i0 < 2 or j1 - j0 < 2:
+        return None
+    before = sum(curve[i0:i1]) / (i1 - i0)
+    after = sum(curve[j0:j1]) / (j1 - j0)
+    return after / max(before, 1e-4)
+
+
+def drop_levels(track, at_s):
+    """(before, after) energy across `at_s`, each as a fraction of the
+    track's OWN p95 - the two quantities _CUT_DROP_MAX_BEFORE and
+    _CUT_DROP_MIN_AFTER are compared against.
+
+    Module-level and public for the same reason gateprobe imports its bars
+    from the gates: a test that recomputes 'the same' number its own way
+    disagrees in the last digit and reports a failure nobody can act on
+    (measured: np.percentile vs a sorted index put a landing at 0.6499
+    against a 0.65 bar the engine had passed).
+    """
+    curve = (track.row or {}).get("energy_curve") or []
+    if not curve:
+        return None
+    peak = max(sorted(curve)[int(0.95 * (len(curve) - 1))], 1e-4)
+    win = max(_CUT_DROP_WIN_BEATS * max(track.period_s, 0.3), 4.0)
+    i0, i1 = int(max(at_s - win, 0.0) * 2), min(int(at_s * 2), len(curve))
+    j0, j1 = int(at_s * 2), min(int((at_s + win) * 2), len(curve))
+    if i1 - i0 < 2 or j1 - j0 < 2:
+        return None
+    return (sum(curve[i0:i1]) / (i1 - i0) / peak,
+            sum(curve[j0:j1]) / (j1 - j0) / peak)
+
+
+def audition_pools(library, style, trial_gate=""):
+    """(a_pool, b_veto_ids) for auditioning `style`: the tracks that can
+    STRUCTURALLY serve each side, so a search does not spend its whole
+    budget on pairs the gates were always going to refuse.
+
+    A SEARCH AID, NOT A GATE. It removes only pairs that could never pass,
+    and every safety screen still runs on whatever survives - so a seam
+    found this way is one the live engine would also have accepted.
+
+    Measured on a 982-track library: breakdown_swap goes from 0.5% of
+    random pairs (46s to find one) to 1.8% (4.3s), which is the difference
+    between auditionable and not. The structural rules mirror
+    plan_transition's, and read the SAME window constants the gate reads,
+    so the two cannot drift apart.
+    """
+    lib = list(library or [])
+    # NEVER PRE-FILTER ON THE GATE UNDER TRIAL. These pools encode the same
+    # confidence bars some gates enforce, so narrowing by them while that
+    # gate is on trial removes exactly the seams the trial exists to hear -
+    # measured: a cut_needs_grid_conf>=0.8 trial found 0 seams in 300 tries
+    # because the pool had already dropped every track under 0.8. The
+    # structural clauses (has a breakdown, has a pre-drop entry) stay: no
+    # threshold debate makes a missing section appear.
+    _conf_bar = 0.0 if (trial_gate or "").startswith(
+        ("cut_needs_grid_conf", "grid_conf")) else 1.0
+
+    if style == "breakdown_swap":
+        def _a(t):
+            return (t.bpm_conf >= 0.7 * _conf_bar
+                    and any(s["kind"] == "breakdown"
+                            for s in (t.sections or [])))
+
+        def _b(t):
+            if t.bpm_conf < 0.7 * _conf_bar:
+                return False
+            per = max(t.period_s, 1e-6)
+            drops = drop_moments(t.sections)
+            lo, hi = (_BDSWAP_DROP_MIN_BEATS * per,
+                      _BDSWAP_DROP_MAX_BEATS * per)
+            return any(any(s["start_s"] + lo <= d <= s["start_s"] + hi
+                           for d in drops)
+                       for s in (t.sections or []) if s["kind"] == "build")
+    elif style == "cut_at_drop":
+        # Both sides carry the short-dual tier's grid bar (0.8 until
+        # 2026-08-13, when the extra strictness was rated away), and B must
+        # own a drop that measurably hits - the mix-in hint this used to
+        # ask for lives in the intro, not where the drops are. The conf bar
+        # drops out when it is itself on trial; the drop never does,
+        # because no verdict conjures one.
+        def _a(t):
+            return t.bpm_conf >= 0.7 * _conf_bar
+
+        def _b(t):
+            if t.bpm_conf < 0.7 * _conf_bar:
+                return False
+            per = max(t.period_s, 0.3)
+            at = max(_CUT_DROP_SCAN_FROM, 8 * per)
+            stop = t.duration_s - _CUT_DROP_RUNWAY_S
+            while at < stop:
+                s = drop_step(t, at)
+                if s is not None and s >= _CUT_DROP_MIN_STEP:
+                    return True
+                at += _CUT_DROP_SCAN_BEATS * per
+            return False
+    else:
+        _a = _b = None
+
+    # TRIAL TARGETING is the INVERSE of the usual narrowing. Normally these
+    # pools remove pairs that could never pass; a trial needs pairs that
+    # will TRIP the gate, and the beat-power screens almost never get to be
+    # the blocker on a random pair - the exit gates (a_exit_collapses,
+    # a_exits_through_breakdown, unstable_phase_*) refuse first and are not
+    # testable, so the override stands down. Measured: 0 trial seams in 300
+    # tries for no_beat_power_A until the pool was biased this way.
+    if (trial_gate or "").startswith("no_beat_power"):
+        from lib.dj import beatpower as _bpm
+        sc = _bpm.scores() or {}
+        if trial_gate.endswith("_A"):
+            def _a(t, _p=_a):                      # noqa: ANN001
+                s = sc.get(t.id)
+                return (s is not None and s < _bpm.BLEND_MIN_EXIT
+                        and (_p is None or _p(t)))
+        else:
+            def _b(t, _p=_b):                      # noqa: ANN001
+                s = sc.get(t.id)
+                return (s is not None and s < _bpm.BLEND_MIN
+                        and (_p is None or _p(t)))
+
+    if _a is None and _b is None:
+        return lib, set()
+    # Never hand back an EMPTY A pool - a library with no usable A should
+    # search badly, not crash the caller into an infinite retry.
+    a_pool = ([t for t in lib if _a(t)] or lib) if _a else lib
+    return a_pool, ({t.id for t in lib if not _b(t)} if _b else set())
+
+
 def _shift_camelot(cam, semitones):
     """Camelot code after a pitch shift (+1 semitone = +7 on the wheel)."""
     try:
@@ -824,6 +1079,7 @@ class Brain:
         self.style_memory = {}          # style -> cross-night multiplier
         self.style_cond_memory = {}     # (style, condition) -> multiplier
         self._rhythm_cache = {}         # (a_id,b_id,mult) -> rhythm score
+        self._drop_entry_cache = {}     # track id -> [(downbeat_s, step)]
 
     @staticmethod
     def _pair_class(a, b):
@@ -1244,28 +1500,62 @@ class Brain:
             cache[track.id] = v
         return v
 
-    def _pair_blendable(self, cur, cand):
+    def _pair_blendable(self, cur, cand, pair=None):
         """Could this pair support an overlapped blend? The CHEAP mirror
         of the plan-time screens (cached file-backed lookups only, no
         audio - score() runs this ~640x per pick): beat power at the
         seam-relevant regions (asymmetric bars: B's intro must groove,
-        A's exit only hands off), and a trusted grid on both sides
-        (conf, or profile-verified). Used as a selection LEAN so the DJ
-        picks partners it can actually mix into - not as a gate."""
+        A's exit only hands off), and a trusted grid on both sides.
+        Used as a selection LEAN so the DJ picks partners it can
+        actually mix into - not as a gate.
+
+        `pair` (best_pair's dict, when the caller has it) anchors the
+        checks to the seam that would actually be planned. A TRUTHFUL
+        mirror needs it: measured over 150 diagnosed picks (2026-08-12),
+        21 winners this function called blendable were then faded by the
+        plan gates, every one a track-level-vs-anchor-level disagreement.
+        A mirror that flatters the winner is worse than none - it spends
+        the s_blend lean promoting exactly the pairs the night cannot
+        mix, past rivals it could."""
         from lib.dj import beatpower as _bp
-        bs_b = _bp.band_scores(cand.id, region="in") or {}
+        # Region the way the plan gate resolves it (_reg_for): the stored
+        # 'in'/'out' band scores describe the PRIMARY mix points, but
+        # best_pair may anchor the seam mid-track - judging a mid-groove
+        # anchor by the intro/outro score was 5 of the 21 misses.
+        def _reg(track, at_s, kind):
+            try:
+                pts = track.mix_outs if kind == "out" else track.mix_ins
+                ref = pts[0]["time_s"] if pts else None
+            except Exception:
+                ref = None
+            return kind if (ref is not None and at_s is not None
+                            and abs(at_s - ref) <= 45.0) else "mid"
+        out_s = pair["out_s"] if pair else None
+        in_s = pair["in_s"] if pair else None
+        bs_b = _bp.band_scores(cand.id, region=_reg(cand, in_s, "in")) or {}
         ev_b = [v for v in (bs_b.get("low"), _bp.scores().get(cand.id))
                 if v is not None]
         if ev_b and max(ev_b) < _bp.BLEND_MIN:
             return False
-        bs_a = _bp.band_scores(cur.id, region="out") or {}
+        bs_a = _bp.band_scores(cur.id, region=_reg(cur, out_s, "out")) or {}
         ev_a = [v for v in (bs_a.get("low"), _bp.scores().get(cur.id))
                 if v is not None]
         if ev_a and max(ev_a) < _bp.BLEND_MIN_EXIT:
             return False
+        # GRID TRUST, the plan's own predicates (2026-08-12; was a
+        # track-level coverage>=0.6 stand-in, the other 16 misses):
+        #   * a PATCHY profile (0 < coverage < 0.6) is an unstable_phase
+        #     kill regardless of conf - the phase wanders mid-blend;
+        #   * the conf wall stands down only on trusted phase buckets AT
+        #     THE ANCHORS (_local_ok), not on whole-track coverage.
         for t in (cur, cand):
-            if (t.bpm_conf or 0.0) < 0.7 \
-                    and _bp.profile_coverage(t.id) < 0.6:
+            _cov = _bp.profile_coverage(t.id)
+            if 0.0 < _cov < 0.6:
+                return False
+        if min(cur.bpm_conf or 0.0, cand.bpm_conf or 0.0) < 0.7:
+            if pair is None \
+                    or _bp.phase_offset(cur.id, at_s=out_s) is None \
+                    or _bp.phase_offset(cand.id, at_s=in_s) is None:
                 return False
         # TEMPO SANITY (2026-08-05): a half/double-time pairing is a
         # legitimate FOLLOW but never a blend - the gate caught the lean
@@ -1281,6 +1571,30 @@ class Brain:
             return False
         if cur.bpm / max(cand.bpm, 1e-6) > 1.5 \
                 or cand.bpm / max(cur.bpm, 1e-6) > 1.5:
+            return False
+        return True
+
+    def _exit_blendable(self, t):
+        """Can the night blend OUT of this track once it plays? The
+        forward half of the chain: _pair_blendable judges the seam INTO
+        a candidate, but 37 of 150 diagnosed picks (2026-08-12) faded
+        with ZERO blendable partners on the table, and every one traced
+        to the CURRENT track failing the A-side screens - the fade was
+        decided one pick earlier, when the night entered a track it
+        could not blend out of. Track-level only (the eventual partner
+        doesn't exist yet): exit-region beat power against the exit bar,
+        and a grid the gates could trust. Same cheap file-backed lookups
+        as _pair_blendable."""
+        from lib.dj import beatpower as _bp
+        bs = _bp.band_scores(t.id, region="out") or {}
+        evid = [v for v in (bs.get("low"), _bp.scores().get(t.id))
+                if v is not None]
+        if evid and max(evid) < _bp.BLEND_MIN_EXIT:
+            return False
+        _cov = _bp.profile_coverage(t.id)
+        if 0.0 < _cov < 0.6:
+            return False
+        if (t.bpm_conf or 0.0) < 0.7 and _cov < 0.6:
             return False
         return True
 
@@ -1516,9 +1830,13 @@ class Brain:
         # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
         # a dry pool may still cross it rather than strand the set.
         #
-        # CONDITIONAL ON A VERIFIED GRID (2026-08-06), the same rule the
-        # plan-time gate already uses: "deep stretch is only fatal on
-        # RISKY material" (see stretch>5.5%_risky). A blanket cliff here
+        # CONDITIONAL ON A VERIFIED GRID (2026-08-06), the rule the
+        # plan-time gate used before it was rated away on 2026-08-13:
+        # "deep stretch is only fatal on RISKY material". This SELECTION
+        # lean is the surviving half of that idea and is deliberately kept
+        # - it discourages depth without forbidding it, which is what the
+        # verdicts said the hard gate should have been doing. A blanket
+        # cliff here
         # made the widened wall cosmetic - it is a 20x penalty, so a 6-8%
         # candidate scored ~0.007 against a tempo-clean rival and could
         # never win the finalist dice however good the pair was.
@@ -1543,8 +1861,19 @@ class Brain:
         # genuinely blend into score full; fade-bound ones pay hard.
         # Cheap (cached file-backed lookups only); not a hard filter, so
         # an arc/flavor pick the night really wants can still win.
-        s_blend = 1.0 if self._pair_blendable(current, cand) else 0.45
+        s_blend = 1.0 if self._pair_blendable(current, cand, pair) else 0.45
         total *= s_blend
+        # CHAIN LOOKAHEAD (2026-08-12). s_blend judges the seam INTO the
+        # candidate; nothing judged the seam OUT of it, and the selection
+        # diagnosis measured the cost: every zero-blendable-rival fade
+        # (37 of 150 picks) was decided one pick EARLIER, when the night
+        # entered a track whose own exit fails the A-side screens.
+        # Softer than s_blend (0.6 vs 0.45): the candidate's own seam is
+        # still good, the cost is deferred - and flavor/arc can still
+        # bring in a dead-end track it really wants, which will then
+        # leave by a fade that is honestly the right seam.
+        s_exit_chain = 1.0 if self._exit_blendable(cand) else 0.6
+        total *= s_exit_chain
         # TEMPO ARC: the night has a planned BPM journey, not just a range.
         # (Weight raised 0.45->0.60: at 0.45 a rise-theme night walked only
         # ~40% of its planned tempo climb - seam-quality terms outvoted it.)
@@ -1565,7 +1894,8 @@ class Brain:
                  "cohere": s_cohere, "class": s_class, "rhythm": s_rhythm,
                  "persona": s_pers, "recency": s_recency, "skip": s_skip,
                  "pair": s_pair, "flavor": s_flavor, "pairmem": s_pairmem,
-                 "wall": s_wall, "conf": s_conf, "bpm_arc": s_bpm_arc}
+                 "wall": s_wall, "conf": s_conf, "blend": s_blend,
+                 "exit_chain": s_exit_chain, "bpm_arc": s_bpm_arc}
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
                        "pitch_st": pitch_st, "forced_fade": forced_fade,
                        "terms": terms}
@@ -1797,9 +2127,13 @@ class Brain:
                                 k=1)[0][1]
 
     # -- section-pair mixability (the anti-garbage rule) -------------------------
-    def best_pair(self, cur, cand, after_s=None):
+    def best_pair(self, cur, cand, after_s=None, exclude_out_s=None):
         """Best (A-exit, B-entry) combination, or None. Never lets two
-        busy/vocal sections blend over each other."""
+        busy/vocal sections blend over each other.
+
+        exclude_out_s: skip A-exits within ±2s of this point - the
+        exit-retry's tool for asking "and without THAT exit?" when the
+        top pair's out point alone killed every blend."""
         # THE PLAY-TIME BUDGET IS A PREFERENCE, NOT A FILTER (2026-08-07).
         # As a filter this deleted every candidate below after_s - and
         # Theme.min_play_s/max_play_s are ABSOLUTE seconds with no idea how
@@ -1814,6 +2148,9 @@ class Brain:
         # median 3% of track length in play time. Earliness is now paid
         # for in the score (BUDGET_TAU_S) instead of being fatal.
         outs = list(cur.mix_outs)
+        if exclude_out_s is not None:
+            outs = [o for o in outs
+                    if abs(o["time_s"] - exclude_out_s) > 2.0]
         if not outs:
             return None
         # How good a section is to mix OUT of / IN to. The golden rule of
@@ -1918,6 +2255,17 @@ class Brain:
             bud = 1.0
             if after_s is not None and o["time_s"] < after_s:
                 bud = math.exp(-(after_s - o["time_s"]) / BUDGET_TAU_S)
+            elif after_s is not None and o["time_s"] > after_s:
+                # LATE COSTS TOO (2026-08-13, see LATE_TAU_S). Without this
+                # the budget was a floor with nothing above it and the
+                # scorer rode every record into its last groove.
+                bud = math.exp(-(o["time_s"] - after_s) / LATE_TAU_S)
+            # ...and past the hard fraction the record has nothing left to
+            # leave ON. Not a lean - a refusal, the way the constant in
+            # system.py always described itself.
+            if cur.duration_s > 0 \
+                    and o["time_s"] > EXIT_LATE_HARD_FRAC * cur.duration_s:
+                continue
             busy_a = sec_a.get("busyness") or 0.0
             ra = sec_a.get("rhythm_density") or 0.0
             ea = sec_a.get("energy") or 0.0
@@ -2023,6 +2371,98 @@ class Brain:
         return Brain._blend_floor_grid(cur, [out_s], cand, [in_s],
                                        span_s, carry_s)[0][0]
 
+    # (near_tempo_veto lived here on 2026-08-13 for a few hours: it vetoed
+    # tempo-near partners so a deep-stretch gate trial could find seams at
+    # all - selection's s_rate lean meant only 4 in 300 tries otherwise.
+    # It went out with the gate it served. If a "deep stretch only" Lab
+    # source is ever wanted, it is a dozen lines: for each `cur`, veto
+    # every track whose rate_for read sits within 5.5% of it.)
+
+    def _drop_entries(self, track):
+        """[(downbeat_s, step)] - every place B's own energy curve actually
+        SLAMS up, strongest first. Cached per track (pair-independent, and
+        plan_transition asks once per candidate).
+
+        This replaces reading `pre_drop` mix-in hints, which answered a
+        different question: mix points are proposed where a track can be
+        BROUGHT IN, so they cluster in the intro (61% inside the first
+        quarter, none past three quarters) while real drops sit mid-song
+        (median 0.47). Scanning the curve is the only way to reach them.
+
+        Guards that the mix-in hints used to provide implicitly, and which
+        therefore have to be explicit here:
+          - the landing is snapped to a DOWNBEAT (a drop lands on one; a
+            cut two beats off it is just a mistake),
+          - B keeps _CUT_DROP_RUNWAY_S of track after the entry, so a
+            mid-song entry does not arm the next seam moments later,
+          - B is not SINGING through the 16-beat run-in, which is the part
+            that plays under A.
+
+        And the SHAPE test, which a step ratio alone fails: the landing has
+        to be hot (>=_CUT_DROP_MIN_AFTER of the track's own p95), the
+        run-up has to be genuinely down, and the KICK has to come back -
+        beat power rising is what separates a drop from a swell.
+        """
+        cached = self._drop_entry_cache.get(track.id)
+        if cached is not None:
+            return cached
+        per = max(track.period_s, 0.3)
+        if not ((track.row or {}).get("energy_curve") or []):
+            self._drop_entry_cache[track.id] = []
+            return []
+
+        def _levels(at):
+            return drop_levels(track, at)
+
+        out, seen = [], []
+        t = max(_CUT_DROP_SCAN_FROM, 8 * per)
+        stop = track.duration_s - _CUT_DROP_RUNWAY_S
+        step_s = _CUT_DROP_SCAN_BEATS * per
+        while t < stop:
+            s = drop_step(track, t)
+            if s is not None and s >= _CUT_DROP_MIN_STEP:
+                out.append((t, s))
+            t += step_s
+        # One entry per drop: keep the strongest in each 16-beat
+        # neighbourhood, else a single slam yields six near-identical
+        # candidates and crowds out the track's other drops.
+        picked = []
+        for at, s in sorted(out, key=lambda r: -r[1]):
+            if any(abs(at - p) <= 16 * per for p in seen):
+                continue
+            # The run-in is B playing UNDER A - a vocal there fights A's
+            # outro, and the mix-in hints had already been vetted for it.
+            if self._vocal_at(track, max(at - 8 * per, 0.0)) >= 0.5:
+                continue
+            db = track.nearest_downbeat(at)
+            if db <= 0 or db >= track.duration_s - _CUT_DROP_RUNWAY_S:
+                continue
+            # JUDGE THE SEAM WHERE IT PLAYS. The scan steps every 4 beats
+            # and the landing then snaps to a downbeat, which slides both
+            # measurement windows by up to two beats - so the shape has to
+            # be re-tested at `db`, not at the scan position that found it.
+            lv = _levels(db)
+            if lv is None or lv[1] < _CUT_DROP_MIN_AFTER \
+                    or lv[0] > _CUT_DROP_MAX_BEFORE:
+                continue
+            s = drop_step(track, db) or s
+            # THE KICK HAS TO COME BACK. Broadband energy rising is a
+            # swell; a drop is the drums returning, which is what beat
+            # power measures. Evidence-gated in the house style: None on
+            # either side means no measurement, never a penalty - and a
+            # breakdown deep enough to have no scored bucket is exactly
+            # where power_at says it would rather not guess.
+            from lib.dj import beatpower as _bpp
+            pb = _bpp.power_at(track.id, max(db - 4 * per, 0.0))
+            pa = _bpp.power_at(track.id, db + 4 * per)
+            if (pb is not None and pa is not None
+                    and pa < _CUT_DROP_MIN_POWER_X * pb):
+                continue
+            seen.append(at)
+            picked.append((db, s))
+        self._drop_entry_cache[track.id] = picked
+        return picked
+
     def _drop_after(self, track, after_s):
         """First DROP MOMENT (energy slams up at a boundary) at/after
         after_s, else the earliest one, or None."""
@@ -2035,7 +2475,8 @@ class Brain:
 
     # -- transition planning -----------------------------------------------------
     def plan_transition(self, cur, cand, meta, after_s=None, arc=None,
-                        force_style=None, test_gates=False):
+                        force_style=None, test_gates=False,
+                        allow_benched=False):
         """Resolve style + timing. Returns a plan dict (see build_events).
         `arc` (0..1, optional) couples style choice to the night's energy
         position - valleys breathe, the climb commits, the peak spends the
@@ -2049,9 +2490,21 @@ class Brain:
         requirement, so the threshold can be judged by ear instead of
         taken on faith. The override is recorded in diag['gate_test'].
         Never set this on a live night: the gates are there because the
-        thresholds are mostly right."""
+        thresholds are mostly right.
+
+        `allow_benched` (OFFLINE USE - the Lab) admits styles that are off
+        the live menu pending an AUDITION rather than on a taste verdict.
+        Deliberately separate from `test_gates`: that one crosses a tuned
+        threshold on a style the DJ already plays, this one puts a style
+        back on the table at all. Live nights leave it False, so a bench
+        stays a bench until somebody has actually listened."""
         pair = meta.get("pair") if meta else None
-        if pair is None or (after_s is not None
+        # The exit-retry (below) hands back an alternative pair whose out
+        # may sit before after_s - the budget is a soft preference and
+        # best_pair already paid for the earliness. Re-deriving here
+        # would silently rediscover the pair the retry just excluded.
+        _exit_retry = bool((meta or {}).get("_exit_retry"))
+        if pair is None or (not _exit_retry and after_s is not None
                             and pair["out_s"] < after_s):
             pair = self.best_pair(cur, cand, after_s=after_s)
         if pair is None:
@@ -2138,7 +2591,9 @@ class Brain:
         # (no stems, no drop, no breakdown to blend over): overriding
         # those doesn't test a belief, it builds a plan out of parts that
         # aren't there.
-        testable = ("grid_conf<0.7", "cut_needs_grid_conf>=0.8",
+        testable = ("grid_conf<0.7",
+                    # (cut_needs_grid_conf>=0.8 removed 2026-08-13 - the
+                    # gate it named no longer exists, rated away.)
                     "grid_conf<0.5", "downbeat_conf", "kick_offset>28ms",
                     "key_fit<0.8", "anti_streak", "kick_clash",
                     "swing_clash", "meter_clash", "half_time",
@@ -2159,6 +2614,14 @@ class Brain:
                     # never be shown wrong. Every band is listed because
                     # the override needs EVERY reason to be testable.
                     "band_clash_low", "band_clash_mid", "band_clash_high",
+                    # (stretch>5.5%_risky was listed here 2026-08-12 so it
+                    # could be rated at all; 13 trials later - right zero
+                    # times - the gate came off the blend family, so the
+                    # entry went with it. Making it testable was the whole
+                    # point: a threshold nobody may cross can never be
+                    # shown wrong, and this one was wrong. Its echo-only
+                    # survivor `stretch>5.5%_echo` is NOT listed - it is
+                    # unrated, and the render gate says it is load-bearing.)
                     "no_beat_power_A", "no_beat_power_B",
                     "kick_offset>20ms")
 
@@ -2171,7 +2634,33 @@ class Brain:
         # one-shot holdout; loop_build carries the drop spectacle) are
         # REMOVED outright - the kill keeps their old pins refusing
         # politely, the choreography is gone.
-        kill(("cut_at_drop", "bassline_layer", "double_drop"), "retired")
+        kill(("bassline_layer", "double_drop"), "retired")
+        # cut_at_drop is BENCHED FOR AUDITION, not retired (2026-08-12).
+        # Its 2026-08-02 retirement rested on three findings and none of
+        # them survived re-measurement on this library:
+        #   - "won 0/2000 rolls" is arithmetic, not a verdict. At 0.08 of
+        #     5.22 it is 1.5% of the dice and reaches the menu on ~2% of
+        #     seams, so the EXPECTED wins in 2000 rolls is about 0.6.
+        #   - "reached 2% of menus" is one gate: cut_needs_grid_conf>=0.8
+        #     on BOTH sides, and the library's median bpm_conf is 0.79 -
+        #     the bar sits in the middle of the distribution and costs 76%
+        #     of pairs before any other screen runs.
+        #   - "2/5 rough live" and the flam gate's "0.247 beats, 4x every
+        #     other style" were both measured BEFORE 2026-08-04, when the
+        #     grid-phase profiles and the sync-drag fix landed. Flam is the
+        #     whole case against this style, and it is the style most
+        #     exposed to that defect - it hard-cuts with zero overlap for
+        #     the PLL to settle in. Re-measured over 6 renders on the
+        #     current stack: median 0.017 beats, max 0.030 - better than
+        #     the workhorse blends (0.061-0.068), 0/6 failing the lurch
+        #     gate, no clipping.
+        # AUDITIONED AND REINSTATED 2026-08-12 (operator, after listening
+        # in the Lab): "cut at drop seems fine". Back on the live menu as a
+        # RARE accent - see themes.style_weights, and note that it keeps
+        # the strictest grid bar of any style (cut_needs_grid_conf>=0.8,
+        # both sides) deliberately: the bar was raised for flam, and even
+        # though the flam is gone the bar is also what keeps a hard cut on
+        # material whose grid is actually trustworthy.
         # spinback_cut retired 2026-08-04: the platter wind-down IS the
         # style, and the user's verdict on the slowdown-into-cut mechanic
         # is "cheesy and overdone" (phrase_cut's optional brake is off for
@@ -2199,7 +2688,11 @@ class Brain:
         # onset stack into a gate-measured 9.1 dB slam on pairs that pass
         # every material screen. Fix = complete the restore >=4 beats
         # pre-drop; until then the style stays off the menu.
-        kill("breakdown_swap", "benched_lurch_fix_pending")
+        # Moved to the AUDITION bench 2026-08-12 (same hatch cut_at_drop
+        # used): still off every live menu, but the Lab can plan it so the
+        # fix can be measured and then heard.
+        if not allow_benched:
+            kill("breakdown_swap", "benched_lurch_fix_pending")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
@@ -2290,6 +2783,9 @@ class Brain:
         fade_reason = None
         rolled = False              # did a style dice roll actually happen?
         gate_tested = None          # threshold this seam was let through
+        # cut_at_drop's vetted entry - set by the gate below when it runs,
+        # and NEEDED at plan time, so it cannot live only in that scope.
+        cut_pd, cut_step = None, 0.0
         if low_conf or not pair.get("beaty", True):
             # No confident grid, or the best seam is BEATLESS on one side:
             # a beat-matched blend there is inaudible as such and just
@@ -2334,18 +2830,26 @@ class Brain:
                 kill(("long_blend", "bass_swap", "filter_sweep",
                       "stem_bass_swap", "melody_carry", "breakdown_swap",
                       "stem_drum_swap", "drum_bridge"), "grid_conf<0.7")
-            # cut_at_drop earns a STRICTER bar than the rest of its tier.
-            # Measured over 560 logged seams (tools/dj/dj_review.py): median
-            # flam 0.247 beats against 0.061-0.068 for every blend style
-            # and 0.034-0.056 for the other short ones - four times worse
-            # than anything else the DJ plays. It is the only technique
-            # that hard-cuts with zero overlap for the PLL to settle in,
-            # and it enters at a pre-drop point picked OUTSIDE the pair
-            # scan, so nothing else has vetted that landing. Small sample
-            # (n=4), so this tightens the gate rather than removing the
-            # style: on a strong grid the cut is the right move.
-            if min(cur.bpm_conf, cand.bpm_conf) < 0.8:
-                kill("cut_at_drop", "cut_needs_grid_conf>=0.8")
+            # cut_at_drop's EXTRA grid bar is GONE (2026-08-13, Gate
+            # Check). It required bpm_conf>=0.8 on both sides, against the
+            # 0.7 its tier uses, on the strength of a median flam of 0.247
+            # beats measured over 560 seams (n=4) - four times any other
+            # style. Two things killed it:
+            #   - that flam was measured BEFORE the 2026-08-04 grid-phase
+            #     and sync-drag fixes. Re-measured after: 0.017 beats,
+            #     better than the workhorse blends.
+            #   - rated by ear on 14 refused seams: the gate was right 3
+            #     times (21%), and on the 11 solo-gate trials 3 (27%). The
+            #     measurement does not order the verdicts either - wrong at
+            #     conf 0.71/0.75/0.73, right at 0.76.
+            # It also cost more than anything else this style faced: only
+            # 48.6% of the library clears 0.8 and it applied to BOTH sides,
+            # ~76% of pairs, with the library's own median sitting at 0.79.
+            # cut_at_drop now sits on the same grid_conf<0.7 bar as the
+            # rest of the short-dual tier (above) - which, unlike this one,
+            # stands down when a verified local phase profile says the grid
+            # locks the music at the seam. Fourth per-track scalar rated
+            # non-predictive; see the note in the beat-power block.
             # Short-dual styles are exposed to raw GROOVE-OFFSET flam: the
             # PLL is grid-primary, so two tracks whose basslines sit
             # differently against their own grids flam by the OFFSET
@@ -2424,29 +2928,49 @@ class Brain:
             _overlap = ("long_blend", "bass_swap", "filter_sweep",
                         "stem_bass_swap", "melody_carry",
                         "breakdown_swap", "stem_drum_swap", "drum_bridge")
-            # HARD STRETCH WALL AT PLAN TIME (2026-08-05). Selection's
-            # 5.5% wall is a relative lean - a tempo-outlier track with
-            # no better partners still pairs beyond it (a duplicate
-            # Swing Star analyzed at 79.7bpm paired with 85bpm at 6.2%
-            # stretch and rendered a 187ms-median wander; gate-caught
-            # three times before this landed). A blend's PLL cannot hold
-            # material stretched past the wall - the plan must refuse
-            # absolutely what selection only discourages. echo_out's
-            # beat-matched run-in is the same physics (its lock failed
-            # next, same pair, once the blends were walled).
-            # CONDITIONAL (2026-08-05, same evening): the blanket wall
-            # immediately faded a clean 5.5-8% rescue-tier pair the user
-            # heard ("why isn't this resolved") - while Negev->Neptunes
-            # at 6.2% stretch measured 5.6ms kick-to-kick. Deep stretch
-            # is only fatal on RISKY material: swing, patchy phase, or
-            # a grid nobody verified. Steady verified tracks keep their
-            # rescue-tier blends.
-            _risky = ((rt or {}).get("swing_delta", 0.0) > 0.05
-                      or min(cur.bpm_conf, cand.bpm_conf) < 0.8
-                      or _bpv.profile_coverage(cur.id) < 0.8
-                      or _bpv.profile_coverage(cand.id) < 0.8)
-            if abs(rate - 1.0) > 0.055 and _risky:
-                kill(_overlap + ("echo_out",), "stretch>5.5%_risky")
+            # THE 5.5% STRETCH WALL IS GONE (2026-08-13, Gate Check).
+            # Added 2026-08-05 as a hard plan-time wall - a duplicate
+            # Swing Star analysed at 79.7bpm paired with 85bpm at 6.2%
+            # stretch and rendered a 187ms-median wander - then made
+            # conditional the same evening when the blanket form faded a
+            # clean rescue-tier pair the operator heard ("why isn't this
+            # resolved"). It refused deep stretch on "risky" material:
+            # swing, bpm_conf<0.8, or phase coverage <0.8 on either side.
+            #
+            # Rated by ear on 13 refused seams: the gate was right ZERO
+            # times, including 0 of 6 solo-gate trials. That is the most
+            # one-sided verdict any screen here has drawn.
+            #
+            # Two things had changed under it. The deck wall itself was
+            # widened 0.92-1.08 -> 0.90-1.10 on 2026-08-06 on the strength
+            # of the beat-matching work, so this gate spent a week capping
+            # 72% of deep pairs at 5.5% and making that widening
+            # unreachable - the exact blanket-wall failure its own comment
+            # warned about. And its risk test was mostly a statement about
+            # the ANALYSIS, not the music: profile_coverage returns 0.0
+            # when a track was never scanned, so absence counted as risk.
+            # The founding case was a track whose BPM was simply WRONG,
+            # which grid_conf<0.7 and unstable_phase_* now catch directly -
+            # neither existed in this form when the wall was written.
+            #
+            # What still bounds stretch: deck.set_rate clips to
+            # [0.90, 1.10], rate_for caps each side at 6% before that, and
+            # s_rate leans hard against depth in selection. Fifth per-track
+            # scalar rated non-predictive - see the beat-power block.
+            #
+            # ECHO_OUT KEEPS THE WALL. Every one of the 13 trials pinned
+            # long_blend, so the verdicts are about the OVERLAP family and
+            # say nothing about echo - and echo is different physics, the
+            # point its original note already made: a brief beat-matched
+            # run-in with no dual for the PLL to settle in, the same
+            # argument that earns cut_at_drop its own tier. Removing it
+            # here too was over-broad and the render gate caught it
+            # immediately - echo_out locked at 179ms median / 343ms p95
+            # against a 35ms bar, which is the 187ms wander this wall was
+            # built for, reproduced. Rate echo's own deep-stretch seams
+            # before touching this line.
+            if abs(rate - 1.0) > 0.055:
+                kill("echo_out", "stretch>5.5%_echo")
             # BEAT POWER (2026-08-04): grid confidence measures whether a
             # lattice FITS; it never asked whether the music actually
             # thumps on it. 38% of this library carries confident grids
@@ -2504,33 +3028,75 @@ class Brain:
                 _cov = _bp.profile_coverage(t.id)
                 if 0.0 < _cov < 0.6:
                     kill(_overlap, f"unstable_phase_{side}")
-            for t, side, reg, bar in (
-                    (cur, "A", _reg_a, _bp.BLEND_MIN_EXIT),
-                    (cand, "B", _reg_b, _bp.BLEND_MIN)):
-                bs = _bp.band_scores(t.id, region=reg) or {}
-                evid = [v for v in (bs.get("low"),
-                                    _bp.scores().get(t.id))
-                        if v is not None]
+            # +/-10s off the boundary, matching the legacy windows
+            # (regions["in"]/["out"] center at primary +/-10): out_s and
+            # in_s are SECTION BOUNDARIES, so the profile read exactly
+            # there is half the wrong section - A's outro it never plays
+            # into, B's quiet bar before its drums arrive. Sampling at
+            # the boundary inflated A-side refusals 5.9% -> 11.9% on the
+            # paired 700-seam run; the deck's audible material during
+            # the overlap is [out_s-15, out_s] and [in_s, in_s+30].
+            for t, side, reg, _at, bar in (
+                    (cur, "A", _reg_a, pair["out_s"] - 10.0,
+                     _bp.BLEND_MIN_EXIT),
+                    (cand, "B", _reg_b, pair["in_s"] + 10.0,
+                     _bp.BLEND_MIN)):
+                # SCORE THE SEAM'S OWN POSITION (2026-08-12). The labeled
+                # regions are three 30s windows - the midpoint, and one
+                # around each PRIMARY mix point - and _reg_for falls back
+                # to the MIDPOINT whenever the seam lands >45s from the
+                # primary. Measured over 700 planned seams that fallback
+                # fired on 35.4%, judging the incoming deck by a stretch
+                # of music the blend never touches. It is not a harmless
+                # approximation: 46.7% of tracks fail the B bar at their
+                # midpoint vs 27.2% at their entry, and 35.3% straddle
+                # the bar between regions - beat power is LOCAL, exactly
+                # as phase turned out to be on 2026-08-04, and this is
+                # the same fix (a dense ~20s profile, read at the seam).
+                # The dense value stands ALONE when present: max()-ing it
+                # with the whole-track scalar would re-admit the very
+                # midpoint reading this replaces, letting a track with a
+                # thumping body enter on a dead one.
+                pw = _bp.power_at(t.id, _at)
+                if pw is not None:
+                    evid = [pw]
+                else:
+                    bs = _bp.band_scores(t.id, region=reg) or {}
+                    evid = [v for v in (bs.get("low"),
+                                        _bp.scores().get(t.id))
+                            if v is not None]
                 if evid and max(evid) < bar:
-                    # THE A-SIDE BAR DOES NOT GOVERN THE PLAIN BLENDS
-                    # (2026-08-07, Gate Check verdicts). Rated by ear on 8
-                    # distinct seams it refused: 6 sounded fine, 2 sounded
-                    # bad (p~0.001 against a 20%-false-alarm baseline). And
-                    # it is not a mis-set bar - every seam it fired on
-                    # measured 0.87-1.01 against the 1.05 exit bar, and the
-                    # "bad" ones (1.01, 0.98, 1.01) sit INSIDE the range of
-                    # the "fine" ones, so no threshold sorts them. A is the
-                    # deck LEAVING: it only has to hand off, and the EQ
-                    # staging carves its low end at the swap anyway.
-                    # The B-side bar stands untouched - B becomes the
-                    # foundation, a different claim, and it has no verdicts
-                    # against it. The stem styles keep both: they run whole
-                    # kits together where A's groove still has to hold up.
-                    _victims = (tuple(s for s in _overlap
-                                      if s not in ("long_blend", "bass_swap",
-                                                   "filter_sweep"))
-                                if side == "A" else _overlap)
-                    kill(_victims, f"no_beat_power_{side}")
+                    # NEITHER BEAT-POWER BAR GOVERNS THE PLAIN BLENDS.
+                    # A-side (2026-08-07, Gate Check): 6 fine / 2 bad on 8
+                    # refused seams (p~0.001 against a 20%-false-alarm
+                    # baseline), bad ones (1.01, 0.98, 1.01) INSIDE the
+                    # range of the fine ones - no threshold sorts them. A
+                    # is the deck LEAVING: it only has to hand off, and
+                    # the EQ staging carves its low end at the swap.
+                    # B-side (2026-08-13, Gate Check, rated the morning
+                    # after the dense phase-corrected profile made the
+                    # measurement honest at the seam's own position): 12
+                    # fine / 2 bad on 14 refused seams (p~1e-7; the strict
+                    # solo-only tally is 2 wrong / 1 right on 3 solo
+                    # trials - thin, the operator chose to act on the
+                    # joint count). Same non-discrimination fingerprint:
+                    # bad ones measured 1.16 and 1.25, fine ones 0.92-1.28.
+                    # Seams at 0.92 - barely any on-beat dominance -
+                    # blended fine; every refused seam with a DEEP B entry
+                    # (74-280s) sounded fine (0 bad of 8), so low on-beat
+                    # dominance mid-track (offbeat basslines, rolling
+                    # grooves) is not the defect this bar assumed. Third
+                    # scalar in a row rated non-predictive (band_clash,
+                    # kick_offset, now beat power) - see the memory rule:
+                    # per-track scalars keep failing to predict what the
+                    # ear objects to.
+                    # The stem styles keep BOTH bars: they run whole kits
+                    # together, and no stem seam has been rated. echo's
+                    # own B bar (below) is separate and also unrated.
+                    kill(tuple(s for s in _overlap
+                               if s not in ("long_blend", "bass_swap",
+                                            "filter_sweep")),
+                         f"no_beat_power_{side}")
                 # echo_out BEAT-MATCHES ITS RUN-IN into B, but had no
                 # B-side beat requirement at all - syncing into a
                 # beatless track locks onto NOTHING (gate-measured twice
@@ -2661,15 +3227,27 @@ class Brain:
                     # gate above, measured one level finer).
                     for k in ("cut_at_drop", "echo_out", "loop_build"):
                         weights[k] = weights.get(k, 0.0) * 0.3
-            # cut_at_drop needs a pre-drop entry in B - ANY of B's pre_drop
-            # mix-ins qualifies, not just the best-scoring pair's (gating on
-            # pair["in_hint"] starved the style to literally zero uses
-            # across a 125-track library: pre_drop points rarely win the
-            # generic pair scoring).
-            pre_drops = [p for p in cand.mix_ins
-                         if p.get("style_hint") == "pre_drop"]
-            if not pre_drops:
-                kill("cut_at_drop", "no_pre_drop_in_B")
+            # cut_at_drop ENTERS AT B'S REAL DROP (2026-08-12, rebuilt).
+            # It used to require a `pre_drop` MIX-IN hint and take the
+            # highest-scoring one, trusting the section label to mean a
+            # slam. Both halves were wrong, and measurement separated them:
+            #   PRECISION - the label is the segmenter's opinion. 13% of
+            #     labelled drops measure no audible step; the median is
+            #     x1.57, "a strong lift".
+            #   RECALL - mix-in points answer "where can this track be
+            #     brought IN", so 61% sit in the first quarter of the song
+            #     and none past three quarters, while the real >=x2.0 steps
+            #     have a median position of 0.47. The style could not reach
+            #     a mid-song drop at all, so it settled for an intro build.
+            # Together: the operator heard it "giving me songs that aren't
+            # dropping". _drop_entries scans B's own curve instead, and
+            # carries the downbeat/runway/vocal guards the mix-in hints
+            # used to supply implicitly.
+            _entries = self._drop_entries(cand)
+            if _entries:
+                cut_pd, cut_step = _entries[0]
+            else:
+                kill("cut_at_drop", "no_real_drop_in_B")
             # (loop_roll_exit rolls the 16 beats just before out_s - its
             # window is derived, so no after_s restriction needed here.)
             loop_ok = any(l["start_s"] < pair["out_s"] for l in cur.loops)
@@ -2745,8 +3323,36 @@ class Brain:
             bd_a = next((s for s in (cur.sections or [])
                          if s["kind"] == "breakdown"
                          and s["end_s"] > (after_s or 0.0)), None)
-            bl_b = next((s for s in (cand.sections or [])
-                         if s["kind"] == "build"), None)
+            # THE BUILD HAS TO LEAD SOMEWHERE (2026-08-12). This used to
+            # take the FIRST build section in B and nothing checked that a
+            # drop followed it. Measured over 12 legal pairs on this
+            # library, the first build sat a MEDIAN 318 beats from the
+            # nearest drop and 4 of 12 had no drop after it at all - so the
+            # style's whole premise ("ride A's breakdown carrying B's
+            # build, the drop that follows is the payoff") was not what the
+            # code did, and the payoff usually did not exist. Pick the
+            # build whose drop arrives soonest instead, and require it
+            # inside a musical window: the drop must land within the blend
+            # or just past it, or there is nothing to build toward and this
+            # is just a mid-carving bass_swap with extra steps.
+            # (Library check: 72% of tracks have both a build and a drop;
+            # best-build gets the drop within 32 beats on 65% of them,
+            # against 43% for the first build.)
+            _bl_max = _BDSWAP_DROP_MAX_BEATS * max(cand.period_s, 1e-6)
+            _bl_min = _BDSWAP_DROP_MIN_BEATS * max(cand.period_s, 1e-6)
+            bl_b, b_drop_s = None, None
+            _drops_b = drop_moments(cand.sections)
+            for _s in (cand.sections or []):
+                if _s["kind"] != "build":
+                    continue
+                _ahead = [d for d in _drops_b
+                          if _s["start_s"] + _bl_min <= d
+                          <= _s["start_s"] + _bl_max]
+                if not _ahead:
+                    continue
+                if bl_b is None or min(_ahead) - _s["start_s"] < \
+                        b_drop_s - bl_b["start_s"]:
+                    bl_b, b_drop_s = _s, min(_ahead)
             if bd_a is None or bl_b is None:
                 kill("breakdown_swap", "no_breakdown_or_build")
             else:
@@ -2777,6 +3383,46 @@ class Brain:
             if not any(weights.get(k, 0) > 0 for k in
                        ("long_blend", "bass_swap", "filter_sweep",
                         "stem_bass_swap", "melody_carry")):
+                # SECOND-CHANCE EXIT (2026-08-12). a_exit_collapses and
+                # a_exits_through_breakdown are properties of the chosen
+                # out POINT alone - the pair scorer optimizes overall
+                # fit, so it happily parks the exit on a breakdown and
+                # thereby kills every overlapped style, dropping the
+                # seam to a dice fade even when A has other exits whose
+                # energy carries. Measured on the progressive-cluster
+                # pool: exit-anchored kills were the FIRST reason on
+                # ~22% of dice-fade seams. When the workhorse blends
+                # died to exit-anchored reasons ONLY (any whole-track
+                # reason - beat power, grid, kick pattern - means a new
+                # exit cannot save the pair), re-ask best_pair for its
+                # best pair WITHOUT that exit and re-plan once. The
+                # _exit_retry flag bounds the recursion at one level and
+                # keeps the retried pair from being re-derived (see the
+                # pair block at the top).
+                _exit_only = {"a_exit_collapses",
+                              "a_exits_through_breakdown"}
+                if not _exit_retry and all(
+                        gated_all.get(s) and gated_all[s] <= _exit_only
+                        for s in ("long_blend", "bass_swap",
+                                  "filter_sweep")):
+                    alt = self.best_pair(cur, cand, after_s=after_s,
+                                         exclude_out_s=pair["out_s"])
+                    if alt is not None:
+                        # rate is read as meta["rate"] behind an `if
+                        # meta` truthiness guard - the retry meta is
+                        # never empty, so carry the default explicitly.
+                        _m = dict(meta or {}, pair=alt, _exit_retry=True)
+                        _m.setdefault("rate", 1.0)
+                        plan = self.plan_transition(
+                            cur, cand, _m,
+                            after_s=after_s, arc=arc,
+                            force_style=force_style,
+                            test_gates=test_gates,
+                            allow_benched=allow_benched)
+                        plan.setdefault("diag", {})["exit_retry"] = {
+                            "from_out_s": round(float(pair["out_s"]), 3),
+                            "to_out_s": round(float(alt["out_s"]), 3)}
+                        return plan
                 weights["long_fade"] = 2.0 * max(
                     weights.get("echo_out", 0.0), 0.4)
             # GATE UNDER TEST: a pin refused only by a tuned threshold is
@@ -2977,6 +3623,8 @@ class Brain:
         # where the music breathes. Drop-anchored styles keep the drop.
         out_s = cur.nearest_phrase(pair["out_s"])
         in_s = cand.nearest_phrase(pair["in_s"])
+        plan_b_drop = None            # breakdown_swap's payoff, if any
+        plan_drop_step = None         # cut_at_drop's measured slam size
         if style == "breakdown_swap" and bd_a is not None \
                 and bl_b is not None:
             # Blend over A's BREAKDOWN carrying B's BUILD: exit a phrase
@@ -2987,18 +3635,25 @@ class Brain:
                 max(bd_a["end_s"] - 4 * cur.period_s,
                     bd_a["start_s"])))
             in_s = cand.nearest_phrase(bl_b["start_s"])
+            # The payoff, carried to build_events so the low/mid restore can
+            # get out of its way. Phrase-snapping in_s moves the entry, so
+            # the drop is stamped RELATIVE to the snapped entry, not the
+            # raw build start - build_events maps it through rate_b.
+            plan_b_drop = b_drop_s
         if style == "cut_at_drop":
-            # Enter at B's best PRE-DROP point (the style's whole premise),
-            # not the generic pair in-point.
-            pd = max((p for p in cand.mix_ins
-                      if p.get("style_hint") == "pre_drop"),
-                     key=lambda p: p.get("score", 0.0), default=None)
-            if pd is not None:
-                in_s = cand.nearest_downbeat(pd["time_s"])
+            # Enter exactly where the gate above vetted: B's strongest
+            # measured drop, already snapped to a downbeat. cut_pd is a
+            # TIME here, not a mix-in dict - the hints are no longer
+            # consulted, so the seam that plays is the seam that was
+            # checked, with no second opinion in between.
+            if cut_pd is not None:
+                in_s = cut_pd
+                plan_drop_step = cut_step or None
         plan = {"style": style, "rate": rate,
                 "out_s": out_s, "in_s": in_s, "beats": beats, "rhythm": rt,
                 "pair_score": pair["score"], "cand_id": cand.id,
-                "duck_vocal_a": duck_vocal,
+                "duck_vocal_a": duck_vocal, "b_drop_s": plan_b_drop,
+                "drop_step": plan_drop_step,
                     "pitch_st": pst, "a_rate": (meta or {}).get("a_rate", 1.0),
                     "diag": diag}
         if arc is not None:
@@ -3009,11 +3664,23 @@ class Brain:
         # the blend (build_events schedules it), B enters at sqrt(rate) and
         # glides home from HALF the distance. Blend-family styles only: they
         # are the ones whose event builder implements the outgoing ramp.
-        if (stretch_engine_name() == "vari"
-                and style in ("long_blend", "bass_swap", "filter_sweep",
-                              "stem_drum_swap", "acapella_out",
-                              "stem_bass_swap", "drum_bridge",
-                              "acapella_in", "melody_carry")
+        _blend_split = (stretch_engine_name() == "vari"
+                        and style in ("long_blend", "bass_swap",
+                                      "filter_sweep", "stem_drum_swap",
+                                      "acapella_out", "stem_bass_swap",
+                                      "drum_bridge", "acapella_in",
+                                      "melody_carry"))
+        # THE CUT SPLITS UNDER KEYLOCK TOO (2026-08-12, operator's call).
+        # For the blend family the split exists to halve the PITCH shift,
+        # which is why it is varispeed-only - under R3 there is no pitch
+        # shift to halve. The cut splits for a second reason keylock does
+        # NOT remove: B is asked to play its DROP - the entire payoff of
+        # the move - up to 10% off its own tempo, and then slides home for
+        # two minutes afterwards. Halving that costs the departing track a
+        # bend it will not live to regret. (Its event builder schedules
+        # the outgoing ramp; that is what the whitelist really gated on.)
+        _cut_split = style == "cut_at_drop"
+        if ((_blend_split or _cut_split)
                 and plan["a_rate"] in (1.0, None) and not pst
                 and abs(math.log(max(plan["rate"], 1e-6))) > 0.010):
             plan["rate"] = math.sqrt(plan["rate"])
@@ -3392,6 +4059,48 @@ class Brain:
             # the launch lands 16 matched beats before the cut, not 16 source
             # beats (up to 8% off - a beat-and-a-third the PLL can't absorb).
             lead = int(16 * cand.period_s / rate_b * RATE)
+            # MEET IN THE MIDDLE ON A CUT (2026-08-12). This path used to
+            # leave A at its natural rate and stretch B the whole way, so
+            # the incoming DROP - the only reason the style exists -
+            # arrived bent by the entire tempo difference and then slid
+            # home over ~2 minutes. Measured over 6 renders before this
+            # change: a_rate 1.0 on every pair, B carrying a median 0.24
+            # and a worst 1.76 semitones AT THE DROP. Bend both decks
+            # instead, exactly as the blend family does.
+            a_rate = plan.get("a_rate", 1.0) or 1.0
+            if abs(a_rate - 1.0) > 1e-4:
+                # AFFORD THE SPLIT, NEVER RUSH IT. The ramp has to finish
+                # before the run-in (a master still moving gives the PLL a
+                # target it cannot lock) and has to run at
+                # ARATE_RAMP_PER_S, the gradient measured inaudible.
+                # Armed PLAN_LEAD_S ahead that buys ~4% of bend; deeper
+                # pairs take the split they can afford rather than a
+                # faster, audible glide. a_rate -> 1.0 degrades to exactly
+                # the old single-sided behaviour.
+                full = rate_b / a_rate       # B's rate with A left alone
+                budget = max(0.0, (S_cut - lead - now_guard) / RATE
+                             * ARATE_RAMP_PER_S)
+                d = min(abs(a_rate - 1.0), budget)
+                a_rate = 1.0 + (d if a_rate > 1.0 else -d)
+                rate_b = full * a_rate       # keeps the beat match exact
+                lead = int(16 * cand.period_s / rate_b * RATE)
+                plan["rate"], plan["a_rate"] = rate_b, a_rate
+            if abs(a_rate - 1.0) > 1e-4:
+                ramp_wall = abs(a_rate - 1.0) / ARATE_RAMP_PER_S
+                # clock_at() maps A's source to wall assuming a CONSTANT
+                # rate_a. The ramp and the run-in at a_rate both break
+                # that, and on a CUT the error is not cosmetic - it lands
+                # the slam off the drop. A runs (a_rate - 1) fast across
+                # the run-in and, on average, half of that across the
+                # ramp: take exactly that much source back. (The blend
+                # path's own correction is an approximation it can
+                # absorb; a cut cannot, so this one is derived.)
+                S_cut -= int((a_rate - 1.0)
+                             * (lead / RATE + ramp_wall / 2.0) * RATE)
+                ev.append({"at": max(S_cut - lead - int(ramp_wall * RATE),
+                                     now_guard),
+                           "cmd": "rate", "deck": active, "value": a_rate,
+                           "ramp_s": ramp_wall})
             S0 = max(S_cut - lead, now_guard)
             # B must still ARRIVE at in_s exactly at the cut, however much
             # run-in survives the clamp.
@@ -3611,6 +4320,48 @@ class Brain:
                 mid = c
                 break
             c += step
+        # Harmonic clash makes overlap unforgivable: with incompatible
+        # keys (after any pitch-shift rescue), B's melody waits until A is
+        # essentially gone before opening. (Hoisted above the swap clamp
+        # 2026-08-12: breakdown_swap's restore-clearance has to know
+        # whether the mid opens at the swap or three-quarters later.)
+        b_cam = _shift_camelot(cand.camelot, plan.get("pitch_st", 0) or 0)
+        key_ok = camelot_compat(cur.camelot, b_cam) >= 0.55
+        # Swap crossfade width: an instant low swap is a measured 8 dB
+        # step; 4 beats stays decisive but spreads it. The staged long
+        # blend widens to 6 - by then the highs have already migrated, so
+        # the swap is the SECOND move, not the whole transition.
+        swap_beats = K("swap_beats_long") if long_stage else K("swap_beats")
+        # THE RESTORE GETS OUT OF THE DROP'S WAY (2026-08-12). breakdown_swap
+        # parks B's entry on a build whose drop lands inside the blend, so
+        # the low+mid restore and the drop onset are two big upward moves
+        # that can land on the same beat - the 9.1 dB step that benched the
+        # style (vs 5.3 dB solo). They have to be heard as two events: pull
+        # the swap early enough that the restore FINISHES a phrase-quarter
+        # before the drop. Everything downstream (A's exit fade, the mid
+        # open, no_return_at) is derived from `mid`, so moving it here moves
+        # the whole choreography coherently.
+        if style == "breakdown_swap" and plan.get("b_drop_s"):
+            drop_at = S0 + int((plan["b_drop_s"] - plan["in_s"])
+                               / max(rate_b, 1e-6) * RATE)
+            # The restore's LAST moment: B's low ramps over swap_beats from
+            # `mid`, and its mid opens at mid_open_at over 4-8 beats. On-key
+            # pairs open the mid at the swap, so the low ramp is the tail;
+            # off-key ones defer the mid and that becomes the tail instead.
+            tail = max(swap_beats, 4.0) * beat_out
+            if not key_ok:
+                tail = 0.75 * (end - mid) / RATE + 8 * beat_out
+            latest = drop_at - int((_BDSWAP_RESTORE_CLEAR_BEATS * beat_out
+                                    + tail) * RATE)
+            # Never drag the swap in front of B's bass arrival or the blend
+            # start - a swap into a bassless stretch is the 42 dB low-end
+            # hole this file already learned about the hard way.
+            floor_c = max(S0 + int(4 * beat_out * RATE),
+                          S0 + int((b_bassy - plan["in_s"])
+                                   / max(rate_b, 1e-6) * RATE)
+                          if b_bassy is not None else S0)
+            if latest < mid:
+                mid = max(min(mid, latest), min(floor_c, mid))
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 4 * beat_out)
         plan["no_return_at"] = mid               # the bass/mid handover
@@ -3642,18 +4393,12 @@ class Brain:
             # so its mid shelf must sit lower than the ramping-gain case
             # or the shelf x 0.92 puts a second melody under A for bars.
             b_mid0 = min(b_mid0, K("b_mid0_long"))
-        # Harmonic clash makes overlap unforgivable: with incompatible
-        # keys (after any pitch-shift rescue), B's melody waits until A is
-        # essentially gone before opening.
-        b_cam = _shift_camelot(cand.camelot, plan.get("pitch_st", 0) or 0)
-        key_ok = camelot_compat(cur.camelot, b_cam) >= 0.55
+        # (key_ok and swap_beats are settled ABOVE, before the swap clamp -
+        # breakdown_swap's restore-clearance needs both to know how long the
+        # restore takes. mid_open_at stays HERE because it reads the final
+        # `mid`.)
         mid_open_at = mid if key_ok else \
             min(mid + int(0.75 * (end - mid)), end)
-        # Swap crossfade width: an instant low swap is a measured 8 dB
-        # step; 4 beats stays decisive but spreads it. The staged long
-        # blend widens to 6 - by then the highs have already migrated, so
-        # the swap is the SECOND move, not the whole transition.
-        swap_beats = K("swap_beats_long") if long_stage else K("swap_beats")
         # STEM_DRUM_SWAP / DRUM_BRIDGE enter on the DRUMS STEM alone: the
         # stems already strip B's bassline/melody/vocals, so the EQ carve
         # would only gut the drums themselves. Low sits at 0.55 (two

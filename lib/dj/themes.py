@@ -40,11 +40,20 @@ class Theme:
     # they fired 7 and 9 times in 560 seams - not "rare accent", closer to
     # never, and a 30-seam night saw none of them at all. Raised to a tier
     # where a night gets one or two, still an order of magnitude under the
-    # blends. cut_at_drop stays at the bottom: a spectacle move whose job
-    # is the engineered moment, and the only technique the measurements
-    # actually indict. (bassline_layer and double_drop removed 2026-08-02.)
+    # blends. (bassline_layer and double_drop removed 2026-08-02.)
+    #
+    # cut_at_drop sat at the bottom of that tier (0.08) as "the only
+    # technique the measurements actually indict" - the 0.247 above. That
+    # number was measured before the 2026-08-04 grid-phase and sync-drag
+    # fixes; re-measured on the current stack it is 0.017 beats, the BEST
+    # of any style, and the operator has since passed it by ear in the Lab.
+    # Raised to 0.20 - the same "one or two a night" tier as the other
+    # accents, deliberately a notch under echo_out. It still lands far
+    # rarer than the weight suggests, because it alone must clear
+    # bpm_conf>=0.8 on BOTH sides and needs a pre-drop entry in B: ~15% of
+    # pairs are structurally eligible before any other screen runs.
     style_weights: dict = field(default_factory=lambda: {
-        "long_blend": 1.7, "bass_swap": 1.2, "cut_at_drop": 0.08,
+        "long_blend": 1.7, "bass_swap": 1.2, "cut_at_drop": 0.20,
         "loop_roll_exit": 0.30,
         "loop_build": 0.28, "long_fade": 0.3,
         "filter_sweep": 0.6, "echo_out": 0.26,

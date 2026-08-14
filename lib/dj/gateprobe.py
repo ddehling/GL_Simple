@@ -21,6 +21,12 @@ from lib.dj.brain import (BAND_CLASH_HI, BAND_CLASH_LO, KICK_SCREEN_BLEND_S,
 _OVERLAP = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap",
             "melody_carry", "breakdown_swap", "stem_drum_swap",
             "drum_bridge")
+# The beat-power bars lost the plain blends to Gate Check verdicts
+# (A-side 2026-08-07, B-side 2026-08-13); they still govern the stem +
+# mid-running styles, which is what a trial of them can pin now.
+_STEM_OVERLAP = tuple(s for s in _OVERLAP
+                      if s not in ("long_blend", "bass_swap",
+                                   "filter_sweep"))
 _SHORT_DUAL = ("cut_at_drop", "echo_out", "loop_build", "loop_roll_exit",
                "loop_in")
 
@@ -93,18 +99,28 @@ def probe(a, b, plan):
             skipped=("local phase measured — kick-true anchors already "
                      "correct this" if local_ok else None)))
 
-    # -- beat power, per side, in the seam's own region -------------------
-    for t, side, reg, bar_v in ((a, "A", reg_a, _bp.BLEND_MIN_EXIT),
-                                (b, "B", reg_b, _bp.BLEND_MIN)):
-        bs = _bp.band_scores(t.id, region=reg) or {}
-        evid = [v for v in (bs.get("low"), _bp.scores().get(t.id))
-                if v is not None]
-        best = max(evid) if evid else None
+    # -- beat power, per side, AT THE SEAM'S OWN POSITION ------------------
+    # Mirrors brain 2026-08-12: the dense phase-corrected profile, read
+    # +/-10s off the boundary (the legacy window centers), stands ALONE
+    # when present; the labeled-region max() is only the fallback for
+    # unscanned tracks.
+    for t, side, reg, _at, bar_v in (
+            (a, "A", reg_a, out_s - 10.0, _bp.BLEND_MIN_EXIT),
+            (b, "B", reg_b, in_s + 10.0, _bp.BLEND_MIN)):
+        pw = _bp.power_at(t.id, _at)
+        if pw is not None:
+            best, evid, src = pw, [pw], f"@{_at:.0f}s (dense profile)"
+        else:
+            bs = _bp.band_scores(t.id, region=reg) or {}
+            evid = [v for v in (bs.get("low"), _bp.scores().get(t.id))
+                    if v is not None]
+            best = max(evid) if evid else None
+            src = f"{reg}-region (no dense profile)"
         rows.append(_row(
             f"no_beat_power_{side}", bool(evid) and best < bar_v,
-            (f"{t.title[:30]} {reg}-region low-band beat power "
-             f"{best:.2f}" if best is not None else "not measured"),
-            f"≥ {bar_v:.2f}", _OVERLAP,
+            (f"{t.title[:30]} low-band beat power {best:.2f} {src}"
+             if best is not None else "not measured"),
+            f"≥ {bar_v:.2f}", _STEM_OVERLAP,
             skipped=None if evid else "no beat-power measurement on file"))
 
     # -- band clash, per band --------------------------------------------
@@ -127,12 +143,42 @@ def probe(a, b, plan):
              f"(loud side {who}: {hi_:.2f}, quiet side {lo_:.2f})"),
             f"clash when hi ≥ {BAND_CLASH_HI} and lo < {BAND_CLASH_LO}",
             kills))
+
+    # (cut_needs_grid_conf>=0.8 was probed here from 2026-08-12 until the
+    # night of 2026-08-13, when 14 trials rated it right 3 times and the
+    # gate was removed - cut_at_drop now sits on the tier's grid_conf<0.7.
+    # The row is gone rather than left reading 'never fires': a probe that
+    # reports a gate the engine no longer has is worse than no probe.)
+
+    # (stretch>5.5%_risky was probed here 2026-08-12 and removed from the
+    # engine on the night of 2026-08-13 after 13 trials rated it right zero
+    # times. Its row goes with it - a probe reporting a gate the engine no
+    # longer has is worse than no probe. What still bounds stretch is the
+    # deck's own [0.90, 1.10] clip and rate_for's 6% per-side cap, neither
+    # of which is a rateable threshold.)
     return rows
+
+
+def gate_styles(gate):
+    """Styles a given screen takes off the menu - i.e. what a trial of it
+    can pin. Mirrors the kill lists used in probe(), so a trial cannot pin
+    a style the gate never touched (which would rate nothing)."""
+    if gate.startswith("kick_offset>28"):
+        return _SHORT_DUAL
+    if gate.startswith("kick_offset>20"):
+        return _OVERLAP
+    if gate.startswith("no_beat_power"):
+        return _STEM_OVERLAP
+    if gate.startswith("band_clash_"):
+        band = gate.rsplit("_", 1)[-1]
+        return tuple(s for s, bands in _STYLE_BANDS.items() if band in bands)
+    return ()
 
 
 def gate_names():
     """Screens a Gate Check session can put on trial, most-costly first
-    (measured share of seams they kill, 2026-08-07)."""
+    (measured share of seams they kill, 2026-08-07; stretch measured
+    2026-08-12)."""
     return ["band_clash_high", "no_beat_power_A", "kick_offset>20ms",
             "no_beat_power_B", "band_clash_mid", "band_clash_low",
             "kick_offset>28ms"]

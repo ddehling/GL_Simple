@@ -23,7 +23,8 @@ import time
 
 import numpy as np
 
-from lib.dj.brain import GLIDE_PER_S, Brain, load_library, TrackInfo
+from lib.dj.brain import (EXIT_LATE_HARD_FRAC, GLIDE_PER_S, Brain,
+                          load_library, TrackInfo)
 from lib.dj.db import LibraryDB
 from lib.dj.rhythm import seam_chips
 from lib.dj.submix import DJSubmix
@@ -56,9 +57,14 @@ EXIT_MAX_FRAC = 0.72             # ceiling the drawn play budget may ask of
                                  # them from exceeding the song. SCALED by
                                  # the persona's play_len_x, or it flattens
                                  # every persona to one play length.
-EXIT_HARD_MAX_FRAC = 0.85        # ...and the ceiling on THAT: even the
-                                 # most patient persona stops before the
-                                 # tail a record has nothing left in.
+# ...and the ceiling on THAT: even the most patient persona stops before
+# the tail a record has nothing left in. ONE NUMBER, imported from the
+# brain (2026-08-13): it used to be defined here and bound only the
+# BUDGET, while brain's scorer - which picks the exit that actually plays
+# - had no late bound at all, so the ceiling was silently advisory and the
+# night rode records to 0.90. brain.best_pair now refuses past it, and a
+# second copy of the number could only drift away from the one enforcing.
+EXIT_HARD_MAX_FRAC = EXIT_LATE_HARD_FRAC
 
 
 def _persona_menu():
@@ -2743,8 +2749,22 @@ class DJSystem:
         if self.current is not None and self.current.duration_s > 0:
             cap = EXIT_MAX_FRAC * getattr(self.brain.persona,
                                           "play_len_x", 1.0)
-            drawn = min(drawn, self.current.duration_s
-                        * min(cap, EXIT_HARD_MAX_FRAC))
+            # THE BUDGET RIDES THE REMAINDER, NOT THE RECORD (2026-08-12,
+            # with the deep-entry candidates in TrackInfo). A track
+            # entered at its 55% mark has 45% left, but a duration-based
+            # cap still reasons about 100% - the drawn budget then
+            # outruns every exit candidate and the seam falls to the
+            # `duration - 35s` comedown fallback, the exact failure the
+            # 2026-08-07 cap fixed for full-length plays. self.plan at
+            # this call site is the transition that BROUGHT IN the
+            # current track (cand_id guards against the first-track and
+            # skip paths, where entry is effectively 0).
+            entry = 0.0
+            plan = getattr(self, "plan", None)
+            if plan and plan.get("cand_id") == self.current.id:
+                entry = max(float(plan.get("in_s") or 0.0), 0.0)
+            remain = max(self.current.duration_s - entry, 40.0)
+            drawn = min(drawn, remain * min(cap, EXIT_HARD_MAX_FRAC))
         self._exit_played = drawn
 
     def _predecode(self, track):

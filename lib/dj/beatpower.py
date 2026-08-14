@@ -379,6 +379,161 @@ def compute_phase(track, db):
     return {"prof": prof} if prof else None
 
 
+def compute_power_prof(track, db):
+    """DENSE beat-power profile from the raw audio - the same on/off
+    attack ratio `compute` measures, but for EVERY ~20s of the track
+    instead of three fixed windows.
+
+    Why (2026-08-12): beat power was stored as three 30s samples - the
+    midpoint, and windows around mix_ins[0]/mix_outs[0] - and the gate
+    picked one by label, falling back to the MIDPOINT whenever the seam
+    landed >45s from the primary mix point. Measured on this library
+    that fallback fired on 35% of planned seams, and it is not a
+    harmless approximation: 46.7% of tracks fail the incoming bar when
+    judged at their midpoint against 27.2% judged at their entry, so
+    182 tracks (19.5%) were refused as 'no beat to match' over a beat
+    they have exactly where the blend would have landed. Within-track
+    spread is the reason - median |in-mid| is 0.43 and 35.3% of tracks
+    STRADDLE the bar, passing in one region and failing in another.
+    Beat power is a local property, and the code treated it as a
+    track-level scalar.
+
+    This is the same lesson, and the same fix, that compute_phase
+    already learned for phase in 2026-08-04 - hence the same shape:
+    {"prof": [{"at_s", "s", "n"}, ...]}, read back through power_at().
+
+    One full-track pass over the low-band attack envelope; per bucket
+    the mean on-beat peak over the mean off-beat (half-period later)
+    peak, identical in definition to `compute` so the stored bars
+    (BLEND_MIN / BLEND_MIN_EXIT) keep their meaning.
+
+    PHASE-CORRECTED (v2, same day): the first cut measured at the RAW
+    grid positions and read 0.8-0.97 on mid-groove sections of tracks
+    whose midpoint scores 2-4x - because stored grids miss the real
+    kicks by ~48ms median in seam regions, drifting as a ramp (see
+    compute_phase's docstring), and a +/-30ms on-beat window loses the
+    kick entirely once the drift passes it. Late-track buckets - the
+    exact regions this profile exists to score - are where the drift is
+    largest, so uncorrected readings sagged precisely where the old
+    midpoint fallback was WRONG in the other direction. Each bucket's
+    beats are shifted by the measured local phase offset before the
+    windows are placed, mirroring what the deck's sync bias does at mix
+    time: the blend aligns KICKS, so the on-beat power that predicts it
+    is at the kick-true positions. Buckets where the phase is untrusted
+    (phase_offset returns None) fall back to the raw grid - a best
+    effort, not a refusal, since a scalar existed for years with no
+    correction at all."""
+    from lib.dj.features import decode_file_stereo
+    from scipy.signal import butter, sosfilt
+    try:
+        x = decode_file_stereo(db.abs(track.path))
+    except Exception:
+        return None
+    mono = x.mean(axis=1).astype(np.float32)
+    del x
+    sos = butter(4, 110.0, btype="lowpass", fs=RATE, output="sos")
+    env = np.abs(sosfilt(sos, mono)).astype(np.float32)
+    del mono
+    w = max(int(0.01 * RATE), 1)
+    env = np.convolve(env, np.ones(w, dtype=np.float32) / w, mode="same")
+    att = np.diff(env)
+    del env
+    att[att < 0] = 0.0
+
+    # (beat_s, on_peak, off_peak) for every grid beat with both windows
+    # fully inside the audio - bucketed after the walk, so a beat is
+    # measured once no matter how the buckets fall. Each beat is shifted
+    # to its kick-true position first (one phase lookup per ~20s bucket,
+    # cached - phase is smooth at that scale).
+    w2 = int(0.03 * RATE)
+    _ph_cache = {}
+
+    def _ph(b):
+        key = int(b / PROF_BUCKET_S)
+        if key not in _ph_cache:
+            _ph_cache[key] = phase_offset(
+                track.id, at_s=(key + 0.5) * PROF_BUCKET_S)
+        return _ph_cache[key] or 0.0
+
+    obs = []
+    for g in (track.grid or []):
+        per = g.get("period_s") or 0
+        if per <= 0:
+            continue
+        b = g["first_beat_s"]
+        if b < 0:
+            b += np.ceil(-b / per) * per
+        while b <= g["end_s"]:
+            bc = b + _ph(b)
+            i = int(bc * RATE)
+            j = int((bc + per * 0.5) * RATE)
+            if i - w2 >= 0 and j + w2 < len(att):
+                obs.append((b,
+                            float(np.max(att[i - w2:i + w2])),
+                            float(np.max(att[j - w2:j + w2]))))
+            b += per
+    del att
+    if len(obs) < 24:
+        return None
+    prof = []
+    n_buckets = int(track.duration_s / PROF_BUCKET_S) + 1
+    for bi in range(n_buckets):
+        lo, hi = bi * PROF_BUCKET_S, (bi + 1) * PROF_BUCKET_S
+        cell = [(on, off) for b, on, off in obs if lo <= b < hi]
+        # Same floor as _band_score's whole-window walk: fewer than 16
+        # beats is not a measurement, it is a fill or a gap.
+        if len(cell) < 16:
+            continue
+        on_m = float(np.mean([c[0] for c in cell]))
+        off_m = float(np.mean([c[1] for c in cell]))
+        if off_m <= 0:
+            continue
+        prof.append({"at_s": round(lo + PROF_BUCKET_S / 2, 1),
+                     "s": round(on_m / off_m, 3),
+                     "n": len(cell)})
+    # v2 = phase-corrected windows; the scan recomputes any stored
+    # profile without this marker.
+    return {"prof": prof, "v": 2} if prof else None
+
+
+def power_at(track_id, at_s):
+    """Beat power AT a position in seconds, or None when unmeasured or
+    nothing trustworthy sits near it. Companion to phase_offset(at_s=),
+    and deliberately the same contract: None means 'no evidence', which
+    every caller must treat as 'no penalty' rather than 'bad'.
+
+    Interpolated, not stair-stepped, for the same reason phase is: the
+    profile samples a continuous property every PROF_BUCKET_S, so the
+    value at a seam is the line through its neighbours. Positions
+    farther than PROF_REACH_S from any measured bucket return None -
+    a breakdown long enough to have no scored bucket is exactly where a
+    guess would be worst."""
+    p = path()
+    try:
+        m = os.path.getmtime(p)
+    except OSError:
+        return None
+    if _CACHE.get("power_mtime") != m:
+        try:
+            with open(p, encoding="utf-8") as f:
+                doc = json.load(f)
+            _CACHE["power"] = {int(k): (v.get("power") or {}).get("prof")
+                               for k, v in doc.get("scores", {}).items()
+                               if isinstance(v, dict) and v.get("power")}
+            _CACHE["power_mtime"] = m
+        except (OSError, ValueError):
+            return None
+    prof = _CACHE.get("power", {}).get(track_id)
+    if not prof:
+        return None
+    xs = np.asarray([r["at_s"] for r in prof], dtype=np.float64)
+    if float(np.min(np.abs(xs - at_s))) > PROF_REACH_S:
+        return None
+    return float(np.interp(at_s, xs,
+                           np.asarray([r["s"] for r in prof],
+                                      dtype=np.float64)))
+
+
 def _band_score(track, seg, lo, kind, freq):
     from scipy.signal import butter, sosfilt
     sos = butter(4, freq, btype=kind, fs=RATE, output="sos")
@@ -431,6 +586,10 @@ def main():
     ap.add_argument("--phase", action="store_true",
                     help="also fill per-region music-vs-grid phase "
                          "offsets (kick alignment bias)")
+    ap.add_argument("--power", action="store_true",
+                    help="also fill the DENSE beat-power profile, so the "
+                         "blend gates can score the seam's actual "
+                         "position instead of the track midpoint")
     args = ap.parse_args()
     try:
         import ctypes
@@ -460,9 +619,14 @@ def main():
         need_phase = args.phase and (not isinstance(have, dict)
                                      or "phase" not in have
                                      or "prof" not in have["phase"])
-        if have is not None and not need_bands and not need_phase:
+        need_power = args.power and (not isinstance(have, dict)
+                                     or "power" not in have
+                                     or "prof" not in have["power"]
+                                     or have["power"].get("v") != 2)
+        if have is not None and not need_bands and not need_phase \
+                and not need_power:
             continue
-        if args.bands or args.phase:
+        if args.bands or args.phase or args.power:
             rec = dict(have) if isinstance(have, dict) else \
                 ({"score": have} if have is not None else {"score": None})
             if need_bands:
@@ -475,6 +639,15 @@ def main():
                 p = compute_phase(t, db)
                 if p is not None:
                     rec["phase"] = p
+            if need_power:
+                pw = compute_power_prof(t, db)
+                if pw is not None:
+                    rec["power"] = pw
+                    # A track with no stored scalar (an old partial scan)
+                    # gets one from the profile's own body bucket, so the
+                    # legacy `evid` path stays populated.
+                    if rec.get("score") is None and pw["prof"]:
+                        rec["score"] = pw["prof"][len(pw["prof"]) // 2]["s"]
             if rec:
                 done[key] = rec
         else:
