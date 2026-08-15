@@ -21,6 +21,7 @@ CLI (fills logs/beat_power.json incrementally, resumable):
 """
 import json
 import os
+import time
 
 import numpy as np
 
@@ -173,9 +174,19 @@ def phase_offset(track_id, region="mid", at_s=None):
     ear hears flam. The sync bias consumes the DIFFERENCE of these
     offsets to put kicks, not grids, in register."""
     p = path()
-    try:
-        m = os.path.getmtime(p)
-    except OSError:
+    # The mtime freshness probe is a syscall, and selection makes ~1650
+    # phase lookups per pick - throttle it to twice a second. A freshly
+    # written profile is picked up within 500ms, which is instant on the
+    # only timescale that matters (a scan finishing mid-session).
+    now = time.monotonic()
+    m = _CACHE.get("phase_mtime")
+    if now - _CACHE.get("phase_mtime_checked", 0.0) > 0.5:
+        _CACHE["phase_mtime_checked"] = now
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            return None
+    if m is None:
         return None
     if _CACHE.get("phase_mtime") != m:
         try:
@@ -185,11 +196,24 @@ def phase_offset(track_id, region="mid", at_s=None):
                                for k, v in doc.get("scores", {}).items()
                                if isinstance(v, dict) and v.get("phase")}
             _CACHE["phase_mtime"] = m
+            _CACHE["phase_arrs"] = {}   # derived arrays follow the doc
+            _CACHE["phase_memo"] = {}   # ...and the result memo with them
         except (OSError, ValueError):
             return None
     d = _CACHE.get("phase", {}).get(track_id)
     if not d:
         return None
+    # RESULT MEMO: the same (track, anchor) is asked thousands of times
+    # per pick - cur's handful of exit anchors repeat for every one of
+    # ~1000 candidates. Keyed at half-second granularity (well inside
+    # one profile bucket); cleared with the doc cache on reload.
+    if at_s is not None:
+        mk = (track_id, region, round(at_s * 2.0))
+        memo = _CACHE.setdefault("phase_memo", {})
+        if mk in memo:
+            return memo[mk]
+    else:
+        mk = None
 
     def _ok(rec):
         # Trust bar: enough beats with real attacks, and a consistent
@@ -202,28 +226,52 @@ def phase_offset(track_id, region="mid", at_s=None):
     if prof is not None:
         if at_s is None:
             at_s = prof[len(prof) // 2]["at_s"]    # label-less: track body
-        pts = [(r["at_s"], r["ms"]) for r in prof if _ok(r)]
-        if not pts:
-            return None
+        # PER-TRACK ARRAY CACHE (2026-08-14). Selection calls this
+        # ~1650x per pick (the blendability mirror runs best_pair per
+        # candidate, and the anchor-trust lean added more) and the
+        # per-call list comprehensions + np builds were HALF of all
+        # planning time (measured 135ms of a 272ms pick on the dev box;
+        # ~3x that on the N150's planner thread, all of it GIL-bound
+        # against the audio producer and the GL loop). The profile is
+        # immutable per file mtime, so the trusted-point arrays and the
+        # untrusted-bucket positions are computed once per track and
+        # invalidated with the same mtime the raw doc cache uses.
+        ck = _CACHE.setdefault("phase_arrs", {})
+        arrs = ck.get(track_id)
+        if arrs is None:
+            pts = [(r["at_s"], r["ms"]) for r in prof if _ok(r)]
+            bad = np.asarray([r["at_s"] for r in prof if not _ok(r)],
+                             dtype=np.float64)
+            if pts:
+                arrs = (np.asarray([p[0] for p in pts]),
+                        np.asarray([p[1] for p in pts]), bad)
+            else:
+                arrs = (None, None, bad)
+            ck[track_id] = arrs
+        xs, ys, bad = arrs
         # If the bucket AT this position was measured but failed the
         # trust bar, the phase HERE is genuinely unstable (fill, break,
         # rubato) - interpolating neighbors across it is a guess dressed
         # as a measurement (validation: -44ms miss on exactly this case).
         # Decline; no correction beats a wrong one.
-        for r in prof:
-            if abs(r["at_s"] - at_s) <= PROF_BUCKET_S / 2 and not _ok(r):
-                return None
-        xs = np.asarray([p[0] for p in pts])
-        nearest = float(np.min(np.abs(xs - at_s)))
-        if nearest > PROF_REACH_S:
-            return None       # nothing trustworthy near this position
-        # INTERPOLATE, don't stair-step: measured profiles are smooth
-        # RAMPS (~-0.44 ms/s on most of this library - the stored grid
-        # period is systematically ~0.04% off the music, a scanner tempo
-        # quantization artifact), so the local phase at a seam is the
-        # line through the neighboring buckets, not the nearest median.
-        return float(np.interp(at_s, xs,
-                               np.asarray([p[1] for p in pts]))) / 1000.0
+        if xs is None:
+            val = None
+        elif len(bad) and float(np.min(np.abs(bad - at_s))) \
+                <= PROF_BUCKET_S / 2:
+            val = None
+        elif float(np.min(np.abs(xs - at_s))) > PROF_REACH_S:
+            val = None        # nothing trustworthy near this position
+        else:
+            # INTERPOLATE, don't stair-step: measured profiles are
+            # smooth RAMPS (~-0.44 ms/s on most of this library - the
+            # stored grid period is systematically ~0.04% off the
+            # music, a scanner tempo quantization artifact), so the
+            # local phase at a seam is the line through the neighboring
+            # buckets, not the nearest median.
+            val = float(np.interp(at_s, xs, ys)) / 1000.0
+        if mk is not None:
+            _CACHE.setdefault("phase_memo", {})[mk] = val
+        return val
     # legacy labeled-region records (pre-profile format)
     if at_s is not None:
         best, dist = None, None
