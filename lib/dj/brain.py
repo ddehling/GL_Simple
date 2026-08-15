@@ -3535,6 +3535,31 @@ class Brain:
                         if hi_ >= BAND_CLASH_HI and lo_ < BAND_CLASH_LO:
                             kill(st_, f"band_clash_{bd}")
                             break
+            # SWING CLASH RUNS ON ITS OWN CONFIDENCE, IN BOTH BRANCHES
+            # (2026-08-14). This screen used to live only in the
+            # UNTRUSTED-signature branch below - a seam whose rhythm was
+            # confidently measured skipped it entirely, so the better
+            # the measurement the less it was used. Dunes -> Beam Me Up
+            # (swing 0.534 vs 0.606, delta 0.072 at swing_conf 0.994,
+            # overall conf 0.75 -> trusted branch) sailed through and
+            # the operator rated it "pretty bad" live. And the old
+            # handling BOOSTED stem_drum_swap x2 on clash, on the theory
+            # it "removes one percussion bed" - its own event builder
+            # says otherwise: B enters on its drum stem UNDER A's full
+            # mix, and after the swap A's drum stem rides OVER B's full
+            # mix - two beds on both sides of the seam, the most exposed
+            # style there is. Same failure shape as drum_bridge's
+            # key-clash boost, retired the same day: a steer built on
+            # theory, rated wrong the first time its flagship case
+            # played. Now every kit-overlay style is DAMPED on a
+            # confident swing clash; swing_conf gates it (the swing
+            # measurement carries its own confidence, independent of
+            # the overall rhythm conf).
+            if (rt is not None and rt.get("swing_conf", 0.0) >= 0.5
+                    and rt["swing_delta"] > 0.055):
+                for k in ("long_blend", "filter_sweep", "loop_roll_exit",
+                          "drum_bridge", "stem_drum_swap"):
+                    weights[k] = weights.get(k, 0.0) * 0.3
             if rt_sure:
                 if abs(rt.get("mult", 1.0) - 1.0) > 1e-6:
                     kill(_overlap, "tempo_multiple_read")
@@ -3550,16 +3575,6 @@ class Brain:
                 da, db_ = cur.rhythm_density, cand.rhythm_density
                 if da > 0 and db_ > 0 and max(da / db_, db_ / da) >= 1.8:
                     kill(_overlap, "kick_density_mismatch")
-                if rt is not None and rt["swing_delta"] > 0.055:
-                    # Swung vs straight flams every offbeat for the whole
-                    # overlap; only removing one percussion bed fixes it.
-                    # stem_drum_swap does exactly that; drum_bridge keeps
-                    # BOTH percussion beds - it showcases the clash.
-                    for k in ("long_blend", "filter_sweep",
-                              "loop_roll_exit", "drum_bridge"):
-                        weights[k] = weights.get(k, 0.0) * 0.3
-                    weights["stem_drum_swap"] = \
-                        weights.get("stem_drum_swap", 0.0) * 2.0
                 fl = rt.get("flam_ms") if rt is not None else None
                 if fl is not None and 15.0 <= fl <= 80.0:
                     # Machine-gun near-misses: the short punchy styles
