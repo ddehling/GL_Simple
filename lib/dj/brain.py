@@ -3783,8 +3783,25 @@ class Brain:
                             "from_out_s": round(float(pair["out_s"]), 3),
                             "to_out_s": round(float(alt["out_s"]), 3)}
                         return plan
-                weights["long_fade"] = 2.0 * max(
-                    weights.get("echo_out", 0.0), 0.4)
+                # THE FADE IS A LAST RESORT, NOT A DEFAULT (2026-08-14,
+                # operator: "it should mostly be last resort picks").
+                # The blend-less check above only watches the five
+                # BLEND styles - when a cut, a stem style or a bridge
+                # survived the gates, the fade still re-entered at 0.8
+                # against their 0.2-0.3 accent weights and won those
+                # menus ~4:1. Now: if ANY synced style beyond echo is
+                # still standing, the fade re-enters at HALF weight and
+                # the surviving styles get real odds; only when the
+                # menu is echo-or-nothing does the 2026-08-05 2:1
+                # fade:echo rule apply unchanged (echo as punctuation,
+                # the fade carrying what the material asked for).
+                _other_synced = any(
+                    weights.get(k, 0) > 0 for k in
+                    ("cut_at_drop", "stem_drum_swap", "drum_bridge",
+                     "acapella_out", "acapella_in", "breakdown_swap",
+                     "loop_build", "loop_roll_exit"))
+                weights["long_fade"] = (1.0 if _other_synced else 2.0) \
+                    * max(weights.get("echo_out", 0.0), 0.4)
             # GATE UNDER TEST: a pin refused only by a tuned threshold is
             # let through so the threshold itself can be rated. Structural
             # refusals (no stems, no drop, retired) still stand.
