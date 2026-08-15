@@ -34,9 +34,16 @@ _SHORT_DUAL = ("cut_at_drop", "echo_out", "loop_build", "loop_roll_exit",
                "loop_in")
 
 # Bands each style genuinely runs together (mirrors brain's _style_bands).
+# The plain blends (long_blend/bass_swap/filter_sweep) were listed here
+# until 2026-08-15 - the ENGINE removed band clash from them on the
+# 2026-08-07 Gate Check verdicts, and the stale mapping made band-clash
+# trials pin a style the gate never refuses: the Lab searched forever
+# and found nothing (operator: "band clash high is not finding any
+# candidates"). This mapping must track brain's _style_bands exactly -
+# it decides both what a trial can PIN and what the probe row reports
+# as killed.
 _STYLE_BANDS = {
-    "long_blend": ("high",), "bass_swap": ("high",),
-    "filter_sweep": ("high",), "stem_bass_swap": ("mid", "high"),
+    "stem_bass_swap": ("mid", "high"),
     "melody_carry": ("mid", "high"), "breakdown_swap": ("mid", "high"),
     "stem_drum_swap": ("low", "mid", "high"),
     "drum_bridge": ("low", "mid", "high"),
@@ -216,6 +223,64 @@ def gate_styles(gate):
     if gate.startswith("cut_drop_shape"):
         return ("cut_at_drop",)
     return ()
+
+
+# WHAT EACH SCREEN IS, for the human rating it (operator 2026-08-15:
+# "we should have a description of what each gate is that is visible
+# during lab testing"). Lives HERE with the names and bars so the text
+# can never describe a gate the engine no longer has. Plain language:
+# what it measures, what it protects, and its CURRENT jurisdiction -
+# including what your own past verdicts already took away from it.
+GATE_DOCS = {
+    "band_clash_high": (
+        "Both tracks carry strong rhythm in the HIGH band (hats, air) "
+        "through the overlap - one side loud, the other quiet, so the "
+        "quiet side's pattern fights through. Governs only the stem and "
+        "mid-running styles: your 2026-08-07 verdicts removed it from "
+        "the plain blends (9 wrong / 2 right - the measurement does not "
+        "predict what the ear objects to there)."),
+    "band_clash_mid": (
+        "Same screen, MID band (melody, snare body). Governs the stem "
+        "and mid-running styles, whose mids genuinely play together - "
+        "unrated on those; the blend verdicts may not transfer."),
+    "band_clash_low": (
+        "Same screen, LOW band (bass, kick fundamental). Governs the "
+        "full-kit stem styles."),
+    "no_beat_power_A": (
+        "Does A's EXIT region actually thump on its beats? Low-band "
+        "beat power at the seam's own position (dense phase-corrected "
+        "profile). A blend out of a beatless exit reads as a fade that "
+        "was promised a beat-match. Governs the stem family only - "
+        "rated off the plain blends 2026-08-07 (6 wrong / 2 right)."),
+    "no_beat_power_B": (
+        "Does B's ENTRY region thump on its beats? Same instrument, "
+        "incoming side - B becomes the foundation, so this side was "
+        "kept longer, then rated off the plain blends 2026-08-13 "
+        "(12 fine / 2 bad). Still governs the stem family, unrated "
+        "there."),
+    "kick_offset>20ms": (
+        "The two tracks' stored BASS PLACEMENT differs by this much "
+        "(beat-phase, wrapped): overlapped-drum styles put both "
+        "basslines in the room at once. Ear-rated BACKWARDS for plain "
+        "blends (big deltas sounded fine, the flam zone was 20-35ms) "
+        "and removed there; still governs the stem styles. Stands down "
+        "whenever local phase is measured at the anchors."),
+    "kick_offset>28ms": (
+        "Same measurement, looser bar, for the short-dual tier (cut, "
+        "echo): a few bars of overlap leave no time for the PLL to "
+        "settle, so placement error plays raw."),
+    "cut_drop_shape": (
+        "cut_at_drop's entry-shape floors, judged where the cut "
+        "actually lands (the snapped downbeat): a measured step up, a "
+        "hot landing, off a real dip. The current floors came from "
+        "your 25 verdicts on 2026-08-14; trials serve the band BELOW "
+        "them, so rate whether entries down there still work."),
+}
+
+
+def gate_doc(name):
+    """Plain-language description of a screen, or '' when unknown."""
+    return GATE_DOCS.get(name, "")
 
 
 def gate_names():

@@ -53,7 +53,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QHBoxLayout, QLabel,
                              QTextBrowser, QVBoxLayout, QWidget)
 
 from lib.dj import gateprobe, stretch_engine_name
-from lib.dj.gateprobe import gate_names, gate_styles
+from lib.dj.gateprobe import gate_doc, gate_names, gate_styles
 from lib.dj.version import engine_version
 from lib.dj.brain import Brain
 from lib.dj.themes import BUILTIN_THEMES, get_theme
@@ -249,6 +249,14 @@ class _SeamWorker(QThread):
                  used_ids, relaxed_ids, require_style=False,
                  trial_gate="", pool_ids=None):
         super().__init__()
+        # Cooperative cancel (2026-08-15): a rare-gate search runs for
+        # minutes, and Stop/gate-switch used to leave it grinding to
+        # completion while the UI looked dead ("stopping and starting a
+        # session doesn't work well, and its hard to switch between
+        # gates" - operator, mid-rating). Checked between attempts and
+        # before delivery; a cancelled worker exits fast and emits
+        # nothing.
+        self._cancelled = False
         self.db, self.brain, self.library = db, brain, library
         self.rng, self.want_style, self.source = rng, want_style, source
         self.used_ids = used_ids
@@ -269,6 +277,13 @@ class _SeamWorker(QThread):
         # Everything else still refuses normally - crossing one threshold
         # is the experiment, crossing all of them is just a broken engine.
         self.trial_gate = trial_gate or ""
+        # What this worker is hunting - the tab drops any delivery whose
+        # signature no longer matches the current controls (a render can
+        # complete in the same instant the operator retargets).
+        self.sig = (want_style, self.trial_gate, source)
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         try:
@@ -328,6 +343,8 @@ class _SeamWorker(QThread):
                 tries = 300 if (long_only or self.require_style) \
                     else (120 if (ab_only or batch_only) else 24)
                 for attempt in range(tries):
+                    if self._cancelled:
+                        return
                     cur = self.rng.choice(pool)
                     # Long test wants a workable render window on both
                     # sides; a plain seam only needs enough track to arm in.
@@ -452,7 +469,10 @@ class _SeamWorker(QThread):
                         # The Beat lens is the only casualty; Scope and
                         # Exit still work, so don't lose the whole seam.
                         self.status.emit(f"band measure failed: {e}")
+                    if self._cancelled:
+                        return           # retargeted while rendering
                     self.ready.emit({
+                        "sig": self.sig,
                         "a": cur, "b": cand,
                         "plan": info.get("plan", plan),
                         "after_s": after_s, "audio": mix,
@@ -502,6 +522,7 @@ class LabTab(QWidget):
         self._next = None                # pre-rendered seam waiting its turn
         self._current = None
         self._session = False
+        self._active_sig = None          # what the live worker hunts
         self._used = set()               # every track heard this session
         self._recent = []                # the tail, as a relaxed fallback
         self._tally = {"good": 0, "passable": 0, "bad": 0, "skip": 0}
@@ -570,6 +591,9 @@ class LabTab(QWidget):
             "Rate 'bad' if the gate was right to refuse it; 'good' or "
             "'passable' means it was not. Verdicts append to "
             "logs/gate_ratings.jsonl beside the earlier 42.")
+        self.gate_box.currentTextChanged.connect(self._retarget)
+        self.style_box.currentTextChanged.connect(self._retarget)
+        self.source_box.currentTextChanged.connect(self._retarget)
         row.addWidget(self.gate_box)
         self.start_btn = QPushButton("▶ Start session")
         self.start_btn.setToolTip(
@@ -586,6 +610,19 @@ class LabTab(QWidget):
         row.addWidget(stop)
         row.addStretch(1)
         v.addLayout(row)
+
+        # WHAT AM I RATING? The gate names are engine shorthand; the
+        # person mid-listening shouldn't have to remember what
+        # no_beat_power_B measures or which styles it still governs.
+        # Text lives in gateprobe (with the names and bars) so it can
+        # never describe a gate the engine no longer has.
+        self.gate_doc_lbl = QLabel("")
+        self.gate_doc_lbl.setWordWrap(True)
+        self.gate_doc_lbl.setStyleSheet(
+            "color: #9ab; font-size: 12px; padding: 2px 6px;")
+        self.gate_doc_lbl.setVisible(False)
+        v.addWidget(self.gate_doc_lbl)
+        self._update_gate_doc()
 
         self.card = QLabel(
             "Press Start - the lab generates a seam the way a live night "
@@ -763,6 +800,37 @@ class LabTab(QWidget):
                                else "▶ Start session")
         if self._session:
             self._pump()
+        else:
+            # Stop means STOP (2026-08-15): the in-flight search used to
+            # grind on for minutes after this button, eating CPU and
+            # blocking the next Start (pump refuses while a worker
+            # lives). Cancel it and drop the prefetched seam - a fresh
+            # Start hunts under whatever the controls say THEN.
+            if self._worker is not None:
+                self._worker.cancel()
+            self._next = None
+            self.status.setText("session stopped")
+
+    def _retarget(self, *_):
+        """Gate/style/source changed: abandon the old hunt and (if a
+        session is running) start hunting the new target immediately.
+        The old flow kept the previous target's search running to
+        completion and then SHOWED its seam - switching gates felt
+        broken because it was ('its hard to switch between gates')."""
+        self._update_gate_doc()
+        self._next = None                    # queued seam is stale
+        if self._worker is not None:
+            self._worker.cancel()            # _worker_done re-pumps
+        elif self._session:
+            self._pump()
+        if self._session:
+            self.status.setText("retargeting...")
+
+    def _update_gate_doc(self):
+        gate = self.gate_box.currentText()
+        self.gate_doc_lbl.setText(
+            "" if gate == _GATE_NONE else gate_doc(gate))
+        self.gate_doc_lbl.setVisible(gate != _GATE_NONE)
 
     def _pump(self):
         """Keep exactly one render in flight and at most one queued."""
@@ -801,6 +869,7 @@ class LabTab(QWidget):
             self.source_box.currentText(), set(self._used),
             set(self._recent[-12:]), require_style=require, trial_gate=gate,
             pool_ids=brain.pool_ids)
+        self._active_sig = self._worker.sig
         self._worker.status.connect(self.status.setText)
         self._worker.ready.connect(self._seam_ready)
         self._worker.failed.connect(self._seam_failed)
@@ -812,6 +881,11 @@ class LabTab(QWidget):
         self._pump()                     # prefetch the next one
 
     def _seam_ready(self, seam):
+        # A render can complete in the same instant the operator
+        # retargets or stops - a seam built for the OLD controls must
+        # never show under the new ones.
+        if not self._session or seam.get("sig") != self._active_sig:
+            return
         for t in (seam["a"], seam["b"]):
             self._used.add(t.id)
             self._recent.append(t.id)
