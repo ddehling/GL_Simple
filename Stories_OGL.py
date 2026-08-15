@@ -2618,6 +2618,10 @@ class EnvironmentalSystem:
                     elif action == 'arc':
                         self._dj_pending_arc = list(arg or [])
                         self._dj.set_arc_waypoints(arg or [])
+                    elif action == 'set_length':
+                        # Operator's set-length choice (seconds) - the
+                        # arc paces valley->peak->comedown over this.
+                        self._dj.set_set_length(float(arg))
                     elif action == 'moment':
                         self._dj.moment(str(arg or 'drop'))
                     elif action == 'layer':

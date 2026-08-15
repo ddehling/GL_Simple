@@ -92,6 +92,11 @@ class DJSystem:
         self.music_root = music_root
         self.engine = engine
         self.night_hours = night_hours
+        # Arc cycle for non-all-night themes. Starts at the classic 90
+        # minutes; the operator picks longer sets live via
+        # set_set_length (which also moves night_hours so both pacing
+        # modes agree on what "the set" is).
+        self.set_cycle_s = SET_CYCLE_S
         self.autopilot = autopilot
         self.threaded = threaded
         self._theme_name = theme
@@ -516,6 +521,18 @@ class DJSystem:
         with self._lock:
             self._pending.append(("arc", list(pts or [])))
 
+    def set_set_length(self, seconds):
+        """Choose the SET LENGTH live (operator 2026-08-14: "I want a
+        choice of longer sets... most everything is just 90 minutes").
+        For cycling themes this is the arc cycle (was the hardcoded
+        90-minute SET_CYCLE_S); for all_night themes it becomes the
+        night length. The arc position is elapsed/length, so changing
+        it mid-set JUMPS the arc to the equivalent position on the new
+        curve - that is the point (a longer set stretches the climb),
+        and the operator can redraw waypoints after."""
+        with self._lock:
+            self._pending.append(("set_len", float(seconds)))
+
     def hold(self):
         """Push the planned exit one phrase later (crowd's loving it)."""
         with self._lock:
@@ -605,7 +622,7 @@ class DJSystem:
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
         if theme.arc == "all_night":
             return min(1.0, elapsed / max(self.night_hours * 3600.0, 60.0))
-        return (elapsed % SET_CYCLE_S) / SET_CYCLE_S
+        return (elapsed % self.set_cycle_s) / self.set_cycle_s
 
     def _arc_slot(self):
         """(phase, cycle_i) of NOW - where a history entry sits on the
@@ -615,7 +632,7 @@ class DJSystem:
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
         if theme.arc == "all_night":
             return self.arc_progress(), 0
-        return self.arc_progress(), int(elapsed // SET_CYCLE_S)
+        return self.arc_progress(), int(elapsed // self.set_cycle_s)
 
     def _arc_base(self, progress):
         """Theme arc, overridden by live waypoints when the operator has
@@ -881,7 +898,7 @@ class DJSystem:
             "arc_cycle_s": (self.night_hours * 3600.0
                             if (self.brain and
                                 self.brain.theme.arc == "all_night")
-                            else SET_CYCLE_S),
+                            else self.set_cycle_s),
             "arc_curve": [round(max(0.0, min(1.0, self._arc_base(i / 24.0))),
                           3) for i in range(25)],
             "track_map": self._track_map(),
@@ -1156,6 +1173,18 @@ class DJSystem:
                         and not getattr(self, "_next_requested", False):
                     self.next_track = None
                     self.plan = None
+            elif kind == "set_len":
+                # 30 min .. 12 h; both pacing clocks move together so the
+                # choice means the same thing on every theme.
+                s = max(1800.0, min(12 * 3600.0, float(val)))
+                self.set_cycle_s = s
+                self.night_hours = s / 3600.0
+                self._log({"event": "set_length", "seconds": s})
+                self._horizon_key = None
+                if self.state == "playing" \
+                        and not getattr(self, "_next_requested", False):
+                    self.next_track = None
+                    self.plan = None
             elif kind == "steer_replan" and self.state == "playing":
                 # Nudge/tap changed the energy target: drop the locked-in
                 # next pick (unless the user chose it by hand) so the very
@@ -1362,7 +1391,8 @@ class DJSystem:
             self._horizon = items[:HORIZON_N]
             return
         prog0 = self.arc_progress()
-        step = 300.0 / (SET_CYCLE_S if (self.brain.theme.arc != "all_night")
+        step = 300.0 / (self.set_cycle_s
+                        if (self.brain.theme.arc != "all_night")
                         else max(self.night_hours * 3600.0, 60.0))
 
         def arc_at(i):

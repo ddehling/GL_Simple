@@ -255,7 +255,19 @@
             <div id="dj-queue" style="font-size:0.8em;margin:4px 0"></div>
             <div class="bias-labels"><span id="dj-arc-hint">drag to steer
                     energy</span>
-                <span id="dj-cycle-lbl"></span>
+                <span>
+                    <select id="dj-setlen" title="Set length: the energy arc
+                        (valley → peak → comedown) paces itself over this"
+                        style="background:#15151c;color:#8cf;border:1px solid
+                        #333;border-radius:6px;padding:4px 6px">
+                        <option value="5400">90 min set</option>
+                        <option value="7200">2 h set</option>
+                        <option value="10800">3 h set</option>
+                        <option value="14400">4 h set</option>
+                        <option value="21600">6 h set</option>
+                        <option value="28800">8 h set</option>
+                    </select>
+                </span>
                 <span><a href="#" id="dj-arc-edit" style="color:#8cf;
                      display:inline-block;padding:6px 8px">✎ shape</a>
                     <a href="#" id="dj-arc-reset" style="color:#8cf;
@@ -490,6 +502,10 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             socket.emit("dj_action", {action, value});
         }
         $("dj-start").onclick = () => emit("start");
+        // Set length: the arc (valley -> peak -> comedown) paces itself
+        // over the chosen duration. Longer set = slower climb.
+        $("dj-setlen").onchange = (e) =>
+            emit("set_length", parseFloat(e.target.value));
         // NO POPUPS - EVER. Two-step inline confirm: first tap arms the
         // button (turns red, relabels), second tap within 3s stops.
         let stopArmed = null;
@@ -801,11 +817,16 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             restoreFlavor(dj.flavor, dj.require_tags);
             lastDj = dj;
             drawArc(dj);
-            $("dj-cycle-lbl").textContent = dj.arc_cycle_s
-                ? (dj.arc_cycle_s >= 7200
-                    ? `full night: ${(dj.arc_cycle_s / 3600).toFixed(0)}h`
-                    : `cycle: ${Math.round(dj.arc_cycle_s / 60)} min, repeats`)
-                : "";
+            // Set-length select: reflect the engine's current cycle
+            // unless the operator is mid-interaction with it.
+            const slSel = $("dj-setlen");
+            if (slSel && dj.arc_cycle_s
+                    && document.activeElement !== slSel) {
+                const cur = String(Math.round(dj.arc_cycle_s));
+                if ([...slSel.options].some(o => o.value === cur)) {
+                    slSel.value = cur;
+                }
+            }
             $("dj-heat").textContent = (dj.arc_heat != null ? dj.arc_heat.toFixed(2) : "--")
                 + (dj.energy_nudge ? `  (nudge ${dj.energy_nudge>0?"+":""}${dj.energy_nudge})` : "");
             $("dj-arcpct").textContent = Math.round(100 * (dj.arc_phase || 0)) + "%"
