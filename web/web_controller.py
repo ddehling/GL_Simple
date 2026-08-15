@@ -1142,7 +1142,7 @@ class WebController:
                       'nudge', 'pulse', 'next_id', 'setlist', 'setlist_pool',
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
                       'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort',
-                      'persona', 'layer'}
+                      'persona', 'layer', 'set_length'}
 
         def queue_dj_action(data):
             """Validate + clamp one DJ control action and queue it for the
@@ -1177,6 +1177,13 @@ class WebController:
             elif action in ('seek', 'seek_rel'):
                 try:
                     arg = float(arg)
+                except (TypeError, ValueError):
+                    return False
+            elif action == 'set_length':
+                # Operator's set-length choice, seconds; same clamp the
+                # engine applies (30 min .. 12 h).
+                try:
+                    arg = max(1800.0, min(43200.0, float(arg)))
                 except (TypeError, ValueError):
                     return False
             elif action == 'seam_fb':

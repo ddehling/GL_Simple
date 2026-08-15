@@ -1,7 +1,14 @@
 glfw
 matplotlib
 numba
-numpy
+# numpy/scipy PINNED (2026-08-15): the DJ render-quality gates measure
+# actual audio, and different numpy/scipy builds render measurably
+# different audio - the N150 (numpy 2.3.5/scipy 1.17.0) failed a fade
+# lurch check at 7.6 dB that the dev box (2.2.4/1.16.2) passes at
+# 4.6 dB on the SAME pair, same code, same data. Gates are only
+# comparable across machines when the math stack matches. Bump both
+# together, deliberately, and re-run the full gate suite when you do.
+numpy==2.2.4
 opencv_contrib_python
 opencv_python
 psutil
@@ -9,7 +16,7 @@ pygame
 pyglm
 PyOpenGL
 sacn
-scipy
+scipy==1.16.2
 scikit-image
 miniaudio
 sounddevice

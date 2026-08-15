@@ -1058,6 +1058,19 @@ TUNE_DEFAULTS = {
     "fade_clash_lead_x": 0.5,  # long_fade: clash pairs shrink B's lead
                                # (co-presence is TIME x depth; EQ can
                                # only touch half the percussion band)
+    # THE CARVE GOES DEEPER WHEN B LANDS HOT (2026-08-15). The deepest
+    # settings measured (lead 0.25 / mid 1.2: co-presence 0.5-1.25s on
+    # the reported trainwreck pairs) failed the render gate as BLANKET
+    # defaults - a late B on a quiet entry leaves the room empty (dead
+    # air + lurch on the conf<0.45 fade population). The split is B's
+    # ENTRY HEAT vs its own body (gain comp makes that ~room-relative):
+    # measured, dense clash entries run 0.77-0.90 while the dead-air
+    # cases measure 0.63-0.70 - so above the 0.75 bar the entry can
+    # carry a tight handover and the carve uses the deep tier; below
+    # it, the gentle tier that every fade population survives.
+    "fade_clash_hot_heat": 0.75,   # entry-heat bar for the deep tier
+    "fade_clash_lead_hot_x": 0.25,  # deep tier: B's lead shrink
+    "fade_a_mid_out_hot": 1.2,      # deep tier: A's mids leave this fast
     # A's air once B is in the room. DEFAULT 1.0 = OFF, and the default
     # is a measurement, not caution: at 0.6 it moved transient
     # co-presence by nothing on average (4.31 -> 4.25s over 4 pairs) and
@@ -3931,11 +3944,23 @@ class Brain:
                 # entry failed - per-bar tallies fall out of the log.
                 diag["cut_drop_trial"] = cut_trial_tags
         if force_style:
-            # Planned-set pin outcome: honored, or refused by which gate.
+            # Planned-set pin outcome: honored, or refused by which
+            # gate(s). EVERY reason, not just the first (2026-08-15):
+            # `gated` keeps only the first kill for the gate report, so
+            # a pin refusal used to surface whichever screen happened to
+            # run earliest - _dj_setlist_test's "drum_bridge gated
+            # without stems" failed for months because the synthetic
+            # pair tripped kick_offset>20ms BEFORE the stems kill and
+            # the warning never mentioned no_stems at all. gated_all is
+            # already collected (the trial override needs the complete
+            # set); the pin verdict reads it too, so the planner's
+            # warning tells the operator everything that stands between
+            # the pin and the night.
+            _reasons = sorted(gated_all.get(force_style) or [])
             diag["style_pin"] = {
                 "want": force_style, "honored": style == force_style,
                 "why_not": (None if style == force_style
-                            else gated.get(force_style) or fade_reason
+                            else ", ".join(_reasons) or fade_reason
                             or "lost_menu")}
 
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
@@ -4342,13 +4367,31 @@ class Brain:
             _db_ = getattr(cand, "rhythm_density", None)
             _clash = (_da is not None and _db_ is not None
                       and min(_da, _db_) >= K("fade_clash_density"))
+            # DEPTH TIER: how hard the carve may squeeze depends on
+            # whether B's entry can CARRY a tight handover - see the
+            # fade_clash_hot_heat knob note. Entry heat = B's first 15s
+            # after in_s against its own body median (evidence-gated:
+            # no curve, no deep tier).
+            _hot = False
             if _clash:
+                _bc = self._energy_arr(cand)
+                if len(_bc):
+                    _i0 = int(plan["in_s"] * 2)
+                    _i1 = min(int((plan["in_s"] + 15.0) * 2), len(_bc))
+                    if 0 <= _i0 < _i1:
+                        _body = float(np.median(_bc))
+                        _heat = float(_bc[_i0:_i1].mean()) / max(_body,
+                                                                 1e-4)
+                        _hot = _heat >= K("fade_clash_hot_heat")
                 plan.setdefault("diag", {})["fade_clash_carve"] = [
-                    round(_da, 2), round(_db_, 2)]
+                    round(_da, 2), round(_db_, 2),
+                    "hot" if _hot else "gentle"]
+            _lead_x = (K("fade_clash_lead_hot_x") if _hot
+                       else K("fade_clash_lead_x")) if _clash else 1.0
+            _mid_out = (K("fade_a_mid_out_hot") if _hot
+                        else K("fade_a_mid_out"))
             A0 = max(S0 - int(K("fade_lead_a") * _ug * RATE), now_guard)
-            B0 = max(S0 - int(K("fade_lead_b") * _ug
-                              * (K("fade_clash_lead_x") if _clash else 1.0)
-                              * RATE), A0)
+            B0 = max(S0 - int(K("fade_lead_b") * _ug * _lead_x * RATE), A0)
             ev += [
                 {"at": A0, "cmd": "gain", "deck": active,
                  "value": K("fade_recede"),
@@ -4452,7 +4495,7 @@ class Brain:
                     {"at": S0, "cmd": "eq", "deck": active, "high": 0.0,
                      "ramp_s": K("fade_a_low_out") * _ug},
                     {"at": S0, "cmd": "eq", "deck": active, "mid": 0.0,
-                     "ramp_s": K("fade_a_mid_out") * _ug},
+                     "ramp_s": _mid_out * _ug},
                 ]
             # (A riser-through-the-dip variant was tried and REMOVED
             # 2026-08-02: synthesized whooshes read as cheesy - user. The

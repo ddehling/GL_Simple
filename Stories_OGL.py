@@ -2562,6 +2562,15 @@ class EnvironmentalSystem:
                     self.dj_cfg['theme'] = str(arg)
                     if self._dj is not None and self._dj.active:
                         self._dj.set_theme(str(arg))
+                elif action == 'set_length':
+                    # Works idle (arms the next start) or live. dj_cfg-
+                    # backed like theme/persona, so DJ stop/start within
+                    # a session keeps the choice; set `set_length_s`
+                    # under dj: in config.yaml to change the default
+                    # across app restarts.
+                    self.dj_cfg['set_length_s'] = float(arg)
+                    if self._dj is not None and self._dj.active:
+                        self._dj.set_set_length(float(arg))
                 elif action == 'persona':
                     # Works idle (arms the start persona) or live (the
                     # night changes character on the next pick).
@@ -2618,10 +2627,6 @@ class EnvironmentalSystem:
                     elif action == 'arc':
                         self._dj_pending_arc = list(arg or [])
                         self._dj.set_arc_waypoints(arg or [])
-                    elif action == 'set_length':
-                        # Operator's set-length choice (seconds) - the
-                        # arc paces valley->peak->comedown over this.
-                        self._dj.set_set_length(float(arg))
                     elif action == 'moment':
                         self._dj.moment(str(arg or 'drop'))
                     elif action == 'layer':
@@ -2843,6 +2848,11 @@ class EnvironmentalSystem:
             self._dj.set_arc_waypoints(self._dj_pending_arc)
         if self._dj_pending_nudge:
             self._dj.set_energy_nudge(self._dj_pending_nudge)
+        # Operator's set-length choice survives DJ stop/start (dj_cfg-
+        # backed, same contract as theme/persona; config.yaml dj:
+        # set_length_s sets the across-restart default).
+        if self.dj_cfg.get('set_length_s'):
+            self._dj.set_set_length(float(self.dj_cfg['set_length_s']))
         if not self._dj.start():
             self._dj_last_error = self._dj.last_error or "DJ failed to start"
             self._dj = None
