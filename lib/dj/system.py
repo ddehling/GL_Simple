@@ -301,6 +301,7 @@ class DJSystem:
             # (user-reported: 'not the correct number of songs in
             # rotation', 2026-07-31).
             user_names, genre_names, auto_names = set(), set(), set()
+            mood_names, decade_names, char_names = set(), set(), set()
             counts = {}
             for t in self.brain.library:
                 if scope is not None and t.id not in scope:
@@ -314,22 +315,48 @@ class DJSystem:
                     part = part.strip().lower()
                     if part:
                         genre_names.add(part)
+                # The tag types all_tags already FOLDS for filtering but
+                # the chip vocab never SHOWED (operator 2026-08-14: "we
+                # probably need to surface more genre tags... maybe more
+                # tags in general. we don't want everything, but
+                # probably more"): ML moods (dark/party/epic...),
+                # decades (1990s...), and the library-relative character
+                # tags (danceable/uplifting/dynamic...). Their counts
+                # are already correct - counts[] is built from all_tags,
+                # the exact set the hard filter matches - so surfacing
+                # them is purely a vocab question.
+                mood_names.update(m.lower()
+                                  for m in (getattr(t, "ml_moods", None)
+                                            or []))
+                if getattr(t, "decade", None):
+                    decade_names.add(t.decade)
+                if getattr(t, "danceability", None) is not None:
+                    from lib.dj.character import character_tags
+                    char_names.update(character_tags(t))
                 for tag in set(t.all_tags):
                     counts[tag] = counts.get(tag, 0) + 1
             vocab = [(tag, counts.get(tag, 0), True) for tag in
                      sorted(user_names,
                             key=lambda k: (-counts.get(k, 0), k))]
-            genre_top = sorted(
-                ((g, counts.get(g, 0)) for g in genre_names
-                 if g not in user_names),
-                key=lambda kv: -kv[1])[:24]
-            self._genre_tags = {g for g, _ in genre_top}
-            vocab += [(g, n, False) for g, n in genre_top]
-            vocab += [(tag, counts.get(tag, 0), False) for tag in
-                      sorted(auto_names, key=lambda k: -counts.get(k, 0))
-                      if tag not in user_names
-                      and tag not in self._genre_tags]
-            self._tag_vocab = vocab[:80]     # everything, sane ceiling
+            _seen = set(user_names)
+
+            def _extend(names, cap=None):
+                rows = sorted(((n, counts.get(n, 0)) for n in names
+                               if n not in _seen and counts.get(n, 0) > 0),
+                              key=lambda kv: (-kv[1], kv[0]))
+                if cap is not None:
+                    rows = rows[:cap]
+                _seen.update(n for n, _ in rows)
+                return [(n, c, False) for n, c in rows]
+
+            genre_rows = _extend(genre_names, cap=40)   # was 24
+            self._genre_tags = {g for g, _, _ in genre_rows}
+            vocab += genre_rows
+            vocab += _extend(decade_names)              # a handful at most
+            vocab += _extend(mood_names, cap=24)
+            vocab += _extend(char_names)                # <=5 by construction
+            vocab += _extend(auto_names)
+            self._tag_vocab = vocab[:128]    # more room, still a ceiling
         except Exception as e:
             print(f"[DJ] tag refresh skipped: {e}")
 
