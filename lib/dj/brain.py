@@ -2403,9 +2403,43 @@ class Brain:
         # Score each exit by its section's energy AGAINST THE TRACK'S
         # BODY: the last strong phrase boundary beats a tail bookmark.
         _body_e = self._body_energy(cur)
+        # ANCHOR TRUST STEERS THE PICK (2026-08-14). Two facts the seam
+        # gates judge at the CHOSEN anchors, which selection used to
+        # ignore - so it kept choosing anchors that doomed winnable
+        # seams:
+        #  - OFF-METER GRID SEGMENTS: plan_transition diverts any seam
+        #    whose overlap crosses a segment >5% off the track's meter
+        #    to the deliberate fade (~12% of seams). Candidates inside
+        #    those spans are vetoed HERE, with the same off_meter_span
+        #    windows the diversion uses, so a clean anchor wins when one
+        #    exists and the fade only happens when the track genuinely
+        #    offers nothing honest.
+        #  - PHASE TRUST on low-conf pairs: the grid_conf<0.7 wall
+        #    stands down only when BOTH anchors carry a measured,
+        #    trusted phase bucket (_local_ok). Pulsacions (conf 0.67)
+        #    exited at 413s - IQR ~130ms, untrusted - when its 370s
+        #    bucket measured IQR 8ms: the pick alone forced the whole
+        #    night around it into unsynced fades. When the pair is
+        #    low-conf AND both tracks have usable coverage, untrusted-
+        #    anchor combos now score x0.35: a lean, not a kill, so a
+        #    track with no trusted anchors still exits somewhere.
+        _lowconf = min(cur.bpm_conf or 0.0, cand.bpm_conf or 0.0) < 0.7
+        _trust_matters = False
+        if _lowconf:
+            from lib.dj import beatpower as _bpt
+            if (_bpt.profile_coverage(cur.id) >= 0.6
+                    and _bpt.profile_coverage(cand.id) >= 0.6):
+                _trust_matters = True
+        _trust_o = {}
+        _trust_i = {}
         for oi, (o, sec_a, voc_a, ml_a) in enumerate(o_pre):
             if sec_a is None:
                 continue
+            if off_meter_span(cur, o["time_s"] - 5.0, o["time_s"] + 30.0):
+                continue
+            if _trust_matters and oi not in _trust_o:
+                _trust_o[oi] = _bpt.phase_offset(
+                    cur.id, at_s=o["time_s"]) is not None
             of = out_fit(sec_a, voc_a, ml_a)
             # What leaving EARLY costs (see the `outs` comment above): a
             # candidate below the drawn budget stays on the table, decaying
@@ -2432,6 +2466,12 @@ class Brain:
             for ii, (i, sec_b, voc_b, ml_b, early_b) in enumerate(i_pre):
                 if sec_b is None:
                     continue
+                if off_meter_span(cand, i["time_s"] - 5.0,
+                                  i["time_s"] + 30.0):
+                    continue
+                if _trust_matters and ii not in _trust_i:
+                    _trust_i[ii] = _bpt.phase_offset(
+                        cand.id, at_s=i["time_s"]) is not None
                 busy_b = sec_b.get("busyness") or 0.0
                 fit = of * in_fit(sec_b, voc_b, ml_b)
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
@@ -2457,6 +2497,13 @@ class Brain:
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
                          * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp
                          * (0.25 + 0.75 * min(hole / 0.25, 1.0)) * bud)
+                if _trust_matters and not (_trust_o.get(oi)
+                                           and _trust_i.get(ii)):
+                    # See the anchor-trust note above the loop: on a
+                    # low-conf pair, untrusted anchors force the fade at
+                    # plan time - prefer the anchors that keep the
+                    # blend alive.
+                    score *= 0.35
                 if best is None or score > best["score"]:
                     best = {"out_s": o["time_s"], "in_s": i["time_s"],
                             "out_hint": o.get("style_hint", "blend"),
@@ -2760,8 +2807,14 @@ class Brain:
             # Last resort: exit on the last downbeat-aligned half minute -
             # but NEVER before the requested after-point (a late entry on
             # a short tail inverted out<in, and the seam fired seconds
-            # after the song started).
+            # after the song started). Capped at the same late-exit hard
+            # fraction best_pair enforces (2026-08-14): `duration - 35`
+            # on a long record lands at 0.9x+ of the track - the exact
+            # comedown territory the ceiling exists to refuse - and a
+            # fallback that ignores the house rule is a bypass, not a
+            # fallback.
             out_fb = max(cur.duration_s - 35.0, cur.duration_s * 0.6)
+            out_fb = min(out_fb, EXIT_LATE_HARD_FRAC * cur.duration_s)
             if after_s is not None:
                 out_fb = min(max(out_fb, after_s),
                              max(cur.duration_s - 8.0, out_fb))
