@@ -128,8 +128,12 @@ def night_summary(nights):
     for date, evs in nights:
         c = Counter(e.get("event") for e in evs)
         seams = [e for e in evs if e.get("event") == "seam_quality"]
+        rated = [t["rated"] for t in night_tracks(evs)
+                 if t["rated"] is not None]
         out.append({
             "date": date,
+            "fb_up": sum(1 for v in rated if v),
+            "fb_down": sum(1 for v in rated if not v),
             "hours": max((float(e.get("clock_s") or 0.0)
                           for e in evs), default=0.0) / 3600.0,
             "plays": c.get("play", 0),
@@ -154,21 +158,60 @@ def night_summary(nights):
 
 
 def night_tracks(events):
-    """The night's play-by-play: [(title, artist, via_style)], in order."""
+    """The night's play-by-play, in order: dicts with title, artist, via,
+    and `rated` - the operator's thumbs (True/False, None = unrated).
+
+    Ratings are joined through the tracklist entry number: `seam_fb`
+    events carry the entry's `n`, and every play event pairs 1:1 with a
+    `_hist_n` bump in system.py, so the k-th play of a session IS entry k.
+    A play without `via` is a session start (`_hist_n` reset to 1) - the
+    counter and the ratings are scoped per session so a mid-night restart
+    can't land old verdicts on new entries. Every press, move, and clear
+    (up=null) logs its own seam_fb; replaying them in order leaves exactly
+    the verdicts that were still standing when the night ended."""
     out = []
+    ratings = {}                  # (session, n) -> bool
+    sess, n = -1, 0
     for e in events:
-        if e.get("event") == "play":
-            out.append((e.get("track") or "?", e.get("artist") or "",
-                        e.get("via") or "start"))
+        k = e.get("event")
+        if k == "play":
+            if not e.get("via"):
+                sess += 1
+                n = 0
+            n += 1
+            out.append({"title": e.get("track") or "?",
+                        "artist": e.get("artist") or "",
+                        "via": e.get("via") or "start",
+                        "_key": (sess, n)})
+        elif k == "seam_fb" and e.get("n") is not None:
+            key = (sess, int(e["n"]))
+            if e.get("up") is None:
+                ratings.pop(key, None)
+            else:
+                ratings[key] = bool(e["up"])
+    for t in out:
+        t["rated"] = ratings.get(t.pop("_key"))
     return out
 
 
 def night_seam_rows(events):
     """Per-seam verdict rows for one night, in play order: dicts with
-    a, b, style, verdict, max_err_beats, hole_s, urgent."""
+    a, b, style, verdict, max_err_beats, hole_s, urgent, and `rated` -
+    the operator's thumbs on that seam (True/False, None = unrated).
+
+    The rating lives on the tracklist entry the seam played INTO; join by
+    the incoming title, first-unclaimed in play order (the same rule
+    pair_seams uses to join armed plans to their measurements)."""
+    trans = [t for t in night_tracks(events) if t["via"] != "start"]
     rows = []
     for s in pair_seams(events):
         q = s["q"]
+        rated = None
+        b = q.get("b")
+        for i, t in enumerate(trans):
+            if t["title"] == b:
+                rated = trans.pop(i)["rated"]
+                break
         rows.append({
             "a": q.get("a") or "?", "b": q.get("b") or "?",
             "style": q.get("style") or "?",
@@ -177,6 +220,7 @@ def night_seam_rows(events):
             "hole_s": float(q.get("hole_s") or 0.0),
             "urgent": bool(q.get("urgent")),
             "rough": is_rough(q),
+            "rated": rated,
         })
     return rows
 

@@ -1416,6 +1416,10 @@ class LibraryTab(QWidget):
                           if getattr(t, "has_stems", False))
             if total and n_stems < total:
                 gaps.append(f"stems {n_stems}/{total}")
+            n_err = self.planner.db.error_count()
+            if n_err:
+                gaps.insert(0, f"⚠ {n_err} failed analysis "
+                               "(hidden - Scan library retries them)")
             self.coverage_lbl.setText(
                 "analysis ✓ complete" if not gaps
                 else "gaps: " + " · ".join(gaps))
@@ -1514,7 +1518,13 @@ class LibraryTab(QWidget):
         self.scan_btn.setEnabled(True)
         self.rescan_btn.setEnabled(True)
         self.refine_btn.setEnabled(True)
-        self.scan_lbl.setText("scan complete")
+        try:
+            n_err = self.planner.db.error_count()
+        except Exception:
+            n_err = 0
+        self.scan_lbl.setText(
+            f"scan complete — ⚠ {n_err} track(s) still failing analysis"
+            if n_err else "scan complete")
         self.planner.reload_library()
 
     # -- enrichment (MusicBrainz, in-process) --------------------------------
@@ -4527,10 +4537,11 @@ class NightsTab(QWidget):
         right = QVBoxLayout()
         right.addWidget(_no_width_floor(QLabel(
             "Measured seams (engine verdicts; red = rough by the same bar "
-            "that charges pair memory):")))
+            "that charges pair memory; 'rated' = your thumbs that night):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
-            ["out → in", "style", "verdict", "flam (beats)", "hole (s)"])
+            ["out → in", "style", "verdict", "rated",
+             "flam (beats)", "hole (s)"])
         self.seam_tree.setRootIsDecorated(False)
         self.seam_tree.setFont(_mono_font())
         self.seam_tree.header().setSectionResizeMode(
@@ -4560,6 +4571,8 @@ class NightsTab(QWidget):
             line = (f"{d[:4]}-{d[4:6]}-{d[6:]}  {s['hours']:4.1f}h  "
                     f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
                     f"{s['rough']:2d} rough  {s['skips']:3d} skips")
+            if s.get("fb_up") or s.get("fb_down"):
+                line += f"  {s['fb_up']}👍 {s['fb_down']}👎"
             if s.get("starved"):
                 line += (f"  ⚠{s['starved']} starved"
                          + (f" ({s['starved_stem']} on stem seams)"
@@ -4580,20 +4593,31 @@ class NightsTab(QWidget):
             return
         _, evs = self._nights[row]
         for r in night_seam_rows(evs):
+            rated = ("" if r["rated"] is None
+                     else ("👍 good" if r["rated"] else "👎 bad"))
             it = QTreeWidgetItem([
                 f"{r['a'][:34]} → {r['b'][:34]}", r["style"], r["verdict"]
                 + (" (urgent)" if r["urgent"] else ""),
-                f"{r['max_err_beats']:.3f}", f"{r['hole_s']:.2f}"])
+                rated, f"{r['max_err_beats']:.3f}", f"{r['hole_s']:.2f}"])
             if r["rough"]:
-                for c in range(5):
+                for c in range(6):
                     it.setForeground(c, QColor(230, 110, 110))
             elif r["verdict"] != "clean":
-                for c in range(5):
+                for c in range(6):
                     it.setForeground(c, QColor(255, 170, 100))
+            if r["rated"] is not None:      # your ear outranks the meter
+                it.setForeground(3, QColor(120, 210, 120) if r["rated"]
+                                 else QColor(240, 100, 100))
             self.seam_tree.addTopLevelItem(it)
-        for title, artist, via in night_tracks(evs):
-            QListWidgetItem(f"{_clip(title, 42)} {_clip(artist, 24)} "
-                            f"via {via}", self.track_list)
+        for t in night_tracks(evs):
+            mark = ("  " if t["rated"] is None
+                    else ("👍" if t["rated"] else "👎"))
+            it = QListWidgetItem(
+                f"{mark} {_clip(t['title'], 42)} {_clip(t['artist'], 24)} "
+                f"via {t['via']}", self.track_list)
+            if t["rated"] is not None:
+                it.setForeground(QColor(120, 210, 120) if t["rated"]
+                                 else QColor(240, 100, 100))
 
 
 # ==========================================================================
