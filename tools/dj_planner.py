@@ -4621,7 +4621,18 @@ class NightsTab(QWidget):
         self.seam_tree.setFont(_mono_font())
         self.seam_tree.header().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
+        self.seam_tree.itemSelectionChanged.connect(self._seam_selected)
         right.addWidget(self.seam_tree, 3)
+        # Per-seam post-mortem: the armed plan's full diagnosis (anchor
+        # scene, sync picture, gate refusals, menu, selection terms) next
+        # to what was measured - click a seam above to fill it.
+        self.seam_detail = QPlainTextEdit()
+        self.seam_detail.setReadOnly(True)
+        self.seam_detail.setFont(_mono_font())
+        self.seam_detail.setMaximumHeight(170)
+        self.seam_detail.setPlaceholderText(
+            "select a seam for its full diagnosis")
+        right.addWidget(self.seam_detail, 0)
         right.addWidget(QLabel("Play-by-play:"))
         self.track_list = QListWidget()
         self.track_list.setFont(_mono_font())
@@ -4664,10 +4675,13 @@ class NightsTab(QWidget):
         from lib.dj.review import night_seam_rows, night_tracks
         self.seam_tree.clear()
         self.track_list.clear()
+        self.seam_detail.clear()
+        self._seam_rows = []
         if not (0 <= row < len(self._nights)):
             return
         _, evs = self._nights[row]
-        for r in night_seam_rows(evs):
+        self._seam_rows = night_seam_rows(evs)
+        for r in self._seam_rows:
             rated = ("" if r["rated"] is None
                      else ("👍 good" if r["rated"] else "👎 bad"))
             it = QTreeWidgetItem([
@@ -4693,6 +4707,91 @@ class NightsTab(QWidget):
             if t["rated"] is not None:
                 it.setForeground(QColor(120, 210, 120) if t["rated"]
                                  else QColor(240, 100, 100))
+
+    def _seam_selected(self):
+        rows = getattr(self, "_seam_rows", [])
+        idx = self.seam_tree.indexOfTopLevelItem(self.seam_tree.currentItem())
+        if not (0 <= idx < len(rows)):
+            self.seam_detail.clear()
+            return
+        self.seam_detail.setPlainText(self._fmt_seam_detail(rows[idx]))
+
+    @staticmethod
+    def _fmt_seam_detail(r):
+        """One seam's post-mortem from the log alone: the plan's inputs
+        (why this seam), the scene at the joint (anchors/sync, logged
+        since 2026-08-16), and the measured outcome."""
+        a = r.get("armed") or {}
+        lines = []
+        if not a:
+            lines.append("no armed plan joined for this seam (urgent skip, "
+                         "abort-recompile, or a pre-armed-logging night)")
+        else:
+            lines.append(
+                f"plan: {a.get('style', '?')}  rate {a.get('rate', '?')}  "
+                f"pair_score {a.get('pair_score', '?')}  "
+                f"blend {a.get('blend_in_s', '?')}s  arc {a.get('arc', '?')}"
+                f"  [{a.get('theme', '?')}/{a.get('persona', '?')}]")
+            an = a.get("anchors") or {}
+            if an:
+                k = (an.get("kinds") or ["?", "?"]) + ["?", "?"]
+                b = (an.get("busy") or ["?", "?"]) + ["?", "?"]
+                v = (an.get("voc") or ["?", "?"]) + ["?", "?"]
+                g = (an.get("grid_conf") or ["?", "?"]) + ["?", "?"]
+                lines.append(
+                    f"anchors: A out {a.get('out_s', '?')}s "
+                    f"({k[0]}, busy {b[0]}, voc {v[0]})  ->  "
+                    f"B in {a.get('in_s', '?')}s "
+                    f"({k[1]}, busy {b[1]}, voc {v[1]})  "
+                    f"room {an.get('room', '?')}")
+                lines.append(
+                    f"grids: conf {g[0]}/{g[1]}   kick delta "
+                    f"{an.get('kick_delta_beats', '?')} beats")
+            else:
+                lines.append("anchors: not recorded "
+                             "(night predates 2026-08-16 log fields)")
+            sy = a.get("sync") or {}
+            if sy:
+                gf = sy.get("grid_fixed") or {}
+                lines.append(
+                    f"sync: phase shift A {sy.get('phase_a_ms', '?')}ms "
+                    f"B {sy.get('phase_b_ms', '?')}ms   "
+                    f"held bias {sy.get('bias_beats', '?')} beats"
+                    + (f"   grid_fixed {gf}" if gf else ""))
+            if a.get("fade_reason"):
+                lines.append(f"fade_reason: {a['fade_reason']}")
+            g = a.get("gated") or {}
+            if g:
+                lines.append("gated: " + "  ".join(
+                    f"{k}={v}" for k, v in g.items()))
+            m = a.get("menu") or {}
+            if m:
+                try:
+                    top = sorted(m.items(), key=lambda kv: -float(kv[1]))[:8]
+                except (TypeError, ValueError):
+                    top = list(m.items())[:8]
+                lines.append("menu: " + "  ".join(
+                    f"{k} {v}" for k, v in top))
+            t = a.get("terms") or {}
+            if t:
+                lines.append("terms: " + "  ".join(
+                    f"{k} {v}" for k, v in sorted(t.items())))
+        meas = (f"measured: {r.get('verdict', '?')}"
+                f"  max_err {r.get('max_err_beats', 0.0):.3f} beats"
+                f"  hole {r.get('hole_s', 0.0):.2f}s")
+        if r.get("resnaps") is not None:
+            meas += f"  resnaps {r['resnaps']}"
+        if r.get("urgent"):
+            meas += "  (urgent - operator-forced, not charged)"
+        lines.append(meas)
+        pr = r.get("predicted") or {}
+        if pr:
+            lines.append("predicted rhythm: " + "  ".join(
+                f"{k} {v}" for k, v in sorted(pr.items())))
+        if r.get("rated") is not None:
+            lines.append("your rating: "
+                         + ("👍 good" if r["rated"] else "👎 bad"))
+        return "\n".join(lines)
 
 
 # ==========================================================================

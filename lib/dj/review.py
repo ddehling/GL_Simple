@@ -221,6 +221,13 @@ def night_seam_rows(events):
             "urgent": bool(q.get("urgent")),
             "rough": is_rough(q),
             "rated": rated,
+            "resnaps": q.get("resnaps"),
+            "predicted": q.get("predicted_rhythm") or {},
+            # The full armed plan this measurement came from - the
+            # diagnosis side (anchors scene, sync picture, gate refusals,
+            # menu, selection terms). Empty for aborted/unjoined seams;
+            # anchors/sync absent on nights before 2026-08-16.
+            "armed": s["armed"] or {},
         })
     return rows
 
