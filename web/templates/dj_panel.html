@@ -125,6 +125,13 @@
             .btn { min-height: 46px; }
             .theme-btn { min-height: 42px; }
             .setrow select { min-height: 44px; }
+            /* A select sharing its row with buttons (setlist: IN ORDER /
+               STEER POOL) was squeezed to an unreadable sliver - wrap the
+               row so the select gets the full width and the buttons drop
+               to their own line. */
+            .setrow { flex-wrap: wrap; }
+            .setrow select { flex: 1 1 100%; min-width: 0; }
+            .setrow .btn { flex: 1 1 auto; }
             /* iOS auto-zooms any focused control with font-size < 16px -
                pin form controls so tapping a select doesn't zoom the page. */
             select, input, button { font-size: 16px; }
