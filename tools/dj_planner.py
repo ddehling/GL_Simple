@@ -2475,6 +2475,7 @@ class AuditionWorker(QThread):
 
 class SetTab(QWidget):
     planCompiled = pyqtSignal(object)          # compiled dict
+    pushStatus = pyqtSignal(str)               # Push-to-live worker -> status
 
     def __init__(self, planner):
         super().__init__()
@@ -2525,6 +2526,7 @@ class SetTab(QWidget):
             "Send this set to the running show (localhost web panel). "
             "Saves first; the show picks up the set's theme and arc "
             "clock too. Override host via DJ_SHOW_URL.")
+        self.pushStatus.connect(lambda s: self.status.setText(s))
         left.addLayout(srow)
         nrow = QHBoxLayout()
         nrow.addWidget(QLabel("Notes:"))
@@ -3627,7 +3629,15 @@ class SetTab(QWidget):
     def _push_live(self, mode="order"):
         """Save, then load this set into the running show via the web
         controller's HTTP action route (planner and show are separate
-        processes; the DB is the payload, this is just the trigger)."""
+        processes; the DB is the payload, this is just the trigger).
+
+        The POST only proves the action was QUEUED - the show can still
+        drop it (DJ disabled) or reject it (setlist name not in ITS
+        database). So a worker thread pushes and then polls
+        /api/dj/active until the show CONFIRMS the setlist loaded (or
+        armed, when idle), and the status line reports what actually
+        happened - the old always-'pushed' message hid every one of
+        those failures."""
         self.save_set()
         if self.setlist_id is None:
             return                       # user cancelled the save prompt
@@ -3637,22 +3647,87 @@ class SetTab(QWidget):
         if row is None:
             return
         name = row["name"]
-        import urllib.request
         base = os.environ.get("DJ_SHOW_URL", "http://localhost:5000")
+        self.status.setText(f"pushing '{name}' to {base} …")
+        import threading
+        threading.Thread(target=self._push_live_worker,
+                         args=(base, name, mode), daemon=True).start()
+
+    def _push_live_worker(self, base, name, mode):
+        """Background: POST the action, then poll until the show confirms.
+        GUI touches go through the pushStatus signal only."""
+        import urllib.request
+        import urllib.error
         action = "setlist" if mode == "order" else "setlist_pool"
         req = urllib.request.Request(
             base + "/api/dj/action",
             data=json.dumps({"action": action, "value": name}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=2.0):
-                pass
-            self.status.setText(
-                f"pushed '{name}' to the live show ({mode} mode).")
+            with urllib.request.urlopen(req, timeout=3.0) as r:
+                ok = bool(json.loads(r.read() or b"{}").get("ok"))
+            if not ok:
+                self.pushStatus.emit("push REFUSED by the show "
+                                     "(action failed validation).")
+                return
+        except urllib.error.HTTPError as e:
+            self.pushStatus.emit(f"push REFUSED by the show (HTTP {e.code}).")
+            return
         except Exception:
-            self.status.setText(
-                f"live show not reachable at {base} - set saved; "
-                "load it from the web panel when the show is up.")
+            self.pushStatus.emit(
+                f"live show not reachable at {base} - set saved; load it "
+                "from the /dj page when the show is up (set DJ_SHOW_URL "
+                "if the show runs on another machine).")
+            return
+
+        # Queued. Now wait for the show to actually load/arm it - the 5 Hz
+        # bridge applies the action and republishes dj_info within ~a second.
+        deadline = time.time() + 5.0
+        info = {}
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(base + "/api/dj/active",
+                                            timeout=2.0) as r:
+                    info = json.loads(r.read() or b"{}")
+            except Exception:
+                info = {}
+            if info.get("setlist") == name:
+                break
+            time.sleep(0.4)
+
+        # A push into a database the show never reads "succeeds" idle and
+        # fails live - either way the mismatch is the headline.
+        show_dir = str(info.get("music_dir") or "")
+        dir_hint = ""
+        if show_dir and (os.path.normcase(os.path.abspath(show_dir))
+                         != os.path.normcase(os.path.abspath(
+                             self.planner.music_dir))):
+            dir_hint = (f"  ⚠ the show reads a DIFFERENT library "
+                        f"({show_dir}) than this planner "
+                        f"({self.planner.music_dir}) - it cannot see sets "
+                        "saved here.")
+
+        if not info:
+            self.pushStatus.emit(
+                f"push queued, but {base} stopped answering - "
+                "check the /dj page.")
+        elif not info.get("available"):
+            self.pushStatus.emit(
+                "push queued, but the show's DJ is DISABLED "
+                "(config.yaml dj: enabled) - nothing will load." + dir_hint)
+        elif info.get("setlist") == name:
+            if info.get("active"):
+                self.pushStatus.emit(
+                    f"pushed: '{name}' is LIVE ({mode} mode)." + dir_hint)
+            else:
+                self.pushStatus.emit(
+                    f"pushed: '{name}' armed ({mode} mode) - press START "
+                    "on the /dj page to play it." + dir_hint)
+        else:
+            err = str(info.get("error") or "").strip()
+            self.pushStatus.emit(
+                f"push FAILED: the show never loaded '{name}'"
+                + (f" ({err})" if err else "") + "." + dir_hint)
 
     def _selected_slot_start(self):
         """Wall-clock offset of the SELECTED entry's compiled slot, so Play

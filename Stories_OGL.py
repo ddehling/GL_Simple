@@ -2649,6 +2649,10 @@ class EnvironmentalSystem:
             info.pop("deck_telemetry", None)   # heavy; web uses compact 'decks'
             info["available"] = True
             info["active"] = self._dj.active
+            # Published idle AND live: the planner's Push-to-live verify
+            # compares this against its own library to catch a push into
+            # a database the show never reads.
+            info["music_dir"] = self._dj_music_dir_display()
             for k, v in self._dj.outstate_keys().items():
                 self.scheduler.state[k] = v
         else:

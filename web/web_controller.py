@@ -315,11 +315,20 @@ class WebController:
 
         @self.app.route('/api/dj/active')
         def dj_active():
-            """DJ availability/liveness (gates the DJ nav tab)."""
+            """DJ availability/liveness (gates the DJ nav tab). Also the
+            planner's Push-to-live VERIFICATION endpoint: enough state to
+            confirm a pushed setlist actually landed (loaded name, mode,
+            the show's library dir, last error) - a queued action that the
+            show then rejects must not read as success."""
             with self._dict_lock:
                 info = self.control_dict.get('dj_info') or {}
             return jsonify({"available": bool(info.get("available")),
-                            "active": bool(info.get("active"))})
+                            "active": bool(info.get("active")),
+                            "state": info.get("state") or "",
+                            "setlist": info.get("setlist"),
+                            "setlist_mode": info.get("setlist_mode") or "",
+                            "music_dir": info.get("music_dir") or "",
+                            "error": info.get("error") or ""})
 
         @self.app.route('/interaction')
         def interaction_panel():
