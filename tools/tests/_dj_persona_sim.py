@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 import numpy as np
 
 import lib.dj.brain as brain_mod
-from lib.dj.brain import Brain, camelot_compat, load_library
+from lib.dj.brain import (Brain, EXIT_BUDGET_FRAC, EXIT_LATE_HARD_FRAC,
+                          camelot_compat, load_library)
 from lib.dj.db import LibraryDB
 from lib.dj.persona import PERSONAS
 from lib.dj.themes import get_theme
@@ -53,14 +54,30 @@ class SimClock:
     t = 0.0
 
 
-def _draw_exit(brain, heat):
+# The remainder cap's fraction now lives in brain (2026-08-16), imported
+# by system as EXIT_MAX_FRAC - one number, no retype needed here either.
+EXIT_MAX_FRAC = EXIT_BUDGET_FRAC
+
+
+def _draw_exit(brain, heat, cur=None, entry_s=0.0):
     """DJSystem._draw_exit replicated (same rng stream, same arc coupling,
-    same persona pacing multiplier)."""
+    same persona pacing multiplier, same remainder cap).
+
+    THE REMAINDER CAP WAS MISSING HERE until 2026-08-16: the live system
+    caps the drawn budget against what remains of the record AFTER its
+    entry point (a drop-entry at 4:00 of a 5:30 record has ~90s left),
+    which is exactly what produces the short dwells a crate_digger night
+    surfaced. Without it this sim overstated every deep-entry dwell."""
     theme = brain.theme
     span = max(theme.max_play_s - theme.min_play_s, 1.0)
     frac = min(1.0, brain.rng.random() * (1.0 - 0.55 * heat)
                + 0.25 * (1.0 - heat))
-    return (theme.min_play_s + frac * span) * brain.persona.play_len_x
+    drawn = (theme.min_play_s + frac * span) * brain.persona.play_len_x
+    if cur is not None and getattr(cur, "duration_s", 0) > 0:
+        cap = EXIT_MAX_FRAC * brain.persona.play_len_x
+        remain = max(cur.duration_s - entry_s, 40.0)
+        drawn = min(drawn, remain * min(cap, EXIT_LATE_HARD_FRAC))
+    return drawn
 
 
 def run_night(library, theme_name, persona, hours, seed):
@@ -86,7 +103,7 @@ def run_night(library, theme_name, persona, hours, seed):
         # reported it rotating 20% faster than neutral - the persona
         # pacing spread it published was an artefact of its own model.
         # Draw the budget, plan, then advance by the exit that was PLANNED.
-        play_s = _draw_exit(brain, arc)
+        play_s = _draw_exit(brain, arc, cur=cur, entry_s=entry_s)
         cand, meta = brain.choose_next(cur, arc, cur.bpm,
                                        now=SimClock.t + play_s)
         if cand is None:
@@ -159,6 +176,12 @@ def summarize(name, all_seams, nights):
             [s["beats"] for s in all_seams])), 1),
         "mean_play_min": round(float(np.mean(
             [s["play_s"] for s in all_seams])) / 60.0, 2),
+        "med_play_min": round(float(np.median(
+            [s["play_s"] for s in all_seams])) / 60.0, 2),
+        # The short-dwell share the 2026-08-16 crate_digger night surfaced:
+        # a track audible for under two minutes barely registers as a song.
+        "under2min_pct": round(100.0 * sum(
+            1 for s in all_seams if s["play_s"] < 120.0) / n, 1),
         "exit_frac_med": round(float(np.median(
             [s["exit_frac"] for s in all_seams])), 2),
         "key_close_pct": round(100.0 * float((kc >= 0.9).mean()), 1),
@@ -211,7 +234,7 @@ def main():
 
     cols = ["persona", "tracks_per_night", "punchy_pct", "fade_pct",
             "blend96_pct", "mean_blend_beats", "mean_play_min",
-            "exit_frac_med",
+            "med_play_min", "under2min_pct", "exit_frac_med",
             "key_close_pct", "key_clash_pct", "bpm_std", "vocal_mean",
             "moment_tries_per_night", "moments_per_night"]
     print("\n" + " | ".join(f"{c:>16}" for c in cols))

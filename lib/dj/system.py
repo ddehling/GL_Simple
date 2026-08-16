@@ -23,8 +23,8 @@ import time
 
 import numpy as np
 
-from lib.dj.brain import (EXIT_LATE_HARD_FRAC, GLIDE_PER_S, Brain,
-                          load_library, TrackInfo)
+from lib.dj.brain import (EXIT_BUDGET_FRAC, EXIT_LATE_HARD_FRAC,
+                          GLIDE_PER_S, Brain, load_library, TrackInfo)
 from lib.dj.db import LibraryDB
 from lib.dj.rhythm import seam_chips
 from lib.dj.submix import DJSubmix
@@ -50,13 +50,13 @@ LAYER_FADE_BARS = 2              # in and out, so it arrives and leaves musicall
 LAYER_GAIN = 0.35                # bed level. looplayer normalises its buffers
                                  # to 0.7 peak, so this lands ~0.25 in the mix -
                                  # under the track, not beside it.
-EXIT_MAX_FRAC = 0.72             # ceiling the drawn play budget may ask of
-                                 # a record, as a fraction of its length
-                                 # (see _draw_exit). The theme budgets are
-                                 # absolute seconds; this is what keeps
-                                 # them from exceeding the song. SCALED by
-                                 # the persona's play_len_x, or it flattens
-                                 # every persona to one play length.
+# Ceiling the drawn play budget may ask of a record's remainder (see
+# _draw_exit). The theme budgets are absolute seconds; this is what keeps
+# them from exceeding the song. SCALED by the persona's play_len_x, or it
+# flattens every persona to one play length. ONE NUMBER, imported from the
+# brain (2026-08-16): best_pair's entry-runway floor reasons about this
+# exact cap, and a second copy could only drift from the one enforced.
+EXIT_MAX_FRAC = EXIT_BUDGET_FRAC
 # ...and the ceiling on THAT: even the most patient persona stops before
 # the tail a record has nothing left in. ONE NUMBER, imported from the
 # brain (2026-08-13): it used to be defined here and bound only the

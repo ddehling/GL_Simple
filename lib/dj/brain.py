@@ -55,6 +55,12 @@ BUDGET_TAU_S = 60.0
 # the exit itself, not just to the budget that suggests one.
 LATE_TAU_S = 90.0
 EXIT_LATE_HARD_FRAC = 0.85
+# Ceiling the drawn play budget may ask of a record's REMAINDER after its
+# entry point. Lives HERE (not system.py, which imports it as
+# EXIT_MAX_FRAC) for the same one-number reason as EXIT_LATE_HARD_FRAC:
+# best_pair's entry-runway floor below and system._draw_exit's budget cap
+# must agree, or the floor reasons about a cap that isn't the one applied.
+EXIT_BUDGET_FRAC = 0.72
 
 # GATE BARS, named so the Gate Check panel can show what a seam was judged
 # against without re-typing the numbers (lib/dj/gateprobe.py reads these).
@@ -2390,13 +2396,33 @@ class Brain:
             ml_a = cur.ml_segment_at(min(o["time_s"] + 1.0,
                                          cur.duration_s - 1.0))
             o_pre.append((o, sec_a, voc_a, ml_a))
+        # AN ENTRY MUST LEAVE ROOM FOR A SONG (2026-08-16). The remainder
+        # cap (system._draw_exit) budgets play as a fraction of what is
+        # left AFTER the entry point, so a deep entry that leaves ~110s of
+        # record caps the dwell near 80s - silently bypassing the theme's
+        # min_play_s floor. Measured with the persona sim on this library
+        # (groove): EVERY persona played 15-29% of its songs for under two
+        # minutes, monk included - structural, not taste. Judge each entry
+        # by the dwell the cap will actually ALLOW: entries that cannot
+        # host even the persona-scaled minimum draw are skipped while a
+        # roomier entry exists, and merely leaned against (x room^2) when
+        # the whole record is too short to host it - short records still
+        # play, they just stop winning ties. play_len_x keeps the persona
+        # spread: monk demands more runway than showman.
+        _floor_s = self.theme.min_play_s * _plx \
+            * float(getattr(self.persona, "entry_floor_x", 1.0) or 1.0)
+        _room_frac = min(EXIT_BUDGET_FRAC * _plx, EXIT_LATE_HARD_FRAC)
         i_pre = []
         for i in cand.mix_ins[:8]:
             sec_b = cand.section_at(min(i["time_s"] + 1.0,
                                         cand.duration_s - 1.0))
             if sec_b is None:
-                i_pre.append((i, None, 0.0, "", 0.0))
+                i_pre.append((i, None, 0.0, "", 0.0, 0.0))
                 continue
+            room = 1.0
+            if cand.duration_s > 0 and _floor_s > 0:
+                runway = max(cand.duration_s - i["time_s"], 0.0) * _room_frac
+                room = min(runway / _floor_s, 1.0)
             voc_b = max(sec_b.get("vocalness") or 0.0,
                         self._vocal_span_max(cand, i["time_s"],
                                              i["time_s"] + 24.0))
@@ -2407,7 +2433,10 @@ class Brain:
             # mix-in must still land where the track has energy, or the
             # blend goes quiet as the outgoing leaves.
             early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
-            i_pre.append((i, sec_b, voc_b, ml_b, early_b))
+            i_pre.append((i, sec_b, voc_b, ml_b, early_b, room))
+        # Does ANY entry have full room? If so the cramped ones are vetoed
+        # outright below; if not (a short record), the lean decides.
+        _roomy = any(p[5] >= 1.0 for p in i_pre if p[1] is not None)
         # NO HOLES IN THE BLEND: section MEANS hide a near-silent
         # stretch inside the overlap (a breakdown bar, a stripped
         # intro) - the render then dips to nothing mid-blend
@@ -2487,9 +2516,11 @@ class Brain:
             ea = sec_a.get("energy") or 0.0
             if _body_e > 0.2:
                 of *= 0.25 + 0.75 * min(ea / _body_e, 1.0)
-            for ii, (i, sec_b, voc_b, ml_b, early_b) in enumerate(i_pre):
+            for ii, (i, sec_b, voc_b, ml_b, early_b, room) in enumerate(i_pre):
                 if sec_b is None:
                     continue
+                if room < 1.0 and _roomy:
+                    continue        # a roomier entry exists - take that one
                 if off_meter_span(cand, i["time_s"] - 5.0,
                                   i["time_s"] + 30.0):
                     continue
@@ -2520,7 +2551,8 @@ class Brain:
                 # collapsing to ~0 (which would zero the whole selection).
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
                          * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp
-                         * (0.25 + 0.75 * min(hole / 0.25, 1.0)) * bud)
+                         * (0.25 + 0.75 * min(hole / 0.25, 1.0)) * bud
+                         * room * room)
                 if _trust_matters and not (_trust_o.get(oi)
                                            and _trust_i.get(ii)):
                     # See the anchor-trust note above the loop: on a

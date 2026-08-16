@@ -31,6 +31,14 @@ class Persona:
     moment_cooldown_x: float = 1.0   # scales the engineered-moment cooldown
     p96: float = 0.35                # chance a long_blend stretches to 96 beats
     play_len_x: float = 1.0          # scales the arc-coupled play length
+    # Scales the entry-runway floor (brain.best_pair): how much of the
+    # theme's minimum play an entry point must leave room for. 1.0 =
+    # every record must be able to host a full minimum song; below 1.0
+    # the persona is allowed drop-in/drop-out records - a taste knob for
+    # deliberate fast rotation, distinct from play_len_x which paces the
+    # WHOLE night. Keep it on exactly the personas whose identity is
+    # short records, or the floor flattens the pacing spread it protects.
+    entry_floor_x: float = 1.0
     # -- selection leans (half-strength by design) -------------------------
     key_strictness: float = 1.0      # exponent on the key-compat score (>1 = stricter)
     explore: float = 1.0             # widens selection dice + flattens finalist sampling
@@ -61,10 +69,15 @@ PERSONAS = {p.name: p for p in [
     # seam. cut_at_drop was reinstated the same week and is what the
     # tagline literally describes; double_drop went 2026-08-02, the
     # nextdrop MOMENT owns the synced-drop spectacle.)
+    # entry_floor_x 0.55: "short records" is this persona's literal
+    # tagline, so it keeps the right to drop into a record's back half
+    # and ride only its last drop (~70-90s) - the entry-runway floor
+    # that protects every other persona from accidental 80-second songs
+    # (2026-08-16) is, for showman, the feature itself.
     Persona("showman", "big moments, short records, drops on drops",
             style_bias={"cut_at_drop": 2.0},
             theatrics=1.9, moment_cooldown_x=0.55,
-            p96=0.15, play_len_x=0.80,
+            p96=0.15, play_len_x=0.80, entry_floor_x=0.55,
             key_strictness=0.75, vocal_pull=0.15),
     # Harmonic journeys: strictest keys of all, surgical single-bassline
     # handoffs, spectacle declined in favor of a clean modulation.
