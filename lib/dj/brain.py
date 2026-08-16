@@ -2566,7 +2566,9 @@ class Brain:
                             "in_hint": i.get("style_hint", "blend"),
                             "score": round(score, 5), "beaty": beaty,
                             "kinds": (sec_a.get("kind"), sec_b.get("kind")),
-                            "busy": (round(busy_a, 2), round(busy_b, 2))}
+                            "busy": (round(busy_a, 2), round(busy_b, 2)),
+                            "voc": (round(voc_a, 2), round(voc_b, 2)),
+                            "room": round(room, 2)}
         return best
 
     @staticmethod
@@ -4083,6 +4085,22 @@ class Brain:
         _bs = _tuning.value("beats_scale", TUNE_DEFAULTS["beats_scale"])
         if abs(_bs - 1.0) > 1e-6:
             beats = max(8, int(round(beats * _bs / 4.0)) * 4)
+        # ANCHOR CONTEXT FOR THE NIGHT LOG (2026-08-16). Everything here
+        # was already computed to make the choice; keeping it is what lets
+        # a bad seam be diagnosed later - which section kinds blended, how
+        # vocal/busy each side was, the kick-placement delta, the grid
+        # confidences, and how much runway the entry left (room). Without
+        # these the log records a verdict with no scene: "clean by the
+        # meter, bad by ear" seams were undiagnosable.
+        diag["anchors"] = {
+            "kinds": list(pair.get("kinds") or ()),
+            "busy": list(pair.get("busy") or ()),
+            "voc": list(pair.get("voc") or ()),
+            "room": pair.get("room"),
+            "grid_conf": [round(cur.bpm_conf or 0.0, 2),
+                          round(cand.bpm_conf or 0.0, 2)],
+            "kick_delta_beats": round(float(d_off_p), 4),
+        }
         if style == "loop_build":
             # Exit ON A's drop; the stutter build fills the bars before it.
             a_drop = self._drop_after(cur, pair["out_s"] - 8 * cur.period_s)
@@ -4288,6 +4306,14 @@ class Brain:
             _pa["b_ms"] / 1000.0 / max(cand.period_s, 1e-6)
             - _pa["a_ms"] / 1000.0 / max(cur.period_s, 1e-6),
             -0.25, 0.25))
+        # Ship the sync picture to the night log too (diag rides the
+        # `armed` event, logged after this compile): the anchor phase
+        # shifts, the bias the PLL will hold, and which sides ran on a
+        # live-fixed grid - the fields a flam post-mortem needs first.
+        plan.setdefault("diag", {})["sync"] = {
+            "phase_a_ms": _pa["a_ms"], "phase_b_ms": _pa["b_ms"],
+            "bias_beats": round(sync_bias, 4),
+            "grid_fixed": dict(plan.get("grid_fixed") or {})}
         # Audio-PLL stays ON for all pairs. Measured both ways on the
         # weak-kick outlier pairs (2026-08-04): with the single-reading
         # jump replaced by the 3-stable bar, the audio path IMPROVED

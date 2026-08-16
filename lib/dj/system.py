@@ -1822,6 +1822,13 @@ class DJSystem:
                    "gated": diag.get("gated") or {},
                    "menu": diag.get("menu") or {},
                    "fade_reason": diag.get("fade_reason"),
+                   # Anchor scene + sync picture (2026-08-16): section
+                   # kinds/vocal/busy at both anchors, entry runway, grid
+                   # confidences, kick delta, applied phase shifts and the
+                   # PLL bias - so a seam that measures clean but sounds
+                   # wrong can still be diagnosed from the log alone.
+                   "anchors": diag.get("anchors") or {},
+                   "sync": diag.get("sync") or {},
                    "arc": round(self.arc_progress(), 3),
                    "theme": self.brain.theme.name,
                    "persona": self.brain.persona.name})
