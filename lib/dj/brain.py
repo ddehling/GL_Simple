@@ -1476,6 +1476,17 @@ class Brain:
         cur *= 1.15 if up else 0.7
         self.style_fb[style] = max(0.3, min(2.0, cur))
 
+    def replay_style_fb(self, verdicts):
+        """Rebuild tonight's thumb-driven style weighting from scratch as a
+        pure function of the SURVIVING verdicts [(style, up), ...]. Called
+        on every verdict add/change/clear: an edited or removed rating
+        actually lets go of its nudge (the clamp in seam_feedback makes
+        single presses non-invertible, so replay beats undo)."""
+        self.style_fb = {}
+        for style, up in verdicts:
+            if style:
+                self.seam_feedback(style, up)
+
     def note_skipped(self, track):
         """Operator skipped it - a labeled 'not tonight' the scorer uses."""
         tid = getattr(track, "id", track)

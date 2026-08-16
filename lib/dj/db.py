@@ -287,7 +287,11 @@ class LibraryDB:
             return True
         return (row["file_size"] != st.st_size
                 or abs(row["mtime"] - st.st_mtime) > 1.0
-                or (row["analysis_version"] or 0) < analysis_version)
+                or (row["analysis_version"] or 0) < analysis_version
+                # errored rows requeue: analysis failures are usually
+                # transient (an OOM'd scan stranded 30 tracks invisibly),
+                # and a truly corrupt file fails fast on retry
+                or row["error"] is not None)
 
     def upsert_track(self, abs_path, analysis, content_hash=None):
         """Write one track's full analysis (or an error record)."""
@@ -494,6 +498,15 @@ class LibraryDB:
             out[name] = (done, total)
         return out
 
+    def error_count(self):
+        """Non-missing tracks whose last analysis failed. These are hidden
+        from every selector and the browser until a scan retries them, so
+        the GUI must say they exist - 30 OOM'd tracks once sat invisible
+        for weeks."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM tracks WHERE missing = 0"
+            " AND error IS NOT NULL").fetchone()[0]
+
     def set_excluded(self, track_id, flag):
         """Mark/unmark a track 'do not use'. Excluded tracks stay in the DB and
         the library browser but are removed from everything that auto-selects
@@ -660,10 +673,19 @@ class LibraryDB:
                 ver = tag()
             except Exception:
                 ver = None
-        self.conn.execute(
+        cur = self.conn.execute(
             "INSERT INTO seam_feedback (a_id, b_id, style, up, at, source,"
             " ver) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (a_id, b_id, style, 1 if up else 0, time.time(), source, ver))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def delete_seam_feedback(self, row_id):
+        """Remove ONE stored verdict by id (the operator edited or cleared
+        a rating on the panel's tracklist - stale evidence must not keep
+        training the pair/style memory)."""
+        self.conn.execute("DELETE FROM seam_feedback WHERE id = ?",
+                          (row_id,))
         self.conn.commit()
 
     def seam_feedback_rows(self, days=90.0):

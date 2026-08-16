@@ -132,6 +132,10 @@ class DJSystem:
                                          # couldn't extend - don't retry
                                          # every tick at 0.5s a burn
         self._history = []               # tonight's tracklist briefs
+        self._hist_n = 0                 # per-night entry sequence (the
+                                         # panel edits verdicts by it)
+        self._pending_fb = None          # thumbs pressed DURING an audible
+                                         # blend - stamps when the swap lands
         self._last_style = None          # last completed transition style
         self._played_energy_ema = None   # arc feedback: what actually played
         self._exit_played = 300.0    # drawn per track from theme min/max play
@@ -400,6 +404,7 @@ class DJSystem:
 
     def stop(self, fade_s=2.0):
         self._running = False
+        self._pending_fb = None
         self.submix.record_q = None
         self.submix.fade_out(fade_s)
         if self._history_id and self.db:
@@ -547,6 +552,14 @@ class DJSystem:
         """Thumbs on the last transition - tonight's style weights learn."""
         with self._lock:
             self._pending.append(("seam_fb", bool(up)))
+
+    def seam_feedback_edit(self, n, up):
+        """Set, change, or CLEAR (up=None) the verdict on any entry of
+        tonight's tracklist, by its sequence number. A late press lands
+        a verdict one song off - this is the eraser/mover."""
+        with self._lock:
+            self._pending.append(
+                ("seam_fb_edit", (int(n), None if up is None else bool(up))))
 
     def moment(self, flavor="drop"):
         """OPERATOR MOMENT: an engineered crowd moment on demand, in one
@@ -894,6 +907,10 @@ class DJSystem:
             "genre_tags": sorted(self._genre_tags),
             "horizon": list(self._horizon),
             "history": self._history[-40:],
+            # Thumbs pressed during the audible in-flight blend, waiting
+            # for its tracklist entry (stamps at the swap) - the panel's
+            # GOOD/BAD latch shows it instead of the previous seam's.
+            "fb_pending": self._pending_fb,
             "arc_waypoints": list(self._arc_waypoints),
             "arc_cycle_s": (self.night_hours * 3600.0
                             if (self.brain and
@@ -1215,17 +1232,13 @@ class DJSystem:
             elif kind == "layer":
                 self._do_layer(val)
             elif kind == "seam_fb":
-                if self._last_style:
-                    self.brain.seam_feedback(self._last_style, val)
-                    pair = getattr(self, "_last_pair", None)
-                    if pair and pair[0] is not None:
-                        try:
-                            self.db.add_seam_feedback(pair[0], pair[1],
-                                                      self._last_style, val)
-                        except Exception as e:
-                            print(f"[DJ] seam fb store failed: {e}")
-                    self._log({"event": "seam_fb", "up": val,
-                               "style": self._last_style})
+                self._do_seam_fb(val)
+            elif kind == "seam_fb_edit":
+                n, up = val
+                for h in self._history:
+                    if h.get("n") == n:
+                        self._apply_fb_to_entry(h, up)
+                        break
             elif kind == "seek":
                 self._do_seek(val)
             elif kind == "mix_now":
@@ -1505,7 +1518,8 @@ class DJSystem:
         self._note_pool_played(first)
         self._note_energy(first)
         ph, ci = self._arc_slot()
-        self._history.append({"t": time.strftime("%H:%M"),
+        self._hist_n += 1
+        self._history.append({"t": time.strftime("%H:%M"), "n": self._hist_n,
                               "title": first.title, "artist": first.artist,
                               "via": "start", "phase": round(ph, 4),
                               "cyc": ci,
@@ -1825,6 +1839,57 @@ class DJSystem:
             self._log({"event": "setlist_pool_done"})
             print("[DJ] setlist pool complete - free play resumes")
 
+    def _do_seam_fb(self, val):
+        """Operator thumbs with no target given: judge the seam in their
+        EARS. If a blend is audibly in flight (armed, B already in the
+        room), that is the seam being judged - not the one that completed
+        a song ago (swap_at lands seam+6s for fades, so the old
+        last-completed-transition target was reliably one song off for
+        any press made during the mix). Its tracklist entry doesn't exist
+        until the swap lands, so the verdict rides along and stamps in
+        _finish_swap. Otherwise: the last completed transition."""
+        if (self.state == "armed" and self.blend_at is not None
+                and self.submix.clock >= self.blend_at
+                and self.next_track is not None):
+            self._pending_fb = bool(val)
+            self._log({"event": "seam_fb_armed", "up": bool(val),
+                       "style": self.plan["style"] if self.plan else None})
+            return
+        for h in reversed(self._history):
+            if h.get("via") != "start":
+                self._apply_fb_to_entry(h, bool(val))
+                break
+
+    def _apply_fb_to_entry(self, h, val):
+        """Set, overwrite, or clear (val=None) one tracklist entry's mix
+        verdict. Any DB row this entry wrote earlier is deleted first, so
+        re-presses and moves never stack evidence; tonight's style
+        weighting is then rebuilt from the verdicts that remain - a
+        removed rating actually lets go of its nudge."""
+        if h.get("via") == "start":
+            return
+        row = h.pop("fb_row", None)
+        if row is not None:
+            try:
+                self.db.delete_seam_feedback(row)
+            except Exception as e:
+                print(f"[DJ] seam fb delete failed: {e}")
+        h.pop("fb", None)
+        if val is not None:
+            h["fb"] = 1 if val else 0
+            if h.get("a") is not None and h.get("b") is not None:
+                try:
+                    h["fb_row"] = self.db.add_seam_feedback(
+                        h["a"], h["b"], h.get("via"), val)
+                except Exception as e:
+                    print(f"[DJ] seam fb store failed: {e}")
+        if self.brain:
+            self.brain.replay_style_fb(
+                [(e.get("via"), bool(e["fb"])) for e in self._history
+                 if e.get("fb") is not None and e.get("via") != "start"])
+        self._log({"event": "seam_fb", "up": val, "style": h.get("via"),
+                   "n": h.get("n")})
+
     def _finish_swap(self):
         if self._history_id:
             self.db.log_play_end(self._history_id)
@@ -1842,7 +1907,6 @@ class DJSystem:
             self.current.id, transition_style=self.plan["style"],
             theme=self._theme_name)
         self._last_style = self.plan["style"]
-        self._last_pair = (old.id if old else None, self.current.id)
         self._wd_loop = False
         self._assess_seam(old)
         # QUEUE CONTINUITY: the played track leaves the front of the
@@ -1853,14 +1917,24 @@ class DJSystem:
         else:
             self._horizon = []
         ph, ci = self._arc_slot()
-        self._history.append({"t": time.strftime("%H:%M"),
-                              "title": self.current.title,
-                              "artist": self.current.artist,
-                              "via": self.plan["style"],
-                              "phase": round(ph, 4), "cyc": ci,
-                              "energy": round(
-                                  self.current.energy_proxy(), 3)})
+        self._hist_n += 1
+        entry = {"t": time.strftime("%H:%M"),
+                 "n": self._hist_n,
+                 "title": self.current.title,
+                 "artist": self.current.artist,
+                 "via": self.plan["style"],
+                 "a": old.id if old else None,   # the seam this entry
+                 "b": self.current.id,           # rode in on (a -> b)
+                 "phase": round(ph, 4), "cyc": ci,
+                 "energy": round(
+                     self.current.energy_proxy(), 3)}
+        self._history.append(entry)
         self._history = self._history[-60:]
+        if self._pending_fb is not None:
+            # Thumbs pressed while THIS blend was audible: it judged
+            # this seam, and now its entry exists to carry the verdict.
+            self._apply_fb_to_entry(entry, self._pending_fb)
+            self._pending_fb = None
         self._log({"event": "play", "track": self.current.title,
                    "artist": self.current.artist, "bpm": self.current.bpm,
                    "camelot": self.current.camelot,
@@ -2403,6 +2477,8 @@ class DJSystem:
         self.blend_at = None
         self.state = "playing"
         self._seam_metrics = None
+        self._pending_fb = None      # that seam never happened - a thumbs
+                                     # pressed during it judges nothing
         # Don't instantly re-arm the same seam: push the drawn exit past
         # the planning lead (an exactly-PLAN_LEAD_S push re-arms the very
         # same step) so the operator (or the skip flow) decides what's next.

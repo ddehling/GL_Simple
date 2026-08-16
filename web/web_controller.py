@@ -1141,7 +1141,8 @@ class WebController:
         DJ_ACTIONS = {'start', 'stop', 'skip', 'theme', 'autopilot',
                       'nudge', 'pulse', 'next_id', 'setlist', 'setlist_pool',
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
-                      'hold', 'reroll', 'seam_fb', 'arc', 'moment', 'abort',
+                      'hold', 'reroll', 'seam_fb', 'seam_fb_edit', 'arc',
+                      'moment', 'abort',
                       'persona', 'layer', 'set_length'}
 
         def queue_dj_action(data):
@@ -1188,6 +1189,14 @@ class WebController:
                     return False
             elif action == 'seam_fb':
                 arg = bool(arg)
+            elif action == 'seam_fb_edit':
+                # {n: tracklist entry sequence, fb: true/false/null(clear)}
+                try:
+                    fb = arg.get('fb')
+                    arg = {'n': int(arg.get('n')),
+                           'fb': None if fb is None else bool(fb)}
+                except (TypeError, ValueError, AttributeError):
+                    return False
             elif action == 'moment':
                 arg = arg if arg in ('drop', 'spinback', 'stall',
                                      'nextdrop') else 'drop'

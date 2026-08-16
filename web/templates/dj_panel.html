@@ -34,6 +34,12 @@
         .btn.skip { border-color: #46a; background: #14203a; color: #9bf; }
         .btn.wide { width: 100%; }
         .btn.on { border-color: #3a6; background: #123a22; color: #9f9; }
+        /* Feedback verdict HOLDS until the next mix replaces it - a
+           600ms flash left "did I press it?" unanswerable. */
+        .btn.fb-sel-up { border-color: #3a6; background: #123a22;
+                         color: #9f9; font-weight: bold; }
+        .btn.fb-sel-dn { border-color: #a33; background: #401515;
+                         color: #f99; font-weight: bold; }
         /* Wrap instead of squishing: 7 buttons in a no-wrap flexbox made
            phone-width tap targets slivers, with ABORT next to Mix now. */
         .transport { display: flex; gap: 8px; margin-bottom: 10px;
@@ -241,8 +247,8 @@
             </div>
             <div class="transport" id="dj-fb" style="margin-top:8px" hidden>
                 <span class="now-sub" style="align-self:center">last mix:</span>
-                <button class="btn" id="dj-fb-up">GOOD</button>
-                <button class="btn" id="dj-fb-dn">BAD</button>
+                <button class="btn" id="dj-fb-up">👍 GOOD</button>
+                <button class="btn" id="dj-fb-dn">👎 BAD</button>
             </div>
         </div>
 
@@ -905,6 +911,20 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             renderHistory(dj.history);
             show($("dj-tonight"), (dj.history || []).length > 0);
             $("dj-fb").hidden = !(dj.history || []).some(h => h.via !== "start");
+            // Latch the buttons to the recorded verdict of the last mix
+            // (server stamps history[].fb). A fresh press wins for 3s so
+            // the 5Hz snapshot can't blank it mid-round-trip.
+            if (Date.now() - fbClickAt > 3000) {
+                let lastMix = null;
+                for (const h of (dj.history || []))
+                    if (h.via !== "start") lastMix = h;
+                // A press made during an audible blend rides server-side
+                // until the swap stamps it (fb_pending); show THAT, not
+                // the previous seam's verdict.
+                setFbSel(dj.fb_pending != null ? dj.fb_pending === true
+                         : lastMix && lastMix.fb != null
+                         ? lastMix.fb === 1 : null);
+            }
         });
 
         // ---------- trajectory canvas (arc + horizon + steering) ----------
@@ -1147,14 +1167,37 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         function renderHistory(hist) {
             const el = $("dj-history");
             if (!el || !hist) return;
-            const key = hist.length + "|" + (hist.length ? hist[hist.length-1].title : "");
+            // Key includes the verdicts: a thumbs press must re-render
+            // the list, not just a new track.
+            const key = hist.length + "|" + (hist.length ? hist[hist.length-1].title : "")
+                + "|" + hist.map(h => h.fb == null ? "-" : h.fb).join("");
             if (el.dataset.have === key) return;
             el.dataset.have = key;
-            el.innerHTML = hist.slice().reverse().map((h) =>
-                `<div style="padding:2px 0;border-bottom:1px solid #2a2a33">
+            el.innerHTML = hist.slice().reverse().map((h) => {
+                // The verdict judged the transition INTO this track, so
+                // it rides on the via badge (colored to match). The badge
+                // is CLICKABLE: cycle 👍 -> 👎 -> clear, on ANY row - a
+                // late press lands a verdict one song off; this fixes it.
+                const rated = h.fb != null;
+                const badgeStyle = !rated ? ""
+                    : h.fb ? ";border-color:#3a6;color:#9f9"
+                           : ";border-color:#a33;color:#f99";
+                const thumb = !rated ? "" : h.fb ? " 👍" : " 👎";
+                const canRate = h.via !== "start" && h.n != null;
+                const click = canRate
+                    ? ` onclick="djFbCycle(${h.n},${rated ? h.fb : "null"})"`
+                    + ` title="mix verdict - click: 👍 → 👎 → clear"`
+                    + ` style="float:right;cursor:pointer${badgeStyle}"`
+                    : ` style="float:right${badgeStyle}"`;
+                return `<div style="padding:2px 0;border-bottom:1px solid #2a2a33">
                  <span style="opacity:.5">${h.t}</span> ${h.title}
                  <span style="opacity:.55">- ${h.artist || ""}</span>
-                 <span class="badge" style="float:right">${(h.via||"").replace(/_/g," ")}</span></div>`).join("");
+                 <span class="badge"${click}>${(h.via||"").replace(/_/g," ")}${thumb}</span></div>`;
+            }).join("");
+        }
+        function djFbCycle(n, cur) {   // null -> up -> down -> null
+            emit("seam_fb_edit",
+                 {n: n, fb: cur === null ? true : cur ? false : null});
         }
 
         // ---------- controls ----------
@@ -1165,10 +1208,19 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                         {modifier: "master_volume",
                          value: parseFloat($("dj-vol").value)});
         $("dj-reroll").onclick = () => emit("reroll");
-        const flash = (b) => { b.style.background = "#2e6b3a";
-            setTimeout(() => b.style.background = "", 600); };
-        $("dj-fb-up").onclick = () => { emit("seam_fb", true); flash($("dj-fb-up")); };
-        $("dj-fb-dn").onclick = () => { emit("seam_fb", false); flash($("dj-fb-dn")); };
+        // The verdict LATCHES (green GOOD / red BAD) until the next mix
+        // replaces the last-mix slot. Snapshot state is authoritative,
+        // but an optimistic press holds for a few seconds so the 5Hz
+        // rebuild can't blank the button before the server round-trips.
+        let fbClickAt = 0;
+        function setFbSel(up) {   // true / false / null (unrated)
+            $("dj-fb-up").classList.toggle("fb-sel-up", up === true);
+            $("dj-fb-dn").classList.toggle("fb-sel-dn", up === false);
+        }
+        $("dj-fb-up").onclick = () => { emit("seam_fb", true);
+            fbClickAt = Date.now(); setFbSel(true); };
+        $("dj-fb-dn").onclick = () => { emit("seam_fb", false);
+            fbClickAt = Date.now(); setFbSel(false); };
 
         // Restore flavor chip state from the system (page reloads, other
         // operators).

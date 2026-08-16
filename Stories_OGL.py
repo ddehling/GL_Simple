@@ -2624,6 +2624,8 @@ class EnvironmentalSystem:
                         self._dj.reroll_next()
                     elif action == 'seam_fb':
                         self._dj.seam_feedback(bool(arg))
+                    elif action == 'seam_fb_edit':
+                        self._dj.seam_feedback_edit(arg['n'], arg['fb'])
                     elif action == 'arc':
                         self._dj_pending_arc = list(arg or [])
                         self._dj.set_arc_waypoints(arg or [])
