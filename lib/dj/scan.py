@@ -18,6 +18,38 @@ from lib.dj.features import ANALYSIS_VERSION, analyze_file
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma"}
 
+# CRASH GUARD: analysis decodes the whole file to float32 stereo in RAM
+# (~21 MB per minute), on several pool workers at once - one multi-hour
+# recording can OOM the machine, and because errored rows requeue on the
+# next scan (db.needs_scan), it then does so on EVERY scan.
+#
+# Two gates, both recorded as a visible error row instead of analyzed:
+#   DJ_MAX_SCAN_MIN (default 20)  - duration cap, from a header-only
+#       probe (no audio decode). The real guard: it catches long MP3s
+#       that are small on disk but huge decoded.
+#   DJ_MAX_SCAN_MB  (default 250) - byte-size backstop for files whose
+#       header won't even read (a duration probe that fails on a 2 GB
+#       file must not admit it to the decode pool).
+MAX_SCAN_MB = float(os.environ.get("DJ_MAX_SCAN_MB", "250"))
+MAX_SCAN_MIN = float(os.environ.get("DJ_MAX_SCAN_MIN", "20"))
+
+
+def probe_duration_s(path):
+    """Container-header duration in seconds, WITHOUT decoding any audio;
+    None if the header is unreadable."""
+    try:
+        import av
+        c = av.open(path, metadata_errors="ignore")
+        try:
+            d = c.duration
+        finally:
+            c.close()
+        if d:
+            return float(d) / 1_000_000.0        # AV_TIME_BASE units
+    except Exception:
+        pass
+    return None
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROGRESS_PATH = os.path.join(_REPO_ROOT, "logs", "dj_scan_progress.json")
 
@@ -85,14 +117,45 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
     rel_present = [db.rel(p) for p in files]
     n_missing = db.mark_missing(rel_present)
 
-    todo = [p for p in files
-            if force or db.needs_scan(p, ANALYSIS_VERSION)]
+    # Do-not-use tracks are never re-analyzed: the flag is the operator
+    # saying "leave this file alone", and analysis is the expensive part.
+    excl = {r["path"] for r in db.conn.execute(
+        "SELECT path FROM tracks WHERE excluded = 1")}
+    cap_bytes = MAX_SCAN_MB * 1e6
+    cap_s = MAX_SCAN_MIN * 60.0
+    todo, n_excl, n_large = [], 0, 0
+    for p in files:
+        if db.rel(p) in excl:
+            n_excl += 1
+            continue
+        if not (force or db.needs_scan(p, ANALYSIS_VERSION)):
+            continue
+        title = os.path.splitext(os.path.basename(p))[0]
+        dur = probe_duration_s(p)
+        if dur is not None and dur > cap_s:
+            n_large += 1
+            db.upsert_track(p, {
+                "title": title, "duration_s": dur,
+                "error": (f"skipped: {dur / 60.0:.0f} min exceeds "
+                          f"DJ_MAX_SCAN_MIN={MAX_SCAN_MIN:.0f}"),
+                "analysis_version": ANALYSIS_VERSION})
+            continue
+        if dur is None and os.path.getsize(p) > cap_bytes:
+            n_large += 1
+            db.upsert_track(p, {
+                "title": title,
+                "error": (f"skipped: unreadable header and "
+                          f"{os.path.getsize(p) / 1e6:.0f} MB exceeds "
+                          f"DJ_MAX_SCAN_MB={MAX_SCAN_MB:.0f}"),
+                "analysis_version": ANALYSIS_VERSION})
+            continue
+        todo.append(p)
     prior_conf = {}
     if refine_grids and not force:
         seen = {os.path.normcase(p) for p in todo}
         for r in db.conn.execute(
                 "SELECT path, bpm_conf, axes FROM tracks WHERE error IS NULL"
-                " AND missing = 0 AND bpm_conf IS NOT NULL"
+                " AND missing = 0 AND excluded = 0 AND bpm_conf IS NOT NULL"
                 " AND bpm_conf < 0.75"):
             # ONE refine attempt per analysis version: a track whose conf
             # stays low AFTER a refine is honestly low (loose grid, live
@@ -107,6 +170,7 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
                 prior_conf[db.rel(p)] = float(r["bpm_conf"])
     summary = {"found": len(files), "scanned": 0, "errors": 0,
                "skipped": len(files) - len(todo), "missing": n_missing,
+               "excluded": n_excl, "too_large": n_large,
                "started_at": time.time()}
     write_progress({**summary, "total": len(todo), "done": 0,
                     "current": "", "finished": False})
@@ -116,6 +180,7 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
             workers = max(1, (os.cpu_count() or 4) - 1)
         results = _run_pool(todo, workers)
         done = 0
+        retry = []
         for abs_path, result, chash in results:
             result.pop("trace", None)
             vocal_snap = _vocal_snapshot(db, abs_path)
@@ -126,11 +191,39 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
             summary["scanned"] += 1
             if result.get("error"):
                 summary["errors"] += 1
+                retry.append(abs_path)
             name = os.path.basename(abs_path)
             if progress_cb:
                 progress_cb(done, len(todo), name)
             write_progress({**summary, "total": len(todo), "done": done,
                             "current": name, "finished": False})
+
+        # RETRY PASS: pool-time failures are usually memory pressure, not
+        # bad files - N workers each holding a decoded track OOM'd 30
+        # tracks on one big scan, and they sat invisible in the planner.
+        # Re-run the casualties one at a time now that the pool is gone;
+        # a genuinely corrupt file just fails again and keeps its error
+        # row (and requeues next scan via needs_scan).
+        if retry:
+            recovered = 0
+            for i, abs_path in enumerate(retry, 1):
+                name = os.path.basename(abs_path)
+                if progress_cb:
+                    progress_cb(done, len(todo), f"retry {i}/{len(retry)}: {name}")
+                write_progress({**summary, "total": len(todo), "done": done,
+                                "current": f"retry {i}/{len(retry)}: {name}",
+                                "finished": False})
+                _, result, chash = _analyze_worker(abs_path)
+                result.pop("trace", None)
+                if not result.get("error"):
+                    vocal_snap = _vocal_snapshot(db, abs_path)
+                    db.upsert_track(abs_path, result, content_hash=chash)
+                    if vocal_snap:
+                        _vocal_restore(db, abs_path, vocal_snap)
+                    recovered += 1
+            summary["errors"] -= recovered
+            summary["retry"] = {"attempted": len(retry),
+                                "recovered": recovered}
 
     if prior_conf:
         deltas, promoted = [], 0
@@ -244,8 +337,8 @@ def vocal_pass(db, progress_cb=None, summary=None, total=0, refine=False):
                 "hint": "pip install -r requirements-dj-vocals.txt"}
     rows = db.conn.execute(
         "SELECT id, path, axes FROM tracks"
-        " WHERE error IS NULL AND missing = 0 AND axes IS NOT NULL"
-        " ORDER BY path").fetchall()
+        " WHERE error IS NULL AND missing = 0 AND excluded = 0"
+        " AND axes IS NOT NULL ORDER BY path").fetchall()
 
     def _needs(axes_json):
         a = _json.loads(axes_json)

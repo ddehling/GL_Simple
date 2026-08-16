@@ -38,11 +38,17 @@ def cmd_render(args):
     db = LibraryDB(root)
     rows = db.all_tracks()
     todo = []
+    from lib.dj.scan import MAX_SCAN_MB, MAX_SCAN_MIN
     for r in rows:
         if r.get("missing") or r.get("error"):
             continue
         if args.track and r["id"] != args.track:
             continue                     # single-track mode (Analysis tab)
+        if not args.track and (
+                r.get("excluded")        # do-not-use: never auto-rendered
+                or (r.get("duration_s") or 0) > MAX_SCAN_MIN * 60.0
+                or (r.get("file_size") or 0) > MAX_SCAN_MB * 1e6):
+            continue                     # (crash guard - see lib/dj/scan.py)
         if not args.force and not args.track \
                 and ST.has_stems(root, r["id"]):
             continue
