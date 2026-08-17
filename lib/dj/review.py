@@ -243,6 +243,13 @@ def night_seam_rows(events):
             "verdict": q.get("verdict") or "?",
             "max_err_beats": float(q.get("max_err_beats") or 0.0),
             "hole_s": float(q.get("hole_s") or 0.0),
+            # Wide audible meter (logged from 2026-08-17). None, not 0.0,
+            # when the night predates the fields - a blank cell must stay
+            # distinguishable from a measured-quiet seam.
+            "max_audible_beats": (float(q["max_audible_beats"])
+                                  if "max_audible_beats" in q else None),
+            "audible_n": int(q.get("audible_n") or 0),
+            "hidden": is_hidden_flam(q),
             "urgent": bool(q.get("urgent")),
             "rough": is_rough(q),
             "rated": rated,

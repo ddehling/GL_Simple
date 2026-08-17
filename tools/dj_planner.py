@@ -4612,11 +4612,17 @@ class NightsTab(QWidget):
         right = QVBoxLayout()
         right.addWidget(_no_width_floor(QLabel(
             "Measured seams (engine verdicts; red = rough by the same bar "
-            "that charges pair memory; 'rated' = your thumbs that night):")))
+            "that charges pair memory; amber 🔎 = grids measured clean but "
+            "the audible meter flagged it — worth a listen; 'rated' = your "
+            "thumbs that night):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
             ["out → in", "style", "verdict", "rated",
-             "flam (beats)", "hole (s)"])
+             "flam (beats)", "audible", "hole (s)"])
+        self.seam_tree.headerItem().setToolTip(
+            5, "Wide-window audible phase error (beats), the transient "
+               "meter that can hear a flam the grid metrics can't - "
+               "logged from 2026-08-17. '—' = night predates the meter.")
         self.seam_tree.setRootIsDecorated(False)
         self.seam_tree.setFont(_mono_font())
         self.seam_tree.header().setSectionResizeMode(
@@ -4657,6 +4663,8 @@ class NightsTab(QWidget):
             line = (f"{d[:4]}-{d[4:6]}-{d[6:]}  {s['hours']:4.1f}h  "
                     f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
                     f"{s['rough']:2d} rough  {s['skips']:3d} skips")
+            if s.get("hidden_flam"):
+                line += f"  🔎{s['hidden_flam']} to hear"
             if s.get("fb_up") or s.get("fb_down"):
                 line += f"  {s['fb_up']}👍 {s['fb_down']}👎"
             if s.get("starved"):
@@ -4668,6 +4676,8 @@ class NightsTab(QWidget):
             it = QListWidgetItem(line, self.night_list)
             if s["rough"]:
                 it.setForeground(QColor(255, 170, 100))
+            elif s.get("hidden_flam"):
+                it.setForeground(QColor(235, 200, 120))
         if self.night_list.count():
             self.night_list.setCurrentRow(0)
 
@@ -4684,16 +4694,27 @@ class NightsTab(QWidget):
         for r in self._seam_rows:
             rated = ("" if r["rated"] is None
                      else ("👍 good" if r["rated"] else "👎 bad"))
+            aud = r.get("max_audible_beats")
             it = QTreeWidgetItem([
                 f"{r['a'][:34]} → {r['b'][:34]}", r["style"], r["verdict"]
-                + (" (urgent)" if r["urgent"] else ""),
-                rated, f"{r['max_err_beats']:.3f}", f"{r['hole_s']:.2f}"])
+                + (" (urgent)" if r["urgent"] else "")
+                + (" 🔎 hear this" if r.get("hidden") else ""),
+                rated, f"{r['max_err_beats']:.3f}",
+                "—" if aud is None else f"{aud:.3f}",
+                f"{r['hole_s']:.2f}"])
             if r["rough"]:
-                for c in range(6):
+                for c in range(7):
                     it.setForeground(c, QColor(230, 110, 110))
             elif r["verdict"] != "clean":
-                for c in range(6):
+                for c in range(7):
                     it.setForeground(c, QColor(255, 170, 100))
+            elif r.get("hidden"):
+                # Grid-clean but the audible meter flags it: the seams
+                # the learning loop can't see. Amber, not red - the
+                # meter is still earning trust (it can read syncopation
+                # as flam), so this is "listen", not "guilty".
+                for c in range(7):
+                    it.setForeground(c, QColor(235, 200, 120))
             if r["rated"] is not None:      # your ear outranks the meter
                 it.setForeground(3, QColor(120, 210, 120) if r["rated"]
                                  else QColor(240, 100, 100))
@@ -4779,11 +4800,21 @@ class NightsTab(QWidget):
         meas = (f"measured: {r.get('verdict', '?')}"
                 f"  max_err {r.get('max_err_beats', 0.0):.3f} beats"
                 f"  hole {r.get('hole_s', 0.0):.2f}s")
+        aud = r.get("max_audible_beats")
+        if aud is not None:
+            meas += (f"  audible {aud:.3f} beats"
+                     f" (sustained x{r.get('audible_n', 0)})")
         if r.get("resnaps") is not None:
             meas += f"  resnaps {r['resnaps']}"
         if r.get("urgent"):
             meas += "  (urgent - operator-forced, not charged)"
         lines.append(meas)
+        if r.get("hidden"):
+            lines.append(
+                "🔎 HIDDEN FLAM: grids measured clean but the audible "
+                "meter read a sustained wide offset - the failure class "
+                "the 08-16 stem seam exposed. Listen; your thumbs on it "
+                "are what teach the meter whether to trust itself.")
         pr = r.get("predicted") or {}
         if pr:
             lines.append("predicted rhythm: " + "  ".join(
