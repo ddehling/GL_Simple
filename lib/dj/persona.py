@@ -123,8 +123,15 @@ PERSONAS = {p.name: p for p in [
     # was inert on most nights and its identity rested on vocal_pull,
     # which was itself dead until the same day. A voice needs ROOM, and
     # the long blend is the only room-making style that always exists.
+    # (style_bias was acapella_out 2.2 until 2026-08-16 - benched that
+    # day on the operator's Lab verdicts ("it just felt pointless"), and
+    # a signature multiplying a benched weight is the exact inert-bias
+    # trap crate_digger fell into for nine days. acapella_in carries the
+    # voices-as-entrances premise instead: the surviving vocal-stem
+    # style, and the one whose mechanic - a voice arrives, then its own
+    # full mix - actually stages an entrance.)
     Persona("storyteller", "the voices carry the night",
-            style_bias={"acapella_out": 2.2, "stem_drum_swap": 1.8,
+            style_bias={"acapella_in": 2.2, "stem_drum_swap": 1.8,
                         "long_blend": 1.3},
             theatrics=1.1, moment_cooldown_x=0.9,
             p96=0.55, play_len_x=1.10,

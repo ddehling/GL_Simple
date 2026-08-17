@@ -3065,6 +3065,21 @@ class Brain:
         # 12 good / 1 passable / 1 bad on 14 Lab seams - the bench's
         # stated exit (measured, then heard) is met, so no kill remains.
         # (The allow_benched hatch stays for whatever gets benched next.)
+        # melody_carry + acapella_out BENCHED 2026-08-16 (operator, Lab
+        # session: 0 good / 5 passable / 8 bad over 13 seams, and the
+        # verdicts track NOTHING measurable - bad at every grid
+        # confidence and kick agreement - so this is not an admission
+        # problem). The operator's verdict on the mechanic itself: "I
+        # just mostly didn't like them... it just felt pointless. For
+        # them to work well you need to be purposeful." A lingering
+        # vocal/melody tail is a deliberate gesture; a dice roll cannot
+        # mean it. Off the live menu until a design gives the tail a
+        # PURPOSE (or a revival listen via the Lab's allow_benched
+        # hatch, which still plays them). acapella_in stays live:
+        # different mechanic (the voice ENTERS and B's own full mix
+        # resolves it), unrated in that session, no live thumbs-down.
+        if not allow_benched:
+            kill(("melody_carry", "acapella_out"), "benched")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
@@ -3642,6 +3657,18 @@ class Brain:
                     kill(_overlap, "tempo_multiple_read")
                 if rt["kick_agreement"] < 0.35:
                     kill(_overlap, "kick_clash")
+                elif rt["kick_agreement"] < 0.6:
+                    # KIT-OVERLAY DAMP IN THE 0.35-0.6 BAND (2026-08-16,
+                    # Lab verdicts): above the kill bar but the kit-
+                    # exposing styles rated mean 0.25 there (4 seams -
+                    # drum_bridge bad at 0.49 and 0.59, stem_bass_swap
+                    # bad at 0.60). n=4 is a lean, not a wall - same
+                    # shape as the swing-clash damp above: these styles
+                    # EXPOSE both kits, so they compete at 0.3x instead
+                    # of being handed pairs whose kicks half-disagree.
+                    for k in ("stem_drum_swap", "drum_bridge",
+                              "stem_bass_swap"):
+                        weights[k] = weights.get(k, 0.0) * 0.3
             else:
                 # No trusted signatures: screen on what IS stored. Tempo
                 # classes an octave apart force a multiple read, and a
