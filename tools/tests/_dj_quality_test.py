@@ -272,6 +272,17 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     lags, grid_lags, dual = [], [], 0.0
     biases = []
     tel_log = []
+    # The LIVE audible meter's readings (sync.audible_err_beats), sampled
+    # at its own ~4Hz cadence AND its own settled window (blend+6s -
+    # mirroring system._collect_seam_metrics exactly; the first batch
+    # collected from the first dual block and inflated flags with PLL
+    # convergence readings the live collector never counts) - so an
+    # offline batch can calibrate the meter against this harness's
+    # env-xcorr ground truth (see _dj_audible_calib.py). aud_series
+    # keeps every settled sample so threshold sweeps re-run offline
+    # without re-rendering.
+    aud_max, aud_n, _aud_last = 0.0, 0, None
+    aud_series = []
     # PER-DECK MID-BAND TAP (250-2500 Hz - where melodies live): wrap each
     # deck's read so we can verify ONE MELODY AT A TIME in the actual
     # rendered audio, not just in the scheduled events.
@@ -318,6 +329,16 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
                 and da["gain"] > 0.15 and db_["gain"] > 0.15)
         if both:
             dual += BLOCK / RATE
+            _ae = (tel.get("sync") or {}).get("audible_err_beats")
+            if _ae is not None \
+                    and tel["clock"] >= blend_at + int(6.0 * RATE):
+                _a = abs(float(_ae))
+                aud_max = max(aud_max, _a)
+                if _aud_last is None or tel["clock"] - _aud_last >= RATE // 4:
+                    aud_series.append((round(dual, 2), round(_a, 4)))
+                    if _a > 0.12:
+                        aud_n += 1
+                    _aud_last = tel["clock"]
             # GROUND TRUTH: grid-phase delta between the decks. The env
             # xcorr below is what a listener's ear might latch onto, but
             # on organic material it often measures rhythm-PATTERN offset
@@ -372,6 +393,8 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
          "lag_early": float(np.median(early)) if early else None,
          "lag_med": float(np.median(settled)) if settled else None,
          "lag_max": float(np.max(settled)) if settled else None,
+         "aud_max": round(aud_max, 4), "aud_n": aud_n,
+         "aud_series": aud_series,
          "raw_lags": lags, "grid_lags": grid_lags,
          "peak": float(np.abs(mix).max()),
          "clipped": int((np.abs(mix) > 0.999).sum())}

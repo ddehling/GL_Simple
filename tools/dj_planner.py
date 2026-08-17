@@ -4611,10 +4611,10 @@ class NightsTab(QWidget):
         h.addLayout(left, 2)
         right = QVBoxLayout()
         right.addWidget(_no_width_floor(QLabel(
-            "Measured seams (engine verdicts; red = rough by the same bar "
-            "that charges pair memory; amber 🔎 = grids measured clean but "
-            "the audible meter flagged it — worth a listen; 'rated' = your "
-            "thumbs that night):")))
+            "Measured seams (engine verdicts; red = rough by the same bars "
+            "that charge pair memory — 🔎 marks the ones only the audible "
+            "meter caught, grids read clean; 'rated' = your thumbs that "
+            "night, and they outrank the meters):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
             ["out → in", "style", "verdict", "rated",
@@ -4664,7 +4664,7 @@ class NightsTab(QWidget):
                     f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
                     f"{s['rough']:2d} rough  {s['skips']:3d} skips")
             if s.get("hidden_flam"):
-                line += f"  🔎{s['hidden_flam']} to hear"
+                line += f"  🔎{s['hidden_flam']} audible-caught"
             if s.get("fb_up") or s.get("fb_down"):
                 line += f"  {s['fb_up']}👍 {s['fb_down']}👎"
             if s.get("starved"):
@@ -4676,8 +4676,6 @@ class NightsTab(QWidget):
             it = QListWidgetItem(line, self.night_list)
             if s["rough"]:
                 it.setForeground(QColor(255, 170, 100))
-            elif s.get("hidden_flam"):
-                it.setForeground(QColor(235, 200, 120))
         if self.night_list.count():
             self.night_list.setCurrentRow(0)
 
@@ -4698,23 +4696,19 @@ class NightsTab(QWidget):
             it = QTreeWidgetItem([
                 f"{r['a'][:34]} → {r['b'][:34]}", r["style"], r["verdict"]
                 + (" (urgent)" if r["urgent"] else "")
-                + (" 🔎 hear this" if r.get("hidden") else ""),
+                + (" 🔎audible" if r.get("hidden") else ""),
                 rated, f"{r['max_err_beats']:.3f}",
                 "—" if aud is None else f"{aud:.3f}",
                 f"{r['hole_s']:.2f}"])
+            # 🔎 rows are rough via the AUDIBLE meter alone (grids read
+            # clean) - red like every charged seam since the meter got
+            # verdict power (calibrated 0-false bar, 2026-08-16).
             if r["rough"]:
                 for c in range(7):
                     it.setForeground(c, QColor(230, 110, 110))
             elif r["verdict"] != "clean":
                 for c in range(7):
                     it.setForeground(c, QColor(255, 170, 100))
-            elif r.get("hidden"):
-                # Grid-clean but the audible meter flags it: the seams
-                # the learning loop can't see. Amber, not red - the
-                # meter is still earning trust (it can read syncopation
-                # as flam), so this is "listen", not "guilty".
-                for c in range(7):
-                    it.setForeground(c, QColor(235, 200, 120))
             if r["rated"] is not None:      # your ear outranks the meter
                 it.setForeground(3, QColor(120, 210, 120) if r["rated"]
                                  else QColor(240, 100, 100))
@@ -4811,10 +4805,11 @@ class NightsTab(QWidget):
         lines.append(meas)
         if r.get("hidden"):
             lines.append(
-                "🔎 HIDDEN FLAM: grids measured clean but the audible "
+                "🔎 AUDIBLE-CAUGHT: grids measured clean but the audible "
                 "meter read a sustained wide offset - the failure class "
-                "the 08-16 stem seam exposed. Listen; your thumbs on it "
-                "are what teach the meter whether to trust itself.")
+                "the 08-16 stem seam exposed. Charged automatically "
+                "(calibrated 0-false bar); a 👍 from you overrides it, "
+                "no listening required otherwise.")
         pr = r.get("predicted") or {}
         if pr:
             lines.append("predicted rhythm: " + "  ".join(

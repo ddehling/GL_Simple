@@ -2773,8 +2773,19 @@ class DJSystem:
         # audible flam (~55ms at 128 bpm) - well past the PLL's deadband
         # and beyond what a healthy lock ever shows.
         flam = beat_matched and m["max_err"] > 0.12 and m.get("err_n", 0) >= 2
+        # ...and the AUDIBLE meter's verdict (2026-08-16): >0.12 beats
+        # wide-window error sustained x4 (~1s at 4Hz). Bar calibrated
+        # offline (_dj_audible_calib.py, 45 rendered seams): 0/11 false
+        # on aligned material, 52% of measured flams caught - the
+        # zero-false corner of the sweep; looser sustains cost 18% false.
+        # This is the instrument that caught the 08-16 disaster the grid
+        # meter graded clean. The charge below is the same gentle one
+        # grid flams get (x0.85, floor 0.4), and an operator thumbs on
+        # the seam still writes its own verdict beside the auto row.
+        aud_flam = beat_matched and m.get("aud_n", 0) >= 4
         hole = m.get("hole_s", 0.0) > 1.5
-        verdict = "flam" if flam else ("hole" if hole else "clean")
+        verdict = "flam" if (flam or aud_flam) \
+            else ("hole" if hole else "clean")
         self._last_seam = {"style": style, "verdict": verdict,
                            "max_err_beats": round(m["max_err"], 3),
                            # The wide-window audible reading (see

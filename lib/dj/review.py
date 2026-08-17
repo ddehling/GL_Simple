@@ -88,32 +88,43 @@ def pair_seams(events):
     return seams
 
 
-def is_rough(q):
-    return (float(q.get("max_err_beats") or 0.0) >= FLAM_BEATS
-            or float(q.get("hole_s") or 0.0) >= HOLE_S)
-
-
 # Wide-window audible flam (max_audible_beats/audible_n, logged from
 # 2026-08-17): the submix's transient xcorr read at +/- half a beat -
 # the instrument that can see a seam whose GRIDS lock while the MUSIC
 # flams (the 2026-08-16 stem_drum_swap that self-assessed clean at
 # 0.042 beats grid error while its rendered kicks sat 125ms apart).
-# Measurement-only: the meter also reads syncopation as offset on some
-# material (a good seam rendered med 0.044 but spiked 0.32), so these
-# thresholds pick out seams for EARS, not verdicts, until enough logged
-# nights say where the bar belongs. n>=6 = sustained >=1.5s at the
-# meter's 4Hz cadence.
+# Bar CALIBRATED OFFLINE 2026-08-16 (_dj_audible_calib.py, 45 rendered
+# seams, live-faithful settled-window collection): at >=0.12 beats
+# sustained x4 (~1s at the meter's 4Hz cadence) it flagged 0 of 11
+# aligned seams and 52% of measured flams; every looser sustain bought
+# detection at 18% false on aligned material, every stricter one only
+# lost detection. The meter carries VERDICT power at this bar (system.
+# _assess_seam) - the missed half are its stability gating starving
+# samples on turbulent seams, a sensitivity limit, not a lie.
 AUDIBLE_WIDE_BEATS = 0.12
-AUDIBLE_WIDE_N = 6
+AUDIBLE_WIDE_N = 4
+
+
+def is_grid_rough(q):
+    return (float(q.get("max_err_beats") or 0.0) >= FLAM_BEATS
+            or float(q.get("hole_s") or 0.0) >= HOLE_S)
+
+
+def is_audible_rough(q):
+    return (float(q.get("max_audible_beats") or 0.0) >= AUDIBLE_WIDE_BEATS
+            and int(q.get("audible_n") or 0) >= AUDIBLE_WIDE_N)
+
+
+def is_rough(q):
+    return is_grid_rough(q) or is_audible_rough(q)
 
 
 def is_hidden_flam(q):
-    """Grid-clean by the verdict bar, yet the audible meter reads a
-    sustained wide offset - the seams the learning loop can't see."""
-    return (not is_rough(q)
-            and float(q.get("max_audible_beats") or 0.0)
-            >= AUDIBLE_WIDE_BEATS
-            and int(q.get("audible_n") or 0) >= AUDIBLE_WIDE_N)
+    """Rough by the audible meter alone - the seams every grid metric
+    calls clean. Charged like any rough seam since verdict power landed
+    (2026-08-16); kept as its own category so readers can see WHICH
+    instrument caught a seam."""
+    return is_audible_rough(q) and not is_grid_rough(q)
 
 
 def severity(q):

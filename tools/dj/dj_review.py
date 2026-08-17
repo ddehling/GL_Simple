@@ -129,12 +129,14 @@ def report_seams(seams):
         print("    -> past the codebase's own ~25ms audibility figure but")
         print("       under the verdict bar, so they charge pair memory")
         print("       nothing. If the room hears these, lower the bar.")
-    # Grid-clean seams the wide audible meter flags (fields logged from
+    # Seams only the wide audible meter caught (fields logged from
     # 2026-08-17): the 2026-08-16 failure class - grids locked, music
-    # flamming. These are the first seams to LISTEN to.
+    # flamming. Charged automatically since the meter earned verdict
+    # power at the calibrated 0-false bar; listed so the instrument's
+    # catches stay reviewable.
     hidden = [s for s in seams if is_hidden_flam(s["q"])]
     if hidden:
-        print(f"  HIDDEN FLAM (grid-clean, audible meter >="
+        print(f"  AUDIBLE-ONLY FLAMS (grids clean, meter >="
               f"{AUDIBLE_WIDE_BEATS} beats sustained): "
               f"{len(hidden)} of {n} ({100.0*len(hidden)/n:.0f}%)")
         for s in hidden[:6]:
