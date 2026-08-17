@@ -234,6 +234,85 @@ def perc_overlap(deck_a, deck_b, t0, t1, bin_s=PERC_BIN_S,
     return out
 
 
+def measured_kick_alignment(decks, marks, a_track, b_track, span_s=24.0):
+    """Kick-to-kick alignment WITHOUT cross-correlation (2026-08-17).
+
+    The env-xcorr instruments failed their ear exam (57 operator-rated
+    seams: lag median 75ms on GOOD vs 50ms on BAD - inverted): on full
+    mixes the correlation's best-overlap lag is the RHYTHM-PATTERN
+    offset (A's shaker line vs B's congas), a musically meaningful
+    eighth or sixteenth that reads as 60-250ms "flam" on beat-aligned
+    material. No window or bar fixes an instrument that measures the
+    wrong quantity.
+
+    This one never lets the two decks meet: each deck's LOW-BAND attack
+    peaks are measured against its OWN grid projected through its real
+    position trace (beatpower --phase's method: ±90ms bounded search
+    per beat, confidence-floored, IQR-gated median - the instrument
+    validated at 2-17ms kick-to-kick on rendered seams, 2026-08-05),
+    and only the two resulting KICK CLOCKS are compared. A's pattern
+    cannot contaminate B's measurement because they are never in the
+    same buffer.
+
+    `decks`: {"a","b"} post-EQ per-deck renders; `marks` as verify_seam.
+    Returns {off_a_ms, off_b_ms, flam_med_ms, flam_p90_ms, n} or None
+    when either side lacks a confident single kick phase (diffuse
+    material, too few beats with attacks - no measurement beats a
+    wrong one). Meaningless on unsynced styles (long_fade)."""
+    blend, swap = marks["blend_s"], marks["swap_s"]
+    t0, t1 = blend, min(swap, blend + span_s)
+    out = {}
+    kick_clocks = {}
+    for key, track in (("a", a_track), ("b", b_track)):
+        tr = marks["pos"].get(key) or []
+        if len(tr) < 2:
+            return None
+        src_lo = min(s for _, s in tr)
+        src_hi = max(s for _, s in tr)
+        beats = _render_times(_beats_in_span(track, src_lo, src_hi), tr)
+        beats = beats[(beats >= t0) & (beats <= t1)]
+        if len(beats) < 8:
+            return None
+        x = np.asarray(decks[key], dtype=np.float64)
+        if x.ndim > 1:
+            x = x.mean(axis=1)
+        t_env, frame_s = _transient_env(x, PERC_KICK_HZ)
+        if not len(t_env):
+            return None
+        w = max(int(0.090 / frame_s), 2)
+        peaks = []
+        for b in beats:
+            i = int(b / frame_s)
+            lo = max(i - w, 0)
+            seg = t_env[lo:i + w]
+            if len(seg) < w:
+                continue
+            k = int(np.argmax(seg))
+            peaks.append((b, float(seg[k]), (lo + k - i) * frame_s))
+        if len(peaks) < 8:
+            return None
+        # Confidence floor: a beat only votes if its attack is a real
+        # kick, not envelope noise in an EQ-carved span.
+        floor = 0.25 * float(np.percentile([p[1] for p in peaks], 90))
+        offs = np.asarray([o for _, pk, o in peaks if pk >= floor])
+        if len(offs) < 8:
+            return None
+        if float(np.percentile(offs, 75) - np.percentile(offs, 25)) > 0.055:
+            return None          # no single kick phase here (diffuse)
+        med = float(np.median(offs))
+        out[f"off_{key}_ms"] = round(med * 1000, 1)
+        # Kick clock = every projected beat + this deck's measured skew
+        # (extrapolated across the span - the PLL holds phase, so the
+        # skew is a per-seam constant to within its own IQR gate).
+        kick_clocks[key] = beats + med
+    ka, kb = kick_clocks["a"], kick_clocks["b"]
+    deltas = np.asarray([float(np.min(np.abs(kb - t))) for t in ka])
+    out["flam_med_ms"] = round(float(np.median(deltas)) * 1000, 1)
+    out["flam_p90_ms"] = round(float(np.percentile(deltas, 90)) * 1000, 1)
+    out["n"] = int(len(ka))
+    return out
+
+
 def verify_seam(decks, marks, a_track, b_track):
     """(ok, report). decks: {"a","b"} post-EQ renders; marks carries
     blend_s/swap_s and the per-deck position traces."""

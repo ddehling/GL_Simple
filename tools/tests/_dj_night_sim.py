@@ -125,6 +125,13 @@ def worker():
                           l for _, l in m["grid_lags"])
                           [len(m["grid_lags"]) // 2]
                           if m.get("grid_lags") else None),
+                      # The ear-validated instrument (2026-08-17):
+                      # per-deck isolated kick clocks, no xcorr.
+                      "kick_flam_ms": (m.get("kick_iso")
+                                       or {}).get("flam_med_ms"),
+                      "kick_off_ms": [
+                          (m.get("kick_iso") or {}).get("off_a_ms"),
+                          (m.get("kick_iso") or {}).get("off_b_ms")],
                       "aud_max": m.get("aud_max"),
                       "aud_n": m.get("aud_n"),
                       "lurch_db": round(m.get("lurch_db", 0.0), 2),
@@ -182,9 +189,15 @@ def report():
         return r["style"] != "long_fade"
 
     issues = {
-        "kick flam >80ms (env-xcorr, synced)": lambda r: synced(r)
+        # kick_iso is the EAR-VALIDATED flam instrument (2026-08-17:
+        # good med 12ms / bad med 38ms on rated seams; the env-xcorr
+        # and wide-meter rows below are kept only to show their
+        # overread against it).
+        "KICK FLAM >45ms (isolated-kick, ear-validated)": lambda r:
+            synced(r) and (r.get("kick_flam_ms") or 0) > 45.0,
+        "kick flam >80ms (env-xcorr - overreads)": lambda r: synced(r)
             and (r.get("lag_med_ms") or 0) > 80.0,
-        "audible-meter verdict (live bar)": lambda r:
+        "audible-meter flag (no ear signal)": lambda r:
             (r.get("aud_max") or 0) >= AUDIBLE_WIDE_BEATS
             and (r.get("aud_n") or 0) >= AUDIBLE_WIDE_N,
         # The QA gate's rule: the transition must not lurch harder than

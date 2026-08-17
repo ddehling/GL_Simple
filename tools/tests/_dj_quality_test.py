@@ -190,7 +190,8 @@ def force_style(theme, style):
 
 
 def render_seam(library, cur, style, wav=False, allow_benched=False,
-                pair=None, b_veto=None, tune=None, decoded=None):
+                pair=None, b_veto=None, tune=None, decoded=None,
+                test_gates=False):
     """Arm one brain-planned transition exactly like DJSystem does and
     render it offline. Returns (metrics dict | None if style not legal).
 
@@ -229,7 +230,8 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     plan = brain.plan_transition(cur, cand, meta,
                                  after_s=cur.duration_s * 0.45,
                                  force_style=style,
-                                 allow_benched=allow_benched)
+                                 allow_benched=allow_benched,
+                                 test_gates=test_gates)
     if plan["style"] != style:
         return None                       # gates said no (no drop/loop/...)
     if tune:
@@ -318,6 +320,10 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     # without re-rendering.
     aud_max, aud_n, _aud_last = 0.0, 0, None
     aud_series = []
+    # Per-deck (render clock, source seconds) traces - what projects
+    # each deck's grid into render time for the isolated kick
+    # measurement (seamverify.measured_kick_alignment).
+    pos_trace = {"a": [], "b": []}
     # PER-DECK MID-BAND TAP (250-2500 Hz - where melodies live): wrap each
     # deck's read so we can verify ONE MELODY AT A TIME in the actual
     # rendered audio, not just in the scheduled events.
@@ -353,6 +359,14 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
         rendered.append(np.frombuffer(gen.send(BLOCK),
                                       np.float32).reshape(-1, 2))
         i += 1
+        if i % 4 == 0:
+            # Both stamps are end-of-block (sub.clock has advanced and
+            # source_time_s is the cursor), so the pairing is exact.
+            for _nm in ("a", "b"):
+                _d = sub.decks[_nm]
+                if _d.playing:
+                    pos_trace[_nm].append((sub.clock,
+                                           _d.source_time_s()))
         tel = sub.telemetry
         if not tel:
             continue
@@ -449,6 +463,32 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
             _pa["b_ms"] / 1000.0 / max(cand.period_s, 1e-6)
             - _pa["a_ms"] / 1000.0 / max(cur.period_s, 1e-6),
             -0.25, 0.25)))    # mirror the brain's clip
+
+    # ISOLATED-KICK ALIGNMENT (2026-08-17): the instrument that replaces
+    # the env-xcorr lag as ground truth - per-deck kick clocks, never a
+    # cross-correlation (see seamverify.measured_kick_alignment for the
+    # ear-exam failure that forced this).
+    _sc0 = sub.clock - len(mono)
+    try:
+        from lib.dj import seamverify as _SV
+        _deck_arr = {}
+        for _nm in ("a", "b"):
+            _arr = np.zeros(len(mono), dtype=np.float32)
+            for _clk, _blk in deck_pcm[_nm]:
+                _i0 = int(_clk - _sc0)
+                if 0 <= _i0 and _i0 + len(_blk) <= len(_arr):
+                    _arr[_i0:_i0 + len(_blk)] = _blk
+            _deck_arr[_nm] = _arr
+        _marks = {"blend_s": (blend_at - _sc0) / RATE,
+                  "swap_s": (swap_at - _sc0) / RATE,
+                  "pos": {nm: [((c - _sc0) / RATE, s)
+                               for c, s in pos_trace[nm]]
+                          for nm in ("a", "b")}}
+        m["kick_iso"] = _SV.measured_kick_alignment(
+            _deck_arr, _marks, cur, cand)
+    except Exception as _e:
+        m["kick_iso"] = None
+        m["kick_iso_err"] = str(_e)
 
     # Dead air / lurch on 0.5 s RMS windows (skip first 1 s).
     w = RATE // 2

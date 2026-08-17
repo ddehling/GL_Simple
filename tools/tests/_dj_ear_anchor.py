@@ -78,19 +78,24 @@ def main():
             continue
         if m is None:
             continue
+        ki = m.get("kick_iso") or {}
         row = {"verdict": e["verdict"], "style": e["style"],
                "pair": m["pair"], "lag_med_ms": m.get("lag_med"),
                "grid_med_ms": (sorted(l for _, l in m["grid_lags"])
                                [len(m["grid_lags"]) // 2]
                                if m.get("grid_lags") else None),
                "aud_max": m.get("aud_max"), "aud_n": m.get("aud_n"),
+               "kick_flam_ms": ki.get("flam_med_ms"),
+               "kick_off_a_ms": ki.get("off_a_ms"),
+               "kick_off_b_ms": ki.get("off_b_ms"),
                "dual_s": round(m.get("dual_s", 0.0), 1)}
         rows.append(row)
         with open(OUT, "a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
         print(f"  [{i + 1:2d}/{len(rated)}] {e['verdict']:8} "
               f"{e['style']:15} lag={row['lag_med_ms']} "
-              f"aud={row['aud_max']}x{row['aud_n']}")
+              f"aud={row['aud_max']}x{row['aud_n']} "
+              f"kick_iso={row['kick_flam_ms']}")
 
     print("\n=== the instruments vs the operator's ears ===")
     for v in ("good", "passable", "bad"):
@@ -106,6 +111,20 @@ def main():
               f"p75 {sorted(lags)[3*len(lags)//4]:.0f})  "
               f">80ms: {over} ({100*over/len(grp):.0f}%)  "
               f"aud_max med {st.median(auds):.3f}")
+    print("\n  ISOLATED-KICK instrument (per-deck, no cross-correlation):")
+    for v in ("good", "passable", "bad"):
+        grp = [r for r in rows if r["verdict"] == v
+               and r.get("kick_flam_ms") is not None]
+        if not grp:
+            continue
+        kf = [r["kick_flam_ms"] for r in grp]
+        over = sum(1 for k in kf if k > 45.0)
+        print(f"  {v:8} n={len(grp):2d}  kick flam med "
+              f"{st.median(kf):6.1f}ms  >45ms: {over} "
+              f"({100*over/len(grp):.0f}%)")
+    unm = sum(1 for r in rows if r.get("kick_flam_ms") is None)
+    print(f"  (declined to measure: {unm} of {len(rows)} - diffuse "
+          "material or too few confident kicks)")
     good_hi = [r for r in rows if r["verdict"] == "good"
                and (r["lag_med_ms"] or 0) > 80.0]
     if good_hi:
