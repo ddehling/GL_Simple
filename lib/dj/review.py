@@ -93,6 +93,29 @@ def is_rough(q):
             or float(q.get("hole_s") or 0.0) >= HOLE_S)
 
 
+# Wide-window audible flam (max_audible_beats/audible_n, logged from
+# 2026-08-17): the submix's transient xcorr read at +/- half a beat -
+# the instrument that can see a seam whose GRIDS lock while the MUSIC
+# flams (the 2026-08-16 stem_drum_swap that self-assessed clean at
+# 0.042 beats grid error while its rendered kicks sat 125ms apart).
+# Measurement-only: the meter also reads syncopation as offset on some
+# material (a good seam rendered med 0.044 but spiked 0.32), so these
+# thresholds pick out seams for EARS, not verdicts, until enough logged
+# nights say where the bar belongs. n>=6 = sustained >=1.5s at the
+# meter's 4Hz cadence.
+AUDIBLE_WIDE_BEATS = 0.12
+AUDIBLE_WIDE_N = 6
+
+
+def is_hidden_flam(q):
+    """Grid-clean by the verdict bar, yet the audible meter reads a
+    sustained wide offset - the seams the learning loop can't see."""
+    return (not is_rough(q)
+            and float(q.get("max_audible_beats") or 0.0)
+            >= AUDIBLE_WIDE_BEATS
+            and int(q.get("audible_n") or 0) >= AUDIBLE_WIDE_N)
+
+
 def severity(q):
     """A single 0..1 badness number for correlation. Flam in beats and hole
     in seconds are different units; normalize each by the point it becomes
@@ -139,6 +162,8 @@ def night_summary(nights):
             "plays": c.get("play", 0),
             "seams": len(seams),
             "rough": sum(1 for e in seams if is_rough(e)),
+            # grid-clean seams the audible meter flags - listen to these
+            "hidden_flam": sum(1 for e in seams if is_hidden_flam(e)),
             "skips": c.get("skip", 0),
             "aborts": c.get("abort", 0),
             "bailouts": c.get("flam_bailout", 0),

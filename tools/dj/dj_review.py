@@ -55,9 +55,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 # audible thresholds) lives in lib/dj/review.py so the planner's
 # post-mortem surfaces read the SAME evidence with the SAME bars. This
 # file is only the human formatting.
-from lib.dj.review import (AUDIBLE_BEATS, FLAM_BEATS, HOLE_S, LOG_DIR,
-                           corr as _corr, is_rough, load_nights,
-                           pair_seams, severity)
+from lib.dj.review import (AUDIBLE_BEATS, AUDIBLE_WIDE_BEATS, FLAM_BEATS,
+                           HOLE_S, LOG_DIR, corr as _corr, is_hidden_flam,
+                           is_rough, load_nights, pair_seams, severity)
 
 
 # ---------------------------------------------------------------- reports
@@ -129,6 +129,19 @@ def report_seams(seams):
         print("    -> past the codebase's own ~25ms audibility figure but")
         print("       under the verdict bar, so they charge pair memory")
         print("       nothing. If the room hears these, lower the bar.")
+    # Grid-clean seams the wide audible meter flags (fields logged from
+    # 2026-08-17): the 2026-08-16 failure class - grids locked, music
+    # flamming. These are the first seams to LISTEN to.
+    hidden = [s for s in seams if is_hidden_flam(s["q"])]
+    if hidden:
+        print(f"  HIDDEN FLAM (grid-clean, audible meter >="
+              f"{AUDIBLE_WIDE_BEATS} beats sustained): "
+              f"{len(hidden)} of {n} ({100.0*len(hidden)/n:.0f}%)")
+        for s in hidden[:6]:
+            q = s["q"]
+            print(f"    {q.get('style','?'):16} -> {q.get('b','?')[:32]:32} "
+                  f"aud {q.get('max_audible_beats')} beats "
+                  f"(grid {q.get('max_err_beats')})")
     fades = [s for s in seams if s["q"].get("style") == "long_fade"]
     if fades:
         print(f"\n  LONG_FADE share: {100.0*len(fades)/n:.0f}% "

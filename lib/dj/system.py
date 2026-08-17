@@ -1794,6 +1794,7 @@ class DJSystem:
         rt = plan.get("rhythm") or {}
         self._seam_metrics = {"style": plan["style"], "max_err": 0.0,
                               "err_n": 0, "hole_s": 0.0, "low_since": None,
+                              "max_aud": 0.0, "aud_n": 0, "aud_last": None,
                               "urgent": self._urgent_exit,
                               # Predicted groove terms ride along so the
                               # self-assessment can log prediction vs
@@ -2690,6 +2691,29 @@ class DJSystem:
                         and abs(err) >= 0.18):
                     m["bailed"] = True
                     self._flam_bailout(abs(err))
+                # AUDIBLE flam (2026-08-16): the submix's wide-window
+                # transient reading - the instrument that can see a seam
+                # whose grids lock while the music flams (lived: grid err
+                # 0.042 beats "clean", rendered kicks 125ms apart,
+                # operator-heard terrible). MEASUREMENT ONLY for now: it
+                # rides the seam_quality log next to the grid verdict so
+                # dj_review can count grid-clean-but-audibly-off seams
+                # and a verdict bar can be set on evidence, not theory
+                # (the wide window can read syncopation as flam - see
+                # _audio_phase_err - so it must earn verdict power the
+                # way predicted_rhythm is earning calibration).
+                ae = sync.get("audible_err_beats")
+                if ae is not None:
+                    a_ = abs(float(ae))
+                    if a_ > m["max_aud"]:
+                        m["max_aud"] = a_
+                    # Sample at the meter's own ~4Hz cadence, not the
+                    # tick rate, so aud_n counts sustained time.
+                    last = m.get("aud_last")
+                    if a_ > 0.12 and (last is None
+                                      or clk - last >= RATE // 4):
+                        m["aud_n"] += 1
+                        m["aud_last"] = clk
         rms = tel.get("rms")
         if (rms is not None and self.blend_at is not None
                 and clk >= self.blend_at):
@@ -2753,6 +2777,12 @@ class DJSystem:
         verdict = "flam" if flam else ("hole" if hole else "clean")
         self._last_seam = {"style": style, "verdict": verdict,
                            "max_err_beats": round(m["max_err"], 3),
+                           # The wide-window audible reading (see
+                           # _collect_seam_metrics): calibration data for
+                           # the seams the grid metrics can't hear.
+                           "max_audible_beats": round(
+                               m.get("max_aud", 0.0), 3),
+                           "audible_n": m.get("aud_n", 0),
                            "hole_s": round(m.get("hole_s", 0.0), 2),
                            "resnaps": m.get("resnaps", 0),
                            "b": self.current.title}

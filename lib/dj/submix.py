@@ -69,6 +69,9 @@ class DJSubmix:
         self._apll_clock = 0     # last audio-phase measurement clock
         self._apll_err = None    # latest audio-phase error (beats, + = late)
         self._apll_i = 0.0       # integral term (learned tempo bias)
+        self._aud_hist = []      # wide-window (audible) readings, meas. only
+        self._aud_err = None     # EMA of the wide reading (beats)
+        self._aud_stable = False  # 3-stable gate for publishing it
         self._fx = []            # active one-shots: [buffer, pos, gain]
         self._duck = None        # {"on", "depth"} sidechain of the slave
         self.record_q = None     # set to a queue to tap the mix (recording)
@@ -197,6 +200,7 @@ class DJSubmix:
             self._stat_cals = 0
             self._cal_last = None
             self._cal_applied = 0.0
+            self._note_audible_err(None)
             sl = self.decks.get(e["slave"])
             if sl is not None:
                 sl.stretch.no_bypass = True      # no mode-flap phase kicks
@@ -226,6 +230,7 @@ class DJSubmix:
             self._sync_bias = 0.0
             self._apll_err = None
             self._apll_i = 0.0
+            self._note_audible_err(None)
             for d in self.decks.values():
                 d.rate_trim = 0.0
                 d.stretch.no_bypass = False
@@ -281,45 +286,84 @@ class DJSubmix:
     def _audio_phase_err(self, master, slave, beat_s):
         """Beat-phase error measured from the two decks' ACTUAL output
         TRANSIENTS (positive difference of the amplitude rings - kick/hat
-        attacks), cross-correlated over the last ~1.5s within +/- a QUARTER
-        beat: a refinement around the grid alignment, never a re-anchor
-        (wider windows lock onto offbeat bass patterns in this genre).
-        Positive = slave's transients land LATE. None when unconfident."""
+        attacks), cross-correlated over the last ~1.5s.
+
+        Returns (control_err, audible_err) in beats, + = slave late,
+        either None when unconfident. Both come from the SAME correlation
+        (mode='full' computes every lag anyway) read at two windows:
+
+        control: +/- a TENTH beat (2026-08-04) - the quarter-beat window
+        left room to lock a consistently-late bass stab and feed the
+        integral a lie (measured -0.4% rate deficit, 5 ms/s beat drift on
+        material that passed every content screen). At a tenth of a beat
+        the correlator can only refine true kick alignment. This is the
+        ONLY value control may consume.
+
+        audible: +/- a HALF beat, MEASUREMENT ONLY (2026-08-16) - the
+        seam self-assessment's instrument. The control window's narrowness
+        is also its blindness: a seam whose real kicks flam by a quarter
+        beat is invisible to it AND to every grid metric (lived: grids
+        'locked' at 5ms while the rendered kicks flammed 125ms median,
+        logged clean, operator-heard terrible). The wide reading exists so
+        that seam can at least be MEASURED; it must never steer the PLL -
+        at this width the correlator can lock rhythm-pattern offsets
+        (shakers vs congas), the exact failure the 2026-08-04 narrowing
+        fixed."""
         from lib.dj.deck import ENV_FPS
         n = int(1.5 * ENV_FPS)
         em = np.maximum(np.diff(master.out_env[-n:].astype(np.float64)), 0.0)
         es = np.maximum(np.diff(slave.out_env[-n:].astype(np.float64)), 0.0)
         if em.max() <= 1e-5 or es.max() <= 1e-5:
-            return None
+            return None, None
         em -= em.mean()
         es -= es.mean()
         xc = np.correlate(em, es, mode="full")
         mid = len(es) - 1
-        # +/- a TENTH beat (2026-08-04): the quarter-beat window left
-        # room to lock a consistently-late bass stab and feed the
-        # integral a lie - measured as a -0.4% rate deficit and 5 ms/s
-        # beat drift on material that passed every content screen. At a
-        # tenth of a beat the correlator can only refine true kick
-        # alignment; anything further off is a different instrument, not
-        # a phase error.
-        half = max(int(0.10 * beat_s * ENV_FPS), 2)
-        seg = xc[mid - half:mid + half + 1]
-        if len(seg) < 3:
-            return None
-        k = int(np.argmax(seg))
-        peak = float(seg[k])
-        rms = float(np.sqrt(np.mean(seg ** 2))) + 1e-12
-        if peak <= 0 or peak < 1.8 * rms:        # no confident beat pattern
-            return None
-        lag = float(k)
-        if 0 < k < len(seg) - 1:                 # parabolic sub-bin (~1ms)
-            y0, y1, y2 = seg[k - 1], seg[k], seg[k + 1]
-            den = y0 - 2 * y1 + y2
-            if abs(den) > 1e-12:
-                lag += 0.5 * (y0 - y2) / den
-        # xc[mid+lag] = sum em[i+lag]*es[i]: positive lag means es must
-        # shift LATER to match em, i.e. the slave's kicks are EARLY.
-        return -((lag - half) / ENV_FPS) / beat_s   # beats; + = slave late
+
+        def pick(half_beats):
+            half = max(int(half_beats * beat_s * ENV_FPS), 2)
+            seg = xc[mid - half:mid + half + 1]
+            if len(seg) < 3:
+                return None
+            k = int(np.argmax(seg))
+            peak = float(seg[k])
+            rms = float(np.sqrt(np.mean(seg ** 2))) + 1e-12
+            if peak <= 0 or peak < 1.8 * rms:    # no confident beat pattern
+                return None
+            lag = float(k)
+            if 0 < k < len(seg) - 1:             # parabolic sub-bin (~1ms)
+                y0, y1, y2 = seg[k - 1], seg[k], seg[k + 1]
+                den = y0 - 2 * y1 + y2
+                if abs(den) > 1e-12:
+                    lag += 0.5 * (y0 - y2) / den
+            # xc[mid+lag] = sum em[i+lag]*es[i]: positive lag means es must
+            # shift LATER to match em, i.e. the slave's kicks are EARLY.
+            return -((lag - half) / ENV_FPS) / beat_s
+
+        return pick(0.10), pick(0.50)
+
+    def _note_audible_err(self, a):
+        """Track the WIDE (audible) phase reading - measurement only.
+
+        Same stability bar as the control path (3 consecutive readings,
+        same sign, tight spread): a single wide xcorr on organic material
+        measures rhythm-pattern offset, not flam. Published in telemetry
+        (audible_err_beats) only while stable; consumed by the seam
+        self-assessment as calibration data, never by control."""
+        if a is None:
+            self._aud_hist = []
+            self._aud_err = None
+            self._aud_stable = False
+            return
+        hist = (getattr(self, "_aud_hist", []) + [a])[-3:]
+        self._aud_hist = hist
+        prev = self._aud_err if getattr(self, "_aud_err", None) is not None \
+            else a
+        self._aud_err = 0.6 * prev + 0.4 * a
+        self._aud_stable = (len(hist) == 3
+                            and max(hist) - min(hist) < 0.07
+                            and (all(h > 0 for h in hist)
+                                 or all(h < 0 for h in hist)))
 
     def _run_pll(self):
         """Continuously trim the slave deck's rate to keep its ACTUAL kicks
@@ -380,6 +424,7 @@ class DJSubmix:
             slave.rate_trim = 0.0
             self._apll_err = None
             self._apll_i = 0.0
+            self._note_audible_err(None)   # ring is pre-snap history now
             self._stat_resnaps += 1
             return
         # Audio-phase measurement 4x/second; PI control on it. The plant is
@@ -393,7 +438,8 @@ class DJSubmix:
             # offset, passes its own stability gates (patterns persist),
             # and drags the deck off the kick-true grid+bias target.
             self._apll_clock = self.clock
-            a = self._audio_phase_err(master, slave, beat_s)
+            a, a_wide = self._audio_phase_err(master, slave, beat_s)
+            self._note_audible_err(a_wide)
             if a is not None:
                 hist = getattr(self, "_apll_hist", [])
                 hist = (hist + [a])[-3:]
@@ -429,6 +475,7 @@ class DJSubmix:
                     self._stat_nudges += 1
                     self._apll_err = None    # stale until the ring refreshes
                     self._apll_hist = []
+                    self._note_audible_err(None)
             else:
                 self._apll_err = None
         _hist = getattr(self, "_apll_hist", [])
@@ -625,6 +672,13 @@ class DJSubmix:
             # seam lock from raw deck phases must subtract this, or an
             # intentionally offset grid reads as flam.
             sync["bias_beats"] = round(getattr(self, "_sync_bias", 0.0), 4)
+            # Wide-window audible phase error (beats, + = slave late),
+            # published only while 3-stable - the seam self-assessment's
+            # ear where the grid metrics are blind (see _audio_phase_err).
+            sync["audible_err_beats"] = (
+                round(float(self._aud_err), 4)
+                if getattr(self, "_aud_stable", False)
+                and self._aud_err is not None else None)
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
                 "sync": sync,
                 "sync_stats": {"resnaps": self._stat_resnaps,
