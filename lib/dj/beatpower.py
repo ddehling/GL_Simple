@@ -281,8 +281,16 @@ def phase_offset(track_id, region="mid", at_s=None):
             dd = abs(rec["at_s"] - at_s)
             if dist is None or dd < dist:
                 best, dist = rec, dd
+        # SAME REACH RULE AS THE PROFILE PATH (2026-08-16). This branch
+        # returned the nearest measured record at ANY distance, so a
+        # measurement taken 100s away could both waive a safety gate
+        # (brain's _local_ok) and shift a seam anchor - while the profile
+        # path above refuses beyond PROF_REACH_S because phase is a local
+        # property. A record beyond reach is no evidence for this anchor:
+        # decline, and do NOT fall through to the label lookup below (its
+        # records are these same far measurements under other names).
         if best is not None:
-            return best["ms"] / 1000.0
+            return best["ms"] / 1000.0 if dist <= PROF_REACH_S else None
     p_ = d.get(region) or d.get("mid")
     if not _ok(p_):
         return None

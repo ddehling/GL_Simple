@@ -62,9 +62,11 @@ def region_for(track, at_s, kind):
 
 def local_phase_known(a, b, out_s, in_s):
     """brain's `_local_ok` - the kick screens stand down where this holds,
-    because the kick-true anchors already correct the placement."""
-    return (_bp.phase_offset(a.id, at_s=out_s) is not None
-            and _bp.phase_offset(b.id, at_s=in_s) is not None)
+    because the kick-true anchors already correct the placement.
+    Region-specific like the corrections themselves (2026-08-16): a
+    standdown must never rest on evidence the seam won't receive."""
+    return (_bp.phase_offset(a.id, region="out", at_s=out_s) is not None
+            and _bp.phase_offset(b.id, region="in", at_s=in_s) is not None)
 
 
 def _row(name, fired, detail, bar, kills, testable=True, skipped=None):
@@ -95,9 +97,9 @@ def probe(a, b, plan):
     d = _kick_delta_s(a, b, rate)
     raw = abs((a.kick_offset_s or 0.0) - (b.kick_offset_s or 0.0))
     note = (f"beat-phase distance {1000*d:.1f}ms  "
-            f"(A {1000*(a.kick_offset_s or 0):.1f}ms vs B "
+            f"(A/out {1000*(a.kick_offset_s or 0):.1f}ms vs B/in "
             f"{1000*(b.kick_offset_s or 0):.1f}ms/{rate:.4f}, wrapped mod "
-            f"A's {1000*(getattr(a, 'period_s', 0) or 0):.0f}ms beat; "
+            f"A/out's {1000*(getattr(a, 'period_s', 0) or 0):.0f}ms beat; "
             f"raw linear pre-stretch {1000*raw:.1f}ms)")
     for nm, bar_v, kills in (("kick_offset>20ms", KICK_SCREEN_BLEND_S,
                               _OVERLAP),
@@ -114,9 +116,9 @@ def probe(a, b, plan):
     # +/-10s off the boundary (the legacy window centers), stands ALONE
     # when present; the labeled-region max() is only the fallback for
     # unscanned tracks.
-    for t, side, reg, _at, bar_v in (
-            (a, "A", reg_a, out_s - 10.0, _bp.BLEND_MIN_EXIT),
-            (b, "B", reg_b, in_s + 10.0, _bp.BLEND_MIN)):
+    for t, side, lane, reg, _at, bar_v in (
+            (a, "A", "out", reg_a, out_s - 10.0, _bp.BLEND_MIN_EXIT),
+            (b, "B", "in", reg_b, in_s + 10.0, _bp.BLEND_MIN)):
         pw = _bp.power_at(t.id, _at)
         if pw is not None:
             best, evid, src = pw, [pw], f"@{_at:.0f}s (dense profile)"
@@ -128,7 +130,8 @@ def probe(a, b, plan):
             src = f"{reg}-region (no dense profile)"
         rows.append(_row(
             f"no_beat_power_{side}", bool(evid) and best < bar_v,
-            (f"{t.title[:30]} low-band beat power {best:.2f} {src}"
+            (f"{side}/{lane} {t.title[:30]} low-band beat power "
+             f"{best:.2f} {src}"
              if best is not None else "not measured"),
             f"≥ {bar_v:.2f}", _STEM_OVERLAP,
             skipped=None if evid else "no beat-power measurement on file"))
@@ -146,10 +149,10 @@ def probe(a, b, plan):
                              skipped="band scores missing"))
             continue
         hi_, lo_ = max(va, vb), min(va, vb)
-        who = "A" if va >= vb else "B"
+        who = "A/out" if va >= vb else "B/in"
         rows.append(_row(
             f"band_clash_{band}", hi_ >= BAND_CLASH_HI and lo_ < BAND_CLASH_LO,
-            (f"{band}-band rhythmicity  A {va:.2f} / B {vb:.2f}   "
+            (f"{band}-band rhythmicity  A/out {va:.2f} / B/in {vb:.2f}   "
              f"(loud side {who}: {hi_:.2f}, quiet side {lo_:.2f})"),
             f"clash when hi ≥ {BAND_CLASH_HI} and lo < {BAND_CLASH_LO}",
             kills))
@@ -198,7 +201,7 @@ def probe(a, b, plan):
                     else "kick not measured")
             rows.append(_row(
                 "cut_drop_shape", bool(fails),
-                (f"entry @{db:.0f}s  step x{step:.2f}  "
+                (f"B/in entry @{db:.0f}s  step x{step:.2f}  "
                  f"run-up {lv[0]:.2f} -> lands {lv[1]:.2f} of p95  {kick}"
                  + (f"   FAILS: {', '.join(fails)}" if fails else "")),
                 (f"step ≥ {_CUT_DROP_MIN_STEP}, land ≥ "
@@ -233,7 +236,8 @@ def gate_styles(gate):
 # including what your own past verdicts already took away from it.
 GATE_DOCS = {
     "band_clash_high": (
-        "Both tracks carry strong rhythm in the HIGH band (hats, air) "
+        "Both tracks (A = outgoing, B = incoming) carry strong rhythm "
+        "in the HIGH band (hats, air) "
         "through the overlap - one side loud, the other quiet, so the "
         "quiet side's pattern fights through. Governs only the stem and "
         "mid-running styles: your 2026-08-07 verdicts removed it from "
@@ -247,17 +251,18 @@ GATE_DOCS = {
         "Same screen, LOW band (bass, kick fundamental). Governs the "
         "full-kit stem styles."),
     "no_beat_power_A": (
-        "Does A's EXIT region actually thump on its beats? Low-band "
-        "beat power at the seam's own position (dense phase-corrected "
-        "profile). A blend out of a beatless exit reads as a fade that "
-        "was promised a beat-match. Governs the stem family only - "
-        "rated off the plain blends 2026-08-07 (6 wrong / 2 right)."),
+        "Does A - the OUTGOING track, the 'out' lane - actually thump "
+        "on its beats where it exits? Low-band beat power at the seam's "
+        "own position (dense phase-corrected profile). A blend out of a "
+        "beatless exit reads as a fade that was promised a beat-match. "
+        "Governs the stem family only - rated off the plain blends "
+        "2026-08-07 (6 wrong / 2 right)."),
     "no_beat_power_B": (
-        "Does B's ENTRY region thump on its beats? Same instrument, "
-        "incoming side - B becomes the foundation, so this side was "
-        "kept longer, then rated off the plain blends 2026-08-13 "
-        "(12 fine / 2 bad). Still governs the stem family, unrated "
-        "there."),
+        "Does B - the INCOMING track, the 'in' lane - thump on its "
+        "beats where it enters? Same instrument, incoming side - B "
+        "becomes the foundation, so this side was kept longer, then "
+        "rated off the plain blends 2026-08-13 (12 fine / 2 bad). "
+        "Still governs the stem family, unrated there."),
     "kick_offset>20ms": (
         "The two tracks' stored BASS PLACEMENT differs by this much "
         "(beat-phase, wrapped): overlapped-drum styles put both "

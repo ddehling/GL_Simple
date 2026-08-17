@@ -1713,9 +1713,13 @@ class Brain:
             if 0.0 < _cov < 0.6:
                 return False
         if min(cur.bpm_conf or 0.0, cand.bpm_conf or 0.0) < 0.7:
+            # Region-specific: the standdown must ask the correction's own
+            # question (see _local_ok's 2026-08-16 note).
             if pair is None \
-                    or _bp.phase_offset(cur.id, at_s=out_s) is None \
-                    or _bp.phase_offset(cand.id, at_s=in_s) is None:
+                    or _bp.phase_offset(cur.id, region="out",
+                                        at_s=out_s) is None \
+                    or _bp.phase_offset(cand.id, region="in",
+                                        at_s=in_s) is None:
                 return False
         # TEMPO SANITY (2026-08-05): a half/double-time pairing is a
         # legitimate FOLLOW but never a blend - the gate caught the lean
@@ -2492,7 +2496,7 @@ class Brain:
                 continue
             if _trust_matters and oi not in _trust_o:
                 _trust_o[oi] = _bpt.phase_offset(
-                    cur.id, at_s=o["time_s"]) is not None
+                    cur.id, region="out", at_s=o["time_s"]) is not None
             of = out_fit(sec_a, voc_a, ml_a)
             # What leaving EARLY costs (see the `outs` comment above): a
             # candidate below the drawn budget stays on the table, decaying
@@ -2526,7 +2530,7 @@ class Brain:
                     continue
                 if _trust_matters and ii not in _trust_i:
                     _trust_i[ii] = _bpt.phase_offset(
-                        cand.id, at_s=i["time_s"]) is not None
+                        cand.id, region="in", at_s=i["time_s"]) is not None
                 busy_b = sec_b.get("busyness") or 0.0
                 fit = of * in_fit(sec_b, voc_b, ml_b)
                 quiet = 1.0 - 0.5 * min(busy_a + busy_b, 1.6) / 1.6
@@ -3127,9 +3131,24 @@ class Brain:
         # measured-good and conf<0.5 was condemning it on stale
         # evidence - these fades were 17% of ALL seams.
         from lib.dj import beatpower as _bpv
+        # THE WAIVER IS THE CORRECTION'S OWN LOOKUP (2026-08-16). This
+        # standdown exists because "the kick-true anchors already correct
+        # the placement" - so it must ask the EXACT question build_events
+        # will ask (region 'out'/'in' at the anchor), never a looser one.
+        # On profile-format entries the region argument is ignored and
+        # nothing changes; on legacy/prof-less entries the region-default
+        # ('mid') lookup could pass on a track-body measurement while the
+        # region-specific correction then found nothing and applied 0.0 -
+        # gates stood down on evidence the seam never received. Lived
+        # consequence 2026-08-16: stem_drum_swap on bpm_conf 0.69/0.66
+        # with phase_a_ms 0.0 in the armed log - grids "locked" to 5ms
+        # while the rendered kicks flammed 125ms median, self-assessed
+        # clean, operator-heard terrible. Same rule as the sync-bias
+        # lesson (2026-08-14): never two lookups for one seam.
         _local_ok = (
-            _bpv.phase_offset(cur.id, at_s=pair["out_s"]) is not None
-            and _bpv.phase_offset(cand.id,
+            _bpv.phase_offset(cur.id, region="out",
+                              at_s=pair["out_s"]) is not None
+            and _bpv.phase_offset(cand.id, region="in",
                                   at_s=pair["in_s"]) is not None)
         if low_conf and _local_ok \
                 and _bpv.profile_coverage(cur.id) >= 0.6 \
@@ -4054,8 +4073,9 @@ class Brain:
         # from the signatures) still shortens - phase correction aligns
         # lattices to music, it cannot fix two different grooves.
         from lib.dj import beatpower as _bpl
-        _pv = (_bpl.phase_offset(cur.id, at_s=pair["out_s"]) is not None
-               and _bpl.phase_offset(cand.id,
+        _pv = (_bpl.phase_offset(cur.id, region="out",
+                                 at_s=pair["out_s"]) is not None
+               and _bpl.phase_offset(cand.id, region="in",
                                      at_s=pair["in_s"]) is not None)
         if beats > 32 and style in ("long_blend", "bass_swap",
                                     "filter_sweep", "stem_bass_swap") \
