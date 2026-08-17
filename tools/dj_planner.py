@@ -4612,10 +4612,8 @@ class NightsTab(QWidget):
         right = QVBoxLayout()
         right.addWidget(_no_width_floor(QLabel(
             "Measured seams (engine verdicts; red = rough by the bar that "
-            "charges pair memory; amber 🔎 = the audible meter flags it "
-            "while grids read clean — a listen list, not a verdict (the "
-            "meter false-flags syncopation); 'rated' = your thumbs, and "
-            "they outrank every meter):")))
+            "charges pair memory; 'rated' = your thumbs, and they outrank "
+            "every meter):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
             ["out → in", "style", "verdict", "rated",
@@ -4664,8 +4662,6 @@ class NightsTab(QWidget):
             line = (f"{d[:4]}-{d[4:6]}-{d[6:]}  {s['hours']:4.1f}h  "
                     f"{s['plays']:3d} tracks  {s['seams']:3d} seams  "
                     f"{s['rough']:2d} rough  {s['skips']:3d} skips")
-            if s.get("hidden_flam"):
-                line += f"  🔎{s['hidden_flam']} audible-caught"
             if s.get("fb_up") or s.get("fb_down"):
                 line += f"  {s['fb_up']}👍 {s['fb_down']}👎"
             if s.get("starved"):
@@ -4694,10 +4690,14 @@ class NightsTab(QWidget):
             rated = ("" if r["rated"] is None
                      else ("👍 good" if r["rated"] else "👎 bad"))
             aud = r.get("max_audible_beats")
+            # The audible column stays as raw data; its FLAG is gone
+            # (2026-08-17 ear-anchor, n=57 rated seams: aud_max median
+            # 0.299 on GOOD vs 0.219 on BAD - the wide meter carries no
+            # taste signal, so surfacing its flags would only spend the
+            # operator's attention on noise).
             it = QTreeWidgetItem([
                 f"{r['a'][:34]} → {r['b'][:34]}", r["style"], r["verdict"]
-                + (" (urgent)" if r["urgent"] else "")
-                + (" 🔎audible" if r.get("hidden") else ""),
+                + (" (urgent)" if r["urgent"] else ""),
                 rated, f"{r['max_err_beats']:.3f}",
                 "—" if aud is None else f"{aud:.3f}",
                 f"{r['hole_s']:.2f}"])
@@ -4707,13 +4707,6 @@ class NightsTab(QWidget):
             elif r["verdict"] != "clean":
                 for c in range(7):
                     it.setForeground(c, QColor(255, 170, 100))
-            elif r.get("hidden"):
-                # Audible-meter flag on a grid-clean seam: amber, not
-                # red - the meter's verdict power was revoked 2026-08-17
-                # (33% false on aligned material), so this is "listen",
-                # never "charged".
-                for c in range(7):
-                    it.setForeground(c, QColor(235, 200, 120))
             if r["rated"] is not None:      # your ear outranks the meter
                 it.setForeground(3, QColor(120, 210, 120) if r["rated"]
                                  else QColor(240, 100, 100))
@@ -4808,13 +4801,6 @@ class NightsTab(QWidget):
         if r.get("urgent"):
             meas += "  (urgent - operator-forced, not charged)"
         lines.append(meas)
-        if r.get("hidden"):
-            lines.append(
-                "🔎 AUDIBLE-METER FLAG: grids measured clean but the "
-                "wide meter read a sustained offset - either a real "
-                "hidden flam (the 08-16 class) or syncopation the meter "
-                "misreads (~33% of its flags on aligned material). NOT "
-                "charged; your thumbs decide if it matters.")
         pr = r.get("predicted") or {}
         if pr:
             lines.append("predicted rhythm: " + "  ".join(

@@ -121,6 +121,10 @@ def worker():
                       "dual_s": round(m.get("dual_s", 0.0), 1),
                       "lag_med_ms": m.get("lag_med"),
                       "lag_max_ms": m.get("lag_max"),
+                      "grid_med_ms": (sorted(
+                          l for _, l in m["grid_lags"])
+                          [len(m["grid_lags"]) // 2]
+                          if m.get("grid_lags") else None),
                       "aud_max": m.get("aud_max"),
                       "aud_n": m.get("aud_n"),
                       "lurch_db": round(m.get("lurch_db", 0.0), 2),

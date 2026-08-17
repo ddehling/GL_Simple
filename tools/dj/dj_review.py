@@ -129,21 +129,17 @@ def report_seams(seams):
         print("    -> past the codebase's own ~25ms audibility figure but")
         print("       under the verdict bar, so they charge pair memory")
         print("       nothing. If the room hears these, lower the bar.")
-    # Seams only the wide audible meter flags (fields logged from
-    # 2026-08-17): either the 2026-08-16 hidden-flam class or the
-    # meter misreading syncopation (~33% of its flags on aligned
-    # material - why its verdict power was revoked 2026-08-17). A
-    # listen list, not a verdict.
+    # The wide audible meter's flags (fields still logged): NO ear
+    # correlation - the 2026-08-17 ear-anchor over 57 rated seams
+    # measured aud_max median 0.299 on operator-GOOD seams vs 0.219 on
+    # BAD, so a flag predicts nothing. Count kept as a diagnostic
+    # (a sudden jump would mean the mix or the meter changed), never a
+    # listen list.
     hidden = [s for s in seams if is_hidden_flam(s["q"])]
     if hidden:
-        print(f"  AUDIBLE-METER FLAGS (grids clean, meter >="
-              f"{AUDIBLE_WIDE_BEATS} beats sustained - listen list): "
-              f"{len(hidden)} of {n} ({100.0*len(hidden)/n:.0f}%)")
-        for s in hidden[:6]:
-            q = s["q"]
-            print(f"    {q.get('style','?'):16} -> {q.get('b','?')[:32]:32} "
-                  f"aud {q.get('max_audible_beats')} beats "
-                  f"(grid {q.get('max_err_beats')})")
+        print(f"  audible-meter flags: {len(hidden)} of {n} "
+              f"({100.0*len(hidden)/n:.0f}%) - no ear correlation "
+              "(2026-08-17 anchor); diagnostic only")
     fades = [s for s in seams if s["q"].get("style") == "long_fade"]
     if fades:
         print(f"\n  LONG_FADE share: {100.0*len(fades)/n:.0f}% "

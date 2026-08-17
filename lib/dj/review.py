@@ -93,15 +93,15 @@ def pair_seams(events):
 # the instrument that can see a seam whose GRIDS lock while the MUSIC
 # flams (the 2026-08-16 stem_drum_swap that self-assessed clean at
 # 0.042 beats grid error while its rendered kicks sat 125ms apart).
-# VERDICT POWER GRANTED 2026-08-16, REVOKED 2026-08-17. The granting
-# calibration (45 seams, "0 false") was poisoned by force_style's
-# shared-theme leak - all kit styles. On an honest natural mix the
-# meter false-flags ~33% of aligned seams (plain blends at 10-20ms
-# true lag reading 0.26-0.48 beats sustained: the wide window locking
-# rhythm-pattern offsets on full-mix material), and no threshold/
-# sustain point in the sweep is clean. So: MEASUREMENT AND VISIBILITY
-# ONLY. These bars pick out seams worth ears in the Nights tab and
-# dj_review; is_rough (the charging bar) is grid/hole only.
+# VERDICT POWER GRANTED 2026-08-16, REVOKED 2026-08-17 - and then the
+# ear-anchor (_dj_ear_anchor.py, 57 operator-rated seams re-rendered)
+# showed the wide meter carries NO taste signal at all: aud_max median
+# 0.299 on GOOD seams vs 0.219 on BAD (mildly inverted), ">80ms" env
+# lag on 48% of GOODs. Both wide transient instruments read rhythm-
+# pattern offsets as flam on full-mix material. Fields stay logged
+# (cheap, and a future instrument may re-analyze them); the flags are
+# a DIAGNOSTIC COUNT only - never a verdict, never a listen list.
+# is_rough (the charging bar) is grid/hole only.
 AUDIBLE_WIDE_BEATS = 0.12
 AUDIBLE_WIDE_N = 4
 
