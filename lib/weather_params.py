@@ -96,6 +96,9 @@ PARAMETER_DEFINITIONS = {
     'lightning_probability': {'type': 'number', 'step': 0.05},
     'lightning_min_s': {'type': 'number', 'step': 1},
     'lightning_max_s': {'type': 'number', 'step': 1},
+    'lightning_flicker': {'type': 'number', 'step': 0.05},
+    'lightning_motion': {'type': 'number', 'step': 0.05},
+    'lightning_contrast': {'type': 'number', 'step': 0.05},
     'marine_life_activity': {'type': 'number', 'step': 0.05},
     'meteor_rate': {'type': 'number', 'step': 0.05},
     'neon_intensity': {'type': 'number', 'step': 0.05},
@@ -190,6 +193,14 @@ DEFAULT_WEATHER_PARAMS = {
     # geometric path still applies independently).
     "lightning_min_s": 0.0,
     "lightning_max_s": 0.0,
+    # WoL lightning-flash dynamics (0..2, 1.0 = neutral baseline — NOT a
+    # visibility gate, so the invisible-at-zero default rule doesn't
+    # apply). flicker = shimmer depth/rate + stutters; motion = traveling
+    # knots + re-stroke odds; contrast = segment variance + dropouts.
+    # Driven live by the Elements interaction-panel sliders.
+    "lightning_flicker": 1.0,
+    "lightning_motion": 1.0,
+    "lightning_contrast": 1.0,
 }
 
 # Empty defaults — projects own their content. Used only as fallbacks
