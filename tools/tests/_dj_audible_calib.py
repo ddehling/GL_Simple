@@ -98,7 +98,10 @@ def main():
             # v2: aud collection mirrors the live settled window
             # (blend+6s) and carries the full sample series - v1 rows
             # counted PLL convergence and are excluded from summaries.
-            "v": 2,
+            # v3: force_style's shared-theme leak fixed - v2 "unforced"
+            # rows secretly planned from a one-style kit menu, so only
+            # v3+ rows represent a natural style mix.
+            "v": 3,
             "t": time.time(), "pair": m["pair"], "style": m["style"],
             "aud_series": m.get("aud_series") or [],
             "forced": bool(force),
@@ -127,7 +130,7 @@ def main():
         for line in f:
             if line.strip():
                 r = json.loads(line)
-                if r.get("v", 1) >= 2:
+                if r.get("v", 1) >= 3:
                     allrows.append(r)
     print(f"\n=== calibration over {len(allrows)} accumulated seams "
           f"(bar: aud_max>={AUDIBLE_WIDE_BEATS}, n>={AUDIBLE_WIDE_N}) ===")

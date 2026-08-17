@@ -2773,19 +2773,22 @@ class DJSystem:
         # audible flam (~55ms at 128 bpm) - well past the PLL's deadband
         # and beyond what a healthy lock ever shows.
         flam = beat_matched and m["max_err"] > 0.12 and m.get("err_n", 0) >= 2
-        # ...and the AUDIBLE meter's verdict (2026-08-16): >0.12 beats
-        # wide-window error sustained x4 (~1s at 4Hz). Bar calibrated
-        # offline (_dj_audible_calib.py, 45 rendered seams): 0/11 false
-        # on aligned material, 52% of measured flams caught - the
-        # zero-false corner of the sweep; looser sustains cost 18% false.
-        # This is the instrument that caught the 08-16 disaster the grid
-        # meter graded clean. The charge below is the same gentle one
-        # grid flams get (x0.85, floor 0.4), and an operator thumbs on
-        # the seam still writes its own verdict beside the auto row.
-        aud_flam = beat_matched and m.get("aud_n", 0) >= 4
+        # The AUDIBLE meter had VERDICT power for a few hours on
+        # 2026-08-16, granted on a 45-seam calibration that showed a
+        # zero-false bar - REVOKED 2026-08-17 when the calibration
+        # harness's shared-theme leak was found (force_style): that
+        # sample was secretly all kit styles. Re-run on an honest
+        # natural mix, the meter false-flags ~33% of ALIGNED seams
+        # (plain blends at 10-20ms true lag reading 0.26-0.48 beats
+        # sustained - the wide window locking rhythm-pattern offsets on
+        # full-mix material, exactly the failure the PLL's 08-04
+        # narrowing predicted). No sweep point is clean on that data,
+        # so the meter measures and logs (max_audible_beats/audible_n
+        # ride seam_quality; the Nights tab lists its catches for EARS)
+        # but convicts nothing until the night-sim census finds a
+        # conditioned bar that survives an honest sample.
         hole = m.get("hole_s", 0.0) > 1.5
-        verdict = "flam" if (flam or aud_flam) \
-            else ("hole" if hole else "clean")
+        verdict = "flam" if flam else ("hole" if hole else "clean")
         self._last_seam = {"style": style, "verdict": verdict,
                            "max_err_beats": round(m["max_err"], 3),
                            # The wide-window audible reading (see

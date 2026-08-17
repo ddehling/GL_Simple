@@ -172,7 +172,14 @@ def force_style(theme, style):
     # the "render nondeterminism, source not yet found" (2026-08-05)
     # and this gate's intermittent coverage misses. Sets never feed
     # ordered structures that meet an RNG.
-    t = get_theme(theme.name)
+    # COPY, never the shared instance (2026-08-17). get_theme returns the
+    # BUILTIN_THEMES singleton, and rebinding style_weights on it pinned
+    # the style for EVERY later get_theme() in the process - the audible
+    # calibration's "natural" picks all rolled a one-style menu after the
+    # first forced render (operator caught it: "thats a lot of flam" on
+    # a 60% flam bucket that was secretly all kit styles).
+    import copy
+    t = copy.copy(get_theme(theme.name))
     known = set(t.style_weights) | {
         "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
         "acapella_in", "melody_carry", "phrase_cut",
@@ -183,7 +190,7 @@ def force_style(theme, style):
 
 
 def render_seam(library, cur, style, wav=False, allow_benched=False,
-                pair=None, b_veto=None, tune=None):
+                pair=None, b_veto=None, tune=None, decoded=None):
     """Arm one brain-planned transition exactly like DJSystem does and
     render it offline. Returns (metrics dict | None if style not legal).
 
@@ -231,8 +238,19 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
         # seam with a knob on vs off. The gate itself never passes this.
         plan["tune"] = dict(tune)
 
-    a = F.decode_file_stereo(os.path.join(MUSIC, cur.path))
-    b = F.decode_file_stereo(os.path.join(MUSIC, cand.path))
+    # `decoded` is a caller-managed {track_id: samples} cache: the night
+    # simulator chains seams (B becomes the next A), so each track needs
+    # decoding once, not twice. Caller prunes it - full tracks are
+    # ~100MB each.
+    def _dec(t):
+        if decoded is not None and t.id in decoded:
+            return decoded[t.id]
+        arr = F.decode_file_stereo(os.path.join(MUSIC, t.path))
+        if decoded is not None:
+            decoded[t.id] = arr
+        return arr
+    a = _dec(cur)
+    b = _dec(cand)
 
     from lib.audio_engine import AudioEngine
     engine = AudioEngine()
@@ -259,6 +277,23 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     sub.post({"cmd": "load", "deck": "b", "samples": b, "grid": cand.grid,
               "track_id": cand.id, "gain_db": cand.gain_db,
               "cue_s": plan["in_s"]})
+    # STEM STYLES RENDER WITH STEMS (2026-08-17). This harness never
+    # attached them, so every stem-style render played stem_gains
+    # against a stem-less deck (a no-op): the measured audio was the EQ
+    # carve on full mixes, not what the live seam plays. Mirror
+    # audition.py - attach when the style (or a vocal duck) needs them.
+    _need_stems = plan["style"] in (
+        "stem_drum_swap", "drum_bridge", "stem_bass_swap",
+        "acapella_out", "acapella_in", "melody_carry") \
+        or plan.get("duck_vocal_a")
+    if _need_stems:
+        from lib.dj.stems import load_stems
+        for deck, t, arr in (("a", cur, a), ("b", cand, b)):
+            if getattr(t, "has_stems", False):
+                st_ = load_stems(MUSIC, t.id, expected_len=len(arr))
+                if st_:
+                    sub.post({"cmd": "attach_stems", "deck": deck,
+                              "stems": st_})
     for _ in range(4):
         rendered.append(np.frombuffer(gen.send(BLOCK),
                                       np.float32).reshape(-1, 2))
@@ -389,6 +424,9 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     settled = [l for d, l in lags if d > 2.0]
     m = {"pair": f"{cur.title[:24]} -> {cand.title[:24]}",
          "style": style, "rate": plan["rate"],
+         "fade_reason": (plan.get("diag") or {}).get("fade_reason"),
+         "in_s": round(plan.get("in_s", 0.0), 2),
+         "out_s": round(plan.get("out_s", 0.0), 2),
          "dual_s": dual, "n_lags": len(settled),
          "lag_early": float(np.median(early)) if early else None,
          "lag_med": float(np.median(settled)) if settled else None,

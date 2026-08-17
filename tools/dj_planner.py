@@ -4611,10 +4611,11 @@ class NightsTab(QWidget):
         h.addLayout(left, 2)
         right = QVBoxLayout()
         right.addWidget(_no_width_floor(QLabel(
-            "Measured seams (engine verdicts; red = rough by the same bars "
-            "that charge pair memory — 🔎 marks the ones only the audible "
-            "meter caught, grids read clean; 'rated' = your thumbs that "
-            "night, and they outrank the meters):")))
+            "Measured seams (engine verdicts; red = rough by the bar that "
+            "charges pair memory; amber 🔎 = the audible meter flags it "
+            "while grids read clean — a listen list, not a verdict (the "
+            "meter false-flags syncopation); 'rated' = your thumbs, and "
+            "they outrank every meter):")))
         self.seam_tree = QTreeWidget()
         self.seam_tree.setHeaderLabels(
             ["out → in", "style", "verdict", "rated",
@@ -4700,15 +4701,19 @@ class NightsTab(QWidget):
                 rated, f"{r['max_err_beats']:.3f}",
                 "—" if aud is None else f"{aud:.3f}",
                 f"{r['hole_s']:.2f}"])
-            # 🔎 rows are rough via the AUDIBLE meter alone (grids read
-            # clean) - red like every charged seam since the meter got
-            # verdict power (calibrated 0-false bar, 2026-08-16).
             if r["rough"]:
                 for c in range(7):
                     it.setForeground(c, QColor(230, 110, 110))
             elif r["verdict"] != "clean":
                 for c in range(7):
                     it.setForeground(c, QColor(255, 170, 100))
+            elif r.get("hidden"):
+                # Audible-meter flag on a grid-clean seam: amber, not
+                # red - the meter's verdict power was revoked 2026-08-17
+                # (33% false on aligned material), so this is "listen",
+                # never "charged".
+                for c in range(7):
+                    it.setForeground(c, QColor(235, 200, 120))
             if r["rated"] is not None:      # your ear outranks the meter
                 it.setForeground(3, QColor(120, 210, 120) if r["rated"]
                                  else QColor(240, 100, 100))
@@ -4805,11 +4810,11 @@ class NightsTab(QWidget):
         lines.append(meas)
         if r.get("hidden"):
             lines.append(
-                "🔎 AUDIBLE-CAUGHT: grids measured clean but the audible "
-                "meter read a sustained wide offset - the failure class "
-                "the 08-16 stem seam exposed. Charged automatically "
-                "(calibrated 0-false bar); a 👍 from you overrides it, "
-                "no listening required otherwise.")
+                "🔎 AUDIBLE-METER FLAG: grids measured clean but the "
+                "wide meter read a sustained offset - either a real "
+                "hidden flam (the 08-16 class) or syncopation the meter "
+                "misreads (~33% of its flags on aligned material). NOT "
+                "charged; your thumbs decide if it matters.")
         pr = r.get("predicted") or {}
         if pr:
             lines.append("predicted rhythm: " + "  ".join(
