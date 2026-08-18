@@ -61,7 +61,31 @@ quantile — that lost twice on Dunes; the dead-air gate is a min and a
 1–2s hush notch IS the crater), squared, against 0.6× body energy, and
 applied OUTSIDE the weighted-sum fit floor. Specimens: Mukadderat→
 06_DEADLIFE 35.2→6.5dB lurch and 0.003→0.318 floor; Symmetry and Take
-Me Home 0.06/0.08→0.33. Census re-run pending at commit time.
+Me Home 0.06/0.08→0.33.
+
+**Census v4 (728 seams, memory-shortened) says: specimens yes,
+population not proven.** Fades bad 33.1%→25.0%, lurch 10.9%→11.8%,
+dead air 6.4%→7.8%, fade share 17.4%→17.0% — *every* difference inside
+its 95% interval, so nothing here is a population-level claim. What
+did change categorically: v4 has ZERO near-zero-floor seams (v3 held
+the 0.003 Mukadderat crater). The fix is validated at the specimen
+level by direct A/B render, not by this census.
+
+**It does NOT narrow the library** (checked, because an energy damp
+easily could): tracks that stopped appearing as A have median best
+exit-life 1.00, identical to those still used, and low-life tracks are
+better represented among the KEPT set. It changes where a song exits,
+not which songs play.
+
+> **CENSUS PAIRING TRAP (2026-08-17).** The "workers are
+> seed-deterministic so paired diffs are exact" rule below holds ONLY
+> for changes that do not alter selection. The simulator chains B into
+> the next A, so a selection change diverges every night at seam ~1:
+> after this fix only **3% of (night, seam) slots still held the same
+> pair**. A per-slot diff across such a change compares different music
+> and manufactures both "fixes" and "regressions" (this one showed 103
+> phantom regressions on first read). Compare population-level rates,
+> each census against its own denominator, with intervals.
 
 ### Levers that DIED against the operator's verdicts (do not rebuild)
 
