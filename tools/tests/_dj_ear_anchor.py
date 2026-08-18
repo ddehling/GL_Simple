@@ -72,7 +72,18 @@ def main():
             s, meta = brain.score(a, b, 0.6, a.bpm, bpm_target=None)
             if meta is None:
                 continue
-            m = Q.render_seam(library, a, e["style"], pair=(b, meta))
+            # allow_benched: a BENCH is a decision about what to play
+            # LIVE, not a reason to throw away the operator's past
+            # verdicts - and this tool exists to order those verdicts.
+            # Without it the anchor silently under-samples exactly the
+            # styles that earned the bench, i.e. the BAD end of the
+            # scale it is meant to span: after drum_bridge and
+            # stem_bass_swap were benched 2026-08-17, an 80-seam run
+            # yielded 34 rows of which only 2 were 'bad', which cannot
+            # validate anything. Skipped seams were silent, so the
+            # sample looked fine until the verdict counts were read.
+            m = Q.render_seam(library, a, e["style"], pair=(b, meta),
+                              allow_benched=True)
         except Exception as ex:
             print(f"  [{i}] render failed: {ex}")
             continue
