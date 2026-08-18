@@ -192,6 +192,7 @@ Uses sACN/E1.31 protocol via the `sacn` library. Universe configs live in `confi
 - `docs/PARAMETER_MANAGEMENT.md` — Parameter system
 - `docs/DEPLOYMENT.md` — Per-project repo model, fresh-machine setup, GitHub auth, adding/switching projects
 - `docs/DJ_README.md` — Autonomous DJ subsystem (library scanner, mixing engine, PyQt6 set planner, /dj live tab)
+- `docs/DJ_VERIFICATION.md` — DJ quality measurement: which instruments to believe (ear-validated vs overreaders), the offline simulators, census baseline (run via `/dj-verify`)
 - `docs/INTERACTION_PANELS.md` — Per-weather-set interaction tab (buttons/sliders a set publishes; club = the DJ page)
 - `docs/shader_info.txt` — Shader effect reference (read for ALL shader work)
 - `docs/shader_audio_reactivity.md` — Audio-reactive shader guide (read ONLY for audio-reactive shaders)
