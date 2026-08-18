@@ -53,19 +53,61 @@ gate-refused pairs) — and **attaches stems** for stem-style renders.
 | Double bass | 1.2% | Minor. |
 | Clipping | 0% | Clean. |
 
-Ranked open levers: (1) **fade craters need EXIT-ANCHOR SELECTION, not
-arm-time patches** — attempted and reverted 2026-08-17: the v3 fade
-deliberately starts B ~7s after the boundary while A recedes, so when
-A's outro is soft the crater is inherent to the blessed shape; clock
-compression made the one triggered specimen lurch WORSE (4.6→7.0dB),
-and soft outros defeat any relative crater predictor because the
-softness starts before the anchor. The fix is upstream: `best_pair`
-must prefer louder/earlier exits when the outro dies (specimens:
-Mukadderat→06_DEADLIFE 35dB/0% floor, the Dunes set, Symmetry).
-(2) plan-time cap on combined per-deck kick offset (~50ms) → those
-pairs take the fade; (3) extend the kick-agreement 0.35–0.6 damp
-beyond kit styles (weakest evidence, n=2); (4) the Condor-class B-gap
-that evades the blend policy's envelope prediction.
+**(1) Fade craters — FIXED 2026-08-17 in exit-anchor selection**
+(`03d7b22`), after two arm-time timing patches were tried and reverted.
+Anchors are now scored by `_exit_life`: the A-side's own 2 Hz curve
+across the fade's exposure window, 1s-smoothed **min** (not a
+quantile — that lost twice on Dunes; the dead-air gate is a min and a
+1–2s hush notch IS the crater), squared, against 0.6× body energy, and
+applied OUTSIDE the weighted-sum fit floor. Specimens: Mukadderat→
+06_DEADLIFE 35.2→6.5dB lurch and 0.003→0.318 floor; Symmetry and Take
+Me Home 0.06/0.08→0.33. Census re-run pending at commit time.
+
+### Levers that DIED against the operator's verdicts (do not rebuild)
+
+Both were swept 2026-08-17 against ~470 rated seams. Neither survives
+rule 2 — and the sweeps cost an afternoon, so they are recorded here
+rather than re-derived:
+
+- **Plan-time cap on combined per-deck kick offset** (the old ranked
+  lever #2). The sync bias already consumes the entire offset: the
+  residual after the ±0.25-beat clip is zero for ~97% of seams in
+  *every* verdict class. Raw combined offset does not separate either
+  (good 71.7ms vs bad 76.6ms; refusal precision 44% against a 41% base
+  rate) — a 50ms cap would refuse 74 of 115 GOOD seams.
+- **Raising the grid-confidence gate.** 39–44% precision at every
+  threshold from 0.70 to 0.90, against a 39% base rate. min(bpm_conf)
+  medians: good 0.77, bad 0.75.
+
+Key fit (camelot) and arc-energy distance were swept in the same pass
+and also sort nothing (both tiers, all verdicts ≈ identical).
+
+### What the remaining bad verdicts actually are
+
+Rendered isolated-kick flam DOES track the ear (good med 12.1ms, bad
+37.6ms; 44% of bads over 45ms vs 8% of goods) — but **nothing available
+at plan time predicts it**, per the dead levers above. So the next
+real lever is an **arm-time pre-flight**: seams arm 60–110s ahead and
+the decks already hold the audio, so `seamverify.measured_kick_alignment`
+can measure each deck's own kick clock at the planned anchors before
+committing, and divert to the fade over ~45ms. Untested — the
+experiment that earns it is: measure isolated-kick flam at plan time
+for the already-rated seams and check it predicts the verdicts where
+the stored offsets did not.
+
+Remaining smaller levers: extend the kick-agreement 0.35–0.6 damp
+beyond kit styles (weakest evidence, n=2); the Condor-class B-gap that
+evades the blend policy's envelope prediction.
+
+### Style benches (2026-08-17)
+
+`drum_bridge` (2/1/5 good/passable/bad since 08-15) and
+`stem_bass_swap` (19/23/44) joined `melody_carry`/`acapella_out` on the
+bench — benched rather than gated for the reason above: no measurable
+quantity sorts their verdicts. Their seams reassigned to long_blend and
+bass_swap, NOT to fades (fade share 412→413 of 1206). `stem_drum_swap`
+stays live (10/10/8, a different animal). The Lab's `allow_benched`
+hatch still plays all four for revival listens.
 
 ## Hard-won rules (each cost a wrong conclusion)
 
