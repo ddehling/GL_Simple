@@ -118,6 +118,8 @@ def worker():
             else:
                 emit({**base,
                       "rate": round(m.get("rate", 1.0), 4),
+                      "gap": m.get("gap"),
+                      "style_final": m.get("style"),
                       "dual_s": round(m.get("dual_s", 0.0), 1),
                       "lag_med_ms": m.get("lag_med"),
                       "lag_max_ms": m.get("lag_max"),
