@@ -61,6 +61,44 @@ EXIT_LATE_HARD_FRAC = 0.85
 # best_pair's entry-runway floor below and system._draw_exit's budget cap
 # must agree, or the floor reasons about a cap that isn't the one applied.
 EXIT_BUDGET_FRAC = 0.72
+# THE SEAM WINDOW ITSELF MUST STAY ALIVE (2026-08-17). The fade-crater
+# class - a third of census fades lurching or dying (Mukadderat ->
+# 06_DEADLIFE 35dB / 0% floor, the Dunes set, Symmetry) - is an
+# EXIT-ANCHOR defect, not a fade-shape one: the blessed v3 fade exposes
+# A's own curve from ~8s before the boundary (recede start) to ~6s
+# after (stop_lead), with B not fully present until ~7s past it. Two
+# arm-time timing patches were tried and reverted (see
+# docs/DJ_VERIFICATION.md) - the softness starts BEFORE the anchor, so
+# only moving the anchor helps. best_pair's existing energy damp reads
+# the SECTION MEAN, and section means hide exactly these holes (Dunes'
+# winning anchor: section 0.52, curve minimum 0.01 six seconds later).
+# So each exit anchor is also judged by its own 2 Hz curve across the
+# exposure window, low-quantile against the track's groove body: an
+# anchor whose window carries >= EXIT_LIFE_BODY_FRAC of body is
+# untouched (healthy outros are quieter than the body ON PURPOSE - the
+# golden rule wants them), a dying one decays toward EXIT_LIFE_FLOOR
+# so a live anchor a phrase earlier can win. The statistic is the
+# 1s-smoothed MINIMUM over the window (see _exit_life for why a
+# quartile lost this argument twice on Dunes): the dead-air gate
+# (rms_min_ratio) is a min, and a 1-2s hush notch a quantile smooths
+# over IS the crater. The ratio is SQUARED before the damp because
+# crater depth
+# is heard in dB: a half-energy window is a -6dB dip (fine), a
+# tenth-energy window is a -20dB hole (the Mukadderat crater) -
+# linear-in-energy under-punished exactly the deep tails this exists
+# for, and the measured margins showed it (dead anchors surviving by
+# 2-16% against live ones).
+EXIT_LIFE_PRE_S = 10.0
+EXIT_LIFE_POST_S = 6.0
+EXIT_LIFE_BODY_FRAC = 0.6
+EXIT_LIFE_FLOOR = 0.2
+# The ENTRY-side mirror: B's first ~20s after in_s is what carries the
+# room alone once A stops (fade_stop_lead ~6s past the seam). Used only
+# to decide whether a cramped clean entry deserves the roomy-veto
+# RESCUE (see best_pair) - not as a global lean; full-room dead entries
+# (the Condor-class B-gap) are a separate, undiagnosed lever.
+ENTRY_LIFE_SPAN_S = 20.0
+ENTRY_LIFE_RESCUE_MIN = 0.25
 
 # GATE BARS, named so the Gate Check panel can show what a seam was judged
 # against without re-typing the numbers (lib/dj/gateprobe.py reads these).
@@ -1660,6 +1698,72 @@ class Brain:
             cache[track.id] = v
         return v
 
+    def _exit_life(self, track, out_s, stat="min"):
+        """How alive the track's OWN 2 Hz curve is through the seam's
+        exposure window around an exit anchor (see the EXIT_LIFE_*
+        constants), against EXIT_LIFE_BODY_FRAC of the groove body,
+        squared, clamped 0..1. 1.0 when there is no evidence (no curve /
+        no body) - no penalty.
+
+        Both consumers - the score damp and the phrase-snap guard - use
+        the 'min' statistic (1s-smoothed hole depth). A q25 was tried
+        for the damp on the theory that a min would over-punish short
+        breathers; the renders said otherwise TWICE on Dunes alone: the
+        quartile called both the 187s and the 228s windows alive (0.68,
+        1.0) and both rendered floors of 0.02-0.07 - the dead-air gate
+        is a min, and a 1-2s hush notch in the exposure window IS what
+        it flags. 'q25' stays computed for diagnostics and any future
+        consumer that genuinely wants broad liveness.
+        Memoized per (track, anchor): anchors
+        belong to the A side, which is shared by every candidate in a
+        pick (~640 best_pair calls), so this computes ~8 windows per
+        pick, not ~1650."""
+        cache = getattr(self, "_exit_life_cache", None)
+        if cache is None:
+            cache = self._exit_life_cache = {}
+        key = (track.id, int(out_s * 2))
+        v = cache.get(key)
+        if v is None:
+            v = {"q25": 1.0, "min": 1.0}
+            body = self._body_energy(track)
+            arr = self._energy_arr(track)
+            if body > 0.2 and len(arr):
+                i0 = max(int((out_s - EXIT_LIFE_PRE_S) * 2), 0)
+                i1 = min(int((out_s + EXIT_LIFE_POST_S) * 2), len(arr))
+                if i1 > i0:
+                    seg = arr[i0:i1]
+                    sm = (seg[1:] + seg[:-1]) * 0.5 if len(seg) >= 2 \
+                        else seg
+                    ref = EXIT_LIFE_BODY_FRAC * body
+                    v = {"q25": min(float(np.quantile(seg, 0.25))
+                                    / ref, 1.0) ** 2,
+                         "min": min(float(sm.min()) / ref, 1.0) ** 2}
+            cache[key] = v
+        return v[stat]
+
+    def _entry_life(self, track, in_s):
+        """_exit_life's B-side mirror: how alive the incoming track's
+        curve is through [in_s, in_s + ENTRY_LIFE_SPAN_S] - the stretch
+        B carries alone once A stops. Same quantile/body/square shape,
+        same no-evidence-no-penalty default, memoized per anchor."""
+        cache = getattr(self, "_entry_life_cache", None)
+        if cache is None:
+            cache = self._entry_life_cache = {}
+        key = (track.id, int(in_s * 2))
+        v = cache.get(key)
+        if v is None:
+            v = 1.0
+            body = self._body_energy(track)
+            arr = self._energy_arr(track)
+            if body > 0.2 and len(arr):
+                i0 = max(int(in_s * 2), 0)
+                i1 = min(int((in_s + ENTRY_LIFE_SPAN_S) * 2), len(arr))
+                if i1 > i0:
+                    q = float(np.quantile(arr[i0:i1], 0.25))
+                    v = min(q / (EXIT_LIFE_BODY_FRAC * body), 1.0) ** 2
+            cache[key] = v
+        return v
+
     def _pair_blendable(self, cur, cand, pair=None):
         """Could this pair support an overlapped blend? The CHEAP mirror
         of the plan-time screens (cached file-backed lookups only, no
@@ -2421,8 +2525,16 @@ class Brain:
             sec_b = cand.section_at(min(i["time_s"] + 1.0,
                                         cand.duration_s - 1.0))
             if sec_b is None:
-                i_pre.append((i, None, 0.0, "", 0.0, 0.0))
+                i_pre.append((i, None, 0.0, "", 0.0, 0.0, True))
                 continue
+            # Off-meter is a property of the ENTRY, not the combo -
+            # hoisted out of the o x i loop (it re-asked per o), and
+            # _roomy below must not count a vetoed entry: Seed's roomy
+            # intros are off-meter, and counting them vetoed its one
+            # clean entry for cramped room - every combo died and the
+            # pair fell to plan_transition's blind fallback exit.
+            om_b = bool(off_meter_span(cand, i["time_s"] - 5.0,
+                                       i["time_s"] + 30.0))
             room = 1.0
             if cand.duration_s > 0 and _floor_s > 0:
                 runway = max(cand.duration_s - i["time_s"], 0.0) * _room_frac
@@ -2437,10 +2549,13 @@ class Brain:
             # mix-in must still land where the track has energy, or the
             # blend goes quiet as the outgoing leaves.
             early_b = math.exp(-max(i["time_s"] - 20.0, 0.0) / 120.0)
-            i_pre.append((i, sec_b, voc_b, ml_b, early_b, room))
+            i_pre.append((i, sec_b, voc_b, ml_b, early_b, room, om_b))
         # Does ANY entry have full room? If so the cramped ones are vetoed
         # outright below; if not (a short record), the lean decides.
-        _roomy = any(p[5] >= 1.0 for p in i_pre if p[1] is not None)
+        # Only entries that survive the off-meter veto count - a vetoed
+        # entry must not set the bar the survivors are judged by.
+        _roomy = any(p[5] >= 1.0 for p in i_pre
+                     if p[1] is not None and not p[6])
         # NO HOLES IN THE BLEND: section MEANS hide a near-silent
         # stretch inside the overlap (a breakdown bar, a stripped
         # intro) - the render then dips to nothing mid-blend
@@ -2520,13 +2635,34 @@ class Brain:
             ea = sec_a.get("energy") or 0.0
             if _body_e > 0.2:
                 of *= 0.25 + 0.75 * min(ea / _body_e, 1.0)
-            for ii, (i, sec_b, voc_b, ml_b, early_b, room) in enumerate(i_pre):
-                if sec_b is None:
+            # ...and by the CURVE through the seam's exposure window,
+            # which the section mean above cannot see (the fade-crater
+            # class - see the EXIT_LIFE_* constants). NOT folded into
+            # `of`: the weighted-sum fit floor below (0.25 + 0.75*fit)
+            # caps everything routed through it at a 4x swing, and the
+            # dead Mukadderat anchor beat that cap through rf * clash
+            # alone. Like `bud` and `room` - single-anchor facts - the
+            # life factor multiplies the score directly. Memoized per
+            # anchor, so this costs ~8 quantiles per pick.
+            xlife = EXIT_LIFE_FLOOR + (1.0 - EXIT_LIFE_FLOOR) \
+                * self._exit_life(cur, o["time_s"])
+            for ii, (i, sec_b, voc_b, ml_b, early_b, room,
+                     om_b) in enumerate(i_pre):
+                if sec_b is None or om_b:
                     continue
                 if room < 1.0 and _roomy:
                     continue        # a roomier entry exists - take that one
-                if off_meter_span(cand, i["time_s"] - 5.0,
-                                  i["time_s"] + 30.0):
+                if room < 1.0 and not _roomy \
+                        and self._entry_life(cand, i["time_s"]) \
+                        < ENTRY_LIFE_RESCUE_MIN:
+                    # A cramped entry competes only when no roomy clean
+                    # entry exists (_roomy fix above) AND it is actually
+                    # ALIVE. Rescuing a cramped DEAD entry trades the
+                    # None->fallback forced fade (which enters B where
+                    # the hints say B works) for a planned crater:
+                    # Father King -> The Road Back's only clean entries
+                    # sit in a dying breakdown (entry-life 0.12/0.16),
+                    # and rescuing one measured floor 0.50 -> 0.11.
                     continue
                 if _trust_matters and ii not in _trust_i:
                     _trust_i[ii] = _bpt.phase_offset(
@@ -2537,11 +2673,24 @@ class Brain:
                 # BLEND WHERE THE BEATS ARE: a beat-matched blend is only
                 # audible as beat-matched if BOTH sides carry rhythm and
                 # comparable energy - otherwise it just reads as a fade.
+                # ASYMMETRIC since 2026-08-17 (the fade-crater class):
+                # B's entries are quiet intros by the golden rule, and a
+                # symmetric match term rewarded the A-exit that DIED to
+                # meet them - on Mukadderat the live groove anchor took
+                # 0.14 from this line while the dead one took 0.38, and
+                # that ratio outvoted every energy damp upstream. B
+                # hotter than A's exit is the real lurch (B slams in
+                # over a receding A: tight 0.4 sigma stays); A carrying
+                # over a quiet entry is the blessed shape itself
+                # (recede 0.5 holds the room while B rises), so that
+                # side only leans, it never drags the exit into the
+                # comedown to "match".
                 rb = sec_b.get("rhythm_density") or 0.0
                 eb = sec_b.get("energy") or 0.0
                 beaty = ra >= 1.2 and rb >= 1.2
+                _esig = 0.4 if eb > ea else 0.8
                 rhythm_fit = (1.3 if beaty else 0.55) \
-                    * math.exp(-((ea - eb) ** 2) / (2 * 0.4 ** 2))
+                    * math.exp(-((ea - eb) ** 2) / (2 * _esig ** 2))
                 # Two lead-carrying sections over each other = clash: heavy
                 # penalty (not a hard reject, so there's always a best pair).
                 clash = 1.0
@@ -2556,7 +2705,7 @@ class Brain:
                 score = ((0.25 + 0.75 * fit) * (0.6 + 0.4 * quiet)
                          * (0.4 + 0.6 * early_b) * rhythm_fit * clash * mp
                          * (0.25 + 0.75 * min(hole / 0.25, 1.0)) * bud
-                         * room * room)
+                         * room * room * xlife)
                 if _trust_matters and not (_trust_o.get(oi)
                                            and _trust_i.get(ii)):
                     # See the anchor-trust note above the loop: on a
@@ -2880,6 +3029,36 @@ class Brain:
             if after_s is not None:
                 out_fb = min(max(out_fb, after_s),
                              max(cur.duration_s - 8.0, out_fb))
+            # ...but never INTO a dead stretch when a live bookmark
+            # exists (2026-08-17, the fade-crater class): the blind
+            # half-minute point knows nothing about the curve, and on
+            # Take Me Home it landed where the record was already
+            # rolling off (census floor 0.078). Rank the track's own
+            # mix-out bookmarks by the same exit-life the scorer uses,
+            # paying for earliness/lateness on the same taus best_pair
+            # does; the blind point competes on equal terms, so when
+            # everything is equally dead (or there are no bookmarks)
+            # the behavior is exactly the old one.
+            def _fb_score(t):
+                bud = 1.0
+                if after_s is not None:
+                    d = t - after_s
+                    bud = math.exp(d / BUDGET_TAU_S) if d < 0 \
+                        else math.exp(-d / LATE_TAU_S)
+                return bud * (EXIT_LIFE_FLOOR + (1.0 - EXIT_LIFE_FLOOR)
+                              * self._exit_life(cur, t))
+            best_fb = (_fb_score(out_fb), out_fb)
+            for o in cur.mix_outs:
+                t = o["time_s"]
+                # Half the record must have played, and the late-exit
+                # ceiling holds here the way it does in the scorer.
+                if not (cur.duration_s * 0.5 <= t
+                        <= EXIT_LATE_HARD_FRAC * cur.duration_s):
+                    continue
+                s_fb = _fb_score(t)
+                if s_fb > best_fb[0]:
+                    best_fb = (s_fb, t)
+            out_fb = best_fb[1]
             pair = {"out_s": out_fb,
                     "in_s": cand.mix_ins[0]["time_s"] if cand.mix_ins else 0.0,
                     "out_hint": "blend", "in_hint": "blend", "score": 0.1}
@@ -3887,6 +4066,31 @@ class Brain:
                     alt = self.best_pair(cur, cand, after_s=after_s,
                                          exclude_out_s=pair["out_s"])
                     if alt is not None:
+                        # The alt exit must itself SURVIVE the two
+                        # exit-anchored kills that triggered the retry,
+                        # or the trade gains nothing and loses the
+                        # scorer's anchor: Wild Window's 240.9s exit was
+                        # breakdown-killed, the retry took 178.8s - whose
+                        # section energy 0.28 fails the same 0.35 bar -
+                        # so the blends died again and the fade played
+                        # the dying groove best_pair had just paid to
+                        # avoid (rendered floor 0.16 vs 0.23).
+                        _sx2 = cur.section_at(alt["out_s"] - 4.0) or {}
+                        if _sx2.get("kind") == "breakdown" \
+                                or (_sx2.get("energy") or 1.0) < 0.35:
+                            alt = None
+                        else:
+                            _ea2 = Brain._energy_arr(cur)
+                            _j0 = int((alt["out_s"] - 15.0) * 2)
+                            _j1 = int(alt["out_s"] * 2)
+                            if len(_ea2) and 0 <= _j0 < _j1 <= len(_ea2):
+                                _sg2 = _ea2[_j0:_j1]
+                                _st2 = float(np.median(_sg2[:6]))
+                                if _st2 > 0.15 and len(_sg2) > 6 \
+                                        and float(np.min(_sg2[6:])) \
+                                        < 0.3 * _st2:
+                                    alt = None
+                    if alt is not None:
                         # rate is read as meta["rate"] behind an `if
                         # meta` truthiness guard - the retry meta is
                         # never empty, so carry the default explicitly.
@@ -4163,6 +4367,19 @@ class Brain:
         # where the music breathes. Drop-anchored styles keep the drop.
         out_s = cur.nearest_phrase(pair["out_s"])
         in_s = cand.nearest_phrase(pair["in_s"])
+        # The phrase snap is content-blind and can move the exit up to
+        # half a phrase - far enough to land back in the very hole the
+        # scorer just paid to avoid (Dunes: scorer 195.4s, snap 187.2s,
+        # straight into the dead breakdown tail; rendered floor 0.023
+        # with the anchor fix defeated). When the snapped window is
+        # materially deader than the scored one, keep the scorer's
+        # anchor on its own downbeat: phrasing is a preference, the
+        # crater is a defect. Judged on the hole-sensitive 'min' stat -
+        # see _exit_life: the snap's failure mode is a short notch that
+        # the score damp's quartile deliberately ignores.
+        if self._exit_life(cur, out_s, stat="min") \
+                < 0.5 * self._exit_life(cur, pair["out_s"], stat="min"):
+            out_s = cur.nearest_downbeat(pair["out_s"])
         plan_b_drop = None            # breakdown_swap's payoff, if any
         plan_drop_step = None         # cut_at_drop's measured slam size
         if style == "breakdown_swap" and bd_a is not None \
