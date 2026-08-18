@@ -3105,8 +3105,45 @@ class Brain:
                 if s_fb > best_fb[0]:
                     best_fb = (s_fb, t)
             out_fb = best_fb[1]
-            pair = {"out_s": out_fb,
-                    "in_s": cand.mix_ins[0]["time_s"] if cand.mix_ins else 0.0,
+            # AND THE ENTRY NEEDS THE SAME CARE AS THE EXIT (2026-08-18).
+            # This line used to be `cand.mix_ins[0]` unconditionally -
+            # the FIRST bookmark, whatever it is - which is how the
+            # census's worst seam happened: Labor Of Love is 124s long
+            # and its only mix-in sits at 110.5s (89% in), best_pair
+            # correctly vetoed that entry as dead, returned None
+            # because it was the only one, and the fallback then
+            # entered on the very point that had just been refused.
+            # The phrase snap pushed it to 117.2s and the deck played
+            # a track with 7s left: rendered rms floor 0.0, literal
+            # silence, then a 32.9dB lurch. Worse, the entry-life veto
+            # added the same day makes best_pair return None MORE
+            # often, so it fed this blind path.
+            # Rank B's bookmarks the way the exit is ranked - by the
+            # life of what B will carry alone - and require real
+            # runway. If NOTHING qualifies, enter B EARLY instead: an
+            # intro is the one entry that is always safe to mix into,
+            # and it is categorically better than landing at 94% of a
+            # record with nothing left to play.
+            in_fb = None
+            if cand.mix_ins:
+                _best_i = None
+                for _i in cand.mix_ins:
+                    _t = _i["time_s"]
+                    if cand.duration_s - _t < _CUT_DROP_RUNWAY_S:
+                        continue          # not enough record left
+                    _s = self._entry_life(cand, _t)
+                    if _best_i is None or _s > _best_i[0]:
+                        _best_i = (_s, _t)
+                if _best_i is not None \
+                        and _best_i[0] >= ENTRY_LIFE_RESCUE_MIN:
+                    in_fb = _best_i[1]
+            if in_fb is None:
+                # Early entry: first downbeat past the intro proper,
+                # clamped so B still has a record left to play.
+                _early = min(_CUT_DROP_SCAN_FROM,
+                             max(cand.duration_s - _CUT_DROP_RUNWAY_S, 0.0))
+                in_fb = cand.nearest_downbeat(_early) if _early > 0 else 0.0
+            pair = {"out_s": out_fb, "in_s": in_fb,
                     "out_hint": "blend", "in_hint": "blend", "score": 0.1}
         rate = meta["rate"] if meta else 1.0
         pst = (meta or {}).get("pitch_st", 0)
