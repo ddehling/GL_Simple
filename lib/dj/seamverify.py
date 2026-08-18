@@ -357,3 +357,74 @@ def verify_seam(decks, marks, a_track, b_track):
         return False, rep
     rep["verdict"] = "ok"
     return True, rep
+
+
+def anchor_kick_offset(track, mono, at_s, span_s=24.0, from_s=None):
+    """This track's own low-band kick offset against its own grid, at a
+    SEAM ANCHOR, measured from source audio (native rate, no deck, no
+    render) - the plan-time half of measured_kick_alignment.
+
+    Same method and the same bars as that instrument, deliberately: the
+    ±90ms bounded per-beat search, the 25%-of-p90 confidence floor, the
+    55ms IQR gate that DECLINES on diffuse material. An instrument that
+    answered the same question a different way could not be compared to
+    the rendered one, and comparing them is the whole point (see
+    predicted_bias_error).
+
+    `mono`: the track's decoded samples (mono or stereo) at RATE.
+    Returns (offset_s, n_beats) or None when there is no confident
+    single kick phase here. Positive = attacks land LATE of the grid,
+    matching beatpower.phase_offset's sign convention.
+
+    A DIAGNOSTIC, NOT A GATE - and the reason is structural, so do not
+    re-promote it without new evidence (2026-08-17). It was built to
+    serve an arm-time pre-flight: measure both anchors before
+    committing, compare against the STORED offsets the sync bias is
+    computed from, and divert to the fade when the correction is about
+    to inherit a large error. Tested on 30 balanced operator-rated
+    seams, it DECLINED ON 60% of them (9 of 15 good, 9 of 15 bad) -
+    because the golden rule deliberately anchors seams in A's outro or
+    breakdown and B's intro, which is exactly where kick phase is
+    sparse and the IQR gate (correctly) refuses to guess. A gate that
+    cannot measure three seams in five cannot govern them. On the
+    remainder the stored-vs-measured residual did not separate the
+    verdicts either (good med 20.2ms vs bad 15.0ms - inverted, though
+    n=6 per side is thin). measured_kick_alignment keeps working
+    because it reads the BLEND span, where both decks play full mixes;
+    that signal does not exist in source audio at the anchors.
+    """
+    lo = at_s if from_s is None else from_s
+    hi = lo + span_s
+    beats = np.asarray(_beats_in_span(track, lo, hi), dtype=np.float64)
+    if len(beats) < 8:
+        return None
+    x = np.asarray(mono, dtype=np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    i0 = max(int(lo * RATE) - RATE, 0)
+    i1 = min(int(hi * RATE) + RATE, len(x))
+    if i1 - i0 < RATE:
+        return None
+    t_env, frame_s = _transient_env(x[i0:i1], PERC_KICK_HZ)
+    if not len(t_env):
+        return None
+    base = i0 / float(RATE)
+    w = max(int(0.090 / frame_s), 2)
+    peaks = []
+    for b in beats:
+        i = int((b - base) / frame_s)
+        lo_i = max(i - w, 0)
+        seg = t_env[lo_i:i + w]
+        if len(seg) < w:
+            continue
+        k = int(np.argmax(seg))
+        peaks.append((float(seg[k]), (lo_i + k - i) * frame_s))
+    if len(peaks) < 8:
+        return None
+    floor = 0.25 * float(np.percentile([p[0] for p in peaks], 90))
+    offs = np.asarray([o for pk, o in peaks if pk >= floor])
+    if len(offs) < 8:
+        return None
+    if float(np.percentile(offs, 75) - np.percentile(offs, 25)) > 0.055:
+        return None
+    return float(np.median(offs)), int(len(offs))
