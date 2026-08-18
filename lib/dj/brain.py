@@ -133,6 +133,22 @@ _BDSWAP_RESTORE_CLEAR_BEATS = 4.0
 # were thin (3-5 per bar); operator acted on the joint count.
 _CUT_DROP_MIN_STEP = 1.5
 _CUT_DROP_WIN_BEATS = 8.0
+# THE DROP HAS TO KEEP GOING (2026-08-17, operator: cuts were bad
+# "either not going or out of a drop - so you'd have a big drop, and
+# then noodling"). _CUT_DROP_MIN_AFTER only asks whether the landing is
+# hot, over ONE 8-beat window - a track that slams and then wanders
+# passes it and then plays the wander as the payoff, alone, for a
+# minute. Swept against the operator's 85 rated cut seams: B's median
+# energy over [entry+10s, entry+40s] under 0.55 of its own p95 appears
+# in 5 of 28 BAD and 2 of 14 passable cuts and 0 of 43 GOOD ones. The
+# first good is lost at 0.62, so the bar sits a clear margin under that
+# cliff. Judged on B's stored curve like every other cut bar, and
+# EVIDENCE-GATED: no curve, or a window the record is too short to
+# fill, means no refusal (the runway floor already guarantees 60s, so
+# for strict picks the window is always there).
+_CUT_DROP_MIN_SUSTAIN = 0.55
+_CUT_DROP_SUSTAIN_FROM_S = 10.0
+_CUT_DROP_SUSTAIN_TO_S = 40.0
 # ...and RECALL: where we are allowed to look for one. The style used to
 # enter only at a `pre_drop` MIX-IN hint, and mix-in points are proposed
 # where you would bring a track IN - measured on this library, 61% of them
@@ -757,6 +773,30 @@ def drop_levels(track, at_s):
         return None
     return (sum(curve[i0:i1]) / (i1 - i0) / peak,
             sum(curve[j0:j1]) / (j1 - j0) / peak)
+
+
+def drop_sustain(track, at_s):
+    """Does the drop KEEP GOING? B's median energy over
+    [at_s + _CUT_DROP_SUSTAIN_FROM_S, at_s + _CUT_DROP_SUSTAIN_TO_S] as
+    a fraction of the track's OWN p95, or None when the curve is missing
+    or the record cannot fill the window (no evidence, no refusal).
+
+    A MEDIAN, not a mean: the question is whether the payoff holds, and
+    a mean lets one surviving stab of energy carry thirty seconds of
+    noodling past the bar. Module-level and public for the same reason
+    drop_levels is - gateprobe and the cutdrop test must read the SAME
+    window the gate enforces, never recompute it.
+    """
+    curve = (track.row or {}).get("energy_curve") or []
+    if not curve:
+        return None
+    peak = max(sorted(curve)[int(0.95 * (len(curve) - 1))], 1e-4)
+    i0 = int((at_s + _CUT_DROP_SUSTAIN_FROM_S) * 2)
+    i1 = min(int((at_s + _CUT_DROP_SUSTAIN_TO_S) * 2), len(curve))
+    if i1 - i0 < 20:            # under 10s of evidence - decline
+        return None
+    seg = sorted(curve[i0:i1])
+    return seg[len(seg) // 2] / peak
 
 
 def drop_kick_levels(track_id, db_s):
@@ -2892,9 +2932,10 @@ class Brain:
             # still measures it for the gateprobe row and the cutdrop
             # test; it just no longer refuses anything.)
             s_db = drop_step(track, db) or s_raw
-            evals.append((at, s_raw, db, s_db, lv))
+            evals.append((at, s_raw, db, s_db, lv,
+                          drop_sustain(track, db)))
 
-        def _tags(s_db, lv):
+        def _tags(s_db, lv, sus=None):
             """Which STRICT bars this candidate fails ([] = strict pass).
             Every bar is judged at the SNAPPED DOWNBEAT - the seam that
             plays - not the scan position that found the candidate. The
@@ -2909,26 +2950,31 @@ class Brain:
                 t.append("after")
             if lv[0] > _CUT_DROP_MAX_BEFORE:
                 t.append("before")
+            # ...and the payoff has to LAST (see _CUT_DROP_MIN_SUSTAIN).
+            # Evidence-gated: None means the record cannot fill the
+            # window, which is not evidence of noodling.
+            if sus is not None and sus < _CUT_DROP_MIN_SUSTAIN:
+                t.append("sustain")
             return t
 
         # One entry per drop: keep the strongest in each 16-beat
         # neighbourhood, else a single slam yields six near-identical
         # candidates and crowds out the track's other drops.
         picked, seen = [], []
-        for at, s_raw, db, s_db, lv in evals:
+        for at, s_raw, db, s_db, lv, sus in evals:
             if any(abs(at - p) <= 16 * per for p in seen):
                 continue
-            if _tags(s_db, lv):
+            if _tags(s_db, lv, sus):
                 continue
             seen.append(at)
             picked.append((db, s_db))
         # Near-miss pass: strict failures inside the trial floors, spaced
         # away from the strict picks AND each other. [(db, step, tags)].
         near, near_seen = [], list(seen)
-        for at, s_raw, db, s_db, lv in evals:
+        for at, s_raw, db, s_db, lv, sus in evals:
             if any(abs(at - p) <= 16 * per for p in near_seen):
                 continue
-            tags = _tags(s_db, lv)
+            tags = _tags(s_db, lv, sus)
             if not tags:
                 continue
             if lv[1] < _CUT_DROP_TRIAL_MIN_AFTER \
