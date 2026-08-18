@@ -87,13 +87,26 @@ and also sort nothing (both tiers, all verdicts ≈ identical).
 Rendered isolated-kick flam DOES track the ear (good med 12.1ms, bad
 37.6ms; 44% of bads over 45ms vs 8% of goods) — but **nothing available
 at plan time predicts it**, per the dead levers above. So the next
-real lever is an **arm-time pre-flight**: seams arm 60–110s ahead and
-the decks already hold the audio, so `seamverify.measured_kick_alignment`
-can measure each deck's own kick clock at the planned anchors before
-committing, and divert to the fade over ~45ms. Untested — the
-experiment that earns it is: measure isolated-kick flam at plan time
-for the already-rated seams and check it predicts the verdicts where
-the stored offsets did not.
+obvious next lever — an **arm-time pre-flight** measuring each deck's
+kick clock at the planned anchors before committing — was built and
+**tested 2026-08-17, and it does not work**
+(`seamverify.anchor_kick_offset`, kept as a diagnostic, commit
+150d45a). It DECLINED on 60% of 30 balanced rated seams, and the reason
+is structural: the golden rule anchors seams in A's outro/breakdown and
+B's intro, exactly where kick phase is sparse, so the IQR gate
+correctly refuses to guess. A gate that cannot measure three seams in
+five cannot govern them. On the measurable remainder the
+stored-vs-measured residual was inverted (good 20.2ms vs bad 15.0ms,
+n=6/side — thin; the decline rate alone is disqualifying).
+`measured_kick_alignment` still works because it reads the BLEND span
+where both decks play full mixes; that signal is absent from source
+audio at the anchors.
+
+**So flam is diagnosable only AFTER rendering**, and any gate on it has
+to render first. The untried shape is therefore not "predict it from
+the anchors" but "render the planned seam offline during the 60–110s of
+arm lead (~13s/seam in the simulator) and measure it with the
+instrument that works."
 
 Remaining smaller levers: extend the kick-agreement 0.35–0.6 damp
 beyond kit styles (weakest evidence, n=2); the Condor-class B-gap that
