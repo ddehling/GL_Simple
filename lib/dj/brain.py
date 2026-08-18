@@ -3303,8 +3303,26 @@ class Brain:
         # hatch, which still plays them). acapella_in stays live:
         # different mechanic (the voice ENTERS and B's own full mix
         # resolves it), unrated in that session, no live thumbs-down.
+        # drum_bridge + stem_bass_swap BENCHED 2026-08-17 (operator's
+        # call, on their own accumulated verdicts). Since the 08-15
+        # fixes: drum_bridge 2 good / 1 passable / 5 bad, stem_bass_swap
+        # 19 / 23 / 44 - and stem_bass_swap is the highest-volume rated
+        # style in the library, so that 51% bad is 44 seams of measured
+        # dislike, not a thin sample. Both were also thumbed down live
+        # on 2026-08-17. Unlike the crater and cut-noodle classes, no
+        # measurable quantity sorts their verdicts (key fit, energy
+        # distance, grid confidence and combined kick offset were all
+        # swept against these ratings the same day: every one of them
+        # separates good from bad at the base rate, ~40%), so there is
+        # nothing here to gate on - which is the same shape of evidence
+        # that benched melody_carry. Off the live menu pending a design
+        # that gives each move a purpose, or a revival listen through
+        # the Lab's allow_benched hatch, which still plays them.
+        # stem_drum_swap stays live: same stem family, but its recent
+        # record is 10 good / 10 passable / 8 bad, a different animal.
         if not allow_benched:
-            kill(("melody_carry", "acapella_out"), "benched")
+            kill(("melody_carry", "acapella_out",
+                  "drum_bridge", "stem_bass_swap"), "benched")
 
         # ANTI-STREAK: one weighted dice roll per seam is blind to what it
         # rolled last time - nights ran long_blend x4 by pure chance and
