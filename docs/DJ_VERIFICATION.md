@@ -146,6 +146,54 @@ bass_swap, NOT to fades (fade share 412→413 of 1206). `stem_drum_swap`
 stays live (10/10/8, a different animal). The Lab's `allow_benched`
 hatch still plays all four for revival listens.
 
+## Campaign baseline (2026-08-18, 4,667 rendered seams, 1,021 distinct A tracks)
+
+The first FLAT, DIVERSE rendered sample — one A per pair, no chaining,
+pairs drawn via `choose_next` the way the DJ picks live. Supersedes the
+census for population claims: the census chains B into the next A, so
+its seams recycle a few tracks per night.
+
+| Issue | Rate (95% CI) |
+|---|---|
+| Level lurch | 14.2% ±1.0% |
+| Dead air | 7.3% ±0.7% |
+| **Kick flam >45ms** | **30.6% ±1.9%** (n=2,180 measurable) |
+| Double bass | 2.2% |
+| Clipping | 0% |
+| ANY | 20.1% ±1.2% |
+
+**Only ~8.8% of seams are REAL defects.** The 20% flag rate decomposes:
+8.1% of all seams are lurches within 2dB of the bar (the fade's
+deliberate dip and blend staging sit on the threshold by construction),
+3.8% are dead-air flags on tracks whose own music swings >12dB (the
+floor spans the whole render including A's solo pre-roll). The genuine
+half is 4.6% real slams + 4.2% real holes.
+
+**Fades were never special.** Real-defect rates: long_blend 9.2%,
+long_fade 9.3% — statistically identical. Blends are twice as numerous,
+so most bad seams are BLENDS. Two days were spent on fades because the
+chained census over-weighted them. `cut_at_drop` is now the *best*
+style (2.7% real) — the sustain bar worked.
+
+**Kick flam is the largest single defect at 30.6%**, dwarfing lurch and
+dead air, and it is the operator's standing complaint. No plan-time
+predictor for it exists (see the dead levers above).
+
+### The blend-start blind spot (found 2026-08-18, NOT yet fixed)
+
+`a_exits_through_breakdown` judges A's section at `out_s - 4s`. A
+96-beat blend BEGINS at `out_s - 48s`. Nothing looks there. Vangelis
+Dreams exits from a groove (0.58) but its blend starts in a breakdown
+(0.21), and B arrives at full level over it: a +16.7dB step in every
+band (low +19.1, mid +11.9, high +20.4) measured at the blend start,
+identical across four different B partners. Incidence measured
+library-wide: **2% of overlapped blends** — real, bounded, and worth
+fixing by judging the blend's START, not only its exit.
+
+Still unexplained: the Grandma Dance class (16-18dB lurches, solo
+dynamics only 3.0-5.4, blend start healthy at 0.62 in a build). Needs
+its own anatomy pass.
+
 ## Hard-won rules (each cost a wrong conclusion)
 
 1. **Waiver = correction, one lookup.** A gate standdown must ask the
