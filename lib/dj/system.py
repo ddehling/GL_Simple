@@ -1769,9 +1769,22 @@ class DJSystem:
         # A skip's fade compresses (see the long_fade path) - a slow
         # 8s recede on a "move on" press reads as the DJ ignoring you.
         plan["urgent"] = bool(self._urgent_exit)
-        events, swap_at, blend_at = self.brain.build_events(
-            plan, self.submix.telemetry, self.active_deck, incoming,
-            self.current, self.next_track)
+        # PREDICTED-EXPOSURE GAP POLICY (2026-08-17, lib/dj/gapscan):
+        # both tracks' PCM is in RAM right here, and the census's worst
+        # lurches were hush-then-slam gaps landing late in the blend
+        # where one deck carries the room alone. The shared policy
+        # (same call the offline harness makes) predicts the blend's
+        # level envelope and ends the blend a phrase early - or, if
+        # nothing dodges the gap, concedes the pair to the fade.
+        from lib.dj.gapscan import apply_gap_policy
+        _samples_a = self.submix.decks[self.active_deck].samples
+        plan, events, swap_at, blend_at, _gap_act = apply_gap_policy(
+            self.brain, plan, self.current, self.next_track,
+            self._next_meta, _samples_a, samples,
+            self.submix.telemetry, self.active_deck, incoming)
+        if _gap_act:
+            self._log({"event": "gap_adjust", **(plan.get("gap") or {}),
+                       "style": plan["style"]})
         events += self._perc_bed_events(plan, blend_at, swap_at)
         # The seam takes ownership of this deck now: any MOMENT still in
         # flight has to be recalled first, or its restore (or worse, its

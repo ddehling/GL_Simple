@@ -191,7 +191,7 @@ def force_style(theme, style):
 
 def render_seam(library, cur, style, wav=False, allow_benched=False,
                 pair=None, b_veto=None, tune=None, decoded=None,
-                test_gates=False):
+                test_gates=False, gap_policy=True):
     """Arm one brain-planned transition exactly like DJSystem does and
     render it offline. Returns (metrics dict | None if style not legal).
 
@@ -299,8 +299,18 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     for _ in range(4):
         rendered.append(np.frombuffer(gen.send(BLOCK),
                                       np.float32).reshape(-1, 2))
-    events, swap_at, blend_at = brain.build_events(
-        plan, sub.telemetry, "a", "b", cur, cand)
+    if gap_policy:
+        # The shared predicted-exposure dip policy (lib/dj/gapscan) -
+        # the SAME call the live arm path makes, so harness renders
+        # keep predicting the night.
+        from lib.dj import gapscan as _GS
+        plan, events, swap_at, blend_at, _gap_act = _GS.apply_gap_policy(
+            brain, plan, cur, cand, meta, a, b, sub.telemetry, "a", "b",
+            after_s=cur.duration_s * 0.45)
+        style = plan["style"]
+    else:
+        events, swap_at, blend_at = brain.build_events(
+            plan, sub.telemetry, "a", "b", cur, cand)
     sub.post_many(events)
 
     from lib.dj.deck import ENV_FPS
@@ -438,6 +448,7 @@ def render_seam(library, cur, style, wav=False, allow_benched=False,
     settled = [l for d, l in lags if d > 2.0]
     m = {"pair": f"{cur.title[:24]} -> {cand.title[:24]}",
          "style": style, "rate": plan["rate"],
+         "gap": plan.get("gap"),
          "fade_reason": (plan.get("diag") or {}).get("fade_reason"),
          "in_s": round(plan.get("in_s", 0.0), 2),
          "out_s": round(plan.get("out_s", 0.0), 2),
