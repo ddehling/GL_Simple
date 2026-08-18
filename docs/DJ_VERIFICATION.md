@@ -53,11 +53,19 @@ gate-refused pairs) — and **attaches stems** for stem-style renders.
 | Double bass | 1.2% | Minor. |
 | Clipping | 0% | Clean. |
 
-Ranked open levers: (1) fix the long_blend terminal collapse against
-the 43 lurch specimens; (2) plan-time cap on combined per-deck kick
-offset (~50ms) → those pairs take the fade; (3) teach `best_pair` to
-avoid exiting through dead outros; (4) extend the kick-agreement
-0.35–0.6 damp beyond kit styles (weakest evidence, n=2).
+Ranked open levers: (1) **fade craters need EXIT-ANCHOR SELECTION, not
+arm-time patches** — attempted and reverted 2026-08-17: the v3 fade
+deliberately starts B ~7s after the boundary while A recedes, so when
+A's outro is soft the crater is inherent to the blessed shape; clock
+compression made the one triggered specimen lurch WORSE (4.6→7.0dB),
+and soft outros defeat any relative crater predictor because the
+softness starts before the anchor. The fix is upstream: `best_pair`
+must prefer louder/earlier exits when the outro dies (specimens:
+Mukadderat→06_DEADLIFE 35dB/0% floor, the Dunes set, Symmetry).
+(2) plan-time cap on combined per-deck kick offset (~50ms) → those
+pairs take the fade; (3) extend the kick-agreement 0.35–0.6 damp
+beyond kit styles (weakest evidence, n=2); (4) the Condor-class B-gap
+that evades the blend policy's envelope prediction.
 
 ## Hard-won rules (each cost a wrong conclusion)
 
