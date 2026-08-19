@@ -683,6 +683,19 @@ def main():
     from lib.dj.brain import load_library
     from lib.dj.db import LibraryDB
     db = LibraryDB(args.music)
+    # SCRIPT MODE RUNS A SECOND COPY OF THIS MODULE (2026-08-18).
+    # `python lib/dj/beatpower.py` loads this file as __main__, while
+    # LibraryDB.__init__ calls set_music_root() on the IMPORTED
+    # lib.dj.beatpower - a different module object with its own
+    # _MUSIC_ROOT. So main()'s path() still saw None and fell through to
+    # the legacy repo logs/ location: a phase scan started this way
+    # reported "0 already scored" against a music-root profile holding
+    # 981 tracks, and rebuilt the library from scratch into a file the
+    # live system never reads. That is the same per-machine-artifact
+    # failure the set_music_root() docstring above was written for, one
+    # module object over. Point THIS copy at the same root the DB uses.
+    set_music_root(db.music_root)
+    print(f"profile: {path()}", flush=True)
     lib = load_library(db)
     done = {}
     try:
