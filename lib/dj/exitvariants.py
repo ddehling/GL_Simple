@@ -84,12 +84,26 @@ _SUBS = {
     # Restore the pre-2026-08-07 hard filter. With it back in place every
     # surviving candidate is >= after_s, so brain's `bud` term is 1.0
     # throughout and no second substitution is needed to neutralise it.
+    # RE-ANCHORED 2026-08-18. The old anchor predated the exit-retry's
+    # `exclude_out_s` filter, which landed between these two lines and
+    # silently took the Exit Compare tab's BASELINE offline - every
+    # 'legacy' and 'clamp_only' build raised instead of comparing. The
+    # guard did its job (it refused rather than comparing against stale
+    # logic); nobody re-anchored it. The substitution now keeps the
+    # exclude filter and only restores the hard after_s cut, which is
+    # the one thing 'legacy' is meant to model.
     "legacy": [(
         """        outs = list(cur.mix_outs)
+        if exclude_out_s is not None:
+            outs = [o for o in outs
+                    if abs(o["time_s"] - exclude_out_s) > 2.0]
         if not outs:
             return None""",
         """        outs = [o for o in cur.mix_outs
                 if after_s is None or o["time_s"] >= after_s]
+        if exclude_out_s is not None:
+            outs = [o for o in outs
+                    if abs(o["time_s"] - exclude_out_s) > 2.0]
         if not outs:
             return None"""
     )],
