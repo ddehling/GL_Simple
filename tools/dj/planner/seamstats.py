@@ -24,6 +24,7 @@ but never votes in a good-share (it is the explicit "no opinion").
 import json
 import math
 import os
+import re
 import time
 
 MIN_BUCKET = 5          # below this a percentage is noise, not a finding
@@ -596,23 +597,77 @@ def _obs_html(sm, brain):
     if not obs:
         return (f"<p style='color:{DIM_C}'>No observations yet — nothing "
                 f"has enough evidence behind it to be worth saying.</p>")
-    KIND = {"causal": ("measured", GOOD_C),
-            "style": ("style", None), "song": ("song choice", None),
-            "mech": ("mechanics", None), "track": ("track", None),
-            "gate": ("gates", None)}
-    h = ["<h4 style='margin:4px 0 2px'>What the ratings say</h4>"
-         f"<p style='color:{DIM_C};margin:0 0 5px'>"
-         f"<span style='color:{GOOD_C}'>measured</span> = a parameter moved "
-         f"on its own against a fixed baseline, so it is cause and effect. "
-         f"Everything else is a pattern in seams the brain chose, so it "
-         f"shows what goes together, not what causes what.</p>"
-         "<ul style='margin:2px 0 6px 16px'>"]
-    for kind, strength, text in obs[:12]:
-        label, col = KIND.get(kind, (kind, None))
-        tag = (f"<span style='color:{col or DIM_C}'>[{label}]</span> ")
-        dim = "" if strength >= 2 else f" <span style='color:{DIM_C}'>"                                        f"(provisional)</span>"
-        h.append(f"<li style='margin:2px 0'>{tag}{text}{dim}</li>")
-    h.append("</ul>")
+    # TWO SECTIONS, NOT SIX TAGS (2026-08-18, operator: the pane "is
+    # obtuse and isn't clear what it's driving at"). The old version led
+    # with a paragraph defining causal-vs-observational in statistics
+    # language, then printed twelve flat bullets whose [mech] / [song
+    # choice] / [gates] tags the reader had to decode before knowing
+    # whether any line was actionable. The distinction is worth keeping -
+    # it is the difference between "this knob caused it" and "these two
+    # things co-occur in seams the brain chose" - but it is a property of
+    # WHERE a finding came from, so it belongs in the structure, not in a
+    # tag. Findings the operator can act on directly come first.
+    CAUSAL = [o for o in obs if o[0] == "causal"]
+    PATTERN = [o for o in obs if o[0] != "causal"]
+    # ONE LINE PER KNOB. A settled probe and the tuning diff it produced
+    # are the same fact told twice ("fade_recede settled at 0.4126" /
+    # "fade_recede moved from 0.5 to 0.4126 because you preferred it"),
+    # and printing both doubled the causal list with nothing added. Keep
+    # the first mention - observations() emits strongest-first, so that
+    # is the more informative one - and drop later repeats of the same
+    # knob. Keyed on the leading <b>name</b> every causal line carries.
+    _seen = set()
+    _dedup = []
+    for o in CAUSAL:
+        m = re.search(r"<b>([^<]+)</b>", o[2])
+        key = m.group(1) if m else o[2][:40]
+        if key in _seen:
+            continue
+        _seen.add(key)
+        _dedup.append(o)
+    CAUSAL = _dedup
+    KIND = {"style": "style", "song": "song choice", "mech": "mechanics",
+            "track": "track", "gate": "gates"}
+    n_rated = sm.get("n") or 0
+    h = ["<h4 style='margin:4px 0 2px'>What the ratings say</h4>",
+         f"<p style='color:{DIM_C};margin:0 0 6px'>"
+         f"The strongest signals in your {n_rated} rated seams, "
+         f"strongest first.</p>"]
+
+    def _row(o, show_kind):
+        kind, strength, text = o
+        pre = ""
+        if show_kind:
+            pre = (f"<span style='color:{DIM_C}'>"
+                   f"{KIND.get(kind, kind)}:</span> ")
+        dim = ("" if strength >= 2 else
+               f" <span style='color:{DIM_C}'>(early — few seams so far, "
+               f"may not hold)</span>")
+        return f"<li style='margin:2px 0'>{pre}{text}{dim}</li>"
+
+    if CAUSAL:
+        h.append(f"<p style='margin:6px 0 1px'><b style='color:{GOOD_C}'>"
+                 f"Proven cause and effect</b> "
+                 f"<span style='color:{DIM_C}'>— one setting was moved at "
+                 f"random against a fixed baseline and you heard the "
+                 f"difference, so these are safe to act on.</span></p>"
+                 "<ul style='margin:1px 0 4px 16px'>")
+        h += [_row(o, False) for o in CAUSAL[:6]]
+        h.append("</ul>")
+    if PATTERN:
+        h.append("<p style='margin:6px 0 1px'><b>Patterns worth "
+                 "checking</b> "
+                 f"<span style='color:{DIM_C}'>— these things go together "
+                 f"in seams the brain chose for its own reasons, so one "
+                 f"does not necessarily cause the other. Treat each as a "
+                 f"lead to test, not a conclusion.</span></p>"
+                 "<ul style='margin:1px 0 6px 16px'>")
+        h += [_row(o, True) for o in PATTERN[:8]]
+        h.append("</ul>")
+    extra = max(len(CAUSAL) - 6, 0) + max(len(PATTERN) - 8, 0)
+    if extra:
+        h.append(f"<p style='color:{DIM_C};margin:0 0 4px'>"
+                 f"+{extra} weaker finding(s) not shown.</p>")
     return "".join(h)
 
 
