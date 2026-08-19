@@ -61,8 +61,64 @@ def cmd_scan(args):
     c = s["db_counts"]
     print(f"library now: {c['total']} tracks ({c['errors']} errored, "
           f"{c['missing']} missing)")
+    _phase_fill(root)
     _grid_health(root)
     return 0
+
+
+def _phase_fill(root):
+    """Fill the music-vs-grid PHASE profile for tracks that lack it.
+
+    This belongs in the scan and was missing from it (2026-08-18).
+    `beatpower.compute_phase` shipped 2026-08-04 behind its own CLI
+    (`python lib/dj/beatpower.py --phase`) and nothing ever wired it
+    into the scan, so every track added since arrived with NO phase
+    profile - and phase is what the sync bias is computed from. An
+    unprofiled track cannot be corrected, so its kicks land wherever
+    its stored grid happens to sit.
+
+    Measured before this existed: 40% of a 1,206-track library had
+    coverage under 0.6 and 21% had none at all, and the tracks that
+    flammed on EVERY seam (20 of them, vs 0.1% expected by chance)
+    carried high grid confidence but only 50% phase coverage, with a
+    flam that was a fixed fraction of a beat - the signature of a grid
+    sitting off the real kicks with nothing measured to correct it.
+    Filling this is the fix for that class, and doing it here is what
+    keeps it fixed as the library grows.
+
+    Incremental and resumable: only tracks with no profile are read.
+
+    Delegates to beatpower's own CLI rather than re-implementing the
+    read-merge-save of the shared profile file: that loop is already
+    incremental, already skips what is profiled, and is the code the
+    manual pass has always used. A second implementation of the same
+    merge is how two writers end up disagreeing about one file.
+    """
+    import subprocess
+    import sys as _sys
+    from lib.dj import beatpower as bp
+    from lib.dj.brain import load_library
+    from lib.dj.db import LibraryDB
+    db = LibraryDB(root)
+    try:
+        lib = load_library(db)
+        todo = [t for t in lib if bp.profile_coverage(t.id) <= 0.0]
+        n_lib = len(lib)
+    finally:
+        db.close()
+    if not todo:
+        print(f"phase      : all {n_lib} tracks profiled")
+        return
+    print(f"phase      : {len(todo)} of {n_lib} track(s) unprofiled - "
+          f"measuring (one audio pass each)", flush=True)
+    script = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))),
+        "lib", "dj", "beatpower.py")
+    r = subprocess.run([_sys.executable, script, "--music", root,
+                        "--phase"])
+    if r.returncode != 0:
+        print(f"phase      : pass exited {r.returncode} - re-run with "
+              f"`python lib/dj/beatpower.py --music {root} --phase`")
 
 
 def _grid_health(root):
