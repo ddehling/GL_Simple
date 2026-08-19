@@ -107,6 +107,16 @@ _SUBS = {
         if not outs:
             return None"""
     )],
+    # The 2026-08-17 exit-life damp, OFF. This is the isolation for the
+    # fade-crater fix: everything else in selection is identical, so any
+    # seam where `nolife` and `current` disagree is a seam the damp
+    # MOVED - and that set is the entire audible surface of the change.
+    # Rating those is focused testing; rating random seams is not.
+    "nolife": [(
+        """            xlife = EXIT_LIFE_FLOOR + (1.0 - EXIT_LIFE_FLOOR) \\
+                * self._exit_life(cur, o["time_s"])""",
+        """            xlife = 1.0"""
+    )],
     # `ea` stays defined: rhythm_fit uses it further down to match A's and
     # B's section energies, which is a different job from the alive test.
     "win": [(
@@ -137,6 +147,9 @@ VARIANTS = {
     "clamp_only": (("legacy",), True),
     # live PLUS the still-unapplied energy-window fix
     "win":        (("win",), True),
+    # the fade-crater damp turned OFF - pair with "current" to see
+    # exactly which seams the 2026-08-17 exit-life fix moved
+    "nolife":     (("nolife",), True),
 }
 BASELINE = "legacy"         # the red line in the Exit Compare tab
 PROPOSED = "current"        # the green line's default
