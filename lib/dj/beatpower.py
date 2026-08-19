@@ -69,10 +69,30 @@ def path():
         return env
     if _MUSIC_ROOT:
         return os.path.join(_MUSIC_ROOT, "beat_power.json")
-    # Legacy repo-logs location: only reachable before any LibraryDB
-    # exists (no DJ tool touches beatpower before opening the library).
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "logs", "beat_power.json")
+    # No LibraryDB yet. Resolve the SAME parallel-location default the
+    # app uses (lib.dj.default_music_dir: the library always sits at
+    # <repo_parent>/music, at a known location relative to the project
+    # on every install), so a reader that runs before the DB is opened
+    # still finds the profile the engine will use. Computed inline
+    # rather than imported - lib/dj/__init__ imports this module.
+    #
+    # This matters on the DEPLOYMENT machine specifically: the profile
+    # is carried by the operator's music sync because it lives next to
+    # the DB it is keyed to, while the repo's logs/ is gitignored and
+    # per-machine. Falling through to logs/ there means an EMPTY
+    # profile, which is not an error anyone sees - it is the whole
+    # precision stack (kick-true anchors, phase interpolation, the
+    # local grid_conf standdown) going silently inert, i.e. the
+    # 2026-08-14 "bad beat matching" day that no local render could
+    # reproduce. Prefer the real file; keep logs/ only as a
+    # last resort so existing local setups still resolve.
+    _repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    _parallel = os.path.join(os.path.dirname(_repo), "music",
+                             "beat_power.json")
+    if os.path.exists(_parallel):
+        return _parallel
+    return os.path.join(_repo, "logs", "beat_power.json")
 
 
 _CACHE = {"mtime": None, "scores": {}}
