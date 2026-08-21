@@ -734,7 +734,8 @@ class LabTab(QWidget):
         self.stack.setCurrentIndex(idx)
         self.legend.setText((
             "click to play from there",
-            "deck A ▲ amber, deck B ▼ cyan · solid tick = measured kick, "
+            "deck A/out ▲ amber, deck B/in ▼ cyan · solid tick = measured "
+            "kick, "
             "dashed = stored grid · wheel zoom, drag pan, click plays",
             "red = the pre-2026-08-07 engine's exit, green = this build · "
             "hatched = the play-time budget's floor",

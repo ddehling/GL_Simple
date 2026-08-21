@@ -507,7 +507,10 @@ class SeamScope(QWidget):
         p.fillRect(QRectF(bx0, y_a, max(bx1 - bx0, 2.0),
                           y_b + lane_h - y_a), band)
         # The seam itself is named on the time axis; the rest get text
-        # where there is room for it, inside the lanes.
+        # where there is room for it, inside the lanes. Every lane label
+        # records its rect in `placed` so later text (the stem names)
+        # dodges it instead of printing on top.
+        placed = []
         for tv, col, lbl, ly in ((self._t_blend, SEAM, "blend", y_a + 2),
                                  (self._t_out, SEAM, "", 0.0),
                                  (self._t_swap, SEAM, "A out", y_b + 2),
@@ -520,12 +523,14 @@ class SeamScope(QWidget):
             p.drawLine(int(x), int(y_a - 2), int(x), int(y_b + lane_h + 2))
             if lbl:
                 p.setPen(col)
-                p.drawText(QRectF(x + 3, ly, 70, 12),
-                           Qt.AlignmentFlag.AlignLeft, lbl)
+                r = QRectF(x + 3, ly,
+                           p.fontMetrics().horizontalAdvance(lbl) + 2, 12)
+                p.drawText(r, Qt.AlignmentFlag.AlignLeft, lbl)
+                placed.append(r)
 
         # -- automation lanes ------------------------------------------------
-        for key, rect, col, name in (("a", a_rect, A_COL, "OUT"),
-                                     ("b", b_rect, B_COL, "IN")):
+        for key, rect, col, name in (("a", a_rect, A_COL, "A/OUT"),
+                                     ("b", b_rect, B_COL, "B/IN")):
             d = sim[key]
             live = d["playing"]
             self._curve(p, rect, d["gain"], col, 2.0, fill=True, vmax=gmax)
@@ -535,16 +540,33 @@ class SeamScope(QWidget):
                         mask=live)
             self._curve(p, rect, d["high"], EQ_HIGH, 1.2, [1, 3], vmax=gmax,
                         mask=live)
+            stem_lbls = []
             for sname, vals in sorted(d["stems"].items()):
                 if max(vals) - min(vals) < 0.02 and abs(vals[0] - 1.0) < 0.02:
                     continue
                 self._curve(p, rect, vals, STEM, 1.4, [4, 2], vmax=gmax,
                             mask=live)
                 j = min(range(len(vals)), key=lambda q: vals[q])
-                p.setPen(STEM)
-                p.drawText(int(self._px0 + j * (rect.width()
-                                                / max(len(vals) - 1, 1))) + 2,
-                           int(rect.bottom() - 3), sname)
+                stem_lbls.append((self._px0 + j * (rect.width()
+                                                   / max(len(vals) - 1, 1))
+                                  + 2, sname))
+            # A stem style ducks several stems at the same beat, so their
+            # minima - where the names are anchored - usually coincide.
+            # Stack colliding names upward instead of printing them on top
+            # of one another, and dodge the seam labels ('no return' lives
+            # in the same bottom row; lab-reported: unreadable overlap).
+            p.setPen(STEM)
+            fm = p.fontMetrics()
+            for x_l, sname in sorted(stem_lbls):
+                r = QRectF(x_l, rect.bottom() - 14,
+                           fm.horizontalAdvance(sname) + 2, 12)
+                for _ in range(max(int(lane_h // 12) - 1, 0)):
+                    if not any(r.intersects(q) for q in placed):
+                        break
+                    r.translate(0, -12)
+                p.drawText(r, Qt.AlignmentFlag.AlignLeft
+                           | Qt.AlignmentFlag.AlignBottom, sname)
+                placed.append(r)
             p.setPen(TXT_HI)
             f = p.font()
             f.setPointSizeF(max(f.pointSizeF() - 1.5, 6.5))
@@ -596,29 +618,28 @@ class SeamScope(QWidget):
         f = p.font()
         f.setPointSizeF(max(f.pointSizeF() - 2.0, 6.0))
         p.setFont(f)
-        last_x = -1e9
-        for t, lbl, deck in sim["marks"]:
-            if not (self._lo <= t <= self._hi):
-                continue
-            x = self._x(t)
-            col = A_COL if deck == "a" else B_COL if deck == "b" else TXT
+        # One sorted pass over marks + the arm point: every tick is drawn,
+        # but a label only prints where the PREVIOUS drawn label actually
+        # ended. (The old check measured the current label's width against
+        # the previous tick's x, so a short label after a long one - 'sync
+        # B' after 'filter off B' - printed on top of it, and 'armed' was
+        # drawn with no check at all.)
+        rail = [(self._x(t), f"{lbl}" + (f" {deck.upper()}" if deck else ""),
+                 A_COL if deck == "a" else B_COL if deck == "b" else TXT)
+                for t, lbl, deck in sim["marks"]
+                if self._lo <= t <= self._hi]
+        t_arm = self.after_s - self.info["cue_a"]
+        if self._lo <= t_arm <= self._hi:
+            rail.append((self._x(t_arm), "armed", ARM))
+        last_end = -1e9
+        for x, text, col in sorted(rail, key=lambda q: q[0]):
             p.setPen(QPen(col, 1))
             p.drawLine(int(x), int(y_rail), int(x), int(y_rail + rail_h))
-            text = f"{lbl}" + (f" {deck.upper()}" if deck else "")
-            if x - last_x > p.fontMetrics().horizontalAdvance(text) + 8:
+            if x + 2 >= last_end + 6:
                 p.setPen(col)
                 p.drawText(QRectF(x + 2, y_rail + 1, 120, rail_h - 2),
                            Qt.AlignmentFlag.AlignLeft, text)
-                last_x = x
-        # arm point, when it falls inside the render window
-        t_arm = self.after_s - self.info["cue_a"]
-        if self._lo <= t_arm <= self._hi:
-            x = self._x(t_arm)
-            p.setPen(QPen(ARM, 1))
-            p.drawLine(int(x), int(y_rail), int(x), int(y_rail + rail_h))
-            p.setPen(ARM)
-            p.drawText(QRectF(x + 2, y_rail + 1, 60, rail_h - 2),
-                       Qt.AlignmentFlag.AlignLeft, "armed")
+                last_end = x + 2 + p.fontMetrics().horizontalAdvance(text)
 
         # -- time axis (seconds from the seam) --------------------------------
         span = self._hi - self._lo

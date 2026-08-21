@@ -385,7 +385,9 @@ class _BandCanvas(QWidget):
                         p.drawLine(int(x), int(cy),
                                    int(x), int(cy + sgn * half))
 
-        # blend / swap markers
+        # blend / swap markers - when the lines land close together the
+        # second label drops a row instead of printing over the first
+        last_end = -1e9
         for t, label, col in ((d["marks"]["blend_s"], "blend",
                                QColor(120, 255, 120)),
                               (d["marks"]["swap_s"], "swap",
@@ -394,7 +396,11 @@ class _BandCanvas(QWidget):
                 p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
                 p.drawLine(int(X(t)), 0, int(X(t)), H)
                 p.setPen(col)
-                p.drawText(int(X(t)) + 4, 14, label)
+                x = int(X(t)) + 4
+                y = 14 if x >= last_end + 6 else 26
+                p.drawText(x, y, label)
+                if y == 14:
+                    last_end = x + p.fontMetrics().horizontalAdvance(label)
 
         if self.playhead is not None and lo <= self.playhead <= hi:
             p.setPen(QPen(QColor(240, 240, 245), 2))

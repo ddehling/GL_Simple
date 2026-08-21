@@ -93,6 +93,22 @@ class ExitLanes(QWidget):
         W = max(self.width() - 70, 10)
         return 55 + W * max(0.0, min(t / max(dur, 1e-6), 1.0))
 
+    @staticmethod
+    def _label_right(p, placed, x_right, y, text, step=13):
+        """Right-edge-anchored label that drops a row instead of printing
+        over an already-placed one. The budget note, both exit tags and
+        'comedown' all crowd the same corner on a late exit (lab-reported:
+        overlapping text made the lens unreadable)."""
+        w = p.fontMetrics().horizontalAdvance(text)
+        x_right = max(x_right, 57 + w)       # keep it on the plot
+        r = QRectF(x_right - w, y, w + 1, step)
+        for _ in range(6):
+            if not any(r.intersects(q) for q in placed):
+                break
+            r.translate(0, step)
+        p.drawText(r, Qt.AlignmentFlag.AlignLeft, text)
+        placed.append(r)
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.fillRect(self.rect(), BG)
@@ -113,7 +129,7 @@ class ExitLanes(QWidget):
         strip = 13
         p.setPen(TXT)
         p.drawText(QRectF(2, y, 50, strip), Qt.AlignmentFlag.AlignVCenter,
-                   "OUT")
+                   "A/OUT")
 
         # sections
         for sec in a.sections or []:
@@ -150,13 +166,18 @@ class ExitLanes(QWidget):
             p.drawLine(int(xf), int(body_top), int(xf), int(body_top + body_h))
 
         # last groove end - past here is comedown
+        placed = []                 # label rects; later text dodges them
         lge = last_groove_end(a)
         if lge:
             xg = self._t2x(lge, dur)
             p.setPen(QPen(QColor(230, 200, 90, 190), 1, Qt.PenStyle.DotLine))
             p.drawLine(int(xg), int(body_top), int(xg), int(body_top + body_h))
             p.setPen(QColor(230, 200, 90, 210))
-            p.drawText(int(xg) + 3, int(body_top + body_h) - 3, "comedown →")
+            r = QRectF(xg + 3, body_top + body_h - 16,
+                       p.fontMetrics().horizontalAdvance("comedown →") + 2, 13)
+            p.drawText(r, Qt.AlignmentFlag.AlignLeft
+                       | Qt.AlignmentFlag.AlignBottom, "comedown →")
+            placed.append(r)
 
         # Candidate mix-outs: the pool best_pair actually chooses from, tick
         # height by score. Drawn AFTER the floor so the ones it swallows are
@@ -179,18 +200,21 @@ class ExitLanes(QWidget):
             p.setBrush(QBrush(col if not killed else BG))
             p.drawRect(QRectF(x - 2.5, base - hh - 5, 5, 5))
             p.setBrush(Qt.BrushStyle.NoBrush)
-        if aft and xf is not None:
-            p.setPen(FLOOR)
-            p.drawText(QRectF(max(57, xf - 190), body_top + 1, 186, 12),
-                       Qt.AlignmentFlag.AlignRight,
-                       f"budget forbids exiting before "
-                       f"{aft/dur*100:.0f}% →")
-
         # the two exits
         lanes = ((("cur", NEW, "seam"),) if self.simple
                  else (("cur", CUR, "before"), ("new", NEW, "now")))
         for key, col, label in lanes:
-            self._draw_exit(p, s, key, col, label, dur, body_top, body_h)
+            self._draw_exit(p, s, key, col, label, dur, body_top, body_h,
+                            placed)
+
+        # Budget note LAST so it drops below the exit tags when they crowd:
+        # the floor often lands right beside the old exit, and both texts
+        # sat on the same top row.
+        if aft and xf is not None:
+            p.setPen(FLOOR)
+            self._label_right(p, placed, xf - 4, body_top + 1,
+                              f"budget forbids exiting before "
+                              f"{aft/dur*100:.0f}% →")
 
         # Playhead, mapped from render time back onto A's own timeline.
         if self.playhead is not None:
@@ -211,7 +235,7 @@ class ExitLanes(QWidget):
         pre = max(12.0, s["beats"] * 60.0 / max(s["a"].bpm, 60.0) + 6.0)
         return s[key]["out_s"] - pre
 
-    def _draw_exit(self, p, s, key, col, label, dur, top, h):
+    def _draw_exit(self, p, s, key, col, label, dur, top, h, placed):
         e = s[key]
         out_s = e["out_s"]
         x = self._t2x(out_s, dur)
@@ -236,8 +260,7 @@ class ExitLanes(QWidget):
             tag += " (fallback)"
         p.setPen(col)
         yt = top + (2 if key == "cur" else 15)
-        p.drawText(QRectF(x - 148, yt, 145, 13),
-                   Qt.AlignmentFlag.AlignRight, tag)
+        self._label_right(p, placed, x - 3, yt, tag)
 
     # -- lane B: the incoming track ---------------------------------------
     def _draw_b(self, p, s, y, h):
@@ -246,7 +269,7 @@ class ExitLanes(QWidget):
         strip = 13
         p.setPen(TXT)
         p.drawText(QRectF(2, y, 50, strip), Qt.AlignmentFlag.AlignVCenter,
-                   "IN")
+                   "B/IN")
         for sec in b.sections or []:
             x0, x1 = self._t2x(sec["start_s"], dur), self._t2x(sec["end_s"], dur)
             col = SECTION_COLORS.get(sec.get("kind"), QColor(85, 85, 90))
