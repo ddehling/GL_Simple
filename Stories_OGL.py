@@ -401,7 +401,7 @@ class EnvironmentalSystem:
         self._dj_pending_flavor = {}           # armed while idle, set on start
         self._dj_pending_arc = []              # arc waypoints armed while idle
         self._dj_pending_nudge = 0.0
-        self._dj_idle_vocab = (0.0, [])        # (stamp, tag vocab) for chips
+        self._dj_idle_vocab = (0.0, [], [])    # (stamp, vocab, genre tags)
         self._dj_last_error = ""
 
         # Beat / tempo detector — a pure consumer of the analyzer output,
@@ -2585,7 +2585,7 @@ class EnvironmentalSystem:
                     mode = 'pool' if action == 'setlist_pool' else 'order'
                     name = str(arg or '') or None
                     self._dj_pending_setlist = (name, mode) if name else None
-                    self._dj_idle_vocab = (0.0, [])   # re-scope the chips
+                    self._dj_idle_vocab = (0.0, [], [])  # re-scope the chips
                     if self._dj is not None and self._dj.active:
                         self._dj.load_setlist(str(arg or ''), mode=mode)
                 elif action in ('nudge', 'arc') and (
@@ -2708,9 +2708,9 @@ class EnvironmentalSystem:
         import time as _t
         import json as _json
         from lib.dj.themes import BUILTIN_THEMES, get_theme
-        stamp, vocab = self._dj_idle_vocab
+        stamp, vocab, genre_tags = self._dj_idle_vocab
         if _t.time() - stamp > 30.0:
-            vocab = []
+            vocab, genre_tags = [], []
             try:
                 from lib.dj.db import LibraryDB
                 from lib.dj import resolve_music_dir
@@ -2730,27 +2730,74 @@ class EnvironmentalSystem:
                             scope = {e['track_id'] for e in sl['entries']}
                     except Exception:
                         pass
-                user, auto = {}, {}
+                # Mirror DJSystem._refresh_tags: user tags first (always),
+                # then genres/decades/moods/auto — so the idle prep page
+                # shows the SAME chip groups the live page does (genre
+                # chips used to appear only after start; user-reported
+                # 2026-08-16). Counts fold per track across all sources,
+                # matching the live all_tags counting.
+                per_track = {}
                 for r in db.conn.execute("SELECT track_id, tag FROM tags"):
                     if scope is not None and r['track_id'] not in scope:
                         continue
-                    user[r['tag']] = user.get(r['tag'], 0) + 1
+                    per_track.setdefault(r['track_id'], []).append(r['tag'])
+                user, genre, decade = set(), set(), set()
+                mood, auto = set(), set()
+                counts = {}
                 for r in db.conn.execute(
-                        "SELECT id, auto_tags FROM tracks WHERE error"
+                        "SELECT id, auto_tags, enrichment, file_genre,"
+                        " mood_ml FROM tracks WHERE error"
                         " IS NULL AND missing = 0"):
                     if scope is not None and r['id'] not in scope:
                         continue
-                    for t in _json.loads(r['auto_tags'] or '[]'):
-                        auto[t] = auto.get(t, 0) + 1
+                    folded = set(per_track.get(r['id'], []))
+                    user.update(folded)
+                    a = _json.loads(r['auto_tags'] or '[]')
+                    auto.update(a)
+                    folded.update(a)
+                    enr = _json.loads(r['enrichment'] or '{}')
+                    g = {str(x).lower() for x in (enr.get('genres') or [])}
+                    for part in (r['file_genre'] or '').replace(
+                            '/', ',').replace(';', ',').split(','):
+                        part = part.strip().lower()
+                        if part:
+                            g.add(part)
+                    genre.update(g)
+                    folded.update(g)
+                    if enr.get('decade'):
+                        decade.add(enr['decade'])
+                        folded.add(enr['decade'])
+                    mm = _json.loads(r['mood_ml'] or '{}')
+                    ms = {str(m).lower() for m in (mm.get('moods') or [])}
+                    mood.update(ms)
+                    folded.update(ms)
+                    for t in folded:
+                        counts[t] = counts.get(t, 0) + 1
                 db.close()
-                vocab = [(t, n, True) for t, n in
-                         sorted(user.items(), key=lambda kv: -kv[1])]
-                vocab += [(t, n, False) for t, n in
-                          sorted(auto.items(), key=lambda kv: -kv[1])
-                          if t not in user][:64 - len(vocab)]
+                vocab = [(t, counts.get(t, 0), True) for t in
+                         sorted(user, key=lambda k: (-counts.get(k, 0), k))]
+                seen = set(user)
+
+                def _extend(names, cap=None):
+                    rows = sorted(
+                        ((n, counts.get(n, 0)) for n in names
+                         if n not in seen and counts.get(n, 0) > 0),
+                        key=lambda kv: (-kv[1], kv[0]))
+                    if cap is not None:
+                        rows = rows[:cap]
+                    seen.update(n for n, _ in rows)
+                    return [(n, c, False) for n, c in rows]
+
+                genre_rows = _extend(genre, cap=40)
+                genre_tags = sorted(g for g, _, _ in genre_rows)
+                vocab += genre_rows
+                vocab += _extend(decade)
+                vocab += _extend(mood, cap=24)
+                vocab += _extend(auto)
+                vocab = vocab[:128]
             except Exception as e:
                 print(f"[DJ] idle vocab skipped: {e}")
-            self._dj_idle_vocab = (_t.time(), vocab)
+            self._dj_idle_vocab = (_t.time(), vocab, genre_tags)
         theme = get_theme(self.dj_cfg.get('theme', 'groove'))
         wps = self._dj_pending_arc
 
@@ -2773,6 +2820,7 @@ class EnvironmentalSystem:
                                      + self._dj_pending_nudge)),
             "themes": sorted(BUILTIN_THEMES),
             "tags": vocab,
+            "genre_tags": genre_tags,
             "flavor": dict(self._dj_pending_flavor),
             "arc_waypoints": list(wps),
             "arc_cycle_s": (float(self.dj_cfg.get('night_hours', 6.0))
