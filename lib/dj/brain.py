@@ -99,6 +99,24 @@ EXIT_LIFE_FLOOR = 0.2
 # (the Condor-class B-gap) are a separate, undiagnosed lever.
 ENTRY_LIFE_SPAN_S = 20.0
 ENTRY_LIFE_RESCUE_MIN = 0.25
+# Energy-match sigmas for best_pair's rhythm_fit term, split by which
+# side is louder. HOT (B enters above A's exit) has always been tight:
+# B slamming in over a receding A is the real lurch. QUIET (B enters at
+# or below A) was widened to 0.8 by the 08-17 crater fix ("A carrying
+# over a quiet entry is the blessed shape") - and that stand-down is
+# what let full-groove exits pair with near-silent intros: measured
+# 2026-08-19 over 4 nights / 406 seams, 52% of ALL seams read as a soft
+# dip, 146 of 149 dip seams had B entering below 0.6 of its own body,
+# style-independent (a blend that dips is still a dip). Re-tightening
+# QUIET to 0.4 is the counterfactual that was RUN, not guessed: dip
+# share 52.0% -> 42.3%, groove-over-groove 48% -> 58%, fades 15.3% ->
+# 11.2% - while the exit side stays protected from the old crater
+# regression by xlife (EXIT_LIFE_*), which did not exist when 0.8 was
+# chosen. Applied 2026-08-23 after live thumbs-downs kept landing on
+# exactly this shape. Named constants so plan-level sweeps can vary
+# them without editing best_pair.
+ENTRY_MATCH_SIG_HOT = 0.4
+ENTRY_MATCH_SIG_QUIET = 0.4
 
 # GATE BARS, named so the Gate Check panel can show what a seam was judged
 # against without re-typing the numbers (lib/dj/gateprobe.py reads these).
@@ -2713,22 +2731,18 @@ class Brain:
                 # BLEND WHERE THE BEATS ARE: a beat-matched blend is only
                 # audible as beat-matched if BOTH sides carry rhythm and
                 # comparable energy - otherwise it just reads as a fade.
-                # ASYMMETRIC since 2026-08-17 (the fade-crater class):
-                # B's entries are quiet intros by the golden rule, and a
-                # symmetric match term rewarded the A-exit that DIED to
-                # meet them - on Mukadderat the live groove anchor took
-                # 0.14 from this line while the dead one took 0.38, and
-                # that ratio outvoted every energy damp upstream. B
-                # hotter than A's exit is the real lurch (B slams in
-                # over a receding A: tight 0.4 sigma stays); A carrying
-                # over a quiet entry is the blessed shape itself
-                # (recede 0.5 holds the room while B rises), so that
-                # side only leans, it never drags the exit into the
-                # comedown to "match".
+                # Sigma history lives at the ENTRY_MATCH_SIG_* constants:
+                # briefly asymmetric 0.4/0.8 (2026-08-17, so a quiet
+                # entry wouldn't drag the exit into the comedown to
+                # "match" - the Mukadderat dead-anchor class), symmetric
+                # 0.4 again since 2026-08-23 (the wide quiet side WAS
+                # the 52%-soft-dip cause; xlife now guards the exit side
+                # instead, so the crater can't return through here).
                 rb = sec_b.get("rhythm_density") or 0.0
                 eb = sec_b.get("energy") or 0.0
                 beaty = ra >= 1.2 and rb >= 1.2
-                _esig = 0.4 if eb > ea else 0.8
+                _esig = (ENTRY_MATCH_SIG_HOT if eb > ea
+                         else ENTRY_MATCH_SIG_QUIET)
                 rhythm_fit = (1.3 if beaty else 0.55) \
                     * math.exp(-((ea - eb) ** 2) / (2 * _esig ** 2))
                 # Two lead-carrying sections over each other = clash: heavy
