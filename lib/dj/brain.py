@@ -3594,11 +3594,23 @@ class Brain:
             # actually hits and aligns THAT (validated 2-17ms kick-to-
             # kick on rendered seams). kick_offset_s is folded bass
             # placement, and these two screens were benching ~23% of
-            # confident pairs on it. They stand only where the seam's
-            # local phase is UNMEASURED (_local_ok, same evidence rule
-            # as the conf wall).
-            if _kick_delta_s(cur, cand, rate) > KICK_SCREEN_CUT_S \
-                    and not _local_ok:
+            # confident pairs on it.
+            # WAIVER REVOKED FOR THE CUT TIER (2026-08-23). The _local_ok
+            # stand-down failed its exam on cuts, twice in one day:
+            # swept against 117 rated cut-family seams, kick delta
+            # orders the verdicts (good med 20.6ms / bad 32.3ms; 28ms
+            # bar = 68% precision vs 59% base - the first plan-time
+            # quantity to beat base rate anywhere in this project), and
+            # the bads concentrate in the WAIVED group (57% of waived
+            # bads over the bar vs 11.9ms median for un-waived bads).
+            # Same day, live: two waived cuts (108/141ms delta) measured
+            # 0.42+ beats of seam error. Phase correction aligns the
+            # lattice to the music; on a cut the OFFSET DIFFERENCE
+            # plays naked either way. The 20ms blend-tier screen below
+            # keeps its waiver - blends consume the offset over a
+            # synced span, and that exam (2026-08-07) went the other
+            # way there.
+            if _kick_delta_s(cur, cand, rate) > KICK_SCREEN_CUT_S:
                 kill(("cut_at_drop", "echo_out",
                       "loop_build", "loop_roll_exit",
                       "loop_in"), "kick_offset>28ms")
