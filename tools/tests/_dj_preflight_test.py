@@ -93,6 +93,24 @@ def main():
           res.get("flam_med_ms") is not None,
           f"flam={res.get('flam_med_ms')} after {i + 1} seam(s)")
 
+    # Fast mode (the production default) must not move the measurement:
+    # bigger blocks + early-stop were A/B'd bit-identical on 10 rated
+    # seams (2026-08-23); this holds that. (The varispeed engine swap
+    # was REJECTED the same day - 19.9ms max drift - keep stretch
+    # engines matched to live.)
+    t0 = time.time()
+    resf = preflight.render_and_measure(MUSIC, cur.id, cand.id,
+                                        dict(plan), "groove", fast=True)
+    t_fast = time.time() - t0
+    wf, ff = res.get("flam_med_ms"), resf.get("flam_med_ms")
+    if wf is None and ff is None:
+        check("fast mode parity", True, "both decline")
+    else:
+        check("fast mode parity",
+              wf is not None and ff is not None and abs(wf - ff) <= 2.0,
+              f"full={wf}ms fast={ff}ms in {t_fast:.1f}s "
+              f"(vs {t_worker:.1f}s)")
+
     m = Q.render_seam(library, cur, "long_blend", pair=(cand, meta),
                       gap_policy=False)
     ki = (m or {}).get("kick_iso") or {}

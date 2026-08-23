@@ -121,7 +121,9 @@ def launch_shadow(music_root, a_id, b_id, plan, theme, lead_s,
     # never re-plans: re-planning in a 2-track library diverges.
     with open(job_p, "wb") as f:
         pickle.dump({"music_root": music_root, "a_id": a_id, "b_id": b_id,
-                     "plan": plan, "theme": theme}, f)
+                     "plan": plan, "theme": theme,
+                     "fast": bool(_tuning.value("preflight_fast", 1.0))},
+                    f)
     repo = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
     kw = {"cwd": repo, "stdout": subprocess.DEVNULL,
@@ -200,7 +202,8 @@ def _load_track(db, track_id):
                      user_tags=db.tags_for(track_id))
 
 
-def render_and_measure(music_root, a_id, b_id, plan, theme_name):
+def render_and_measure(music_root, a_id, b_id, plan, theme_name,
+                       fast=False):
     """Render the armed plan offline and measure kick alignment.
 
     Mirrors tools/tests/_dj_quality_test.render_seam's render path (real
@@ -210,11 +213,21 @@ def render_and_measure(music_root, a_id, b_id, plan, theme_name):
     live in the plan's fields; the policy itself is not re-run here
     (its input telemetry no longer exists), so gap-adjusted seams are
     rendered from the adjusted plan - `gap` rides the result so readers
-    can segment. Returns the result dict (never raises)."""
+    can segment. Returns the result dict (never raises).
+
+    `fast` (2026-08-23, after the live shadow run showed a ~2fps render
+    dip in worker windows): 4x block size - the render loop is Python-
+    iteration-bound, not DSP-bound - and stop rendering once the
+    instrument's own measurement span (blend + 24s + margin) is
+    covered instead of running to swap+8s. Event scheduling and the
+    PLL coarsen from 23ms to 93ms granularity; _dj_preflight_test's
+    A/B holds fast-vs-full flam agreement, which is the only fidelity
+    that matters here."""
     import numpy as np
     t_start = time.time()
+    block = BLOCK * 4 if fast else BLOCK
     res = {"a_id": a_id, "b_id": b_id, "style": plan.get("style"),
-           "gap": bool(plan.get("gap"))}
+           "gap": bool(plan.get("gap")), "fast": bool(fast)}
     try:
         from lib.audio_engine import AudioEngine
         from lib.dj import beatpower, features as F, seamverify
@@ -250,8 +263,8 @@ def render_and_measure(music_root, a_id, b_id, plan, theme_name):
         gen = engine._mixer()
         next(gen)
         n_blocks = 0
-        for _ in range(int(2.0 * RATE) // BLOCK):      # telemetry warm-up
-            gen.send(BLOCK)
+        for _ in range(int(2.0 * RATE) // block):      # telemetry warm-up
+            gen.send(block)
             n_blocks += 1
         sub.post({"cmd": "load", "deck": "b", "samples": b,
                   "grid": cand.grid, "track_id": cand.id,
@@ -269,7 +282,7 @@ def render_and_measure(music_root, a_id, b_id, plan, theme_name):
                         sub.post({"cmd": "attach_stems", "deck": deck,
                                   "stems": st_})
         for _ in range(4):
-            gen.send(BLOCK)
+            gen.send(block)
             n_blocks += 1
         events, swap_at, blend_at = brain.build_events(
             plan, sub.telemetry, "a", "b", cur, cand)
@@ -287,20 +300,27 @@ def render_and_measure(music_root, a_id, b_id, plan, theme_name):
                 return f
             _d.read = _wrap(_d.read, _nm)
 
-        end_clock = swap_at + int(8.0 * RATE)
+        if fast:
+            # The instrument reads [blend, min(swap, blend+24s)] - render
+            # just past that, not to swap+8s.
+            end_clock = min(swap_at, blend_at + int(24.0 * RATE)) \
+                + int(4.0 * RATE)
+        else:
+            end_clock = swap_at + int(8.0 * RATE)
         # Hard block cap: a wedged deck must not spin this worker forever
         # (fail open = fail FAST).
-        cap = n_blocks + int((end_clock - sub.clock) / BLOCK) + 2048
+        cap = n_blocks + int((end_clock - sub.clock) / block) + 2048
+        pos_every = 1 if fast else 4     # keep trace density ~constant
         while sub.clock < end_clock and n_blocks < cap:
-            gen.send(BLOCK)
+            gen.send(block)
             n_blocks += 1
-            if n_blocks % 4 == 0:
+            if n_blocks % pos_every == 0:
                 for _nm in ("a", "b"):
                     _d = sub.decks[_nm]
                     if _d.playing:
                         pos_trace[_nm].append((sub.clock,
                                                _d.source_time_s()))
-        total_len = n_blocks * BLOCK
+        total_len = n_blocks * block
         _sc0 = sub.clock - total_len
         deck_arr = {}
         for _nm in ("a", "b"):
@@ -335,8 +355,15 @@ def main():
     job_p, res_p = sys.argv[1], sys.argv[2]
     with open(job_p, "rb") as f:
         job = pickle.load(f)
+    # NOTE (2026-08-23): swapping the worker's stretch engine to
+    # varispeed was A/B'd for more speed (1.7x) and REJECTED: the live
+    # decks play rubberband, and measuring a varispeed rendition moved
+    # flam by up to 19.9ms (mean 9.2ms) on the same seams - the exact
+    # harness-fidelity violation DJ_VERIFICATION.md rule 4 exists for.
+    # Fast mode stays: bigger blocks + early-stop, bit-identical flam.
     res = render_and_measure(job["music_root"], job["a_id"], job["b_id"],
-                             job["plan"], job["theme"])
+                             job["plan"], job["theme"],
+                             fast=bool(job.get("fast")))
     with open(res_p, "w", encoding="utf-8") as f:
         json.dump(res, f)
 
