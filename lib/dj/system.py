@@ -25,6 +25,7 @@ import numpy as np
 
 from lib.dj.brain import (EXIT_BUDGET_FRAC, EXIT_LATE_HARD_FRAC,
                           GLIDE_PER_S, Brain, load_library, TrackInfo)
+from lib.dj import preflight as _preflight
 from lib.dj.db import LibraryDB
 from lib.dj.rhythm import seam_chips
 from lib.dj.submix import DJSubmix
@@ -1321,7 +1322,16 @@ class DJSystem:
                             "stem_bass_swap", "drum_bridge", "melody_carry")
                         or bool((self.plan or {}).get("duck_vocal_a")),
                         "decoding": bool(getattr(self, "_decoding", None)),
+                        # Was the shadow pre-flight worker running when
+                        # these callbacks starved? THE deploy question
+                        # for lib/dj/preflight - answered by data.
+                        "preflight": _preflight.active(),
                         "min_depth_ms": stats.get("min_depth_ms")})
+        # Shadow pre-flight results land here (watcher thread -> queue ->
+        # this tick), so the night log's `preflight` events interleave
+        # with the seams they measured.
+        for _pr in _preflight.poll():
+            self._log({"event": "preflight", **_pr})
 
     def _pick_next(self, out_bpm):
         """The live pick FOLLOWS the displayed queue: take the horizon's
@@ -1846,6 +1856,27 @@ class DJSystem:
                    "arc": round(self.arc_progress(), 3),
                    "theme": self.brain.theme.name,
                    "persona": self.brain.persona.name})
+        # SHADOW PRE-FLIGHT (2026-08-23): render this armed seam offline
+        # in an idle-priority SUBPROCESS and log what the ear-validated
+        # flam instrument measures (lib/dj/preflight - shadow only, it
+        # never touches the seam; every guard fails open to a
+        # `preflight_skip` log line).
+        # LIVE ONLY: offline sims/gates drive this same state machine
+        # with engine=None and must not spawn a render subprocess per
+        # simulated seam.
+        if self.engine is not None:
+            try:
+                _lead = (blend_at - self.submix.clock) / RATE
+                _skip = _preflight.launch_shadow(
+                    self.db.music_root, self.current.id,
+                    self.next_track.id, plan, self.brain.theme.name,
+                    _lead, time.time() + max(_lead, 0.0))
+                if _skip:
+                    self._log({"event": "preflight_skip", "why": _skip,
+                               "style": plan["style"]})
+            except Exception as _e:
+                self._log({"event": "preflight_skip", "why": f"err:{_e}",
+                           "style": plan["style"]})
 
     def _note_pool_played(self, track):
         pool = self.brain.pool_ids

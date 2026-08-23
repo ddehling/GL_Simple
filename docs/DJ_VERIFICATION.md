@@ -132,6 +132,46 @@ the anchors" but "render the planned seam offline during the 60–110s of
 arm lead (~13s/seam in the simulator) and measure it with the
 instrument that works."
 
+> 2026-08-23 addendum: a fifth plan-time lever — span drift, the
+> peak-to-peak variation of (phase_A − phase_B) walked across the blend
+> span from the beatpower phase profiles — was examined the same way:
+> verdicts at base rate over 289 rated seams (good med 7.6ms / bad
+> 8.7ms). Weak-moderate agreement with the rendered meter (ρ 0.43,
+> n=22), extremes only. A prioritizer for the pre-flight at most,
+> never a gate.
+
+### The arm-time pre-flight — SHADOW MODE (built 2026-08-23)
+
+The "untried shape" above is now built, in shadow: `lib/dj/preflight.py`
+renders every armed synced seam offline in an **idle-priority
+subprocess** during the arm lead and logs what
+`measured_kick_alignment` reads — it never touches the seam. Validated
+in sim first (36 rated seams): 0/12 operator-good seams tripped the
+45ms bar, and folding the measured per-deck residuals back into the
+phase estimates fixed a tripped drum_bridge 58.8 → 7.2ms; the 127ms
+specimen barely moved (a rhythmic-subdivision offset, not phase — the
+acting mode's second branch must be demote-to-fade, not retry).
+
+Night-log events:
+- `preflight` — one per completed shadow render: `flam_med_ms`,
+  `off_a_ms`/`off_b_ms`, `over_bar`, `declined`, `wall_s`/`decode_s`/
+  `render_s`, and `in_time` (did the measurement land before the blend
+  started — THE feasibility number for a future acting mode).
+- `preflight_skip` — why a seam wasn't shadowed (`disabled`,
+  `unsynced_style`, `short_lead`, `worker_busy`, `low_memory_*`,
+  `spawn_failed`, `timeout`). Every guard fails open.
+- `audio_starved` now carries `preflight: true/false` — whether the
+  worker was running when callbacks starved. This is the deploy-safety
+  question answered by data, not argument.
+
+Kill switch: tuning knob `preflight_shadow` (0 disables). Gate:
+`python tools/tests/_dj_preflight_test.py --music D:/Devel/music` —
+holds worker-vs-harness instrument parity (a fidelity gap here would
+invalidate every shadow log line), the real subprocess entry, and
+fail-open. Before any acting mode: shadow `flam_med_ms` must order the
+operator's live thumbs (rule 2), and `in_time` + `audio_starved`
+telemetry must show the deploy box tolerates it.
+
 Remaining smaller levers: extend the kick-agreement 0.35–0.6 damp
 beyond kit styles (weakest evidence, n=2); the Condor-class B-gap that
 evades the blend policy's envelope prediction.
