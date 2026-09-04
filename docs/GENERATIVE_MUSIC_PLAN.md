@@ -1,262 +1,226 @@
-# Continuous Generative Music for the Club / DJ System — Options & Plan
+# Generative Note-Level Music for the Club / DJ System — Options & Plan
 
-Status: PLAN ONLY (no code). Written 2026-09-04 after a survey of the audio engine,
-the DJ subsystem, the operator verdicts recorded in `docs/DJ_README.md`, and the
-2026 generative-music landscape.
+Status: PLAN ONLY (no code). Rewritten 2026-09-04 after the operator clarified the goal:
+**a system that generatively composes and plays notes** — a live algorithmic composer
+driving a synthesizer — not a system that renders finished tracks for the DJ to mix.
+(The earlier track-rendering direction is summarised in §8 and set aside.)
 
-## 0. Context
+## 0. What we are building
 
-The club set plays a music *library*: `lib/dj/` scans real tracks, beat-matches
-them, and mounts the whole mix as one `AudioEngine` track. The goal is a
-**continuous generative music** capability that never runs out, is steered by the
-signals the DJ already publishes (night arc, energy, key, mood), and drives the
-visuals the way the DJ does.
+A **generative deck**: an autonomous composer that decides notes (drums, bass, chords,
+melody, texture) a few bars ahead, a sample-accurate scheduler that plays them on the
+DJ's clock, and a synth engine that turns them into audio inside the existing
+`AudioEngine`. It is steered by the signals the show already publishes (night arc,
+energy target, key, mood, weather state), it can take the floor from the DJ and hand it
+back at a planned seam, and it publishes exact beat/bar/phrase/drop truth to the visuals.
+The same engine can play ambient generative music for the non-club weather sets.
 
-One design decision dominates everything else, and it comes from the operator's
-own ear, on record in `docs/DJ_README.md`:
-
-- the deck-C loop layer was shelved because "the bed loop isn't clean... not
-  particularly impressive" (README 245-289);
-- synthesized one-shots over tracks "read as a cheap sample pasted on the song"
-  (README 386-398);
-- "a crowd moment must change the music; everything else is a wet fart"
-  (README 399-408).
-
-**Therefore generative material must be first-class music the DJ selects and mixes
-at seams — never a layer pasted over records.** The plan below is built on that.
+It honours the operator verdicts on record in `docs/DJ_README.md` (245-289, 386-408):
+it is never a layer pasted over a record; when it plays, **it is the music**.
 
 ---
 
-## 1. What the codebase already gives us
+## 1. Constraints and seams (from the code survey)
 
-### Hard constraints
-| Constraint | Where | Consequence |
+| Constraint / seam | Where | Consequence for this design |
 |---|---|---|
-| Show box = Intel N150, 4 cores, **no GPU** | `config.yaml` `dj:` block, `bin/ensure_cpu_performance.sh` | No neural generation on the show box. Numpy/scipy DSP is fine (DJ FX run at ~2% CPU). |
-| **44100 Hz** mandatory while the DJ runs | `Stories_OGL.py:2860-2868`; every `lib/dj/*` hardcodes `RATE=44100` | All generated audio must arrive at (or be resampled to) 44.1 kHz stereo float32. |
-| `numpy==2.2.4`, `scipy==1.16.2` hard-pinned; no torch/librosa/mido in base | `requirements.txt`; torch stacks live in `requirements-dj-*.txt` and separate installs (`lib/dj/analyze.py:45-84`) | Neural generation runs on **another machine or a separate venv process**; the show process never imports torch. Hand-off is by files. |
-| Audio render thread is the deadline; measured 43% of a core during a keylock blend | `lib/audio_engine.py:457-485` | Never generate or resample full tracks in-process while music plays. Pre-render off-thread / in a nice-19 subprocess (`lib/dj/preflight.py:116-137`). |
-| Show is autonomous; MIDI deliberately not wired in | `Stories_OGL.py:417-422` | Generation is self-driving from outstate; operator control via the web panel only. |
-| SQLite is WAL and must be written locally, never over a network mount | `lib/dj/db.py:195`, `analyze.py:62-67` | A remote GPU box ships WAV + manifest; a show-side ingest process writes the DB. |
-
-### Integration seams to reuse
-| Seam | File | Use |
-|---|---|---|
-| Track protocol `read(n)->(n,2) f32`, `.done`, `fade_out`, mounted by `AudioEngine.attach_track` | `lib/audio_engine.py:755`, mixer `:838-925`, 1.2 s render-ahead ring `:59-62` | Anything that produces blocks is "just a track". |
-| `DJSubmix` — decks a/b/c, sample-accurate automation (`post_many`), PLL sync, `fx_play`, `duck`, `mix_gain`, telemetry | `lib/dj/submix.py:46` | Home for a stream deck (Path 2). |
-| Non-library audio through the *real* brain: Beatport preview "ghost" tracks; fully synthetic tracks with hermetic grids run end-to-end | `tools/dj/planner/discover.py`; `tools/tests/_dj_brain_test.py:264 synth_structured`, `e2e_test:301` | **The established pattern for Path 1.** |
-| Brain contract: `TrackInfo` (`brain.py:262`), `load_library:590`, `choose_next:2287`, `best_pair:2470`, `plan_transition:3044`, `build_events:4645` | `lib/dj/brain.py` | What a generated track must satisfy to get the full transition-style menu. |
-| Commission signals: `DJSystem.arc_target:668`, `bpm_target:611`, `_arc_base:651`, `_maybe_horizon:1416` (arc at +300 s steps), `theme.prefer_tags/bpm_range` | `lib/dj/system.py`, `themes.py` | Tell the generator *what to make next*. |
-| Ground truth → visuals: `live_beat:747`, `outstate_keys:791`, `DJVisualCoupler` | `lib/dj/system.py`, `lib/dj/vis.py` | Generated tracks carry exact grids, so visuals get better-than-analyzed truth. |
-| Internal analyzer tap (`set_monitor_tap`, `audio_source: internal`) | `Stories_OGL.py:2319`, `lib/audio_analyzer.py:443` | Spectrum for shaders comes free. |
-| Web `/dj` actions whitelist `DJ_ACTIONS`, `POST /api/dj/action`; declarative `INTERACTION_PANELS` | `web/web_controller.py:1150`, `lib/interaction.py` | Operator controls without new plumbing. |
-| Offline verification: hand-pumped engine e2e, `_dj_night_sim.py`, `seamverify.measured_kick_alignment`, `_dj_quality_test.render_seam`, Seam Lab ratings | `tools/tests/`, `lib/dj/seamverify.py:237`, `docs/DJ_VERIFICATION.md` | Every phase ends with a rendered gate. |
+| Show box: Intel N150, 4 cores, no GPU | `config.yaml` `dj:`, `bin/ensure_cpu_performance.sh` | Note-level composition is negligible CPU. Synthesis must be vectorised (numpy) or JIT (numba, already in `requirements.txt` and used by `lib/pixel_extract.py`). No neural audio models on-box. |
+| 44100 Hz stereo float32; every `lib/dj/*` hardcodes `RATE` | `Stories_OGL.py:2860-2868` | Synth renders natively at 44.1 kHz. |
+| Render-ahead thread is the deadline; 43% of a core measured during a keylock blend; pattern is pre-render off-thread | `lib/audio_engine.py:457-485`, `RING_TARGET_MS=1200` `:59` | Synthesis runs on its own worker thread into a ring; the deck's `read()` is a memcpy. numba `nogil` kernels release the GIL. |
+| Track protocol `read(n)->(n,2)`, `.done`, `fade_out`, `attach_track` | `lib/audio_engine.py:755` | Peer-track mode for non-club sets. |
+| `DJSubmix` decks a/b/c, sample-accurate automation in 256-frame sub-blocks, PLL sync, `duck`, `fx_play`, telemetry | `lib/dj/submix.py:46,:59,:105-130,:195,:521` | Home for the generative deck `"g"`. Its note scheduler uses the same `at`-stamped event idiom. |
+| `Deck` grid/phase surface: `beat_phase:336`, `phase_snap:349`, `_fetch:401`, `read:492` | `lib/dj/deck.py` | `GenDeck` subclasses `Deck`, serves audio from its ring, reports phase from its own clock (exact). |
+| Brain hand-off planning: `plan_transition:3044`, `best_pair:2470` (needs `mix_ins`/`mix_outs`), `build_events:4645`; a/b flip hardcoded at `system.py:1703,:1952` | `lib/dj/brain.py`, `system.py` | A virtual `GenTrack` TrackInfo (exact grid, `bpm_conf=1`, rolling sections, phrase-aligned mix points) lets the real brain plan record→gen and gen→record seams. The a/b flip must be generalised so `active_deck` may be `"g"`. |
+| Steering signals: `arc_target:668`, `bpm_target:611`, `_arc_base:651`, `theme.prefer_tags/bpm_range`, `key_center`, `music_mood`, weather params | `lib/dj/system.py`, `themes.py`, `Stories_OGL.py:2322-2399` | The composer's inputs. |
+| Visual truth: `live_beat:747`, `outstate_keys:791`, `DJVisualCoupler` | `lib/dj/system.py`, `lib/dj/vis.py` | The composer *knows* every drop before it happens → `dj_next_drop_eta`, engineered-drop stamps (`_dj_drop_wall/_dj_drop_hard`, `system.py:830`). |
+| Internal analyzer tap | `Stories_OGL.py:2319` | Spectrum for shaders is free. |
+| Web `/dj` `DJ_ACTIONS`, `POST /api/dj/action`, declarative `INTERACTION_PANELS` | `web/web_controller.py:1150`, `lib/interaction.py` | Operator controls: style preset, density/brightness/complexity, take/give the floor. |
+| Ambient beds per weather state: `play_ambient` / `_restore_state_ambient` | `Stories_OGL.py:1911-1945,:2950` | A set may declare `generative:` instead of `ambient_sound`; the generator becomes the bed. |
+| `python-osc` in requirements; `loopback` analyzer source exists | `requirements.txt`, `lib/audio_analyzer.py:26,:122` | Makes a SuperCollider backend *possible* later (§3, S3). |
+| Offline verification culture: hand-pumped engine e2e, `_dj_night_sim`, `seamverify`, Seam Lab ratings | `tools/tests/_dj_brain_test.py:301`, `docs/DJ_VERIFICATION.md` | Every phase ends with a rendered gate and a listening session. |
 
 ---
 
-## 2. Generation options
+## 2. The composer (what notes) — options
 
-| Option | On N150? | Beat-locked to DJ | Sound quality | Autonomy | Risk | Role |
-|---|---|---|---|---|---|---|
-| **A. Commissioned offline neural tracks** (Stable Audio Open 1.5 / ACE-Step / Magenta RT2 offline) on a GPU box, ingested as first-class library tracks | ✅ (gen elsewhere) | ✅ exact — ground-truth grid | ●●●● | ✅ | low-medium | **Primary** |
-| **B. Google Lyria RealTime** cloud stream (48k PCM, steerable bpm/scale/density/brightness; bpm/scale change = hard cut via `reset_context`; experimental, currently free) | ✅ (network) | ⚠ measured, not given | ●●●● | ✅ | medium (experimental API, venue internet) | Station mode |
-| **C. Magenta RealTime 2** live stream (Apache-2.0, 230M/2.4B; real-time officially on Apple Silicon; ~2× real-time `mrt2_small` on NVIDIA/Linux via community JAX port) | ❌ needs 2nd box | ⚠ measured | ●●●● | ✅ | high | Local alternative to B |
-| **D. Procedural numpy/scipy synthesis** in-process (pattern grammars + synth voices) | ✅ | ✅ exact | ●●○ | ✅ | low | CPU fallback + hermetic test fixture |
-| E. SuperCollider/Pure Data via OSC + loopback | ✅ | ⚠ via loopback | ●●● | ✅ | medium (2nd process, JACK, bypasses engine) | not recommended |
-| F. Loop-layer beds (deck C) with generated percussion | ✅ | ✅ | — | ✅ | **rejected by operator verdict** | only if real DJ tools land in `media/loops/` first |
+The composer works **phrase-first**: it plans 4–8 bars ahead (harmony, section, density
+targets), then realises each bar into note events just before it is needed. All variants
+share one `Phrase` data model so they can be swapped or combined.
 
-Why A is primary: it needs **no real-time generation at all**. The next pick is locked
-~20 s into the current record (`system.py:1577-1587`), so a generator only has to stay
-two horizon slots (~10–15 min) ahead of the arc; 10–60 s neural rendering fits with
-margin. The DJ then mixes generated tracks with its proven machinery, and because the
-generator *knows* its BPM, grid, downbeats, key and structure, every confidence gate
-that limits real records (`bpm_conf`, `downbeat_conf`, phrase, mix points) is cleared
-by ground truth. Quality is judged in the same Seam Lab / night-census flow as records.
+### C1. Rule- and probability-based algorithmic composition (recommended core)
+- **Harmony**: key from the DJ's Camelot / `key_center`; per-style chord grammars (Markov
+  over functions, e.g. i–VI–III–VII loops for club, modal drones for ambient); voice-leading
+  by nearest-tone; occasional modulation staged at phrase boundaries (and only when the DJ
+  is not about to mix a record in — the seam plan fixes the key).
+- **Rhythm**: per-voice Euclidean / probability grids (kick, clap, hats, perc), swing,
+  ghost notes, fills at phrase ends; density and syncopation scale with the energy target.
+- **Bass / melody**: constrained random walks and Markov chains over scale degrees with a
+  **motif memory** (state, repeat, vary, transpose, invert) so the night has identity;
+  call-and-response between voices; register and velocity ride energy.
+- **Form**: section state machine (intro → groove → build → break → drop → outro) driven
+  by the arc, with 16/32-bar phrase discipline and an engineered drop the visuals can
+  count down to.
+- **Style presets** per theme (`groove`, `peak_heavy`, `chill_evening`, `wind_down`) and
+  per weather set (forest, ocean, spooky…) as parameter bundles, not code.
+- Cost: microseconds per bar. Fully deterministic under a seed → hermetic tests.
+- Libraries: hand-roll the core (the sample-clock scheduler must be ours); optionally
+  borrow pattern classes from `isobar` (pure Python, MIT) and theory helpers from
+  `music21` (already in `requirements-dj-mood.txt`, heavy — only for offline tooling).
+
+### C2. Neural symbolic "phrase proposer" (later, optional)
+- Small MIDI transformers exist that run on CPU: Anticipatory Music Transformer
+  (`stanford-crfm/music-small-ar-inter-100k`, ~112M, Lakh MIDI, Apache-2.0), or the 2026
+  125M piano-autocomplete class of models (~100 notes/s on a phone). Electronic/dance
+  coverage in their training data is thin; treat output as *proposals* the rule engine
+  filters (key, range, density) rather than the composer itself.
+- Runs on the show box CPU for sparse parts (a 112M model at a few tokens per note is
+  feasible ahead of time) or on the optional GPU box (§6).
+
+### C3. LLM phrase director (later, optional)
+- Once per phrase (every 8–16 bars, seconds of latency is fine) an LLM proposes a
+  high-level plan: section, chord loop, motif operations, energy curve. Precedent: the
+  planner's Set Copilot runs through the `claude` CLI with no API key. Not in the audio
+  path; degrades to C1 silently when unavailable.
+
+**Recommendation:** C1 is the product; C2/C3 are seasoning after the engine exists.
 
 ---
 
-## 3. Recommended architecture
+## 3. The synth engine (how it sounds) — options
 
-Two delivery paths behind one commission/ingest contract, plus a procedural fallback.
+All backends implement one `Voice` interface: `note_on/off(pitch, vel, at_sample)`,
+`set_param(name, value, ramp)`, `render(n) -> (n,2)`.
+
+| | Backend | Fit | Verdict |
+|---|---|---|---|
+| **S1** | **In-process numba/numpy synth**: subtractive (multi-osc saw/square/sine → SVF/ladder-style filter → ADSR), 2-op FM, 808-style drum synthesis (kick pitch-sweep, noise snare/hat), sample player for one-shots; FX: tempo delay, FDN reverb, sidechain (`duck` already exists), master soft-clip | Everything stays inside `AudioEngine`: limiter, ring, analyzer tap, DJ hand-offs, no new process or system package. Rough budget: 16 voices × ~50 ops/sample × 44.1 k ≈ 35 M ops/s, a few % of a core in numba; block-vectorised numpy is also viable with the 1.2 s ring. | **Core.** Sound design is our effort, but that is also where the character comes from. |
+| **S2** | **FluidSynth + SoundFonts** via `pyfluidsynth` (`Synth` without `start()`, `get_samples(n)` → numpy, 44.1 kHz default) | Instant huge palette (pianos, strings, mallets, GM kits, synth SF2s), block-rendered into our protocol. Needs `libfluidsynth` (apt) + `.sf2` assets in `media/soundfonts/`. Low CPU. | **Optional instrument backend** behind the same `Voice` interface — strongest for ambient / organic sets, adequate for club leads. |
+| S3 | **SuperCollider `scsynth`** driven over OSC (`python-osc` present; `supriya`/`sc3nb` optional) | Best synth vocabulary, tiny CPU, runs on Pi-class hardware. But audio leaves our engine: no limiter/ring coupling, DJ crossfades only via the analyzer `loopback` source, a second process to supervise (JACK/PipeWire). | Later "pro" backend only if S1's palette proves limiting. |
+| S4 | VST3 hosting (Surge XT / Vital / Dexed via `pedalboard` or DawDreamer) | Excellent sounds, but Python hosts render in blocks with awkward state/tail semantics for continuous play, and pull in JUCE-sized deps. | Not first. |
+| S5 | MIDI out to hardware synths | Repo deliberately keeps MIDI out of the show (`Stories_OGL.py:417`); new hardware, `mido`/`rtmidi`. | Not recommended. |
+
+**Recommendation:** S1 core + S2 optional, one `Voice` interface, backend chosen per
+instrument slot in the style preset.
+
+---
+
+## 4. Architecture
 
 ```
-  DJSystem (night arc, bpm_target, key of horizon tail, prefer_tags, dryness)
-        │  commission JSON  (target bpm, camelot set, energy, duration, structure template)
-        ▼
-  lib/dj/gen/commission.py  ── files ──▶  GPU box worker  (Stable Audio / ACE-Step / MRT2 offline)
-                                                │  WAV (44.1k) + manifest (ground-truth grid, key,
-                                                │  sections, mix points, model, commission id)
-                                                ▼
-  lib/dj/gen/ingest.py  (show box, nice-19 subprocess): verify tempo/key against the audio,
-      measure loudness/kick_offset/energy/chroma/rhythm/beatpower, write DB row
-      (provenance='generated', auto_tag "generated", unique title) — atomic rename first
+  outstate: arc phase/heat, bpm_target, key (camelot / key_center), music_mood, weather,
+            operator controls (style, density, brightness, complexity, floor)
         │
         ▼
-  DJSystem.step 10 s poll → Brain.add_tracks(...)  (hot-add; no restart)
+  Composer (control thread, phrase-first)         lib/dj/gen/composer/
+    form state machine → harmony → rhythm grids → bass/melody/motif memory
+    emits Phrase(bar_events[...]) 4–8 bars ahead; knows every drop in advance
+        │  note events {at_sample, voice, pitch, vel, dur, params}
+        ▼
+  NoteScheduler (sample clock, 256-frame sub-blocks, `at`-stamped like submix automation)
         │
         ▼
-  Brain selects / plans / mixes it like any record → DJSubmix → AudioEngine → speakers
-                                                    └─▶ live_beat / outstate → club director
+  SynthRack (worker thread → ~2-bar ring)          lib/dj/gen/synth/
+    Voice S1 numba/numpy | Voice S2 FluidSynth ; FX chain ; sidechain from kick
+        │  (n,2) float32 @ 44.1k
+        ▼
+  GenDeck(Deck) = DJSubmix.decks["g"]  — sync MASTER, exact grid, gain/EQ/filter automation
+        │                              (or: peer attach_track for non-club sets)
+        ▼
+  AudioEngine mixer → limiter → speakers → internal tap → shaders
+        │
+  GenTrack (virtual TrackInfo) → DJSystem.live_beat / outstate_keys → club director
 ```
 
-Path 2 (station mode, Lyria RT or MRT2 stream) adds a `StreamDeck(Deck)` inside
-`DJSubmix` (`decks["s"]`), fed by a feeder thread that resamples 48k→44.1k off the
-render thread into a ~10 s ring; always sync **master** (a ring cannot be reseeked);
-represented to the brain as a virtual `StationTrack` TrackInfo (synthetic grid, rolling
-groove section, growing energy curve) so `plan_transition` plans record→station and
-station→record hand-offs with the normal blend/bass-swap/filter-sweep vocabulary. Stream
-health watchdog + a pre-decoded escape record are mandatory.
+Key design points:
+- **Two mount modes, one engine.** Club: `GenDeck` inside `DJSubmix` so the brain plans
+  seams (`plan_transition` with `GenTrack`: exact grid, `bpm_conf=1.0`, rolling sections,
+  `mix_ins`/`mix_outs` regenerated at the next phrase boundary) and records slave to it
+  (a ring cannot be reseeked, so `_apply("sync")` refuses `"g"` as slave). Non-club: peer
+  `attach_track("generative")` with `is_ambient=True` so the existing ambient volume and
+  crossfade rules apply and `play_ambient` is not called for that state.
+- **Take / give the floor.** Record→gen: `plan_transition(cur=record, cand=GenTrack)`; the
+  composer commissions its own tempo/key from the live `out_bpm` and the record's Camelot
+  and starts on the record's downbeat grid. Gen→record: composer schedules an outro at
+  the next phrase, `GenTrack.mix_outs` advertises it, normal arming follows. Continuity
+  watchdog and a pre-decoded escape record remain mandatory.
+- **Visual truth is exact.** Beat/bar/phrase phase come from the scheduler clock (no
+  measurement, unlike a stream); `dj_next_drop_eta`, `build_level` and hard-drop stamps
+  come from the composer's plan. The club director gets choreography a human VJ cannot.
+- **Autonomous first.** No performer input; operator controls are sparse and coarse.
 
-### 3.1 Path 1 details (from the design memo; file:line cited)
-
-**Write from ground truth:** `bpm`, `beat_grid` (one segment, `period_s=60/bpm`,
-`first_beat_s`), `bpm_conf=1.0`, `downbeat_offset`, `downbeat_conf=1.0`,
-`phrase_beats/_start_s/_conf`, `camelot/key_pc/key_mode`, section boundaries + kinds
-(intro/build/groove/breakdown/drop/outro), `structure` labels (`db.set_structure:417`),
-`mix_points` (in = end of intro, out = start of outro, `style_hint: blend`), `duration_s`,
-`axes.vocal=0` with `vocal_src="ground_truth"` (survives rescans via `scan.py:275`).
-
-**Still measure from the audio** (generators do not obey prompts exactly):
-`loudness_gain_db` (`features.py:1143`), `kick_offset_s` (`:1089`, with the true grid),
-`energy_curve`/`band_curve` (`:1158/:1170`), `spectral`, `chroma` (`:628`) — and **reject**
-if `chroma_key_compat` < ~0.8 or `verify_tempo_window` (`:191`) deviates > 0.5 %,
-otherwise the live tempo write-back (`system.py:1248-1277`, `db.py:467-481`) would
-silently "correct" the track and drop its beat-power record; per-section stats
-(`build_sections:730`), `rhythm_signature` (`:164`), `classify_axes` (`:990`), and the
-`beat_power.json` entry (`beatpower.py:325/412/482`, picked up live by mtime cache).
-
-**Schema v16** (`db.py:198-266` ALTER-if-missing pattern): `tracks.provenance TEXT`
-(NULL = library, `'generated'`), `tracks.gen_meta TEXT` JSON (model, commission id,
-targets, created_at, expires_at). `bpm_source` is the wrong home (overwritten by
-`set_verified_tempo`). Mirror as `auto_tags` `"generated"` so the web music-type chips
-filter it with zero new code; expose `TrackInfo.is_generated`.
-
-**Traps:** titles must be unique (`ckey` at `brain.py:1271-1285` collapses same-title
-tracks into one "song" and the no-repeat wall blocks them all); set `content_hash` from
-`scan.quick_hash`; `scan_library` needs a skip for generated rows (or re-ingest from the
-manifest) so `--force` never replaces ground truth with estimates; write
-`analysis_version = features.ANALYSIS_VERSION`; never DELETE rows (play_history cascades,
-`db.py:123`) — set `missing=1`/`excluded=1` on expiry; promote thumbed-up generated tracks
-(`seam_feedback.up=1`) to permanent by clearing `expires_at`.
-
-**Hot-add (no runtime reload exists today):** producer writes WAV to a temp name and
-renames; ingest writes the row; `DJSystem.step` polls `max(id) WHERE provenance='generated'`
-on the existing 10 s `_refresh_tags` cadence (`system.py:1281`); hydrate with the one-track
-constructor pattern (`preflight._load_track`, `preflight.py:194-202`); new `Brain.add_tracks`
-appends to `library`, extends `ckey`, ranks the newcomer by bisecting existing sorted arrays
-(`brain.py:606-667`), stamps `has_stems`; leaves `adapt_theme`/`norepeat_n` frozen; DJSystem
-adds to `_by_id` and clears `_horizon` so `_maybe_horizon` reconsiders.
-
-**Commission contract:** `{target_bpm: bpm_target at slot k, camelot: neighbours of the
-horizon tail's key (compat ≥ 0.9), energy: arc_at(k), duration: 240–360 s, structure:
-32-bar drums-only intro / groove / breakdown / drop / 32-bar outro, tags: theme.prefer_tags,
-persona/flavor}`; keep ≥ 2 finished tracks ahead; raise urgency on `_horizon_dry`
-(`system.py:1465`) / small `eligible_pool_size` (`brain.py:2258`).
-
-### 3.2 Path 2 details (station mode)
-`StreamDeck` overrides `load` (accept ring), `_fetch` (`deck.py:401`), `source_time_s`
-(`:319`); keeps `samples` non-None so `read`'s guard passes (`:494`); `cue/set_loop/jump_cut/
-brake/phase_snap/nudge` become logged no-ops; `_apply("sync")` (`submix.py:195`) refuses a
-StreamDeck as slave; rate 1.0 with varispeed passthrough (no keylock cost). Visual truth:
-`StationTrack` gets a synthetic grid once beat phase is **measured** on the first ~20 s
-(`verify_tempo_window` / `estimate_beat_grid:401`), re-measured after every
-`reset_context`; until then `bpm_conf=0` so `live_beat` honestly returns None. Commanded
-density/brightness jumps stamp `_dj_drop_wall/_dj_drop_hard` so `DJVisualCoupler` fires an
-engineered drop. Lyria bpm/scale are commissioned from the live `out_bpm` before going on
-air and held fixed while audible; records stretch to the stream. `system.py` needs the a/b
-flip generalised (`:1703`, `:1952`) so `active_deck` may be `"s"`, a station slot length in
-`_draw_exit` (`:2937`), and a stream-health watchdog that calls `_emergency_handoff`
-(`:2646`) to a pre-decoded escape record.
-
-### 3.3 Code layout
-- `lib/dj/gen/` — `spec.py` (commission + manifest schema), `commission.py`, `ingest.py`,
-  `procedural.py` (grow `synth_structured` into intro/groove/break/drop/outro with kick,
-  key-rooted bass, in-key pad — both the CPU fallback and the hermetic fixture),
-  `station.py` (StreamDeck, StationTrack, feeder/resampler, `FakeStreamSource` replaying a
-  48k WAV), `backends/lyria.py`, `backends/remote.py` (imported only when
-  `dj.generative` config enables them).
-- Brain/system/db deltas kept minimal: `Brain.add_tracks`, `TrackInfo.is_generated`,
-  DB v16, ingest poll, a/b generalisation.
-- `tools/dj/dj_gen.py` (`commission`, `ingest`, `procedural --n`, `sweep`) modelled on
-  `dj_scan.py`. Worker box: `tools/dj/gen_worker/` (its own venv/requirements, torch).
-- Tests: `tools/tests/_dj_gen_ingest_test.py`, `_dj_gen_hotadd_test.py`,
-  `_dj_station_test.py`; `_dj_night_sim.py --generated K`; Seam Lab ratings filtered by
-  provenance (per `docs/DJ_VERIFICATION.md` rule 2).
-- `docs/GENERATIVE_MUSIC.md` (user doc, written with Phase 2).
-
----
-
-## 4. Hardware: a low-power Linux GPU box for the worker
-
-The worker does **offline** generation for Path 1 (and optionally MRT2 streaming for
-Path 2). It lives on the venue LAN and ships files to the show box.
-
-| Option | Power | Cost (approx.) | Software path | Verdict |
-|---|---|---|---|---|
-| **SFF x86 + low-profile NVIDIA card** — RTX A2000 12 GB (70 W, single-slot, no aux power) or RTX 3050 6 GB LP (70 W) or RTX 4060 LP (115 W); host = used Dell OptiPlex / Lenovo ThinkCentre SFF or a 1-slot mini-ITX build | ~20 W idle, 120–170 W load | $150–250 host + $180 (3050) / $400–500 (A2000, used) / $300 (4060 LP) | Standard Ubuntu + CUDA; PyTorch **and** JAX both first-class. The only path the MRT2 community CUDA port and every batch model actually exercise. 12 GB runs `mrt2_base` offline, Stable Audio Open 1.5, ACE-Step. | **Recommended.** A2000 12 GB if VRAM matters; 4060 LP if new and cheap matters. |
-| **NVIDIA Jetson Orin Nano Super** dev kit | 7–25 W | ~$249 | Ubuntu (JetPack), PyTorch supported; aarch64 — JAX/CUDA is *not* a supported target, 8 GB shared with the OS | Lowest power and cheapest, and fine for slow batch generation with PyTorch models. Not for MRT2 real time; VRAM-tight for 2.4B models. Choose only if power is the overriding constraint. |
-| Mini-PC with mobile RTX 4060/4070 (laptop-GPU class) | 100–150 W | $800–1200 | Ubuntu works on most; verify vendor Linux support before buying | Compact, more expensive per FLOP than option 1. |
-| Mac mini M4 | 5–30 W | ~$599 | macOS only — but the **officially supported** MRT2 real-time path | Not Linux. Mention only because it is the cheapest way to get MRT2 streaming in real time if Linux is negotiable. |
-
-Notes: Path 1 does not need real-time performance; a 70 W card rendering a 5-minute
-track in 30–90 s keeps the DJ's horizon full with hours of slack. Cloud (Lyria RT) needs
-no box at all but needs reliable venue internet and accepts experimental-API risk.
+Code layout: `lib/dj/gen/` (`composer/` {form, harmony, rhythm, melody, motif, styles},
+`scheduler.py`, `synth/` {voices_numba, voices_fluid, fx, rack}, `deck.py` (GenDeck,
+GenTrack), `presets/*.yaml`), `tools/dj/gen_player.py` (standalone `--wav`/`--live`,
+mirrors `dj_player.py`), `tools/tests/_dj_gen_*_test.py`, `media/soundfonts/` (optional),
+`docs/GENERATIVE_MUSIC.md` (user doc). Engine deltas: `DJSubmix.decks["g"]`, sync refusal,
+a/b flip generalisation in `system.py`, ambient bypass in `Stories_OGL.transition_to_weather`.
 
 ---
 
 ## 5. Phased roadmap
 
-**Phase 0 — Spikes (1–2 sessions, no engine changes)**
-- Extend `synth_structured` into a procedural 4-minute track with a manifest; run it
-  through `e2e_test` and a rendered seam; listen. Establishes the manifest schema and the
-  ingest contract with a zero-cost generator.
-- On any GPU machine (or Colab), generate three commissioned tracks with Stable Audio
-  Open 1.5 and/or ACE-Step at a fixed BPM/key; measure how far they miss the commission
-  (tempo, key, structure) to size the ingest rejection thresholds.
-- If a Gemini key is available: standalone Lyria RT client; measure latency, jitter,
-  and the hard cut on `reset_context`; decide whether station mode is worth Phase 4.
+**Phase 0 — Spike (no engine changes).** `tools/dj/gen_player.py --wav out.wav --minutes 2
+--bpm 126 --key 8A --style groove`: rule composer + S1 voices (kick, hats, clap, sub bass,
+one lead, one pad) + delay/reverb. Listen. Measure CPU on the N150. Decide the initial
+voice set and whether S2 is wanted from the start.
 
-**Phase 1 — Ingest + hot-add (engine)**
-- DB v16, `lib/dj/gen/spec.py` + `ingest.py`, `Brain.add_tracks`, DJSystem poll, scan skip,
-  expiry sweep, `dj_gen.py ingest/sweep`. Gates: `_dj_gen_ingest_test`, `_dj_gen_hotadd_test`.
-- Deliverable: drop a WAV + manifest into `music/generated/` while the DJ plays and hear
-  the brain mix it in with a synced style.
+**Phase 1 — Engine.** `Voice` interface, S1 voices, FX, NoteScheduler, SynthRack worker +
+ring, deterministic seeds. Gate `_dj_gen_synth_test.py`: seed → WAV, kick-to-grid
+alignment via `seamverify.measured_kick_alignment`, no NaN/clip, CPU per block under
+budget.
 
-**Phase 2 — Commissioning + worker**
-- `commission.py` reading arc/bpm/key/tags/dryness; `gen_worker` on the GPU box
-  (file-based job queue in the music root, nice-19, resumable, like `preflight.launch_shadow`);
-  procedural backend as always-on fallback; web `/dj` chip "generated: only / avoid / off"
-  (free via the auto_tag) and a status line ("2 generated ahead, next in 3:10").
-- Gates: night census with `--generated K`; Seam Lab session rating generated↔library seams.
-- Deliverable: a night that never runs dry and stays on-arc even with a thin library.
+**Phase 2 — Composer v1 (club).** Form/harmony/rhythm/melody/motif; style presets for the
+four themes; energy/arc steering; engineered drops. Gate: 30-minute offline render per
+preset, phrase-boundary and drop timing assertions, plus an operator listening session
+(this is the ear-gate; instruments do not judge musicality).
 
-**Phase 3 — Quality loop**
-- Feed Seam Lab / thumbs verdicts back into commissions (which model, prompt vocabulary,
-  structure templates win); promote thumbed-up tracks to permanent; `dj_review` provenance
-  breakdown; planner Library tab provenance column/filter.
+**Phase 3 — Club integration.** `GenDeck`, `GenTrack`, sync-master rule, a/b
+generalisation, record↔gen seams through the real brain, outstate truth, `/dj` controls
+(gen on/off, style, density, brightness, complexity, take/give floor), night sim
+`--generative`, `dj_review` rows. Gate `_dj_gen_handoff_test.py` (hand-pumped engine e2e,
+modelled on `_dj_brain_test.e2e_test`).
 
-**Phase 4 — Station mode (stream)**
-- `StreamDeck`/`StationTrack`, feeder + resampler, a/b generalisation, watchdog + escape
-  record, `FakeStreamSource` gate `_dj_station_test`. Lyria backend first (no hardware),
-  MRT2-on-LAN backend second, same interface. Operator controls: station on/off, prompt
-  presets per theme, density/brightness sliders.
+**Phase 4 — Non-club sets.** `generative:` per weather state in project config; weather →
+composer mapping (rain → density, wind → filter motion, fog → reverb, season → mode);
+`INTERACTION_PANELS` sliders; S2 SoundFont voices for organic palettes.
 
-**Phase 5 (optional)**
-- Real DJ-tool loops in `media/loops/` and, only then, revisit deck-C beds carved
-  (HP 200–300 Hz + sidechain) per the README's revival notes. Generated percussion is a
-  candidate source *only* after real tools have proven the mechanism.
-
-Each phase ends with an offline rendered gate plus a live night reviewed via
-`dj_review.py`, matching `docs/DJ_VERIFICATION.md`.
+**Phase 5 — Quality loop and seasoning.** "Phrase Lab" rating treadmill (Seam Lab
+pattern) that renders phrases per preset and logs verdicts; tune style parameters from
+verdicts; motif memory across the night; then optional C2 (neural phrase proposer),
+C3 (LLM phrase director), S3 (SuperCollider backend).
 
 ---
 
-## 6. Open decisions for the operator
-1. **Worker hardware**: buy the SFF + low-profile NVIDIA box (recommended) vs Jetson vs
-   cloud-only (Lyria RT)? Phases 1 and 0-procedural need none of them.
-2. **Cloud OK?** Is a Gemini API dependency (and venue internet) acceptable for station
-   mode, or must everything be local?
-3. **Genre envelope** for commissions: the club set's themes (`groove`, `peak_heavy`,
-   `chill_evening`, `wind_down`) map to prompt vocabularies — confirm the target styles.
-4. **Retention**: expire generated tracks after N nights unless thumbed up (proposed), or
-   keep everything?
+## 6. Hardware
+
+**No GPU is needed for the core plan.** Composition is trivial; S1/S2 synthesis fits the
+N150 with numba, on a worker thread separate from the DJ's render thread.
+
+A GPU box only matters if Phase 5's neural phrase proposer is adopted. If so, the earlier
+recommendation stands: an SFF x86 Linux desktop with a low-profile NVIDIA card (RTX A2000
+12 GB at 70 W, or RTX 4060 LP) — standard Ubuntu + CUDA, PyTorch and JAX both first-class.
+For a ~112M symbolic model a Jetson Orin Nano Super (7–25 W, ~$249, Ubuntu/JetPack,
+PyTorch) is also sufficient and cheaper, at the cost of an aarch64 toolchain.
+
+---
+
+## 7. Open decisions for the operator
+1. **Palette**: analog-style synthesis only (S1), or add SoundFont instruments (S2) from
+   the start? (S2 needs `libfluidsynth` on the show box and `.sf2` assets.)
+2. **Scope**: club deck first (Phases 1–3), or ambient generative for all weather sets
+   first (Phases 1, 2-lite, 4)? Both share Phases 0–1.
+3. **How much floor**: should the generative deck be an occasional guest between records
+   (bridges, wind-down, empty library) or able to run the whole night?
+4. **Appetite for SuperCollider** as a later backend (second process, richer sounds).
+
+---
+
+## 8. Set aside: track-level generation (previous draft)
+
+Researched and documented before the clarification: commissioning finished 4–6 min tracks
+from offline neural models (Stable Audio Open 1.5, ACE-Step, Magenta RealTime 2) on a GPU
+box and ingesting them as first-class library rows with ground-truth grids (DB v16
+`provenance`, hot-add via a 10 s poll, `Brain.add_tracks`); and a stream deck for Google
+Lyria RealTime / Magenta RT2 station mode. It remains a valid complement (the ingest and
+`StreamDeck` designs share the `GenDeck` seam work) but it is not what the operator wants
+as the product. Details are in git history of this file.
