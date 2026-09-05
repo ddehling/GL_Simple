@@ -5,8 +5,8 @@ Status: PLAN ONLY (no code). Rewritten 2026-09-04/05 after the operator clarifie
 driving a synthesizer — not a system that renders finished tracks for the DJ to mix.
 Operator decisions folded in (2026-09-05): **both analog synthesis and SoundFonts from the
 start; its own subsystem and interface, separate from the club and modelled on how the DJ
-is wired; must run for long periods (hours to all night); SuperCollider optional, not
-required.** (The earlier track-rendering direction is summarised in §9 and set aside.)
+is wired; must run for long periods (hours to all night); SuperCollider explored in §3.1
+as a candidate analog backend, to be decided by spike.** (The earlier track-rendering direction is summarised in §9 and set aside.)
 
 ## 0. What we are building
 
@@ -112,18 +112,91 @@ the install scripts in `bin/` gain one line) and `.sf2` assets under `media/soun
 per palette). Pin the FluidSynth output rate to 44100 and render on the rack's worker
 thread, never in the engine callback.
 
-**SuperCollider in one paragraph, for the decision.** SuperCollider is a free, mature
-audio-synthesis *server* (`scsynth`) plus its own language. You describe instruments as
-graphs of unit generators, load them into the server, and then play notes by sending it
-OSC network messages (`python-osc` is already a dependency). Its strengths: an enormous
-synthesis vocabulary, very low CPU, decades of live-coding use. Its costs here: a second
-process to install and supervise, its audio goes straight to the sound card rather than
-through `AudioEngine` (so the limiter, the render-ahead ring and the DJ's crossfades no
-longer apply; the visuals would use the analyzer's `loopback` source), and a second
-language for sound design. **Recommendation: not needed.** S1 + S2 already cover analog
-and sampled palettes inside the engine. Keep S3 as a documented option behind the same
-`Voice` interface if, after Phase 2 listening, the analog palette wants sounds S1 cannot
-make cheaply.
+**SuperCollider** is explored in depth in §3.1 below (operator asked to explore it,
+2026-09-05). Short version: it is a serious candidate for the *analog* backend, in place
+of or alongside the numba voices, if a second process plus PipeWire routing is an
+acceptable operating cost on the show box. It does not replace FluidSynth for SoundFonts.
+
+### 3.1 SuperCollider, explored
+
+**What it is.** SuperCollider has two halves. `scsynth` is a real-time synthesis
+*server*: a tree of nodes (synths in groups) reading and writing audio/control buses,
+where every instrument is a compiled `SynthDef` graph of unit generators (about 300 core
+UGens; ~200 more in `sc3-plugins`: Moog-style ladder filters, `JPverb`/`Greyhole`
+reverbs, `DFM1`, granular, physical models). It is controlled *only* by OSC messages, and
+OSC bundles carry timestamps, so scheduling is sample-accurate however late the client
+is. `supernova` is a multi-threaded variant. `sclang` is SuperCollider's own language and
+client; **we would not use it** — the Python binding below compiles SynthDefs itself, so
+the show box needs only the server package. NRT mode (`scsynth -N score.osc … out.wav`)
+renders an OSC score to a file with no audio device, which gives hermetic tests.
+
+**Python binding: `supriya`** (26.9b0, Sept 2026; Python 3.10–3.14; MIT; actively
+maintained; POSIX/macOS/Windows). It boots and supervises `scsynth`, compiles SynthDefs
+from Python UGen classes, allocates nodes/buses/buffers, sends timestamped bundles, has
+tempo/meter-aware clocks and patterns, and renders non-realtime scores to WAV. The
+alternatives are the wrong shape: `sc3nb` leans on `sclang`; FoxDot/Renardo are
+live-coding environments with their own SynthDef packs and an `sclang` dependency; raw
+`python-osc` would reinvent supriya's server/node bookkeeping.
+
+**How its audio gets into our engine — three routings.**
+
+| | Routing | Keeps limiter / ring / internal tap / DJ crossfade? | Notes |
+|---|---|---|---|
+| R1 | `scsynth` plays straight to the sound card next to our engine; PipeWire mixes them | No | Simplest. Visuals only via the analyzer's `loopback` source. Two masters on one device; not recommended. |
+| **R2** | `scsynth` → PipeWire **null sink**; our engine **captures the sink's monitor** and mounts it as the `GenRack` source track (`attach_track`) | **Yes** | Everything downstream is identical to the in-process rack. Capture via miniaudio's capture API, or the `parec` subprocess the analyzer already uses (`lib/audio_analyzer.py:242`). Added latency ≈ SC block (64 samples) + PipeWire quantum + capture ≈ 10–40 ms, in front of our 1.2 s ring; the composer schedules bars ahead, so it is invisible. Fallback without PipeWire: ALSA `snd-aloop`. Windows: WASAPI loopback of a virtual cable (VB-Cable). **Recommended if SC is chosen.** |
+| R3 | NRT render per phrase to buffers, played by our engine | Yes | No live parameter changes (a phrase is fixed once rendered); good for tests, not for the live rack. |
+
+**Clock and truth.** `scsynth` has its own clock. We schedule every note with a
+timestamped bundle at `now + latency` (SuperCollider's standard practice, 100–200 ms);
+the composer already works phrases ahead. Visual ground truth = the intended note time
+plus the measured capture latency, auto-calibrated at start (send a click, detect it in
+the captured stream, store the offset; re-check hourly). Under PipeWire both processes
+clock off the same device, so no long-run drift between "SC time" and engine time; the
+engine's ring lead (`render_lead_frames`) is subtracted exactly as for the DJ.
+
+**Ops on the show box.** `apt install supercollider-server sc3-plugins` (server + core
+plugins, no Qt IDE; both are in Debian/Ubuntu and Arch). Launch as a supervised
+subprocess of `GenSystem`: `pw-jack scsynth -u 57110 -B 127.0.0.1 -i 0 -o 2 -z 64` with
+`/status` heartbeats, restart-on-death, and a silence fallback while restarting (same
+supervision the in-process worker would need, §4.2). Pin the SC version (3.13/3.14) in
+the install scripts (`bin/linux-install.sh` already drives apt). Windows: the SC
+installer provides `scsynth` on PortAudio; one line in `bin/windows-install.ps1` plus the
+virtual-cable step for R2. Raspberry Pi is supported by SC upstream.
+
+**CPU.** `scsynth` renders dozens of voices in ~1–3 % of one core on N150-class hardware,
+in its own process — zero GIL interaction with the engine or the DJ. PipeWire adds ~1–2 %.
+
+**What it buys over the in-process numba rack (S1).**
+- Hundreds of proven, well-documented UGens: sound design is a week, not a season.
+  Per-sample feedback and modulation (FM matrices, resonators, physical models) that
+  block-based numpy cannot do cheaply.
+- New instruments are a Python function (a `@synthdef`), hot-loaded into the server while
+  the show runs, never touching engine threads.
+- Hermetic NRT rendering for tests; a large corpus of example instruments to borrow from;
+  the same server runs on a Pi.
+**What it costs.**
+- A second process and a PipeWire routing to install, pin and supervise (R2); one more
+  thing to go wrong at 2 a.m. Debugging spans two processes.
+- SoundFonts are *not* an SC feature: FluidSynth (S2) stays in-process either way
+  (or runs as a second captured process through the same null sink).
+- Windows needs a virtual cable for R2; the club box is Linux, so this matters only if the
+  generative set must also run on Windows dev machines.
+
+**Decision framework.** SC wins if sound-design leverage and instrument variety matter
+more than a minimal process count; the numba rack wins if "one process, one venv" is the
+higher value. Each side is about a day to spike, so the recommendation is to run both
+Phase 0 spikes and choose by ear and by ops feel:
+
+- **Spike SC-0** (standalone, no engine changes): install `supercollider-server` +
+  `sc3-plugins` on the show box; `supriya` boots `scsynth` under `pw-jack` into a null
+  sink; the Phase 0 composer sends a 3-minute set through four SynthDefs (kick, hats,
+  ladder bass, pad + `JPverb`) as timestamped bundles; capture the monitor with `parec` to
+  WAV; measure round-trip latency and CPU; render the same score through NRT and confirm
+  it matches. Listen next to the numba spike output.
+- If SC is chosen: S3 becomes the analog backend behind the same `Voice` interface
+  (`note_on` → `s_new` in a timestamped bundle, `note_off` → gate, `set_param` → `n_set`),
+  `GenRack` becomes "capture track + FluidSynth in-process", and §4.2 supervision covers
+  the `scsynth` child. Everything else in the plan is unchanged.
 
 ---
 
@@ -230,7 +303,8 @@ palette, director shader, `INTERACTION_PANELS`) is project content in the fan re
 --bpm 124 --key 8A --style groove --seed 1`: rule composer + S1 voices (kick, hats, clap,
 sub bass, lead) + S2 SoundFont keys/pad + delay/reverb. Listen. Measure CPU on the N150.
 Confirms the `Voice` interface, the FluidSynth block-render path at 44.1 k, and whether
-the sound is worth the rest of the plan.
+the sound is worth the rest of the plan. **Run Spike SC-0 (§3.1) alongside it** and pick
+the analog backend (numba S1 vs SuperCollider S3) by ear and ops feel before Phase 1.
 
 **Phase 1 — Engine.** `Voice` interface, S1 voices, S2 FluidSynth voices, FX,
 NoteScheduler, SynthRack worker + ring, `GenRack` track protocol, seeds, supervision.
@@ -284,7 +358,7 @@ PyTorch) is also sufficient and cheaper, at the cost of an aarch64 toolchain.
 | Scope / mount | A **separate subsystem and interface**, modelled on the DJ (own set, own `/gen` page, own conductor), not a deck inside the DJ. DJ hand-offs and ambient beds for other sets are optional later phases. |
 | Interface | Web page first (it doubles as the API). Later, a more performant surface: PyQt6 console and/or a scoped nanoKONTROL2 mapping — decide from live use. |
 | Duration | Must run for long periods → §4.2 long-run requirements are in scope from Phase 1, soak test from Phase 2. |
-| SuperCollider | Not required; S1 + S2 cover the palettes inside the engine. Kept as a documented optional backend (§3). |
+| SuperCollider | **Under exploration (2026-09-05, §3.1).** Viable as the analog backend via R2 (null-sink capture into the engine) with `supriya`; decide between it and the numba rack by running both Phase 0 spikes. FluidSynth stays for SoundFonts either way. |
 
 ## 8. Remaining open questions (non-blocking)
 1. Which SoundFont banks to license/ship first (GM bank for coverage, plus one or two
