@@ -175,6 +175,25 @@
             </div>
         </div>
 
+        <!-- Strudel pattern (live coding; replaces the rule composer's notes) -->
+        <div class="section-panel foldable" id="gen-pattern">
+            <div class="section-header"><h3>Pattern <small style="opacity:.6;font-weight:normal">Strudel · one cycle = one bar</small></h3></div>
+            <textarea id="gen-code" spellcheck="false" placeholder='stack(
+  s("bd*4, [~ cp]*2, hh(5,8)"),
+  note("<0 3 5 7>(3,8)").scale("A:minor").s("bass").lpf(800),
+  note("0 2 4 [6 7]").scale("A2:minor").s("lead").gain(energy)
+)'
+                style="width:100%;min-height:150px;box-sizing:border-box;padding:10px;border-radius:6px;
+                       border:1px solid #555;background:#15151c;color:#ddd;font-family:ui-monospace,Menlo,Consolas,monospace;
+                       font-size:0.85em;line-height:1.4;resize:vertical"></textarea>
+            <div class="transport" style="margin-top:8px">
+                <button class="btn go" id="gen-eval">▶ EVAL (next phrase)</button>
+                <button class="btn" id="gen-pattern-clear">CLEAR → autonomous</button>
+            </div>
+            <div class="now-sub" id="gen-pattern-status" style="min-height:1.2em"></div>
+            <div class="now-sub" style="opacity:.55">Globals: energy, section, bar, key, bpm, phrase, chords. Sounds map to slots: bd sd/cp hh oh rim, bass lead pad arp keys. Ctrl+Enter evaluates.</div>
+        </div>
+
         <!-- Layers -->
         <div class="section-panel foldable" id="gen-layers">
             <div class="section-header"><h3>Layers <small style="opacity:.6;font-weight:normal">tap to mute</small></h3></div>
@@ -244,6 +263,11 @@
         $("gen-stop").onclick = () => emit("stop");
         $("gen-end").onclick = () => emit("end");
         $("gen-reseed").onclick = () => emit("reseed", null);
+        $("gen-eval").onclick = () => emit("pattern", $("gen-code").value);
+        $("gen-pattern-clear").onclick = () => emit("pattern_clear");
+        $("gen-code").addEventListener("keydown", (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); emit("pattern", $("gen-code").value); }
+        });
         let holdOn = false;
         $("gen-hold").onclick = () => { holdOn = !holdOn; emit("hold", holdOn); };
 
@@ -336,6 +360,16 @@
             if (document.activeElement !== $("gen-fluid"))
                 $("gen-fluid").value = Array.isArray(g.fluid_slots) ? g.fluid_slots.join(",") : (g.fluid_slots || "");
             buildSlots(g.slots || [], g.layers || [], g.muted || [], g.fluid_slots);
+            // Pattern card: never overwrite text the operator is editing.
+            const code = $("gen-code");
+            if (document.activeElement !== code && g.pattern && code.value !== g.pattern && !code.dataset.dirty) code.value = g.pattern;
+            code.oninput = () => { code.dataset.dirty = "1"; };
+            const ps = $("gen-pattern-status");
+            if (g.pattern_available === false) { ps.textContent = "Strudel bridge unavailable (node + npm install in tools/gen/strudel)"; ps.style.color = "#f99"; }
+            else if (g.pattern_error) { ps.textContent = "pattern error: " + g.pattern_error; ps.style.color = "#f99"; }
+            else if (g.error && g.error.startsWith("pattern:")) { ps.textContent = g.error; ps.style.color = "#f99"; }
+            else if (g.pattern) { ps.textContent = "pattern live - the composer's form/energy still run underneath"; ps.style.color = "#9f9"; }
+            else { ps.textContent = live ? "autonomous (rule composer)" : "idle - a pattern set now is applied at start"; ps.style.color = ""; }
 
             if (!live) return;
             $("gen-section").textContent = g.section;

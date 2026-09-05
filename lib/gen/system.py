@@ -32,6 +32,14 @@ from lib.gen.synth import SynthRack
 from lib.gen.theory import parse_key
 
 LEAD_S = 6.0            # composed audio kept ahead of the render head
+
+
+def _strudel_available():
+    try:
+        from lib.gen.composer.strudel import available
+        return bool(available()[0])
+    except Exception:
+        return False
 STEP_S = 0.1            # conductor tick
 MAX_ERRORS = 5          # per minute before giving up
 
@@ -74,6 +82,8 @@ class GenSystem:
         self._render_t = 0.0                 # cumulative render seconds (cpu)
         self._render_samples = 0
         self._hold = False
+        self._strudel = None                 # StrudelBridge, started on first pattern
+        self._pattern_code = None
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> bool:
@@ -127,6 +137,9 @@ class GenSystem:
         if not self._running:
             return
         self._running = False
+        if self._strudel is not None:
+            self._strudel.stop()
+            self._strudel = None
         if self.rack is not None:
             self.rack.fade_out(fade_s)
         self._log({"event": "stop", "t": self._elapsed()})
@@ -247,6 +260,9 @@ class GenSystem:
                 nc.bpm = self.bpm_req
             self.composer = nc
             self.style_name = name
+            nc.pattern_source = c.pattern_source
+            if nc.pattern_source is not None:
+                nc.pattern_source.slots = set(STYLES[name]["slots"].keys())
             self.rack.set_style(STYLES[name], nc.bpm, at=at)
             self._log({"event": "style", "style": name, "t": self._elapsed()})
         self._post(do)
@@ -301,6 +317,35 @@ class GenSystem:
 
     def request_end(self):
         self._post(lambda: (self.composer.request_end(), self._log({"event": "end_requested", "t": self._elapsed()})))
+
+    # -- Strudel patterns -------------------------------------------------
+    def set_pattern(self, code):
+        """Evaluate Strudel code; from the next phrase its events replace
+        the rule composer's. Bad code is reported in status, never fatal."""
+        def do():
+            from lib.gen.composer.strudel import StrudelBridge, StrudelSource
+            try:
+                if self._strudel is None:
+                    self._strudel = StrudelBridge()
+                    self._strudel.start()
+                src = self.composer.pattern_source
+                if src is None or not isinstance(src, StrudelSource):
+                    src = StrudelSource(self._strudel, self.composer.style["slots"].keys())
+                src.load(code)
+                self.composer.pattern_source = src
+                self._pattern_code = code
+                self._log({"event": "pattern", "code": code[:400], "t": self._elapsed()})
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"pattern: {type(e).__name__}: {e}"
+        self._post(do)
+
+    def clear_pattern(self):
+        def do():
+            self.composer.pattern_source = None
+            self._pattern_code = None
+            self.last_error = ""
+            self._log({"event": "pattern_clear", "t": self._elapsed()})
+        self._post(do)
 
     # -- status -----------------------------------------------------------
     def _heard_clock(self):
@@ -389,6 +434,9 @@ class GenSystem:
             "motifs": len(c.melody.memory),
             "lead_s": round((self.rack.pending_until() - self.rack.clock) / RATE, 1),
             "log": list(self._log_tail)[-14:],
+            "pattern": self._pattern_code,
+            "pattern_error": (getattr(c.pattern_source, "error", "") if c.pattern_source else ""),
+            "pattern_available": _strudel_available(),
             "error": self.last_error,
         }
 

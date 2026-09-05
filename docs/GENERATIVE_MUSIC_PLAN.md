@@ -19,11 +19,13 @@ are gated:
 | Synth rack: numba/numpy analog voices, delay/reverb/sidechain, FluidSynth SoundFont slots, AudioEngine track protocol | `lib/gen/synth/` | `tools/tests/_gen_synth_test.py` |
 | SuperCollider backend: SynthDefs in Python (supriya), NRT render, realtime scheduler | `lib/gen/backends/sc.py` | `tools/tests/_gen_sc_test.py` (SKIPs without scsynth) |
 | Player CLI | `tools/gen/gen_player.py` | — |
+| **Strudel patterns** (C4): Node bridge + composer source; Pattern card on `/gen`; `--strudel` in the player | `tools/gen/strudel/`, `lib/gen/composer/strudel.py`, `media/patterns/example.js` | `tools/tests/_gen_strudel_test.py` |
 | **Frontend (Phase 3, landed 2026-09-05):** `GenSystem` conductor (composes ahead on its own thread, steering queue, movements, end-of-set, supervision, night log), shared action whitelist, `/gen` page + `gen_action` socket + `POST /api/gen/action`, Gen nav tab, Stories_OGL soundtrack-takeover bridge, `gen:` config, standalone server | `lib/gen/system.py`, `lib/gen/actions.py`, `web/templates/gen_panel.html`, `web/static/js/gen_tab.js`, `web/web_controller.py`, `Stories_OGL.py` (`_apply_gen_controls/_gen_start/_gen_stop`), `config.yaml`, `tools/gen/gen_server.py` | `tools/tests/_gen_system_test.py` |
 
 ```bash
 pip install numba supriya pyfluidsynth            # numba is in requirements.txt already
 sudo apt install supercollider-server sc3-plugins fluidsynth fluid-soundfont-gm   # optional backends
+(cd tools/gen/strudel && npm install)             # optional: Strudel patterns (node >= 18)
 python tools/gen/gen_player.py --wav out.wav --minutes 3 --style groove --bpm 124 --key 8A --seed 1 --log
 python tools/gen/gen_player.py --wav out.wav --style downtempo --fluid-slots keys,pad
 python tools/gen/gen_player.py --wav out_sc.wav --backend sc-nrt          # same notes through scsynth
@@ -122,7 +124,49 @@ share one `Phrase` data model so they can be swapped or combined.
   planner's Set Copilot runs through the `claude` CLI with no API key. Not in the audio
   path; degrades to C1 silently when unavailable.
 
-**Recommendation:** C1 is the product; C2/C3 are seasoning after the engine exists.
+### C4. Strudel patterns (explored and landed 2026-09-05)
+**What Strudel is.** The JavaScript port of TidalCycles (AGPL-3.0, active on Codeberg
+`uzu/strudel`, npm `@strudel/*` 1.2.6): a *pattern language* where `s("bd*4, [~ cp]*2,
+hh(5,8)")` is a bar of drums, `note("<0 3 5 7>(3,8)").scale("A:minor")` a Euclidean bass
+line, and functions like `every`, `off`, `sometimesBy`, `jux` transform patterns
+algebraically. It is browser-first (Web Audio via superdough, Web MIDI, an OSC bridge to
+SuperDirt), but its **pattern engine is pure JS and runs headless under Node**.
+
+**Verified here.** `@strudel/core` + `mini` + `tonal` + `transpiler` evaluate code and
+query cycles into events (haps: begin/end fractions + a control dict) in Node 22: 64
+cycles ≈ 1500 events in ~190 ms, deterministic across queries (random ops are seeded by
+cycle). One packaging wart: core imports a browser-only class from `@kabelsalat/web`
+at module load, whose Node entry lacks the export; a two-line local shim package
+(`tools/gen/strudel/shim/`) fixes it without patching node_modules.
+
+**How it fits: Strudel as a composer, not as an audio engine.** We do not use its browser
+synth, MIDI or OSC. `tools/gen/strudel/bridge.mjs` is a Node sidecar speaking JSON lines
+(eval / query / ping, strictly ordered). `lib/gen/composer/strudel.py` translates haps
+to `NoteEvent`s on the rack's sample clock — **one cycle == one bar** at the composer's
+tempo — mapping `s` to slots (bd→kick, cp→snare, hh→hat, oh→ohat, rim→perc, bass/lead/
+pad/arp/keys), `note`/`n` to MIDI, `gain`/`velocity` to velocity, `lpf`/`cutoff` to the
+voice cutoff, `legato`/`clip` to gate length. The rule composer's **form, harmony,
+energy and arc keep running underneath** and are handed to the pattern as globals
+(`energy`, `section`, `bar`, `key`, `bpm`, `phrase`, `chords`), so a pattern can be
+written once and *breathe with the night*: `.gain(energy)`, `.lpf(600 + energy*900)`.
+Everything downstream — SoundFont slots, the SuperCollider backend, the engine mount,
+the visuals' ground truth — is untouched.
+
+**Operator surface.** The `/gen` page has a Pattern card (textarea, EVAL applies at the
+next phrase boundary, CLEAR returns to the autonomous composer; Ctrl+Enter). Bad code is
+reported on the card and never interrupts playback (the previous pattern keeps playing).
+`gen_player.py --strudel file.js` renders a pattern file; `media/patterns/example.js`
+is a starting point. Gate: `tools/tests/_gen_strudel_test.py` (SKIPs without node).
+
+**Verdict.** Strudel is the best answer to "how does the operator *author* generative
+material" — far more expressive per line than preset knobs, with a large public corpus
+of patterns to borrow — while the rule composer remains the always-on autonomous core
+and the long-run/arc machinery. Not adopted: Strudel's own scheduler/audio (browser tab
+must stay open; bypasses the engine), the OSC→SuperDirt route (a second synth stack),
+and Vortex (the Python port, self-described "free puppies", stalled).
+
+**Recommendation:** C1 is the product; C4 is how the operator writes into it; C2/C3 are
+seasoning after the engine exists.
 
 ---
 

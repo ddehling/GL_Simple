@@ -5,6 +5,8 @@
 #     pip install -r requirements-gen.txt
 #     Debian/Ubuntu: sudo apt install fluidsynth libfluidsynth3 fluid-soundfont-gm
 #     (-> /usr/share/sounds/sf2/FluidR3_GM.sf2; or put an .sf2 in media/soundfonts/)
+#   Strudel patterns (lib/gen/composer/strudel.py): node >= 18, then
+#     cd tools/gen/strudel && npm install
 #   SuperCollider backend (lib/gen/backends/sc.py):
 #     Debian/Ubuntu: sudo apt install supercollider-server sc3-plugins
 #     Windows/macOS: the SuperCollider installer provides scsynth.

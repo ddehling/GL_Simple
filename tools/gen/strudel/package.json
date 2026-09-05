@@ -1,0 +1,16 @@
+{
+  "name": "gl-simple-strudel-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Headless Strudel pattern engine for lib/gen (JSON-lines over stdio). Install: npm install (in this folder).",
+  "dependencies": {
+    "@strudel/core": "1.2.6",
+    "@strudel/mini": "1.2.6",
+    "@strudel/tonal": "1.2.6",
+    "@strudel/transpiler": "1.2.6",
+    "@kabelsalat/web": "file:./shim/kabelsalat-web"
+  },
+  "overrides": {
+    "@kabelsalat/web": "file:./shim/kabelsalat-web"
+  }
+}

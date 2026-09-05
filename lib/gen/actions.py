@@ -14,6 +14,7 @@ GEN_ACTIONS = {
     "energy", "density", "swing",      # how much
     "hold", "reseed", "mute",          # form / identity / layers
     "master", "set_length", "fluid",   # level / arc / SoundFont slots
+    "pattern", "pattern_clear",        # Strudel code (replaces the rule composer's notes)
 }
 
 _KEYS = [f"{n}{ab}" for n in range(1, 13) for ab in ("A", "B")]
@@ -54,6 +55,9 @@ def sanitize_gen_action(data):
             arg = {"slot": arg["slot"], "on": bool(arg.get("on"))}
         elif action == "set_length":
             arg = max(600.0, min(43200.0, float(arg)))       # 10 min .. 12 h
+        elif action == "pattern":
+            if not isinstance(arg, str) or not arg.strip() or len(arg) > 20000:
+                return None
         elif action == "fluid":
             # comma list of slots to render with SoundFonts ("" = none)
             if not isinstance(arg, str) or len(arg) > 120:
@@ -133,6 +137,14 @@ def apply_gen_action(system, cfg, action, arg, start_fn=None, stop_fn=None):
     elif action == "end":
         if live:
             system.request_end()
+    elif action == "pattern":
+        cfg["pattern"] = arg               # re-applied at the next start
+        if live:
+            system.set_pattern(arg)
+    elif action == "pattern_clear":
+        cfg.pop("pattern", None)
+        if live:
+            system.clear_pattern()
 
 
 def idle_info(cfg, error=""):
@@ -151,6 +163,7 @@ def idle_info(cfg, error=""):
         "set_length_s": cfg.get("set_length_s", 3 * 3600.0),
         "muted": sorted(set((cfg.get("muted") or "").split(",")) - {""}),
         "fluid_slots": cfg.get("fluid_slots", ""),
+        "pattern": cfg.get("pattern"),
         "slots": list(STYLES.get(cfg.get("style", "groove"), STYLES["groove"])["slots"].keys()),
         "error": error,
     }

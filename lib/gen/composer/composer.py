@@ -49,6 +49,10 @@ class Composer:
         self._pending_key = None
         self._pending_bpm = None
         self.log = []
+        # Optional external note source (a Strudel pattern): when set, its
+        # events replace the rule-generated ones; form/harmony/energy keep
+        # running and are handed to it as context.
+        self.pattern_source = None
 
     # -- steering -----------------------------------------------------------
     def set_key(self, key):
@@ -109,6 +113,17 @@ class Composer:
         sps = spb / S
         last_of_section = self.form.bars_left <= nb
         ev = []
+        if self.pattern_source is not None:
+            ctx = {"energy": round(energy, 3), "section": section, "bar": self.bar,
+                   "key": self.key.camelot, "bpm": round(self.bpm, 2), "phrase": self.bar // nb,
+                   "chords": [c[1] for c in chords]}
+            try:
+                ev = list(self.pattern_source.events(self.bar, nb, start, spb, ctx))
+                self.pattern_source.error = ""
+            except Exception as e:  # noqa: BLE001 - the pattern must never kill the show
+                self.pattern_source.error = f"{type(e).__name__}: {e}"
+                ev = []
+            return self._finish_phrase(ev, nb, start, spb, section, energy, chords, layers, None)
 
         def note(step_abs, slot, pitch, vel, dur_steps, **params):
             at = self._step_to_sample(start, step_abs)
@@ -161,6 +176,9 @@ class Composer:
             for step_abs, midi, vel, gate in notes:
                 note(step_abs, "lead", midi, vel, gate)
 
+        return self._finish_phrase(ev, nb, start, spb, section, energy, chords, layers, op)
+
+    def _finish_phrase(self, ev, nb, start, spb, section, energy, chords, layers, op):
         ev.sort(key=lambda e: (e.at, e.slot))
         drops = []
         drop_bar = self.form.upcoming_drop_bar()
