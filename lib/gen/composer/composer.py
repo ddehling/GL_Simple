@@ -60,6 +60,15 @@ class Composer:
     def request_end(self):
         self.form.ending = True
 
+    def set_arc(self, arc_fn):
+        self.form.arc_fn = arc_fn or (lambda bar: 0.6)
+
+    def reseed(self, seed: int):
+        """New randomness from the next phrase on; motif memory survives
+        (identity), the dice change."""
+        self.seed = int(seed)
+        self.rng.seed(self.seed)
+
     # -- timing helpers ------------------------------------------------------
     @property
     def samples_per_beat(self) -> float:

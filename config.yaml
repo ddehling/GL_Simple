@@ -60,6 +60,20 @@ dj:
   # threads competing for the GIL.
   stretch_engine: "rubberband"
 
+gen:
+  # Generative note-level music (lib/gen; docs/GENERATIVE_MUSIC_PLAN.md).
+  # enabled gates AVAILABILITY only - it never auto-plays; start it from
+  # the web panel's Gen tab (/gen). Live steering from the page is kept
+  # here for the session (style, key, bpm, energy, density, ...).
+  enabled: true
+  style: groove            # groove | downtempo | ambient
+  key: "8A"                # Camelot (8A = A minor) or a name (Am, C, F#m)
+  # bpm: 124               # omit = the style's own tempo
+  set_length_s: 10800      # arc length; the arc CYCLES (movements) all night
+  fluid_slots: ""          # e.g. "keys,pad" to render those on SoundFonts
+  # soundfont: /usr/share/sounds/sf2/FluidR3_GM.sf2   # apt: fluid-soundfont-gm
+  master: 0.8
+
 midi:
   enabled: true             # Korg nanoKontrol2 live control for the Club / DJ set
   device_name: "nanoKONTROL2"  # Partial, case-insensitive MIDI device name match

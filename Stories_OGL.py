@@ -397,6 +397,14 @@ class EnvironmentalSystem:
                 os.environ["DJ_STRETCH_ENGINE"] = eng
         self._dj = None
         self._dj_prev_source = None            # analyzer source to restore
+        # Generative music subsystem (lib/gen) - the DJ's sibling: its own
+        # page (/gen), its own action whitelist (lib/gen/actions.py), the
+        # same soundtrack-takeover contract. Constructed on the first web
+        # "start"; config gates availability. See _apply_gen_controls.
+        self.gen_cfg = dict(cfg.get("gen", {"enabled": False}) or {})
+        self._gen = None
+        self._gen_prev_source = None
+        self._gen_last_error = ""
         self._dj_pending_setlist = None        # armed while idle, load on start
         self._dj_pending_flavor = {}           # armed while idle, set on start
         self._dj_pending_arc = []              # arc waypoints armed while idle
@@ -1985,6 +1993,9 @@ class EnvironmentalSystem:
         # Autonomous DJ: drain queued web actions + mirror status.
         self._apply_dj_controls()
 
+        # Generative music: drain queued web actions + mirror status.
+        self._apply_gen_controls()
+
         # Interaction panel: drain queued button/slider presses.
         self._apply_interaction_controls()
 
@@ -2851,9 +2862,119 @@ class EnvironmentalSystem:
         from lib.dj import resolve_music_dir
         return resolve_music_dir(self.dj_cfg.get("music_dir", ""))
 
+    def _apply_gen_controls(self):
+        """Drain queued generative-music web actions, mirror status, publish
+        outstate keys. Mirrors _apply_dj_controls: while the generator is
+        live it owns the soundtrack (state ambient silenced, oneshots
+        muted, analyzer on the internal tap so every audio-reactive shader
+        follows what is actually playing)."""
+        if self.web_controller is None or not self.gen_cfg.get("enabled", False):
+            return
+        with self.web_controller._dict_lock:
+            actions = self.web_controller.control_dict.pop(
+                'request_gen_actions', [])
+        if actions:
+            from lib.gen.actions import apply_gen_action
+            for action, arg in actions:
+                try:
+                    apply_gen_action(self._gen, self.gen_cfg, action, arg,
+                                     start_fn=self._gen_start,
+                                     stop_fn=self._gen_stop)
+                except Exception as e:
+                    print(f"[GEN] action '{action}' failed: {e}")
+        if self._gen is not None:
+            if not self._gen.active:
+                # Ended on its own (outro finished / gave up): hand back.
+                self._gen_stop()
+                info = None
+            else:
+                info = self._gen.status()
+                info["available"] = True
+                for k, v in self._gen.outstate_keys().items():
+                    self.scheduler.state[k] = v
+        else:
+            info = None
+        if info is None:
+            from lib.gen.actions import idle_info
+            info = idle_info(self.gen_cfg, self._gen_last_error)
+            self.scheduler.state['gen_active'] = False
+        self.web_controller.set('gen_info', info)
+
+    def _gen_start(self):
+        if self._gen is not None and self._gen.active:
+            return
+        from lib.gen.system import GenSystem
+        engine = self.scheduler.state.get("soundengine")
+        eng_rate = int(getattr(engine, "sample_rate", 44100)) if engine else 44100
+        if eng_rate != 44100:
+            self._gen_last_error = (f"needs a 44100 Hz audio engine; project runs at "
+                                    f"{eng_rate} Hz")
+            print(f"[GEN] not starting: {self._gen_last_error}")
+            return
+        if self._dj is not None and self._dj.active:
+            self._dj_stop()                    # one soundtrack owner at a time
+        # Soundtrack takeover BEFORE the rack mounts (queue order matters,
+        # exactly as for the DJ submix).
+        if engine is not None:
+            try:
+                engine.stop_all(duration=1.5)
+                engine.oneshots_muted = True
+            except Exception:
+                pass
+        cfg = self.gen_cfg
+        self._gen = GenSystem(
+            engine=engine,
+            style=str(cfg.get("style", "groove")),
+            bpm=cfg.get("bpm"),
+            key=str(cfg.get("key", "8A")),
+            seed=cfg.get("seed"),
+            soundfont=cfg.get("soundfont"),
+            fluid_slots=str(cfg.get("fluid_slots", "") or ""),
+            set_length_s=float(cfg.get("set_length_s", 3 * 3600.0)),
+            energy_bias=float(cfg.get("energy_bias", 0.0)),
+            density=float(cfg.get("density", 1.0)),
+            swing=cfg.get("swing"),
+            master=float(cfg.get("master", 0.8)),
+            muted=str(cfg.get("muted", "") or ""),
+            log_dir=str(cfg.get("log_dir", "logs")))
+        if not self._gen.start():
+            self._gen_last_error = self._gen.last_error or "generator failed to start"
+            self._gen = None
+            print(f"[GEN] start failed: {self._gen_last_error}")
+            if engine is not None:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
+            return
+        self._gen_last_error = ""
+        try:
+            engine.stop_ambient()
+        except Exception:
+            pass
+        if self.analyzer is not None:
+            self._gen_prev_source = getattr(self.analyzer, "_active_source", None)
+            self.set_audio_source("internal")
+        print("[GEN] live - ambient handed off, analyzer on internal mix")
+
+    def _gen_stop(self):
+        if self._gen is None:
+            return
+        self._gen.stop()
+        self._gen = None
+        if self.analyzer is not None and self._gen_prev_source:
+            self.set_audio_source(self._gen_prev_source)
+            self._gen_prev_source = None
+        self.scheduler.state['gen_active'] = False
+        engine = self.scheduler.state.get("soundengine")
+        if engine is not None:
+            engine.oneshots_muted = False
+            self._restore_state_ambient(engine)
+        print("[GEN] stopped - state ambient restored")
+
     def _dj_start(self):
         if self._dj is not None and self._dj.active:
             return
+        if self._gen is not None and self._gen.active:
+            self._gen_stop()
         from lib.dj import resolve_music_dir
         from lib.dj.system import DJSystem
         engine = self.scheduler.state.get("soundengine")

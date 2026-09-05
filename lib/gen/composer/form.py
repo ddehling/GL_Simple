@@ -19,6 +19,7 @@ class Form:
         self._bar = 0
         self.history.append((0, self.section, self.bars_left))
         self.ending = False
+        self.hold = False          # operator: stay in this section
 
     def _draw_bars(self, section: str) -> int:
         lo, hi = self.style["sections"][section]["bars"]
@@ -51,6 +52,9 @@ class Form:
         self._bar += nbars
         self.bars_in += nbars
         self.bars_left -= nbars
+        if self.bars_left <= 0 and self.hold and not self.ending:
+            self.bars_left = 4          # ride the section another phrase
+            return
         if self.bars_left <= 0:
             self.section = self._next_section()
             self.bars_left = self._draw_bars(self.section)

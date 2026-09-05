@@ -57,6 +57,7 @@ ACTION_KINDS = ("event", "state", "param", "signal")
 # Keyed by the string a project writes in the spec.
 _REQUIRES_GATES = {
     "dj": lambda cd: bool((cd.get("dj_info") or {}).get("available")),
+    "gen": lambda cd: bool((cd.get("gen_info") or {}).get("available")),
 }
 
 _DEFAULT_THEME = {

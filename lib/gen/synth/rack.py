@@ -9,6 +9,7 @@ reverb returns; soft clip; shutdown fade."""
 from __future__ import annotations
 
 import heapq
+import threading
 
 import numpy as np
 
@@ -45,7 +46,10 @@ class SynthRack:
             for s in self.fluid_slots:
                 self.fluid.add_slot(s, int(self.slots.get(s, {}).get("fluid_program", 0)))
         self._pending = []          # heap of (at, seq, NoteEvent)
+        self._lock = threading.Lock()   # step thread schedules, render thread pops
         self._seq = 0
+        self.muted = set()          # slots silenced at render time (immediate)
+        self._style_swap = None     # (at_sample, style, bpm) applied by render()
         self._active = []           # [start, buf(mono), slot]
         self.clock = 0
         self.done = False
@@ -61,15 +65,47 @@ class SynthRack:
 
     # -- control-thread API --------------------------------------------------
     def schedule(self, events):
-        for e in events:
-            self._seq += 1
-            heapq.heappush(self._pending, (e.at, self._seq, e))
+        with self._lock:
+            for e in events:
+                self._seq += 1
+                heapq.heappush(self._pending, (e.at, self._seq, e))
+
+    def set_style(self, style: dict, bpm: float, at: int = 0):
+        """Swap patches (and the tempo-synced delay) once the render clock
+        reaches `at` - the composer's phrase boundary - so already-scheduled
+        notes finish under the patches they were written for."""
+        with self._lock:
+            self._style_swap = (int(at), style, float(bpm))
+
+    def _apply_style(self, style, bpm):
+        self.style = style
+        self.slots = style["slots"]
+        self.voices = {}
+        for name, patch in self.slots.items():
+            vc = VOICES.get(patch.get("voice"))
+            if vc is not None:
+                self.voices[name] = vc()
+        if self.fluid is not None:
+            for s in self.fluid_slots:
+                if s in self.slots and not self.fluid.has_slot(s):
+                    self.fluid.add_slot(s, int(self.slots[s].get("fluid_program", 0)))
+        if abs(bpm - self.bpm) > 1e-6:
+            self.bpm = float(bpm)
+            self.delay = fx.PingPongDelay(int(RATE * 60.0 / self.bpm * 0.75))
+        self.has_kick = "kick" in self.slots
+
+    def set_master(self, value: float):
+        self.master = float(max(0.0, min(1.0, value)))
+
+    def set_mute(self, slot: str, on: bool):
+        (self.muted.add if on else self.muted.discard)(slot)
 
     def fade_out(self, duration=1.0):
         self._fade = 1.0 / max(duration, 0.05) / RATE
 
     def pending_until(self):
-        return self._pending[-1][0] if self._pending else self.clock
+        with self._lock:
+            return max((e[0] for e in self._pending), default=self.clock)
 
     # -- render --------------------------------------------------------------
     def _pan(self, slot):
@@ -82,8 +118,17 @@ class SynthRack:
         send_d = np.zeros((n, 2), dtype=np.float32)
         send_r = np.zeros((n, 2), dtype=np.float32)
         fluid_events = []
-        while self._pending and self._pending[0][0] < c1:
-            _, _, e = heapq.heappop(self._pending)
+        due = []
+        with self._lock:
+            if self._style_swap is not None and self._style_swap[0] <= c0:
+                _, st, bpm = self._style_swap
+                self._style_swap = None
+                self._apply_style(st, bpm)
+            while self._pending and self._pending[0][0] < c1:
+                due.append(heapq.heappop(self._pending)[2])
+        for e in due:
+            if e.slot in self.muted or e.slot not in self.slots:
+                continue
             if e.slot in self.fluid_slots:
                 fluid_events.append(e)
                 continue

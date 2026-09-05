@@ -218,7 +218,8 @@ class WebController:
         with self._dict_lock:
             panels = getattr(self, '_interaction_panels', {})
             cur = self.control_dict.get('current_weather_set')
-            snapshot = {'dj_info': self.control_dict.get('dj_info')}
+            snapshot = {'dj_info': self.control_dict.get('dj_info'),
+                        'gen_info': self.control_dict.get('gen_info')}
         return panel_for_set(panels, cur, snapshot)
 
     def set_weather_module(self, *, weather_state_enum=None,
@@ -313,6 +314,24 @@ class WebController:
         def dj_panel():
             return render_template('dj_panel.html')
 
+        @self.app.route('/gen')
+        def gen_panel():
+            """Generative music control surface (lib/gen) - the DJ's
+            sibling: its own page, its own action whitelist."""
+            return render_template('gen_panel.html')
+
+        @self.app.route('/api/gen/active')
+        def gen_active():
+            """Generative subsystem availability/liveness (gates the nav
+            tab, same idiom as /api/dj/active)."""
+            with self._dict_lock:
+                info = self.control_dict.get('gen_info') or {}
+            return jsonify({"available": bool(info.get("available")),
+                            "active": bool(info.get("active")),
+                            "state": info.get("state") or "",
+                            "style": info.get("style") or "",
+                            "error": info.get("error") or ""})
+
         @self.app.route('/api/dj/active')
         def dj_active():
             """DJ availability/liveness (gates the DJ nav tab). Also the
@@ -351,6 +370,7 @@ class WebController:
                 return jsonify({"available": False})
             with self._dict_lock:
                 dj = self.control_dict.get('dj_info') or {}
+                gen = self.control_dict.get('gen_info') or {}
             return jsonify({
                 "available": True,
                 "set": panel["set"],
@@ -360,7 +380,9 @@ class WebController:
                 # "something is running behind this tab" — currently only
                 # the DJ-backed panel has a liveness notion; it lights the
                 # tab green exactly as the old dedicated DJ tab did.
-                "live": bool(dj.get("active")) if panel.get("requires") == "dj" else False,
+                "live": (bool(dj.get("active")) if panel.get("requires") == "dj"
+                         else bool(gen.get("active")) if panel.get("requires") == "gen"
+                         else False),
             })
 
         @self.app.route('/api/interaction/spec')
@@ -1005,6 +1027,7 @@ class WebController:
                         "ttls": self.control_dict.get('club_ttls', {}),
                     },
                     "dj": self.control_dict.get('dj_info'),
+                                "gen": self.control_dict.get('gen_info'),
                 }
             emit('state_update', _sanitize_for_json(snapshot))
 
@@ -1267,6 +1290,29 @@ class WebController:
             ok = queue_dj_action(request.get_json(silent=True))
             return jsonify({'ok': bool(ok)}), (200 if ok else 400)
 
+        def queue_gen_action(data):
+            """Validate + clamp one generative-music action and queue it
+            for Stories_OGL._apply_gen_controls (render thread, 5 Hz).
+            The whitelist/sanitizer lives in lib/gen/actions.py so the
+            standalone gen_server and the show can never disagree."""
+            from lib.gen.actions import sanitize_gen_action
+            pair = sanitize_gen_action(data)
+            if pair is None:
+                return False
+            with self._dict_lock:
+                q = self.control_dict.setdefault('request_gen_actions', [])
+                q.append(pair)
+            return True
+
+        @self.socketio.on('gen_action')
+        def handle_gen_action(data):
+            queue_gen_action(data)
+
+        @self.app.route('/api/gen/action', methods=['POST'])
+        def api_gen_action():
+            ok = queue_gen_action(request.get_json(silent=True))
+            return jsonify({'ok': bool(ok)}), (200 if ok else 400)
+
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
 
@@ -1516,6 +1562,7 @@ class WebController:
                                     "ttls": self.control_dict.get('club_ttls', {}),
                                 },
                                 "dj": self.control_dict.get('dj_info'),
+                                "gen": self.control_dict.get('gen_info'),
                                 "available_sets": list(
                                     self.control_dict.get('available_sets', [])),
                                 "set_timer": (

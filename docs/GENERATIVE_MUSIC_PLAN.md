@@ -19,6 +19,7 @@ are gated:
 | Synth rack: numba/numpy analog voices, delay/reverb/sidechain, FluidSynth SoundFont slots, AudioEngine track protocol | `lib/gen/synth/` | `tools/tests/_gen_synth_test.py` |
 | SuperCollider backend: SynthDefs in Python (supriya), NRT render, realtime scheduler | `lib/gen/backends/sc.py` | `tools/tests/_gen_sc_test.py` (SKIPs without scsynth) |
 | Player CLI | `tools/gen/gen_player.py` | — |
+| **Frontend (Phase 3, landed 2026-09-05):** `GenSystem` conductor (composes ahead on its own thread, steering queue, movements, end-of-set, supervision, night log), shared action whitelist, `/gen` page + `gen_action` socket + `POST /api/gen/action`, Gen nav tab, Stories_OGL soundtrack-takeover bridge, `gen:` config, standalone server | `lib/gen/system.py`, `lib/gen/actions.py`, `web/templates/gen_panel.html`, `web/static/js/gen_tab.js`, `web/web_controller.py`, `Stories_OGL.py` (`_apply_gen_controls/_gen_start/_gen_stop`), `config.yaml`, `tools/gen/gen_server.py` | `tools/tests/_gen_system_test.py` |
 
 ```bash
 pip install numba supriya pyfluidsynth            # numba is in requirements.txt already
@@ -28,7 +29,14 @@ python tools/gen/gen_player.py --wav out.wav --style downtempo --fluid-slots key
 python tools/gen/gen_player.py --wav out_sc.wav --backend sc-nrt          # same notes through scsynth
 python tools/gen/gen_player.py --live --minutes 10                        # speakers (miniaudio)
 python tools/tests/_gen_composer_test.py && python tools/tests/_gen_synth_test.py && python tools/tests/_gen_sc_test.py
+python tools/tests/_gen_system_test.py                                     # conductor + frontend contract
+python tools/gen/gen_server.py --port 5000 [--fluid-slots keys,pad]        # /gen page on this machine's speakers, no show app
+python tools/gen/gen_server.py --wav night.wav --minutes 20                # same page, headless render
 ```
+In the show: `gen.enabled: true` in `config.yaml` makes the **Gen** tab appear; START on
+`/gen` takes the soundtrack exactly as the DJ does (ambient silenced, oneshots muted,
+analyzer on the internal tap) and STOP hands it back. A project may also point a
+set's interaction panel at it: `{"label": "Generative", "page": "/gen", "requires": "gen"}`.
 
 Measured in the dev container (4 cores, no GPU): numpy rack renders at ~17x realtime
 steady state; scsynth NRT at ~49x; FluidSynth adds negligible cost. Kick onsets land on
