@@ -1,12 +1,39 @@
 # Generative Note-Level Music for the Club / DJ System — Options & Plan
 
-Status: PLAN ONLY (no code). Rewritten 2026-09-04/05 after the operator clarified the goal:
+Status: **Phase 0 spike landed 2026-09-05** (see §0.1). Plan rewritten 2026-09-04/05 after the operator clarified the goal:
 **a system that generatively composes and plays notes** — a live algorithmic composer
 driving a synthesizer — not a system that renders finished tracks for the DJ to mix.
 Operator decisions folded in (2026-09-05): **both analog synthesis and SoundFonts from the
 start; its own subsystem and interface, separate from the club and modelled on how the DJ
 is wired; must run for long periods (hours to all night); SuperCollider explored in §3.1
 as a candidate analog backend, to be decided by spike.** (The earlier track-rendering direction is summarised in §9 and set aside.)
+
+## 0.1 Phase 0 status (2026-09-05)
+
+Standalone, no engine changes. Both analog backends and the SoundFont path exist and
+are gated:
+
+| Piece | Where | Gate |
+|---|---|---|
+| Composer (theory, styles, form, harmony, rhythm, melody + motif memory) | `lib/gen/composer/`, `lib/gen/theory.py`, `lib/gen/events.py` | `tools/tests/_gen_composer_test.py` |
+| Synth rack: numba/numpy analog voices, delay/reverb/sidechain, FluidSynth SoundFont slots, AudioEngine track protocol | `lib/gen/synth/` | `tools/tests/_gen_synth_test.py` |
+| SuperCollider backend: SynthDefs in Python (supriya), NRT render, realtime scheduler | `lib/gen/backends/sc.py` | `tools/tests/_gen_sc_test.py` (SKIPs without scsynth) |
+| Player CLI | `tools/gen/gen_player.py` | — |
+
+```bash
+pip install numba supriya pyfluidsynth            # numba is in requirements.txt already
+sudo apt install supercollider-server sc3-plugins fluidsynth fluid-soundfont-gm   # optional backends
+python tools/gen/gen_player.py --wav out.wav --minutes 3 --style groove --bpm 124 --key 8A --seed 1 --log
+python tools/gen/gen_player.py --wav out.wav --style downtempo --fluid-slots keys,pad
+python tools/gen/gen_player.py --wav out_sc.wav --backend sc-nrt          # same notes through scsynth
+python tools/gen/gen_player.py --live --minutes 10                        # speakers (miniaudio)
+python tools/tests/_gen_composer_test.py && python tools/tests/_gen_synth_test.py && python tools/tests/_gen_sc_test.py
+```
+
+Measured in the dev container (4 cores, no GPU): numpy rack renders at ~17x realtime
+steady state; scsynth NRT at ~49x; FluidSynth adds negligible cost. Kick onsets land on
+the composer's sample grid on both backends (43/43 and 35/35). **Next: the operator
+listening session** (styles × backends), then Phase 1 decisions from §5.
 
 ## 0. What we are building
 
