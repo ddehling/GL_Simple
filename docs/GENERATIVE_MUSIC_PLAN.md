@@ -1,19 +1,24 @@
 # Generative Note-Level Music for the Club / DJ System — Options & Plan
 
-Status: PLAN ONLY (no code). Rewritten 2026-09-04 after the operator clarified the goal:
+Status: PLAN ONLY (no code). Rewritten 2026-09-04/05 after the operator clarified the goal:
 **a system that generatively composes and plays notes** — a live algorithmic composer
 driving a synthesizer — not a system that renders finished tracks for the DJ to mix.
-(The earlier track-rendering direction is summarised in §8 and set aside.)
+Operator decisions folded in (2026-09-05): **both analog synthesis and SoundFonts from the
+start; its own subsystem and interface, separate from the club and modelled on how the DJ
+is wired; must run for long periods (hours to all night); SuperCollider optional, not
+required.** (The earlier track-rendering direction is summarised in §9 and set aside.)
 
 ## 0. What we are building
 
-A **generative deck**: an autonomous composer that decides notes (drums, bass, chords,
-melody, texture) a few bars ahead, a sample-accurate scheduler that plays them on the
-DJ's clock, and a synth engine that turns them into audio inside the existing
-`AudioEngine`. It is steered by the signals the show already publishes (night arc,
-energy target, key, mood, weather state), it can take the floor from the DJ and hand it
-back at a planned seam, and it publishes exact beat/bar/phrase/drop truth to the visuals.
-The same engine can play ambient generative music for the non-club weather sets.
+A **generative music subsystem** (`GenSystem`), a sibling of the DJ rather than a part of
+it: an autonomous composer that decides notes (drums, bass, chords, melody, texture) a
+few bars ahead, a sample-accurate scheduler on its own sample clock, and a synth rack
+(analog-style voices + SoundFont voices) that renders audio inside the existing
+`AudioEngine`. It has its own weather set and its own control page (like the club set has
+`/dj`), runs for hours unattended, is steered by an arc plus the show's published state,
+and publishes exact beat/bar/phrase/drop truth to the visuals. Optional later: DJ
+hand-offs so the two subsystems can trade the floor, and ambient generative beds for
+other weather sets.
 
 It honours the operator verdicts on record in `docs/DJ_README.md` (245-289, 386-408):
 it is never a layer pasted over a record; when it plays, **it is the music**.
@@ -36,7 +41,7 @@ it is never a layer pasted over a record; when it plays, **it is the music**.
 | Internal analyzer tap | `Stories_OGL.py:2319` | Spectrum for shaders is free. |
 | Web `/dj` `DJ_ACTIONS`, `POST /api/dj/action`, declarative `INTERACTION_PANELS` | `web/web_controller.py:1150`, `lib/interaction.py` | Operator controls: style preset, density/brightness/complexity, take/give the floor. |
 | Ambient beds per weather state: `play_ambient` / `_restore_state_ambient` | `Stories_OGL.py:1911-1945,:2950` | A set may declare `generative:` instead of `ambient_sound`; the generator becomes the bed. |
-| `python-osc` in requirements; `loopback` analyzer source exists | `requirements.txt`, `lib/audio_analyzer.py:26,:122` | Makes a SuperCollider backend *possible* later (§3, S3). |
+| `python-osc` in requirements; `loopback` analyzer source exists | `requirements.txt`, `lib/audio_analyzer.py:26,:122` | Makes a SuperCollider backend *possible* later (§3, S3) — optional, see §7. |
 | Offline verification culture: hand-pumped engine e2e, `_dj_night_sim`, `seamverify`, Seam Lab ratings | `tools/tests/_dj_brain_test.py:301`, `docs/DJ_VERIFICATION.md` | Every phase ends with a rendered gate and a listening session. |
 
 ---
@@ -99,95 +104,162 @@ All backends implement one `Voice` interface: `note_on/off(pitch, vel, at_sample
 | S4 | VST3 hosting (Surge XT / Vital / Dexed via `pedalboard` or DawDreamer) | Excellent sounds, but Python hosts render in blocks with awkward state/tail semantics for continuous play, and pull in JUCE-sized deps. | Not first. |
 | S5 | MIDI out to hardware synths | Repo deliberately keeps MIDI out of the show (`Stories_OGL.py:417`); new hardware, `mido`/`rtmidi`. | Not recommended. |
 
-**Recommendation:** S1 core + S2 optional, one `Voice` interface, backend chosen per
-instrument slot in the style preset.
+**Decision (operator):** S1 **and** S2 from the start, one `Voice` interface, backend
+chosen per instrument slot in the style preset (e.g. drums + bass + lead on S1, keys /
+pads / mallets / strings on S2). S2 needs `libfluidsynth` on the show box (apt package;
+the install scripts in `bin/` gain one line) and `.sf2` assets under `media/soundfonts/`
+(start with a GM bank such as FluidR3 or GeneralUser GS, both free; add specialised banks
+per palette). Pin the FluidSynth output rate to 44100 and render on the rack's worker
+thread, never in the engine callback.
+
+**SuperCollider in one paragraph, for the decision.** SuperCollider is a free, mature
+audio-synthesis *server* (`scsynth`) plus its own language. You describe instruments as
+graphs of unit generators, load them into the server, and then play notes by sending it
+OSC network messages (`python-osc` is already a dependency). Its strengths: an enormous
+synthesis vocabulary, very low CPU, decades of live-coding use. Its costs here: a second
+process to install and supervise, its audio goes straight to the sound card rather than
+through `AudioEngine` (so the limiter, the render-ahead ring and the DJ's crossfades no
+longer apply; the visuals would use the analyzer's `loopback` source), and a second
+language for sound design. **Recommendation: not needed.** S1 + S2 already cover analog
+and sampled palettes inside the engine. Keep S3 as a documented option behind the same
+`Voice` interface if, after Phase 2 listening, the analog palette wants sounds S1 cannot
+make cheaply.
 
 ---
 
 ## 4. Architecture
 
+Mirror the DJ's wiring exactly, so every seam is one already proven in this codebase.
+
+| DJ (exists) | Generative (new) |
+|---|---|
+| `lib/dj/system.py DJSystem` — conductor on its own planner thread, `step()`, `status()`, `outstate_keys()` | `lib/gen/system.py GenSystem` — conductor on its own thread; composer runs here |
+| `lib/dj/submix.py DJSubmix` — one `attach_track` object, sample clock, `post_many` automation | `lib/gen/rack.py GenRack` — one `attach_track("gen_rack")` object; note scheduler + synth rack + FX; worker thread renders ~2 bars ahead into a ring; `read()` is a memcpy |
+| `Stories_OGL._dj_start/_dj_stop` (`:2854/:2932`) — soundtrack takeover, `oneshots_muted`, analyzer → `internal` | `_gen_start/_gen_stop` — same takeover contract (stop ambient, mute oneshots, analyzer `internal`, restore on stop) |
+| `Stories_OGL._apply_dj_controls` (`:2541`) — 5 Hz bridge, `dj_info` at `:2705` | `_apply_gen_controls` — 5 Hz bridge, `gen_info` |
+| `web_controller.py DJ_ACTIONS` (`:1150`), `queue_dj_action`, `dj_action` socket, `POST /api/dj/action`, `/dj` page | `GEN_ACTIONS`, `queue_gen_action`, `gen_action`, `POST /api/gen/action`, `/gen` page (`web/templates/gen_panel.html`) |
+| club set: `INTERACTION_PANELS` `{"label": "DJ", "page": "/dj", "requires": "dj"}` (`lib/interaction.py:12,:56`) | a new weather set in the fan project, e.g. `generative`, with `{"label": "Generative", "page": "/gen", "requires": "gen"}`; add the `gen` gate to `_REQUIRES_GATES` |
+| `lib/dj/vis.py DJVisualCoupler` + `live_beat` | `lib/gen/vis.py GenVisualCoupler` — same reactive keys (`audio_energy`, `build_level`, `drop`, beat pulses, `bar_phase`, `phrase_phase`), exact from the scheduler |
+| `tools/dj/dj_player.py --live/--wav` | `tools/gen/gen_player.py --live/--wav/--minutes/--seed/--style` |
+| `tools/tests/_dj_*` gates, `_dj_night_sim` | `tools/tests/_gen_*` gates, `_gen_long_run_sim` |
+
 ```
-  outstate: arc phase/heat, bpm_target, key (camelot / key_center), music_mood, weather,
-            operator controls (style, density, brightness, complexity, floor)
+  arc (set length / all-night) + outstate (weather, season, key_center, music_mood)
+  + operator controls (style, density, brightness, complexity, tempo, key, hold, reseed)
         │
         ▼
-  Composer (control thread, phrase-first)         lib/dj/gen/composer/
-    form state machine → harmony → rhythm grids → bass/melody/motif memory
-    emits Phrase(bar_events[...]) 4–8 bars ahead; knows every drop in advance
-        │  note events {at_sample, voice, pitch, vel, dur, params}
+  GenSystem (own thread)  ── Composer: form → harmony → rhythm → bass/melody/motif memory
+        │  Phrase = note events {at_sample, slot, pitch, vel, dur, params}, 4–8 bars ahead
         ▼
-  NoteScheduler (sample clock, 256-frame sub-blocks, `at`-stamped like submix automation)
-        │
-        ▼
-  SynthRack (worker thread → ~2-bar ring)          lib/dj/gen/synth/
-    Voice S1 numba/numpy | Voice S2 FluidSynth ; FX chain ; sidechain from kick
+  GenRack (attach_track peer of dj_submix)
+     NoteScheduler (sample clock, 256-frame sub-blocks)
+     SynthRack worker thread → ring:  slots → Voice(S1 numba analog | S2 FluidSynth) → FX → soft-clip
         │  (n,2) float32 @ 44.1k
-        ▼
-  GenDeck(Deck) = DJSubmix.decks["g"]  — sync MASTER, exact grid, gain/EQ/filter automation
-        │                              (or: peer attach_track for non-club sets)
         ▼
   AudioEngine mixer → limiter → speakers → internal tap → shaders
         │
-  GenTrack (virtual TrackInfo) → DJSystem.live_beat / outstate_keys → club director
+  GenSystem.outstate_keys() → GenVisualCoupler → club-style director in the generative set
 ```
 
-Key design points:
-- **Two mount modes, one engine.** Club: `GenDeck` inside `DJSubmix` so the brain plans
-  seams (`plan_transition` with `GenTrack`: exact grid, `bpm_conf=1.0`, rolling sections,
-  `mix_ins`/`mix_outs` regenerated at the next phrase boundary) and records slave to it
-  (a ring cannot be reseeked, so `_apply("sync")` refuses `"g"` as slave). Non-club: peer
-  `attach_track("generative")` with `is_ambient=True` so the existing ambient volume and
-  crossfade rules apply and `play_ambient` is not called for that state.
-- **Take / give the floor.** Record→gen: `plan_transition(cur=record, cand=GenTrack)`; the
-  composer commissions its own tempo/key from the live `out_bpm` and the record's Camelot
-  and starts on the record's downbeat grid. Gen→record: composer schedules an outro at
-  the next phrase, `GenTrack.mix_outs` advertises it, normal arming follows. Continuity
-  watchdog and a pre-decoded escape record remain mandatory.
-- **Visual truth is exact.** Beat/bar/phrase phase come from the scheduler clock (no
-  measurement, unlike a stream); `dj_next_drop_eta`, `build_level` and hard-drop stamps
-  come from the composer's plan. The club director gets choreography a human VJ cannot.
-- **Autonomous first.** No performer input; operator controls are sparse and coarse.
+Why a sibling and not a deck inside the DJ: the operator wants a separate instrument with
+its own page; the DJ's brain, decks and seam vocabulary are built around *records* with
+analysed grids; and the DJ is off while the generative set plays (same as the club set vs
+every other set today). The one place the two meet is the optional hand-off in Phase 6,
+which can then be done through the DJ's own `plan_transition` with a virtual `GenTrack`
+(exact grid, `bpm_conf=1.0`) and a `GenDeck` view of the same rack — the rack's audio is
+the same either way.
 
-Code layout: `lib/dj/gen/` (`composer/` {form, harmony, rhythm, melody, motif, styles},
-`scheduler.py`, `synth/` {voices_numba, voices_fluid, fx, rack}, `deck.py` (GenDeck,
-GenTrack), `presets/*.yaml`), `tools/dj/gen_player.py` (standalone `--wav`/`--live`,
-mirrors `dj_player.py`), `tools/tests/_dj_gen_*_test.py`, `media/soundfonts/` (optional),
-`docs/GENERATIVE_MUSIC.md` (user doc). Engine deltas: `DJSubmix.decks["g"]`, sync refusal,
-a/b flip generalisation in `system.py`, ambient bypass in `Stories_OGL.transition_to_weather`.
+### 4.1 Control surface
+
+- **Phase 3 (web, matches the DJ):** `/gen` page with start/stop, style preset, tempo, key
+  /mode lock, energy nudge and arc waypoints (reuse the `/dj` arc-strip widget), density /
+  brightness / complexity / swing sliders, section hold, "reseed", motif freeze, per-slot
+  mute and backend (analog ↔ SoundFont), 👍/👎 on the current phrase. State goes down as
+  `gen_info` at 5 Hz over the existing socket, like `dj_info`. Coarse controls at 5 Hz are
+  fine for an autonomous instrument; this is the cheapest route and stays remote-friendly.
+- **"More performant than a web interface", two candidates for later:**
+  1. **Native desktop console** — a PyQt6 app (`tools/gen_console.py`; the DJ planner is
+     already PyQt6) driving the running show over the same `POST /api/gen/action` +
+     socket contract, so nothing in the engine changes. Gives real faders/knobs, ms-level
+     feedback (a local OSC channel via `python-osc` can replace the socket if 5 Hz is too
+     coarse), scopes and a phrase timeline.
+  2. **Physical MIDI controller** — the nanoKONTROL2 driver exists (`lib/midi_controller.py`,
+     input only, `register_callback:317`). The show deliberately takes no MIDI
+     (`Stories_OGL.py:417-422`, an autonomy decision for the club); the generative set
+     would be the first justified exception, and it should be scoped to that set. This is
+     an operator decision to record when Phase 3 lands.
+  Recommendation: build the web page first (it is also the API), then decide between 1
+  and 2 from live use.
+
+### 4.2 Long-run operation (hours to all night)
+
+Requirements that follow from "runs for long periods", each with the mechanism:
+- **Macro-form over hours**: an arc like the DJ's themes (`themes.py`) but for movements —
+  palette rotation, tonal-centre drift by fifths/relative modes at movement boundaries,
+  tempo drift within a band, density waves. Prevents the "same loop for four hours" fatigue.
+- **Motif memory with decay**: motifs are reused and varied for identity, then retired;
+  a bounded store (LRU) so memory is flat over the night.
+- **Seeded and reseedable**: a night seed plus per-phrase sub-seeds; "reseed" is a control;
+  every event log line carries the seed so a moment can be reproduced offline.
+- **Numerical hygiene**: int64 sample clock (no float drift), filter and delay state flushed
+  of denormals, envelopes clamped, FluidSynth voice count capped, periodic soft reset of
+  reverb tails at silent bars.
+- **Supervision**: the rack worker is a supervised thread — if the ring underruns or the
+  worker dies, the rack emits silence with a fade, restarts the worker, logs it, and
+  `gen_info` shows it; a continuity watchdog like the DJ's (`system.py:2574`) ensures the
+  composer always has the next phrase queued.
+- **Flat resource profile**: no per-note allocations on the audio path (preallocated
+  voice pools), bounded event queues, log rotation (`logs/gen_*.jsonl` like `logs/dj_*.jsonl`).
+- **Offline soak**: `_gen_long_run_sim.py` renders an 8-hour night at faster than real
+  time through the hand-pumped engine and asserts no NaN/clip, bounded memory, phrase
+  discipline, and macro-form coverage; `gen_review.py` reads the night log the way
+  `dj_review.py` does.
+
+Code layout: `lib/gen/` (`system.py`, `rack.py`, `scheduler.py`, `composer/` {form,
+harmony, rhythm, melody, motif, styles}, `synth/` {voices_numba, voices_fluid, fx},
+`vis.py`, `presets/*.yaml`), `tools/gen/gen_player.py`, `tools/gen/gen_review.py`,
+`tools/gen_console.py` (later), `web/templates/gen_panel.html`, `media/soundfonts/`,
+`tools/tests/_gen_*`, `docs/GENERATIVE_MUSIC.md`. The generative *weather set* (states,
+palette, director shader, `INTERACTION_PANELS`) is project content in the fan repo.
 
 ---
 
 ## 5. Phased roadmap
 
-**Phase 0 — Spike (no engine changes).** `tools/dj/gen_player.py --wav out.wav --minutes 2
---bpm 126 --key 8A --style groove`: rule composer + S1 voices (kick, hats, clap, sub bass,
-one lead, one pad) + delay/reverb. Listen. Measure CPU on the N150. Decide the initial
-voice set and whether S2 is wanted from the start.
+**Phase 0 — Spike (no engine changes).** `tools/gen/gen_player.py --wav out.wav --minutes 3
+--bpm 124 --key 8A --style groove --seed 1`: rule composer + S1 voices (kick, hats, clap,
+sub bass, lead) + S2 SoundFont keys/pad + delay/reverb. Listen. Measure CPU on the N150.
+Confirms the `Voice` interface, the FluidSynth block-render path at 44.1 k, and whether
+the sound is worth the rest of the plan.
 
-**Phase 1 — Engine.** `Voice` interface, S1 voices, FX, NoteScheduler, SynthRack worker +
-ring, deterministic seeds. Gate `_dj_gen_synth_test.py`: seed → WAV, kick-to-grid
-alignment via `seamverify.measured_kick_alignment`, no NaN/clip, CPU per block under
-budget.
+**Phase 1 — Engine.** `Voice` interface, S1 voices, S2 FluidSynth voices, FX,
+NoteScheduler, SynthRack worker + ring, `GenRack` track protocol, seeds, supervision.
+Gates: `_gen_synth_test.py` (seed → WAV, kick-to-grid alignment via
+`seamverify.measured_kick_alignment`, no NaN/clip, CPU per block under budget),
+`_gen_rack_test.py` (underrun → fade + restart).
 
-**Phase 2 — Composer v1 (club).** Form/harmony/rhythm/melody/motif; style presets for the
-four themes; energy/arc steering; engineered drops. Gate: 30-minute offline render per
-preset, phrase-boundary and drop timing assertions, plus an operator listening session
-(this is the ear-gate; instruments do not judge musicality).
+**Phase 2 — Composer v1.** Form / harmony / rhythm / melody / motif memory; three style
+presets (club groove, downtempo, ambient); energy/arc steering; engineered drops; macro-form
+over hours. Gates: per-preset offline renders with phrase/drop timing assertions; the
+8-hour soak (`_gen_long_run_sim.py`); and the operator listening session, which is the
+real gate.
 
-**Phase 3 — Club integration.** `GenDeck`, `GenTrack`, sync-master rule, a/b
-generalisation, record↔gen seams through the real brain, outstate truth, `/dj` controls
-(gen on/off, style, density, brightness, complexity, take/give floor), night sim
-`--generative`, `dj_review` rows. Gate `_dj_gen_handoff_test.py` (hand-pumped engine e2e,
-modelled on `_dj_brain_test.e2e_test`).
+**Phase 3 — Show integration + web page.** `GenSystem` in `Stories_OGL` (`_gen_start/_stop`,
+5 Hz bridge, `gen_info`), `GEN_ACTIONS` + `/gen` page, `gen` gate in `lib/interaction.py`,
+`GenVisualCoupler`, night log + `gen_review.py`. The generative weather set (states,
+palette, director) lands in the fan project repo. Gate: hand-pumped e2e modelled on
+`_dj_brain_test.e2e_test`, plus a live evening.
 
-**Phase 4 — Non-club sets.** `generative:` per weather state in project config; weather →
-composer mapping (rain → density, wind → filter motion, fog → reverb, season → mode);
-`INTERACTION_PANELS` sliders; S2 SoundFont voices for organic palettes.
+**Phase 4 — Control surface v2.** From live use, choose the PyQt6 console and/or the
+nanoKONTROL2 mapping (§4.1); either talks to the engine through the Phase 3 API.
 
-**Phase 5 — Quality loop and seasoning.** "Phrase Lab" rating treadmill (Seam Lab
-pattern) that renders phrases per preset and logs verdicts; tune style parameters from
-verdicts; motif memory across the night; then optional C2 (neural phrase proposer),
-C3 (LLM phrase director), S3 (SuperCollider backend).
+**Phase 5 — Quality loop and seasoning.** "Phrase Lab" rating treadmill (Seam Lab pattern)
+per preset; tune style parameters from verdicts; more palettes and SoundFont banks; then
+optional C2 (neural phrase proposer), C3 (LLM phrase director), S3 (SuperCollider).
+
+**Phase 6 (optional) — DJ hand-offs and ambient beds.** `GenTrack` + `GenDeck` view of the
+rack for record↔generative seams through the DJ brain; `generative:` per weather state for
+other sets (weather → composer mapping) as an ambient bed via the same rack.
 
 ---
 
@@ -204,18 +276,26 @@ PyTorch) is also sufficient and cheaper, at the cost of an aarch64 toolchain.
 
 ---
 
-## 7. Open decisions for the operator
-1. **Palette**: analog-style synthesis only (S1), or add SoundFont instruments (S2) from
-   the start? (S2 needs `libfluidsynth` on the show box and `.sf2` assets.)
-2. **Scope**: club deck first (Phases 1–3), or ambient generative for all weather sets
-   first (Phases 1, 2-lite, 4)? Both share Phases 0–1.
-3. **How much floor**: should the generative deck be an occasional guest between records
-   (bridges, wind-down, empty library) or able to run the whole night?
-4. **Appetite for SuperCollider** as a later backend (second process, richer sounds).
+## 7. Decisions recorded (2026-09-05)
+
+| Question | Decision |
+|---|---|
+| Palette | Both: analog-style synthesis (S1) **and** SoundFont instruments (S2) from the start. |
+| Scope / mount | A **separate subsystem and interface**, modelled on the DJ (own set, own `/gen` page, own conductor), not a deck inside the DJ. DJ hand-offs and ambient beds for other sets are optional later phases. |
+| Interface | Web page first (it doubles as the API). Later, a more performant surface: PyQt6 console and/or a scoped nanoKONTROL2 mapping — decide from live use. |
+| Duration | Must run for long periods → §4.2 long-run requirements are in scope from Phase 1, soak test from Phase 2. |
+| SuperCollider | Not required; S1 + S2 cover the palettes inside the engine. Kept as a documented optional backend (§3). |
+
+## 8. Remaining open questions (non-blocking)
+1. Which SoundFont banks to license/ship first (GM bank for coverage, plus one or two
+   specialised banks per palette)?
+2. Should the generative set also be allowed while the club set is active (Phase 6), or
+   strictly one-or-the-other like every other set today?
+3. Log retention and whether thumbed-up phrases should be exported as MIDI for reuse.
 
 ---
 
-## 8. Set aside: track-level generation (previous draft)
+## 9. Set aside: track-level generation (previous draft)
 
 Researched and documented before the clarification: commissioning finished 4–6 min tracks
 from offline neural models (Stable Audio Open 1.5, ACE-Step, Magenta RealTime 2) on a GPU
