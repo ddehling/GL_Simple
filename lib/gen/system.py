@@ -323,11 +323,10 @@ class GenSystem:
         """Evaluate Strudel code; from the next phrase its events replace
         the rule composer's. Bad code is reported in status, never fatal."""
         def do():
-            from lib.gen.composer.strudel import StrudelBridge, StrudelSource
+            from lib.gen.composer.strudel import StrudelSource, open_engine
             try:
                 if self._strudel is None:
-                    self._strudel = StrudelBridge()
-                    self._strudel.start()
+                    self._strudel = open_engine()
                 src = self.composer.pattern_source
                 if src is None or not isinstance(src, StrudelSource):
                     src = StrudelSource(self._strudel, self.composer.style["slots"].keys())
@@ -437,6 +436,8 @@ class GenSystem:
             "pattern": self._pattern_code,
             "pattern_error": (getattr(c.pattern_source, "error", "") if c.pattern_source else ""),
             "pattern_available": _strudel_available(),
+            "pattern_engine": (type(self._strudel).__name__.replace("Strudel", "").lower()
+                               if self._strudel is not None else None),
             "error": self.last_error,
         }
 

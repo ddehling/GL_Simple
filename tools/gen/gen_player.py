@@ -16,7 +16,7 @@ Composes notes and renders them WITHOUT the show app.
     # Print the composer's phrase log (section / energy / chords / motif op):
     python tools/gen/gen_player.py --wav out.wav --log
 
-    # Render a Strudel pattern file through the same rack (node + `npm install` in tools/gen/strudel):
+    # Render a Strudel pattern file through the same rack (pip install mini-racer; no node needed):
     python tools/gen/gen_player.py --wav out.wav --strudel media/patterns/example.js
 
 Styles: groove | downtempo | ambient.  Key: Camelot (8A) or name (Am, F#m, C).
@@ -49,9 +49,9 @@ def _arc(minutes):
 def compose(args):
     c = Composer(args.style, bpm=args.bpm, key=args.key, seed=args.seed, arc_fn=_arc(args.minutes))
     if args.strudel:
-        from lib.gen.composer.strudel import StrudelBridge, StrudelSource
-        bridge = StrudelBridge()
-        bridge.start()
+        from lib.gen.composer.strudel import StrudelSource, open_engine
+        bridge = open_engine()
+        print(f"Strudel engine: {type(bridge).__name__}")
         src = StrudelSource(bridge, c.style["slots"].keys())
         src.load(open(args.strudel, encoding="utf-8").read())
         c.pattern_source = src

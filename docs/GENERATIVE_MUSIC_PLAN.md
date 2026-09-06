@@ -25,7 +25,7 @@ are gated:
 ```bash
 pip install numba supriya pyfluidsynth            # numba is in requirements.txt already
 sudo apt install supercollider-server sc3-plugins fluidsynth fluid-soundfont-gm   # optional backends
-(cd tools/gen/strudel && npm install)             # optional: Strudel patterns (node >= 18)
+pip install mini-racer                            # Strudel patterns in-process (no node); bundle is committed
 python tools/gen/gen_player.py --wav out.wav --minutes 3 --style groove --bpm 124 --key 8A --seed 1 --log
 python tools/gen/gen_player.py --wav out.wav --style downtempo --fluid-slots keys,pad
 python tools/gen/gen_player.py --wav out_sc.wav --backend sc-nrt          # same notes through scsynth
@@ -139,9 +139,18 @@ cycle). One packaging wart: core imports a browser-only class from `@kabelsalat/
 at module load, whose Node entry lacks the export; a two-line local shim package
 (`tools/gen/strudel/shim/`) fixes it without patching node_modules.
 
+**Can it run in Python? Yes (verified 2026-09-06).** The four packages bundled by
+esbuild into one browser-style script (`tools/gen/strudel/dist/strudel.bundle.js`,
+~0.9 MB, committed; rebuild with `build_bundle.sh`) run inside the Python process on an
+embedded V8 (`pip install mini-racer`, a manylinux wheel) with a few shims (`console`,
+`performance`, timers). Same numbers as Node: 64 bars ≈ 1150 events in ~150 ms, context
+signals and error reporting intact. **The show box needs no Node at all.** The Node
+sidecar (`bridge.mjs`) stays as the fallback and development path; `open_engine()` picks
+V8 first. Vortex, the official Python *port* of Tidal, is stalled ("free puppies") and
+could not even be fetched here (Codeberg only); not a candidate.
+
 **How it fits: Strudel as a composer, not as an audio engine.** We do not use its browser
-synth, MIDI or OSC. `tools/gen/strudel/bridge.mjs` is a Node sidecar speaking JSON lines
-(eval / query / ping, strictly ordered). `lib/gen/composer/strudel.py` translates haps
+synth, MIDI or OSC. Either engine speaks the same tiny interface (eval / query / ping). `lib/gen/composer/strudel.py` translates haps
 to `NoteEvent`s on the rack's sample clock — **one cycle == one bar** at the composer's
 tempo — mapping `s` to slots (bd→kick, cp→snare, hh→hat, oh→ohat, rim→perc, bass/lead/
 pad/arp/keys), `note`/`n` to MIDI, `gain`/`velocity` to velocity, `lpf`/`cutoff` to the
@@ -156,7 +165,8 @@ the visuals' ground truth — is untouched.
 next phrase boundary, CLEAR returns to the autonomous composer; Ctrl+Enter). Bad code is
 reported on the card and never interrupts playback (the previous pattern keeps playing).
 `gen_player.py --strudel file.js` renders a pattern file; `media/patterns/example.js`
-is a starting point. Gate: `tools/tests/_gen_strudel_test.py` (SKIPs without node).
+is a starting point. Gate: `tools/tests/_gen_strudel_test.py` (runs on whichever engine
+is available; SKIPs with neither).
 
 **Verdict.** Strudel is the best answer to "how does the operator *author* generative
 material" — far more expressive per line than preset knobs, with a large public corpus

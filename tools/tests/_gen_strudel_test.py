@@ -24,8 +24,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lib.gen import RATE                                  # noqa: E402
 from lib.gen.composer import Composer                      # noqa: E402
-from lib.gen.composer.strudel import (StrudelBridge, StrudelSource,  # noqa: E402
-                                      available, note_to_midi)
+from lib.gen.composer.strudel import (StrudelBridge, StrudelSource, StrudelV8,  # noqa: E402
+                                      available, node_available, note_to_midi,
+                                      open_engine, v8_available)
 from lib.gen.system import GenSystem                      # noqa: E402
 
 FAILS = []
@@ -46,9 +47,39 @@ def main():
     if not ok:
         print(f"SKIP: {why}")
         return 0
-    print("== bridge")
-    b = StrudelBridge()
-    check(b.start(), "ping")
+    print("== engines")
+    engines = []
+    if v8_available()[0]:
+        engines.append(("v8 (in-process)", StrudelV8()))
+    else:
+        print(f"  skip v8: {v8_available()[1]}")
+    if node_available()[0]:
+        engines.append(("node bridge", StrudelBridge()))
+    else:
+        print(f"  skip node: {node_available()[1]}")
+    for name, eng in engines:
+        check(eng.start(), f"{name}: ping")
+        check(eng.eval(CODE), f"{name}: eval")
+        haps = eng.query(0, 1, {"energy": 0.5})
+        check(len(haps) > 10 and all("b" in h and "v" in h for h in haps), f"{name}: query -> {len(haps)} haps")
+        g1 = {h["v"].get("gain") for h in eng.query(0, 1, {"energy": 0.9}) if h["v"].get("s") == "lead"}
+        check(g1 == {0.9}, f"{name}: context signal read at query time {g1}")
+        try:
+            eng.eval("stack(("); check(False, f"{name}: bad code raises")
+        except ValueError as e:
+            check("token" in str(e).lower(), f"{name}: bad code -> error ({e})")
+        check(eng.alive and eng.query(0, 1)[:1], f"{name}: survives bad code, old pattern intact")
+        eng.stop()
+    same = None
+    if len(engines) == 2:
+        a, bnode = StrudelV8(), StrudelBridge()
+        a.start(); bnode.start(); a.eval(CODE); bnode.eval(CODE)
+        same = a.query(0, 4, {"energy": 0.5}) == bnode.query(0, 4, {"energy": 0.5})
+        check(same, "both engines produce identical events")
+        a.stop(); bnode.stop()
+    b = open_engine()
+    print(f"  using {type(b).__name__} for the mapping checks")
+    check(b.alive, "open_engine")
     check(b.eval(CODE), "eval")
     try:
         b.eval("stack(("); check(False, "bad code raises")
