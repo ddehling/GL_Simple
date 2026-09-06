@@ -17,6 +17,7 @@ GEN_ACTIONS = {
     "pattern", "pattern_clear",        # Strudel code (replaces the rule composer's notes)
     "gesture", "ask", "feedback",      # the director: vocabulary, language, taste
     "brightness", "section",           # timbre lever; next-section request
+    "scene_save", "scene_load", "scene_delete",   # named steering snapshots
 }
 
 _KEYS = [f"{n}{ab}" for n in range(1, 13) for ab in ("A", "B")]
@@ -72,6 +73,10 @@ def sanitize_gen_action(data):
             arg = bool(arg)
         elif action == "brightness":
             arg = max(0.4, min(1.6, float(arg)))
+        elif action in ("scene_save", "scene_load", "scene_delete"):
+            if not isinstance(arg, str) or not arg.strip() or len(arg) > 40:
+                return None
+            arg = arg.strip()
         elif action == "section":
             if arg not in ("intro", "groove", "build", "drop", "break", "outro", "flow", "swell", "calm"):
                 return None
@@ -178,6 +183,24 @@ def apply_gen_action(system, cfg, action, arg, start_fn=None, stop_fn=None):
     elif action == "section":
         if live:
             system.request_section(arg)
+    elif action == "scene_save":
+        if live:
+            system.scene_save(arg)
+    elif action == "scene_load":
+        if live:
+            system.scene_load(arg)
+    elif action == "scene_delete":
+        if live:
+            system.scene_delete(arg)
+
+
+def _scene_listing(cfg):
+    try:
+        from lib.gen.scenes import SceneStore
+        import os
+        return SceneStore(os.path.join(cfg.get("log_dir", "logs"), "gen_scenes.json")).listing()
+    except Exception:
+        return []
 
 
 def idle_info(cfg, error=""):
@@ -189,6 +212,7 @@ def idle_info(cfg, error=""):
         "styles": [{"id": k, "label": v["label"], "bpm": list(v["bpm"])} for k, v in STYLES.items()],
         "bpm": cfg.get("bpm") or STYLES.get(cfg.get("style", "groove"), STYLES["groove"])["bpm"][0],
         "key": cfg.get("key", "8A"),
+        "camelot": cfg.get("key", "8A"),      # same field live; the page's key select reads it
         "energy_bias": cfg.get("energy_bias", 0.0),
         "density": cfg.get("density", 1.0),
         "swing": cfg.get("swing"),
@@ -198,6 +222,7 @@ def idle_info(cfg, error=""):
         "fluid_slots": cfg.get("fluid_slots", ""),
         "pattern": cfg.get("pattern"),
         "brightness": cfg.get("brightness", 1.0),
+        "scenes": _scene_listing(cfg),
         "gestures": [{"id": k, "label": v["label"]} for k, v in __import__("lib.gen.director", fromlist=["GESTURES"]).GESTURES.items()],
         "slots": list(STYLES.get(cfg.get("style", "groove"), STYLES["groove"])["slots"].keys()),
         "error": error,

@@ -320,6 +320,12 @@ class WebController:
             sibling: its own page, its own action whitelist."""
             return render_template('gen_panel.html')
 
+        @self.app.route('/api/gen/surface')
+        def gen_surface():
+            """The declarative UI spec the /gen page renders (lib/gen/ui.py)."""
+            from lib.gen.ui import surface_spec
+            return jsonify(surface_spec())
+
         @self.app.route('/api/gen/active')
         def gen_active():
             """Generative subsystem availability/liveness (gates the nav

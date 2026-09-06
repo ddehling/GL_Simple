@@ -29,6 +29,7 @@ from lib.gen import RATE
 from lib.gen.composer import Composer
 from lib.gen.composer.styles import STYLES
 from lib.gen.feedback import PreferenceMemory
+from lib.gen.scenes import SceneStore, scene_intent, snapshot as scene_snapshot
 from lib.gen.synth import SynthRack
 from lib.gen.theory import parse_key
 
@@ -105,6 +106,7 @@ class GenSystem:
         self.brightness = 1.0
         self._ramps = {}                     # param -> {"from","to","start_bar","bars"}
         self.prefs = PreferenceMemory(os.path.join(log_dir, "gen_prefs.json"))
+        self.scenes = SceneStore(os.path.join(log_dir, "gen_scenes.json"))
         self.director = None                 # LLMDirector, created on first ask
         self._director_busy = False
         self._director_last = {}             # {"text","say","done","warn","error","t"}
@@ -414,6 +416,28 @@ class GenSystem:
         self._log({"event": "feedback", "up": bool(up), "snapshot": rec, "t": self._elapsed()})
         return rec
 
+    # -- scenes -----------------------------------------------------------
+    def scene_save(self, name):
+        rec = self.scenes.save(name, scene_snapshot(self))
+        self._log({"event": "scene_save", "name": name, "t": self._elapsed()})
+        return rec
+
+    def scene_load(self, name):
+        from lib.gen.director import apply_intent
+        sc = self.scenes.get(name)
+        if sc is None:
+            self.last_error = f"no scene {name!r}"
+            return []
+        if sc.get("style") and sc["style"] != self.style_name:
+            self.set_style(sc["style"])
+        done = apply_intent(self, scene_intent(sc, self.composer.style["slots"].keys()))
+        self._director_log.append({"kind": "scene", "text": name, "say": "scene recalled", "done": done, "t": self._elapsed()})
+        self._log({"event": "scene_load", "name": name, "done": done, "t": self._elapsed()})
+        return done
+
+    def scene_delete(self, name):
+        self.scenes.delete(name)
+
     # -- director ---------------------------------------------------------
     def gesture(self, name):
         from lib.gen.director import apply_intent, gesture_intent
@@ -601,6 +625,7 @@ class GenSystem:
                          "busy": self._director_busy, "last": self._director_last,
                          "log": list(self._director_log)[-8:]},
             "taste": self.prefs.counts(),
+            "scenes": self.scenes.listing(),
             "pattern": self._pattern_code,
             "pattern_error": (getattr(c.pattern_source, "error", "") if c.pattern_source else ""),
             "pattern_available": _strudel_available(),
