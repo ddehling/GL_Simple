@@ -610,6 +610,8 @@ class GenSystem:
             "seed": self.seed, "uptime_s": self._elapsed(),
             "heard_s": round(heard / RATE, 2),
             "notes": stats["notes"], "peak": round(stats["peak"], 3),
+            "render_errors": stats.get("render_errors", 0),
+            "last_render_error": stats.get("last_render_error", ""),
             "motifs": len(c.melody.memory),
             "lead_s": round((self.rack.pending_until() - self.rack.clock) / RATE, 1),
             "log": list(self._log_tail)[-14:],

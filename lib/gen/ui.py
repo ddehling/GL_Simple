@@ -97,6 +97,7 @@ SURFACE = {
                 {"label": "heard", "key": "heard_s", "format": "{0:.1f} s"},
                 {"label": "composed ahead", "key": "lead_s", "format": "{0} s"},
                 {"label": "notes", "key": "notes"}, {"label": "peak", "key": "peak"},
+                {"label": "render errors", "key": "render_errors"},
                 {"label": "motifs", "key": "motifs"}, {"label": "seed", "key": "seed"},
                 {"label": "pattern engine", "key": "pattern_engine"},
                 {"label": "SoundFont slots", "key": "fluid_slots", "format": "list"},
