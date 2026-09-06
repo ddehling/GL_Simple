@@ -1,9 +1,25 @@
-# The /gen surface — a spec-driven operator UI
+# The generative surface — one spec, native console first
 
-The generative music page (`/gen`) is **not** a hand-written page. It is a
-declarative *surface spec* published by the backend and rendered by a small
-widget registry in the browser. The DJ page (`/dj`) is a 1,200-line monolith;
-this one is built so that growing it never means editing a monolith.
+The operator UI for the generative system is a declarative *surface spec*
+(`lib/gen/ui.py`) rendered by a widget registry. Two renderers exist and must
+stay in parity (the gates enforce it):
+
+| Renderer | Entry | Where it runs | Talks to |
+|---|---|---|---|
+| **Native console (PyQt6)** — the primary surface | `python tools/gen_console.py` | a laptop / the show box desktop | this machine's audio (`LocalBackend`), or the show over HTTP (`--remote URL`: `GET /api/gen/status`, `POST /api/gen/action`) |
+| Web page | `/gen` in the show's panel, or `tools/gen/gen_server.py` | any phone/tablet on the venue Wi-Fi | the show's socket |
+
+`tools/gen/console/widgets.py` is the native registry (`@register('type')`, class
+with `build()`/`update_state()`), `tools/gen/console/app.py` the window (two column
+stacks, foldable cards, 10 Hz refresh, Space/Esc/Ctrl+Q). Adding a widget type means
+one class there **and** one module in the web registry, or the console gate fails;
+adding a control or a card is still one spec entry that both renderers pick up.
+
+## The web renderer
+
+The `/gen` page is a shell rendering the same spec through a browser-side
+widget registry. The DJ page (`/dj`) is a 1,200-line monolith; this one is built so
+that growing it never means editing a monolith.
 
 ```
 lib/gen/ui.py            SURFACE spec: cards -> widgets {type, key, action, ...}
@@ -77,6 +93,9 @@ layout; `show_when: "live"` hides it while idle; `foldable`/`folded` persist per
 the same actions (`POST /api/gen/action` is the HTTP twin of the socket event).
 
 ## Gates
-- `tools/tests/_gen_ui_test.py` — spec validity (types, actions, keys, ids), client
+- `tools/tests/_gen_console_test.py` — native console: registry parity with the spec,
+  idle/live rendering, chip/slider/toggle/scene/transport input reaching the system,
+  remote mode against the show's own web controller; writes a screenshot when given a path.
+- `tools/tests/_gen_ui_test.py` — web: spec validity (types, actions, keys, ids), client
   module wiring, scenes round trip, routes, and that the validator rejects bad specs.
 - Browser smoke (Playwright) is run by hand against `tools/gen/gen_server.py`.

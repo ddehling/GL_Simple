@@ -326,6 +326,14 @@ class WebController:
             from lib.gen.ui import surface_spec
             return jsonify(surface_spec())
 
+        @self.app.route('/api/gen/status')
+        def gen_status():
+            """The full gen_info snapshot (what the socket ships at 5 Hz), for
+            the native console's remote mode (tools/gen_console.py --remote)."""
+            with self._dict_lock:
+                info = self.control_dict.get('gen_info') or {"available": False, "active": False}
+            return jsonify(_sanitize_for_json(info))
+
         @self.app.route('/api/gen/active')
         def gen_active():
             """Generative subsystem availability/liveness (gates the nav
