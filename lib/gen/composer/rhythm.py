@@ -98,6 +98,7 @@ class Drums:
         self._perc_len = 16
         self._break = rng.choice(list(BREAKS))
         self._break_phrase = -1
+        self.override = None            # {"kick": [(step, vel)], "snare": [...], "hat": [...]} from a SongScript
         self._fill = None
         self._fill_key = None
 
@@ -131,6 +132,11 @@ class Drums:
         bass_busy = min(1.0, ctx.get("bass_hits", 0) / 8.0)
         kind = "halftime" if ctx.get("halftime") else self.kind
         double = bool(ctx.get("double"))
+        if self.override and slot in ("kick", "snare", "hat") and self.override.get(slot) is not None and not fill:
+            hits = [(int(st), float(v)) for st, v in self.override[slot] if 0 <= int(st) < S]
+            if slot == "hat":
+                hits = [(st, min(1.0, v * (0.9 + 0.2 * rng.random()))) for st, v in hits]
+            return hits
         if slot == "kick":
             if fill:
                 return list(self._fill_for(ctx, bar_in_phrase)["kick"])

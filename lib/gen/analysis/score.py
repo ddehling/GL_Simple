@@ -74,6 +74,8 @@ def _window(feats, idx):
            "chroma": np.array([f["chroma"] for f in seg]).mean(axis=0)}
     if all("profile" in f for f in seg):
         out["profile"] = np.array([f["profile"] for f in seg]).mean(axis=0)
+    if all("pattern" in f for f in seg):
+        out["pattern"] = np.concatenate([np.array([f["pattern"][k] for f in seg]).mean(axis=0) for k in ("kick", "snare", "hat")])
     return out
 
 
@@ -83,6 +85,11 @@ def _local(a, b):
     s_s = float(max(0.0, 1.0 - 0.5 * np.abs(a["shares"] - b["shares"]).sum()))
     d_r = abs(a["low_hits"] - b["low_hits"]) + abs(a["high_hits"] - b["high_hits"])
     s_r = float(np.exp(-d_r / 2.0))
+    if "pattern" in a and "pattern" in b:
+        pa, pb = a["pattern"], b["pattern"]
+        na, nb = np.linalg.norm(pa), np.linalg.norm(pb)
+        s_p = float(pa @ pb / (na * nb)) if na > 1e-9 and nb > 1e-9 else 0.0
+        s_r = 0.5 * s_r + 0.5 * max(0.0, s_p)          # the beat itself, not just how busy it is
     ca, cb = a["chroma"], b["chroma"]
     na, nb = np.linalg.norm(ca), np.linalg.norm(cb)
     cos = float(ca @ cb / (na * nb)) if na > 1e-9 and nb > 1e-9 else 0.0

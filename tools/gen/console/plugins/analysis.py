@@ -114,6 +114,54 @@ class ScoreStrip(QWidget):
         qp.end()
 
 
+class BeatGrid(QWidget):
+    """The beat as evidence: the selected section's folded onset strengths
+    (kick / snare / hat, 16 steps) with the hits the script keeps marked,
+    plus the grid facts (tempo, beat length, first downbeat, swing, kind)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(96)
+        self.grid = None
+        self.hits = None
+        self.facts = ""
+        self.title = ""
+
+    def set(self, grid=None, hits=None, facts="", title=""):
+        self.grid, self.hits, self.facts, self.title = grid, hits, facts, title
+        self.update()
+
+    def paintEvent(self, ev):
+        qp = QPainter(self)
+        w, h = self.width(), self.height()
+        qp.fillRect(0, 0, w, h, QColor("#16181d"))
+        font = QFont(); font.setPointSize(8); qp.setFont(font)
+        qp.setPen(QPen(QColor("#c8ccd4"))); qp.drawText(6, 12, f"beat  {self.title}  {self.facts}")
+        if not self.grid:
+            qp.setPen(QPen(QColor("#5a606c"))); qp.drawText(6, 30, "ingest a song, then select a section row")
+            qp.end(); return
+        rows = ("kick", "snare", "hat")
+        left, top = 48, 18
+        cw = max(8.0, (w - left - 8) / 16.0)
+        rh = max(10.0, (h - top - 4) / len(rows))
+        for r, name in enumerate(rows):
+            qp.setPen(QPen(QColor("#9aa0ac"))); qp.drawText(6, int(top + r * rh + rh * 0.7), name)
+            vals = (self.grid or {}).get(name) or [0.0] * 16
+            hit_steps = {st for st, _ in ((self.hits or {}).get(name) or [])}
+            for k in range(16):
+                v = max(0.0, min(1.0, float(vals[k]) if k < len(vals) else 0.0))
+                x = left + k * cw
+                col = QColor(40 + int(190 * v), 60 + int(140 * v), 70)
+                qp.setPen(QPen(QColor("#0e1013"))); qp.setBrush(QBrush(col))
+                qp.drawRect(QRectF(x, top + r * rh + 1, cw - 1, rh - 2))
+                if k in hit_steps:
+                    qp.setPen(QPen(QColor("#ffffff"), 2)); qp.setBrush(Qt.BrushStyle.NoBrush)
+                    qp.drawRect(QRectF(x + 1, top + r * rh + 2, cw - 3, rh - 4))
+                if k % 4 == 0:
+                    qp.setPen(QPen(QColor("#ffd166"))); qp.drawLine(int(x), int(top), int(x), int(top + len(rows) * rh))
+        qp.end()
+
+
 class AnalysisPage(QWidget):
     def __init__(self, console):
         super().__init__()
@@ -141,6 +189,7 @@ class AnalysisPage(QWidget):
         lay.addWidget(self.bar)
         self.info = QLabel(""); lay.addWidget(self.info)
         self.strip = ScoreStrip(); lay.addWidget(self.strip)
+        self.beat = BeatGrid(); lay.addWidget(self.beat)
         split = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableWidget(0, len(COLS)); self.table.setHorizontalHeaderLabels(COLS)
         self.table.horizontalHeader().setStretchLastSection(True); self.table.verticalHeader().setVisible(False)
@@ -149,6 +198,27 @@ class AnalysisPage(QWidget):
         split.addWidget(self.cmds)
         split.setSizes([700, 400])
         lay.addWidget(split, 1)
+        self.table.itemSelectionChanged.connect(self._show_beat)
+
+    def _beat_facts(self):
+        a = (self.result or {}).get("analysis") or {}
+        b = a.get("beat") or {}
+        if not b:
+            return ""
+        return (f"{a.get('bpm', 0):.2f} bpm (conf {a.get('bpm_conf', 0):.2f})  beat {b.get('beat_s', 0):.3f} s  "
+                f"{b.get('bars', 0)} bars  first downbeat {a.get('first_bar_s', 0):.2f} s (conf {a.get('downbeat_conf', 0):.2f})  "
+                f"swing {b.get('swing', 0):.2f}  kind {b.get('drums_kind', '?')}")
+
+    def _show_beat(self):
+        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        i = rows[0].row() if rows else None
+        if self.script and i is not None and i < len(self.script["sections"]):
+            e = self.script["sections"][i]
+            self.beat.set(e.get("drums_grid"), e.get("drums"), self._beat_facts(), f"section {i} {e['section']}")
+        else:
+            a = (self.result or {}).get("analysis") or {}
+            pat = (a.get("beat") or {}).get("pattern") or {}
+            self.beat.set(pat.get("grid"), {k: pat.get(k) for k in ("kick", "snare", "hat")} if pat else None, self._beat_facts(), "whole song")
 
     # -- helpers --------------------------------------------------------------
     def _run(self, label, fn):
@@ -200,8 +270,9 @@ class AnalysisPage(QWidget):
                 if cell(8):
                     e["lanes"] = json.loads(cell(8))
                 old = self.script["sections"][i] if i < len(self.script["sections"]) else {}
-                if old.get("hook"):
-                    e["hook"] = old["hook"]
+                for keep in ("hook", "bass", "drums", "drums_grid"):
+                    if old.get(keep):
+                        e[keep] = old[keep]
                 rows.append(e)
             except Exception as ex:  # noqa: BLE001
                 self.msg = f"row {i + 1}: {ex}"
@@ -384,6 +455,7 @@ class AnalysisPage(QWidget):
                               f"(key conf {a['key_conf']:.2f}, tempo conf {a['bpm_conf']:.2f}), {len(self.script['sections'])} sections, "
                               f"{a['duration_s']:.0f} s{mat}")
             self.strip.set(orig=self.result["features"], recon=[], report=None, script=self.script)
+            self._show_beat()
         elif self._pending == "table+strip":
             self._pending = "strip"
             self._fill_table()

@@ -38,7 +38,10 @@ import numpy as np
 
 from lib.gen import RATE
 
-SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass")
+SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass",
+                "drums", "drums_grid")
+# drums: {"kick": [[step, vel], ...], "snare": [...], "hat": [...]}  the section's beat, as hits on the 16th grid (the kit plays exactly this)
+# drums_grid: {"kick": [16 floats], ...}  the folded onset strengths it was read from (evidence, shown in the tab)
 # bass: {"steps": [16th onsets], "degrees": [offsets from the tonic]}  the section's bass cell (from the source's bass stem)
 DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, "humanize": 1.0, "end": True, "sections": [],
            "kit": None, "vocals": [], "bank": [], "bpm_src": None}
@@ -212,6 +215,8 @@ def to_actions(script: dict, slots=None) -> list:
             out.append((bar, "chords", list(e["chords"])))          # (script-only: the action list has no chord lever)
         if e.get("hook"):
             out.append((bar, "hook", e["hook"].get("name", "hook")))   # (script-only)
+        if e.get("drums"):
+            out.append((bar, "drums", {k: [st for st, _ in v] for k, v in e["drums"].items()}))   # (script-only: the beat)
         bar += e["bars"]
     if s.get("end", True):
         out.append((bar, "end", None))
@@ -236,6 +241,8 @@ def describe(script: dict) -> str:
             bits.append(f"-> {e.get('key', '')} {e.get('bpm', '')}".strip())
         if e.get("hook"):
             bits.append("hook")
+        if e.get("drums"):
+            bits.append("beat " + "/".join(f"{k}:{''.join('x' if any(st == i for st, _ in v) else '.' for i in range(16))}" for k, v in e["drums"].items() if v))
         lines.append("  " + "  ".join(bits))
         bar += e["bars"]
     if s.get("kit"):

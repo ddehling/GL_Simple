@@ -100,6 +100,29 @@ def main():
     rep_bad = SC.compare(res["features"], fb, bpm_orig=a["bpm"], bpm_recon=bad["bpm"], key_orig=s2["key"], key_recon=bad["key"])
     check(rep_bad["global"] < rep["global"] - 8, f"a wrong recreation scores lower ({rep_bad['global']:.1f} < {rep['global']:.1f})")
 
+    print("== beat")
+    beat = a.get("beat") or {}
+    check(beat and abs(beat["beat_s"] - 60.0 / sc["bpm"]) < 0.01 and beat["drums_kind"] == "four" and beat.get("pattern"),
+          f"beat grid read: {beat.get('beat_s')} s/beat, kind {beat.get('drums_kind')}, {beat.get('bars')} bars")
+    loud = [e for e in s2["sections"] if e.get("drums") and e["section"] in ("groove", "drop")]
+    kicks = [st for st, _ in loud[0]["drums"]["kick"]] if loud else []
+    check(loud and set(kicks) >= {0, 4, 8, 12} and len(kicks) <= 6, f"four-on-the-floor kick read from the loud section: {kicks}")
+    check(all("pattern" in f and set(f["pattern"]) == {"kick", "snare", "hat"} for f in res["features"]) and all("rhythm" in r for r in rep["local"]),
+          "per-bar drum patterns feed the rhythm term")
+    c5 = S.make_composer(s2)
+    c5.form.section = loud[0]["section"] if loud else "groove"
+    ps5 = [c5.next_phrase() for _ in range(2)]
+    played = set()
+    for p5 in ps5:
+        if p5.section not in ("groove", "drop"):
+            continue
+        spb = (p5.end - p5.start) / p5.nbars
+        for e in p5.events:
+            if e.slot == "kick":
+                b = int((e.at - p5.start) // spb)
+                played.add(int(round(((e.at - p5.start) - b * spb) / (spb / 16))) % 16)
+    check(not played or played <= set(kicks) | {15, 14}, f"the recreation's kick plays the scripted beat {sorted(played)}")
+
     print("== timbre + alignment + tune")
     check(all("profile" in f and len(f["profile"]) == 32 for f in res["features"]) and all("timbre" in r for r in rep["local"]),
           "32-band timbre profiles are scored per window")

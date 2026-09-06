@@ -128,6 +128,7 @@ class Composer:
                 self._script_entry = None
                 self.harmony.override = None
                 self.melody.bass_override = None
+                self.drums.override = None
                 self._script_lanes = {}
             return
         if e is self._script_entry:
@@ -147,6 +148,7 @@ class Composer:
             self.swing = float(e["swing"])
         self.harmony.override = list(e["chords"]) if e.get("chords") else None
         self.melody.bass_override = dict(e["bass"]) if e.get("bass") else None
+        self.drums.override = {k: [(int(st), float(v)) for st, v in hits] for k, hits in (e.get("drums") or {}).items()} if e.get("drums") else None
         self._script_lanes = dict(e.get("lanes") or {})
         h = e.get("hook")
         if h and h.get("steps") and h.get("degrees"):

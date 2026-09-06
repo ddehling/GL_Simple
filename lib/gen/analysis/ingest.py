@@ -105,6 +105,57 @@ def bar_features(samples, bars, bands=None, chroma=None):
     return out
 
 
+DRUM_BANDS = {"kick": (0, 4), "snare": (8, 16), "hat": (24, 32)}      # of the 32 DJ bands
+HIT_THR = {"kick": 0.55, "snare": 0.65, "hat": 0.55}                   # of the folded pattern's max
+STEPS = 16
+
+
+def _band_onsets(bands):
+    """Positive spectral flux per drum class, per analysis frame."""
+    out = {}
+    for name, (lo, hi) in DRUM_BANDS.items():
+        e = bands[:, lo:hi].mean(axis=1)
+        e = np.log1p(e / max(float(e.mean()), 1e-9))
+        d = np.maximum(np.diff(e, prepend=e[0]), 0.0)
+        out[name] = d
+    return out
+
+
+def bar_patterns(bands, bars):
+    """Per bar: {"kick": [16], "snare": [16], "hat": [16]} - onset strength
+    folded onto the 16th grid, normalised to the bar's max (0..1)."""
+    ons = _band_onsets(bands)
+    out = []
+    for i in range(len(bars) - 1):
+        t0, t1 = float(bars[i]), float(bars[i + 1])
+        f0, f1 = int(t0 * F.FPS), int(t1 * F.FPS)
+        if f1 <= f0 + STEPS or f1 > len(bands):
+            break
+        pat = {}
+        edges = np.linspace(f0, f1, STEPS + 1)
+        for name, d in ons.items():
+            v = np.array([float(d[int(edges[k]):max(int(edges[k]) + 1, int(edges[k + 1]))].max()) for k in range(STEPS)])
+            pat[name] = [round(float(x), 3) for x in (v / max(float(v.max()), 1e-9))]
+        out.append(pat)
+    return out
+
+
+def section_pattern(bar_pats, b0, b1, thr=0.45):
+    """Average pattern over bars [b0, b1) -> {"kick": [(step, vel)], "snare": [...], "hat": [...],
+    "grid": {"kick": [16 floats], ...}} - the hits are the steps whose mean strength clears thr."""
+    seg = bar_pats[b0:b1]
+    if not seg:
+        return None
+    out = {"grid": {}}
+    for name in DRUM_BANDS:
+        m = np.array([bp[name] for bp in seg]).mean(axis=0)
+        m = m / max(float(m.max()), 1e-9)
+        out["grid"][name] = [round(float(x), 3) for x in m]
+        hits = [(k, round(float(m[k]), 2)) for k in range(STEPS) if m[k] >= max(thr, HIT_THR.get(name, thr))]
+        out[name] = hits[:12]
+    return out
+
+
 def _triad_templates(key_pc, mode):
     from lib.gen.theory import Key
     k = Key(key_pc, "minor" if mode == "minor" else "major")
@@ -192,6 +243,24 @@ def _refine_key(feats, key_pc, mode):
         if fit > best_fit:
             best, best_fit = (pc, md), fit
     return best
+
+
+def _drums_kind(sig):
+    low = np.asarray(sig.get("low") or [], dtype=float)
+    mid = np.asarray(sig.get("mid") or [], dtype=float)
+    if len(low) < 16:
+        return "unknown"
+    L = low.reshape(-1, 16).mean(axis=0) if len(low) % 16 == 0 else low[:16]
+    M = mid.reshape(-1, 16).mean(axis=0) if len(mid) >= 16 and len(mid) % 16 == 0 else (mid[:16] if len(mid) >= 16 else np.zeros(16))
+    on_beats = L[[0, 4, 8, 12]].mean()
+    off = np.delete(L, [0, 4, 8, 12]).mean()
+    if on_beats > 1.6 * (off + 1e-6) and L[[4, 8, 12]].min() > 0.5 * L[0]:
+        return "four"
+    if M.size == 16 and M[8] > 1.3 * max(M[4], M[12], 1e-6):
+        return "halftime"
+    if M.size == 16 and M[4] > 0.6 * M.max() and M[12] > 0.6 * M.max() and L[10] > 0.5 * L[0]:
+        return "breakbeat"
+    return "broken"
 
 
 def _style_from(bpm, sig, sections):
@@ -391,6 +460,9 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
     if progress:
         progress(0.7, "features")
     feats = bar_features(samples, bars, bands, chroma)
+    bar_pats = bar_patterns(bands, bars)
+    for f, bp in zip(feats, bar_pats):
+        f["pattern"] = bp
     key_pc, key_mode = _refine_key(feats, key_pc, key_mode)
     chords = chords_per_bar(feats, key_pc, key_mode)
     emax = max([s["energy"] for s in sections] + [1e-6])
@@ -416,11 +488,16 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
         dens = float(np.clip(0.35 + sec.get("rhythm_density", 3.0) / 6.0, 0.4, 1.3))
         e_lever = float(np.clip(1.3 * e - 0.3, 0.1, 1.0))      # DJ energy (RMS-ish) -> the form lever
         bright = float(np.clip(1.0 + (sec["high_share"] - high_mean) * 3.0, 0.6, 1.5))
+        b1 = int(np.searchsorted(bars, sec["end_s"] - 1e-3))
+        drums = section_pattern(bar_pats, b0, max(b0 + 1, b1))
         entry = {"section": kind, "bars": nbars, "energy": round(e_lever, 3),
                  "density": round(dens, 2), "brightness": round(bright, 2), "swing": round(swing, 3),
                  "layers": _layers(sec, kind, emax, high_mean, bass_mean), "chords": loop}
         if kind == "break" and sec["high_share"] < 0.6 * high_mean:
             entry["lanes"] = {"lp": 2500.0}
+        if drums and (drums["kick"] or drums["snare"] or drums["hat"]):
+            entry["drums"] = {k: drums[k] for k in ("kick", "snare", "hat")}
+            entry["drums_grid"] = drums["grid"]
         entries.append(entry)
     style_mode = {"groove": "minor", "techno": "phrygian", "trance": "minor", "dnb": "minor", "hiphop": "dorian",
                   "downtempo": "dorian", "ambient": "lydian"}[style]
@@ -431,8 +508,12 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
               "humanize": 1.0, "end": True, "sections": entries}
     if progress:
         progress(1.0, "done")
+    beat_s = float(np.median(np.diff(np.asarray(beats)))) if len(beats) > 2 else 60.0 / max(bpm, 1e-6)
     analysis = {"bpm": float(bpm), "bpm_conf": float(bpm_conf), "key": key.name, "camelot": key.camelot, "key_conf": float(key_conf),
                 "downbeat_conf": float(db_conf), "duration_s": len(samples) / RATE, "n_sections": len(sections),
+                "beat": {"beat_s": round(beat_s, 4), "beats": len(beats), "bars": len(bars), "first_beat_s": round(float(beats[0]), 3) if len(beats) else 0.0,
+                         "downbeat_offset": int(downbeat), "swing": swing, "drums_kind": _drums_kind(sig),
+                         "pattern": section_pattern(bar_pats, 0, len(bar_pats)) if bar_pats else None},
                 "sections": sections, "rhythm": {k: sig.get(k) for k in ("swing", "swing_conf", "w_low", "w_mid", "w_high")},
                 "style_mode": style_mode, "first_bar_s": float(bars[0]) if len(bars) else 0.0}
     return {"script": script, "features": feats, "analysis": analysis, "bars": [float(b) for b in bars], "chords": chords}
@@ -444,4 +525,8 @@ def features_on_grid(samples, bpm, first_bar_s=0.0):
     bar_len = 4 * 60.0 / float(bpm)
     n = int((len(samples) / RATE - first_bar_s) // bar_len)
     bars = np.array([first_bar_s + i * bar_len for i in range(n + 1)])
-    return bar_features(samples, bars)
+    bands, chroma = F.frame_track(samples)
+    feats = bar_features(samples, bars, bands, chroma)
+    for f, bp in zip(feats, bar_patterns(bands, bars)):
+        f["pattern"] = bp
+    return feats

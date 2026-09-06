@@ -196,6 +196,13 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
 - **Engine**: `listen.py --analysis <folder>` prints original vs recreation numbers; the system asks
   for a hook written over THIS build's chords when a build starts; a web `timeline_strip` widget
   (Log tab) draws the song strip from status, mirrored by a Qt widget of the same name.
+- **The beat itself** (operator: "no evidence of the beat structure"): per bar and per section the
+  onsets of the kick / snare / hat bands are folded onto the 16th grid (`ingest.bar_patterns`,
+  `section_pattern`); each section carries `drums` (hits with velocities) and `drums_grid` (the
+  evidence), the Analysis tab draws the selected section's grid under the score strip with the
+  grid facts (tempo, beat length, first downbeat, swing, kind), the script describes it as
+  `kick:x...x...x...x...`, the recreation's kit plays exactly those hits (`Drums.override`), and
+  the rhythm term of the score compares the patterns, not just onset counts (example 83 -> 88).
 - **allin1** (the DJ planner's structure model) does NOT run in this venv: it needs natten < 0.15,
   which has no build for torch 2.11 on Windows (the planner runs it under WSL). `ingest` tries it
   and falls back to the DJ segmentation silently (GEN_STRUCTURE=0 skips the attempt).
