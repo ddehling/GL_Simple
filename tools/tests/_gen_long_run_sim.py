@@ -154,7 +154,12 @@ def main():
     check(hours >= args.hours * 0.999, f"rendered {hours:.2f} h")
     check(n_err == 0 and not any("error at" in f for f in fails), "no conductor errors")
     check(bad_blocks == 0, f"every block finite and under the ceiling (peak {peak:.3f})")
-    check(rss1 - rss0 < 150, f"RSS growth {rss1 - rss0:.0f} MB over {hours:.1f} h (< 150)")
+    # Warm-up (numba JIT, the Strudel engine on the first pattern, voice
+    # buffers) lands inside the first hour; what must stay flat is the
+    # working set AFTER it. Judge growth from the first hour mark.
+    warm = hour_marks[0]["rss_mb"] if hour_marks else rss0
+    growth = rss1 - warm
+    check(growth < 60, f"RSS flat after warm-up: {warm:.0f} -> {rss1:.0f} MB (+{growth:.0f}, < 60; warm-up from {rss0:.0f})")
     check(max_pending < 4000 and max_active < 400 and max_phrases <= 96 and max_motifs <= 12,
           f"bounded: pending {max_pending}, active {max_active}, phrases {max_phrases}, motifs {max_motifs}")
     check(n_move >= expect_moves - 1, f"movements {n_move} (expected ~{expect_moves})")
