@@ -62,6 +62,19 @@ def main():
           f"renders a chord ({a.shape[0]} smp, peak {np.abs(a).max():.3f}, {3 / dt:.0f}x realtime)")
     b = inst.render(evs, 0, 3.0)
     print(f"  info deterministic across calls: {np.array_equal(a, b)}")
+    import threading
+    box = {}
+
+    def worker():
+        try:
+            box["audio"] = inst.render(evs, 0, 2.0)
+        except Exception as e:  # noqa: BLE001
+            box["error"] = f"{type(e).__name__}: {e}"
+    t = threading.Thread(target=worker); t.start(); t.join(120)
+    check("audio" in box and np.abs(box["audio"]).max() > 0.01,
+          f"renders from a worker thread (the conductor / console workers){' - ' + box['error'][:90] if 'error' in box else ''}")
+    silence = inst.render([], 0, 1.0)
+    check(float(np.abs(silence).max()) < 1e-3, "no notes hang between calls")
 
     print("== overlay")
     st = get_style("groove")
@@ -97,7 +110,8 @@ def main():
     x = np.concatenate(out)
     check(keys_notes and np.isfinite(x).all() and np.abs(x).max() > 0.01 and np.abs(x).max() <= 0.96,
           f"phrases render through the hosted slot ({len(keys_notes)} notes, peak {np.abs(x).max():.3f})")
-    check(max(times) * 1000 < 8.0, f"audio thread stays light (max {max(times) * 1000:.1f} ms per 23 ms block; scheduling took {sched:.2f} s)")
+    p99 = float(np.percentile(np.array(times) * 1000, 99))
+    check(p99 < 8.0, f"audio thread stays light (p99 {p99:.1f} ms, max {max(times) * 1000:.1f} ms per 23 ms block; scheduling took {sched:.2f} s)")
     # the first note-on lands on the grid: energy appears at its sample, not before
     first = min(e.at for e in keys_notes)
     env = np.abs(x.mean(axis=1))

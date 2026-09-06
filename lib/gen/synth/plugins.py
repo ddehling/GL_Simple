@@ -131,6 +131,8 @@ class VstInstrument:
         self.plugin = VST3Plugin(binary_path(entry["path"]))
         self.name = entry.get("name", "?")
         self.lock = threading.Lock()
+        self._dirty = False
+        self.flush_s = float(entry.get("flush_s", 3.0))
         pre = preset or entry.get("preset")
         if pre:
             p = pre if os.path.isabs(pre) else os.path.join(os.path.dirname(entry["path"]), pre)
@@ -168,7 +170,14 @@ class VstInstrument:
             msgs.append(Message("note_off", note=note, time=off))
         msgs.sort(key=lambda m: m.time)
         with self.lock:
-            audio = self.plugin(msgs, duration=float(seconds), sample_rate=float(RATE), num_channels=2, reset=True)
+            # reset=False: pedalboard reloads the plugin on reset and refuses to do that off the
+            # main thread (the conductor and the console's workers render here). State carries
+            # between calls instead, so flush the previous call's tail with silence first - the
+            # batch must start clean at its own t0, not with a ghost of the last phrase.
+            if self._dirty:
+                self.plugin([], duration=float(self.flush_s), sample_rate=float(RATE), num_channels=2, reset=False)
+            audio = self.plugin(msgs, duration=float(seconds), sample_rate=float(RATE), num_channels=2, reset=False)
+            self._dirty = bool(msgs)
         return np.ascontiguousarray(audio.T, dtype=np.float32)
 
 
