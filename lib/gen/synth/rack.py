@@ -137,13 +137,15 @@ class SynthRack:
                 continue
             patch = self.slots[e.slot]
             buf = v.render(e.pitch, e.vel, e.dur, patch, e.params, self.rng)
-            self._active.append([int(e.at), buf, e.slot])
+            # The note carries ITS patch: a style swap must not re-price
+            # (or, for a slot the new style lacks, crash on) a tail in flight.
+            self._active.append([int(e.at), buf, e.slot, patch])
             self.stats["notes"] += 1
             if e.slot == "kick":
                 self._kicks.append(int(e.at))
         keep = []
         for item in self._active:
-            start, buf, slot = item
+            start, buf, slot, patch = item
             end = start + buf.shape[0]
             if end <= c0:
                 continue
@@ -151,7 +153,6 @@ class SynthRack:
             b = min(end, c1)
             if a < b:
                 seg = buf[a - start:b - start]
-                patch = self.slots[slot]
                 g = float(patch.get("gain", 0.5))
                 l, r = self._pan(slot)
                 bus = buses[BUS_OF.get(slot, "music")]
@@ -170,7 +171,7 @@ class SynthRack:
         self._active = keep
         if self.fluid is not None:
             self.fluid.clock = c0
-            fb = self.fluid.render(n, fluid_events)
+            fb = self.fluid.render(n, [e for e in fluid_events if self.fluid.has_slot(e.slot)])
             # fluid slots share one stereo return; use the mean of their gains/sends
             gains = [float(self.slots[s].get("gain", 0.5)) for s in self.fluid_slots] or [0.5]
             srs = [float(self.slots[s].get("send_reverb", 0.3)) for s in self.fluid_slots] or [0.3]
@@ -206,4 +207,10 @@ class SynthRack:
     def read(self, n):
         if self.done:
             return None
-        return self.render(int(n))
+        try:
+            return self.render(int(n))
+        except Exception as e:  # noqa: BLE001 - never take the render thread down
+            self.stats["render_errors"] = self.stats.get("render_errors", 0) + 1
+            self.stats["last_render_error"] = f"{type(e).__name__}: {e}"
+            self.clock += int(n)
+            return np.zeros((int(n), 2), dtype=np.float32)

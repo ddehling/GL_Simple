@@ -2382,6 +2382,20 @@ class EnvironmentalSystem:
             except Exception:
                 lb = None
         self._dj_vis.apply(state, audio_dt, lb)
+        # Generative-music ground truth -> the same reactive keys (lib/gen/
+        # vis.py): the composer decided every beat, bar, phrase and drop,
+        # so the room is choreographed to what is actually playing. A
+        # no-op while the generator is off.
+        if getattr(self, "_gen_vis", None) is None:
+            from lib.gen.vis import GenVisualCoupler
+            self._gen_vis = GenVisualCoupler()
+        glb = None
+        if getattr(self, "_gen", None) is not None and self._gen.active:
+            try:
+                glb = self._gen.live_beat()
+            except Exception:
+                glb = None
+        self._gen_vis.apply(state, audio_dt, glb)
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
         state["rhythm_density"] = sig["density"]

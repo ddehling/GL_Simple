@@ -634,6 +634,29 @@ class GenSystem:
             "error": self.last_error,
         }
 
+    def live_beat(self):
+        """Ground-truth beat of what the room hears now (the composer's
+        clock minus the engine's render lead). None when idle. `drive` is
+        the phrase's actual rhythm: 1 with a kick playing, 0 in a break -
+        a resting kick must not flash the room (the DJ's rule)."""
+        if not self._running or self.composer is None or self.rack is None:
+            return None
+        heard = self._heard_clock()
+        p = self._phrase_at(heard)
+        c = self.composer
+        beat = c.samples_per_beat
+        spb = c.samples_per_bar
+        pos = (heard - p.start) if p else heard
+        layers = set(p.meta.get("layers", [])) if p else set()
+        muted = set(self.muted)
+        kick = "kick" in layers and "kick" not in muted
+        bass = "bass" in layers and "bass" not in muted
+        return {"bpm": float(c.bpm), "phase": float((pos % beat) / beat),
+                "bar_phase": float((pos % spb) / spb),
+                "phrase_phase": float((heard - p.start) / (p.end - p.start)) if p else 0.0,
+                "bass_share": 0.5 if bass else (0.35 if kick else 0.15),
+                "drive": 1.0 if kick else (0.4 if (layers - {"pad", "keys"}) else 0.0)}
+
     def outstate_keys(self):
         """Published into outstate each tick for the visuals."""
         if not self._running or self.composer is None:
