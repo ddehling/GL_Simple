@@ -16,3 +16,9 @@ pyfluidsynth
 supriya
 soundfile
 mini-racer
+pedalboard   # VST3 hosting (lib/gen/synth/plugins.py): real instruments and effects in the rack
+mido         # MIDI messages for hosted instruments
+music21      # public-domain score corpus for the melody model (tools/gen/melody_corpus.py)
+# Song analysis stem reuse (lib/gen/analysis/reuse.py) - optional, heavy; the DJ vocal stack (requirements-dj-vocals.txt) covers it too.
+#   GPU: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 ; then: pip install demucs librosa
+#   (basic-pitch would improve hook transcription but pins an old numpy; the fallback is librosa pyin)

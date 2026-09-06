@@ -131,7 +131,7 @@ def main():
     s = g.status()
     check(s["pattern"] == 's("bd*4")' and not s["pattern_error"] and not s["error"], "pattern accepted")
     ph = [p for p in g._phrases if p.start >= g.rack.clock - 8 * RATE]
-    slots = collections.Counter(e.slot for p in ph for e in p.events)
+    slots = collections.Counter(e.slot for p in ph for e in p.events if e.slot != "auto")   # mix automation is not a note
     check(set(slots) == {"kick"}, f"pattern replaced the rule composer's notes: {dict(slots)}")
     g.set_pattern("nope(("); pump(2)
     check(g.active and g.status()["error"].startswith("pattern:") and g.status()["pattern"] == 's("bd*4")', "bad code reported; old pattern keeps playing")

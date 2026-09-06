@@ -1,0 +1,100 @@
+{
+ "clap_909": {
+  "file": "clap_909.wav",
+  "base_midi": 38,
+  "tags": [
+   "clap"
+  ]
+ },
+ "hat_closed": {
+  "file": "hat_closed.wav",
+  "base_midi": 60,
+  "tags": [
+   "hat"
+  ]
+ },
+ "hat_open": {
+  "file": "hat_open.wav",
+  "base_midi": 60,
+  "tags": [
+   "hat"
+  ]
+ },
+ "impact_a": {
+  "file": "impact_a.wav",
+  "base_midi": 60,
+  "tags": [
+   "impact"
+  ]
+ },
+ "kick_808": {
+  "file": "kick_808.wav",
+  "base_midi": 36,
+  "tags": [
+   "kick"
+  ]
+ },
+ "kick_909": {
+  "file": "kick_909.wav",
+  "base_midi": 36,
+  "tags": [
+   "kick"
+  ]
+ },
+ "ride_a": {
+  "file": "ride_a.wav",
+  "base_midi": 60,
+  "tags": [
+   "ride"
+  ]
+ },
+ "rim_a": {
+  "file": "rim_a.wav",
+  "base_midi": 38,
+  "tags": [
+   "rim"
+  ]
+ },
+ "riser_2s": {
+  "file": "riser_2s.wav",
+  "base_midi": 60,
+  "tags": [
+   "riser"
+  ]
+ },
+ "shaker_a": {
+  "file": "shaker_a.wav",
+  "base_midi": 60,
+  "tags": [
+   "shaker"
+  ]
+ },
+ "snare_a": {
+  "file": "snare_a.wav",
+  "base_midi": 38,
+  "tags": [
+   "snare"
+  ]
+ },
+ "sweep_2s": {
+  "file": "sweep_2s.wav",
+  "base_midi": 60,
+  "tags": [
+   "sweep"
+  ]
+ },
+ "tom_hi_d3": {
+  "file": "tom_hi_d3.wav",
+  "base_midi": 50,
+  "tags": [
+   "tom"
+  ]
+ },
+ "tom_lo_a2": {
+  "file": "tom_lo_a2.wav",
+  "base_midi": 45,
+  "tags": [
+   "tom"
+  ]
+ }
+}

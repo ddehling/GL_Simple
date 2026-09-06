@@ -21,6 +21,40 @@ class Form:
         self.ending = False
         self.hold = False          # operator: stay in this section
         self.requested = None      # operator/director: go here next
+        self.taste = {}            # {section: weight multiplier} from the preference memory
+        self.script = None         # [entry dicts] when a SongScript drives the form (lib/gen/script.py)
+        self.script_i = -1
+        self.script_end = False    # after the script: outro + stop (else the grammar takes over)
+
+    # -- scripted mode --------------------------------------------------------
+    def set_script(self, entries, end=True):
+        """Follow `entries` ([{section, bars, ...}]) from now: the current
+        section is replaced by the first entry immediately."""
+        self.script = [dict(e) for e in entries] or None
+        self.script_end = bool(end)
+        self.script_i = -1
+        if self.script:
+            self._enter_script(0)
+
+    def _enter_script(self, i):
+        e = self.script[i]
+        self.script_i = i
+        self.section = e["section"] if e["section"] in self.style["sections"] else self.section
+        self.bars_left = max(4, int(e.get("bars", 8)))
+        self.bars_in = 0
+        self.history.append((self._bar, self.section, self.bars_left))
+
+    @property
+    def script_entry(self):
+        if self.script and 0 <= self.script_i < len(self.script):
+            return self.script[self.script_i]
+        return None
+
+    @property
+    def script_next(self):
+        if self.script and 0 <= self.script_i + 1 < len(self.script):
+            return self.script[self.script_i + 1]
+        return None
 
     def _draw_bars(self, section: str) -> int:
         lo, hi = self.style["sections"][section]["bars"]
@@ -49,7 +83,7 @@ class Form:
             e = self.style["sections"][name]["energy"]
             # bias: hot arc favours hot sections, calm arc favours calm ones
             bias = 1.0 + 1.5 * (arc - 0.5) * (e - 0.5) * 2.0
-            weighted.append((name, max(0.05, w * bias)))
+            weighted.append((name, max(0.05, w * bias * float(self.taste.get(name, 1.0)))))
         tot = sum(w for _, w in weighted)
         r = self.rng.random() * tot
         for name, w in weighted:
@@ -64,6 +98,13 @@ class Form:
         self._bar += nbars
         self.bars_in += nbars
         self.bars_left -= nbars
+        if self.bars_left <= 0 and self.script:
+            if self.script_i + 1 < len(self.script):
+                self._enter_script(self.script_i + 1)
+                return
+            self.script = None          # the script is over
+            if self.script_end:
+                self.ending = True
         if self.bars_left <= 0 and self.hold and not self.ending:
             self.bars_left = 4          # ride the section another phrase
             return
@@ -78,6 +119,11 @@ class Form:
         pulled toward the arc, with a ramp inside builds/outros."""
         sec = self.style["sections"][self.section]
         base = sec["energy"]
+        e = self.script_entry
+        if e is not None and e.get("energy") is not None:
+            base = float(e["energy"])
+            if self.section not in ("build", "outro"):
+                return max(0.0, min(1.0, base))
         arc = float(self.arc_fn(self._bar))
         e = 0.65 * base + 0.35 * arc
         if self.section == "build":
@@ -87,6 +133,9 @@ class Form:
         return max(0.0, min(1.0, e))
 
     def layers(self) -> set:
+        e = self.script_entry
+        if e is not None and e.get("layers"):
+            return set(e["layers"]) & set(self.style["slots"].keys())
         lay = self.style["sections"][self.section]["layers"]
         if "*" in lay:
             return set(self.style["slots"].keys())
@@ -96,5 +145,8 @@ class Form:
         """Bar index of the next section that starts with a drop, if the
         current section is a build (the visuals count down to it)."""
         if self.section == "build":
+            return self._bar + self.bars_left
+        nxt = self.script_next
+        if nxt is not None and nxt.get("section") == "drop" and self.section != "drop":
             return self._bar + self.bars_left
         return None

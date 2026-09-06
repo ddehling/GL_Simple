@@ -14,7 +14,7 @@ native widgets and drives either this machine or the show box.
     # Start unconnected and choose on the Setup tab:
     python tools/gen_console.py --setup
 
-Tabs: Play · Steer · Scenes · Patterns · Log · Nights · Scope (plugins) · Setup.
+Tabs: Play · Steer · Scenes · Patterns · Log · Nights · Scope · Timeline (plugins) · Setup.
 Shortcuts: Space start/stop · Esc stop · 1-9 gestures · H hold · R new ideas ·
 Ctrl+K ask · Ctrl+S save scene · Ctrl+1..7 tabs · F1 list · Ctrl+Q quit.
 """

@@ -54,16 +54,26 @@ def main():
         ok = all(p.start <= e.at < p.end for p in ps for e in p.events)
         check(ok, "events inside their phrase")
         bad = 0
+        borrowed = 0
         for p in ps:
-            key = parse_key(p.meta["camelot"]) if False else None
             k = c.key  # key is constant in this run
             pcs = {k.degree_pc(d) for d in range(7)}
+            spb = (p.end - p.start) / p.nbars
+            # a borrowed or suspended chord brings its own tones for its bar
+            per_bar = []
+            for ch in p.chords:
+                allowed = set(pcs)
+                if ch[2].get("borrowed") or ch[2].get("sus"):
+                    allowed |= {m % 12 for m in c.harmony.notes(ch, 3, 4)}
+                    borrowed += 1
+                per_bar.append(allowed)
             for e in p.events:
-                if e.slot in DRUM_SLOTS:
+                if e.slot in DRUM_SLOTS or e.slot in ("fx", "auto"):
                     continue
-                if int(round(e.pitch)) % 12 not in pcs:
+                b = min(p.nbars - 1, max(0, int(round((e.at - p.start) / (spb / 16)) // 16)))   # nearest grid step's bar (humanized notes can sit a few ms early)
+                if int(round(e.pitch)) % 12 not in per_bar[b]:
                     bad += 1
-        check(bad == 0, f"all pitched notes in {c.key.name} ({bad} out)")
+        check(bad == 0, f"all pitched notes in {c.key.name} or its bar's borrowed chord ({bad} out, {borrowed} coloured bars)")
         sections = [s for _, s, _ in c.form.history]
         check(len(set(sections)) >= 3, f"form moves: {sections[:8]}")
         if style != "ambient":

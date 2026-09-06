@@ -50,6 +50,131 @@ steady state; scsynth NRT at ~49x; FluidSynth adds negligible cost. Kick onsets 
 the composer's sample grid on both backends (43/43 and 35/35). **Next: the operator
 listening session** (styles × backends), then Phase 1 decisions from §5.
 
+Listening session 1 (2026-09-06, operator verdict: "a terrible MIDI keyboard") led to a
+sound-design pass: hats/perc/arp/lead had sat 25-35 dB under the kick with the pad owning
+the midrange, the image was mono (L/R correlation 0.996), the voices were static presets
+and the composer played exact grid steps at flat velocities. Now: rebalanced slot gains,
+detuned oscillators split L/R plus a per-note pan spread (correlation 0.90), per-note
+pitch drift / filter LFOs / key-tracked cutoff / late vibrato, a distinct `keys` voice,
+per-slot micro-timing + strums + 303-style bass slides + metric accents and articulation
+(`Composer.humanize`), and a peak limiter instead of a hard tanh on the master. Notes are
+now synthesised at `schedule()` time on the conductor thread, so the audio thread only
+mixes (render-thread max 1.7 ms per 23 ms block, was 90 ms; a JIT warm-up runs at start
+so the first note no longer stalls the ring).
+
+Listening session 2 pass (2026-09-06, "do them all"), gated by `tools/tests/_gen_music_test.py`:
+- **Rack**: 909 kick (oscillator-driven, choked on retrigger) + 909 clap, tom/rim/ride/shaker
+  voices; trapezoidal-integrator SVF with input drive (`dsp.svf_tpt`, resonance up to 0.45 fs)
+  replaces the Chamberlin; FM (2-op), supersaw and one-shot sample voices; transition material
+  (`fx` slot: riser, reverse cymbal, impact, sweep) scheduled from the form's drop foreknowledge;
+  per-bus chain (drum compressor, bass saturation, music high-pass, master high shelf) ahead of the
+  limiter; every pitched voice parameter overridable from the style patch (`_Subtractive.TUNABLE`);
+  **auto gain staging** (`SynthRack.calibrate`, targets in `rack.SLOT_TARGET_DB`) so "gain" means the
+  same loudness whichever voice class sits in a slot.
+- **Composer**: borrowed chords, suspensions, bass pedals and slow harmonic rhythm per section
+  (`harmony.py`, chords are now `(degree, label, spec)`); a **theme** made in the build and restated
+  on the drop, retired on a key change; bass avoids the kick's steps and hats/shaker thin under a
+  busy bass; keys answer the lead in its gaps; per-slot groove templates (`style["feel"]`: swing
+  multiplier + push).
+- **System**: `tools/gen/listen.py` renders style x section excerpts (and full sets) with mix
+  numbers and `--compare` deltas for A/B between passes. Render thread unchanged at <= 1.5 ms per
+  23 ms block. Groove drop after the pass: L/R correlation 0.86, crest 13 dB, 8-16 kHz within 6 dB
+  of the low end (was 21 dB under before session 1).
+- Not done on this box: the long-run soak (`_gen_long_run_sim.py` imports the Linux-only `resource`).
+
+Listening session 3 pass (2026-09-06, "do them all", round 2), gated by `tools/tests/_gen_mix_test.py`:
+- **Mix automation lanes** (`rack.LANES`: hp, lp, duck, verb, delay_fb): the composer writes `auto`
+  events per section (`composer.AUTO`, style overrides in `style["auto"]`) - the high-pass climbs
+  through a build and snaps open on the drop, the low-pass closes breaks and outros, sidechain depth
+  and reverb amount follow the section; the director/console/MIDI can move lanes too (`lane` action).
+- **Space**: modulated 8-line FDN reverb behind diffusion allpasses (`fx.FDNReverb`, per-style
+  `reverb_decay`) replaces Freeverb; a stereo chorus send (`send_chorus`).
+- **Layers**: `patch["layers"]` stacks patches under one note with per-layer gain and hp/lp
+  crossover (groove: sub + top bass, body + click kick; dnb: sub + reese; hiphop: 808 + sampled click).
+- **Karplus-Strong** pluck (`ks` voice) for guitar/harp/kalimba colour (hiphop lead/arp, ambient arp).
+- **One-shot library**: `oneshots:<name>` sample refs resolved through `media/oneshots/manifest.json`
+  (or the project's `media/gen/oneshots/`); `tools/gen/oneshots.py scan|bootstrap|list` (the
+  bootstrap renders a starter set from the rack's own voices).
+- **Loudness + true-peak**: K-weighted-ish meter with a slow makeup gain toward `style["target_lufs"]`
+  (+-8 dB), a lookahead limiter (64 samples) that never exceeds 0.95 - the tanh safety clip is gone.
+- **Polyphony**: per-slot caps with oldest-note stealing (`rack.POLY`), total cap 96.
+- **Melody with harmonic function**: strong beats snap to chord tones, the note before a strong beat
+  approaches by scale step, a contour (arch/rise/fall/wave) is drawn with each motif; pad voicings
+  are voice-led (least movement from the previous voicing).
+- **Rhythmic language**: `style["drums"]` four | broken | breakbeat (a break library) | halftime,
+  `halftime_in` sections, a shared fill library (kick/snare/toms play the same fill), 12-step perc
+  cells rolling 3-against-4, builds fill the hats.
+- **Style morphing**: `rack.set_style(..., morph=)` glides slot gains over 8 bars on a style change.
+- **Four new styles**: techno, trance, dnb, hiphop (7 total).
+- **Taste loop**: liked sections weigh more in the form grammar (`PreferenceMemory.section_bias`,
+  `Form.taste`), a thumbs-up boosts the motif that was playing (`Melody.like`).
+- **MIDI surface**: console plugin `tools/gen/console/plugins/midi.py` maps the nanoKONTROL2 to
+  steering, mutes, gestures, feedback, lanes and transport through the action whitelist
+  (new actions: `humanize`, `lane`, `automation`).
+- Numbers (groove drop, 64 s): render thread max 3.0 ms per 23 ms block; L/R correlation 0.81;
+  breaks 0.2-0.7; every style holds -12 to -14 LUFS-ish (ambient -20 target) with peak 0.95.
+  `tools/gen/listen.py --sections drop,break,flow` is the per-pass A/B.
+
+Listening session 4 pass (2026-09-06, real instruments + melodies + timeline), gated by
+`tools/tests/_gen_vst_test.py` and `tools/tests/_gen_melody_test.py`:
+- **Hosted instruments and effects** (`lib/gen/synth/plugins.py`, VST3 through pedalboard, verified
+  on Windows with Dexed at ~50-80x realtime, deterministic): a slot patch `{"voice": "vst",
+  "plugin": "vst:<name>", "program"/"preset"/"params"}`; the rack renders a hosted slot PER PHRASE
+  (all its notes in one call plus a release tail - instruments are stateful and pedalboard does not
+  carry state between calls) on the conductor thread, latency-compensated, calibrated like any
+  voice; a style's `"vst"` overlay switches slots to plugins only where the binary exists (the
+  analog patch stays as the fallback), `"bus_fx"` hosts effects per bus. Manifest
+  `media/plugins/plugins.json` (binaries per machine, gitignored); `tools/gen/plugins.py
+  scan|list|test|programs`. Groove uses Dexed for keys/lead/pad when present. Pi stays analog.
+- **Melodies**: three sources, best first - AUTHORED hooks (`lib/gen/composer/hooks.py`: the Claude
+  CLI writes 2-bar hooks + answer phrases for the style/key in a background thread, validated,
+  cached in `logs/gen_hooks.json`; GEN_HOOKS=0 turns it off, the gates run with it off), the CORPUS
+  model (`tools/gen/melody_corpus.py` builds `lib/gen/composer/data/melody_model.json` from
+  music21's public-domain scores: rhythm cells, an order-2 interval model by metric strength,
+  cadence/start tables, contours; `melody_model.py` samples motifs with leap resolution and
+  cadences), else the old walk. Development operators (sequence, fragment, augment, retrograde
+  beside repeat/transpose/vary/invert), question-answer phrases (the authored answer or a
+  developed one), section-final cadence on the tonic (held), a climax an octave up on the last
+  phrase of a build; a like boosts the motif that played. Status reports the melody source.
+- **Timeline** (console tab `tools/gen/console/plugins/timeline.py`, data `GenSystem.timeline()`
+  riding in status for the remote console): what has played, what is composed ahead in the rack,
+  and what the form knows beyond that (rest of the section hatched, the drop it counts down to,
+  the most likely next sections with their weights, the energy arc), chords per bar, theme
+  statements, key changes, automation moves, a phrase table.
+
+Song analysis (2026-09-06, "ingest a song, recreate it in our language, score it"), gated by
+`tools/tests/_gen_analysis_test.py`:
+- **The song description language** is the system's own steering, written down: a SongScript
+  (`lib/gen/script.py`, YAML) = style / bpm / key / seed + a sequence of sections with length and
+  levers (energy, density, brightness, swing, layers, chords, lanes, key/bpm changes, hook), plus
+  optional MATERIAL from the source (kit one-shots, placed vocal phrases). `Composer.load_script`
+  follows one (scripted Form, plain scripted chords in Harmony, the hook as the theme, lanes into
+  the automation), `script.render` plays one offline, `script.to_actions` compiles it to the
+  whitelisted actions (style, key, bpm, section, energy, density, swing, brightness, mute, lane,
+  end) - the literal command list that regenerates the song. New action `script` (a file path)
+  makes the running show follow it.
+- **Ingest** (`lib/gen/analysis/ingest.py`, on the DJ analysis in `lib/dj/features.py`): tempo,
+  downbeats -> bar grid, key (KS estimate refined over all 24 keys by diatonic-triad fit),
+  sections (DJ kinds -> generator sections, drop = loud after a break/build), energy / density /
+  brightness / swing levers, layers from band shares, chords per bar from a per-bar FFT chroma
+  with the bass note weighted as the root, style from tempo + kick/snare step pattern. Also the
+  per-bar FEATURE track (energy dB, band shares, low/high onset density, chroma).
+- **Reuse** (`lib/gen/analysis/reuse.py`, optional: torch + demucs, CUDA on this box): stems ->
+  a drum kit of one-shots cut from the drum stem (the recreation's kick/snare/hat play them),
+  vocal phrases chopped from the vocal stem and placed on the bar grid (a `vox` slot), the melodic
+  stem transcribed (basic-pitch, else librosa pyin) into the most repeated two-bar cell = the hook.
+- **Score** (`lib/gen/analysis/score.py`): per 4-bar window energy / spectrum / rhythm / harmony
+  (0..100), global = local mean + structure (energy envelopes correlate) + tempo + key; the song
+  against itself is 100; the faithful synth-only recreation of the example script scores ~78, a
+  deliberately wrong one ~54.
+- **Surfaces**: console tab Analysis (`tools/gen/console/plugins/analysis.py`: ingest with an
+  optional stem reuse, editable section table, the command list, recreate, score strip with
+  original vs recreation energy and a score bar per phrase, save, play to the show) and the CLI
+  `tools/gen/analyze.py ingest|recreate|score|all|play [--reuse]` writing logs/analysis/<name>/.
+- Limits: melody transcription is only as good as the stem + basic-pitch; chord detection on
+  dense mixes is ~60% right per bar (the score uses chroma directly, not the chord labels);
+  sections come from the DJ novelty segmentation (a long plateau is one section).
+
 ## 0. What we are building
 
 A **generative music subsystem** (`GenSystem`), a sibling of the DJ rather than a part of

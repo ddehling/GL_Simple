@@ -7,8 +7,16 @@ from dataclasses import dataclass, field
 
 # Instrument slots a style may populate. A style maps each slot to a
 # patch (analog voice + params, or a SoundFont program, or an SC synthdef).
-SLOTS = ("kick", "snare", "hat", "ohat", "perc", "bass", "lead", "pad", "arp", "keys")
-DRUM_SLOTS = ("kick", "snare", "hat", "ohat", "perc")
+SLOTS = ("kick", "snare", "hat", "ohat", "perc", "tom", "rim", "ride", "shaker",
+         "bass", "lead", "pad", "arp", "keys", "fx", "auto", "vox")
+DRUM_SLOTS = ("kick", "snare", "hat", "ohat", "perc", "tom", "rim", "ride", "shaker")
+# "vox" carries placed sample phrases (a song's own vocal chops, per
+# params["file"]) when a SongScript brings them.
+# "auto" events are mix automation, not notes: params {"lane": "hp"|"lp"|
+# "duck"|"verb"|"delay_fb", "to": value}, dur = ramp length in samples.
+# "fx" carries transition material (risers, impacts, sweeps, reverse
+# cymbals) keyed by params["kind"]; it is scheduled by the form, not the
+# section layer masks.
 
 
 @dataclass(frozen=True)

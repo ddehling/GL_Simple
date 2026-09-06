@@ -126,6 +126,12 @@ def _synthdefs():
 SEND_BUS = 16       # private stereo audio bus for delay/reverb sends
 
 
+# Analog voices without an SC synthdef of their own render through the
+# nearest one; sample/fx material is skipped on this backend.
+SC_VOICE_ALIAS = {"keys": "pluck", "kick909": "kick", "clap909": "clap", "tom": "perc", "rim": "perc",
+                  "ride": "hat", "shaker": "hat", "supersaw": "pad", "fm": "pluck"}
+
+
 def _translate(events, style, key_of_slot):
     """NoteEvents -> [(t_seconds, synthdef_name, kwargs, gate_end_seconds|None)]."""
     out = []
@@ -133,7 +139,8 @@ def _translate(events, style, key_of_slot):
         patch = style["slots"].get(e.slot)
         if patch is None:
             continue
-        voice = patch.get("voice")
+        voice_name = patch.get("voice")
+        voice = SC_VOICE_ALIAS.get(voice_name, voice_name)
         name = key_of_slot.get(voice)
         if name is None:
             continue
@@ -141,7 +148,9 @@ def _translate(events, style, key_of_slot):
         g = float(patch.get("gain", 0.5))
         kw = {"amp": g * (0.4 + 0.6 * e.vel)}
         if voice in ("kick",):
-            kw["decay"] = float(patch.get("decay", 0.38))
+            # the analog 909 model's amplitude tau is decay/3.4; SC's percussive
+            # release IS the decay, so shorten it to keep the tails comparable
+            kw["decay"] = float(patch.get("decay", 0.38)) * (0.7 if voice_name == "kick909" else 1.0)
         elif voice == "hat":
             kw["decay"] = float(e.params.get("decay", patch.get("decay", 0.05)))
         elif voice in ("bass", "lead", "pad", "pluck"):
@@ -207,9 +216,26 @@ def render_nrt(events, seconds: float, out_path: str, style: dict, sample_rate: 
     if inspect.isawaitable(result):          # supriya >= 26: Score.render is async
         result = asyncio.run(result)
     path, code = result
-    if code != 0:
+    if code != 0 and not _teardown_crash_with_complete_file(code, path, seconds, sample_rate):
         raise RuntimeError(f"scsynth NRT failed with code {code}")
     return str(path)
+
+
+def _teardown_crash_with_complete_file(code, path, seconds, sample_rate):
+    """scsynth 3.14.1 for Windows renders NRT scores fully, then segfaults
+    (0xC0000005) while freeing RTAlloc'd UGen buffers (Limiter, CombC,
+    DelayN...) at exit. The .wav on disk is complete; accept it when the
+    file holds at least the requested duration."""
+    import os
+    import sys
+    if sys.platform != "win32" or code != 0xC0000005 or not path or not os.path.exists(path):
+        return False
+    try:
+        import soundfile as sf
+        info = sf.info(str(path))
+        return info.frames >= int(seconds * sample_rate) - 64
+    except Exception:
+        return False
 
 
 def _bpm_guess(style):

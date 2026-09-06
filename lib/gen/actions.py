@@ -18,6 +18,8 @@ GEN_ACTIONS = {
     "gesture", "ask", "feedback",      # the director: vocabulary, language, taste
     "brightness", "section",           # timbre lever; next-section request
     "scene_save", "scene_load", "scene_delete",   # named steering snapshots
+    "humanize", "lane", "automation",  # feel amount; a mix lane {lane,to,ramp_s}; form automation on/off
+    "script",                          # follow a SongScript file (lib/gen/script.py) from the next phrase
 }
 
 _KEYS = [f"{n}{ab}" for n in range(1, 13) for ab in ("A", "B")]
@@ -73,6 +75,22 @@ def sanitize_gen_action(data):
             arg = bool(arg)
         elif action == "brightness":
             arg = max(0.4, min(1.6, float(arg)))
+        elif action == "humanize":
+            arg = max(0.0, min(1.5, float(arg)))
+        elif action == "script":
+            import os as _os
+            if not isinstance(arg, str) or not arg.lower().endswith((".yaml", ".yml", ".json")) or not _os.path.exists(arg):
+                return None
+        elif action == "automation":
+            arg = bool(arg)
+        elif action == "lane":
+            from lib.gen.synth.rack import LANES
+            if not isinstance(arg, dict) or arg.get("lane") not in LANES:
+                return None
+            lo, hi = {"hp": (10.0, 4000.0), "lp": (200.0, 20000.0), "duck": (0.0, 0.9),
+                      "verb": (0.0, 3.0), "delay_fb": (0.0, 0.85)}[arg["lane"]]
+            arg = {"lane": arg["lane"], "to": max(lo, min(hi, float(arg.get("to", lo)))),
+                   "ramp_s": max(0.0, min(60.0, float(arg.get("ramp_s", 0.0))))}
         elif action in ("scene_save", "scene_load", "scene_delete"):
             if not isinstance(arg, str) or not arg.strip() or len(arg) > 40:
                 return None
@@ -176,6 +194,21 @@ def apply_gen_action(system, cfg, action, arg, start_fn=None, stop_fn=None):
     elif action == "feedback":
         if live:
             system.feedback(arg)
+    elif action == "humanize":
+        if system is not None:
+            system.set_humanize(arg)
+        cfg["humanize"] = arg
+    elif action == "script":
+        if system is not None:
+            system.load_script(arg)
+        cfg["script"] = arg
+    elif action == "automation":
+        if system is not None:
+            system.set_automation(arg)
+        cfg["automation"] = arg
+    elif action == "lane":
+        if system is not None:
+            system.set_lane(arg["lane"], arg["to"], arg["ramp_s"])
     elif action == "brightness":
         cfg["brightness"] = arg
         if live:

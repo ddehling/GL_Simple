@@ -70,6 +70,24 @@ class PreferenceMemory:
             out["favoured_layers"] = [s for s, n in c.most_common(6)]
         return out
 
+    def section_bias(self, style: str) -> dict:
+        """{section: weight multiplier} for the form grammar: sections the
+        operator liked get up to 2x, disliked down to 0.5x. Empty without
+        evidence. The form multiplies its grammar weights by this - a
+        nudge on the dice, never a lock."""
+        ups, downs = {}, {}
+        for r in self.items:
+            if r.get("style") != style or not r.get("section"):
+                continue
+            (ups if r["up"] else downs)[r["section"]] = (ups if r["up"] else downs).get(r["section"], 0) + 1
+        out = {}
+        for sec in set(ups) | set(downs):
+            u, d = ups.get(sec, 0), downs.get(sec, 0)
+            if u + d == 0:
+                continue
+            out[sec] = float(max(0.5, min(2.0, (1.0 + u) / (1.0 + d))))
+        return out
+
     def nudges(self, style: str, current: dict, strength: float = 0.35) -> dict:
         """Concrete deltas to apply now: move each param a fraction toward
         the liked centroid and away from the disliked one."""

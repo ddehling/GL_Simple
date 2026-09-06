@@ -127,3 +127,15 @@ logs/
 # Contact sheets written by the tools/tests/_*_visual_harness.py gates
 _wyne_frames/
 _storm_frames/
+
+# Generative-music SoundFont assets (large binaries, fetched per machine)
+media/soundfonts/*.sf2
+media/soundfonts/*.SF2
+
+# Generated one-shot starter set (tools/gen/oneshots.py bootstrap)
+media/oneshots/*.wav
+
+# Hosted VST3 binaries live per machine (tools/gen/plugins.py scan); the manifest is committed
+media/plugins/*.vst3/
+media/plugins/*.dll
+media/plugins/*.txt

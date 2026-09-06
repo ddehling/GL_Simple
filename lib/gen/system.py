@@ -29,6 +29,7 @@ from lib.gen import RATE
 from lib.gen.composer import Composer
 from lib.gen.composer.styles import STYLES
 from lib.gen.feedback import PreferenceMemory
+from lib.gen.composer.hooks import HookAuthor
 from lib.gen.scenes import SceneStore, scene_intent, snapshot as scene_snapshot
 from lib.gen.synth import SynthRack
 from lib.gen.theory import parse_key
@@ -65,7 +66,7 @@ MAX_ERRORS = 5          # per minute before giving up
 class GenSystem:
     def __init__(self, engine=None, style="groove", bpm=None, key="8A", seed=None,
                  soundfont=None, fluid_slots="", set_length_s=3 * 3600.0,
-                 energy_bias=0.0, density=1.0, swing=None, master=0.8, muted="",
+                 energy_bias=0.0, density=1.0, swing=None, master=0.8, muted="", hooks=None,
                  log_dir="logs", threaded=True):
         self.engine = engine
         self.style_name = style if style in STYLES else "groove"
@@ -106,6 +107,11 @@ class GenSystem:
         self.brightness = 1.0
         self._ramps = {}                     # param -> {"from","to","start_bar","bars"}
         self.prefs = PreferenceMemory(os.path.join(log_dir, "gen_prefs.json"))
+        # authored hooks: an LLM writes the movement's theme in the background
+        # (default: on unless GEN_HOOKS=0 - the gates run with it off so they never call the CLI)
+        if hooks is None:
+            hooks = os.environ.get("GEN_HOOKS", "1") != "0"
+        self.hooks = HookAuthor(os.path.join(log_dir, "gen_hooks.json"), enabled=bool(hooks))
         self.scenes = SceneStore(os.path.join(log_dir, "gen_scenes.json"))
         self.director = None                 # LLMDirector, created on first ask
         self._director_busy = False
@@ -157,6 +163,9 @@ class GenSystem:
         self.fluid = fluid
         self.rack = SynthRack(style, self.composer.bpm, fluid=fluid, fluid_slots=slots,
                               seed=self.seed, master=self.master)
+        self.rack.warm_up()          # JIT before the audio callback needs blocks
+        self.composer.form.taste = self.prefs.section_bias(self.style_name)
+        self._wire_hooks(self.composer)
         for s in self.muted:
             self.rack.set_mute(s, True)
 
@@ -276,6 +285,8 @@ class GenSystem:
             nk = random.Random(self.seed + mv).choice(self.composer.key.neighbours())
             self.composer.set_key(nk)
             self.composer.reseed(self.seed + 7919 * mv)
+            if self.hooks.enabled:
+                self.hooks.request(self.style_name, self.composer.style.get("label", self.style_name), self.composer.bpm, nk.name, n=3)
             self._log({"event": "movement", "n": mv, "key": nk.name, "t": self._elapsed()})
             print(f"[GEN] movement {mv}: key -> {nk.name} ({nk.camelot})")
 
@@ -318,7 +329,12 @@ class GenSystem:
             nc.pattern_source = c.pattern_source
             if nc.pattern_source is not None:
                 nc.pattern_source.slots = set(STYLES[name]["slots"].keys())
-            self.rack.set_style(STYLES[name], nc.bpm, at=at)
+            nc.humanize = getattr(c, "humanize", 1.0)
+            nc.automation = getattr(c, "automation", True)
+            nc.form.taste = self.prefs.section_bias(name)
+            self._wire_hooks(nc)
+            # style MORPH: slot gains glide over 8 bars instead of jumping
+            self.rack.set_style(STYLES[name], nc.bpm, at=at, morph=int(8 * self.rack_bar_samples()))
             self._log({"event": "style", "style": name, "t": self._elapsed()})
         self._post(do)
 
@@ -404,6 +420,95 @@ class GenSystem:
         self._post(do)
 
     # -- taste ------------------------------------------------------------
+    def _wire_hooks(self, c):
+        """Give the melody this style's authored hooks and ask for fresh
+        ones (in the background) for the current key."""
+        c.melody.hook_provider = self.hooks.provider(self.style_name)
+        if self.hooks.enabled and self.hooks.count(self.style_name) < 8:
+            self.hooks.request(self.style_name, c.style.get("label", self.style_name), c.bpm, c.key.name,
+                               n=4, hint=f"Section energy runs intro -> groove -> build -> drop; the hook is the drop's theme.")
+
+    def rack_bar_samples(self):
+        return int(RATE * 4 * 60.0 / (self.composer.bpm if self.composer else 120.0))
+
+    def load_script(self, path_or_dict):
+        """Follow a SongScript from the next phrase (switching style first
+        when the script asks for another one)."""
+        from lib.gen import script as _script
+        sc = _script.load(path_or_dict) if isinstance(path_or_dict, str) else _script.normalize(path_or_dict)
+
+        def do():
+            if sc.get("style") in STYLES and sc["style"] != self.style_name:
+                self.set_style(sc["style"])          # posts its own do(); our load runs after it
+                self._post(lambda: self.composer.load_script(sc))
+            else:
+                self.composer.load_script(sc)
+            if sc.get("bpm"):
+                self.rack.set_style(self.composer.style, float(sc["bpm"]), at=self.composer.clock)
+            self._log({"event": "script", "title": sc.get("title"), "sections": len(sc["sections"]), "t": self._elapsed()})
+        self._post(do)
+
+    def set_humanize(self, v):
+        def do():
+            self.composer.humanize = float(v)
+        self._post(do)
+
+    def set_automation(self, on):
+        def do():
+            self.composer.automation = bool(on)
+        self._post(do)
+
+    def set_lane(self, lane, to, ramp_s=0.0):
+        if self.rack is not None:
+            self.rack.set_lane(lane, float(to), int(float(ramp_s) * RATE))
+
+    # -- timeline ---------------------------------------------------------
+    def timeline(self, past_s=240.0):
+        """What has played, what is composed ahead, and what the form
+        knows beyond that - for the console's Timeline tab.
+          now_s      playback position (rack clock) in seconds
+          phrases    [{bar0, nbars, start_s, end_s, section, energy, chords,
+                       key, lead, layers, drops:[s], played: bool}] from
+                       past_s ago up to the last composed phrase
+          horizon    {section, bars_left, end_s, next: [(section, weight)],
+                       requested, hold, ending, drop_s, movement,
+                       set_length_s, arc: [(s, energy)] for the next 10 min}
+        """
+        if self.rack is None or self.composer is None:
+            return {"now_s": 0.0, "phrases": [], "horizon": {}}
+        now = self.rack.clock
+        bar_s = self._bar_seconds()
+        out = []
+        for p in list(self._phrases):
+            if p.end < now - past_s * RATE:
+                continue
+            out.append({"bar0": p.bar0, "nbars": p.nbars, "start_s": round(p.start / RATE, 3), "end_s": round(p.end / RATE, 3),
+                        "section": p.section, "energy": round(p.energy, 3), "chords": [c[1] for c in p.chords],
+                        "key": p.meta.get("camelot"), "lead": p.meta.get("lead_op"), "layers": p.meta.get("layers", []),
+                        "drops": [round(d / RATE, 3) for d in p.drops()], "played": p.end <= now,
+                        "auto": [{"lane": e.params.get("lane"), "to": e.params.get("to")} for e in p.events if e.slot == "auto"][:6]})
+        f = self.composer.form
+        c = self.composer
+        comp_end_s = c.clock / RATE                       # end of the last composed phrase
+        grammar = f.style["form"].get(f.section, [])
+        nxt = []
+        tot = sum(w for _, w in grammar) or 1.0
+        arc = float(f.arc_fn(f._bar))
+        for name, w in grammar:
+            e = f.style["sections"][name]["energy"]
+            bias = 1.0 + 1.5 * (arc - 0.5) * (e - 0.5) * 2.0
+            nxt.append((name, round(max(0.05, w * bias * float(f.taste.get(name, 1.0))) / tot, 3)))
+        nxt.sort(key=lambda x: -x[1])
+        drop_bar = f.upcoming_drop_bar()
+        horizon = {"section": f.section, "bars_in": f.bars_in, "bars_left": f.bars_left,
+                   "section_end_s": round(comp_end_s + f.bars_left * bar_s, 3),
+                   "composed_to_s": round(comp_end_s, 3), "next": nxt,
+                   "requested": f.requested, "hold": f.hold, "ending": f.ending,
+                   "drop_s": round(comp_end_s + (drop_bar - c.bar) * bar_s, 3) if drop_bar is not None else None,
+                   "movement": self._movement, "set_length_s": self.set_length_s,
+                   "arc": [(round(comp_end_s + k * 30.0, 1), round(float(f.arc_fn(c.bar + int(k * 30.0 / bar_s))), 3)) for k in range(21)]}
+        return {"now_s": round(now / RATE, 3), "phrases": out, "horizon": horizon}
+
     def snapshot(self):
         st = self.status()
         return {"style": st["style"], "section": st["section"], "key": st["camelot"], "mode": st["mode"],
@@ -414,6 +519,13 @@ class GenSystem:
     def feedback(self, up):
         rec = self.prefs.record(self.snapshot(), up)
         self._log({"event": "feedback", "up": bool(up), "snapshot": rec, "t": self._elapsed()})
+
+        def do():
+            # the taste loop: liked sections come back more often, liked motifs return
+            self.composer.form.taste = self.prefs.section_bias(self.style_name)
+            if up:
+                self.composer.melody.like()
+        self._post(do)
         return rec
 
     # -- scenes -----------------------------------------------------------
@@ -610,6 +722,15 @@ class GenSystem:
             "seed": self.seed, "uptime_s": self._elapsed(),
             "heard_s": round(heard / RATE, 2),
             "notes": stats["notes"], "peak": round(stats["peak"], 3),
+            "lanes": self.rack.lane_values(), "lufs": round(float(self.rack.loud.lufs()), 1),
+            "norm_db": round(self.rack.norm_db, 2), "stolen": stats.get("stolen", 0),
+            "humanize": round(float(getattr(c, "humanize", 1.0)), 2),
+            "automation": bool(getattr(c, "automation", True)),
+            "timeline": self.timeline(),
+            "script": ({"title": c.script.get("title"), "entry": self.composer.form.script_i, "n": len(c.script["sections"])}
+                       if getattr(c, "script", None) and c.form.script else None),
+            "hooks": dict(self.hooks.status(), source=getattr(c.melody, "source", "?"),
+                          theme=(c.melody.theme.name or "(unnamed)") if c.melody.theme is not None else None),
             "render_errors": stats.get("render_errors", 0),
             "last_render_error": stats.get("last_render_error", ""),
             "motifs": len(c.melody.memory),
