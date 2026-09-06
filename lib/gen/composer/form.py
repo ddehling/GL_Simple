@@ -20,6 +20,7 @@ class Form:
         self.history.append((0, self.section, self.bars_left))
         self.ending = False
         self.hold = False          # operator: stay in this section
+        self.requested = None      # operator/director: go here next
 
     def _draw_bars(self, section: str) -> int:
         lo, hi = self.style["sections"][section]["bars"]
@@ -27,9 +28,20 @@ class Form:
         n = self.rng.randint(lo // 4, hi // 4) * 4
         return max(4, n)
 
+    def request(self, section: str):
+        """Make `section` the next section (at the current one's end; a
+        request while >8 bars remain also shortens the wait to one phrase)."""
+        if section in self.style["sections"]:
+            self.requested = section
+            if self.bars_left > 8:
+                self.bars_left = 4
+
     def _next_section(self) -> str:
         if self.ending:
             return "outro"
+        if self.requested:
+            r, self.requested = self.requested, None
+            return r
         arc = float(self.arc_fn(self._bar))
         opts = self.style["form"][self.section]
         weighted = []

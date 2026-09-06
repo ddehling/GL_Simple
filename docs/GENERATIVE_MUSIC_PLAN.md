@@ -20,6 +20,7 @@ are gated:
 | SuperCollider backend: SynthDefs in Python (supriya), NRT render, realtime scheduler | `lib/gen/backends/sc.py` | `tools/tests/_gen_sc_test.py` (SKIPs without scsynth) |
 | Player CLI | `tools/gen/gen_player.py` | — |
 | **Strudel patterns** (C4): Node bridge + composer source; Pattern card on `/gen`; `--strudel` in the player | `tools/gen/strudel/`, `lib/gen/composer/strudel.py`, `media/patterns/example.js` | `tools/tests/_gen_strudel_test.py` |
+| **Director** (C5): gestures, language, taste; Direct card on `/gen`; brightness / ramps / section requests / slot patterns | `lib/gen/director.py`, `lib/gen/feedback.py` | `tools/tests/_gen_director_test.py` |
 | **Frontend (Phase 3, landed 2026-09-05):** `GenSystem` conductor (composes ahead on its own thread, steering queue, movements, end-of-set, supervision, night log), shared action whitelist, `/gen` page + `gen_action` socket + `POST /api/gen/action`, Gen nav tab, Stories_OGL soundtrack-takeover bridge, `gen:` config, standalone server | `lib/gen/system.py`, `lib/gen/actions.py`, `web/templates/gen_panel.html`, `web/static/js/gen_tab.js`, `web/web_controller.py`, `Stories_OGL.py` (`_apply_gen_controls/_gen_start/_gen_stop`), `config.yaml`, `tools/gen/gen_server.py` | `tools/tests/_gen_system_test.py` |
 
 ```bash
@@ -175,8 +176,36 @@ and the long-run/arc machinery. Not adopted: Strudel's own scheduler/audio (brow
 must stay open; bypasses the engine), the OSC→SuperDirt route (a second synth stack),
 and Vortex (the Python port, self-described "free puppies", stalled).
 
-**Recommendation:** C1 is the product; C4 is how the operator writes into it; C2/C3 are
-seasoning after the engine exists.
+### C5. The director: interaction above code (landed 2026-09-06)
+The operator's stated preference is to interact **higher than code**. `lib/gen/director.py`
+gives three inputs that all resolve to one **Intent** (a small dict: `set`/`nudge`/`ramp`
+parameters, `section`, `hold`, `layers` mute/unmute, per-slot Strudel `patterns`, `reseed`,
+`end`, `like`) applied through the same phrase-boundary steering queue:
+
+- **Gestures** — a curated vocabulary with musical meaning (`darker`, `brighter`, `open it
+  up`, `strip to drums`, `bring a melody`, `sparser/denser`, `more swing`, `slower/faster`,
+  `build to a drop`, `breakdown`, `back to groove`, `modulate up/down`, `keep this going`,
+  `let it move`, `wind down`, `more like this`, `new ideas`). Chips on the `/gen` page. No
+  dependencies. A new **brightness** lever (filter-cutoff multiplier on every pitched patch)
+  makes "darker/brighter" real; **ramps** interpolate a parameter over N bars; **section
+  requests** steer the form; **slot patterns** let one slot take Strudel notes while the
+  rules keep the rest.
+- **Language** — free text to an LLM director (Claude through the `claude` CLI when present,
+  else the `anthropic` SDK; the DJ planner's copilot precedent). The prompt carries the live
+  state, the schema and a Strudel cheat sheet; the reply is JSON only, **validated**
+  (unknown keys dropped, numbers clamped, sections/slots checked) and any proposed pattern is
+  **sandboxed** in a scratch Strudel engine and must produce events for its slot before it can
+  reach the rack. Runs on a worker thread; the page shows busy / reply / what changed.
+  Degrades cleanly: gestures and autonomy never depend on it.
+- **Taste** — 👍/👎 record snapshots (style, section, key, layers, energy, density, swing,
+  brightness) to `logs/gen_prefs.json`; `more like this` records a like and nudges the
+  parameters toward the liked centroid and away from disliked ground. A nudge, never a lock.
+
+Gate: `tools/tests/_gen_director_test.py` (director tested with an injected transport; the
+real model path is exercised only when `claude` or a key is present).
+
+**Recommendation:** C1 is the product; C5 is how the operator talks to it; C4 is the
+director's (and the curious operator's) language for new material; C2/C3 remain optional.
 
 ---
 

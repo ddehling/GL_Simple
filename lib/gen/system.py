@@ -28,10 +28,27 @@ from queue import SimpleQueue
 from lib.gen import RATE
 from lib.gen.composer import Composer
 from lib.gen.composer.styles import STYLES
+from lib.gen.feedback import PreferenceMemory
 from lib.gen.synth import SynthRack
 from lib.gen.theory import parse_key
 
 LEAD_S = 6.0            # composed audio kept ahead of the render head
+
+
+def _gesture_menu():
+    from lib.gen.director import GESTURES
+    return [{"id": k, "label": v["label"]} for k, v in GESTURES.items()]
+
+
+def _director_available():
+    try:
+        from lib.gen.director import find_claude_exe
+        if find_claude_exe():
+            return True
+        import anthropic  # noqa: F401
+        return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    except Exception:
+        return False
 
 
 def _strudel_available():
@@ -84,6 +101,14 @@ class GenSystem:
         self._hold = False
         self._strudel = None                 # StrudelBridge, started on first pattern
         self._pattern_code = None
+        self._slot_patterns = {}             # slot -> code (status)
+        self.brightness = 1.0
+        self._ramps = {}                     # param -> {"from","to","start_bar","bars"}
+        self.prefs = PreferenceMemory(os.path.join(log_dir, "gen_prefs.json"))
+        self.director = None                 # LLMDirector, created on first ask
+        self._director_busy = False
+        self._director_last = {}             # {"text","say","done","warn","error","t"}
+        self._director_log = deque(maxlen=20)
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> bool:
@@ -198,7 +223,35 @@ class GenSystem:
             self._phrases.append(p)
             self._on_phrase(p)
 
+    def _tick_ramps(self, next_bar):
+        """Advance parameter ramps to the value they should have at
+        `next_bar` (the phrase about to be composed)."""
+        for k, r in list(self._ramps.items()):
+            prog = min(1.0, (next_bar - r["start_bar"]) / max(1, r["bars"]))
+            v = r["from"] + (r["to"] - r["from"]) * prog
+            self._apply_param(k, v)
+            if prog >= 1.0:
+                del self._ramps[k]
+
+    def _apply_param(self, k, v):
+        c = self.composer
+        if k == "energy_bias":
+            self.energy_bias = c.energy_bias = float(v)
+        elif k == "density":
+            self.density = c.density = float(v)
+        elif k == "swing":
+            self.swing = c.swing = float(v)
+        elif k == "brightness":
+            self.brightness = c.brightness = float(v)
+        elif k == "bpm":
+            self.bpm_req = float(v)
+            c.set_bpm(float(v))
+            self.rack.set_style(c.style, float(v), at=c.clock)
+        elif k == "master":
+            self.set_master(v)
+
     def _on_phrase(self, p):
+        self._tick_ramps(p.bar0 + p.nbars)
         rec = {"event": "phrase", "bar": p.bar0, "section": p.section,
                "energy": round(p.energy, 3), "chords": [c[1] for c in p.chords],
                "key": p.meta.get("camelot"), "bpm": round(p.bpm, 2),
@@ -305,6 +358,109 @@ class GenSystem:
     def set_hold(self, on):
         self._hold = bool(on)
         self._post(lambda: setattr(self.composer.form, "hold", bool(on)))
+
+    def set_brightness(self, v):
+        self.brightness = float(v)
+        self._post(lambda: setattr(self.composer, "brightness", float(v)))
+
+    def add_ramp(self, param, to, bars):
+        def do():
+            cur = {"energy_bias": self.composer.energy_bias, "density": self.composer.density,
+                   "swing": self.composer.swing, "brightness": self.composer.brightness,
+                   "bpm": self.composer.bpm}.get(param)
+            if cur is None:
+                return
+            self._ramps[param] = {"from": float(cur), "to": float(to), "start_bar": self.composer.bar, "bars": int(bars)}
+            self._log({"event": "ramp", "param": param, "to": to, "bars": bars, "t": self._elapsed()})
+        self._post(do)
+
+    def request_section(self, name):
+        self._post(lambda: (self.composer.form.request(name),
+                            self._log({"event": "section_request", "section": name, "t": self._elapsed()})))
+
+    def set_slot_pattern(self, slot, code):
+        """Strudel notes for ONE slot; the rules keep every other slot."""
+        def do():
+            from lib.gen.composer.strudel import StrudelSource, open_engine
+            try:
+                if self._strudel is None:
+                    self._strudel = open_engine()
+                src = StrudelSource(self._strudel, {slot})
+                src.load(code)
+                self.composer.slot_patterns[slot] = src
+                self._slot_patterns[slot] = code
+                self._log({"event": "slot_pattern", "slot": slot, "code": code[:300], "t": self._elapsed()})
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"pattern[{slot}]: {type(e).__name__}: {e}"
+        self._post(do)
+
+    def clear_slot_pattern(self, slot=None):
+        def do():
+            for s_ in ([slot] if slot else list(self.composer.slot_patterns)):
+                self.composer.slot_patterns.pop(s_, None)
+                self._slot_patterns.pop(s_, None)
+        self._post(do)
+
+    # -- taste ------------------------------------------------------------
+    def snapshot(self):
+        st = self.status()
+        return {"style": st["style"], "section": st["section"], "key": st["camelot"], "mode": st["mode"],
+                "layers": [s_ for s_ in st["layers"] if s_ not in st["muted"]],
+                "energy": st["energy"], "density": st["density"], "swing": st["swing"],
+                "brightness": st["brightness"], "pattern_slots": sorted(self._slot_patterns)}
+
+    def feedback(self, up):
+        rec = self.prefs.record(self.snapshot(), up)
+        self._log({"event": "feedback", "up": bool(up), "snapshot": rec, "t": self._elapsed()})
+        return rec
+
+    # -- director ---------------------------------------------------------
+    def gesture(self, name):
+        from lib.gen.director import apply_intent, gesture_intent
+        intent = gesture_intent(name)
+        if intent is None:
+            self.last_error = f"unknown gesture {name!r}"
+            return []
+        done = apply_intent(self, intent)
+        self._director_log.append({"kind": "gesture", "text": name, "say": intent.get("say", name), "done": done, "t": self._elapsed()})
+        self._log({"event": "gesture", "name": name, "done": done, "t": self._elapsed()})
+        return done
+
+    def ask(self, text, transport=None):
+        """Free text -> the LLM director -> Intent -> steering. Runs on a
+        worker thread (seconds of latency); status shows busy/last reply."""
+        from lib.gen.director import LLMDirector, apply_intent
+        if self.director is None or transport is not None:
+            self.director = LLMDirector(transport=transport)
+        if self._director_busy:
+            return False
+        self._director_busy = True
+        self._director_last = {"text": text, "t": self._elapsed()}
+
+        def work():
+            try:
+                sandbox = None
+                try:
+                    from lib.gen.composer.strudel import open_engine
+                    sandbox = open_engine()
+                except Exception:
+                    sandbox = None
+                intent, warn, reply = self.director.intent_for(text, self.status(), slots=self.composer.style["slots"].keys(), sandbox=sandbox)
+                if sandbox is not None:
+                    sandbox.stop()
+                done = apply_intent(self, intent)
+                say = intent.get("say", "")
+                self.director.history.append((text, say, done))
+                self._director_last = {"text": text, "say": say, "done": done, "warn": warn, "error": "", "t": self._elapsed()}
+                self._director_log.append({"kind": "ask", "text": text, "say": say, "done": done, "warn": warn, "t": self._elapsed()})
+                self._log({"event": "ask", "text": text, "intent": intent, "warn": warn, "t": self._elapsed()})
+            except Exception as e:  # noqa: BLE001
+                self._director_last = {"text": text, "error": f"{type(e).__name__}: {e}", "t": self._elapsed()}
+                self._log({"event": "ask_error", "text": text, "error": str(e), "t": self._elapsed()})
+            finally:
+                self._director_busy = False
+        threading.Thread(target=work, daemon=True, name="gen-director").start()
+        return True
 
     def reseed(self, seed=None):
         s = int(seed) if seed is not None else random.randrange(1, 10 ** 6)
@@ -433,6 +589,18 @@ class GenSystem:
             "motifs": len(c.melody.memory),
             "lead_s": round((self.rack.pending_until() - self.rack.clock) / RATE, 1),
             "log": list(self._log_tail)[-14:],
+            "brightness": round(self.brightness, 3),
+            "ramps": {k: {"to": r["to"], "bars_left": max(0, r["start_bar"] + r["bars"] - c.bar)} for k, r in self._ramps.items()},
+            "section_requested": f.requested,
+            "section_composed": (self._phrases[-1].section if self._phrases else None),   # already written, not yet heard
+            "pattern_slots": sorted(self._slot_patterns),
+            "slot_pattern_errors": {s_: src.error for s_, src in c.slot_patterns.items() if getattr(src, "error", "")},
+            "gestures": _gesture_menu(),
+            "director": {"available": (self.director.available if self.director is not None else _director_available()),
+                         "mode": (self.director.mode if self.director is not None else None),
+                         "busy": self._director_busy, "last": self._director_last,
+                         "log": list(self._director_log)[-8:]},
+            "taste": self.prefs.counts(),
             "pattern": self._pattern_code,
             "pattern_error": (getattr(c.pattern_source, "error", "") if c.pattern_source else ""),
             "pattern_available": _strudel_available(),

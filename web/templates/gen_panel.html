@@ -143,6 +143,24 @@
             <div class="meter"><div class="fill arc" id="gen-arc" style="width:0%"></div></div>
         </div>
 
+        <!-- Direct: interaction above code - gestures, language, taste -->
+        <div class="section-panel hidden" id="gen-direct">
+            <div class="section-header"><h3>Direct</h3></div>
+            <div class="chips" id="gen-gestures"></div>
+            <div class="row" style="margin-top:10px">
+                <input type="text" id="gen-ask" placeholder="tell the director… e.g. darker and slower over ten minutes, then a bright arp for the drop"
+                       style="flex:1;padding:10px;border-radius:6px;border:1px solid #555;background:#15151c;color:#ddd">
+                <button class="btn alt" id="gen-ask-go" style="flex:0 0 auto">ASK</button>
+            </div>
+            <div class="now-sub" id="gen-director-status" style="min-height:1.2em"></div>
+            <div class="log" id="gen-director-log" style="max-height:140px;margin-top:6px"></div>
+            <div class="transport" style="margin-top:10px">
+                <button class="btn" id="gen-like">👍 more like this</button>
+                <button class="btn" id="gen-dislike">👎 not this</button>
+                <span class="now-sub" id="gen-taste" style="flex:1;align-self:center;text-align:right"></span>
+            </div>
+        </div>
+
         <!-- Steering (offered idle AND live; idle values arm the next start) -->
         <div class="section-panel foldable" id="gen-steer">
             <div class="section-header"><h3>Steering</h3></div>
@@ -161,6 +179,9 @@
             <div class="row"><label>swing</label>
                 <input type="range" id="gen-swing" min="0" max="0.33" step="0.005">
                 <span class="val" id="gen-swing-v">0.00</span></div>
+            <div class="row"><label>brightness</label>
+                <input type="range" id="gen-bright" min="0.4" max="1.6" step="0.01">
+                <span class="val" id="gen-bright-v">1.00</span></div>
             <div class="row"><label>level</label>
                 <input type="range" id="gen-master" min="0" max="1" step="0.01">
                 <span class="val" id="gen-master-v">0.80</span></div>
@@ -256,6 +277,23 @@
         bindSlider("gen-density", "density", (x) => x.toFixed(2));
         bindSlider("gen-swing", "swing", (x) => x.toFixed(3));
         bindSlider("gen-master", "master", (x) => x.toFixed(2));
+        bindSlider("gen-bright", "brightness", (x) => x.toFixed(2));
+        $("gen-ask-go").onclick = () => { const t = $("gen-ask").value.trim(); if (t) { emit("ask", t); $("gen-ask").value = ""; } };
+        $("gen-ask").addEventListener("keydown", (e) => { if (e.key === "Enter") $("gen-ask-go").onclick(); });
+        $("gen-like").onclick = () => emit("gesture", "more_like_this");
+        $("gen-dislike").onclick = () => emit("feedback", false);
+        let gesturesKey = "";
+        function buildGestures(list) {
+            const key = (list || []).map((g) => g.id).join("|");
+            if (key === gesturesKey) return;
+            gesturesKey = key;
+            const box = $("gen-gestures"); box.innerHTML = "";
+            (list || []).forEach((g) => {
+                const c = document.createElement("span"); c.className = "chip"; c.textContent = g.label;
+                c.onclick = () => { emit("gesture", g.id); c.classList.add("live"); setTimeout(() => c.classList.remove("live"), 900); };
+                box.appendChild(c);
+            });
+        }
         $("gen-key").addEventListener("change", (e) => emit("key", e.target.value));
         $("gen-setlen").addEventListener("change", (e) => emit("set_length", parseFloat(e.target.value)));
         $("gen-fluid").addEventListener("change", (e) => emit("fluid", e.target.value.trim()));
@@ -371,8 +409,21 @@
             else if (g.pattern) { ps.textContent = "pattern live - the composer's form/energy still run underneath"; ps.style.color = "#9f9"; }
             else { ps.textContent = live ? "autonomous (rule composer)" : "idle - a pattern set now is applied at start"; ps.style.color = ""; }
 
+            show($("gen-direct"), live);
             if (!live) return;
-            $("gen-section").textContent = g.section;
+            buildGestures(g.gestures);
+            setSlider("gen-bright", g.brightness);
+            const dir = g.director || {};
+            const ds = $("gen-director-status");
+            if (!dir.available) { ds.textContent = "director offline (install Claude Code `claude`, or pip install anthropic + ANTHROPIC_API_KEY) - gestures still work"; ds.style.color = "#f99"; }
+            else if (dir.busy) { ds.textContent = "director thinking about: " + (dir.last && dir.last.text || ""); ds.style.color = "#9ef"; }
+            else if (dir.last && dir.last.error) { ds.textContent = "director error: " + dir.last.error; ds.style.color = "#f99"; }
+            else if (dir.last && dir.last.say !== undefined) { ds.textContent = "director: " + (dir.last.say || "(done)") + (dir.last.warn && dir.last.warn.length ? "  · " + dir.last.warn.join("; ") : ""); ds.style.color = "#9f9"; }
+            else { ds.textContent = "director ready (" + (dir.mode || "") + ")"; ds.style.color = ""; }
+            $("gen-director-log").innerHTML = (dir.log || []).slice().reverse().map((r) =>
+                `<div class="l"><span class="s">${r.kind}</span><span class="c">${r.text} → ${(r.done || []).join(", ") || r.say || ""}</span></div>`).join("");
+            const taste = g.taste || {}; $("gen-taste").textContent = `taste: ${taste.up || 0} up · ${taste.down || 0} down`;
+            $("gen-section").textContent = g.section + (g.section_requested ? ` → ${g.section_requested}` : "");
             $("gen-barbeat").textContent = ` · bar ${g.bar} · beat ${g.beat}`;
             $("gen-keyline").textContent = `${g.key} (${g.camelot}) · ${g.bpm} bpm · chord ${g.chord_now} · ` +
                 `${g.lead_op ? "motif " + g.lead_op : ""}`;

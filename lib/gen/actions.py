@@ -15,6 +15,8 @@ GEN_ACTIONS = {
     "hold", "reseed", "mute",          # form / identity / layers
     "master", "set_length", "fluid",   # level / arc / SoundFont slots
     "pattern", "pattern_clear",        # Strudel code (replaces the rule composer's notes)
+    "gesture", "ask", "feedback",      # the director: vocabulary, language, taste
+    "brightness", "section",           # timbre lever; next-section request
 }
 
 _KEYS = [f"{n}{ab}" for n in range(1, 13) for ab in ("A", "B")]
@@ -57,6 +59,21 @@ def sanitize_gen_action(data):
             arg = max(600.0, min(43200.0, float(arg)))       # 10 min .. 12 h
         elif action == "pattern":
             if not isinstance(arg, str) or not arg.strip() or len(arg) > 20000:
+                return None
+        elif action == "gesture":
+            from lib.gen.director import GESTURES
+            if arg not in GESTURES:
+                return None
+        elif action == "ask":
+            if not isinstance(arg, str) or not arg.strip() or len(arg) > 2000:
+                return None
+            arg = arg.strip()
+        elif action == "feedback":
+            arg = bool(arg)
+        elif action == "brightness":
+            arg = max(0.4, min(1.6, float(arg)))
+        elif action == "section":
+            if arg not in ("intro", "groove", "build", "drop", "break", "outro", "flow", "swell", "calm"):
                 return None
         elif action == "fluid":
             # comma list of slots to render with SoundFonts ("" = none)
@@ -145,6 +162,22 @@ def apply_gen_action(system, cfg, action, arg, start_fn=None, stop_fn=None):
         cfg.pop("pattern", None)
         if live:
             system.clear_pattern()
+    elif action == "gesture":
+        if live:
+            system.gesture(arg)
+    elif action == "ask":
+        if live:
+            system.ask(arg)
+    elif action == "feedback":
+        if live:
+            system.feedback(arg)
+    elif action == "brightness":
+        cfg["brightness"] = arg
+        if live:
+            system.set_brightness(arg)
+    elif action == "section":
+        if live:
+            system.request_section(arg)
 
 
 def idle_info(cfg, error=""):
@@ -164,6 +197,8 @@ def idle_info(cfg, error=""):
         "muted": sorted(set((cfg.get("muted") or "").split(",")) - {""}),
         "fluid_slots": cfg.get("fluid_slots", ""),
         "pattern": cfg.get("pattern"),
+        "brightness": cfg.get("brightness", 1.0),
+        "gestures": [{"id": k, "label": v["label"]} for k, v in __import__("lib.gen.director", fromlist=["GESTURES"]).GESTURES.items()],
         "slots": list(STYLES.get(cfg.get("style", "groove"), STYLES["groove"])["slots"].keys()),
         "error": error,
     }

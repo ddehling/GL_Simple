@@ -53,6 +53,12 @@ class Composer:
         # events replace the rule-generated ones; form/harmony/energy keep
         # running and are handed to it as context.
         self.pattern_source = None
+        # Per-slot pattern overrides: {slot: source}. Those slots take their
+        # notes from the pattern; every other slot stays with the rules.
+        self.slot_patterns = {}
+        # Timbre lever the director can move: multiplies each pitched
+        # patch's filter cutoff (0.4 dark .. 1.6 bright).
+        self.brightness = 1.0
 
     # -- steering -----------------------------------------------------------
     def set_key(self, key):
@@ -128,6 +134,10 @@ class Composer:
         def note(step_abs, slot, pitch, vel, dur_steps, **params):
             at = self._step_to_sample(start, step_abs)
             dur = max(int(dur_steps * sps) - 1, int(0.02 * RATE))
+            if slot not in DRUM_SLOTS and abs(self.brightness - 1.0) > 1e-6 and "cutoff" not in params:
+                base = self.style["slots"].get(slot, {}).get("cutoff")
+                if base:
+                    params = dict(params, cutoff=float(base) * float(self.brightness))
             ev.append(NoteEvent(at, slot, float(pitch), float(min(1.0, vel)), dur, params))
 
         # drums
@@ -176,6 +186,17 @@ class Composer:
             for step_abs, midi, vel, gate in notes:
                 note(step_abs, "lead", midi, vel, gate)
 
+        if self.slot_patterns:
+            ctx = {"energy": round(energy, 3), "section": section, "bar": self.bar,
+                   "key": self.key.camelot, "bpm": round(self.bpm, 2), "phrase": self.bar // nb,
+                   "chords": [c[1] for c in chords]}
+            ev = [e for e in ev if e.slot not in self.slot_patterns]
+            for slot, src in list(self.slot_patterns.items()):
+                try:
+                    ev += [e for e in src.events(self.bar, nb, start, spb, ctx) if e.slot == slot]
+                    src.error = ""
+                except Exception as e:  # noqa: BLE001
+                    src.error = f"{type(e).__name__}: {e}"
         return self._finish_phrase(ev, nb, start, spb, section, energy, chords, layers, op)
 
     def _finish_phrase(self, ev, nb, start, spb, section, energy, chords, layers, op):
