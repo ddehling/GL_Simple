@@ -39,7 +39,11 @@ widget)` (widget.refresh(state) while visible), `add_shortcut(seq, fn, label)` (
 F1), `add_status(label)`, `on_state(fn)`, `add_menu_action(menu, text, fn, shortcut)`,
 `ctx.emit(action, value)`, and `backend`/`state`. Two ship as the pattern:
 `shortcuts.py` (1-9 gestures, H hold, R new ideas, Ctrl+K ask, Ctrl+S save scene, F1
-help) and `nightlog.py` (a Nights tab that reads `logs/gen_*.jsonl` with filters).
+help), `nightlog.py` (a Nights tab that reads `logs/gen_*.jsonl` with filters) and
+`scope.py` (a Scope tab: waveform + spectrum from the rack's monitor ring at ~30 Hz,
+QPainter, no extra dependency; baselines: display gain and a reference dBFS line for
+the waveform, floor/range/smoothing/log-linear for the spectrum, and a captured baseline
+spectrum to overlay or subtract). Native only: remote backends do not stream audio.
 
 ## The web renderer
 

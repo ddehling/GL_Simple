@@ -106,6 +106,12 @@ class LocalBackend:
         info["backend"] = "local" + ("" if self.engine is not None else " (headless)")
         return info
 
+    def audio_tap(self, n):
+        """Last n stereo samples the rack rendered, or None when idle."""
+        if self.gen is None or self.gen.rack is None:
+            return None
+        return self.gen.rack.recent(n)
+
     def close(self):
         self.stop()
         try:
@@ -147,6 +153,9 @@ class RemoteBackend:
 
     def stop(self):
         self.act("stop")
+
+    def audio_tap(self, n):
+        return None          # the show does not stream audio to the console
 
     def close(self):
         pass

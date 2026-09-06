@@ -62,6 +62,10 @@ class SynthRack:
         self._kicks = []            # recent kick onsets for the duck
         self.has_kick = "kick" in self.slots
         self.stats = {"notes": 0, "peak": 0.0, "blocks": 0}
+        # Monitor ring (4 s) for scopes: the render thread writes, a GUI
+        # reads - a torn read is a torn picture, never a crash.
+        self._mon = np.zeros((RATE * 4, 2), dtype=np.float32)
+        self._mon_w = 0
 
     # -- control-thread API --------------------------------------------------
     def schedule(self, events):
@@ -196,12 +200,30 @@ class SynthRack:
             self._gain = float(ramp[-1])
             if self._gain <= 0.0:
                 self.done = True
+        L = self._mon.shape[0]
+        w = self._mon_w % L
+        end = w + n
+        if end <= L:
+            self._mon[w:end] = out
+        else:
+            k = L - w
+            self._mon[w:] = out[:k]; self._mon[:end - L] = out[k:]
+        self._mon_w += n
         self.clock = c1
         self.stats["blocks"] += 1
         pk = float(np.abs(out).max()) if n else 0.0
         if pk > self.stats["peak"]:
             self.stats["peak"] = pk
         return out
+
+    def recent(self, n):
+        """The last n rendered stereo samples (oldest first), for scopes."""
+        L = self._mon.shape[0]
+        n = int(min(max(1, n), L))
+        w = self._mon_w % L
+        if n <= w:
+            return self._mon[w - n:w].copy()
+        return np.concatenate([self._mon[L - (n - w):], self._mon[:w]]).copy()
 
     # AudioEngine track protocol
     def read(self, n):
