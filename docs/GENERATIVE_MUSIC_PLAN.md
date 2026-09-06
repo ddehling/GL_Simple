@@ -203,6 +203,16 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
   grid facts (tempo, beat length, first downbeat, swing, kind), the script describes it as
   `kick:x...x...x...x...`, the recreation's kit plays exactly those hits (`Drums.override`), and
   the rhythm term of the score compares the patterns, not just onset counts (example 83 -> 88).
+- **Play and compare** (operator): the Analysis tab plays the original and the recreation
+  (`tools/gen/console/player.py`, sounddevice, independent of the show engine) with A/B switching
+  that keeps the position, seek by clicking, Space to pause; a `CompareView` stacks
+  high-resolution log-frequency spectrograms (`lib/gen/analysis/spectro.py`: 256 log bins
+  30 Hz-16 kHz, 86 fps, cached as .spec.npz) on one time axis with the recreation shifted so its
+  bar 0 sits under the original's first downbeat, bar ticks, section markers, the play cursor,
+  wheel zoom and drag scroll.
+- **Hosted instruments off the main thread**: pedalboard refuses `reset=True` outside the main
+  thread; instruments render with `reset=False` and the previous batch's tail is flushed with
+  silence first (the console error "Plugin ... must be reloaded on the main thread" was this).
 - **allin1** (the DJ planner's structure model) does NOT run in this venv: it needs natten < 0.15,
   which has no build for torch 2.11 on Windows (the planner runs it under WSL). `ingest` tries it
   and falls back to the DJ segmentation silently (GEN_STRUCTURE=0 skips the attempt).

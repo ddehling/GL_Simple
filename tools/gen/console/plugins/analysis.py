@@ -25,10 +25,10 @@ import threading
 import traceback
 
 import numpy as np
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont
+from PyQt6.QtCore import Qt, QRectF, QRect
+from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QImage, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit, QFileDialog,
-                             QTableWidget, QTableWidgetItem, QPlainTextEdit, QProgressBar, QSplitter, QCheckBox)
+                             QTableWidget, QTableWidgetItem, QPlainTextEdit, QProgressBar, QSplitter, QCheckBox, QSlider)
 
 COLS = ["section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes"]
 SECTION_COLOURS = {"intro": "#4a5a7a", "groove": "#3f7a5a", "build": "#a8772a", "drop": "#b03a3a", "break": "#5a4a8a",
@@ -114,6 +114,159 @@ class ScoreStrip(QWidget):
         qp.end()
 
 
+class CompareView(QWidget):
+    """Original over recreation: high-resolution log-frequency spectrograms
+    (lib/gen/analysis/spectro.py) on one time axis, the recreation shifted
+    so its bar 0 sits under the original's first downbeat; bar ticks,
+    section labels, the play cursor. Click seeks, the wheel zooms, drag
+    scrolls, the view follows the cursor while playing."""
+
+    def __init__(self, on_seek=None):
+        super().__init__()
+        self.setMinimumHeight(260)
+        self.a = None            # {"rgb","fps","seconds"} original
+        self.b = None            # recreation
+        self.offset_s = 0.0      # recreation display offset (= original first downbeat)
+        self.bars = []           # original bar times (s)
+        self.sections = []       # [(display_s, label)]
+        self.window_s = 60.0
+        self.view_start = 0.0
+        self.cursor_s = 0.0      # display time
+        self.which = "a"
+        self.follow = True
+        self.on_seek = on_seek
+        self._drag = None
+        self.setMouseTracking(True)
+
+    def set_sources(self, a=None, b=None, offset_s=None, bars=None, sections=None):
+        if a is not None:
+            self.a = a
+        if b is not None:
+            self.b = b
+        if offset_s is not None:
+            self.offset_s = float(offset_s)
+        if bars is not None:
+            self.bars = list(bars)
+        if sections is not None:
+            self.sections = list(sections)
+        self.update()
+
+    def total_s(self):
+        return max((self.a or {}).get("seconds", 0.0), (self.b or {}).get("seconds", 0.0) + self.offset_s, 1.0)
+
+    def set_cursor(self, display_s, which):
+        self.cursor_s = float(display_s)
+        self.which = which
+        if self.follow and (display_s < self.view_start or display_s > self.view_start + self.window_s * 0.92):
+            self.view_start = max(0.0, display_s - self.window_s * 0.15)
+        self.update()
+
+    def _x(self, t, w):
+        return (t - self.view_start) / self.window_s * w
+
+    def _row(self, qp, src, rect, label, w):
+        qp.fillRect(rect, QColor("#0b0c10"))
+        if src is not None and src.get("rgb") is not None:
+            fps = float(src["fps"])
+            shift = self.offset_s if label == "recreation" else 0.0
+            f0 = int(max(0.0, (self.view_start - shift) * fps))
+            f1 = int(min(src["rgb"].shape[0], (self.view_start + self.window_s - shift) * fps))
+            if f1 > f0:
+                sl = np.ascontiguousarray(src["rgb"][f0:f1].transpose(1, 0, 2)[::-1])      # (bins, frames, 3), top = high
+                img = QImage(sl.data, sl.shape[1], sl.shape[0], sl.shape[1] * 3, QImage.Format.Format_RGB888)
+                x0 = self._x(f0 / fps + shift, w)
+                x1 = self._x(f1 / fps + shift, w)
+                qp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                qp.drawImage(QRectF(x0, rect.top(), max(1.0, x1 - x0), rect.height()), img)
+        qp.setPen(QPen(QColor("#e8eaf0"))); qp.drawText(int(rect.left()) + 6, int(rect.top()) + 12, label)
+        # frequency guide
+        qp.setPen(QPen(QColor("#5a606c")))
+        for hz, frac in ((100, 0.19), (1000, 0.56), (10000, 0.92)):
+            y = rect.bottom() - frac * rect.height()
+            qp.drawText(int(rect.right()) - 34, int(y), f"{hz // 1000}k" if hz >= 1000 else str(hz))
+
+    def paintEvent(self, ev):
+        qp = QPainter(self)
+        w, h = self.width(), self.height()
+        qp.fillRect(0, 0, w, h, QColor("#16181d"))
+        font = QFont(); font.setPointSize(8); qp.setFont(font)
+        top_h = 16
+        row_h = (h - top_h - 18) / 2.0
+        ra = QRectF(0, top_h, w, row_h - 2)
+        rb = QRectF(0, top_h + row_h, w, row_h - 2)
+        self._row(qp, self.a, ra, "original", w)
+        self._row(qp, self.b, rb, "recreation", w)
+        # bars and sections
+        bar_len = None
+        if len(self.bars) > 1:
+            bar_len = float(np.median(np.diff(self.bars)))
+        if bar_len and bar_len > 0:
+            px_per_bar = bar_len / self.window_s * w
+            every = 1 if px_per_bar > 40 else (4 if px_per_bar > 10 else 16)
+            for i, t in enumerate(self.bars):
+                if t < self.view_start - bar_len or t > self.view_start + self.window_s:
+                    continue
+                if i % every:
+                    continue
+                x = self._x(t, w)
+                qp.setPen(QPen(QColor(255, 255, 255, 70 if i % 4 else 130)))
+                qp.drawLine(int(x), top_h, int(x), h - 18)
+                if px_per_bar * every > 28:
+                    qp.setPen(QPen(QColor("#9aa0ac"))); qp.drawText(int(x) + 2, h - 6, str(i))
+        for t, label in self.sections:
+            if self.view_start - 1 <= t <= self.view_start + self.window_s:
+                x = self._x(t, w)
+                qp.setPen(QPen(QColor("#ffd166"), 2)); qp.drawLine(int(x), 0, int(x), top_h)
+                qp.drawText(int(x) + 3, 11, label)
+        # time ruler
+        qp.setPen(QPen(QColor("#5a606c")))
+        step = 5 if self.window_s <= 60 else (30 if self.window_s <= 400 else 60)
+        t = int(self.view_start // step) * step
+        while t < self.view_start + self.window_s:
+            x = self._x(t, w)
+            qp.drawText(int(x) + 2, top_h + 12 + 0, "")
+            t += step
+        # cursor
+        xc = self._x(self.cursor_s, w)
+        qp.setPen(QPen(QColor("#ffffff"), 2)); qp.drawLine(int(xc), top_h, int(xc), h - 18)
+        qp.setPen(QPen(QColor("#e8eaf0")))
+        qp.drawText(int(xc) + 4, h - 22, f"{int(self.cursor_s // 60)}:{self.cursor_s % 60:05.2f}  ({'A' if self.which == 'a' else 'B'})")
+        qp.end()
+
+    # -- interaction ---------------------------------------------------------------
+    def _t_at(self, x):
+        return self.view_start + x / max(1, self.width()) * self.window_s
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._drag = (ev.position().x(), self.view_start, False)
+            t = self._t_at(ev.position().x())
+            row = "b" if ev.position().y() > self.height() / 2 else "a"
+            if self.on_seek:
+                self.on_seek(t, row)
+
+    def mouseMoveEvent(self, ev):
+        if self._drag and (ev.buttons() & Qt.MouseButton.LeftButton):
+            x0, vs0, _ = self._drag
+            dx = ev.position().x() - x0
+            if abs(dx) > 4:
+                self.view_start = max(0.0, vs0 - dx / max(1, self.width()) * self.window_s)
+                self._drag = (x0, vs0, True)
+                self.update()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag = None
+
+    def wheelEvent(self, ev):
+        t = self._t_at(ev.position().x())
+        factor = 0.8 if ev.angleDelta().y() > 0 else 1.25
+        new_w = float(max(4.0, min(self.total_s(), self.window_s * factor)))
+        frac = (t - self.view_start) / self.window_s
+        self.window_s = new_w
+        self.view_start = max(0.0, t - frac * new_w)
+        self.update()
+
+
 class BeatGrid(QWidget):
     """The beat as evidence: the selected section's folded onset strengths
     (kick / snare / hat, 16 steps) with the hits the script keeps marked,
@@ -189,6 +342,24 @@ class AnalysisPage(QWidget):
         lay.addWidget(self.bar)
         self.info = QLabel(""); lay.addWidget(self.info)
         self.strip = ScoreStrip(); lay.addWidget(self.strip)
+        # compare: original over recreation, with transport
+        tr = QHBoxLayout()
+        self.b_a = QPushButton("▶ A original"); self.b_a.clicked.connect(lambda: self.play_src("a")); tr.addWidget(self.b_a)
+        self.b_b = QPushButton("▶ B recreation"); self.b_b.clicked.connect(lambda: self.play_src("b")); tr.addWidget(self.b_b)
+        self.b_ab = QPushButton("A/B"); self.b_ab.clicked.connect(self.ab); tr.addWidget(self.b_ab)
+        self.b_pause = QPushButton("⏸"); self.b_pause.clicked.connect(self.pause); tr.addWidget(self.b_pause)
+        self.b_stop = QPushButton("■"); self.b_stop.clicked.connect(self.stop); tr.addWidget(self.b_stop)
+        tr.addWidget(QLabel("zoom"))
+        self.zoom = QSlider(Qt.Orientation.Horizontal); self.zoom.setRange(4, 600); self.zoom.setValue(60); self.zoom.setMaximumWidth(200)
+        self.zoom.valueChanged.connect(self._zoom); tr.addWidget(self.zoom)
+        self.follow = QCheckBox("follow"); self.follow.setChecked(True); self.follow.toggled.connect(lambda v: setattr(self.compare, "follow", v)); tr.addWidget(self.follow)
+        self.pos_lbl = QLabel("0:00.00"); tr.addWidget(self.pos_lbl); tr.addStretch(1)
+        lay.addLayout(tr)
+        self.compare = CompareView(on_seek=self.seek); lay.addWidget(self.compare, 2)
+        from tools.gen.console.player import WavPlayer
+        self.player = WavPlayer()
+        QShortcut(QKeySequence("Space"), self, activated=self.toggle_play)
+        QShortcut(QKeySequence("Tab"), self.compare, activated=self.ab)
         self.beat = BeatGrid(); lay.addWidget(self.beat)
         split = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableWidget(0, len(COLS)); self.table.setHorizontalHeaderLabels(COLS)
@@ -295,6 +466,79 @@ class AnalysisPage(QWidget):
         from lib.gen import script as S
         self.cmds.setPlainText("\n".join(f"bar {b:4d}  {a:10s} {json.dumps(v) if not isinstance(v, str) else v}" for b, a, v in S.to_actions(sc)) if sc.get("sections") else "")
 
+    # -- playback + compare ---------------------------------------------------------
+    def _load_compare(self, which, path):
+        """Worker: spectrogram + audio for one side into the compare view and the player."""
+        from lib.gen.analysis import spectro
+        if not path or not os.path.exists(path):
+            return
+        d = spectro.prepare(path)
+        self.player.load(which, d["stereo"])
+        first_bar = float(((self.result or {}).get("analysis") or {}).get("first_bar_s", 0.0))
+        bars = (self.result or {}).get("bars") or []
+        sections = []
+        if self.script:
+            bar = 0
+            for e in self.script["sections"]:
+                t = bars[bar] if bar < len(bars) else first_bar + bar * (4 * 60.0 / float(self.script["bpm"]))
+                sections.append((float(t), e["section"]))
+                bar += e["bars"]
+        side = {"rgb": d["rgb"], "fps": d["fps"], "seconds": d["seconds"]}
+        self._compare_pending = (which, side, first_bar, bars, sections)
+
+    def _source_path(self):
+        if self.result and self.result.get("source"):
+            return self.result["source"]
+        p = self.path.text().strip()
+        return p if os.path.isfile(p) else None
+
+    def play_src(self, which):
+        if which not in self.player.sources:
+            self.msg = "nothing loaded for " + ("the original" if which == "a" else "the recreation")
+            return
+        if not self.player.available():
+            self.msg = "no output device: " + self.player.error[:60]
+            return
+        self.player.play(which)
+
+    def ab(self):
+        other = "b" if self.player.current == "a" else "a"
+        if other in self.player.sources:
+            # keep the DISPLAY position: the recreation runs offset by the first downbeat
+            t_disp = self._display_pos()
+            self.player.switch(other)
+            self.player.seek(t_disp - (self.compare.offset_s if other == "b" else 0.0))
+            self.compare.which = other
+
+    def pause(self):
+        self.player.pause()
+
+    def stop(self):
+        self.player.stop()
+
+    def toggle_play(self):
+        if self.player.playing:
+            self.player.pause()
+        elif self.player.current in self.player.sources:
+            self.play_src(self.player.current)
+
+    def seek(self, display_s, row):
+        which = row if row in self.player.sources else (self.player.current or "a")
+        was = self.player.playing
+        self.player.switch(which)
+        self.player.seek(display_s - (self.compare.offset_s if which == "b" else 0.0))
+        self.compare.which = which
+        if was:
+            self.player.play(which)
+        self.compare.set_cursor(display_s, which)
+
+    def _display_pos(self):
+        return self.player.position() + (self.compare.offset_s if self.player.current == "b" else 0.0)
+
+    def _zoom(self, v):
+        self.compare.window_s = float(v)
+        self.compare.update()
+
     # -- actions --------------------------------------------------------------
     def browse(self):
         p, _ = QFileDialog.getOpenFileName(self, "Song", "", "Audio (*.wav *.flac *.mp3 *.ogg *.m4a *.aiff);;All files (*)")
@@ -328,7 +572,9 @@ class AnalysisPage(QWidget):
                            "sections": res["analysis"]["sections"], "source": os.path.abspath(p)}, fh)
             self.recon_feats = None
             self.report = None
+            self.result["source"] = os.path.abspath(p)
             self._pending = "table"
+            self._load_compare("a", os.path.abspath(p))
         self._run("ingest", work)
 
     def recreate(self):
@@ -350,6 +596,7 @@ class AnalysisPage(QWidget):
             self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), sc["bpm"], 0.0)
             self.report = None
             self._pending = "strip"
+            self._load_compare("b", os.path.join(folder, "recreation.wav"))
         self._run("recreate", work)
 
     def score(self):
@@ -396,6 +643,7 @@ class AnalysisPage(QWidget):
             except Exception:  # noqa: BLE001
                 pass
             self._pending = "table+strip"
+            self._load_compare("b", os.path.join(folder, "recreation_tuned.wav"))
         self._run("tune", work)
 
     def save(self):
@@ -439,10 +687,33 @@ class AnalysisPage(QWidget):
         self._fill_table()
         self.strip.set(orig=(self.result or {}).get("features", []), recon=[], report=None, script=self.script)
         self.msg = f"opened {cand}"
+        if self.result is not None:
+            self.result["source"] = saved.get("source") if os.path.exists(feats) else None
+        src = self._source_path() or os.path.join(self.folder, "original.wav")
+        rec = os.path.join(self.folder, "recreation_tuned.wav")
+        if not os.path.exists(rec):
+            rec = os.path.join(self.folder, "recreation.wav")
+
+        def work():
+            self._load_compare("a", src)
+            self._load_compare("b", rec)
+        self._run("load audio", work)
 
     # -- refresh (console timer) ----------------------------------------------
+    _compare_pending = None
+
     def refresh(self, state):
         self.bar.setValue(int(100 * self.progress))
+        if self._compare_pending is not None:
+            which, side, first_bar, bars, sections = self._compare_pending
+            self._compare_pending = None
+            self.compare.set_sources(a=side if which == "a" else None, b=side if which == "b" else None,
+                                     offset_s=first_bar, bars=bars, sections=sections)
+            self.compare.window_s = float(min(self.compare.total_s(), 60.0))
+        if self.player.sources:
+            t = self._display_pos()
+            self.compare.set_cursor(t, self.player.current or "a")
+            self.pos_lbl.setText(f"{int(t // 60)}:{t % 60:05.2f}  {'A' if self.player.current == 'a' else 'B'}{' ▶' if self.player.playing else ''}")
         if self._pending == "table":
             self._pending = None
             self._fill_table()
