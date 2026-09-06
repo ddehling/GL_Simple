@@ -147,7 +147,7 @@ def main():
         web = WebController(control_dict={}, port=0, service_name="test")
         client = web.app.test_client()
         r = client.get("/gen")
-        check(r.status_code == 200 and b"Lucifera Gen" in r.data and b"gen_action" in r.data, "/gen renders the page")
+        check(r.status_code == 200 and b"Lucifera Gen" in r.data and b"/static/js/gen/index.js" in r.data, "/gen renders the page shell")
         r = client.get("/api/gen/active")
         check(r.status_code == 200 and r.get_json()["available"] is False, "/api/gen/active idle before the show reports")
         web.set("gen_info", idle_info({"style": "groove"}))
