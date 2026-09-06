@@ -11,7 +11,12 @@ native widgets and drives either this machine or the show box.
     # Dry run with no sound device (composer runs, nothing is played):
     python tools/gen_console.py --headless
 
-Shortcuts: Space start/stop · Esc stop · Ctrl+Q quit.
+    # Start unconnected and choose on the Setup tab:
+    python tools/gen_console.py --setup
+
+Tabs: Play · Steer · Scenes · Patterns · Log · Nights (plugin) · Setup.
+Shortcuts: Space start/stop · Esc stop · 1-9 gestures · H hold · R new ideas ·
+Ctrl+K ask · Ctrl+S save scene · Ctrl+1..7 tabs · F1 list · Ctrl+Q quit.
 """
 import argparse
 import os
@@ -32,8 +37,12 @@ def main():
     ap.add_argument("--soundfont", default=None)
     ap.add_argument("--set-length", type=float, default=10800.0)
     ap.add_argument("--autostart", action="store_true")
+    ap.add_argument("--no-plugins", action="store_true")
+    ap.add_argument("--setup", action="store_true", help="start unconnected on the Setup tab (choose where to play)")
     args = ap.parse_args()
     from tools.gen.console.app import run
+    if args.setup:
+        return run(None, sys.argv, plugins=not args.no_plugins)
     if args.remote:
         from tools.gen.console.backend import RemoteBackend
         backend = RemoteBackend(args.remote)
@@ -44,7 +53,7 @@ def main():
                                 "set_length_s": args.set_length, "log_dir": "logs"}, audio=not args.headless)
         if args.autostart:
             backend.start()
-    return run(backend, sys.argv)
+    return run(backend, sys.argv, plugins=not args.no_plugins)
 
 
 if __name__ == "__main__":

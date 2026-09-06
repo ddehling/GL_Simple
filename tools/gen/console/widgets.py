@@ -237,6 +237,7 @@ class Countdown(GenWidget):
 
     def update_state(self, s):
         v = s.get(self.spec["key"])
+        self.setVisible(v is not None)
         if v is None:
             self.lab.setText(""); self.lab.setProperty("hot", False)
         else:

@@ -17,7 +17,7 @@ function showWhen(rule, live) {
 function buildCard(card) {
     const cardEl = el('div', 'card');
     cardEl.dataset.id = card.id;
-    if (card.kind === 'banner' || card.kind === 'transport') cardEl.classList.add('span', card.kind);
+    if (card.kind === 'banner' || card.kind === 'transport' || card.kind === 'strip') cardEl.classList.add('span', card.kind);
     else {
         cardEl.classList.add('section-panel');
         if (card.col) cardEl.classList.add('col' + card.col);

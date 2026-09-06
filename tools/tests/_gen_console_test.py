@@ -1,6 +1,11 @@
 """Gate for the NATIVE console (tools/gen_console.py, tools/gen/console/):
 the PyQt6 renderer of the /gen surface spec. Runs offscreen.
 
+  0. STRUCTURE: tabs come from the spec (plus Setup, plus plugin tabs);
+     header strip = cards in no tab; menus are not duplicated; the console
+     starts on Setup when unconnected and lands on Play after connecting;
+     plugins load and register shortcuts / tabs; the plugin API works.
+
   1. REGISTRY PARITY: every widget type the spec uses has a Qt class, and
      the spec validates against the Qt registry (same validator as web).
   2. RENDER: the window builds every card from the spec; idle vs live
@@ -41,8 +46,27 @@ def main():
     from tools.gen.console.widgets import REGISTRY
     app = QApplication.instance() or QApplication([])
 
-    print("== registry parity")
+    print("== structure")
     spec = surface_spec()
+    w0 = ConsoleWindow(None, refresh_ms=10 ** 7); w0.show()
+    names = [w0.tabs.tabText(i) for i in range(w0.tabs.count())]
+    check(names[:5] == [t["label"] for t in spec["tabs"]] and names[-1] == "Setup" and "Nights" in names, f"tabs from spec + plugins + Setup: {names}")
+    check(w0.tabs.tabText(w0.tabs.currentIndex()) == "Setup", "unconnected console starts on Setup")
+    check([a.text() for a in w0.menuBar().actions()] == ["&File", "&View", "&Help"], "menus built once")
+    check(set(w0.plugins) >= {"shortcuts", "nightlog"} and len(w0.shortcuts()) >= 12, f"plugins {w0.plugins}, {len(w0.shortcuts())} shortcuts")
+    strip_ids = [c.card["id"] for c in w0.strip_cards]
+    check(strip_ids == ["banner", "transport", "nowstrip"], f"header strip = untabbed cards {strip_ids}")
+    from PyQt6.QtWidgets import QLabel
+    seen = []
+    w0.on_state(lambda st: seen.append(st)); w0.add_status(QLabel("x")); w0.add_shortcut("Ctrl+Shift+T", lambda: None, "test")
+    tabw = w0.add_tab("Extra", QLabel("plugin tab")); w0.refresh()
+    check(seen and w0.tabs.indexOf(tabw) == w0.tabs.count() - 2 and any(l == "test" for _, l in w0.shortcuts()), "plugin API: on_state, add_status, add_shortcut, add_tab (before Setup)")
+    check(w0.ctx.emit("start") is False and "Connect first" in w0.sb_msg.text(), "actions before connecting are refused with a hint")
+    w0.connect_local(audio=False, cfg={"style": "groove", "bpm": 124, "key": "8A", "seed": 4, "log_dir": tempfile.mkdtemp()})
+    check(w0.tabs.tabText(w0.tabs.currentIndex()) == "Play" and w0.backend is not None, "connecting lands on Play")
+    w0.close()
+
+    print("== registry parity")
     used = {w["type"] for c in spec["cards"] for w in c["widgets"]}
     check(used <= set(REGISTRY), f"Qt registry covers all {len(used)} widget types ({sorted(used - set(REGISTRY))} missing)")
     logdir = tempfile.mkdtemp()
@@ -55,12 +79,14 @@ def main():
     print("== render")
     check(len(win.cards) == len(spec["cards"]), f"{len(win.cards)} cards built")
     win.refresh()
-    vis_idle = {c.card["id"] for c in win.cards if c.isVisible()}
+    # cards in non-current tabs are not "visible" to Qt; what matters is the
+    # explicit show/hide the spec rule drives, so test isHidden().
+    vis_idle = {c.card["id"] for c in win.cards if not c.isHidden()}
     check("now" not in vis_idle and "steer" in vis_idle and "transport" in vis_idle, f"idle visibility follows show_when: {sorted(vis_idle)}")
     be.act("start"); be.pump(3.0); win.refresh()
     live = be.status()
     check(live["active"], "backend started from an action")
-    vis_live = {c.card["id"] for c in win.cards if c.isVisible()}
+    vis_live = {c.card["id"] for c in win.cards if not c.isHidden()}
     check("now" in vis_live and "direct" in vis_live, f"live visibility: {sorted(vis_live)}")
     check(validate_surface(spec, set(live) | set(idle), widget_types=set(REGISTRY)) == [], "spec valid against live+idle status with the Qt registry")
 

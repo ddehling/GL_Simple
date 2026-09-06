@@ -28,6 +28,17 @@ SURFACE = {
     "version": SURFACE_VERSION,
     "title": "Lucifera Gen",
     "tab": "Gen",
+    # Renderers that support tabs (the native console) group cards by tab;
+    # cards not listed in any tab (banner, transport, nowstrip) form the
+    # always-visible header strip. Renderers without tabs (the web page)
+    # simply flow the cards in order.
+    "tabs": [
+        {"id": "play", "label": "Play", "cards": ["now", "direct"], "hint": "what is playing, and how to steer it musically"},
+        {"id": "steer", "label": "Steer", "cards": ["steer", "layers"], "hint": "the parameters underneath"},
+        {"id": "scenes", "label": "Scenes", "cards": ["scenes"], "hint": "save and recall the whole steering surface"},
+        {"id": "patterns", "label": "Patterns", "cards": ["pattern"], "hint": "write material as Strudel code"},
+        {"id": "log", "label": "Log", "cards": ["timeline", "health"], "hint": "what happened, and how the engine is doing"},
+    ],
     "cards": [
         {"id": "banner", "kind": "banner", "widgets": [{"type": "banner"}]},
         {"id": "transport", "kind": "transport", "sticky": True, "widgets": [
@@ -39,12 +50,14 @@ SURFACE = {
                 {"label": "🎲 NEW IDEAS", "action": "reseed", "show_when": "live"},
             ]},
         ]},
-        {"id": "now", "title": "Now", "col": 1, "show_when": "live", "widgets": [
+        {"id": "nowstrip", "kind": "strip", "show_when": "live", "widgets": [
             {"type": "headline", "key": "section", "sub_keys": ["bar", "beat"], "arrow_key": "section_requested"},
             {"type": "keyline", "keys": ["key", "camelot", "bpm", "chord_now", "lead_op"]},
             {"type": "beats", "key": "beat"},
-            {"type": "chords", "key": "chords", "phase_key": "phrase_phase"},
             {"type": "countdown", "key": "drop_eta", "label": "drop in", "hot_below": 8},
+        ]},
+        {"id": "now", "title": "Phrase", "hint": "this 4-bar phrase and where the night is", "col": 1, "show_when": "live", "widgets": [
+            {"type": "chords", "key": "chords", "phase_key": "phrase_phase"},
             {"type": "meter", "label": "section", "done_key": "section_bars_left", "total_key": "section_bars",
              "inverse": True, "right_keys": ["section_bars_left", "section_next"], "right_format": "{0} bars left · next: {1}", "palette": "section"},
             {"type": "meter", "key": "energy", "label": "energy", "palette": "energy", "right_keys": ["energy", "energy_bias"], "right_format": "{0:.2f} (bias {1:+.2f})"},
@@ -148,6 +161,22 @@ def validate_surface(spec, status_keys, actions=GEN_ACTIONS, widget_types=None):
     problems = []
     widget_types = registered_widget_types() if widget_types is None else set(widget_types)
     ids = set()
+    card_ids = [c.get("id") for c in spec.get("cards", [])]
+    strip = {c.get("id") for c in spec.get("cards", []) if c.get("kind") in ("banner", "transport", "strip")}
+    seen_in_tab = {}
+    for tab in spec.get("tabs", []):
+        if not tab.get("id") or not tab.get("label"):
+            problems.append(f"tab without id/label: {tab}")
+        for cid in tab.get("cards", []):
+            if cid not in card_ids:
+                problems.append(f"tab {tab.get('id')}: unknown card {cid!r}")
+            if cid in seen_in_tab:
+                problems.append(f"card {cid!r} in two tabs ({seen_in_tab[cid]}, {tab.get('id')})")
+            seen_in_tab[cid] = tab.get("id")
+    if spec.get("tabs"):
+        for cid in card_ids:
+            if cid not in strip and cid not in seen_in_tab:
+                problems.append(f"card {cid!r} is in no tab and not a strip card")
     for card in spec.get("cards", []):
         cid = card.get("id")
         if not cid or cid in ids:

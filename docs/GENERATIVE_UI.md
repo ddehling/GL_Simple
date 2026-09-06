@@ -9,11 +9,37 @@ stay in parity (the gates enforce it):
 | **Native console (PyQt6)** — the primary surface | `python tools/gen_console.py` | a laptop / the show box desktop | this machine's audio (`LocalBackend`), or the show over HTTP (`--remote URL`: `GET /api/gen/status`, `POST /api/gen/action`) |
 | Web page | `/gen` in the show's panel, or `tools/gen/gen_server.py` | any phone/tablet on the venue Wi-Fi | the show's socket |
 
-`tools/gen/console/widgets.py` is the native registry (`@register('type')`, class
-with `build()`/`update_state()`), `tools/gen/console/app.py` the window (two column
-stacks, foldable cards, 10 Hz refresh, Space/Esc/Ctrl+Q). Adding a widget type means
-one class there **and** one module in the web registry, or the console gate fails;
-adding a control or a card is still one spec entry that both renderers pick up.
+### Console structure and user flow
+
+```
+ menu bar        File (Play here / Dry run / Connect to show / Quit) · View (tabs, Ctrl+1..) · Help (F1)
+ header strip    banner · transport (START/STOP/END SET/HOLD/NEW IDEAS) · now-strip (section, bar, beat, key, bpm, chord, beats, drop countdown)
+ tabs            Play (Phrase + Direct) · Steer · Scenes · Patterns · Log · Nights (plugin) · Setup
+ status bar      backend · style/section/bar/bpm/key/uptime · last action · engine health
+```
+
+First run: the console opens on **Setup** ("Where should the music play?": this machine,
+dry run, or the show box by URL). Connecting jumps to **Play**, which is the night: what
+is playing, the gesture chips, the ask box, thumbs. Everything else is one tab away and
+never needed mid-set. Actions sent before connecting are refused with a hint.
+
+**Tabs come from the spec** (`SURFACE["tabs"]`: id, label, hint, card ids). Cards in no
+tab form the header strip. The validator checks every tab references known cards and
+every non-strip card is in exactly one tab. The web renderer ignores tabs and flows the
+cards, so the two surfaces stay in parity from one spec.
+
+**Widgets**: `tools/gen/console/widgets.py` is the native registry (`@register('type')`,
+class with `build()`/`update_state()`). Adding a widget type means one class there **and**
+one module in the web registry, or the console gate fails; adding a control or a card is
+one spec entry that both renderers pick up.
+
+**Plugins** (`tools/gen/console/plugins/<name>.py`, discovered automatically, `--no-plugins`
+to skip): a module with `def register(console)`. The console offers `add_tab(title,
+widget)` (widget.refresh(state) while visible), `add_shortcut(seq, fn, label)` (listed under
+F1), `add_status(label)`, `on_state(fn)`, `add_menu_action(menu, text, fn, shortcut)`,
+`ctx.emit(action, value)`, and `backend`/`state`. Two ship as the pattern:
+`shortcuts.py` (1-9 gestures, H hold, R new ideas, Ctrl+K ask, Ctrl+S save scene, F1
+help) and `nightlog.py` (a Nights tab that reads `logs/gen_*.jsonl` with filters).
 
 ## The web renderer
 
