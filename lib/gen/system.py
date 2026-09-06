@@ -272,6 +272,10 @@ class GenSystem:
         self._log_tail.append(rec)
         self._log(rec)
         f = self.composer.form
+        # a build is starting: ask for a hook written over THIS build's chords
+        if p.section == "build" and self.hooks.enabled and p.meta.get("lead_op") in ("theme_make", None) and f.bars_in <= p.nbars:
+            self.hooks.request(self.style_name, self.composer.style.get("label", self.style_name), self.composer.bpm,
+                               self.composer.key.name, n=2, chords=[c[1] for c in p.chords])
         # End-of-set detection: ending requested and the outro has run its
         # course (the form re-drew 'outro' after an outro) -> stop after it.
         if f.ending and self._end_at is None:

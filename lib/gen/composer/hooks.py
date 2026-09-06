@@ -112,11 +112,14 @@ class HookAuthor:
             raise RuntimeError((r.stderr or r.stdout or "")[:200])
         return r.stdout
 
-    def request(self, style: str, label: str, bpm: float, key: str, n: int = 4, hint: str = "", block=False):
-        """Ask for n hooks in the background (or synchronously with block=True)."""
+    def request(self, style: str, label: str, bpm: float, key: str, n: int = 4, hint: str = "", block=False, chords=None):
+        """Ask for n hooks in the background (or synchronously with block=True).
+        chords: the section's chord labels, one per bar - the hook is written over them."""
         if not self.enabled:
             return False
-        k = (style, key)
+        if chords:
+            hint = (hint + " " if hint else "") + f"The chords under the hook, one per bar: {' | '.join(str(c) for c in chords)}. Land chord tones on the beats."
+        k = (style, key, tuple(chords) if chords else None)
         with self.lock:
             if k in self.pending:
                 return False

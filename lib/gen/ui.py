@@ -102,6 +102,7 @@ SURFACE = {
              "help": "Globals: energy, section, bar, key, bpm, phrase, chords. Sounds map to slots: bd sd/cp hh oh rim, bass lead pad arp keys. Ctrl+Enter evaluates."},
         ]},
         {"id": "timeline", "title": "Phrases", "col": 1, "foldable": True, "show_when": "live", "widgets": [
+            {"type": "timeline_strip", "key": "timeline", "height": 120, "window_s": 300},
             {"type": "phrase_log", "key": "log", "limit": 14},
         ]},
         {"id": "health", "title": "Health", "col": 2, "foldable": True, "folded": True, "show_when": "live", "widgets": [

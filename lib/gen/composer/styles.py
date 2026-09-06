@@ -355,4 +355,10 @@ STYLES = {
 def get_style(name: str) -> dict:
     if name not in STYLES:
         raise KeyError(f"unknown style {name!r}; have {sorted(STYLES)}")
-    return copy.deepcopy(STYLES[name])
+    st = copy.deepcopy(STYLES[name])
+    try:
+        from lib.gen.analysis import learn
+        st = learn.apply(name, st)          # data-derived adjustments from ingested songs (GEN_LEARNED=0 to skip)
+    except Exception:
+        pass
+    return st

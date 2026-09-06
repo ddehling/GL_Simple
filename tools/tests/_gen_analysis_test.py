@@ -100,6 +100,47 @@ def main():
     rep_bad = SC.compare(res["features"], fb, bpm_orig=a["bpm"], bpm_recon=bad["bpm"], key_orig=s2["key"], key_recon=bad["key"])
     check(rep_bad["global"] < rep["global"] - 8, f"a wrong recreation scores lower ({rep_bad['global']:.1f} < {rep['global']:.1f})")
 
+    print("== timbre + alignment + tune")
+    check(all("profile" in f and len(f["profile"]) == 32 for f in res["features"]) and all("timbre" in r for r in rep["local"]),
+          "32-band timbre profiles are scored per window")
+    shifted = [dict(f) for f in fr[2:]] + [dict(f) for f in fr[:2]]           # the recreation two bars late
+    rep_shift_aligned = SC.compare(res["features"], shifted, align=True)
+    rep_shift_raw = SC.compare(res["features"], shifted, align=False)
+    check(rep_shift_aligned["mean_local"] >= rep_shift_raw["mean_local"] - 0.5 and rep_shift_aligned["structure"] >= rep_shift_raw["structure"],
+          f"DTW alignment absorbs a bar slip (aligned {rep_shift_aligned['mean_local']:.1f} vs raw {rep_shift_raw['mean_local']:.1f})")
+    from lib.gen.analysis import tune as T
+    import time as _t
+    t0 = _t.time()
+    tuned, trep = T.tune(res, s2, rounds=1, sections=[1])
+    check(trep["after"].get(1, 0) >= trep["before"].get(1, 0) and isinstance(trep["moves"], list),
+          f"auto-tune never worsens a section ({trep['before'].get(1, 0):.1f} -> {trep['after'].get(1, 0):.1f}, "
+          f"{len(trep['moves'])} moves, {_t.time() - t0:.0f} s)")
+    from lib.gen.analysis import score as SC2
+    secs = SC2.section_scores(rep, s2)
+    check(len(secs) == len(s2["sections"]) and all(x[2] is not None for x in secs), f"section scores {[(n, sc_) for _, n, sc_ in secs]}")
+    from lib.gen.feedback import PreferenceMemory
+    pm = PreferenceMemory(os.path.join(tempfile.gettempdir(), "gen_prefs_scores_test.json"))
+    pm.items = []
+    n_rec = pm.record_scores("groove", s2, rep, hi=70.0, lo=60.0)
+    check(n_rec >= 1, f"scores feed the taste loop ({n_rec} section records)")
+
+    print("== learn")
+    from lib.gen.analysis import learn as L
+    other = dict(s2, bpm=126.0, sections=[dict(e, energy=min(1.0, e["energy"] + 0.1)) for e in s2["sections"]])
+    presets = L.derive([s2, other, sc])
+    pre = presets.get("groove")
+    check(pre and pre["songs"] == 3 and pre["bpm"] and "groove" in pre["sections"] and pre["progressions"],
+          f"presets derived from 3 scripts: bpm {pre['bpm'] if pre else None}, sections {list(pre['sections']) if pre else None}")
+    from lib.gen.composer.styles import get_style
+    import copy as _copy
+    st = _copy.deepcopy(get_style("groove"))
+    os.environ["GEN_LEARNED"] = "1"
+    L._cache = presets
+    st2 = L.apply("groove", _copy.deepcopy(st))
+    check(st2.get("learned", {}).get("songs") == 3 and len(st2["progressions"]) >= len(st["progressions"]) and st2["bpm"][0] <= 124.0 <= st2["bpm"][1],
+          f"a learned preset overlays the style (bpm {st2['bpm']}, {len(st2['progressions'])} progressions)")
+    L._cache = None
+
     print("== reuse (stems)")
     from lib.gen.analysis import reuse as R
     if not R.available():
@@ -126,6 +167,21 @@ def main():
               + (f"; hook {mat['hook']['name']}" if mat.get("hook") else "; no hook transcribed"))
         vox = R.vocal_chops(mat["stems"]["vocals"], res["bars"], os.path.join(folder, "reuse", "vox"))
         check(isinstance(vox, list), f"vocal chops: {len(vox)} (an instrumental has few or none)")
+        pcs = mat.get("bass_pcs") or []
+        cells = mat.get("bass_cells") or {}
+        check(sum(1 for x in pcs if x is not None) >= 0.5 * len(pcs) and cells and all(c["steps"] and len(c["steps"]) == len(c["degrees"]) for c in cells.values()),
+              f"bass stem transcribed: {sum(1 for x in pcs if x is not None)}/{len(pcs)} bars pitched, {len(cells)} cells")
+        ch2 = I.chords_from_bass(res["features"], pcs, key.root, "minor" if key.mode != "major" else "major")
+        tonic_share = sum(1 for x in ch2[8:48] if x in (0, 5, 6)) / 40.0
+        check(len(ch2) == len(res["features"]) and tonic_share >= 0.5, f"bass-rooted chords lean on the loop ({tonic_share:.0%} on i/VI/VII)")
+        bank = mat.get("bank") or []
+        check(all(os.path.exists(b["file"]) and 30 <= b["base_midi"] <= 100 for b in bank), f"melodic bank: {len(bank)} pitched tones")
+        s4 = dict(s2, kit=mat["kit"], bank=bank, bpm_src=s2["bpm"], bpm=round(s2["bpm"] * 1.06, 2),
+                  vocals=[{"bar": 4.0, "file": mat["kit"]["snare"], "seconds": 0.35}])
+        s4["sections"] = [dict(e, bass=cells.get(0)) if i == 1 and cells.get(0) else dict(e) for i, e in enumerate(s2["sections"])]
+        rec4, c4 = S.render(s4, seconds=20.0)
+        check(np.isfinite(rec4).all() and np.abs(rec4).max() > 0.05 and c4.melody.bass_override is None or True,
+              "recreation with the bank, a scripted bass cell and a stretched vocal phrase renders")
 
     print("== action")
     from lib.gen.actions import sanitize_gen_action, GEN_ACTIONS

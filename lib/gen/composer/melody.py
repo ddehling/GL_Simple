@@ -146,6 +146,7 @@ class Melody:
         self.theme = None
         self.last_motif = None
         self.hook_provider = None       # callable(rng) -> hook dict or None (lib/gen/composer/hooks.py)
+        self.bass_override = None       # {"steps": [...], "degrees": [...]} from a SongScript (the source's bass line)
         self.source = "walk"            # where the last new motif came from: hook | corpus | walk
         self._bass_cell = None
         self._bass_cell_left = 0
@@ -175,6 +176,19 @@ class Melody:
         S = self.steps
         rng = self.rng
         dens = self.style["density"].get("bass", 0.7)
+        if self.bass_override and self.bass_override.get("steps"):
+            oct_ = self.style["slots"]["bass"].get("octave", 1)
+            tonic = self.key.degree_midi(0, oct_)
+            out = []
+            steps = [int(x) for x in self.bass_override["steps"]]
+            degs = [int(x) for x in self.bass_override["degrees"]]
+            for i, (st, d) in enumerate(zip(steps, degs)):
+                if not (0 <= st < S):
+                    continue
+                nxt = steps[i + 1] if i + 1 < len(steps) else S
+                gate = max(0.5, (nxt - st) * 0.8)
+                out.append((st, self.key.degree_midi(d, oct_) if d >= -7 else tonic, (0.9 if st % 4 == 0 else 0.72), gate))
+            return out
         if self._bass_cell is None or self._bass_cell_left <= 0:
             n_hits = max(2, int(round((3 + 6 * energy) * dens)))
             from lib.gen.composer.rhythm import euclid

@@ -134,7 +134,7 @@ class AnalysisPage(QWidget):
         self.reuse = QCheckBox("reuse stems"); self.reuse.setToolTip("separate the song (demucs) and reuse its drums, vocal phrases and hook")
         top.addWidget(self.reuse)
         for text, fn in (("Browse", self.browse), ("Ingest", self.ingest), ("Recreate", self.recreate), ("Score", self.score),
-                         ("Save", self.save), ("Play", self.play), ("Open", self.open_script)):
+                         ("Tune", self.tune), ("Save", self.save), ("Play", self.play), ("Open", self.open_script)):
             b = QPushButton(text); b.clicked.connect(fn); top.addWidget(b)
         lay.addLayout(top)
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setTextVisible(False); self.bar.setMaximumHeight(6)
@@ -297,6 +297,36 @@ class AnalysisPage(QWidget):
             self._pending = "strip"
         self._run("score", work)
 
+    def tune(self):
+        sc = self._script_from_table()
+        if sc is None or self.result is None:
+            self.msg = "ingest first"
+            return
+        folder = self.folder or self._folder()
+
+        def work():
+            from lib.gen import script as S
+            from lib.gen.analysis import ingest as I, score as SC, tune as T
+
+            def prog(x, what):
+                self.progress = x; self.msg = f"tune: {what}"
+            tuned, rep = T.tune(self.result, sc, rounds=1, progress=prog)
+            self.script = tuned
+            S.save(tuned, os.path.join(folder, "script_tuned.yaml"))
+            audio, _ = S.render(tuned, out_path=os.path.join(folder, "recreation_tuned.wav"))
+            self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), tuned["bpm"], 0.0)
+            a = self.result["analysis"]
+            self.report = SC.compare(self.result["features"], self.recon_feats, bpm_orig=a["bpm"], bpm_recon=tuned["bpm"],
+                                     key_orig=tuned["key"], key_recon=tuned["key"])
+            self.report["tune"] = rep
+            try:
+                from lib.gen.feedback import PreferenceMemory
+                PreferenceMemory(os.path.join("logs", "gen_prefs.json")).record_scores(tuned["style"], tuned, self.report)
+            except Exception:  # noqa: BLE001
+                pass
+            self._pending = "table+strip"
+        self._run("tune", work)
+
     def save(self):
         sc = self._script_from_table()
         if sc is None:
@@ -354,7 +384,10 @@ class AnalysisPage(QWidget):
                               f"(key conf {a['key_conf']:.2f}, tempo conf {a['bpm_conf']:.2f}), {len(self.script['sections'])} sections, "
                               f"{a['duration_s']:.0f} s{mat}")
             self.strip.set(orig=self.result["features"], recon=[], report=None, script=self.script)
-        elif self._pending == "strip":
+        elif self._pending == "table+strip":
+            self._pending = "strip"
+            self._fill_table()
+        if self._pending == "strip":
             self._pending = None
             self.strip.set(orig=(self.result or {}).get("features", []), recon=self.recon_feats or [], report=self.report, script=self.script)
             if self.report:

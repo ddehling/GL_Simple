@@ -5,6 +5,9 @@ generator's own command language, recreate it, score the recreation.
     python tools/gen/analyze.py recreate logs/analysis/<name>   # renders recreation.wav from script.yaml (edit the yaml first if you like)
     python tools/gen/analyze.py score logs/analysis/<name>      # per-phrase and global scores -> score.json + a text report
     python tools/gen/analyze.py all song.wav                    # the three in a row
+    python tools/gen/analyze.py tune logs/analysis/<name>       # auto-tune the script against the score -> script_tuned.yaml + recreation_tuned.wav
+    python tools/gen/analyze.py batch <folder> [--reuse]        # ingest a whole folder, then learn style presets from every script
+    python tools/gen/analyze.py learn                           # (re)derive lib/gen/composer/data/learned_styles.json from logs/analysis/*/script.yaml
     python tools/gen/analyze.py play logs/analysis/<name>       # send the script to the running show (POST /api/gen/action)
 
 Scores: local = per 4-bar window (energy, spectrum, rhythm, harmony),
@@ -87,6 +90,70 @@ def do_score(folder):
     return rep
 
 
+def do_tune(folder, rounds=2):
+    """Auto-tune script.yaml against the saved original features; writes
+    script_tuned.yaml + recreation_tuned.wav + score_tuned.json."""
+    import numpy as np
+    from lib.gen import script as S
+    from lib.gen.analysis import ingest as I, score as SC, tune as T
+    with open(os.path.join(folder, "features.json"), encoding="utf-8") as fh:
+        saved = json.load(fh)
+    sc = S.load(os.path.join(folder, "script.yaml"))
+    res = {"features": saved["features"], "analysis": saved["analysis"]}
+    t0 = time.time()
+    tuned, rep = T.tune(res, sc, rounds=rounds, progress=lambda p, what: print(f"  {p:4.0%} {what}", flush=True))
+    S.save(tuned, os.path.join(folder, "script_tuned.yaml"))
+    audio, _ = S.render(tuned, out_path=os.path.join(folder, "recreation_tuned.wav"))
+    fr = I.features_on_grid(audio.mean(axis=1).astype(np.float32), tuned["bpm"], 0.0)
+    a = saved["analysis"]
+    score = SC.compare(saved["features"], fr, bpm_orig=a["bpm"], bpm_recon=tuned["bpm"], key_orig=tuned["key"], key_recon=tuned["key"])
+    with open(os.path.join(folder, "score_tuned.json"), "w", encoding="utf-8") as fh:
+        json.dump({"score": score, "tune": rep}, fh, indent=1)
+    print(f"tuned in {time.time() - t0:.0f} s: {len(rep['moves'])} moves, mean section gain {rep['gain']:+.1f} -> global {score['global']:.1f}")
+    for m in rep["moves"][:12]:
+        print(f"   section {m['section']} {m['lever']}: {m['from']} -> {m['to']} ({m['gain']:+.1f})")
+    try:
+        from lib.gen.feedback import PreferenceMemory
+        n = PreferenceMemory(os.path.join("logs", "gen_prefs.json")).record_scores(tuned["style"], tuned, score)
+        print(f"   taste: {n} section records from the scores")
+    except Exception as e:  # noqa: BLE001
+        print(f"   taste not recorded ({e})")
+    return score
+
+
+def do_batch(folder_in, reuse=False):
+    """Ingest every audio file in a folder; then learn presets from all scripts under logs/analysis."""
+    exts = (".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aiff", ".aif")
+    files = sorted(f for f in os.listdir(folder_in) if f.lower().endswith(exts))
+    print(f"{len(files)} songs in {folder_in}")
+    for f in files:
+        try:
+            do_ingest(os.path.join(folder_in, f), None, reuse)
+        except Exception as e:  # noqa: BLE001
+            print(f"  {f}: failed ({type(e).__name__}: {e})")
+    return do_learn()
+
+
+def do_learn():
+    from lib.gen import script as S
+    from lib.gen.analysis import learn as L
+    root = os.path.join("logs", "analysis")
+    scripts = []
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        p = os.path.join(root, name, "script.yaml")
+        if os.path.exists(p):
+            try:
+                scripts.append(S.load(p))
+            except Exception:
+                pass
+    presets = L.derive(scripts)
+    path = L.save(presets)
+    print(f"learned presets from {len(scripts)} scripts -> {path}")
+    for style, pre in presets.items():
+        print(f"  {style:10s} songs {pre['songs']}  bpm {pre['bpm']}  swing {pre['swing']}  sections {list(pre['sections'])}  progressions {pre['progressions'][:3]}")
+    return presets
+
+
 def do_play(folder, base="http://localhost:5000"):
     import urllib.request
     path = os.path.abspath(os.path.join(folder, "script.yaml"))
@@ -98,8 +165,9 @@ def do_play(folder, base="http://localhost:5000"):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["ingest", "recreate", "score", "all", "play"])
-    ap.add_argument("target")
+    ap.add_argument("cmd", choices=["ingest", "recreate", "score", "tune", "all", "play", "batch", "learn"])
+    ap.add_argument("target", nargs="?", default="")
+    ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--show", default="http://localhost:5000")
@@ -111,10 +179,17 @@ def main():
         do_recreate(args.target, args.seed)
     elif args.cmd == "score":
         do_score(args.target)
+    elif args.cmd == "tune":
+        do_tune(args.target, args.rounds)
     elif args.cmd == "all":
         folder = do_ingest(args.target, args.out, args.reuse)
         do_recreate(folder, args.seed)
         do_score(folder)
+        do_tune(folder, args.rounds)
+    elif args.cmd == "batch":
+        do_batch(args.target, args.reuse)
+    elif args.cmd == "learn":
+        do_learn()
     else:
         do_play(args.target, args.show)
     return 0

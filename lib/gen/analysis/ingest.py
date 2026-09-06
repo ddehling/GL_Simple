@@ -94,12 +94,14 @@ def bar_features(samples, bars, bands=None, chroma=None):
         ssum = max(bass + mid + high, 1e-9)
         c, cb = bar_chroma(samples, bars[i], bars[i + 1])
         dur = (bars[i + 1] - bars[i])
+        prof = 10.0 * np.log10(seg.mean(axis=0) + 1e-12)          # 32-band log profile (timbre)
         out.append({"t": float(bars[i]), "energy_db": float(10 * np.log10(tot + 1e-12)),
                     "bass": float(bass / ssum), "mid": float(mid / ssum), "high": float(high / ssum),
                     "low_hits": float((onset_bass[f0:f1] > thr_low).sum() / dur),
                     "high_hits": float((onset_perc[f0:f1] > thr_high).sum() / dur),
                     "chroma": [round(float(x), 5) for x in c],
-                    "bass_chroma": [round(float(x), 5) for x in cb]})
+                    "bass_chroma": [round(float(x), 5) for x in cb],
+                    "profile": [round(float(x), 2) for x in prof]})
     return out
 
 
@@ -136,6 +138,30 @@ def chords_per_bar(feats, key_pc, mode):
         cb = cb / max(float(cb.max()), 1e-9)
         scores = [float(c @ t) + 0.5 * float(cb[roots[d]]) for d, t in enumerate(temps)]
         out.append(int(np.argmax(scores)))
+    return out
+
+
+def chords_from_bass(feats, bass_pcs, key_pc, mode):
+    """Chords with the transcribed bass note as the root: for each bar, if
+    the bass pitch class is a diatonic root and the chroma supports that
+    triad reasonably, take that degree; else the best template fit."""
+    from lib.gen.theory import Key
+    k = Key(key_pc, "minor" if mode == "minor" else "major")
+    temps = _triad_templates(key_pc, mode)
+    roots = [k.degree_pc(d) for d in range(7)]
+    out = []
+    for f, bpc in zip(feats, bass_pcs):
+        c = np.asarray(f["chroma"])
+        n = np.linalg.norm(c)
+        c = c / n if n > 1e-9 else c
+        fits = [float(c @ t) for t in temps]
+        best = int(np.argmax(fits))
+        if bpc is not None and bpc in roots:
+            d = roots.index(bpc)
+            if fits[d] >= 0.75 * fits[best]:
+                out.append(d)
+                continue
+        out.append(best)
     return out
 
 
@@ -228,7 +254,9 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
     vocal phrases and transcribed hook into the script (lib/gen/analysis/reuse.py)."""
     samples = F.decode_file(path)
     title = os.path.splitext(os.path.basename(path))[0]
-    res = ingest_samples(samples, title=title, progress=progress, deep=deep)
+    structure = structure_allin1(path) if os.environ.get("GEN_STRUCTURE", "1") != "0" else None
+    res = ingest_samples(samples, title=title, progress=progress, deep=deep, structure=structure)
+    res["analysis"]["structure_model"] = "allin1" if structure else "dj"
     if reuse:
         from lib.gen.analysis import reuse as R
         out_dir = out_dir or os.path.join("logs", "analysis", title)
@@ -240,6 +268,23 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
                       progress=(lambda p, what: progress(0.5 + 0.5 * p, what)) if progress else None, want=want)
         res["material"] = mat
         sc = res["script"]
+        if mat.get("bass_pcs"):
+            res["chords"] = chords_from_bass(res["features"], mat["bass_pcs"], key.root, "minor" if key.mode != "major" else "major")
+            b = 0
+            for e in sc["sections"]:
+                loop = res["chords"][b:b + 4]
+                if len(loop) == 4:
+                    e["chords"] = loop
+                b += e["bars"]
+        if mat.get("bass_cells"):
+            b = 0
+            for e in sc["sections"]:
+                cell = mat["bass_cells"].get(b // 4 * 4)
+                if cell:
+                    e["bass"] = cell
+                b += e["bars"]
+        if mat.get("bank"):
+            sc["bank"] = mat["bank"]
         if mat.get("kit"):
             sc["kit"] = mat["kit"]
         if mat.get("vocals"):
@@ -257,7 +302,63 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
     return res
 
 
-def ingest_samples(samples, title="ingested", progress=None, deep=False):
+def _sections_from_structure(segments, beats, bands, onset_perc):
+    """DJ-style section dicts (energy, shares, rhythm_density, kind) on the
+    structure model's segments, snapped to beats."""
+    beats = np.asarray(beats, dtype=np.float64)
+    mean = np.maximum(bands.mean(axis=0), 1e-10)
+    total_pow = (bands / mean).mean(axis=1)
+    p95 = max(np.percentile(total_pow, 95), 1e-9)
+    out = []
+    thr = np.percentile(onset_perc, 75)
+    beat_rate = 1.0 / max(float(beats[1] - beats[0]), 1e-6) if len(beats) > 1 else 2.0
+    for sg in segments:
+        b0 = int(np.searchsorted(beats, sg["start_s"]))
+        b1 = int(np.searchsorted(beats, sg["end_s"]))
+        if b1 - b0 < 4:
+            continue
+        f0, f1 = int(sg["start_s"] * F.FPS), min(int(sg["end_s"] * F.FPS), len(bands))
+        if f1 <= f0:
+            continue
+        seg_bands = bands[f0:f1] / mean
+        bass, mid, high = seg_bands[:, 0:6].mean(), seg_bands[:, 6:20].mean(), seg_bands[:, 20:32].mean()
+        ssum = max(bass + mid + high, 1e-9)
+        hits = float((onset_perc[f0:f1] > thr).mean()) * F.FPS
+        out.append({"start_s": float(sg["start_s"]), "end_s": float(sg["end_s"]), "start_beat": b0, "end_beat": b1,
+                    "energy": round(float(np.clip(total_pow[f0:f1].mean() / p95, 0, 1.5)), 3),
+                    "bass_share": round(float(bass / ssum), 3), "mid_share": round(float(mid / ssum), 3),
+                    "high_share": round(float(high / ssum), 3), "rhythm_density": round(hits / max(beat_rate, 1e-6), 3),
+                    "kind": {"drop": "groove", "break": "breakdown"}.get(sg["kind"], sg["kind"]), "label": sg.get("label")})
+    return out
+
+
+_ALLIN1_BROKEN = False
+
+
+def structure_allin1(path):
+    """Beats, downbeats and functional sections from the allin1 model
+    (optional; the DJ planner uses it too). None when unavailable."""
+    try:
+        import allin1
+    except Exception:
+        return None
+    global _ALLIN1_BROKEN
+    if _ALLIN1_BROKEN:
+        return None
+    try:
+        r = allin1.analyze(path, include_activations=False, include_embeddings=False)
+    except Exception as e:  # noqa: BLE001
+        _ALLIN1_BROKEN = True
+        print(f"[analysis] allin1 unavailable ({type(e).__name__}: {str(e)[:80]}); DJ segmentation used")
+        return None
+    label_map = {"chorus": "drop", "verse": "groove", "inst": "groove", "solo": "groove", "bridge": "break", "break": "break",
+                 "intro": "intro", "outro": "outro", "start": "intro", "end": "outro"}
+    segs = [{"start_s": float(sg.start), "end_s": float(sg.end), "label": str(sg.label), "kind": label_map.get(str(sg.label), "groove")}
+            for sg in r.segments]
+    return {"bpm": float(r.bpm), "beats": [float(b) for b in r.beats], "downbeats": [float(b) for b in r.downbeats], "segments": segs}
+
+
+def ingest_samples(samples, title="ingested", progress=None, deep=False, structure=None):
     if progress:
         progress(0.05, "framing")
     bands, chroma = F.frame_track(samples)
@@ -267,11 +368,20 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False):
         progress(0.25, "beat grid")
     grid, bpm, bpm_conf, beats = F.estimate_beat_grid(onset_mix)
     downbeat, db_conf = F.estimate_downbeat(beats, bands, chroma, onset_bass, onset_broad)
+    if structure and structure.get("downbeats") and len(structure["downbeats"]) >= 4:
+        # the structure model knows the downbeats: rebuild the beat list from them
+        dbs = np.asarray(structure["downbeats"], dtype=np.float64)
+        beats = np.concatenate([np.linspace(dbs[i], dbs[i + 1], 4, endpoint=False) for i in range(len(dbs) - 1)] + [dbs[-1:]])
+        downbeat, db_conf = 0, 0.99
+        if structure.get("bpm"):
+            bpm, bpm_conf = float(structure["bpm"]), max(bpm_conf, 0.9)
     frame_energy = (bands / np.maximum(bands.mean(axis=0), 1e-10)).mean(axis=1)
     key_pc, key_mode, camelot, key_conf = F.estimate_key(chroma, frame_energy)
     if progress:
         progress(0.5, "sections")
     sections, _nov = F.build_sections(bands, chroma, beats, downbeat, onset_perc, novelty)
+    if structure and structure.get("segments"):
+        sections = _sections_from_structure(structure["segments"], beats, bands, onset_perc)
     try:
         from lib.dj.rhythm import rhythm_signature
         sig = rhythm_signature(bands, grid, downbeat) or {}
@@ -317,8 +427,8 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False):
     from lib.gen.theory import Key
     key = Key(key_pc, "minor" if key_mode == "minor" else "major")
     key_txt = key.camelot if key.camelot != "?" else key.name
-    script = {"title": title, "style": style, "bpm": round(float(bpm), 2), "key": key_txt, "seed": 1, "humanize": 1.0,
-              "end": True, "sections": entries}
+    script = {"title": title, "style": style, "bpm": round(float(bpm), 2), "bpm_src": round(float(bpm), 2), "key": key_txt, "seed": 1,
+              "humanize": 1.0, "end": True, "sections": entries}
     if progress:
         progress(1.0, "done")
     analysis = {"bpm": float(bpm), "bpm_conf": float(bpm_conf), "key": key.name, "camelot": key.camelot, "key_conf": float(key_conf),

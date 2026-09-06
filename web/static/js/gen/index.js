@@ -5,4 +5,5 @@ import './widgets/basic.js';
 import './widgets/controls.js';
 import './widgets/director.js';
 import './widgets/pattern.js';
+import './widgets/timeline.js';
 import './app.js';

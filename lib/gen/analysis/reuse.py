@@ -309,16 +309,126 @@ def _notes_pyin(path):
     return out
 
 
-def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit", "vocals", "hook")):
+def bass_line(bass_wav, bars, key_pc, mode):
+    """Transcribe the bass stem (monophonic, librosa pyin 30-300 Hz) ->
+    {"pcs": [pitch class or None per bar], "cells": {phrase_bar0: {"steps": [...], "degrees": [...]}}}.
+    The per-bar pitch class feeds the chord reader (the bass IS the root);
+    the per-phrase cell (16-step onset grid + degree offsets from the
+    tonic) is what the recreation's bass plays."""
+    try:
+        import librosa
+    except Exception:
+        reasons.append("librosa missing: no bass line")
+        return None
+    y = _mono(bass_wav)
+    bars = np.asarray(bars, dtype=np.float64)
+    if len(y) < RATE or len(bars) < 2:
+        return None
+    hop = 512
+    f0, voiced, _ = librosa.pyin(y, fmin=30.0, fmax=300.0, sr=RATE, frame_length=4096, hop_length=hop)
+    env = np.array([float(np.sqrt(np.mean(y[i * hop:(i + 1) * hop] ** 2)) + 1e-9) for i in range(len(f0))])
+    thr = np.percentile(env, 60)
+    from lib.gen.theory import Key
+    key = Key(key_pc, "minor" if mode == "minor" else "major")
+    pcs_key = [key.degree_pc(d) for d in range(7)]
+    per_bar = []
+    notes = []          # (bar_index, step, midi)
+    for k in range(len(bars) - 1):
+        a = int(bars[k] * RATE / hop)
+        b = int(bars[k + 1] * RATE / hop)
+        seg = [(i, f0[i]) for i in range(a, min(b, len(f0))) if voiced[i] and np.isfinite(f0[i]) and env[i] > thr]
+        if not seg:
+            per_bar.append(None)
+            continue
+        midis = np.array([69 + 12 * np.log2(f / 440.0) for _, f in seg])
+        pc = int(np.round(np.median(midis))) % 12
+        per_bar.append(pc)
+        # onsets within the bar: where the pitch starts or jumps
+        last = None
+        bar_len = b - a
+        for i, f in seg:
+            m = int(round(69 + 12 * np.log2(f / 440.0)))
+            if last is None or abs(m - last[1]) >= 1 or i - last[0] > int(0.5 * RATE / hop):
+                step = int(round((i - a) / max(bar_len, 1) * 16))
+                if step < 16:
+                    notes.append((k, step, m))
+            last = (i, m)
+    cells = {}
+    for ph0 in range(0, len(bars) - 1, 4):
+        ns = [(st, m) for (k, st, m) in notes if k == ph0]           # the phrase's first bar as the cell
+        if len(ns) < 2:
+            continue
+        seen = {}
+        for st, m in ns:
+            seen.setdefault(st, m)
+        steps = sorted(seen)
+        tonic = 12 * 2 + key.root                                       # bass octave reference
+        degs = []
+        for st in steps:
+            m = seen[st]
+            pc = m % 12
+            if pc not in pcs_key:
+                pc = min(pcs_key, key=lambda p: min((p - pc) % 12, (pc - p) % 12))
+            d = pcs_key.index(pc) + 7 * ((m - tonic) // 12)
+            degs.append(int(max(-7, min(14, d))))
+        cells[ph0] = {"steps": steps[:8], "degrees": degs[:8]}
+    return {"pcs": per_bar, "cells": cells}
+
+
+def melodic_bank(other_wav, out_dir, max_slices=6, length_s=0.6):
+    """Slice the melodic stem at its strongest onsets into short samples
+    with their pitch, so the recreation's keys / arp can play the song's
+    own tone: [{"file", "base_midi"}]."""
+    import soundfile as sf
+    try:
+        import librosa
+    except Exception:
+        reasons.append("librosa missing: no melodic bank")
+        return []
+    y = _mono(other_wav)
+    if len(y) < RATE:
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+    env, hop = _band_env(y, 150.0, 4000.0)
+    hits = _onsets(env, hop, thr_rel=0.5, min_gap_s=0.25)
+    if not hits:
+        reasons.append("no melodic onsets found")
+        return []
+    hits = sorted(hits, key=lambda h: -env[h])[: max_slices * 3]
+    bank = []
+    for h in hits:
+        i0 = h * hop
+        i1 = i0 + int(length_s * RATE)
+        if i1 >= len(y):
+            continue
+        seg = y[i0:i1].copy()
+        f0, voiced, _ = librosa.pyin(seg, fmin=80.0, fmax=1500.0, sr=RATE, frame_length=2048, hop_length=256)
+        good = f0[np.isfinite(f0) & voiced] if voiced is not None else f0[np.isfinite(f0)]
+        if len(good) < 4:
+            continue
+        midi = int(round(69 + 12 * np.log2(float(np.median(good)) / 440.0)))
+        fade = int(0.02 * RATE)
+        seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        seg[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        seg = seg / max(float(np.abs(seg).max()), 1e-6) * 0.8
+        pth = os.path.join(out_dir, f"tone_{len(bank):02d}_{midi}.wav")
+        sf.write(pth, seg, RATE, subtype="PCM_16")
+        bank.append({"file": pth, "base_midi": midi})
+        if len(bank) >= max_slices:
+            break
+    return bank
+
+
+def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit", "vocals", "hook", "bass", "bank")):
     """Everything above in one call -> {"stems", "kit", "vocals", "hook", "reasons"}."""
     reasons.clear()
     if not available():
         reasons.append("demucs/torch not installed (pip install -r requirements-dj-vocals.txt)")
-        return {"stems": None, "kit": {}, "vocals": [], "hook": None, "reasons": list(reasons)}
+        return {"stems": None, "kit": {}, "vocals": [], "hook": None, "bass_pcs": None, "bass_cells": {}, "bank": [], "reasons": list(reasons)}
     if progress:
         progress(0.05, "separating stems")
     stems = separate(samples_stereo, os.path.join(out_dir, "stems"))
-    out = {"stems": stems, "kit": {}, "vocals": [], "hook": None}
+    out = {"stems": stems, "kit": {}, "vocals": [], "hook": None, "bass_pcs": None, "bass_cells": {}, "bank": []}
     if "kit" in want:
         if progress:
             progress(0.6, "cutting the drum kit")
@@ -331,6 +441,17 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
         if progress:
             progress(0.85, "transcribing the hook")
         out["hook"] = transcribe_hook(stems["other"], bars, key_pc, mode) or transcribe_hook(stems["vocals"], bars, key_pc, mode)
+    if "bass" in want:
+        if progress:
+            progress(0.9, "transcribing the bass")
+        bl = bass_line(stems["bass"], bars, key_pc, mode)
+        if bl:
+            out["bass_pcs"] = bl["pcs"]
+            out["bass_cells"] = bl["cells"]
+    if "bank" in want:
+        if progress:
+            progress(0.95, "slicing melodic tones")
+        out["bank"] = melodic_bank(stems["other"], os.path.join(out_dir, "bank"))
     out["reasons"] = list(reasons)
     if progress:
         progress(1.0, "reuse done")

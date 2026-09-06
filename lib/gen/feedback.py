@@ -44,6 +44,24 @@ class PreferenceMemory:
         self._save()
         return rec
 
+    def record_scores(self, style: str, script: dict, report: dict, hi: float = 80.0, lo: float = 50.0):
+        """A scored recreation as taste evidence: sections that scored >= hi
+        are recorded as liked snapshots (their levers), <= lo as disliked.
+        Returns the number of records written."""
+        from lib.gen.analysis.score import section_scores
+        n = 0
+        for i, sec, sc in section_scores(report, script):
+            if sc is None:
+                continue
+            e = script["sections"][i]
+            snap = {"style": style, "section": sec, "layers": e.get("layers"), "energy": e.get("energy"),
+                    "density": e.get("density"), "swing": e.get("swing"), "brightness": e.get("brightness")}
+            if sc >= hi:
+                self.record(snap, True); n += 1
+            elif sc <= lo:
+                self.record(snap, False); n += 1
+        return n
+
     def counts(self):
         return {"up": sum(1 for r in self.items if r["up"]), "down": sum(1 for r in self.items if not r["up"])}
 

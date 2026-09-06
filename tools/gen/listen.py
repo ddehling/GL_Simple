@@ -92,7 +92,28 @@ def main():
     ap.add_argument("--solo", action="store_true", help="also measure per-slot solo levels (slow: one render per slot)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--compare", default=None, help="a previous listen folder to diff against")
+    ap.add_argument("--analysis", default=None, help="a logs/analysis/<name> folder: original vs recreation side by side")
     args = ap.parse_args()
+    if args.analysis:
+        import soundfile as sf
+        rows = []
+        for name in ("original", "recreation", "recreation_tuned"):
+            path = os.path.join(args.analysis, name + ".wav")
+            if not os.path.exists(path):
+                continue
+            x, sr = sf.read(path, dtype="float32", always_2d=True)
+            if x.shape[1] == 1:
+                x = np.repeat(x, 2, axis=1)
+            st = stats(x)
+            rows.append((name, st))
+        print(f"{'file':20s} {'rms':>6s} {'peak':>5s} {'crest':>5s} {'L/R':>5s}  bands(dB) 20..16k")
+        for name, st in rows:
+            print(f"{name:20s} {st['rms_db']:6.1f} {st['peak']:5.2f} {st['crest_db']:5.1f} {st['lr_corr']:5.2f}  " + " ".join(f"{v:5.0f}" for v in st["bands_db"].values()))
+        if len(rows) >= 2:
+            a, b = rows[0][1], rows[1][1]
+            print(f"{'recreation - original':20s} {b['rms_db'] - a['rms_db']:+6.1f} {'':5s} {b['crest_db'] - a['crest_db']:+5.1f} {b['lr_corr'] - a['lr_corr']:+5.2f}  "
+                  + " ".join(f"{b['bands_db'][k] - a['bands_db'][k]:+5.0f}" for k in a["bands_db"]))
+        return 0
     import soundfile as sf
     stamp = time.strftime("%Y-%m-%d_%H-%M")
     out_dir = args.out or os.path.join("logs", "listen", stamp)

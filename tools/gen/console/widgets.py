@@ -572,3 +572,20 @@ class PhraseLog(GenWidget):
         text = "\n".join(lines)
         if text != self.box.toPlainText():
             self.box.setPlainText(text)
+
+
+@register("timeline_strip")
+class TimelineStripWidget(GenWidget):
+    """The song strip (the Timeline tab draws the full version; this is
+    the same painter inside a spec card)."""
+
+    def build(self):
+        from tools.gen.console.plugins.timeline import TimelineStrip
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
+        self.strip = TimelineStrip()
+        self.strip.setMinimumHeight(int(self.spec.get("height", 120)) + 50)
+        self.strip.set_window(float(self.spec.get("window_s", 300)))
+        lay.addWidget(self.strip)
+
+    def update_state(self, s):
+        self.strip.refresh({"timeline": s.get(self.spec.get("key", "timeline"))})

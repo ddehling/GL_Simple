@@ -520,6 +520,10 @@ class SampleVoice(Voice):
     def render(self, pitch, vel, dur, patch, params, rng):
         ref = str(params.get("file", patch.get("file", "")))
         base = patch.get("base_midi")
+        bank = patch.get("samples")
+        if bank and "file" not in params:              # multisample: the tone nearest the note
+            best = min(bank, key=lambda b: abs(int(b.get("base_midi", 60)) - int(round(pitch))))
+            ref, base = str(best["file"]), int(best.get("base_midi", 60))
         if ref.startswith("oneshots:"):
             from lib.gen.synth import oneshots
             ref, man_base = oneshots.resolve(ref)
@@ -532,10 +536,22 @@ class SampleVoice(Voice):
         if abs(ratio - 1.0) > 1e-4:
             idx = np.arange(0, x.shape[0] - 1, ratio)
             x = np.stack([np.interp(idx, np.arange(x.shape[0]), x[:, ch]) for ch in range(2)], axis=1).astype(np.float32)
+        rate = float(params.get("rate", 1.0) or 1.0)
+        if abs(rate - 1.0) > 0.01:                     # constant-pitch time-stretch (vocal phrases at a new tempo)
+            try:
+                import librosa
+                x = np.stack([librosa.effects.time_stretch(np.ascontiguousarray(x[:, ch]), rate=rate) for ch in range(2)], axis=1).astype(np.float32)
+            except Exception:  # noqa: BLE001 - no librosa: play it unstretched
+                pass
         decay = patch.get("decay")
         if decay:
             t = np.arange(x.shape[0], dtype=np.float32) / RATE
             x = x * np.exp(-t / float(decay))[:, None]
+        if dur and x.shape[0] > dur + int(0.3 * RATE) and patch.get("samples"):
+            n = int(dur + 0.3 * RATE)                  # a bank tone follows the note length
+            x = x[:n].copy()
+            f = int(0.25 * RATE)
+            x[-f:] *= np.linspace(1.0, 0.0, f, dtype=np.float32)[:, None]
         return (x * (0.4 + 0.6 * vel)).astype(np.float32)
 
 

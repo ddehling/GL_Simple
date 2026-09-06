@@ -175,6 +175,31 @@ Song analysis (2026-09-06, "ingest a song, recreate it in our language, score it
   dense mixes is ~60% right per bar (the score uses chroma directly, not the chord labels);
   sections come from the DJ novelty segmentation (a long plateau is one section).
 
+Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
+- **Closed loop**: `lib/gen/analysis/tune.py` hill-climbs each section's levers (energy, density,
+  brightness, swing, lp/hp lanes, layer toggles) against its local score, rendering only that
+  section (first 16 bars); CLI `analyze.py tune`, tab button Tune; accepted moves are reported.
+- **Scoring**: a 32-band spectral profile per bar and a TIMBRE term (profile correlation) in the
+  local score; DTW alignment of the two energy envelopes (+-8 bars) before windows are compared.
+  Faithful synth-only recreation of the example: 78 -> 83.
+- **Chords from the bass**: with stems, the bass stem is transcribed (librosa pyin 30-300 Hz); its
+  pitch class per bar roots the chord reader, and its per-phrase cell (16th onsets + degree
+  offsets) becomes the section's scripted bass line (`section["bass"]`, Melody.bass_override).
+- **More reuse**: the melodic stem is sliced at its strongest onsets into pitched tones
+  (`script["bank"]`; keys/arp become multisample players), vocal phrases are time-stretched to a
+  changed tempo (librosa, constant pitch; `bpm_src`), basic-pitch installed with `--no-deps` on
+  the ONNX runtime (numpy 2 kept) for polyphonic hook transcription.
+- **Learning**: `analyze.py batch <folder>` ingests a library; `analyze.py learn` derives
+  per-style presets (tempo range, swing, section energies/lengths, layers, progressions) into
+  `lib/gen/composer/data/learned_styles.json`, applied by `get_style` (GEN_LEARNED=0 to skip);
+  scored recreations feed the taste memory (`PreferenceMemory.record_scores`).
+- **Engine**: `listen.py --analysis <folder>` prints original vs recreation numbers; the system asks
+  for a hook written over THIS build's chords when a build starts; a web `timeline_strip` widget
+  (Log tab) draws the song strip from status, mirrored by a Qt widget of the same name.
+- **allin1** (the DJ planner's structure model) does NOT run in this venv: it needs natten < 0.15,
+  which has no build for torch 2.11 on Windows (the planner runs it under WSL). `ingest` tries it
+  and falls back to the DJ segmentation silently (GEN_STRUCTURE=0 skips the attempt).
+
 ## 0. What we are building
 
 A **generative music subsystem** (`GenSystem`), a sibling of the DJ rather than a part of

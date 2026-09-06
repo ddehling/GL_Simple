@@ -22,3 +22,4 @@ music21      # public-domain score corpus for the melody model (tools/gen/melody
 # Song analysis stem reuse (lib/gen/analysis/reuse.py) - optional, heavy; the DJ vocal stack (requirements-dj-vocals.txt) covers it too.
 #   GPU: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 ; then: pip install demucs librosa
 #   (basic-pitch would improve hook transcription but pins an old numpy; the fallback is librosa pyin)
+#   basic-pitch (hook transcription): pip install --no-deps basic-pitch ; pip install onnxruntime pretty_midi resampy mir_eval

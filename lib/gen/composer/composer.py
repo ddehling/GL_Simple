@@ -127,6 +127,7 @@ class Composer:
             if self._script_entry is not None:           # script over: release the overrides
                 self._script_entry = None
                 self.harmony.override = None
+                self.melody.bass_override = None
                 self._script_lanes = {}
             return
         if e is self._script_entry:
@@ -145,6 +146,7 @@ class Composer:
         if e.get("swing") is not None:
             self.swing = float(e["swing"])
         self.harmony.override = list(e["chords"]) if e.get("chords") else None
+        self.melody.bass_override = dict(e["bass"]) if e.get("bass") else None
         self._script_lanes = dict(e.get("lanes") or {})
         h = e.get("hook")
         if h and h.get("steps") and h.get("degrees"):
@@ -350,11 +352,12 @@ class Composer:
         self._automation(ev, section, section_start, start, spb, nb)
         # the source song's own vocal phrases, where they were
         if self.script and self.script.get("vocals") and "vox" not in self.muted:
+            rate = (self.bpm / float(self.script["bpm_src"])) if self.script.get("bpm_src") else 1.0
             for v in self.script["vocals"]:
                 b = float(v["bar"])
                 if self.bar <= b < self.bar + nb:
-                    dur_steps = max(1.0, float(v.get("seconds", 1.0)) * RATE / sps)
-                    note((b - self.bar) * S, "vox", 60.0, 0.9, dur_steps, file=v["file"])
+                    dur_steps = max(1.0, float(v.get("seconds", 1.0)) / rate * RATE / sps)
+                    note((b - self.bar) * S, "vox", 60.0, 0.9, dur_steps, file=v["file"], rate=rate)
 
         if self.slot_patterns:
             ctx = {"energy": round(energy, 3), "section": section, "bar": self.bar,

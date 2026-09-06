@@ -38,9 +38,12 @@ import numpy as np
 
 from lib.gen import RATE
 
-SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook")
+SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass")
+# bass: {"steps": [16th onsets], "degrees": [offsets from the tonic]}  the section's bass cell (from the source's bass stem)
 DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, "humanize": 1.0, "end": True, "sections": [],
-           "kit": None, "vocals": []}
+           "kit": None, "vocals": [], "bank": [], "bpm_src": None}
+# bank:    [{"file": wav, "base_midi": 64}]  pitched slices of the source's melodic stem (keys/arp play them)
+# bpm_src: the source song's tempo (vocal phrases are time-stretched by bpm/bpm_src)
 # kit:    {"kick": wav, "snare": wav, "hat": wav}  one-shots cut from the source song (the recreation plays them)
 # vocals: [{"bar": 12.25, "file": wav, "seconds": 1.8}]  the source song's vocal phrases, placed on its bar grid
 
@@ -66,6 +69,8 @@ def normalize(script: dict) -> dict:
     s["kit"] = {k: str(v) for k, v in (s.get("kit") or {}).items() if v} or None
     s["vocals"] = [{"bar": float(v["bar"]), "file": str(v["file"]), "seconds": float(v.get("seconds", 1.0))}
                    for v in (s.get("vocals") or []) if v.get("file")]
+    s["bank"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 60))} for b in (s.get("bank") or []) if b.get("file")]
+    s["bpm_src"] = float(s["bpm_src"]) if s.get("bpm_src") else None
     s["seed"] = int(s.get("seed") or 1)
     s["bpm"] = float(s["bpm"]) if s.get("bpm") else None
     return s
@@ -108,7 +113,7 @@ def apply_material(style: dict, script: dict) -> dict:
     """A copy of the style whose kit slots play the script's one-shots and
     which has a "vox" slot when the script places vocal phrases."""
     s = normalize(script)
-    if not s.get("kit") and not s.get("vocals"):
+    if not s.get("kit") and not s.get("vocals") and not s.get("bank"):
         return style
     st = copy.deepcopy(style)
     for slot, path in (s.get("kit") or {}).items():
@@ -116,6 +121,14 @@ def apply_material(style: dict, script: dict) -> dict:
             base = st["slots"][slot]
             st["slots"][slot] = {"voice": "sample", "file": path, "base_midi": KIT_BASE.get(slot, 60), "gain": float(base.get("gain", 0.8)),
                                  "send_reverb": float(base.get("send_reverb", 0.0)), "octave": base.get("octave", 3)}
+    bank = [b for b in (s.get("bank") or []) if os.path.exists(b["file"])]
+    if bank:
+        for slot in ("keys", "arp"):
+            if slot in st["slots"]:
+                base = st["slots"][slot]
+                st["slots"][slot] = {"voice": "sample", "samples": bank, "gain": float(base.get("gain", 0.4)) * 0.9,
+                                     "send_reverb": float(base.get("send_reverb", 0.3)), "send_delay": float(base.get("send_delay", 0.0)),
+                                     "octave": base.get("octave", 3), "decay": 0.6}
     if s.get("vocals"):
         st["slots"]["vox"] = {"voice": "sample", "gain": 0.85, "base_midi": 60, "send_reverb": 0.2}
         for sec in st["sections"].values():
@@ -229,6 +242,10 @@ def describe(script: dict) -> str:
         lines.append("  kit: " + ", ".join(f"{k}={os.path.basename(v)}" for k, v in s["kit"].items()))
     if s.get("vocals"):
         lines.append(f"  vocals: {len(s['vocals'])} phrases placed (first at bar {s['vocals'][0]['bar']})")
+    if s.get("bank"):
+        lines.append(f"  bank: {len(s['bank'])} melodic tones (keys/arp play the song's own sound)")
+    if any(e.get("bass") for e in s["sections"]):
+        lines.append("  bass: cells transcribed from the bass stem")
     return "\n".join(lines)
 
 
