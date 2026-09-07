@@ -328,6 +328,27 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
     motifs (that is the brief); the pad is one texture; the second instrument plays chords not its
     line. Next: an exemplar per (pitch, dynamics), the keys slot following its own identified line
     as a second motif memory, and per-sound NMF for the plucks too.
+- **"Absolutely unworking garbage" (operator, same evening) - what it actually was.** The tab's
+  flows all complete (driven offscreen: ingest, recreate, score, play); the SOUND was broken, by
+  four things the stem numbers had not shown:
+  1. The recreation's mix peaked at 3.4 BEFORE the limiter: the rack's loudness normaliser pushed
+     the (quiet) sample material up by its full +8 dB clamp and the peak limiter flattened every
+     drum hit. Material scripts now run with no normaliser and no master shelf; `level_ref_db` (the
+     source's RMS) and a measured `master_db` from the calibration pass put the recreation at the
+     record's level as far as the peaks allow (at most 2 dB into the limiter; -13.4 vs -11.8 dBFS).
+  2. The form's own transition FX: an 8-bar white-noise RISER into every drop, at the analog style's
+     level, over material 10 dB quieter - 28,000 sample-to-sample jumps in one ten-second window.
+     `script.fx` (the analyser writes False) keeps the form's risers / impacts / sweeps out of a
+     recreation. Mix discontinuities: 67,634 -> 12 (the record itself: 4,616).
+  3. Every kit one-shot carried the next two or three hits and every pluck sample several notes:
+     isolation was measured against the same SOUND's onsets, not all onsets in the stem. Cuts now
+     end before the next hit of any sound. Drums 6.4 -> 4.8 dB (activity 0.70).
+  4. The 4-second pad texture went silent after 4 s of every held chord (the sample voice plays a
+     file once); `loop` patches loop the body with crossfades for the note's length.
+  Ananta after all four: drums 5.1 / bass 3.7 / other 9.6 / vocals 1.0 dB. One more measurement
+  lesson: the per-stem numbers and the phrase score both missed a ten-second noise blast; a
+  discontinuity count (|sample-to-sample jump| > 0.4) against the source's own count catches that
+  class of defect in seconds, and the recreation is now checked that way in the gate.
 - **Hosted instruments off the main thread**: pedalboard refuses `reset=True` outside the main
   thread; instruments render with `reset=False` and the previous batch's tail is flushed with
   silence first (the console error "Plugin ... must be reloaded on the main thread" was this).

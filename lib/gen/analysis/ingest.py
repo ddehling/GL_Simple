@@ -734,7 +734,8 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
     key = Key(key_pc, "minor" if key_mode == "minor" else "major")
     key_txt = key.camelot if key.camelot != "?" else key.name
     script = {"title": title, "style": style, "bpm": round(float(bpm), 2), "bpm_src": round(float(bpm), 2), "key": key_txt, "seed": 1,
-              "humanize": 1.0, "end": True, "sections": entries}
+              "humanize": 1.0, "end": True, "sections": entries, "fx": False,      # the form's risers/impacts are not the song's
+              "level_ref_db": round(float(20.0 * np.log10(float(np.sqrt(np.mean(np.asarray(samples, dtype=np.float32) ** 2))) + 1e-9)), 1)}
     if progress:
         progress(1.0, "done")
     beat_s = float(np.median(np.diff(np.asarray(beats)))) if len(beats) > 2 else 60.0 / max(bpm, 1e-6)

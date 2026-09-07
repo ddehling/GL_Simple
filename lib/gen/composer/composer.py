@@ -414,7 +414,7 @@ class Composer:
                 for step, midi, vel, gate in self.melody.arp_bar(chords[b], energy * self.density):
                     note(b * S + step, "arp", midi, vel, gate)
         # transitions the form knows about
-        if "fx" in self.style["slots"] and "fx" not in self.muted:
+        if "fx" in self.style["slots"] and "fx" not in self.muted and (self.script is None or self.script.get("fx", True)):
             drop_bar = self.form.upcoming_drop_bar()
             if drop_bar is not None:
                 to_drop = drop_bar - self.bar

@@ -547,6 +547,24 @@ class SampleVoice(Voice):
         if decay:
             t = np.arange(x.shape[0], dtype=np.float32) / RATE
             x = x * np.exp(-t / float(decay))[:, None]
+        if dur and patch.get("loop") and x.shape[0] > int(0.5 * RATE) and x.shape[0] < dur + int(0.3 * RATE):
+            # a sustained texture held longer than the file: loop its body with crossfades (a drone, a pad)
+            xf = min(int(0.1 * RATE), x.shape[0] // 4)
+            head = int(0.05 * RATE)
+            body = x[head:]                              # skip the attack, loop the sustain
+            need = int(dur + 0.3 * RATE)
+            out = [x[:head]]
+            total = head
+            piece = body.copy()
+            piece[:xf] *= np.linspace(0.0, 1.0, xf, dtype=np.float32)[:, None]
+            piece[-xf:] *= np.linspace(1.0, 0.0, xf, dtype=np.float32)[:, None]
+            pos = head
+            buf = np.zeros((need + body.shape[0], 2), dtype=np.float32)
+            buf[:head] = x[:head]
+            while pos < need:
+                buf[pos:pos + body.shape[0]] += piece
+                pos += body.shape[0] - xf
+            x = buf[:need]
         if dur and x.shape[0] > dur + int(0.3 * RATE) and patch.get("samples"):
             n = int(dur + 0.3 * RATE)                  # a bank tone follows the note length
             x = x[:n].copy()

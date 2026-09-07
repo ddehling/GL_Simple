@@ -64,8 +64,9 @@ def do_recreate(folder, seed=None):
     if any(t is not None for t in trims) and not any(e.get("trim_db") is not None for e in sc["sections"]):
         for e, t in zip(sc["sections"], trims):
             e["trim_db"] = t
+        sc["master_db"] = float((c.script or {}).get("master_db") or 0.0)
         S.save(sc, os.path.join(folder, "script.yaml"))          # keep the level calibration with the script
-        print(f"  level calibration: {' '.join(f'{t:+.1f}' for t in trims if t is not None)} dB per section (saved)")
+        print(f"  level calibration: {' '.join(f'{t:+.1f}' for t in trims if t is not None)} dB per section, master {sc['master_db']:+.1f} dB (saved)")
     print(f"recreated {audio.shape[0] / 44100:.0f} s in {time.time() - t0:.1f} s -> {folder}/recreation.wav")
     return folder
 

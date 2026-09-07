@@ -138,25 +138,34 @@ def cluster(X, k_max=8, min_share=0.012, merge_corr=0.985):
     return labels, keep
 
 
-def _exemplar(y, starts, energies, min_gap_s=0.12, max_len_s=0.6):
-    """The most isolated loud hit among starts -> (start, end) samples."""
-    starts = sorted(starts)
+def _exemplar(y, starts, energies, all_starts=None, min_gap_s=0.12, max_len_s=0.6):
+    """The most isolated loud hit among starts -> (start, end) samples.
+    Isolation is measured against ALL onsets of the stem (all_starts):
+    the cut must end before the next hit of ANY sound, or the one-shot
+    carries its neighbours."""
+    order = np.argsort(starts)
+    starts_s = [starts[i] for i in order]
+    energies_s = [energies[i] for i in order]
+    alls = np.asarray(sorted(all_starts) if all_starts is not None else starts_s, dtype=np.int64)
     best, best_score = None, -1e9
     n_pre = int(0.05 * RATE)
-    for i, s in enumerate(starts):
+    for s, en in zip(starts_s, energies_s):
         if s < n_pre or s + int(0.06 * RATE) >= len(y):
             continue
-        nxt = starts[i + 1] if i + 1 < len(starts) else len(y)
+        k = int(np.searchsorted(alls, s, side="right"))
+        nxt = int(alls[k]) if k < len(alls) else len(y)
         gap = (nxt - s) / RATE
         if gap < min_gap_s:
             continue
+        k0 = int(np.searchsorted(alls, s, side="left"))
+        prev_gap = (s - int(alls[k0 - 1])) / RATE if k0 > 0 else 1.0
         pre = float(np.sqrt(np.mean(y[s - n_pre:s - 64] ** 2)) + 1e-6)
         peak = float(np.abs(y[s:s + int(0.03 * RATE)]).max())
-        score = 20 * np.log10(peak / pre) + 0.5 * energies[i] + 6.0 * min(gap, 0.5)
+        score = 20 * np.log10(peak / pre) + 0.5 * en + 8.0 * min(gap, 0.6) + 4.0 * min(prev_gap, 0.3)
         if score > best_score:
-            best, best_score = (s, min(nxt, s + int(max_len_s * RATE))), score
+            best, best_score = (s, min(nxt - int(0.005 * RATE), s + int(max_len_s * RATE))), score
     if best is None:
-        s = starts[0]
+        s = starts_s[0]
         best = (s, min(len(y), s + int(0.3 * RATE)))
     s, e = best
     seg = y[s:e]
@@ -355,7 +364,7 @@ def drum_sounds(drums_wav, out_dir, bars=None, progress=None):
         cen = float(np.median([meta[i][0] for i in idx]))
         dec = float(np.median([meta[i][1] for i in idx]))
         lvl = float(np.percentile([meta[i][2] for i in idx], 75))          # how loud this sound's hits are (dBFS)
-        s, e = _exemplar(y, [starts[i] for i in idx], [meta[i][2] for i in idx])
+        s, e = _exemplar(y, [starts[i] for i in idx], [meta[i][2] for i in idx], all_starts=starts)
         sounds.append({"idx": idx, "centroid": round(cen, 1), "decay": round(dec, 1), "n": int(len(idx)),
                        "dur": round((e - s) / RATE, 3), "cut": (s, e), "level": lvl})
     top = max(sd["level"] for sd in sounds)
@@ -494,7 +503,8 @@ def pluck_instruments(other_wav, bars, out_dir, max_instruments=3, max_pitches=2
         rms = np.array([np.sqrt(np.mean(seg[i:i + frame] ** 2)) for i in range(0, len(seg) - frame, frame)]) + 1e-9
         lvl = 20 * np.log10(rms.mean())
         steadiness = -float(np.std(20 * np.log10(rms)))
-        score = lvl + 2.0 * steadiness
+        n_pluck = int(np.sum((np.asarray(starts) >= a) & (np.asarray(starts) < b)))    # plucked hits inside: not a pad
+        score = lvl + 2.0 * steadiness - 1.5 * n_pluck
         if score > best_score:
             best, best_score = (a, b), score
     if best is not None:
@@ -535,7 +545,7 @@ def pluck_instruments(other_wav, bars, out_dir, max_instruments=3, max_pitches=2
         for i in inst["pitched"]:
             m = pitches[i][0]
             s = starts[i]
-            nxt = starts[inst["idx"][np.searchsorted(inst["idx"], i) + 1]] if np.searchsorted(inst["idx"], i) + 1 < len(inst["idx"]) else len(y)
+            nxt = starts[i + 1] if i + 1 < len(starts) else len(y)     # the next plucked onset of ANY instrument
             gap = (nxt - s) / RATE
             score = meta[i][2] + 8.0 * min(gap, 0.6) + 4.0 * pitches[i][1]
             if m not in by_pitch or score > by_pitch[m][0]:
@@ -544,7 +554,7 @@ def pluck_instruments(other_wav, bars, out_dir, max_instruments=3, max_pitches=2
         bank = []
         for m, (score, i, gap) in sorted(top):
             s = starts[i]
-            e = min(len(y), s + int(max(0.15, gap) * RATE))
+            e = min(len(y), s + int(max(0.12, gap - 0.005) * RATE))       # ends before the next hit
             path = _cut(y, s, e, os.path.join(out_dir, f"pluck{n_i}_{m}.wav"), peak=0.8)
             if path:
                 bank.append({"file": path, "base_midi": int(m)})

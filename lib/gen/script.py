@@ -58,7 +58,12 @@ SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "
 # bass: {"steps": [16th onsets], "degrees": [offsets from the tonic]}  the section's bass cell (from the source's bass stem)
 DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, "humanize": 1.0, "end": True, "sections": [],
            "kit": None, "vocals": [], "bank": [], "bass_bank": [], "bpm_src": None, "fidelity": 0.0,
-           "motifs": [], "bass_cells": [], "pad": None, "bank_keys": [], "mix_db": {}, "kit_db": {}}
+           "motifs": [], "bass_cells": [], "pad": None, "bank_keys": [], "mix_db": {}, "kit_db": {},
+           "level_ref_db": None, "master_db": 0.0, "fx": True}
+# fx: the form's own transition material (risers, impacts, reverse cymbals, sweeps); the analyser writes False -
+#     a recreation plays the song's material, and a riser at -6 dB under it is a wall of noise
+# level_ref_db: the source's RMS (dBFS); render's calibration pass sets master_db so the recreation's RMS matches
+#               it as far as the peaks allow (at most ~2 dB into the limiter) - the record's level without crushing it
 # kit_db: {slot: dB}  each identified drum sound's level relative to the loudest one (the kit's balance, from the song)
 # mix_db: {"drums", "bass", "other", "vocals": dB}  per-stem trims, measured by score --stems against the source's stems
 # pad:       {"file", "base_midi", "seconds"}  the song's sustained texture (its steadiest two bars), the pad slot plays it
@@ -146,6 +151,9 @@ def normalize(script: dict) -> dict:
     s["mix_db"] = {str(k): round(float(max(-18.0, min(18.0, v))), 1) for k, v in (s.get("mix_db") or {}).items()
                    if k in ("drums", "bass", "other", "vocals")}
     s["kit_db"] = {str(k): round(float(max(-30.0, min(0.0, v))), 1) for k, v in (s.get("kit_db") or {}).items()}
+    s["level_ref_db"] = round(float(s["level_ref_db"]), 1) if s.get("level_ref_db") is not None else None
+    s["master_db"] = round(float(max(-24.0, min(24.0, s.get("master_db") or 0.0))), 1)
+    s["fx"] = bool(s.get("fx", True))
     p = s.get("pad")
     s["pad"] = ({"file": str(p["file"]), "base_midi": int(p.get("base_midi", 60)), "seconds": float(p.get("seconds", 0.0))}
                 if isinstance(p, dict) and p.get("file") else None)
@@ -208,12 +216,17 @@ def apply_material(style: dict, script: dict) -> dict:
             and not (s.get("fidelity", 0.0) > 0 and any(e.get("loops") for e in s["sections"]))):
         return style
     st = copy.deepcopy(style)
+    # a song's material carries its own loudness and top end: no loudness normaliser (it pushed quiet material
+    # into the limiter by +8 dB) and no master shelf; the level is set by render's calibration (master_db)
+    st["target_lufs"] = None
+    st["master_shelf_db"] = 0.0
     kit_db = s.get("kit_db") or {}
     for slot, path in (s.get("kit") or {}).items():
         if slot in st["slots"] and os.path.exists(path):
             base = st["slots"][slot]
-            # identified sounds are peak-normalised one-shots: their balance is the song's (kit_db), not the analog patch gains
-            gain = 0.9 * 10 ** (float(kit_db[slot]) / 20.0) if slot in kit_db else float(base.get("gain", 0.8))
+            # identified sounds are peak-normalised one-shots: their balance is the song's (kit_db), not the analog
+            # patch gains; 0.6 leaves the drum bus headroom when several land on one step
+            gain = 0.6 * 10 ** (float(kit_db[slot]) / 20.0) if slot in kit_db else float(base.get("gain", 0.8))
             st["slots"][slot] = {"voice": "sample", "file": path, "base_midi": KIT_BASE.get(slot, 60), "gain": gain,
                                  "send_reverb": float(base.get("send_reverb", 0.0)), "octave": base.get("octave", 3)}
     if s.get("fidelity", 0.0) > 0.0 and any(e.get("loops") for e in s["sections"]):
@@ -239,7 +252,7 @@ def apply_material(style: dict, script: dict) -> dict:
         base = st["slots"]["pad"]
         st["slots"]["pad"] = {"voice": "sample", "samples": [{"file": pad["file"], "base_midi": int(pad.get("base_midi", 60))}],
                               "gain": float(base.get("gain", 0.2)), "send_reverb": float(base.get("send_reverb", 0.4)) * 0.5,
-                              "octave": base.get("octave", 3), "drone": True}          # one note on the root, the texture itself
+                              "octave": base.get("octave", 3), "drone": True, "loop": True}   # one note on the root, the texture itself, held
     bass_bank = [b for b in (s.get("bass_bank") or []) if os.path.exists(b["file"])]
     if bass_bank and "bass" in st["slots"]:
         base = st["slots"]["bass"]
@@ -318,8 +331,22 @@ def render(script: dict, out_path: str | None = None, seconds: float | None = No
         trims = level_trims(first, s, c0.bpm)
         for e, t in zip(s["sections"], trims):
             e["trim_db"] = t
+        if s.get("level_ref_db") is not None:
+            s["master_db"] = master_makeup(first, float(s["level_ref_db"]), float(s.get("master_db") or 0.0))
         return _render_pass(s, out_path, seconds, progress=(lambda p: progress(0.5 + 0.5 * p)) if progress else None, stems=stems)
     return _render_pass(s, out_path, seconds, progress=progress, stems=stems)
+
+
+def master_makeup(audio, ref_db: float, current_db: float = 0.0, limit_into_db: float = 2.0) -> float:
+    """The master_db that brings a render's RMS to ref_db (the source's),
+    capped so its peaks go at most limit_into_db over full scale (the
+    lookahead limiter takes that much cleanly; more is the crushed sound)."""
+    m = np.asarray(audio, dtype=np.float32).mean(axis=1) if np.ndim(audio) == 2 else np.asarray(audio, dtype=np.float32)
+    rms = 20.0 * np.log10(float(np.sqrt(np.mean(m ** 2))) + 1e-9)
+    peak = 20.0 * np.log10(float(np.abs(audio).max()) + 1e-9)
+    want = ref_db - rms
+    room = limit_into_db - peak
+    return round(float(max(-24.0, min(24.0, current_db + min(want, room)))), 1)
 
 
 def _render_pass(s: dict, out_path, seconds, progress=None, stems: bool = False):
@@ -329,7 +356,8 @@ def _render_pass(s: dict, out_path, seconds, progress=None, stems: bool = False)
     c = make_composer(s)
     total = float(seconds) if seconds else total_seconds(s, c.bpm) + 4 * 60.0 / c.bpm
     full_loops = s.get("fidelity", 0.0) >= 0.99 and any(e.get("loops") for e in s["sections"])
-    rack = SynthRack(apply_material(c.style, s), c.bpm, seed=s["seed"], master=1.0 if full_loops else 0.8)   # loops carry the record's level
+    master = (1.0 if full_loops else 0.8) * 10 ** (float(s.get("master_db") or 0.0) / 20.0)     # loops carry the record's level
+    rack = SynthRack(apply_material(c.style, s), c.bpm, seed=s["seed"], master=master)
     rack.warm_up()
     n_total = int(total * RATE)
     for p in c.phrases_until(n_total):

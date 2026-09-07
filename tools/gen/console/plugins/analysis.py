@@ -615,6 +615,7 @@ class AnalysisPage(QWidget):
             if any(t is not None for t in trims) and not any(e.get("trim_db") is not None for e in sc["sections"]):
                 for e, t in zip(sc["sections"], trims):
                     e["trim_db"] = t                  # the level calibration stays with the script (no second pass next time)
+                sc["master_db"] = float((comp.script or {}).get("master_db") or 0.0)
                 S.save(sc, os.path.join(folder, "script.yaml"))
             self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), sc["bpm"], 0.0)
             self.report = None

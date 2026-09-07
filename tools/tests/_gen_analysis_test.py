@@ -241,6 +241,10 @@ def main():
         check(np.isfinite(rec3).all() and rep3["global"] >= rep["global"] - 6.0,
               f"recreation with the song's own drums renders and scores {rep3['global']:.1f} (synth-only {rep['global']:.1f})"
               + (f"; hook {mat['hook']['name']}" if mat.get("hook") else "; no hook transcribed"))
+        # the sound itself: no bursts of discontinuities (a riser at the wrong level, a crushed limiter) beyond the source's own
+        jumps = lambda x: int((np.abs(np.diff(np.asarray(x, dtype=np.float32).mean(axis=1))) > 0.4).sum())
+        j0, j3 = jumps(audio), jumps(rec3)
+        check(j3 <= 3 * j0 + 200, f"the recreation has no bursts of discontinuities ({j3} sample jumps > 0.4 vs {j0} in the source)")
         vox = R.vocal_chops(mat["stems"]["vocals"], res["bars"], os.path.join(folder, "reuse", "vox"))
         check(isinstance(vox, list), f"vocal chops: {len(vox)} (an instrumental has few or none)")
         pcs = mat.get("bass_pcs") or []
