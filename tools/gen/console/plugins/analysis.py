@@ -332,7 +332,12 @@ class AnalysisPage(QWidget):
         top = QHBoxLayout()
         self.path = QLineEdit(""); self.path.setPlaceholderText("song file (wav/mp3/flac...) or a logs/analysis/<name> folder")
         top.addWidget(self.path, 1)
-        self.reuse = QCheckBox("reuse stems"); self.reuse.setToolTip("separate the song (demucs) and reuse its drums, vocal phrases and hook")
+        self.reuse = QCheckBox("reuse stems"); self.reuse.setToolTip("separate the song (demucs) and reuse its drums, bass line, tones, vocal phrases and hook")
+        try:
+            from lib.gen.analysis import reuse as _R
+            self.reuse.setChecked(_R.available())          # on by default when the stack is installed
+        except Exception:  # noqa: BLE001
+            pass
         top.addWidget(self.reuse)
         for text, fn in (("Browse", self.browse), ("Ingest", self.ingest), ("Recreate", self.recreate), ("Score", self.score),
                          ("Tune", self.tune), ("Save", self.save), ("Play", self.play), ("Open", self.open_script)):

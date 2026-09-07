@@ -317,7 +317,7 @@ def _layers(sec, kind, emax, high_mean, bass_mean):
     return sorted(lay)
 
 
-def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("kit", "vocals", "hook")):
+def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("kit", "vocals", "hook", "bass", "bank")):
     """Analyse an audio file -> {"script": SongScript, "features": [bar feats], "analysis": dict, "bars": [s]}.
     reuse=True also separates the song into stems and puts its own drums,
     vocal phrases and transcribed hook into the script (lib/gen/analysis/reuse.py)."""
