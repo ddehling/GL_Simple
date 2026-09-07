@@ -99,6 +99,8 @@ class Drums:
         self._break = rng.choice(list(BREAKS))
         self._break_phrase = -1
         self.override = None            # {"kick": [(step, vel)], "snare": [...], "hat": [...]} from a SongScript
+        self.override_bars = None       # [{slot: [(step, vel)]} per bar of the phrase]: the identified beat bar by bar
+        self.steer = 1.0                # energy x density relative to the scripted section's own (1 = as identified)
         self._fill = None
         self._fill_key = None
 
@@ -132,10 +134,25 @@ class Drums:
         bass_busy = min(1.0, ctx.get("bass_hits", 0) / 8.0)
         kind = "halftime" if ctx.get("halftime") else self.kind
         double = bool(ctx.get("double"))
+        if self.override_bars and 0 <= bar_in_phrase < len(self.override_bars) and slot in self.override_bars[bar_in_phrase]:
+            # the identified beat, this very bar: hits above 0.4 of the sound's own max always, weaker ones by
+            # their strength; thinned (or thickened) only by the steering relative to the section's own levers
+            hits = []
+            for st, v in self.override_bars[bar_in_phrase][slot]:
+                st, v = int(st), float(v)
+                if not (0 <= st < S):
+                    continue
+                p = (1.0 if v >= 0.4 else v / 0.4) * self.steer
+                if rng.random() < p:
+                    vel = min(1.0, max(0.25, v) * (0.94 + 0.12 * rng.random()))
+                    hits.append((st, vel))
+            if slot == "tom":
+                hits = [(st, v, TOM_MID) for st, v in hits]
+            return hits
         tpl_fill = (self.override or {}).get("fill") if bar_in_phrase == nbars - 1 else None
         if tpl_fill is not None and tpl_fill.get(slot) is None:
             tpl_fill = None
-        if self.override and slot in ("kick", "snare", "hat") and (tpl_fill is not None or (self.override.get(slot) is not None and not fill)):
+        if self.override and slot != "fill" and (tpl_fill is not None or (self.override.get(slot) is not None and not fill)):
             # the song's pattern as a template: strong hits always, weaker ones by their strength,
             # energy and density - so the beat is the song's, and still breathes with the steering;
             # on a phrase's last bar the song's own fill (when it has one) is the template
@@ -150,6 +167,8 @@ class Drums:
                     hits.append((st, vel))
             if slot == "kick" and not hits:
                 hits = [(0, 1.0)]
+            if slot == "tom":
+                hits = [(st, v, TOM_MID) for st, v in hits]
             return hits
         if slot == "kick":
             if fill:

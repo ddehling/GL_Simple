@@ -58,7 +58,7 @@ def do_recreate(folder, seed=None):
     from lib.gen import script as S
     sc = S.load(os.path.join(folder, "script.yaml"))
     t0 = time.time()
-    audio, c = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), seed=seed,
+    audio, c = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), seed=seed, stems=True,
                         progress=lambda p: print(f"  {p:4.0%}", end="\r", flush=True))
     trims = [e.get("trim_db") for e in (c.script or {}).get("sections", [])]
     if any(t is not None for t in trims) and not any(e.get("trim_db") is not None for e in sc["sections"]):
@@ -90,9 +90,32 @@ def do_score(folder):
     for r in rep["local"]:
         lines.append(f"{r['bar0']:5d} {r['t']:6.1f} {r['score']:6.1f} {r['energy']:7.1f} {r['spectrum']:6.1f} {r['rhythm']:7.1f} {r['harmony']:6.1f}")
     lines.append("weakest: " + ", ".join(f"bar {r['bar0']} ({r['score']:.0f})" for r in SC.worst(rep)))
+    stems = {n: os.path.join(folder, "stems", n + ".wav") for n in ("drums", "bass", "other", "vocals")}
+    if all(os.path.exists(p) for p in stems.values()) and not os.environ.get("GEN_NO_STEM_SCORE"):
+        # the strict measure: the recreation's own stems against the original's, beat by beat
+        for p in (os.path.join(folder, "recon_stems", n + ".wav") for n in stems):
+            if os.path.exists(p):
+                os.remove(p)
+        sf_rep = SC.stem_fidelity(stems, os.path.join(folder, "recreation.wav"), float(a.get("first_bar_s", 0.0)), sc["bpm"],
+                                  os.path.join(folder, "recon_stems"), n_bars=len(saved["features"]))
+        rep["stems"] = sf_rep
+        with open(os.path.join(folder, "score.json"), "w", encoding="utf-8") as fh:
+            json.dump(rep, fh, indent=1)
+        # the mix, identified: fold the measured level differences into the script's per-stem trims (recreate again to apply)
+        mix = dict(sc.get("mix_db") or {})
+        for n, v in sf_rep.items():
+            if isinstance(v, dict) and v.get("level_db") is not None and abs(v["level_db"]) >= 0.5:
+                mix[n] = round(float(max(-18.0, min(18.0, mix.get(n, 0.0) - v["level_db"]))), 1)
+        if mix != (sc.get("mix_db") or {}):
+            sc["mix_db"] = mix
+            S.save(sc, os.path.join(folder, "script.yaml"))
+            lines.append("mix trims saved to the script (dB): " + "  ".join(f"{k} {v:+.1f}" for k, v in mix.items()) + "  -> recreate again to apply")
+        lines.append("stems (fine log-mel per beat, mean |dB|; 0 = identical): " + "  ".join(
+            f"{n} {v['db']:.1f} dB (level {v['level_db']:+.1f}, activity r {v['corr']:.2f})" for n, v in sf_rep.items() if isinstance(v, dict))
+                     + f"  | mean {sf_rep['mean_db']:.1f} dB")
     with open(os.path.join(folder, "score.txt"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
-    print("\n".join(lines[:1] + lines[-1:]))
+    print("\n".join(lines[:1] + lines[-2:]))
     return rep
 
 

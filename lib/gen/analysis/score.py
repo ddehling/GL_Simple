@@ -22,6 +22,8 @@ later window down. Global blends the mean local score with STRUCTURE
 Everything is 0..100; 100 is the song against itself."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 WEIGHTS = {"energy": 0.3, "spectrum": 0.15, "timbre": 0.15, "rhythm": 0.15, "harmony": 0.25}
@@ -143,6 +145,54 @@ def compare(orig, recon, window: int = 4, bpm_orig=None, bpm_recon=None, key_ori
     return {"global": round(float(glob), 1), "mean_local": round(mean_local, 1), "structure": round(structure, 1),
             "tempo": round(tempo, 1), "key": round(key, 1), "coverage": round(coverage, 3), "n_bars": n, "local": local,
             "weights": dict(WEIGHTS), "mapping": mapping}
+
+
+def stem_fidelity(orig_stems: dict, recon_wav: str, first_bar_s: float, bpm: float, cache_dir: str, n_bars: int | None = None):
+    """The strict measure: separate the recreation into the same four stems
+    (demucs, cached in cache_dir) and compare each with the original's stem
+    on a fine log-mel spectrogram, beat by beat: mean |dB| difference of the
+    beat spectra (0 = identical), the level difference, and the frame-level
+    activity correlation. Returns {stem: {"db", "level_db", "corr"}} plus
+    "mean_db"."""
+    import librosa
+    from lib.gen.analysis import reuse as R
+    from lib.dj.features import decode_file_stereo
+    from lib.gen import RATE
+    # the recreation's stems: the rack's own buses when render wrote them (exact), else demucs (a guess)
+    stem_root = os.path.splitext(recon_wav)[0]
+    exact = {n: f"{stem_root}_{n}.wav" for n in orig_stems}
+    if all(os.path.exists(p) for p in exact.values()):
+        want = exact
+    else:
+        want = {n: os.path.join(cache_dir, n + ".wav") for n in orig_stems}
+        if not all(os.path.exists(p) for p in want.values()):
+            R.separate(decode_file_stereo(recon_wav), cache_dir)
+    hop = 1024
+    beat = 60.0 / float(bpm)
+    out = {}
+    for n, op in orig_stems.items():
+        yo, yr = R._mono(op), R._mono(want[n])
+        Lo = 10 * np.log10(librosa.feature.melspectrogram(y=yo, sr=RATE, n_fft=2048, hop_length=hop, n_mels=64, fmin=30, fmax=16000) + 1e-10)
+        Lr = 10 * np.log10(librosa.feature.melspectrogram(y=yr, sr=RATE, n_fft=2048, hop_length=hop, n_mels=64, fmin=30, fmax=16000) + 1e-10)
+        ref = max(float(Lo.max()), float(Lr.max()))
+        Lo, Lr = np.maximum(Lo - ref, -70.0), np.maximum(Lr - ref, -70.0)
+        d, ao, ar = [], [], []
+        k = 0
+        while True:
+            to, tr = first_bar_s + k * beat, k * beat
+            fo0, fo1 = int(to * RATE / hop), int((to + beat) * RATE / hop)
+            fr0, fr1 = int(tr * RATE / hop), int((tr + beat) * RATE / hop)
+            if fo1 > Lo.shape[1] or fr1 > Lr.shape[1] or (n_bars and k >= 4 * n_bars):
+                break
+            d.append(float(np.abs(Lo[:, fo0:fo1].mean(axis=1) - Lr[:, fr0:fr1].mean(axis=1)).mean()))
+            ao.append(float(Lo[:, fo0:fo1].mean())); ar.append(float(Lr[:, fr0:fr1].mean()))
+            k += 1
+        eo = 20 * np.log10(np.sqrt(np.mean(yo ** 2)) + 1e-9); er = 20 * np.log10(np.sqrt(np.mean(yr ** 2)) + 1e-9)
+        corr = float(np.corrcoef(ao, ar)[0, 1]) if len(ao) > 8 and np.std(ao) > 1e-6 and np.std(ar) > 1e-6 else 0.0
+        out[n] = {"db": round(float(np.mean(d)), 2) if d else None, "level_db": round(float(er - eo), 1), "corr": round(corr, 3), "beats": len(d)}
+    vals = [v["db"] for v in out.values() if v["db"] is not None]
+    out["mean_db"] = round(float(np.mean(vals)), 2) if vals else None
+    return out
 
 
 def worst(report, k=3):

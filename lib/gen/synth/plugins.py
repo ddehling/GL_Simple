@@ -265,6 +265,8 @@ def overlay(style: dict) -> dict:
         base = st["slots"].get(slot)
         if base is None:
             continue
+        if base.get("voice") == "sample":
+            continue                      # a song's own material (script.apply_material) is never overlaid
         if instrument(vp) is None:
             continue
         merged = dict(base)

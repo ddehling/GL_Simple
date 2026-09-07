@@ -40,7 +40,10 @@ import numpy as np
 from lib.gen import RATE
 
 SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass",
-                "drums", "drums_grid", "drums_phrases", "dyn", "level", "trim_db", "loops", "melody", "bass_line")
+                "drums", "drums_grid", "drums_phrases", "drums_bars", "dyn", "level", "trim_db", "loops", "melody", "bass_line")
+# drums_bars: [{slot: [[step, vel], ...]} per bar of the section]  the identified beat bar by bar (from the drum stem's sounds);
+#        the kit plays it as a template per bar (strong hits always, weak ones by strength; thinned only when the steering
+#        goes below the section's own energy / density), so the song's fills and variation are there and still steerable
 # level: the section's mean level in dB relative to the song's mean (from the source); render(calibrate=True) measures the
 #        recreation's own section levels and writes the difference into trim_db (dB, added to the gain lane) - a second pass
 # chords: one entry per bar (cycled when shorter than the section): a diatonic degree (int) or {"deg", "third": "maj"|"min", "sus": 0|2|4}
@@ -55,7 +58,12 @@ SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "
 # bass: {"steps": [16th onsets], "degrees": [offsets from the tonic]}  the section's bass cell (from the source's bass stem)
 DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, "humanize": 1.0, "end": True, "sections": [],
            "kit": None, "vocals": [], "bank": [], "bass_bank": [], "bpm_src": None, "fidelity": 0.0,
-           "motifs": [], "bass_cells": []}
+           "motifs": [], "bass_cells": [], "pad": None, "bank_keys": [], "mix_db": {}, "kit_db": {}}
+# kit_db: {slot: dB}  each identified drum sound's level relative to the loudest one (the kit's balance, from the song)
+# mix_db: {"drums", "bass", "other", "vocals": dB}  per-stem trims, measured by score --stems against the source's stems
+# pad:       {"file", "base_midi", "seconds"}  the song's sustained texture (its steadiest two bars), the pad slot plays it
+# bank_keys: [{"file", "base_midi"}]  a second identified plucked instrument (the keys slot plays it)
+# kit may carry any drum slot (kick, snare, hat, ohat, shaker, perc, rim, tom, ride): the song's identified sounds
 # motifs:     [{"steps", "degrees", "contour", "count", "name"}]  the song's melody cells -> the generator's motif memory
 # bass_cells: [{"steps", "degrees", "count"}]                      the song's bass cells -> the bass generator's library
 # bass_bank: [{"file", "base_midi"}]  the bass stem's notes as samples (the bass slot plays them)
@@ -125,6 +133,8 @@ def normalize(script: dict) -> dict:
                 e[k] = round(float(max(-18.0, min(18.0, e[k]))), 2)
         if e.get("drums_phrases") is not None:
             e["drums_phrases"] = [dict(p) for p in e["drums_phrases"]] or None
+        if e.get("drums_bars") is not None:
+            e["drums_bars"] = [dict(p) for p in e["drums_bars"]] or None
         out.append(e)
     s["sections"] = out
     s["kit"] = {k: str(v) for k, v in (s.get("kit") or {}).items() if v} or None
@@ -132,6 +142,13 @@ def normalize(script: dict) -> dict:
                    for v in (s.get("vocals") or []) if v.get("file")]
     s["bank"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 60))} for b in (s.get("bank") or []) if b.get("file")]
     s["bass_bank"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 36))} for b in (s.get("bass_bank") or []) if b.get("file")]
+    s["bank_keys"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 60))} for b in (s.get("bank_keys") or []) if b.get("file")]
+    s["mix_db"] = {str(k): round(float(max(-18.0, min(18.0, v))), 1) for k, v in (s.get("mix_db") or {}).items()
+                   if k in ("drums", "bass", "other", "vocals")}
+    s["kit_db"] = {str(k): round(float(max(-30.0, min(0.0, v))), 1) for k, v in (s.get("kit_db") or {}).items()}
+    p = s.get("pad")
+    s["pad"] = ({"file": str(p["file"]), "base_midi": int(p.get("base_midi", 60)), "seconds": float(p.get("seconds", 0.0))}
+                if isinstance(p, dict) and p.get("file") else None)
     s["motifs"] = [{"steps": [int(x) for x in m["steps"]], "degrees": [int(x) for x in m["degrees"]], "contour": m.get("contour", "flat"),
                     "count": int(m.get("count", 1)), "name": str(m.get("name", ""))} for m in (s.get("motifs") or []) if m.get("steps")]
     s["bass_cells"] = [{"steps": [int(x) for x in c["steps"]], "degrees": [int(x) for x in c["degrees"]], "count": int(c.get("count", 1))}
@@ -187,14 +204,17 @@ def apply_material(style: dict, script: dict) -> dict:
     """A copy of the style whose kit slots play the script's one-shots and
     which has a "vox" slot when the script places vocal phrases."""
     s = normalize(script)
-    if (not s.get("kit") and not s.get("vocals") and not s.get("bank") and not s.get("bass_bank")
+    if (not s.get("kit") and not s.get("vocals") and not s.get("bank") and not s.get("bass_bank") and not s.get("pad")
             and not (s.get("fidelity", 0.0) > 0 and any(e.get("loops") for e in s["sections"]))):
         return style
     st = copy.deepcopy(style)
+    kit_db = s.get("kit_db") or {}
     for slot, path in (s.get("kit") or {}).items():
         if slot in st["slots"] and os.path.exists(path):
             base = st["slots"][slot]
-            st["slots"][slot] = {"voice": "sample", "file": path, "base_midi": KIT_BASE.get(slot, 60), "gain": float(base.get("gain", 0.8)),
+            # identified sounds are peak-normalised one-shots: their balance is the song's (kit_db), not the analog patch gains
+            gain = 0.9 * 10 ** (float(kit_db[slot]) / 20.0) if slot in kit_db else float(base.get("gain", 0.8))
+            st["slots"][slot] = {"voice": "sample", "file": path, "base_midi": KIT_BASE.get(slot, 60), "gain": gain,
                                  "send_reverb": float(base.get("send_reverb", 0.0)), "octave": base.get("octave", 3)}
     if s.get("fidelity", 0.0) > 0.0 and any(e.get("loops") for e in s["sections"]):
         for slot in ("loop_drums", "loop_bass", "loop_other", "loop_vox"):
@@ -206,24 +226,43 @@ def apply_material(style: dict, script: dict) -> dict:
             st["master_shelf_db"] = 0.0          # the loops carry the record's own top end
             st["target_lufs"] = None             # and its own loudness
     bank = [b for b in (s.get("bank") or []) if os.path.exists(b["file"])]
+    bank_keys = [b for b in (s.get("bank_keys") or []) if os.path.exists(b["file"])] or bank
     if bank:
-        for slot in ("keys", "arp", "lead"):
+        for slot, bk in (("keys", bank_keys), ("arp", bank), ("lead", bank)):
             if slot in st["slots"]:
                 base = st["slots"][slot]
-                st["slots"][slot] = {"voice": "sample", "samples": bank, "gain": float(base.get("gain", 0.4)) * 0.9,
+                st["slots"][slot] = {"voice": "sample", "samples": bk, "gain": float(base.get("gain", 0.4)) * 0.9,
                                      "send_reverb": float(base.get("send_reverb", 0.3)), "send_delay": float(base.get("send_delay", 0.0)),
                                      "octave": base.get("octave", 3), "decay": 0.6}
+    pad = s.get("pad")
+    if pad and os.path.exists(str(pad.get("file", ""))) and "pad" in st["slots"]:
+        base = st["slots"]["pad"]
+        st["slots"]["pad"] = {"voice": "sample", "samples": [{"file": pad["file"], "base_midi": int(pad.get("base_midi", 60))}],
+                              "gain": float(base.get("gain", 0.2)), "send_reverb": float(base.get("send_reverb", 0.4)) * 0.5,
+                              "octave": base.get("octave", 3), "drone": True}          # one note on the root, the texture itself
     bass_bank = [b for b in (s.get("bass_bank") or []) if os.path.exists(b["file"])]
     if bass_bank and "bass" in st["slots"]:
         base = st["slots"]["bass"]
-        st["slots"]["bass"] = {"voice": "sample", "samples": bass_bank, "gain": float(base.get("gain", 0.6)), "octave": base.get("octave", 1),
+        st["slots"]["bass"] = {"voice": "sample", "samples": bass_bank, "gain": float(base.get("gain", 0.6)) * 1.6, "octave": base.get("octave", 1),
                                "send_reverb": 0.0, "decay": 0.9}
     if s.get("vocals"):
         st["slots"]["vox"] = {"voice": "sample", "gain": 0.85, "base_midi": 60, "send_reverb": 0.2}
         for sec in st["sections"].values():
             if "*" not in sec["layers"]:
                 sec["layers"] = set(sec["layers"]) | {"vox"}
+    mix = s.get("mix_db") or {}
+    if any(abs(float(v)) > 0.05 for v in mix.values()):
+        # per-stem trims (dB) measured against the source's own stems: the mix identified
+        for slot, patch in st["slots"].items():
+            stem = STEM_OF.get(slot)
+            if stem in mix and isinstance(patch, dict) and "gain" in patch:
+                patch["gain"] = float(patch["gain"]) * 10 ** (float(mix[stem]) / 20.0)
     return st
+
+
+STEM_OF = {"kick": "drums", "snare": "drums", "hat": "drums", "ohat": "drums", "shaker": "drums", "perc": "drums", "rim": "drums",
+           "tom": "drums", "ride": "drums", "bass": "bass", "pad": "other", "keys": "other", "lead": "other", "arp": "other",
+           "melody": "other", "vox": "vocals"}
 
 
 def make_composer(script: dict, arc_fn=None):
@@ -260,7 +299,7 @@ def level_trims(audio, script: dict, bpm: float) -> list:
 
 
 def render(script: dict, out_path: str | None = None, seconds: float | None = None, seed: int | None = None,
-           progress=None, calibrate: bool | None = None):
+           progress=None, calibrate: bool | None = None, stems: bool = False):
     """Play the script offline. Returns (audio (n,2) float32, composer).
     seconds defaults to the script's own length (plus a bar of tail).
     calibrate: when the sections carry a "level" (the analyser writes the
@@ -279,11 +318,13 @@ def render(script: dict, out_path: str | None = None, seconds: float | None = No
         trims = level_trims(first, s, c0.bpm)
         for e, t in zip(s["sections"], trims):
             e["trim_db"] = t
-        return _render_pass(s, out_path, seconds, progress=(lambda p: progress(0.5 + 0.5 * p)) if progress else None)
-    return _render_pass(s, out_path, seconds, progress=progress)
+        return _render_pass(s, out_path, seconds, progress=(lambda p: progress(0.5 + 0.5 * p)) if progress else None, stems=stems)
+    return _render_pass(s, out_path, seconds, progress=progress, stems=stems)
 
 
-def _render_pass(s: dict, out_path, seconds, progress=None):
+def _render_pass(s: dict, out_path, seconds, progress=None, stems: bool = False):
+    """stems=True (with out_path) also writes the rack's four buses as
+    <out>_drums/_bass/_other/_vocals.wav - exact stems of the recreation."""
     from lib.gen.synth import SynthRack
     c = make_composer(s)
     total = float(seconds) if seconds else total_seconds(s, c.bpm) + 4 * 60.0 / c.bpm
@@ -295,11 +336,25 @@ def _render_pass(s: dict, out_path, seconds, progress=None):
         rack.schedule(p.events)
     out = []
     done = 0
-    while rack.clock < n_total:
-        out.append(rack.render(2048))
-        done += 2048
-        if progress is not None and done % (2048 * 64) == 0:
-            progress(min(1.0, done / n_total))
+    writers = {}
+    if stems and out_path:
+        import soundfile as sf
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        root = os.path.splitext(out_path)[0]
+        writers = {n: sf.SoundFile(f"{root}_{n}.wav", "w", samplerate=RATE, channels=2, subtype="PCM_16")
+                   for n in ("drums", "bass", "other", "vocals")}
+        gain = rack.master
+        rack.capture = lambda name, block: writers[name].write(np.clip(block * gain, -1, 1))
+    try:
+        while rack.clock < n_total:
+            out.append(rack.render(2048))
+            done += 2048
+            if progress is not None and done % (2048 * 64) == 0:
+                progress(min(1.0, done / n_total))
+    finally:
+        rack.capture = None
+        for w in writers.values():
+            w.close()
     audio = np.concatenate(out)[:n_total]
     if out_path:
         import soundfile as sf
@@ -393,7 +448,11 @@ def describe(script: dict) -> str:
         lines.append("  " + "  ".join(bits))
         bar += e["bars"]
     if s.get("kit"):
-        lines.append("  kit: " + ", ".join(f"{k}={os.path.basename(v)}" for k, v in s["kit"].items()))
+        lines.append(f"  kit: {len(s['kit'])} identified sounds: " + ", ".join(f"{k}={os.path.basename(v)}" for k, v in s["kit"].items()))
+    if s.get("pad"):
+        lines.append(f"  pad: the song's sustained texture ({s['pad'].get('seconds', 0)} s at midi {s['pad'].get('base_midi')})")
+    if s.get("bank_keys"):
+        lines.append(f"  keys: a second plucked instrument ({len(s['bank_keys'])} note samples)")
     if s.get("vocals"):
         lines.append(f"  vocals: {len(s['vocals'])} phrases placed (first at bar {s['vocals'][0]['bar']})")
     if s.get("bank"):

@@ -191,12 +191,22 @@ class Composer:
         elif e.get("drums"):
             tpl = e["drums"]
         if tpl:
-            ov = {k: [(int(st), float(v)) for st, v in (tpl.get(k) or [])] for k in ("kick", "snare", "hat") if tpl.get(k) is not None}
+            ov = {k: [(int(st), float(v)) for st, v in (tpl.get(k) or [])] for k in tpl if k != "fill" and tpl.get(k) is not None}
             if tpl.get("fill"):
                 ov["fill"] = {k: [(int(st), float(v)) for st, v in hits] for k, hits in tpl["fill"].items()}
             self.drums.override = ov or None
         else:
             self.drums.override = None
+        db = e.get("drums_bars")
+        if db:
+            self.drums.override_bars = [{k: [(int(st), float(v)) for st, v in hits] for k, hits in db[(p0 + b) % len(db)].items()}
+                                        for b in range(PHRASE_BARS)]
+        else:
+            self.drums.override_bars = None
+        # steering relative to the section's own levers: 1.0 = play the song's beat as identified
+        e_en = float(e.get("energy") if e.get("energy") is not None else 0.6)
+        e_de = float(e.get("density") if e.get("density") is not None else 1.0)
+        self.drums.steer = min(1.5, max(0.1, (max(0.0, self.form.energy() + self.energy_bias) / max(e_en, 0.05)) * (self.density / max(e_de, 0.05))))
 
     def _dyn(self, bar_in_section: int) -> float:
         """The scripted section's dynamics (dB relative to its mean) at a
@@ -359,7 +369,18 @@ class Composer:
                 if prev is not None:
                     for j, m in enumerate(prev[2]):
                         note(prev[3] * S, "pad", m, 0.55 + 0.1 * self.rng.random(), prev[1] * S, offset_s=0.02 * j)
-                prev = (chords[b][0], 1, self.melody.pad_bar(chords[b], energy), b, chords[b][2])
+                voicing = self.melody.pad_bar(chords[b], energy)
+                pad_patch = self.style["slots"].get("pad", {})
+                if pad_patch.get("drone"):
+                    # a song's own sustained texture: one note on the chord root, in the sample's own register
+                    base = int(pad_patch.get("samples", [{}])[0].get("base_midi", 60)) if pad_patch.get("samples") else 60
+                    m = self.key.degree_midi(self.harmony.root_degree(chords[b]), 3)
+                    while m - base > 6:
+                        m -= 12
+                    while base - m > 6:
+                        m += 12
+                    voicing = [m]
+                prev = (chords[b][0], 1, voicing, b, chords[b][2])
             if prev is not None:
                 for j, m in enumerate(prev[2]):
                     note(prev[3] * S, "pad", m, 0.55 + 0.1 * self.rng.random(), prev[1] * S, offset_s=0.02 * j, sustain=True)

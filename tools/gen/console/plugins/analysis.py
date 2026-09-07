@@ -293,7 +293,8 @@ class BeatGrid(QWidget):
         if not self.grid:
             qp.setPen(QPen(QColor("#5a606c"))); qp.drawText(6, 30, "ingest a song, then select a section row")
             qp.end(); return
-        rows = ("kick", "snare", "hat")
+        order = ("kick", "snare", "hat", "ohat", "shaker", "perc", "rim", "tom", "ride")
+        rows = tuple(k for k in order if k in (self.grid or {})) or ("kick", "snare", "hat")
         left, top = 48, 18
         cw = max(8.0, (w - left - 8) / 16.0)
         rh = max(10.0, (h - top - 4) / len(rows))
@@ -609,7 +610,7 @@ class AnalysisPage(QWidget):
 
             def prog(x):
                 self.progress = x
-            audio, comp = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), progress=prog)
+            audio, comp = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), progress=prog, stems=True)
             trims = [e.get("trim_db") for e in (comp.script or {}).get("sections", [])]
             if any(t is not None for t in trims) and not any(e.get("trim_db") is not None for e in sc["sections"]):
                 for e, t in zip(sc["sections"], trims):
@@ -631,6 +632,27 @@ class AnalysisPage(QWidget):
             a = self.result["analysis"]
             self.report = SC.compare(self.result["features"], self.recon_feats, bpm_orig=a["bpm"], bpm_recon=self.script["bpm"],
                                      key_orig=self.script["key"], key_recon=self.script["key"])
+            stems = {n: os.path.join(self.folder or "", "stems", n + ".wav") for n in ("drums", "bass", "other", "vocals")}
+            if self.folder and all(os.path.exists(p) for p in stems.values()) and os.path.exists(os.path.join(self.folder, "recreation.wav")):
+                # the strict measure: the recreation's own stems against the source's, beat by beat; the level
+                # differences become the script's per-stem mix trims (the next recreate applies them)
+                self.msg = "score: separating the recreation into stems"
+                from lib.gen import script as S
+                for p in (os.path.join(self.folder, "recon_stems", n + ".wav") for n in stems):
+                    if os.path.exists(p):
+                        os.remove(p)
+                sf_rep = SC.stem_fidelity(stems, os.path.join(self.folder, "recreation.wav"), float(a.get("first_bar_s", 0.0)), self.script["bpm"],
+                                          os.path.join(self.folder, "recon_stems"), n_bars=len(self.result["features"]))
+                self.report["stems"] = sf_rep
+                mix = dict(self.script.get("mix_db") or {})
+                for n, v in sf_rep.items():
+                    if isinstance(v, dict) and v.get("level_db") is not None and abs(v["level_db"]) >= 0.5:
+                        mix[n] = round(float(max(-18.0, min(18.0, mix.get(n, 0.0) - v["level_db"]))), 1)
+                if mix != (self.script.get("mix_db") or {}):
+                    self.script["mix_db"] = mix
+                    S.save(self.script, os.path.join(self.folder, "script.yaml"))
+                self.msg = ("stems: " + "  ".join(f"{n} {v['db']:.1f} dB" for n, v in sf_rep.items() if isinstance(v, dict))
+                            + f"  (mean {sf_rep['mean_db']:.1f}; mix trims saved, recreate to apply)")
             if self.folder:
                 with open(os.path.join(self.folder, "score.json"), "w", encoding="utf-8") as fh:
                     json.dump(self.report, fh, indent=1)

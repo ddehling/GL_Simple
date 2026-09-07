@@ -283,6 +283,51 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
   75 vs 84 (about 0.8: the kit's own hats/percussion around the template, fills), spectrum 88 vs 90.
   The earlier ablation showed the three fields are worth ~0 alone under the old scorer on this
   song and 3.6 points together with the corrected one, most of it the dynamics + calibration.
+- **Sound identification (2026-09-06, operator: "an order of magnitude better in note and sound
+  identification")**. What was wrong, measured on Ananta: the "melody" was 799 basic-pitch notes that were
+  the DRONE's harmonics at every octave (G#/D#), so the motifs were flat "-7 -7 -7" cells; the plucked
+  onsets (1277, the actual tune) it mostly missed; the kit was three one-shots for a record with 2600
+  percussion onsets; and - found on the way - the rack's plugin overlay replaced the lead / keys / pad
+  patches with Dexed AFTER the script's material was applied, so the recreation never played the
+  song's melodic samples at all. New module `lib/gen/analysis/sounds.py`:
+  - Drums: every onset of the drum stem gets a timbre vector (attack + body mel spectra, decay,
+    centroid), clustered (k-means, merge near-identical, drop tiny); templates that are a SUM of two
+    sounds (a kick under a clap makes its own cluster) are explained by the others with NNLS and keep
+    only their residual (or merge when they are the same kind of sound); fixed-template NMF over the
+    whole stem gives each sound's activation per 6 ms, peak-picked and folded onto the 16th grid ->
+    per bar, a strength grid PER SOUND (`drum_grids`). Each sound gets its most isolated hit as a
+    one-shot, its level relative to the loudest (`kit_db` - sample slots are not calibrated by the
+    rack, so the balance must come from the song), and a drum SLOT (kick = the low-band sound that
+    plays the most, snare = the mid sound on the backbeat, hat = the busiest high one, the rest by
+    register). Joint NMF refinement of the templates was tried and rejected: templates drift into the
+    loudest band. Unsupervised NMF was tried: a kick's pitch sweep splits into four components.
+  - The script carries the beat per identified sound: `drums` / `drums_phrases` for every slot the
+    kit has, plus `drums_bars` - the identified beat bar by bar; the kit plays it as a template
+    (hits above 0.4 of the sound's max always, weaker ones by strength) thinned or thickened only by
+    the STEERING relative to the section's own levers (`Drums.steer`), so the song's fills and
+    variation are there and the operator can still push it. Layers follow which sounds play.
+  - Melodic: the "other" stem is split (HPSS) into the sustained part and the plucked part. Plucked
+    onsets get a pitch by harmonic summation on the spectrum after the onset MINUS the spectrum
+    before it (the drone subtracted; pyin on the transient part could not hear the tone), and a
+    timbre vector; clustered -> up to three instruments, each with a multisample from its own cleanest
+    hit per pitch and a note line -> lead (motifs), keys (`bank_keys`), arp. The sustained part's
+    steadiest two bars become the pad sample, pitched by the chord ROOT sounding there (pyin heard
+    the fifth) and played as a DRONE (one note on the root, the texture itself, `pad.drone`).
+  - Mix: `mix_db` per-stem trims and the vocal chops on their own bus.
+  - THE STRICT MEASURE (`score.stem_fidelity`): the phrase-level score said 88-91 for recreations
+    the ear called bad. The recreation is now rendered with its four buses as exact stems
+    (`render(stems=True)`, `SynthRack.capture`) and each is compared with the source's demucs stem on
+    a 64-band log-mel spectrogram BEAT BY BEAT: mean |dB| of the beat spectra, the level difference
+    (fed back into `mix_db`; `analyze.py score` / the tab's Score do it) and the activity correlation.
+    Ananta, drums / bass / other / vocals, mean |dB| (activity r): before 8.8 / 4.1 (-6 dB level) /
+    7.7 (+11 dB, and that was Dexed) / 1.5; after 6.4 (0.62) / 3.7 (0.59) / 8.5 (0.47, at the right
+    level, playing the song's plucks) / 1.0 (0.90). The drum identification CEILING - the stem
+    resynthesised from the identified sounds on the grid - is 3.9-4.1 dB (r 0.64-0.68): one exemplar
+    per sound, no velocity layers, 16th quantisation. The generator path loses ~2.3 dB more.
+  - Not solved: the melodic stem at 8.5 dB. The plucks are right but the LINES are generated from
+    motifs (that is the brief); the pad is one texture; the second instrument plays chords not its
+    line. Next: an exemplar per (pitch, dynamics), the keys slot following its own identified line
+    as a second motif memory, and per-sound NMF for the plucks too.
 - **Hosted instruments off the main thread**: pedalboard refuses `reset=True` outside the main
   thread; instruments render with `reset=False` and the previous batch's tail is flushed with
   silence first (the console error "Plugin ... must be reloaded on the main thread" was this).

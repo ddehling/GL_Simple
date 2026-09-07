@@ -216,6 +216,21 @@ def main():
         mat = R.reuse(stereo, res["bars"], key.root, "minor" if key.mode != "major" else "major", os.path.join(folder, "reuse"))
         check(mat["stems"] and all(os.path.exists(p) for p in mat["stems"].values()), f"stems separated in {_t.time() - t0:.0f} s")
         check(len(mat["kit"]) >= 2 and all(os.path.exists(p) for p in mat["kit"].values()), f"drum kit cut from the drum stem: {sorted(mat['kit'])}")
+        # sound identification: the drum stem's onsets clustered into sounds, activations per sound by template NMF
+        from lib.gen.analysis import sounds as SO
+        ds = SO.drum_sounds(mat["stems"]["drums"], os.path.join(folder, "reuse", "kit_sounds"), bars=res["bars"])
+        check(len(ds["sounds"]) >= 3 and "kick" in ds["kit"] and len(ds["grids"]) >= len(res["bars"]) - 2,
+              f"drum sounds identified: {[(s['slot'], s['n'], int(s['centroid'])) for s in ds['sounds']]}")
+        kick_prof = np.mean([np.asarray(g["kick"]) for g in ds["grids"][10:22] if "kick" in g], axis=0) if ds["kit"].get("kick") else np.zeros(16)
+        check(all(kick_prof[s] >= 0.5 for s in (0, 4, 8, 12)) and sum(1 for v in kick_prof if v >= 0.5) <= 6,
+              f"the kick's own activation reads four-on-the-floor in the groove ({''.join('x' if v >= 0.5 else '.' for v in kick_prof)})")
+        check(mat.get("drum_grids") and any(len(e.get("drums") or {}) >= 3 for e in res["script"]["sections"]) is not None,
+              f"ingest carries the beat per identified sound ({len(mat.get('drum_grids') or [])} bars)")
+        pi = SO.pluck_instruments(mat["stems"]["other"], res["bars"], os.path.join(folder, "reuse", "plucks"))
+        inst0 = pi["instruments"][0] if pi["instruments"] else None
+        check(inst0 is not None and len(inst0["bank"]) >= 3 and len(inst0["line"]) >= 20 and len({n[2] for n in inst0["line"]}) >= 4,
+              f"plucked instruments identified from the melodic stem: {[(i['n'], len(i['bank']), int(i['centroid'])) for i in pi['instruments']]}"
+              + (f"; pad {pi['pad']['seconds']} s at midi {pi['pad']['base_midi']}" if pi.get("pad") else "; no pad"))
         s3 = dict(s2, kit=mat["kit"])
         if mat.get("hook"):
             s3["sections"] = [dict(e) for e in s2["sections"]]

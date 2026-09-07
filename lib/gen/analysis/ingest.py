@@ -180,8 +180,8 @@ def section_pattern(bar_pats, b0, b1, thr=0.45):
     if not seg:
         return None
     out = {"grid": {}}
-    for name in DRUM_BANDS:
-        m = np.array([bp[name] for bp in seg]).mean(axis=0)
+    for name in seg[0].keys():                       # kick/snare/hat from the band reader, or every identified sound
+        m = np.array([bp.get(name, [0.0] * STEPS) for bp in seg]).mean(axis=0)
         m = m / max(float(m.max()), 1e-9)
         out["grid"][name] = [round(float(x), 3) for x in m]
         hits = [(k, round(float(m[k]), 2)) for k in range(STEPS) if m[k] >= max(thr, HIT_THR.get(name, thr))]
@@ -198,18 +198,19 @@ def phrase_templates(bar_pats, b0, b1, thr=0.45):
         tpl = section_pattern(bar_pats, p, min(p + 4, b1), thr)
         if tpl is None:
             break
-        entry = {k: tpl[k] for k in DRUM_BANDS}
+        names = [k for k in tpl if k != "grid"]
+        entry = {k: tpl[k] for k in names}
         last = min(p + 4, b1) - 1
         if last > p:
             lb = section_pattern(bar_pats, last, last + 1, thr)
             if lb:
                 diff = 0.0
-                for k in ("kick", "snare"):
+                for k in [k for k in ("kick", "snare", "tom", "perc") if k in tpl["grid"]]:
                     a, b = np.asarray(tpl["grid"][k]), np.asarray(lb["grid"][k])
                     na, nb_ = np.linalg.norm(a), np.linalg.norm(b)
                     diff = max(diff, 1.0 - (float(a @ b / (na * nb_)) if na > 1e-9 and nb_ > 1e-9 else 1.0))
                 if diff > 0.25:
-                    entry["fill"] = {k: lb[k] for k in DRUM_BANDS}
+                    entry["fill"] = {k: lb[k] for k in names}
         out.append(entry)
     return out
 
@@ -519,6 +520,61 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
                                               # the slider adds the source loops as a reference (1.0 = the loops themselves)
         if mat.get("kit"):
             sc["kit"] = mat["kit"]
+            if mat.get("kit_db"):
+                sc["kit_db"] = mat["kit_db"]              # each sound's level in the song, relative to the loudest
+        if mat.get("pad"):
+            sc["pad"] = dict(mat["pad"])
+            # the texture is the chord itself: pitch it by the ROOT sounding in the bars it was cut from, so the
+            # drone plays untransposed on the tonic (pyin heard its fifth)
+            pb = mat["pad"].get("bar")
+            if pb is not None and res.get("chords_rich") and 0 <= pb < len(res["chords_rich"]):
+                from lib.gen.script import chord_deg
+                root_pc = key.degree_pc(chord_deg(res["chords_rich"][pb]))
+                heard = int(sc["pad"].get("base_midi", 60))
+                sc["pad"]["base_midi"] = min((m for m in range(24, 96) if m % 12 == root_pc), key=lambda m: abs(m - heard))
+        if mat.get("instruments"):
+            # the melodic layers follow the identified instruments: lead = the first, keys = the second,
+            # arp only when the song has a third; each plays in the sections where its notes are
+            lines = [inst.get("line") or [] for inst in mat["instruments"]]
+            if mat.get("melody") and lines and not lines[0]:
+                lines[0] = mat["melody"]
+            slot_of = ("lead", "keys", "arp")
+            b = 0
+            for e in sc["sections"]:
+                b0, b1 = b, b + e["bars"]
+                b += e["bars"]
+                on = set()
+                for k, line in enumerate(lines[:3]):
+                    if sum(1 for n in line if b0 <= n[0] < b1) >= 2:
+                        on.add(slot_of[k])
+                e["layers"] = sorted((set(e.get("layers") or []) - {"lead", "keys", "arp"}) | on)
+        if mat.get("bank_keys"):
+            sc["bank_keys"] = mat["bank_keys"]
+        if mat.get("drum_grids"):
+            # the beat per IDENTIFIED SOUND (template NMF on the drum stem) replaces the three-band reading:
+            # templates per section / phrase for every slot the song's kit has, and the layers follow the song
+            grids = mat["drum_grids"]
+            from lib.gen.events import DRUM_SLOTS
+            b = 0
+            for e in sc["sections"]:
+                b0, b1 = b, min(b + e["bars"], len(grids))
+                b += e["bars"]
+                if b1 <= b0:
+                    continue
+                drums = section_pattern(grids, b0, b1)
+                if not drums:
+                    continue
+                slots_on = [k for k in drums["grid"] if any(np.asarray(g.get(k, [0.0])).max() >= 0.5 for g in grids[b0:b1])]
+                e["drums"] = {k: drums[k] for k in drums["grid"]}
+                e["drums_grid"] = drums["grid"]
+                phrases = phrase_templates(grids, b0, b1)
+                if len(phrases) > 1:
+                    e["drums_phrases"] = phrases
+                # and the beat bar by bar: every hit above 0.2 of the sound's max (the kit plays the strong ones always)
+                e["drums_bars"] = [{k: [[st, round(float(v), 2)] for st, v in enumerate(g.get(k) or []) if v >= 0.2] for k in slots_on}
+                                   for g in grids[b0:b1]]
+                e["layers"] = sorted((set(e.get("layers") or []) - set(DRUM_SLOTS)) | set(slots_on))
+            a["drum_sounds"] = mat.get("drum_sounds", [])
         if mat.get("vocals"):
             sc["vocals"] = mat["vocals"]
         if mat.get("hook"):

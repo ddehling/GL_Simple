@@ -668,8 +668,17 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
            "melody": [], "bass_bank": [], "bass_line": []}
     if "kit" in want:
         if progress:
-            progress(0.6, "cutting the drum kit")
-        out["kit"] = drum_kit(stems["drums"], os.path.join(out_dir, "kit"))
+            progress(0.6, "identifying the drum sounds")
+        try:
+            from lib.gen.analysis import sounds as SO
+            ds = SO.drum_sounds(stems["drums"], os.path.join(out_dir, "kit"), bars=bars)
+        except Exception as e:  # noqa: BLE001
+            reasons.append(f"drum sound identification failed ({type(e).__name__}: {str(e)[:60]})")
+            ds = {"kit": {}, "sounds": [], "grids": []}
+        if ds["kit"]:
+            out["kit"], out["drum_grids"], out["drum_sounds"], out["kit_db"] = ds["kit"], ds["grids"], ds["sounds"], ds.get("kit_db", {})
+        else:
+            out["kit"] = drum_kit(stems["drums"], os.path.join(out_dir, "kit"))
     if "vocals" in want:
         if progress:
             progress(0.75, "chopping vocals")
@@ -697,13 +706,30 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
                                                                   release_s=0.08, name="bass")
     if "bank" in want:
         if progress:
-            progress(0.95, "notes as samples")
-        bank, line = note_samples(stems["other"], bars, os.path.join(out_dir, "notes"))
-        if len(bank) >= 3:
-            out["bank"], out["melody"] = bank, line          # the song's own tones, the song's own line
+            progress(0.93, "identifying the plucked instruments")
+        insts, pad = [], None
+        try:
+            from lib.gen.analysis import sounds as SO
+            pi = SO.pluck_instruments(stems["other"], bars, os.path.join(out_dir, "plucks"))
+            insts, pad = pi["instruments"], pi["pad"]
+            reasons.extend(SO.reasons)
+        except Exception as e:  # noqa: BLE001
+            reasons.append(f"pluck identification failed ({type(e).__name__}: {str(e)[:60]})")
+        out["pad"] = pad
+        if insts and len(insts[0]["bank"]) >= 3:
+            out["bank"], out["melody"] = insts[0]["bank"], insts[0]["line"]     # the song's own plucks, the song's own line
+            out["instruments"] = [{k: v for k, v in i.items() if k != "line"} for i in insts]
+            if len(insts) > 1 and len(insts[1]["bank"]) >= 3:
+                out["bank_keys"] = insts[1]["bank"]
         else:
-            out["bank"] = melodic_bank(stems["other"], os.path.join(out_dir, "bank"))
-            out["melody"] = []
+            if progress:
+                progress(0.95, "notes as samples")
+            bank, line = note_samples(stems["other"], bars, os.path.join(out_dir, "notes"))
+            if len(bank) >= 3:
+                out["bank"], out["melody"] = bank, line      # the song's own tones, the song's own line
+            else:
+                out["bank"] = melodic_bank(stems["other"], os.path.join(out_dir, "bank"))
+                out["melody"] = []
     if "loops" in want and sections:
         if progress:
             progress(0.98, "cutting section loops")

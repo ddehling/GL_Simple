@@ -27,7 +27,7 @@ from lib.gen.synth import plugins
 from lib.gen.synth.voices import VOICES
 
 BUS_OF = {s: "drums" for s in DRUM_SLOTS}
-BUS_OF.update({"bass": "bass", "lead": "music", "pad": "music", "arp": "music", "keys": "music", "fx": "fx", "vox": "fx",
+BUS_OF.update({"bass": "bass", "lead": "music", "pad": "music", "arp": "music", "keys": "music", "fx": "fx", "vox": "vox",
                "loop_drums": "fx", "loop_bass": "fx", "loop_other": "fx", "loop_vox": "fx",     # loops keep their own mix: no bus chain
                "melody": "music"})
 PAN_OF = {"kick": 0.0, "snare": 0.05, "hat": -0.25, "ohat": 0.3, "perc": 0.4, "tom": 0.15,
@@ -37,7 +37,7 @@ PAN_OF = {"kick": 0.0, "snare": 0.05, "hat": -0.25, "ohat": 0.3, "perc": 0.4, "t
 PAN_SPREAD = {"hat": 0.12, "ohat": 0.1, "perc": 0.35, "arp": 0.3, "keys": 0.15, "lead": 0.1,
               "tom": 0.25, "shaker": 0.1, "ride": 0.05}
 SQRT2 = float(np.sqrt(2.0))
-BUSES = ("drums", "bass", "music", "fx")
+BUSES = ("drums", "bass", "music", "fx", "vox")     # vox: a song's placed vocal phrases, on their own so they measure as a stem
 # Mono-legato drums: a new note in the key slot cuts the tails of notes
 # in the listed slots (a 909 kick retriggers, a closed hat chokes the
 # open hat). Fade length in seconds.
@@ -102,6 +102,7 @@ class SynthRack:
         self.clock = 0
         self.done = False
         self._fade = None
+        self.capture = None         # offline stems: callable(name, block) fed the four buses per render block
         self._gain = 1.0
         self.master = float(master)
         beat = RATE * 60.0 / self.bpm
@@ -580,8 +581,11 @@ class SynthRack:
             if bus in buses:
                 for f in chain:
                     buses[bus] = f.process(buses[bus])
-        mix = (self.drum_comp.process(buses["drums"]) + self.bass_sat.process(buses["bass"])
-               + self.music_hp.process(buses["music"]) + buses["fx"])
+        b_drums, b_bass = self.drum_comp.process(buses["drums"]), self.bass_sat.process(buses["bass"])
+        b_music, b_fx, b_vox = self.music_hp.process(buses["music"]), buses["fx"], buses["vox"]
+        if self.capture is not None:                  # offline: the buses as stems (drums / bass / other / vocals)
+            self.capture("drums", b_drums); self.capture("bass", b_bass); self.capture("other", b_music); self.capture("vocals", b_vox)
+        mix = b_drums + b_bass + b_music + b_fx + b_vox
         self.delay.fb = float(max(0.0, min(0.85, self.lanes["delay_fb"][0])))
         mix += self.delay.process(send_d) * 0.8
         mix += self.reverb.process(send_r) * (0.55 * float(self.lanes["verb"][0]))
