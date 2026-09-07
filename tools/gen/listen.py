@@ -97,11 +97,22 @@ def main():
     if args.analysis:
         import soundfile as sf
         rows = []
+        import json
+        src = None
+        try:
+            with open(os.path.join(args.analysis, "features.json"), encoding="utf-8") as fh:
+                src = json.load(fh).get("source")
+        except Exception:
+            pass
         for name in ("original", "recreation", "recreation_tuned"):
             path = os.path.join(args.analysis, name + ".wav")
-            if not os.path.exists(path):
+            if not os.path.exists(path) and name == "original" and src and os.path.exists(src):
+                from lib.dj.features import decode_file_stereo
+                x = decode_file_stereo(src)
+            elif os.path.exists(path):
+                x, sr = sf.read(path, dtype="float32", always_2d=True)
+            else:
                 continue
-            x, sr = sf.read(path, dtype="float32", always_2d=True)
             if x.shape[1] == 1:
                 x = np.repeat(x, 2, axis=1)
             st = stats(x)

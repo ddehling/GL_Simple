@@ -266,7 +266,13 @@ def transcribe_hook(stem_wav, bars, key_pc, mode, min_notes=4):
     return {"steps": steps, "degrees": degs, "contour": contour, "name": f"transcribed x{count}"}
 
 
-def _notes_basic_pitch(path):
+_NOTE_CACHE = {}
+
+
+def _notes_full(path):
+    """[(start_s, end_s, midi, amp)] from basic-pitch (cached per path), or None."""
+    if path in _NOTE_CACHE:
+        return _NOTE_CACHE[path]
     try:
         from basic_pitch.inference import predict
         from basic_pitch import ICASSP_2022_MODEL_PATH
@@ -274,12 +280,163 @@ def _notes_basic_pitch(path):
         return None
     try:
         _, midi_data, note_events = predict(path, ICASSP_2022_MODEL_PATH)
-        out = [(float(s), float(p)) for s, e, p, amp, *_ in note_events if e - s >= 0.08 and amp >= 0.3]
-        out.sort()
+        out = sorted((float(s), float(e), int(p), float(amp)) for s, e, p, amp, *_ in note_events if e - s >= 0.06 and amp >= 0.25)
+        _NOTE_CACHE[path] = out
         return out
     except Exception as e:  # noqa: BLE001
         reasons.append(f"basic-pitch failed: {type(e).__name__}: {e}")
         return None
+
+
+def _notes_basic_pitch(path):
+    full = _notes_full(path)
+    if full is None:
+        return None
+    return [(s, float(p)) for s, e, p, amp in full if e - s >= 0.08 and amp >= 0.3]
+
+
+def note_samples(stem_wav, bars, out_dir, notes=None, release_s=0.12, max_pitches=24, name="tone"):
+    """NOTES AS SAMPLES: transcribe the stem (basic-pitch), cut every note's
+    audio out of it, keep the cleanest instance per pitch (long, loud,
+    isolated) -> a multisample bank [{"file", "base_midi"}], and return
+    the transcribed line on the bar grid as [(bar, step, midi, dur_steps, vel)]
+    so the recreation plays the song's own melody with the song's own
+    tone. notes: pre-transcribed [(start, end, midi, amp)] (else basic-pitch)."""
+    import soundfile as sf
+    y = _mono(stem_wav)
+    bars = np.asarray(bars, dtype=np.float64)
+    if notes is None:
+        notes = _notes_full(stem_wav)
+    if not notes or len(bars) < 2:
+        reasons.append(f"no notes transcribed from {os.path.basename(stem_wav)}")
+        return [], []
+    os.makedirs(out_dir, exist_ok=True)
+    # isolation: how much other-note energy overlaps this note
+    starts = np.array([n[0] for n in notes])
+    ends = np.array([n[1] for n in notes])
+    best = {}
+    for i, (s0, e0, midi, amp) in enumerate(notes):
+        overlap = np.sum((starts < e0) & (ends > s0)) - 1
+        score = amp * min(e0 - s0, 1.5) / (1.0 + 0.7 * overlap)
+        if midi not in best or score > best[midi][0]:
+            best[midi] = (score, i)
+    # keep the strongest pitches (by score) up to max_pitches, spread across the range
+    keep = sorted(best.items(), key=lambda kv: -kv[1][0])[:max_pitches]
+    bank = []
+    for midi, (score, i) in sorted(keep):
+        s0, e0, _, amp = notes[i]
+        a = max(0, int((s0 - 0.005) * RATE))
+        b = min(len(y), int((e0 + release_s) * RATE))
+        if b - a < int(0.05 * RATE):
+            continue
+        seg = y[a:b].copy()
+        fade = min(int(0.005 * RATE), len(seg) // 4)
+        seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        tail = min(int(release_s * RATE), len(seg) // 3)
+        seg[-tail:] *= np.linspace(1.0, 0.0, tail, dtype=np.float32)
+        pk = float(np.abs(seg).max())
+        if pk < 1e-3:
+            continue
+        seg = seg / pk * 0.8
+        path = os.path.join(out_dir, f"{name}_{midi}.wav")
+        sf.write(path, seg, RATE, subtype="PCM_16")
+        bank.append({"file": path, "base_midi": int(midi)})
+    # the line on the grid
+    line = []
+    for s0, e0, midi, amp in notes:
+        k = int(np.searchsorted(bars, s0, side="right") - 1)
+        if not (0 <= k < len(bars) - 1):
+            continue
+        bar_len = bars[k + 1] - bars[k]
+        step = int(round((s0 - bars[k]) / bar_len * 16))
+        if step >= 16:
+            k, step = k + 1, 0
+        dur = max(0.5, (e0 - s0) / bar_len * 16)
+        line.append((int(k), int(step), int(midi), round(float(dur), 2), round(float(min(1.0, 0.3 + amp)), 2)))
+    # one note per (bar, step): keep the loudest
+    dedup = {}
+    for bar, step, midi, dur, vel in line:
+        if (bar, step) not in dedup or vel > dedup[(bar, step)][4]:
+            dedup[(bar, step)] = (bar, step, midi, dur, vel)
+    line = sorted(dedup.values())
+    return bank, line
+
+
+def melody_motifs(line, chords, key_pc, mode, max_motifs=8):
+    """The transcribed line as GENERATIVE material: every two-bar cell
+    (steps 0..31, degree offsets from the bar's chord root) with how often
+    it recurs, most recurrent first. The composer seeds its motif memory
+    with these and develops them (repeat / transpose / vary / invert /
+    sequence / fragment / augment / retrograde) instead of replaying them."""
+    from collections import Counter
+    from lib.gen.theory import Key
+    key = Key(key_pc, "minor" if mode == "minor" else "major")
+    pcs = [key.degree_pc(d) for d in range(7)]
+    wins = {}
+    for bar, step, midi, dur, vel in line:
+        w = bar // 2
+        root_deg = int(chords[bar]) % 7 if bar < len(chords) else 0
+        pc = int(midi) % 12
+        if pc not in pcs:
+            pc = min(pcs, key=lambda q: min((q - pc) % 12, (pc - q) % 12))
+        deg = pcs.index(pc)
+        octave_off = (int(midi) - (12 * 5 + key.root)) // 12          # relative to the tonic in octave 4
+        d = deg - root_deg + 7 * octave_off
+        wins.setdefault(w, {})[(bar % 2) * 16 + int(step)] = (int(max(-7, min(12, d))), float(vel), float(dur))
+    sigs = Counter()
+    rep = {}
+    for w, cell in wins.items():
+        if len(cell) < 3:
+            continue
+        steps = sorted(cell)
+        sig = tuple((st, cell[st][0] % 7) for st in steps)
+        sigs[sig] += 1
+        rep.setdefault(sig, (w, cell))
+    out = []
+    for sig, count in sigs.most_common(max_motifs):
+        w, cell = rep[sig]
+        steps = sorted(cell)[:12]
+        degs = [cell[st][0] for st in steps]
+        span = max(degs) - min(degs)
+        third = max(1, len(degs) // 3)
+        a, b, c = np.mean(degs[:third]), np.mean(degs[third:2 * third] or degs), np.mean(degs[-third:])
+        contour = "flat" if span == 0 else ("arch" if b > a and b > c else ("wave" if b < a and b < c else ("rise" if c > a else "fall")))
+        out.append({"steps": steps, "degrees": degs, "contour": contour, "count": int(count), "name": f"cell@bar{2 * w} x{count}"})
+    return out
+
+
+def bass_cell_library(cells, max_cells=8):
+    """Distinct bass cells (steps + degree offsets) with recurrence counts,
+    most common first: the library the bass generator draws from."""
+    from collections import Counter
+    sigs = Counter()
+    rep = {}
+    for ph0, cell in cells.items():
+        sig = tuple(zip(cell["steps"], [d % 7 for d in cell["degrees"]]))
+        sigs[sig] += 1
+        rep.setdefault(sig, cell)
+    return [dict(rep[sig], count=int(c)) for sig, c in sigs.most_common(max_cells)]
+
+
+def bass_notes(bass_wav, bars, cells_notes):
+    """Bass NOTES AS SAMPLES from the pyin transcription used by bass_line:
+    cells_notes = [(bar, step, midi)] -> (bank, line)."""
+    import soundfile as sf
+    y = _mono(bass_wav)
+    bars = np.asarray(bars, dtype=np.float64)
+    if not cells_notes or len(bars) < 2:
+        return [], []
+    notes = []
+    for i, (bar, step, midi) in enumerate(cells_notes):
+        if bar + 1 >= len(bars):
+            continue
+        s0 = bars[bar] + (bars[bar + 1] - bars[bar]) * step / 16.0
+        nb, ns = (cells_notes[i + 1][0], cells_notes[i + 1][1]) if i + 1 < len(cells_notes) else (bar, 16)
+        e0 = (bars[nb] + (bars[min(nb + 1, len(bars) - 1)] - bars[nb]) * ns / 16.0) if nb < len(bars) else s0 + 0.5
+        e0 = min(e0, s0 + 1.5)
+        if e0 - s0 >= 0.08:
+            notes.append((float(s0), float(e0), int(midi), 0.8))
+    return notes
 
 
 def _notes_pyin(path):
@@ -354,6 +511,7 @@ def bass_line(bass_wav, bars, key_pc, mode):
                     notes.append((k, step, m))
             last = (i, m)
     cells = {}
+    cells_notes = list(notes)
     for ph0 in range(0, len(bars) - 1, 4):
         ns = [(st, m) for (k, st, m) in notes if k == ph0]           # the phrase's first bar as the cell
         if len(ns) < 2:
@@ -372,7 +530,7 @@ def bass_line(bass_wav, bars, key_pc, mode):
             d = pcs_key.index(pc) + 7 * ((m - tonic) // 12)
             degs.append(int(max(-7, min(14, d))))
         cells[ph0] = {"steps": steps[:8], "degrees": degs[:8]}
-    return {"pcs": per_bar, "cells": cells}
+    return {"pcs": per_bar, "cells": cells, "notes": cells_notes}
 
 
 def melodic_bank(other_wav, out_dir, max_slices=6, length_s=0.6):
@@ -419,7 +577,58 @@ def melodic_bank(other_wav, out_dir, max_slices=6, length_s=0.6):
     return bank
 
 
-def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit", "vocals", "hook", "bass", "bank")):
+def section_loops(stems, bars, sections, out_dir, loop_bars=4, silence_db=-48.0):
+    """For each script section (bars b0..b1 on the song's grid) cut the most
+    representative `loop_bars`-bar window from every stem: the phrase whose
+    energy is nearest the section's median. Returns [{"drums": wav, "bass":
+    wav, "other": wav, "vocals": wav} or {} per section] (silent stems are
+    left out)."""
+    import soundfile as sf
+    bars = np.asarray(bars, dtype=np.float64)
+    os.makedirs(out_dir, exist_ok=True)
+    audio = {}
+    for name, path in stems.items():
+        x, sr = sf.read(path, dtype="float32", always_2d=True)
+        audio[name] = x if x.shape[1] == 2 else np.repeat(x, 2, axis=1)
+    out = []
+    b = 0
+    for i, sec in enumerate(sections):
+        nb = int(sec.get("bars", 8))
+        b0, b1 = b, b + nb
+        b += nb
+        loops = {}
+        if b1 + 1 > len(bars):
+            out.append(loops)
+            continue
+        # candidate windows: phrase-aligned inside the section
+        cands = list(range(b0, max(b0 + 1, b1 - loop_bars + 1), loop_bars))
+        mix = sum(audio.values()) / max(len(audio), 1)
+        def energy(k0):
+            a, c = int(bars[k0] * RATE), int(bars[min(len(bars) - 1, k0 + loop_bars)] * RATE)
+            return float(np.sqrt(np.mean(mix[a:c] ** 2)) + 1e-9) if c > a else 0.0
+        es = [energy(k) for k in cands]
+        med = float(np.median(es))
+        k0 = cands[int(np.argmin([abs(e - med) for e in es]))]
+        a, c = int(bars[k0] * RATE), int(bars[min(len(bars) - 1, k0 + loop_bars)] * RATE)
+        for name, x in audio.items():
+            seg = x[a:c].copy()
+            if seg.shape[0] < RATE // 4:
+                continue
+            rms = 20 * np.log10(float(np.sqrt(np.mean(seg ** 2))) + 1e-9)
+            if rms < silence_db:
+                continue
+            fade = min(int(0.005 * RATE), seg.shape[0] // 8)
+            seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)[:, None]
+            seg[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)[:, None]
+            path = os.path.join(out_dir, f"sec{i:02d}_{name}.wav")
+            sf.write(path, np.clip(seg, -1, 1), RATE, subtype="PCM_16")
+            loops[name] = path
+        loops["_bar0"] = int(k0)
+        out.append(loops)
+    return out
+
+
+def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit", "vocals", "hook", "bass", "bank", "loops"), sections=None):
     """Everything above in one call -> {"stems", "kit", "vocals", "hook", "reasons"}."""
     reasons.clear()
     if not available():
@@ -428,7 +637,8 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
     if progress:
         progress(0.05, "separating stems")
     stems = separate(samples_stereo, os.path.join(out_dir, "stems"))
-    out = {"stems": stems, "kit": {}, "vocals": [], "hook": None, "bass_pcs": None, "bass_cells": {}, "bank": []}
+    out = {"stems": stems, "kit": {}, "vocals": [], "hook": None, "bass_pcs": None, "bass_cells": {}, "bank": [], "loops": [],
+           "melody": [], "bass_bank": [], "bass_line": []}
     if "kit" in want:
         if progress:
             progress(0.6, "cutting the drum kit")
@@ -448,10 +658,23 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
         if bl:
             out["bass_pcs"] = bl["pcs"]
             out["bass_cells"] = bl["cells"]
+            bn = bass_notes(stems["bass"], bars, bl.get("notes") or [])
+            if bn:
+                out["bass_bank"], out["bass_line"] = note_samples(stems["bass"], bars, os.path.join(out_dir, "bass_notes"), notes=bn,
+                                                                  release_s=0.08, name="bass")
     if "bank" in want:
         if progress:
-            progress(0.95, "slicing melodic tones")
-        out["bank"] = melodic_bank(stems["other"], os.path.join(out_dir, "bank"))
+            progress(0.95, "notes as samples")
+        bank, line = note_samples(stems["other"], bars, os.path.join(out_dir, "notes"))
+        if len(bank) >= 3:
+            out["bank"], out["melody"] = bank, line          # the song's own tones, the song's own line
+        else:
+            out["bank"] = melodic_bank(stems["other"], os.path.join(out_dir, "bank"))
+            out["melody"] = []
+    if "loops" in want and sections:
+        if progress:
+            progress(0.98, "cutting section loops")
+        out["loops"] = section_loops(stems, bars, sections, os.path.join(out_dir, "loops"))
     out["reasons"] = list(reasons)
     if progress:
         progress(1.0, "reuse done")

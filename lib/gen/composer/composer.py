@@ -120,6 +120,21 @@ class Composer:
         self.form.set_script(s["sections"], end=bool(s.get("end", True)))
         self._script_entry = None
         self._script_lanes = {}
+        # the song's MATERIAL into the generator's mechanisms
+        if s.get("motifs"):
+            from lib.gen.composer.melody import Motif
+            seeded = []
+            for m in s["motifs"]:
+                mo = Motif(m["steps"], m["degrees"], self.bar, contour=m.get("contour", "flat"), name=m.get("name", "song"))
+                mo.liked = max(0, int(m.get("count", 1)) - 1)       # recurrence = how much the song liked it
+                self.melody.memory.add(mo)
+                seeded.append(mo)
+            if seeded and self.melody.theme is None:
+                self.melody.theme = seeded[0]
+            self.melody.hook_provider = lambda rng, _s=seeded: (lambda m: {"steps": m.steps, "degrees": m.degrees, "contour": m.contour, "name": m.name})(
+                rng.choices(_s, weights=[1 + m.liked for m in _s])[0])
+        if s.get("bass_cells"):
+            self.melody.bass_library = [dict(c) for c in s["bass_cells"]]
 
     def _apply_script_entry(self):
         e = self.form.script_entry
@@ -352,8 +367,35 @@ class Composer:
                 note(0, "fx", 36.0, 1.0, 2 * S, kind="impact")
                 note(0, "fx", 60.0, 0.6, 2 * S, kind="sweep")
         self._automation(ev, section, section_start, start, spb, nb)
+        # the source song's own loops for this section (fidelity > 0): one hit per phrase per stem
+        loops_on = set()
+        if self.script and self._script_entry and self._script_entry.get("loops") and self.script.get("fidelity", 0.0) > 0.0:
+            fid = float(self.script["fidelity"])
+            rate = (self.bpm / float(self.script["bpm_src"])) if self.script.get("bpm_src") else 1.0
+            stems = self._script_entry["loops"]
+            order = ["drums", "bass", "other", "vocals"]
+            n_on = 4 if fid >= 0.99 else (3 if fid >= 0.75 else (2 if fid >= 0.4 else 1))
+            for name in order[:n_on]:
+                path = stems.get(name)
+                if not path:
+                    continue
+                slot = {"drums": "loop_drums", "bass": "loop_bass", "other": "loop_other", "vocals": "loop_vox"}[name]
+                if slot in self.muted:
+                    continue
+                loops_on.add(name)
+                dur_steps = nb * S / rate
+                note(0, slot, 60.0, 1.0, dur_steps, file=path, rate=rate)
+            # the generator steps back where a loop plays
+            if "drums" in loops_on:
+                ev = [e for e in ev if e.slot not in DRUM_SLOTS]
+            if "bass" in loops_on:
+                ev = [e for e in ev if e.slot != "bass"]
+            if "other" in loops_on:
+                ev = [e for e in ev if e.slot not in ("pad", "keys", "arp", "lead")]
+        # (the transcribed lines are evidence only: the lead develops the song's motifs and the bass
+        #  draws from its cell library - both generated, both steerable - through its note samples)
         # the source song's own vocal phrases, where they were
-        if self.script and self.script.get("vocals") and "vox" not in self.muted:
+        if self.script and self.script.get("vocals") and "vox" not in self.muted and "vocals" not in loops_on:
             rate = (self.bpm / float(self.script["bpm_src"])) if self.script.get("bpm_src") else 1.0
             for v in self.script["vocals"]:
                 b = float(v["bar"])

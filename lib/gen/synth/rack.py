@@ -27,10 +27,12 @@ from lib.gen.synth import plugins
 from lib.gen.synth.voices import VOICES
 
 BUS_OF = {s: "drums" for s in DRUM_SLOTS}
-BUS_OF.update({"bass": "bass", "lead": "music", "pad": "music", "arp": "music", "keys": "music", "fx": "fx", "vox": "fx"})
+BUS_OF.update({"bass": "bass", "lead": "music", "pad": "music", "arp": "music", "keys": "music", "fx": "fx", "vox": "fx",
+               "loop_drums": "fx", "loop_bass": "fx", "loop_other": "fx", "loop_vox": "fx",     # loops keep their own mix: no bus chain
+               "melody": "music"})
 PAN_OF = {"kick": 0.0, "snare": 0.05, "hat": -0.25, "ohat": 0.3, "perc": 0.4, "tom": 0.15,
           "rim": -0.2, "ride": 0.35, "shaker": -0.35,
-          "bass": 0.0, "lead": -0.15, "pad": 0.0, "arp": 0.2, "keys": -0.3, "fx": 0.0, "vox": 0.0}
+          "bass": 0.0, "lead": -0.15, "pad": 0.0, "arp": 0.2, "keys": -0.3, "fx": 0.0, "vox": 0.0, "melody": -0.1}
 # per-note random pan spread (+-), so repeated hits do not stack on one point
 PAN_SPREAD = {"hat": 0.12, "ohat": 0.1, "perc": 0.35, "arp": 0.3, "keys": 0.15, "lead": 0.1,
               "tom": 0.25, "shaker": 0.1, "ride": 0.05}
@@ -110,7 +112,7 @@ class SynthRack:
         self.drum_comp = fx.Compressor(thresh_db=-14.0, ratio=3.0, attack_s=0.004, release_s=0.09, makeup_db=2.5)
         self.bass_sat = fx.Saturator(1.8)
         self.music_hp = fx.Biquad("highpass", 170.0, 0.8)
-        self.master_shelf = fx.Biquad("highshelf", 6000.0, 0.7, 2.5)
+        self.master_shelf = fx.Biquad("highshelf", 6000.0, 0.7, float(style.get("master_shelf_db", 2.5)))
         self.mix_hp = fx.Biquad("highpass", LANES["hp"], 0.7)
         self.mix_lp = fx.Biquad("lowpass", LANES["lp"], 0.7)
         self.lanes = {k: [float(v), float(v), 0] for k, v in LANES.items()}   # value, target, samples left
@@ -316,6 +318,7 @@ class SynthRack:
             self.delay = fx.PingPongDelay(int(RATE * 60.0 / self.bpm * 0.75))
         self.has_kick = "kick" in self.slots
         self.target_lufs = style.get("target_lufs", self.target_lufs)
+        self.master_shelf = fx.Biquad("highshelf", 6000.0, 0.7, float(style.get("master_shelf_db", 2.5)))
         self.reverb.set(decay=style.get("reverb_decay"))
         self.calibrate()
 

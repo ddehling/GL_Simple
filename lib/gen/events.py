@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 # Instrument slots a style may populate. A style maps each slot to a
 # patch (analog voice + params, or a SoundFont program, or an SC synthdef).
 SLOTS = ("kick", "snare", "hat", "ohat", "perc", "tom", "rim", "ride", "shaker",
-         "bass", "lead", "pad", "arp", "keys", "fx", "auto", "vox")
+         "bass", "lead", "pad", "arp", "keys", "fx", "auto", "vox",
+         "loop_drums", "loop_bass", "loop_other", "loop_vox", "melody")
+# melody: the source song's transcribed line played through its own note samples (SongScript "melody")
+LOOP_SLOTS = ("loop_drums", "loop_bass", "loop_other", "loop_vox")
+# loop_*: the source song's own stems, a representative 4-bar loop per section, played on the
+# phrase grid when a SongScript brings them (the "source material" the recreation is built on).
 DRUM_SLOTS = ("kick", "snare", "hat", "ohat", "perc", "tom", "rim", "ride", "shaker")
 # "vox" carries placed sample phrases (a song's own vocal chops, per
 # params["file"]) when a SongScript brings them.

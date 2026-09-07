@@ -147,6 +147,7 @@ class Melody:
         self.last_motif = None
         self.hook_provider = None       # callable(rng) -> hook dict or None (lib/gen/composer/hooks.py)
         self.bass_override = None       # {"steps": [...], "degrees": [...]} from a SongScript (the source's bass line)
+        self.bass_library = None        # [{"steps", "degrees", "count"}] the bass generator draws its cells from (a song's)
         self.source = "walk"            # where the last new motif came from: hook | corpus | walk
         self._bass_cell = None
         self._bass_cell_left = 0
@@ -189,6 +190,15 @@ class Melody:
                 gate = max(0.5, (nxt - st) * 0.8)
                 out.append((st, self.key.degree_midi(d, oct_) if d >= -7 else tonic, (0.9 if st % 4 == 0 else 0.72), gate))
             return out
+        if (self._bass_cell is None or self._bass_cell_left <= 0) and self.bass_library:
+            # a cell from the song's own library (recurrent ones more often), thinned by energy / density
+            lib = self.bass_library
+            cell = rng.choices(lib, weights=[1 + int(c.get("count", 1)) for c in lib])[0]
+            pairs = list(zip(cell["steps"], cell["degrees"]))
+            keep = max(2, int(round(len(pairs) * min(1.0, 0.55 + 0.45 * energy) * min(1.0, dens + 0.3))))
+            pairs = pairs[:keep] if keep < len(pairs) else pairs
+            self._bass_cell = [(int(st), int(d) if -7 <= int(d) <= 14 else 0) for st, d in pairs if 0 <= int(st) < S]
+            self._bass_cell_left = rng.randint(2, 4)
         if self._bass_cell is None or self._bass_cell_left <= 0:
             n_hits = max(2, int(round((3 + 6 * energy) * dens)))
             from lib.gen.composer.rhythm import euclid
@@ -223,10 +233,15 @@ class Melody:
             cell.append((s, off))
         cell.sort()
         out = []
+        from_library = bool(self.bass_library)
         for i, (s, off) in enumerate(cell):
             nxt = cell[i + 1][0] if i + 1 < len(cell) else S
             gate = max(0.5, (nxt - s) * (0.45 + 0.45 * (1 - energy)) * (0.85 + 0.3 * rng.random()))
-            pitch = self.key.snap(root + off) if off not in (0, 12) else root + off
+            if from_library:
+                # library degrees are offsets from the tonic; follow the chord by moving the cell with the root
+                pitch = self.key.degree_midi(off + self._bass_root_degree(chord), oct_)
+            else:
+                pitch = self.key.snap(root + off) if off not in (0, 12) else root + off
             vel = (0.9 if s % 4 == 0 else 0.7) + 0.08 * (rng.random() - 0.5)
             out.append((s, pitch, vel, gate))
         return out
@@ -374,6 +389,14 @@ class Melody:
             gap = (nxt - sa) if nxt is not None else d
             d = min(d, gap) * (1.03 if rng.random() < 0.45 else rng.uniform(0.55, 0.9))
             shaped.append((sa, midi, vel, max(0.4, d)))
+        # density / energy thin the line (seeded motifs included): weak-beat notes go first
+        dens_eff = float(energy)
+        if dens_eff < 0.55 and len(shaped) > 3:
+            # a hard cap (no dice): keep the strong-beat notes first, then the loudest
+            keep_n = max(3, int(round(len(shaped) * (0.35 + dens_eff))))
+            ranked = sorted(shaped, key=lambda n: (0 if n[0] % 4 == 0 else 1, -n[2]))
+            keep = set(id(n) for n in ranked[:keep_n])
+            shaped = [n for n in shaped if id(n) in keep]
         if cadence and shaped:
             # the section's last phrase ends on the tonic, held
             sa, midi, vel, d = shaped[-1]

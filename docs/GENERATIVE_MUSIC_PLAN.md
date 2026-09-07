@@ -210,6 +210,37 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
   30 Hz-16 kHz, 86 fps, cached as .spec.npz) on one time axis with the recreation shifted so its
   bar 0 sits under the original's first downbeat, bar ticks, section markers, the play cursor,
   wheel zoom and drag scroll.
+- **Source loops = the recreation that matches** (operator: "the songs just don't match at all"): a
+  generator playing its own synths over the song's key, chords and beat never sounds like the
+  record. With stems, every section now gets a representative 4-bar loop per stem (the phrase
+  nearest the section's median energy, `reuse.section_loops`), the script carries them
+  (`section["loops"]`) and a `fidelity` dial: 0 generator only, 0.5 drum + bass loops under
+  generated melodic layers, 1 every loop (drums / bass / other / vocals on `loop_*` slots straight
+  to the fx bus, the generator only adds transitions and the hook; master shelf and loudness
+  target off). Ananta Groove: synth-only 82 -> stems 85 -> loops 89.6, spectrum within 2-3 dB of the
+  original. The Analysis tab has the "source material" slider; the tab ticks "reuse stems" by
+  default when demucs is installed.
+- **Notes as samples, played PROGRAMMATICALLY** (operator: "extract the notes to use as samples",
+  then "not sheet-music transcription - generate the pattern with our mechanisms so we can adjust on
+  the fly"): the melodic stem is transcribed (basic-pitch) and every note's audio is cut into a
+  multisample keyed by pitch (`reuse.note_samples`, up to 24 pitches; the bass stem the same way
+  via pyin); the transcribed lines are kept as EVIDENCE only. What plays is generated: the line's
+  two-bar cells become `script["motifs"]` (chord-relative degrees, recurrence counts) that seed the
+  composer's motif memory and theme (`Composer.load_script`), so the lead DEVELOPS the song's cells
+  (repeat / transpose / vary / invert / sequence / fragment / augment / retrograde) with harmonic
+  function on the scripted chords; the bass stem's cells become `script["bass_cells"]`, the library
+  the bass generator draws from (kick avoidance, slides, energy thinning intact); the section's
+  drum grid is a TEMPLATE the kit varies (strong hits always, weaker by strength x energy x density);
+  lead / keys / arp / bass play through the song's own note samples. Density and energy thin the
+  lead by a hard cap (120 -> 44 -> 27 notes per minute). Fidelity default is now 0 (programmatic);
+  the slider adds the source loops as a reference up to 1.0.
+- **The ceiling, measured** (Ananta Groove, 212 bars): self = 100; all-loops reference 91.1; drum +
+  bass loops under generated layers 88.7; fully programmatic 85.1. Per-term loss programmatic vs
+  loops (points of global): rhythm 1.9, harmony 1.4, energy 1.3, timbre 0.4, spectrum 0.3. Even the
+  loops only reach 72 on the rhythm term (one 4-bar window per section vs the record's fills and
+  variation; the term is also noisy), timbre is solved by the note samples (94 vs 98), harmony loses
+  where the mix-only chord reader (~half right per bar) hands the generator wrong chords, energy
+  loses the within-section dynamics (automation, fills) that section levers flatten.
 - **Hosted instruments off the main thread**: pedalboard refuses `reset=True` outside the main
   thread; instruments render with `reset=False` and the previous batch's tail is flushed with
   silence first (the console error "Plugin ... must be reloaded on the main thread" was this).

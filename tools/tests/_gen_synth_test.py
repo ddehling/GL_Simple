@@ -66,6 +66,7 @@ def kick_alignment(mix, kicks):
 
 
 def main():
+    os.environ["GEN_VST"] = "0"          # the ANALOG rack's gate: hosted plugins are not bit-deterministic
     print("== warm-up (numba JIT)")
     render(seconds=4)
     print("== determinism")

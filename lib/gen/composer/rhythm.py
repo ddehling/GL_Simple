@@ -133,9 +133,19 @@ class Drums:
         kind = "halftime" if ctx.get("halftime") else self.kind
         double = bool(ctx.get("double"))
         if self.override and slot in ("kick", "snare", "hat") and self.override.get(slot) is not None and not fill:
-            hits = [(int(st), float(v)) for st, v in self.override[slot] if 0 <= int(st) < S]
-            if slot == "hat":
-                hits = [(st, min(1.0, v * (0.9 + 0.2 * rng.random()))) for st, v in hits]
+            # the song's pattern as a template: strong hits always, weaker ones by their strength,
+            # energy and density - so the beat is the song's, and still breathes with the steering
+            hits = []
+            for st, v in self.override[slot]:
+                st, v = int(st), float(v)
+                if not (0 <= st < S):
+                    continue
+                p = 1.0 if v >= 0.85 else v * (0.55 + 0.45 * energy) * min(1.2, dens + 0.2)
+                if rng.random() < p:
+                    vel = min(1.0, v * (0.92 + 0.16 * rng.random()))
+                    hits.append((st, vel))
+            if slot == "kick" and not hits:
+                hits = [(0, 1.0)]
             return hits
         if slot == "kick":
             if fill:

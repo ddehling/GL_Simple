@@ -257,7 +257,7 @@ def overlay(style: dict) -> dict:
     of the style: slots whose plugin resolves become "vst" voices (the
     original patch is kept as the fallback), others are left alone."""
     ov = style.get("vst") or {}
-    if not ov:
+    if not ov or os.environ.get("GEN_VST", "1") == "0":       # GEN_VST=0: analog only (gates, determinism)
         return style
     import copy
     st = copy.deepcopy(style)

@@ -39,12 +39,20 @@ import numpy as np
 from lib.gen import RATE
 
 SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass",
-                "drums", "drums_grid")
+                "drums", "drums_grid", "loops", "melody", "bass_line")
+# melody / bass_line: [[bar_in_section, step, midi, dur_steps, vel], ...]  the transcribed lines (notes as samples)
+# loops: {"drums": wav, "bass": wav, "other": wav, "vocals": wav}  a 4-bar loop per stem cut from the source for this section
 # drums: {"kick": [[step, vel], ...], "snare": [...], "hat": [...]}  the section's beat, as hits on the 16th grid (the kit plays exactly this)
 # drums_grid: {"kick": [16 floats], ...}  the folded onset strengths it was read from (evidence, shown in the tab)
 # bass: {"steps": [16th onsets], "degrees": [offsets from the tonic]}  the section's bass cell (from the source's bass stem)
 DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, "humanize": 1.0, "end": True, "sections": [],
-           "kit": None, "vocals": [], "bank": [], "bpm_src": None}
+           "kit": None, "vocals": [], "bank": [], "bass_bank": [], "bpm_src": None, "fidelity": 0.0,
+           "motifs": [], "bass_cells": []}
+# motifs:     [{"steps", "degrees", "contour", "count", "name"}]  the song's melody cells -> the generator's motif memory
+# bass_cells: [{"steps", "degrees", "count"}]                      the song's bass cells -> the bass generator's library
+# bass_bank: [{"file", "base_midi"}]  the bass stem's notes as samples (the bass slot plays them)
+# fidelity: how much of the recreation is the source's own loops: 0 = generator only, 0.5 = drum + bass loops under generated
+#           melodic layers, 1 = every loop that exists, the generator only fills what the loops lack (transitions, hook)
 # bank:    [{"file": wav, "base_midi": 64}]  pitched slices of the source's melodic stem (keys/arp play them)
 # bpm_src: the source song's tempo (vocal phrases are time-stretched by bpm/bpm_src)
 # kit:    {"kick": wav, "snare": wav, "hat": wav}  one-shots cut from the source song (the recreation plays them)
@@ -73,7 +81,20 @@ def normalize(script: dict) -> dict:
     s["vocals"] = [{"bar": float(v["bar"]), "file": str(v["file"]), "seconds": float(v.get("seconds", 1.0))}
                    for v in (s.get("vocals") or []) if v.get("file")]
     s["bank"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 60))} for b in (s.get("bank") or []) if b.get("file")]
+    s["bass_bank"] = [{"file": str(b["file"]), "base_midi": int(b.get("base_midi", 36))} for b in (s.get("bass_bank") or []) if b.get("file")]
+    s["motifs"] = [{"steps": [int(x) for x in m["steps"]], "degrees": [int(x) for x in m["degrees"]], "contour": m.get("contour", "flat"),
+                    "count": int(m.get("count", 1)), "name": str(m.get("name", ""))} for m in (s.get("motifs") or []) if m.get("steps")]
+    s["bass_cells"] = [{"steps": [int(x) for x in c["steps"]], "degrees": [int(x) for x in c["degrees"]], "count": int(c.get("count", 1))}
+                       for c in (s.get("bass_cells") or []) if c.get("steps")]
+    for e in s["sections"]:
+        for k in ("melody", "bass_line"):
+            if e.get(k):
+                e[k] = [[int(n[0]), int(n[1]), int(n[2]), float(n[3]), float(n[4])] for n in e[k] if len(n) >= 5]
     s["bpm_src"] = float(s["bpm_src"]) if s.get("bpm_src") else None
+    s["fidelity"] = float(max(0.0, min(1.0, s.get("fidelity") or 0.0)))
+    for e in s["sections"]:
+        if e.get("loops"):
+            e["loops"] = {k: str(v) for k, v in e["loops"].items() if v and not str(k).startswith("_")}
     s["seed"] = int(s.get("seed") or 1)
     s["bpm"] = float(s["bpm"]) if s.get("bpm") else None
     return s
@@ -116,7 +137,8 @@ def apply_material(style: dict, script: dict) -> dict:
     """A copy of the style whose kit slots play the script's one-shots and
     which has a "vox" slot when the script places vocal phrases."""
     s = normalize(script)
-    if not s.get("kit") and not s.get("vocals") and not s.get("bank"):
+    if (not s.get("kit") and not s.get("vocals") and not s.get("bank") and not s.get("bass_bank")
+            and not (s.get("fidelity", 0.0) > 0 and any(e.get("loops") for e in s["sections"]))):
         return style
     st = copy.deepcopy(style)
     for slot, path in (s.get("kit") or {}).items():
@@ -124,14 +146,28 @@ def apply_material(style: dict, script: dict) -> dict:
             base = st["slots"][slot]
             st["slots"][slot] = {"voice": "sample", "file": path, "base_midi": KIT_BASE.get(slot, 60), "gain": float(base.get("gain", 0.8)),
                                  "send_reverb": float(base.get("send_reverb", 0.0)), "octave": base.get("octave", 3)}
+    if s.get("fidelity", 0.0) > 0.0 and any(e.get("loops") for e in s["sections"]):
+        for slot in ("loop_drums", "loop_bass", "loop_other", "loop_vox"):
+            st["slots"][slot] = {"voice": "sample", "gain": 1.0, "base_midi": 60}
+        for sec in st["sections"].values():
+            if "*" not in sec["layers"]:
+                sec["layers"] = set(sec["layers"]) | {"loop_drums", "loop_bass", "loop_other", "loop_vox"}
+        if s["fidelity"] >= 0.99:
+            st["master_shelf_db"] = 0.0          # the loops carry the record's own top end
+            st["target_lufs"] = None             # and its own loudness
     bank = [b for b in (s.get("bank") or []) if os.path.exists(b["file"])]
     if bank:
-        for slot in ("keys", "arp"):
+        for slot in ("keys", "arp", "lead"):
             if slot in st["slots"]:
                 base = st["slots"][slot]
                 st["slots"][slot] = {"voice": "sample", "samples": bank, "gain": float(base.get("gain", 0.4)) * 0.9,
                                      "send_reverb": float(base.get("send_reverb", 0.3)), "send_delay": float(base.get("send_delay", 0.0)),
                                      "octave": base.get("octave", 3), "decay": 0.6}
+    bass_bank = [b for b in (s.get("bass_bank") or []) if os.path.exists(b["file"])]
+    if bass_bank and "bass" in st["slots"]:
+        base = st["slots"]["bass"]
+        st["slots"]["bass"] = {"voice": "sample", "samples": bass_bank, "gain": float(base.get("gain", 0.6)), "octave": base.get("octave", 1),
+                               "send_reverb": 0.0, "decay": 0.9}
     if s.get("vocals"):
         st["slots"]["vox"] = {"voice": "sample", "gain": 0.85, "base_midi": 60, "send_reverb": 0.2}
         for sec in st["sections"].values():
@@ -158,7 +194,8 @@ def render(script: dict, out_path: str | None = None, seconds: float | None = No
         s["seed"] = int(seed)
     c = make_composer(s)
     total = float(seconds) if seconds else total_seconds(s, c.bpm) + 4 * 60.0 / c.bpm
-    rack = SynthRack(apply_material(c.style, s), c.bpm, seed=s["seed"])
+    full_loops = s.get("fidelity", 0.0) >= 0.99 and any(e.get("loops") for e in s["sections"])
+    rack = SynthRack(apply_material(c.style, s), c.bpm, seed=s["seed"], master=1.0 if full_loops else 0.8)   # loops carry the record's level
     rack.warm_up()
     n_total = int(total * RATE)
     for p in c.phrases_until(n_total):
@@ -253,6 +290,19 @@ def describe(script: dict) -> str:
         lines.append(f"  bank: {len(s['bank'])} melodic tones (keys/arp play the song's own sound)")
     if any(e.get("bass") for e in s["sections"]):
         lines.append("  bass: cells transcribed from the bass stem")
+    if s.get("motifs"):
+        lines.append(f"  motifs: {len(s['motifs'])} melody cells from the song seed the motif memory (top: {s['motifs'][0]['name']}); "
+                     f"lead/keys/arp play {len(s.get('bank') or [])} of its note samples")
+    if s.get("bass_cells"):
+        lines.append(f"  bass: {len(s['bass_cells'])} cells from the bass stem feed the bass generator"
+                     + (f", through {len(s['bass_bank'])} bass note samples" if s.get("bass_bank") else ""))
+    n_mel = sum(len(e.get("melody") or []) for e in s["sections"])
+    if n_mel:
+        lines.append(f"  (evidence: {n_mel} transcribed melody notes, {sum(len(e.get('bass_line') or []) for e in s['sections'])} bass notes - not replayed)")
+    n_loops = sum(1 for e in s["sections"] if e.get("loops"))
+    if n_loops:
+        lines.append(f"  loops: {n_loops} sections carry source loops; fidelity {s.get('fidelity', 0.0):.2f} "
+                     "(0 generator only .. 1 the loops, generator fills the rest)")
     return "\n".join(lines)
 
 

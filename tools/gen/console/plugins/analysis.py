@@ -343,6 +343,14 @@ class AnalysisPage(QWidget):
                          ("Tune", self.tune), ("Save", self.save), ("Play", self.play), ("Open", self.open_script)):
             b = QPushButton(text); b.clicked.connect(fn); top.addWidget(b)
         lay.addLayout(top)
+        fid = QHBoxLayout()
+        fid.addWidget(QLabel("source material"))
+        self.fidelity = QSlider(Qt.Orientation.Horizontal); self.fidelity.setRange(0, 100); self.fidelity.setValue(100); self.fidelity.setMaximumWidth(260)
+        self.fidelity.setToolTip("0 = generator only; 50 = the song's drum + bass loops under generated melodic layers; 100 = every source loop, the generator fills the rest")
+        fid.addWidget(self.fidelity)
+        self.fid_lbl = QLabel("100%"); fid.addWidget(self.fid_lbl); fid.addStretch(1)
+        self.fidelity.valueChanged.connect(lambda v: self.fid_lbl.setText(f"{v}%"))
+        lay.addLayout(fid)
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setTextVisible(False); self.bar.setMaximumHeight(6)
         lay.addWidget(self.bar)
         self.info = QLabel(""); lay.addWidget(self.info)
@@ -446,7 +454,7 @@ class AnalysisPage(QWidget):
                 if cell(8):
                     e["lanes"] = json.loads(cell(8))
                 old = self.script["sections"][i] if i < len(self.script["sections"]) else {}
-                for keep in ("hook", "bass", "drums", "drums_grid"):
+                for keep in ("hook", "bass", "drums", "drums_grid", "loops", "melody", "bass_line"):
                     if old.get(keep):
                         e[keep] = old[keep]
                 rows.append(e)
@@ -454,10 +462,14 @@ class AnalysisPage(QWidget):
                 self.msg = f"row {i + 1}: {ex}"
                 return None
         sc["sections"] = rows
+        sc["fidelity"] = self.fidelity.value() / 100.0
         return S.normalize(sc)
 
     def _fill_table(self):
         sc = self.script or {"sections": []}
+        if sc.get("fidelity") is not None and any(e.get("loops") for e in sc.get("sections", [])):
+            self.fidelity.blockSignals(True); self.fidelity.setValue(int(round(100 * float(sc["fidelity"])))); self.fidelity.blockSignals(False)
+            self.fid_lbl.setText(f"{self.fidelity.value()}%")
         self.table.setRowCount(len(sc["sections"]))
         for i, e in enumerate(sc["sections"]):
             vals = [e.get("section", ""), str(e.get("bars", "")), *(f"{e[k]:.2f}" if e.get(k) is not None else "" for k in ("energy", "density", "brightness", "swing")),

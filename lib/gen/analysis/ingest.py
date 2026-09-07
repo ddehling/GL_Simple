@@ -317,7 +317,7 @@ def _layers(sec, kind, emax, high_mean, bass_mean):
     return sorted(lay)
 
 
-def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("kit", "vocals", "hook", "bass", "bank")):
+def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("kit", "vocals", "hook", "bass", "bank", "loops")):
     """Analyse an audio file -> {"script": SongScript, "features": [bar feats], "analysis": dict, "bars": [s]}.
     reuse=True also separates the song into stems and puts its own drums,
     vocal phrases and transcribed hook into the script (lib/gen/analysis/reuse.py)."""
@@ -334,7 +334,8 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
         from lib.gen.theory import parse_key
         key = parse_key(res["script"]["key"])
         mat = R.reuse(stereo, res["bars"], key.root, "minor" if key.mode != "major" else "major", out_dir,
-                      progress=(lambda p, what: progress(0.5 + 0.5 * p, what)) if progress else None, want=want)
+                      progress=(lambda p, what: progress(0.5 + 0.5 * p, what)) if progress else None, want=want,
+                      sections=res["script"]["sections"])
         res["material"] = mat
         sc = res["script"]
         if mat.get("bass_pcs"):
@@ -346,14 +347,38 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
                     e["chords"] = loop
                 b += e["bars"]
         if mat.get("bass_cells"):
-            b = 0
-            for e in sc["sections"]:
-                cell = mat["bass_cells"].get(b // 4 * 4)
-                if cell:
-                    e["bass"] = cell
-                b += e["bars"]
+            sc["bass_cells"] = R.bass_cell_library(mat["bass_cells"])       # a library the bass generator draws from
         if mat.get("bank"):
             sc["bank"] = mat["bank"]
+        if mat.get("bass_bank"):
+            sc["bass_bank"] = mat["bass_bank"]
+        for key_name, mat_key in (("melody", "melody"), ("bass_line", "bass_line")):
+            if mat.get(mat_key):
+                b = 0
+                for e in sc["sections"]:
+                    b0, b1 = b, b + e["bars"]
+                    notes = [[bar - b0, st, midi, dur, vel] for bar, st, midi, dur, vel in mat[mat_key] if b0 <= bar < b1]
+                    if notes:
+                        e[key_name] = notes
+                    b = b1
+        if mat.get("melody"):
+            motifs = R.melody_motifs(mat["melody"], res["chords"], key.root, "minor" if key.mode != "major" else "major")
+            if motifs:
+                sc["motifs"] = motifs                     # the generator's motif memory, seeded from the song
+                for e in sc["sections"]:
+                    if e["section"] in ("drop", "groove", "build") and e.get("energy", 0) >= 0.7 and not e.get("hook"):
+                        e["hook"] = {k: motifs[0][k] for k in ("steps", "degrees", "contour", "name")}
+                        break
+        if mat.get("loops"):
+            n_loops = 0
+            for e, lp in zip(sc["sections"], mat["loops"]):
+                files = {k: v for k, v in lp.items() if not k.startswith("_")}
+                if files:
+                    e["loops"] = files
+                    n_loops += 1
+            if n_loops:
+                sc["fidelity"] = 0.0          # programmatic by default: the song's MATERIAL through the generator's mechanisms;
+                                              # the slider adds the source loops as a reference (1.0 = the loops themselves)
         if mat.get("kit"):
             sc["kit"] = mat["kit"]
         if mat.get("vocals"):
