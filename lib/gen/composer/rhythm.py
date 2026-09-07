@@ -132,11 +132,15 @@ class Drums:
         bass_busy = min(1.0, ctx.get("bass_hits", 0) / 8.0)
         kind = "halftime" if ctx.get("halftime") else self.kind
         double = bool(ctx.get("double"))
-        if self.override and slot in ("kick", "snare", "hat") and self.override.get(slot) is not None and not fill:
+        tpl_fill = (self.override or {}).get("fill") if bar_in_phrase == nbars - 1 else None
+        if tpl_fill is not None and tpl_fill.get(slot) is None:
+            tpl_fill = None
+        if self.override and slot in ("kick", "snare", "hat") and (tpl_fill is not None or (self.override.get(slot) is not None and not fill)):
             # the song's pattern as a template: strong hits always, weaker ones by their strength,
-            # energy and density - so the beat is the song's, and still breathes with the steering
+            # energy and density - so the beat is the song's, and still breathes with the steering;
+            # on a phrase's last bar the song's own fill (when it has one) is the template
             hits = []
-            for st, v in self.override[slot]:
+            for st, v in (tpl_fill[slot] if tpl_fill is not None else self.override[slot]):
                 st, v = int(st), float(v)
                 if not (0 <= st < S):
                     continue

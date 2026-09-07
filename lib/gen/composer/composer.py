@@ -161,10 +161,9 @@ class Composer:
             self.brightness = float(e["brightness"])
         if e.get("swing") is not None:
             self.swing = float(e["swing"])
-        self.harmony.override = list(e["chords"]) if e.get("chords") else None
         self.melody.bass_override = dict(e["bass"]) if e.get("bass") else None
-        self.drums.override = {k: [(int(st), float(v)) for st, v in hits] for k, hits in (e.get("drums") or {}).items()} if e.get("drums") else None
         self._script_lanes = dict(e.get("lanes") or {})
+        self._apply_phrase_overrides()
         h = e.get("hook")
         if h and h.get("steps") and h.get("degrees"):
             from lib.gen.composer.melody import Motif
@@ -174,6 +173,43 @@ class Composer:
             self.melody.theme = m
             self.melody.memory.add(m)
             self.melody.hook_provider = lambda rng, _m=m: {"steps": _m.steps, "degrees": _m.degrees, "contour": _m.contour, "name": _m.name}
+
+    def _apply_phrase_overrides(self):
+        """The scripted section's per-phrase material: this phrase's four
+        chords (the section's chord list runs bar by bar and cycles) and
+        this phrase's drum template (drums_phrases, else the section's)."""
+        e = self._script_entry
+        if e is None:
+            return
+        p0 = int(self.form.bars_in)
+        ch = e.get("chords")
+        self.harmony.override = [ch[(p0 + b) % len(ch)] for b in range(PHRASE_BARS)] if ch else None
+        tpl = None
+        dp = e.get("drums_phrases")
+        if dp:
+            tpl = dp[(p0 // PHRASE_BARS) % len(dp)]
+        elif e.get("drums"):
+            tpl = e["drums"]
+        if tpl:
+            ov = {k: [(int(st), float(v)) for st, v in (tpl.get(k) or [])] for k in ("kick", "snare", "hat") if tpl.get(k) is not None}
+            if tpl.get("fill"):
+                ov["fill"] = {k: [(int(st), float(v)) for st, v in hits] for k, hits in tpl["fill"].items()}
+            self.drums.override = ov or None
+        else:
+            self.drums.override = None
+
+    def _dyn(self, bar_in_section: int) -> float:
+        """The scripted section's dynamics (dB relative to its mean) at a
+        bar, scaled down by the fidelity: the source loops carry their own."""
+        e = self._script_entry
+        if e is None:
+            return 0.0
+        trim = float(e.get("trim_db") or 0.0)             # level calibration (script.render's second pass)
+        if not e.get("dyn"):
+            return trim
+        d = e["dyn"]
+        k = 1.0 - float((self.script or {}).get("fidelity", 0.0) or 0.0)
+        return trim + k * float(d[bar_in_section % len(d)])
 
     # -- steering -----------------------------------------------------------
     def set_key(self, key):
@@ -228,10 +264,13 @@ class Composer:
             self.bpm = self._pending_bpm
             self._pending_bpm = None
         self._apply_script_entry()
+        self._apply_phrase_overrides()
         nb = PHRASE_BARS
         S = self.style["steps_per_bar"]
         section = self.form.section
-        energy = max(0.0, min(1.0, self.form.energy() + self.energy_bias))
+        # a louder phrase of the source is also a busier one: +6 dB ~ +0.12 energy
+        dyn_bias = 0.02 * sum(self._dyn(self.form.bars_in + b) for b in range(nb)) / nb
+        energy = max(0.0, min(1.0, self.form.energy() + self.energy_bias + dyn_bias))
         layers = self.form.layers() - self.muted
         chords = self.harmony.next_phrase(nb, section)
         start = self.clock
@@ -443,6 +482,16 @@ class Composer:
                     continue
                 self._auto_state[lane] = to
             ev.append(NoteEvent(start, "auto", 0.0, 0.0, int(ramp_bars * spb), {"lane": lane, "to": float(to)}))
+        # the scripted section's dynamics: the gain lane bar by bar (a short ramp into each bar)
+        e = self._script_entry
+        if e is not None and (e.get("dyn") or e.get("trim_db")):
+            for b in range(nb):
+                to = round(10.0 ** (self._dyn(self.form.bars_in + b) / 20.0), 4)
+                ev.append(NoteEvent(int(start + b * spb), "auto", 0.0, 0.0, int(spb / 8), {"lane": "gain", "to": float(to)}))
+            self._auto_state["gain"] = to
+        elif self._auto_state.get("gain", 1.0) != 1.0:
+            ev.append(NoteEvent(start, "auto", 0.0, 0.0, int(spb / 2), {"lane": "gain", "to": 1.0}))
+            self._auto_state["gain"] = 1.0
 
     def _finish_phrase(self, ev, nb, start, spb, section, energy, chords, layers, op):
         ev.sort(key=lambda e: (e.at, e.slot))

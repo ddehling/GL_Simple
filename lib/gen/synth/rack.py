@@ -50,7 +50,9 @@ POLY_TOTAL = 96
 # Mix automation lanes and their resting values. The composer writes
 # "auto" events (params lane/to, dur = ramp) from what the form knows;
 # the director can move them too (set_lane).
-LANES = {"hp": 20.0, "lp": 20000.0, "duck": 0.45, "verb": 1.0, "delay_fb": 0.42}
+LANES = {"hp": 20.0, "lp": 20000.0, "duck": 0.45, "verb": 1.0, "delay_fb": 0.42, "gain": 1.0}
+# gain: a linear multiplier on the mix after the master (before loudness normalisation) - the
+# composer writes a song's bar-by-bar dynamics here (SongScript "dyn"), the director can ride it
 
 # Auto gain staging: each slot's voice is rendered once at start-up (a
 # reference note, vel 0.8) and trimmed so its RMS lands on the slot's
@@ -596,6 +598,11 @@ class SynthRack:
                 err = float(self.target_lufs) - lufs - self.norm_db
                 self.norm_db = float(np.clip(self.norm_db + np.clip(err * 0.02, -0.15, 0.15) * (n / 1024.0), -8.0, 8.0))
             mix = mix * np.float32(10 ** (self.norm_db / 20.0))
+        # the gain lane rides AFTER loudness normalisation: scripted bar-by-bar dynamics are
+        # not what the normaliser should undo (it holds the long-term level, this is the phrasing)
+        g_lane = float(self.lanes["gain"][0])
+        if abs(g_lane - 1.0) > 1e-4:
+            mix *= np.float32(max(0.0, g_lane))
         for f in self.bus_fx.get("master", ()):
             mix = f.process(mix)
         out = self.limiter.process(self.master_shelf.process(mix))

@@ -88,7 +88,7 @@ def sanitize_gen_action(data):
             if not isinstance(arg, dict) or arg.get("lane") not in LANES:
                 return None
             lo, hi = {"hp": (10.0, 4000.0), "lp": (200.0, 20000.0), "duck": (0.0, 0.9),
-                      "verb": (0.0, 3.0), "delay_fb": (0.0, 0.85)}[arg["lane"]]
+                      "verb": (0.0, 3.0), "delay_fb": (0.0, 0.85), "gain": (0.0, 2.0)}[arg["lane"]]
             arg = {"lane": arg["lane"], "to": max(lo, min(hi, float(arg.get("to", lo)))),
                    "ramp_s": max(0.0, min(60.0, float(arg.get("ramp_s", 0.0))))}
         elif action in ("scene_save", "scene_load", "scene_delete"):

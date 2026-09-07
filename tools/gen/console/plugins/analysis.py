@@ -450,11 +450,11 @@ class AnalysisPage(QWidget):
                 if cell(6):
                     e["layers"] = [x.strip() for x in cell(6).replace("+", ",").split(",") if x.strip()]
                 if cell(7):
-                    e["chords"] = [int(x) for x in cell(7).replace(",", " ").split()]
+                    e["chords"] = [S.parse_chord(x) for x in cell(7).replace(",", " ").split()]
                 if cell(8):
                     e["lanes"] = json.loads(cell(8))
                 old = self.script["sections"][i] if i < len(self.script["sections"]) else {}
-                for keep in ("hook", "bass", "drums", "drums_grid", "loops", "melody", "bass_line"):
+                for keep in ("hook", "bass", "drums", "drums_grid", "drums_phrases", "dyn", "loops", "melody", "bass_line"):
                     if old.get(keep):
                         e[keep] = old[keep]
                 rows.append(e)
@@ -473,7 +473,7 @@ class AnalysisPage(QWidget):
         self.table.setRowCount(len(sc["sections"]))
         for i, e in enumerate(sc["sections"]):
             vals = [e.get("section", ""), str(e.get("bars", "")), *(f"{e[k]:.2f}" if e.get(k) is not None else "" for k in ("energy", "density", "brightness", "swing")),
-                    "+".join(e.get("layers") or []), " ".join(str(x) for x in (e.get("chords") or [])),
+                    "+".join(e.get("layers") or []), " ".join(S.chord_str(x) for x in (e.get("chords") or [])),
                     json.dumps(e["lanes"]) if e.get("lanes") else ""]
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(v)
@@ -609,7 +609,12 @@ class AnalysisPage(QWidget):
 
             def prog(x):
                 self.progress = x
-            audio, _ = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), progress=prog)
+            audio, comp = S.render(sc, out_path=os.path.join(folder, "recreation.wav"), progress=prog)
+            trims = [e.get("trim_db") for e in (comp.script or {}).get("sections", [])]
+            if any(t is not None for t in trims) and not any(e.get("trim_db") is not None for e in sc["sections"]):
+                for e, t in zip(sc["sections"], trims):
+                    e["trim_db"] = t                  # the level calibration stays with the script (no second pass next time)
+                S.save(sc, os.path.join(folder, "script.yaml"))
             self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), sc["bpm"], 0.0)
             self.report = None
             self._pending = "strip"

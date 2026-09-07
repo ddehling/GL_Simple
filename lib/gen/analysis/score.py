@@ -8,8 +8,9 @@ phrase) blends five distances:
   energy    |dB difference|                 exp(-d / 6)
   spectrum  L1 of the three band shares     1 - 0.5 * L1
   timbre    correlation of the 32-band log profiles   (r + 1) / 2
-  rhythm    |low hits| + |high hits| per s  exp(-d / 2)
-  harmony   cosine of mean chroma           clipped 0..1
+  rhythm    half: |kick hits/s| + |snare+hat hits/s|   exp(-d / 3)   (busy-ness, from the folded 16th patterns)
+            half: cosine of the mean kick/snare/hat step patterns   (the beat itself)
+  harmony   cosine of mean chroma           clipped 0..1   (median-frame chroma: sustained content, not the kick)
 
 local = 100 * (0.3 energy + 0.15 spectrum + 0.15 timbre + 0.15 rhythm + 0.25 harmony)
 
@@ -83,8 +84,8 @@ def _local(a, b):
     d_e = abs(a["energy_db"] - b["energy_db"])
     s_e = float(np.exp(-d_e / 6.0))
     s_s = float(max(0.0, 1.0 - 0.5 * np.abs(a["shares"] - b["shares"]).sum()))
-    d_r = abs(a["low_hits"] - b["low_hits"]) + abs(a["high_hits"] - b["high_hits"])
-    s_r = float(np.exp(-d_r / 2.0))
+    d_r = abs(a["low_hits"] - b["low_hits"]) + abs(a["high_hits"] - b["high_hits"])   # hits/s (busy-ness)
+    s_r = float(np.exp(-d_r / 3.0))
     if "pattern" in a and "pattern" in b:
         pa, pb = a["pattern"], b["pattern"]
         na, nb = np.linalg.norm(pa), np.linalg.norm(pb)

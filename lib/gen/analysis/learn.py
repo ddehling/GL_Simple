@@ -50,7 +50,8 @@ def derive(scripts: list, min_songs: int = 1) -> dict:
                 for sl in e.get("layers") or []:
                     layers[k][sl] += 1
                 if e.get("chords"):
-                    progs[tuple(int(x) % 7 for x in e["chords"])] += 1
+                    from lib.gen.script import chord_deg
+                    progs[tuple(chord_deg(x) % 7 for x in e["chords"][:4])] += 1
         sections = {}
         for k, levers in per_kind.items():
             n = len(levers["bars"])

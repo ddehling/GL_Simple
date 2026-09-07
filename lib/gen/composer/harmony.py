@@ -61,8 +61,8 @@ class Harmony:
             self.phrases_on = 1
         labels = ROMAN if self.key.mode != "major" else ROMAN_MAJ
         if self.override:
-            prog = [int(d) for d in self.override]
-            return [(prog[b % len(prog)] % 7, labels[prog[b % len(prog)] % 7], dict(PLAIN, alt={})) for b in range(nbars)]
+            prog = list(self.override)
+            return [self.scripted(prog[b % len(prog)], labels) for b in range(nbars)]
         slow = section in self.cfg["slow_in"]
         pedal = section in self.cfg["pedal_in"]
         degs = []
@@ -87,6 +87,31 @@ class Harmony:
                 label += f"sus{spec['sus']}"
             out.append((deg, label, spec))
         return out
+
+    def scripted(self, entry, labels=None) -> tuple:
+        """A scripted bar: a degree (int) or {"deg", "third": maj|min,
+        "sus": 2|4} -> (degree, label, spec). A third that is not the
+        key's own is an altered chord tone (the song borrowed it)."""
+        labels = labels or (ROMAN if self.key.mode != "major" else ROMAN_MAJ)
+        if isinstance(entry, dict):
+            deg = int(entry.get("deg", 0)) % 7
+            spec = dict(PLAIN, alt={})
+            label = labels[deg]
+            third = entry.get("third")
+            if third in ("maj", "min"):
+                own = (self.key.degree_pc(deg + 2) - self.key.degree_pc(deg)) % 12       # 3 = minor, 4 = major
+                want = 4 if third == "maj" else 3
+                if own != want:
+                    spec["alt"] = {1: want - own}
+                    spec["borrowed"] = True
+                    label = (label.upper() if want == 4 else label.lower()) + "*"
+            sus = int(entry.get("sus", 0) or 0)
+            if sus in (2, 4):
+                spec["sus"] = sus
+                label += f"sus{sus}"
+            return (deg, label, spec)
+        deg = int(entry) % 7
+        return (deg, labels[deg], dict(PLAIN, alt={}))
 
     def notes(self, chord, octave: int, size: int = 3, extra=()) -> list:
         """Spell a bar's chord (degree, label, spec) or a bare degree."""

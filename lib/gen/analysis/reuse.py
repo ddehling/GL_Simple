@@ -466,6 +466,33 @@ def _notes_pyin(path):
     return out
 
 
+def stem_chroma(wav, bars, lo_hz=80.0, hi_hz=2500.0, weight_1f=True):
+    """Per-bar chroma (C-origin, sums to 1) of a stem: one long FFT per bar
+    over [lo_hz, hi_hz], 1/f weighted so fundamentals count most. Cleaner
+    chord evidence than the mix (no drums, no vocals)."""
+    y = _mono(wav)
+    bars = np.asarray(bars, dtype=np.float64)
+    out = []
+    for k in range(len(bars) - 1):
+        a, b = int(bars[k] * RATE), int(bars[k + 1] * RATE)
+        x = y[a:b].astype(np.float64)
+        n = len(x)
+        if n < 2048:
+            out.append([1.0 / 12.0] * 12)
+            continue
+        spec = np.abs(np.fft.rfft(x * np.hanning(n))) ** 2
+        freqs = np.fft.rfftfreq(n, 1.0 / RATE)
+        m = (freqs >= lo_hz) & (freqs <= hi_hz)
+        f = freqs[m]
+        pc = (np.round(12.0 * np.log2(f / 261.6256)) % 12).astype(int)
+        w = spec[m] / f if weight_1f else spec[m]
+        c = np.zeros(12)
+        np.add.at(c, pc, w)
+        c = c / max(float(c.sum()), 1e-12)
+        out.append([round(float(v), 5) for v in c])
+    return out
+
+
 def bass_line(bass_wav, bars, key_pc, mode):
     """Transcribe the bass stem (monophonic, librosa pyin 30-300 Hz) ->
     {"pcs": [pitch class or None per bar], "cells": {phrase_bar0: {"steps": [...], "degrees": [...]}}}.
@@ -654,6 +681,12 @@ def reuse(samples_stereo, bars, key_pc, mode, out_dir, progress=None, want=("kit
     if "bass" in want:
         if progress:
             progress(0.9, "transcribing the bass")
+        # chord evidence from the stems: the bass stem's chroma (root) and the harmonic stem's (quality)
+        try:
+            out["bass_chroma"] = stem_chroma(stems["bass"], bars, lo_hz=30.0, hi_hz=250.0)
+            out["harm_chroma"] = stem_chroma(stems["other"], bars, lo_hz=80.0, hi_hz=2500.0)
+        except Exception as e:  # noqa: BLE001
+            reasons.append(f"stem chroma failed ({type(e).__name__})")
         bl = bass_line(stems["bass"], bars, key_pc, mode)
         if bl:
             out["bass_pcs"] = bl["pcs"]

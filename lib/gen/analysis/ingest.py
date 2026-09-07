@@ -46,28 +46,47 @@ def _chroma_c(chroma_a):
     return np.roll(chroma_a, 9, axis=1)
 
 
-def bar_chroma(samples, t0, t1, lo_hz=55.0, hi_hz=2500.0):
-    """Chroma (C-origin, sums to 1) and bass chroma (55-220 Hz) of one bar
-    from a single long FFT: harmonic content, not the DJ frame chroma,
-    which is tuned for key finding over a whole track."""
+CHROMA_N, CHROMA_HOP = 8192, 4096
+_CHROMA_CACHE = {}
+
+
+def _chroma_bins(lo_hz, hi_hz):
+    key = (lo_hz, hi_hz)
+    if key not in _CHROMA_CACHE:
+        freqs = np.fft.rfftfreq(CHROMA_N, 1.0 / RATE)
+        m = (freqs >= lo_hz) & (freqs <= hi_hz)
+        pc = (np.round(12.0 * np.log2(freqs[m] / 261.6256)) % 12).astype(int)
+        _CHROMA_CACHE[key] = (m, pc, freqs[m])
+    return _CHROMA_CACHE[key]
+
+
+def bar_chroma(samples, t0, t1, lo_hz=80.0, hi_hz=2500.0):
+    """Chroma (C-origin, sums to 1) and bass chroma (40-250 Hz) of one bar:
+    the MEDIAN over 186 ms frames, so the sustained (harmonic) content
+    counts and transients do not - a long single FFT let the kick's
+    fundamental read as the tonic on every bar of a dance record."""
     a, b = int(t0 * RATE), int(t1 * RATE)
     x = samples[a:b].astype(np.float64)
     n = len(x)
     if n < 2048:
         return np.ones(12) / 12.0, np.ones(12) / 12.0
-    win = np.hanning(n)
-    spec = np.abs(np.fft.rfft(x * win)) ** 2
-    freqs = np.fft.rfftfreq(n, 1.0 / RATE)
-    out = np.zeros(12)
-    bass = np.zeros(12)
-    m = (freqs >= lo_hz) & (freqs <= hi_hz)
-    f = freqs[m]
-    pc = (np.round(12.0 * np.log2(f / 261.6256)) % 12).astype(int)
-    w = spec[m] / f                                   # 1/f: the fundamental region counts most
-    np.add.at(out, pc, w)
-    mb = (freqs >= lo_hz) & (freqs <= 220.0)
-    pcb = (np.round(12.0 * np.log2(freqs[mb] / 261.6256)) % 12).astype(int)
-    np.add.at(bass, pcb, spec[mb])
+    if n < CHROMA_N:
+        x = np.concatenate([x, np.zeros(CHROMA_N - n)])
+    win = np.hanning(CHROMA_N)
+    m, pc, f = _chroma_bins(lo_hz, hi_hz)
+    mb, pcb, fb = _chroma_bins(40.0, 250.0)
+    starts = range(0, max(1, len(x) - CHROMA_N + 1), CHROMA_HOP)
+    idx = np.array([np.arange(s, s + CHROMA_N) for s in starts])
+    spec = np.abs(np.fft.rfft(x[idx] * win, axis=1)) ** 2
+    rows = np.zeros((len(starts), 12))
+    rows_b = np.zeros((len(starts), 12))
+    for j in range(len(starts)):
+        np.add.at(rows[j], pc, spec[j, m] / f)          # 1/f: the fundamental region counts most
+        np.add.at(rows_b[j], pcb, spec[j, mb])
+    rows /= np.maximum(rows.sum(axis=1, keepdims=True), 1e-12)
+    rows_b /= np.maximum(rows_b.sum(axis=1, keepdims=True), 1e-12)
+    out = np.median(rows, axis=0)
+    bass = np.median(rows_b, axis=0)
     out = out / max(float(out.sum()), 1e-12)
     bass = bass / max(float(bass.sum()), 1e-12)
     return out, bass
@@ -78,11 +97,9 @@ def bar_features(samples, bars, bands=None, chroma=None):
     if bands is None or chroma is None:
         bands, chroma = F.frame_track(samples)
     chroma = _chroma_c(chroma)
-    onset_broad, onset_bass, onset_perc, _ = F._onset_channels(bands)
     mean = np.maximum(bands.mean(axis=0), 1e-10)
+    pats = bar_patterns(bands, bars)
     out = []
-    thr_low = np.percentile(onset_bass, 80)
-    thr_high = np.percentile(onset_perc, 80)
     for i in range(len(bars) - 1):
         f0, f1 = int(bars[i] * F.FPS), int(bars[i + 1] * F.FPS)
         if f1 <= f0 or f1 > len(bands):
@@ -95,14 +112,30 @@ def bar_features(samples, bars, bands=None, chroma=None):
         c, cb = bar_chroma(samples, bars[i], bars[i + 1])
         dur = (bars[i + 1] - bars[i])
         prof = 10.0 * np.log10(seg.mean(axis=0) + 1e-12)          # 32-band log profile (timbre)
+        pat = pats[i] if i < len(pats) else {k: [0.0] * STEPS for k in DRUM_BANDS}
+        low_hits, high_hits = _busyness(pat, dur)
         out.append({"t": float(bars[i]), "energy_db": float(10 * np.log10(tot + 1e-12)),
                     "bass": float(bass / ssum), "mid": float(mid / ssum), "high": float(high / ssum),
-                    "low_hits": float((onset_bass[f0:f1] > thr_low).sum() / dur),
-                    "high_hits": float((onset_perc[f0:f1] > thr_high).sum() / dur),
+                    "low_hits": low_hits, "high_hits": high_hits,
                     "chroma": [round(float(x), 5) for x in c],
                     "bass_chroma": [round(float(x), 5) for x in cb],
-                    "profile": [round(float(x), 2) for x in prof]})
+                    "profile": [round(float(x), 2) for x in prof],
+                    "pattern": pat})
     return out
+
+
+ACTIVE_STEP = 0.5
+
+
+def _busyness(pat, dur):
+    """Hits per second from a bar's folded pattern: the 16th steps whose
+    onset strength clears half the bar's max - low = kick, high = the mean
+    of snare and hat. Level-independent, unlike counting onsets above a
+    whole-track percentile (which measured where the loudest onsets fell)."""
+    dur = max(float(dur), 1e-6)
+    low = sum(1 for v in pat.get("kick", []) if v >= ACTIVE_STEP) / dur
+    high = 0.5 * (sum(1 for v in pat.get("snare", []) if v >= ACTIVE_STEP) + sum(1 for v in pat.get("hat", []) if v >= ACTIVE_STEP)) / dur
+    return float(low), float(high)
 
 
 DRUM_BANDS = {"kick": (0, 4), "snare": (8, 16), "hat": (24, 32)}      # of the 32 DJ bands
@@ -156,6 +189,117 @@ def section_pattern(bar_pats, b0, b1, thr=0.45):
     return out
 
 
+def phrase_templates(bar_pats, b0, b1, thr=0.45):
+    """One drum template per 4-bar phrase of bars [b0, b1): the phrase's
+    mean pattern (as section_pattern) plus "fill" - the phrase's last bar
+    on its own when its kick/snare differ from the phrase mean (a fill)."""
+    out = []
+    for p in range(b0, b1, 4):
+        tpl = section_pattern(bar_pats, p, min(p + 4, b1), thr)
+        if tpl is None:
+            break
+        entry = {k: tpl[k] for k in DRUM_BANDS}
+        last = min(p + 4, b1) - 1
+        if last > p:
+            lb = section_pattern(bar_pats, last, last + 1, thr)
+            if lb:
+                diff = 0.0
+                for k in ("kick", "snare"):
+                    a, b = np.asarray(tpl["grid"][k]), np.asarray(lb["grid"][k])
+                    na, nb_ = np.linalg.norm(a), np.linalg.norm(b)
+                    diff = max(diff, 1.0 - (float(a @ b / (na * nb_)) if na > 1e-9 and nb_ > 1e-9 else 1.0))
+                if diff > 0.25:
+                    entry["fill"] = {k: lb[k] for k in DRUM_BANDS}
+        out.append(entry)
+    return out
+
+
+DB_PER_UNIT = 2.0        # energy_db is 10 log10 of a mean AMPLITUDE (the DJ bands are sqrt(power)): 1 unit = 2 dB of gain
+
+
+def _dynamics(feats, b0, nbars):
+    """Per-bar dB (real dB of gain) relative to the section's mean level (the "dyn" entry)."""
+    seg = [f["energy_db"] for f in feats[b0:b0 + nbars]]
+    if len(seg) < 2:
+        return None
+    m = float(np.mean(seg))
+    out = [round(float(np.clip(DB_PER_UNIT * (x - m), -12.0, 12.0)), 1) for x in seg]
+    if max(abs(x) for x in out) < 0.3:
+        return None
+    return out
+
+
+QUALITIES = {"maj": (0, 4, 7), "min": (0, 3, 7), "sus2": (0, 2, 7), "sus4": (0, 5, 7)}
+
+
+def _quality_fit(chroma, root_pc):
+    """Cosine of a bar's chroma against the four triad qualities on a root."""
+    c = np.asarray(chroma, dtype=float)
+    n = np.linalg.norm(c)
+    if n < 1e-9:
+        return {}
+    c = c / n
+    out = {}
+    for q, ivs in QUALITIES.items():
+        t = np.zeros(12)
+        for w, iv in zip((1.0, 0.8, 0.8), ivs):
+            t[(root_pc + iv) % 12] = w
+        out[q] = float(c @ (t / np.linalg.norm(t)))
+    return out
+
+
+ROOT_W = {"harm": 1.0, "bass_chroma": 0.6, "bass_pc": 0.25, "hold": 0.04}
+
+
+def read_chords(feats, key_pc, mode, bass_pcs=None, harm_chroma=None, bass_chroma=None, margin=0.08):
+    """A chord per bar. The ROOT is the diatonic degree that the evidence
+    agrees on: the harmonic chroma's fit to the degree's triad, the bar's
+    bass chroma at the degree's root, the transcribed bass pitch class
+    when there is one, and a small preference for holding the previous
+    chord (loops hold). The QUALITY is a chroma check on that root
+    (major / minor / sus2 / sus4); one that is not the key's own on that
+    degree is written as {"deg", "third", "sus"} so the harmony spells
+    what the song plays. Returns [int | dict per bar]."""
+    from lib.gen.theory import Key
+    k = Key(key_pc, "minor" if mode == "minor" else "major")
+    temps = _triad_templates(key_pc, mode)
+    roots = [k.degree_pc(d) for d in range(7)]
+    own_third = {d: (k.degree_pc(d + 2) - k.degree_pc(d)) % 12 for d in range(7)}
+    out = []
+    prev = None
+    for i, f in enumerate(feats):
+        harm = np.asarray(harm_chroma[i] if harm_chroma is not None and i < len(harm_chroma) else f["chroma"], dtype=float)
+        cb = np.asarray(bass_chroma[i] if bass_chroma is not None and i < len(bass_chroma) else (f.get("bass_chroma") or np.zeros(12)), dtype=float)
+        n = np.linalg.norm(harm)
+        hn = harm / n if n > 1e-9 else harm
+        fits = np.array([float(hn @ t) for t in temps])
+        cbn = cb / max(float(cb.max()), 1e-9)
+        bpc = bass_pcs[i] if bass_pcs is not None and i < len(bass_pcs) else None
+        score = ROOT_W["harm"] * fits + ROOT_W["bass_chroma"] * np.array([cbn[r] for r in roots])
+        if bpc is not None:
+            for d, r in enumerate(roots):
+                if r == int(bpc) % 12:
+                    score[d] += ROOT_W["bass_pc"]
+        if prev is not None:
+            score[prev] += ROOT_W["hold"]
+        deg = int(np.argmax(score)) if n > 1e-9 or cb.sum() > 1e-9 else (prev if prev is not None else 0)
+        prev = deg
+        # the quality on that root (only when the chroma clearly prefers it over the key's own)
+        q = _quality_fit(harm, roots[deg])
+        entry = deg
+        if q:
+            own = "min" if own_third[deg] == 3 else "maj"
+            qbest = max(q, key=q.get)
+            others = max(v for kq, v in q.items() if kq != qbest)
+            if qbest != own and q[qbest] >= q[own] + margin and q[qbest] >= others + 0.5 * margin:
+                if qbest in ("maj", "min"):
+                    entry = {"deg": deg, "third": qbest}
+                else:
+                    entry = {"deg": deg, "sus": int(qbest[-1])}
+        out.append(entry)
+    return out
+
+
 def _triad_templates(key_pc, mode):
     from lib.gen.theory import Key
     k = Key(key_pc, "minor" if mode == "minor" else "major")
@@ -192,28 +336,20 @@ def chords_per_bar(feats, key_pc, mode):
     return out
 
 
-def chords_from_bass(feats, bass_pcs, key_pc, mode):
-    """Chords with the transcribed bass note as the root: for each bar, if
-    the bass pitch class is a diatonic root and the chroma supports that
-    triad reasonably, take that degree; else the best template fit."""
-    from lib.gen.theory import Key
-    k = Key(key_pc, "minor" if mode == "minor" else "major")
-    temps = _triad_templates(key_pc, mode)
-    roots = [k.degree_pc(d) for d in range(7)]
-    out = []
-    for f, bpc in zip(feats, bass_pcs):
-        c = np.asarray(f["chroma"])
-        n = np.linalg.norm(c)
-        c = c / n if n > 1e-9 else c
-        fits = [float(c @ t) for t in temps]
-        best = int(np.argmax(fits))
-        if bpc is not None and bpc in roots:
-            d = roots.index(bpc)
-            if fits[d] >= 0.75 * fits[best]:
-                out.append(d)
-                continue
-        out.append(best)
-    return out
+def chords_from_bass(feats, bass_pcs, key_pc, mode, harm_chroma=None, bass_chroma=None):
+    """Chords rooted on the transcribed bass note, quality from the chroma
+    (read_chords with the stems' evidence)."""
+    return read_chords(feats, key_pc, mode, bass_pcs=bass_pcs, harm_chroma=harm_chroma, bass_chroma=bass_chroma)
+
+
+def _section_chords(chords, b0, nbars):
+    """The section's chord list, one per bar (cycled / padded to nbars)."""
+    seg = list(chords[b0:b0 + nbars])
+    if not seg:
+        return [0, 0, 0, 0]
+    while len(seg) < nbars:
+        seg.append(seg[len(seg) % max(1, min(4, len(seg)))])
+    return seg[:nbars]
 
 
 def _refine_key(feats, key_pc, mode):
@@ -338,13 +474,15 @@ def ingest(path, progress=None, deep=False, reuse=False, out_dir=None, want=("ki
                       sections=res["script"]["sections"])
         res["material"] = mat
         sc = res["script"]
-        if mat.get("bass_pcs"):
-            res["chords"] = chords_from_bass(res["features"], mat["bass_pcs"], key.root, "minor" if key.mode != "major" else "major")
+        if mat.get("bass_pcs") or mat.get("harm_chroma"):
+            rich = chords_from_bass(res["features"], mat.get("bass_pcs"), key.root, "minor" if key.mode != "major" else "major",
+                                    harm_chroma=mat.get("harm_chroma"), bass_chroma=mat.get("bass_chroma"))
+            from lib.gen.script import chord_deg
+            res["chords"] = [chord_deg(c) for c in rich]
+            res["chords_rich"] = rich
             b = 0
             for e in sc["sections"]:
-                loop = res["chords"][b:b + 4]
-                if len(loop) == 4:
-                    e["chords"] = loop
+                e["chords"] = _section_chords(rich, b, e["bars"])
                 b += e["bars"]
         if mat.get("bass_cells"):
             sc["bass_cells"] = R.bass_cell_library(mat["bass_cells"])       # a library the bass generator draws from
@@ -489,7 +627,9 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
     for f, bp in zip(feats, bar_pats):
         f["pattern"] = bp
     key_pc, key_mode = _refine_key(feats, key_pc, key_mode)
-    chords = chords_per_bar(feats, key_pc, key_mode)
+    rich = read_chords(feats, key_pc, key_mode)              # root from the bar's bass chroma, quality checked on the chroma
+    from lib.gen.script import chord_deg
+    chords = [chord_deg(c) for c in rich]
     emax = max([s["energy"] for s in sections] + [1e-6])
     high_mean = float(np.mean([s["high_share"] for s in sections])) if sections else 0.2
     bass_mean = float(np.mean([s["bass_share"] for s in sections])) if sections else 0.3
@@ -498,6 +638,7 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
     swing = float(np.clip((float(sig.get("swing", 0.5) or 0.5) - 0.5) * 2.0, 0.0, 0.33))
     entries = []
     bar_t = list(bars)
+    song_db = float(np.mean([f["energy_db"] for f in feats])) if feats else 0.0
     for i, sec in enumerate(sections):
         kind = SECTION_MAP.get(sec.get("kind", "groove"), "groove")
         e = sec["energy"] / emax
@@ -507,9 +648,7 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
         nbars = max(4, int(round((sec["end_beat"] - sec["start_beat"]) / 16.0)) * 4)
         # bars of this section on the grid -> its chord loop (first 4 bars, most common per position)
         b0 = int(np.searchsorted(bars, sec["start_s"] - 1e-3))
-        loop = chords[b0:b0 + 4] if b0 + 4 <= len(chords) else chords[b0:]
-        if len(loop) < 4:
-            loop = (loop + [0, 0, 0, 0])[:4]
+        loop = _section_chords(rich, b0, nbars)
         dens = float(np.clip(0.35 + sec.get("rhythm_density", 3.0) / 6.0, 0.4, 1.3))
         e_lever = float(np.clip(1.3 * e - 0.3, 0.1, 1.0))      # DJ energy (RMS-ish) -> the form lever
         bright = float(np.clip(1.0 + (sec["high_share"] - high_mean) * 3.0, 0.6, 1.5))
@@ -523,6 +662,15 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
         if drums and (drums["kick"] or drums["snare"] or drums["hat"]):
             entry["drums"] = {k: drums[k] for k in ("kick", "snare", "hat")}
             entry["drums_grid"] = drums["grid"]
+            phrases = phrase_templates(bar_pats, b0, min(b0 + nbars, len(bar_pats)))
+            if len(phrases) > 1:
+                entry["drums_phrases"] = phrases            # the beat phrase by phrase, fills where the song has them
+        dyn = _dynamics(feats, b0, nbars)
+        if dyn:
+            entry["dyn"] = dyn                               # the section's bar-by-bar dynamics
+        seg_db = [f["energy_db"] for f in feats[b0:b0 + nbars]]
+        if seg_db and feats:
+            entry["level"] = round(DB_PER_UNIT * float(np.mean(seg_db) - song_db), 1)   # the section's level (dB) against the song's mean
         entries.append(entry)
     style_mode = {"groove": "minor", "techno": "phrygian", "trance": "minor", "dnb": "minor", "hiphop": "dorian",
                   "downtempo": "dorian", "ambient": "lydian"}[style]
@@ -541,7 +689,7 @@ def ingest_samples(samples, title="ingested", progress=None, deep=False, structu
                          "pattern": section_pattern(bar_pats, 0, len(bar_pats)) if bar_pats else None},
                 "sections": sections, "rhythm": {k: sig.get(k) for k in ("swing", "swing_conf", "w_low", "w_mid", "w_high")},
                 "style_mode": style_mode, "first_bar_s": float(bars[0]) if len(bars) else 0.0}
-    return {"script": script, "features": feats, "analysis": analysis, "bars": [float(b) for b in bars], "chords": chords}
+    return {"script": script, "features": feats, "analysis": analysis, "bars": [float(b) for b in bars], "chords": chords, "chords_rich": rich}
 
 
 def features_on_grid(samples, bpm, first_bar_s=0.0):

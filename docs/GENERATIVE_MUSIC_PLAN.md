@@ -234,13 +234,55 @@ Analysis round 2 (2026-09-06, "how can we improve things" -> "do them all"):
   lead / keys / arp / bass play through the song's own note samples. Density and energy thin the
   lead by a hard cap (120 -> 44 -> 27 notes per minute). Fidelity default is now 0 (programmatic);
   the slider adds the source loops as a reference up to 1.0.
-- **The ceiling, measured** (Ananta Groove, 212 bars): self = 100; all-loops reference 91.1; drum +
-  bass loops under generated layers 88.7; fully programmatic 85.1. Per-term loss programmatic vs
-  loops (points of global): rhythm 1.9, harmony 1.4, energy 1.3, timbre 0.4, spectrum 0.3. Even the
-  loops only reach 72 on the rhythm term (one 4-bar window per section vs the record's fills and
-  variation; the term is also noisy), timbre is solved by the note samples (94 vs 98), harmony loses
-  where the mix-only chord reader (~half right per bar) hands the generator wrong chords, energy
-  loses the within-section dynamics (automation, fills) that section levers flatten.
+- **The ceiling, measured** (Ananta Groove, 212 bars, the scorer as it was then): self = 100;
+  all-loops reference 91.1; drum + bass loops under generated layers 88.7; fully programmatic 85.1.
+  Per-term loss programmatic vs loops (points of global): rhythm 1.9, harmony 1.4, energy 1.3,
+  timbre 0.4, spectrum 0.3. Even the loops only reached 72 on the rhythm term, timbre was solved by
+  the note samples (94 vs 98), harmony lost where the chord reader handed the generator wrong
+  chords, energy lost the within-section dynamics. Two of those three diagnoses turned out to be
+  partly the scorer's (next item).
+- **Closing the gap (2026-09-06, after the ceiling diagnostics)** - three script fields and two
+  scorer corrections:
+  - `chords` is now one entry PER BAR of the section (cycled when shorter), each an int degree or
+    `{"deg", "third": maj|min, "sus": 2|4}` (text form `5M`, `6s4`); the harmony spells an altered
+    third / a suspension (`Harmony.scripted`). The reader (`ingest.read_chords`) picks the root by
+    a soft vote (harmonic chroma fit + bass chroma at the root + transcribed bass note + a hold
+    preference) and checks the quality on that root; with stems the harmonic and bass stems supply
+    the chroma (`reuse.stem_chroma`). On the synthetic gate song: 38% of bars right (old mix reader)
+    -> 59% (stems + quality); note the gate's beat tracker puts the first downbeat a bar in, so the
+    test compares with a +-1 bar shift.
+  - `drums_phrases`: one template per 4-bar phrase (`ingest.phrase_templates`) plus `fill` - the
+    phrase's last bar when its kick/snare differ from the phrase mean; the kit plays the fill
+    template on that bar (`Drums.bar`).
+  - `dyn`: dB per bar relative to the section's mean, written bar by bar to a new `gain` mix lane
+    (after loudness normalisation, before the limiter - the normaliser holds the long-term level and
+    must not undo phrasing); a louder bar also nudges the energy lever (+6 dB ~ +0.12).
+    `level`: the section's level vs the song's mean; `script.render` CALIBRATES when levels are
+    present - a first pass measures the recreation's own section levels and the difference is
+    written to `trim_db` (saved with the script, so the next render is one pass).
+  - Scorer corrections found on the way: (1) the bar chroma was a single long FFT from 55 Hz with
+    1/f weighting, so on a dance record the KICK's fundamental read as the tonic on every bar - key
+    detection said A# minor for a song that sits on G#, and the harmony term rewarded playing the
+    kick's pitch; it is now the MEDIAN over 186 ms frames from 80 Hz (transients drop out;
+    `ingest.bar_chroma`), and the key comes out G# major. (2) The rhythm term's density half counted
+    onsets above a whole-track percentile, i.e. WHERE the loudest onsets fell, so even the song's
+    own loops scored 0.35 on it; it now counts active 16th steps (kick; snare+hat) per second from
+    the folded patterns (`ingest._busyness`). (3) `energy_db` is 10 log10 of a mean AMPLITUDE (the
+    DJ bands are sqrt(power)), i.e. half-decibels; `dyn` / `level` / `trim_db` are real dB
+    (`DB_PER_UNIT`). Numbers before and after are therefore not comparable; everything below is
+    re-measured with the corrected scorer.
+- **The ceiling, re-measured** (Ananta Groove, 212 bars, corrected scorer, GEN_STRUCTURE=0, three
+  seeds each): self = 100; all-loops reference 92.0 (rhythm 83.5, harmony 98.9, energy 84.5); drum
+  + bass loops under generated layers 91.9; programmatic with the old script (section levers, a
+  4-bar chord loop) 87.1 (energy 82.6, rhythm 74.4, harmony 86.6, structure 88); programmatic with
+  per-bar chords / drum templates / dynamics + level calibration 90.7 (energy 89.3, rhythm 75.4,
+  harmony 87.3, structure 96). The programmatic version now beats the loops on ENERGY (the
+  calibration; the loops are re-levelled by the rack's master chain) and is 1.3 global points from
+  the all-loops reference. What remains: harmony 87 vs 99 (about 1.9 global points: one root per
+  bar on a drone record whose colour is in the melodic stem; the generator's own voicings), rhythm
+  75 vs 84 (about 0.8: the kit's own hats/percussion around the template, fills), spectrum 88 vs 90.
+  The earlier ablation showed the three fields are worth ~0 alone under the old scorer on this
+  song and 3.6 points together with the corrected one, most of it the dynamics + calibration.
 - **Hosted instruments off the main thread**: pedalboard refuses `reset=True` outside the main
   thread; instruments render with `reset=False` and the previous batch's tail is flushed with
   silence first (the console error "Plugin ... must be reloaded on the main thread" was this).

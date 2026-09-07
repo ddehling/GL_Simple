@@ -33,13 +33,21 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 
 import numpy as np
 
 from lib.gen import RATE
 
 SECTION_KEYS = ("section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes", "key", "bpm", "hook", "bass",
-                "drums", "drums_grid", "loops", "melody", "bass_line")
+                "drums", "drums_grid", "drums_phrases", "dyn", "level", "trim_db", "loops", "melody", "bass_line")
+# level: the section's mean level in dB relative to the song's mean (from the source); render(calibrate=True) measures the
+#        recreation's own section levels and writes the difference into trim_db (dB, added to the gain lane) - a second pass
+# chords: one entry per bar (cycled when shorter than the section): a diatonic degree (int) or {"deg", "third": "maj"|"min", "sus": 0|2|4}
+#         when the song's chord quality is not the key's own (the harmony spells it with an altered third / a suspension)
+# drums_phrases: [{"kick": [[step, vel]], "snare", "hat", "fill": {...}|None}, ...]  one template per 4-bar phrase of the section
+#         (the kit varies it); "fill" is the phrase's last bar when it differs from the rest (a fill), played on that bar
+# dyn: [dB per bar]  the section's dynamics relative to its own mean level, written to the "gain" lane bar by bar
 # melody / bass_line: [[bar_in_section, step, midi, dur_steps, vel], ...]  the transcribed lines (notes as samples)
 # loops: {"drums": wav, "bass": wav, "other": wav, "vocals": wav}  a 4-bar loop per stem cut from the source for this section
 # drums: {"kick": [[step, vel], ...], "snare": [...], "hat": [...]}  the section's beat, as hits on the 16th grid (the kit plays exactly this)
@@ -59,6 +67,41 @@ DEFAULT = {"title": "", "style": "groove", "bpm": None, "key": "8A", "seed": 1, 
 # vocals: [{"bar": 12.25, "file": wav, "seconds": 1.8}]  the source song's vocal phrases, placed on its bar grid
 
 
+def chord_deg(c) -> int:
+    """The degree of a chord entry (int or dict)."""
+    return int(c["deg"]) if isinstance(c, dict) else int(c)
+
+
+def parse_chord(x):
+    """Chord entry from an int, a dict or its text form: "3", "3M" (major
+    third), "3m" (minor), "3s4" / "3s2" (suspended), combinable ("5Ms2")."""
+    if isinstance(x, dict):
+        d = {"deg": int(x.get("deg", 0))}
+        if x.get("third") in ("maj", "min"):
+            d["third"] = x["third"]
+        if int(x.get("sus", 0) or 0) in (2, 4):
+            d["sus"] = int(x["sus"])
+        return d if len(d) > 1 else d["deg"]
+    if isinstance(x, (int, float)):
+        return int(x)
+    s = str(x).strip()
+    m = re.match(r"^(-?\d+)([Mm])?(?:s([24]))?$", s)
+    if not m:
+        return int(float(s))
+    d = {"deg": int(m.group(1))}
+    if m.group(2):
+        d["third"] = "maj" if m.group(2) == "M" else "min"
+    if m.group(3):
+        d["sus"] = int(m.group(3))
+    return d if len(d) > 1 else d["deg"]
+
+
+def chord_str(c) -> str:
+    if not isinstance(c, dict):
+        return str(int(c))
+    return f"{int(c['deg'])}{'M' if c.get('third') == 'maj' else ('m' if c.get('third') == 'min' else '')}{'s' + str(c['sus']) if c.get('sus') else ''}"
+
+
 def normalize(script: dict) -> dict:
     """A copy with defaults filled and section lengths on the 4-bar grid."""
     s = dict(DEFAULT)
@@ -74,7 +117,14 @@ def normalize(script: dict) -> dict:
         if "layers" in e and e["layers"] is not None:
             e["layers"] = [str(x) for x in e["layers"]]
         if "chords" in e and e["chords"] is not None:
-            e["chords"] = [int(x) for x in e["chords"]] or None
+            e["chords"] = [parse_chord(x) for x in e["chords"]] or None
+        if e.get("dyn") is not None:
+            e["dyn"] = [round(float(max(-12.0, min(12.0, x))), 2) for x in e["dyn"]] or None
+        for k in ("level", "trim_db"):
+            if e.get(k) is not None:
+                e[k] = round(float(max(-18.0, min(18.0, e[k]))), 2)
+        if e.get("drums_phrases") is not None:
+            e["drums_phrases"] = [dict(p) for p in e["drums_phrases"]] or None
         out.append(e)
     s["sections"] = out
     s["kit"] = {k: str(v) for k, v in (s.get("kit") or {}).items() if v} or None
@@ -184,14 +234,57 @@ def make_composer(script: dict, arc_fn=None):
     return c
 
 
+def level_trims(audio, script: dict, bpm: float) -> list:
+    """Per-section dB to add so the recreation's section levels (relative
+    to its own mean) match the script's "level" targets (the source's)."""
+    from lib.gen.analysis.ingest import features_on_grid, DB_PER_UNIT
+    s = normalize(script)
+    mono = np.asarray(audio, dtype=np.float32).mean(axis=1) if np.ndim(audio) == 2 else np.asarray(audio, dtype=np.float32)
+    feats = features_on_grid(mono, float(bpm), 0.0)
+    db = np.array([f["energy_db"] for f in feats])
+    if len(db) < 4:
+        return [0.0 for _ in s["sections"]]
+    song = float(db.mean())
+    out = []
+    b = 0
+    for e in s["sections"]:
+        seg = db[b:b + e["bars"]]
+        b += e["bars"]
+        if e.get("level") is None or len(seg) == 0:
+            out.append(0.0)
+            continue
+        have = DB_PER_UNIT * (float(seg.mean()) - song)
+        t = float(np.clip(float(e["level"]) - have, -9.0, 9.0))
+        out.append(round(t, 1) if abs(t) >= 0.3 else 0.0)
+    return out
+
+
 def render(script: dict, out_path: str | None = None, seconds: float | None = None, seed: int | None = None,
-           progress=None):
+           progress=None, calibrate: bool | None = None):
     """Play the script offline. Returns (audio (n,2) float32, composer).
-    seconds defaults to the script's own length (plus a bar of tail)."""
-    from lib.gen.synth import SynthRack
+    seconds defaults to the script's own length (plus a bar of tail).
+    calibrate: when the sections carry a "level" (the analyser writes the
+    source's section levels) and no "trim_db" yet, a first pass measures
+    the recreation's own section levels and the difference goes into
+    trim_db for the pass that is returned (composer.script carries the
+    trims, so a caller can save them and skip the pass next time)."""
     s = normalize(script)
     if seed is not None:
         s["seed"] = int(seed)
+    if calibrate is None:
+        calibrate = (any(e.get("level") is not None for e in s["sections"]) and not any(e.get("trim_db") is not None for e in s["sections"])
+                     and s.get("fidelity", 0.0) < 0.99)
+    if calibrate:
+        first, c0 = _render_pass(s, None, seconds, progress=(lambda p: progress(0.5 * p)) if progress else None)
+        trims = level_trims(first, s, c0.bpm)
+        for e, t in zip(s["sections"], trims):
+            e["trim_db"] = t
+        return _render_pass(s, out_path, seconds, progress=(lambda p: progress(0.5 + 0.5 * p)) if progress else None)
+    return _render_pass(s, out_path, seconds, progress=progress)
+
+
+def _render_pass(s: dict, out_path, seconds, progress=None):
+    from lib.gen.synth import SynthRack
     c = make_composer(s)
     total = float(seconds) if seconds else total_seconds(s, c.bpm) + 4 * 60.0 / c.bpm
     full_loops = s.get("fidelity", 0.0) >= 0.99 and any(e.get("loops") for e in s["sections"])
@@ -249,11 +342,21 @@ def to_actions(script: dict, slots=None) -> list:
         for lane, v in (e.get("lanes") or {}).items():
             out.append((bar, "lane", {"lane": lane, "to": float(v), "ramp_s": 2.0}))
         if e.get("chords"):
-            out.append((bar, "chords", list(e["chords"])))          # (script-only: the action list has no chord lever)
+            out.append((bar, "chords", [chord_str(c) for c in e["chords"]]))   # (script-only: the action list has no chord lever)
         if e.get("hook"):
             out.append((bar, "hook", e["hook"].get("name", "hook")))   # (script-only)
-        if e.get("drums"):
+        if e.get("drums_phrases"):
+            for p, tpl in enumerate(e["drums_phrases"]):
+                if p * 4 >= e["bars"]:
+                    break
+                d = {k: [st for st, _ in tpl.get(k) or []] for k in ("kick", "snare", "hat")}
+                if tpl.get("fill"):
+                    d["fill"] = {k: [st for st, _ in v] for k, v in tpl["fill"].items()}
+                out.append((bar + 4 * p, "drums", d))                   # (script-only: the beat, per phrase)
+        elif e.get("drums"):
             out.append((bar, "drums", {k: [st for st, _ in v] for k, v in e["drums"].items()}))   # (script-only: the beat)
+        if e.get("dyn"):
+            out.append((bar, "dyn", [round(float(x), 1) for x in e["dyn"][: e["bars"]]]))       # (script-only: dB per bar -> gain lane)
         bar += e["bars"]
     if s.get("end", True):
         out.append((bar, "end", None))
@@ -273,13 +376,20 @@ def describe(script: dict) -> str:
         if e.get("layers"):
             bits.append("+".join(e["layers"]))
         if e.get("chords"):
-            bits.append("chords " + " ".join(str(x) for x in e["chords"]))
+            ch = [chord_str(x) for x in e["chords"]]
+            bits.append("chords " + " ".join(ch[:8]) + (f" ..{len(ch)}" if len(ch) > 8 else ""))
         if e.get("key") or e.get("bpm"):
             bits.append(f"-> {e.get('key', '')} {e.get('bpm', '')}".strip())
         if e.get("hook"):
             bits.append("hook")
         if e.get("drums"):
             bits.append("beat " + "/".join(f"{k}:{''.join('x' if any(st == i for st, _ in v) else '.' for i in range(16))}" for k, v in e["drums"].items() if v))
+        if e.get("drums_phrases"):
+            n_fill = sum(1 for p in e["drums_phrases"] if p.get("fill"))
+            bits.append(f"{len(e['drums_phrases'])} phrase templates" + (f", {n_fill} fills" if n_fill else ""))
+        if e.get("dyn"):
+            d = e["dyn"][: e["bars"]]
+            bits.append(f"dyn {min(d):+.1f}..{max(d):+.1f} dB")
         lines.append("  " + "  ".join(bits))
         bar += e["bars"]
     if s.get("kit"):

@@ -64,6 +64,39 @@ def main():
     tmp = os.path.join(tempfile.gettempdir(), "gen_script_test.yaml")
     S.save(sc, tmp)
     check(S.load(tmp) == S.normalize(sc), "save/load round-trips")
+    # per-bar material: chord qualities, per-phrase drum templates, bar-by-bar dynamics
+    sc_m = S.normalize(sc)
+    g = sc_m["sections"][1]
+    g["chords"] = ["0", "5M", {"deg": 6, "sus": 4}, 3, 2, 4, 0, 1]
+    g["dyn"] = [-6, 0, -6, 0, -6, 0, -6, 0]
+    g["drums_phrases"] = [{"kick": [[0, 1.0], [8, 1.0]], "snare": [[4, 1.0]], "hat": []},
+                          {"kick": [[0, 1.0], [4, 1.0], [8, 1.0], [12, 1.0]], "snare": [[4, 1.0], [12, 1.0]], "hat": [],
+                           "fill": {"snare": [[12, 1.0], [14, 1.0], [15, 1.0]]}}]
+    sc_m = S.normalize(sc_m)
+    check([S.chord_str(c) for c in sc_m["sections"][1]["chords"]] == ["0", "5M", "6s4", "3", "2", "4", "0", "1"], "chord entries carry a quality (text form round-trips)")
+    cm = S.make_composer(sc_m)
+    pm = list(cm.phrases_until(int(S.total_seconds(sc_m, cm.bpm) * RATE)))
+    g1, g2 = pm[2], pm[3]
+    check([ch[1] for ch in g1.chords] == ["i", "VI", "VIIsus4", "iv"] and [ch[0] for ch in g2.chords] == [2, 4, 0, 1],
+          f"a section's chord list runs bar by bar across phrases ({[ch[1] for ch in g1.chords]} then {[ch[0] for ch in g2.chords]})")
+    from lib.gen.composer.harmony import Harmony
+    h = cm.harmony
+    maj = h.notes(h.scripted({"deg": 0, "third": "maj"}), 3)
+    sus = h.notes(h.scripted({"deg": 0, "sus": 2}), 3)
+    check((maj[1] - maj[0]) % 12 == 4 and (sus[1] - sus[0]) % 12 == 2, f"an altered third / a suspension is spelled ({maj}, {sus})")
+    k1 = sum(1 for e in g1.events if e.slot == "kick"); k2 = sum(1 for e in g2.events if e.slot == "kick")
+    sn2 = sum(1 for e in g2.events if e.slot == "snare")
+    check(k1 == 8 and k2 == 16 and sn2 == 9, f"per-phrase drum templates and the fill bar are played ({k1} then {k2} kicks, {sn2} snares with the fill)")
+    gains = [(round((e.at - g1.start) / cm.samples_per_bar), e.params["to"]) for e in g1.events if e.slot == "auto" and e.params.get("lane") == "gain"]
+    check(gains == [(0, 0.5012), (1, 1.0), (2, 0.5012), (3, 1.0)], f"dynamics are written to the gain lane bar by bar ({gains})")
+    aud_m, _ = S.render(sc_m, seconds=S.total_seconds(sc_m, cm.bpm))
+    spb = int(cm.samples_per_bar)
+    b8 = g1.start
+    rms = [float(np.sqrt(np.mean(aud_m[b8 + b * spb + spb // 4: b8 + (b + 1) * spb] ** 2))) for b in range(4)]
+    # -6 dB on the odd bars; the limiter takes some of it back on the loud bars, so ask for >= 2 dB of contrast
+    check(rms[1] > 1.25 * rms[0] and rms[3] > 1.25 * rms[2], f"and the rack plays them ({' '.join(f'{20 * np.log10(r + 1e-9):.1f}' for r in rms)} dB over four bars)")
+    acts_m = S.to_actions(sc_m)
+    check(sum(1 for a in acts_m if a[1] == "drums") == 2 and any(a[1] == "dyn" for a in acts_m), "to_actions carries the beat per phrase and the dynamics")
 
     print("== ingest")
     folder = os.path.join(tempfile.gettempdir(), "gen_analysis_test")
@@ -82,6 +115,10 @@ def main():
     check(res["features"] and all(len(f["chroma"]) == 12 for f in res["features"]) and len(res["chords"]) == len(res["features"]),
           f"{len(res['features'])} bar features with chroma and chords")
     check(sum(1 for x in res["chords"][8:48] if x in (0, 5, 6)) >= 0.4 * 40, f"chords lean on the loop's degrees {res['chords'][8:20]} (mix-only reader, ~half right)")
+    long_secs = [e for e in s2["sections"] if e["bars"] >= 8]
+    check(all(len(e.get("chords") or []) == e["bars"] for e in s2["sections"]) and all(e.get("drums_phrases") for e in long_secs if e.get("drums"))
+          and any(e.get("dyn") for e in s2["sections"]),
+          f"ingest writes a chord per bar, a drum template per phrase and the dynamics per bar ({sum(len(e.get('dyn') or []) for e in s2['sections'])} bars of dyn)")
 
     print("== recreate + score")
     self_rep = SC.compare(res["features"], res["features"], bpm_orig=a["bpm"], bpm_recon=a["bpm"], key_orig="8A", key_recon="8A")
@@ -195,9 +232,18 @@ def main():
         cells = mat.get("bass_cells") or {}
         check(sum(1 for x in pcs if x is not None) >= 0.5 * len(pcs) and cells and all(c["steps"] and len(c["steps"]) == len(c["degrees"]) for c in cells.values()),
               f"bass stem transcribed: {sum(1 for x in pcs if x is not None)}/{len(pcs)} bars pitched, {len(cells)} cells")
-        ch2 = I.chords_from_bass(res["features"], pcs, key.root, "minor" if key.mode != "major" else "major")
-        tonic_share = sum(1 for x in ch2[8:48] if x in (0, 5, 6)) / 40.0
-        check(len(ch2) == len(res["features"]) and tonic_share >= 0.5, f"bass-rooted chords lean on the loop ({tonic_share:.0%} on i/VI/VII)")
+        hc = R.stem_chroma(mat["stems"]["other"], res["bars"], 80.0, 2500.0)
+        bc = R.stem_chroma(mat["stems"]["bass"], res["bars"], 30.0, 250.0)
+        ch2 = I.chords_from_bass(res["features"], pcs, key.root, "minor" if key.mode != "major" else "major", harm_chroma=hc, bass_chroma=bc)
+        tonic_share = sum(1 for x in ch2[8:48] if S.chord_deg(x) in (0, 5, 6)) / 40.0
+        # the composition's bars 8..24 loop i i VI VII; the detected first downbeat may sit a bar in, so compare with a shift
+        truth = []
+        for p in S.make_composer(s2).phrases_until(int(S.total_seconds(s2, s2["bpm"]) * RATE)):
+            truth += [ch[0] for ch in p.chords]
+        best_acc = max(sum(1 for i in range(8, 40) if 0 <= i + sh < len(truth) and S.chord_deg(ch2[i]) == truth[i + sh]) / 32.0 for sh in (-1, 0, 1))
+        check(len(ch2) == len(res["features"]) and tonic_share >= 0.5 and best_acc >= 0.5,
+              f"stem-rooted chords with a quality check: {tonic_share:.0%} on i/VI/VII, {best_acc:.0%} of bars right (best of a +-1 bar shift), "
+              f"{sum(1 for x in ch2 if isinstance(x, dict))} non-diatonic qualities")
         bank = mat.get("bank") or []
         check(bank and all(os.path.exists(b["file"]) and 20 <= b["base_midi"] <= 110 for b in bank), f"melodic bank: {len(bank)} pitched tones")
         s4 = dict(s2, kit=mat["kit"], bank=bank, bpm_src=s2["bpm"], bpm=round(s2["bpm"] * 1.06, 2),
