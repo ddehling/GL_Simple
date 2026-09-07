@@ -466,6 +466,7 @@ class AnalysisPage(QWidget):
         return S.normalize(sc)
 
     def _fill_table(self):
+        from lib.gen import script as S
         sc = self.script or {"sections": []}
         if sc.get("fidelity") is not None and any(e.get("loops") for e in sc.get("sections", [])):
             self.fidelity.blockSignals(True); self.fidelity.setValue(int(round(100 * float(sc["fidelity"])))); self.fidelity.blockSignals(False)
@@ -480,7 +481,6 @@ class AnalysisPage(QWidget):
                 if j == 0:
                     it.setBackground(QColor(SECTION_COLOURS.get(v, "#555")))
                 self.table.setItem(i, j, it)
-        from lib.gen import script as S
         self.cmds.setPlainText("\n".join(f"bar {b:4d}  {a:10s} {json.dumps(v) if not isinstance(v, str) else v}" for b, a, v in S.to_actions(sc)) if sc.get("sections") else "")
 
     # -- playback + compare ---------------------------------------------------------
