@@ -141,6 +141,10 @@ class TimedEvent:
         elapsed = (time.perf_counter_ns() - start) / 1.0E9
         if self.state['count'] < 1000:
             self.frame_duration.append(elapsed)
+        # Hitch profiler: remember this frame's slowest event by name, so
+        # an 'events'-phase hitch names its culprit instead of the group.
+        if elapsed > outstate.get('_ev_slowest', (None, 0.0))[1]:
+            outstate['_ev_slowest'] = (self.name, elapsed)
         return True
 
     def closeevent(self, outstate):

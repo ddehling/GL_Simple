@@ -24,7 +24,15 @@ from lib.weather_params import (
 # `background_events` list. The editor should hide these from the
 # "+ Add Background Event" dropdown -- the set's dedicated dropdowns
 # are the single source of truth for them.
-IMPLICIT_BACKGROUND_EVENTS = frozenset({"narrative_player", "sound_pool"})
+IMPLICIT_BACKGROUND_EVENTS = frozenset({"narrative_player", "sound_pool",
+                                        "live_shader"})
+
+# Built-in bare stage for the Shader Lab: a set with no background events,
+# no narrative, no sound pool and no random events, so ONLY the implicit
+# live_shader slots render. Injected into every project's weather_sets by
+# WeatherSetManager (see __init__); switching to it silences the weather
+# scene without touching the live-coded patterns.
+BLANK_SET_NAME = "Blank Canvas"
 
 
 class WeatherSetManager:
@@ -57,6 +65,27 @@ class WeatherSetManager:
         self.target_set: Optional[str] = None
         self.event_map: dict = event_map
         self._cached_set_config: Optional[tuple] = None  # (set_name, config)
+
+        # Inject the Shader Lab bare stage into the SHARED weather_sets
+        # dict (Stories_OGL indexes the same object directly by
+        # current_set, so a private copy would KeyError there). Uses the
+        # project's first weather state so get_set_states always casts.
+        if BLANK_SET_NAME not in self.weather_sets:
+            try:
+                first_state = next(iter(self._weather_state_enum)).value
+                self.weather_sets[BLANK_SET_NAME] = {
+                    "states": [first_state],
+                    "background_events": [],
+                    "random_events": [],
+                    "random_event_rate": 0.0,
+                    # The borrowed state's preset still carries its own
+                    # on_transition_events and ambient_sound — this flag
+                    # tells transition_to_weather to drop both, otherwise
+                    # the "blank" stage plays that state's sounds/events.
+                    "suppress_state_extras": True,
+                }
+            except Exception:
+                pass    # exotic enum: the blank stage is simply unavailable
 
     # ------------------------------------------------------------------
     # Config accessors
@@ -99,10 +128,22 @@ class WeatherSetManager:
             implied.append("narrative_player")
         if cfg.get("sound_pool_dir"):
             implied.append("sound_pool")
+        # The Shader Lab slot is unconditional: every set in every project
+        # schedules it, so a live-coded pattern survives set changes. It
+        # renders nothing until the web layer publishes a source.
+        implied.append("live_shader")
         for ev in implied:
             if ev not in events:
                 events.append(ev)
         return events
+
+    def get_suppress_state_extras(self) -> bool:
+        """Whether the active set mutes per-STATE extras (a state preset's
+        on_transition_events and ambient_sound). Used by the built-in
+        Blank Canvas set, which borrows a real state for its params but
+        must not inherit that state's sounds or spawned events."""
+        return bool(self.get_current_set_config().get(
+            "suppress_state_extras", False))
 
     def get_random_events_config(self) -> tuple:
         """Return (random_events list, random_event_rate float) for current set."""

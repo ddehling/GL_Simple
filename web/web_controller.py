@@ -14,6 +14,11 @@ from zeroconf import Zeroconf, ServiceInfo
 import numpy as np
 
 
+def _shader_slots():
+    from web.shader_lab import NUM_SLOTS
+    return NUM_SLOTS
+
+
 def _sanitize_for_json(obj):
     """Recursively convert numpy scalars/arrays to Python-native types so
     json.dumps (used by socketio.emit) doesn't choke on float32 etc."""
@@ -92,6 +97,18 @@ class WebController:
                                  engineio_logger=False)
 
         self.available_events = []  # Will be set by EnvironmentalSystem
+
+        # Shader Lab (live GLSL slot). live_shader_dirty is the render
+        # thread's every-frame fast-path flag (plain GIL-atomic bool);
+        # the seq counter versions each queued source so compile status
+        # can be matched to the request that produced it.
+        self.live_shader_dirty = False
+        self._live_shader_seq = 0
+        # One conversation per slot, created lazily: {slot: ShaderLabSession}
+        self._shader_lab_sessions = {}
+        # What each live slot is showing right now: {slot: None | {name,
+        # origin: 'generated'|'editor'|'library', desc, prompt, knobs, since}}
+        self._live_shader_now = {}
 
         self.server_thread = None
         self.zeroconf = None
@@ -345,6 +362,68 @@ class WebController:
                             "state": info.get("state") or "",
                             "style": info.get("style") or "",
                             "error": info.get("error") or ""})
+        @self.app.route('/shaderlab')
+        def shaderlab_page():
+            """Live Shader Lab: describe a pattern, see it on the LEDs."""
+            return render_template('shaderlab.html')
+
+        @self.app.route('/api/shaderlab/info')
+        def shaderlab_info():
+            from web.shader_lab import NUM_SLOTS, ShaderLabSession
+            lib = self._shader_lab_load_library()
+            with self._dict_lock:
+                statuses = {i: self.control_dict.get(f'live_shader_status_{i}')
+                            for i in range(NUM_SLOTS)}
+                now = dict(self._live_shader_now)
+                params = copy.copy(self.control_dict.get('live_shader_params'))
+            from web import shader_patterns
+            return jsonify({
+                'llm_available': ShaderLabSession.available(),
+                'num_slots': NUM_SLOTS,
+                'builtin_patterns': [
+                    {'id': pid, 'desc': spec['desc']}
+                    for pid, spec in shader_patterns.PATTERNS.items()],
+                'params': _sanitize_for_json(params),
+                'saved_patterns': [
+                    {'name': p.get('name'), 'prompt': p.get('prompt', ''),
+                     'created': p.get('created')} for p in lib],
+                'slots': _sanitize_for_json(now),
+                'status': _sanitize_for_json(statuses),
+            })
+
+        @self.app.route('/api/perf')
+        def api_perf():
+            """Frame-time health: FPS, worst frames, hitch log with phase
+            breakdown + DJ/GC context. Refreshed every 500 frames by the
+            main loop. `curl :PORT/api/perf` on the deployment box."""
+            with self._dict_lock:
+                perf = copy.deepcopy(self.control_dict.get('perf'))
+            return jsonify(_sanitize_for_json(perf)
+                           or {'status': 'no data yet — fills every '
+                                         '500 frames (~12s)'})
+
+        @self.app.route('/api/shaderlab/compile', methods=['POST'])
+        def api_shaderlab_compile():
+            """HTTP twin of the shaderlab_compile socket event (synchronous):
+            validate, queue for the render thread, wait for the verdict.
+            Lets out-of-process tools (curl, a future file-watch mode)
+            drive the live slot without a socket connection."""
+            from web.shader_lab import validate_glsl
+            body = request.get_json(silent=True) or {}
+            code = body.get('code')
+            slot = self._valid_slot(body.get('slot'))
+            if not isinstance(code, str):
+                return jsonify({'ok': False, 'error': 'missing code'}), 400
+            ok, reason = validate_glsl(code)
+            if not ok:
+                return jsonify({'ok': False, 'error': reason}), 400
+            seq = self.queue_live_shader(code, slot)
+            status = self.wait_for_compile(seq, slot)
+            if status is None:
+                return jsonify({'ok': False, 'error': 'compile timed out'}), 504
+            return jsonify({'ok': bool(status.get('ok')),
+                            'error': status.get('error', ''),
+                            'seq': status.get('seq')})
 
         @self.app.route('/api/dj/active')
         def dj_active():
@@ -1326,6 +1405,190 @@ class WebController:
         def api_gen_action():
             ok = queue_gen_action(request.get_json(silent=True))
             return jsonify({'ok': bool(ok)}), (200 if ok else 400)
+        # ---- Shader Lab (live GLSL slot; see web/shader_lab.py) --------
+        # Handlers validate on this thread, then queue for the render
+        # thread / spawn a worker — same contract as the DJ channel. The
+        # Anthropic API call and the compile-status poll both happen on
+        # background worker threads, never here and never on the render
+        # thread.
+
+        @self.socketio.on('shaderlab_generate')
+        def handle_shaderlab_generate(data):
+            prompt = (data or {}).get('prompt')
+            if not isinstance(prompt, str) or not prompt.strip():
+                return
+            model = (data or {}).get('model')
+            # slot is OPTIONAL: None means "route the wish" server-side.
+            raw_slot = (data or {}).get('slot')
+            slot = self._valid_slot(raw_slot) if raw_slot is not None else None
+            self.socketio.start_background_task(
+                self._run_shader_generation, prompt.strip()[:2000], slot,
+                model if isinstance(model, str) else None)
+
+        @self.socketio.on('shaderlab_compile')
+        def handle_shaderlab_compile(data):
+            code = (data or {}).get('code')
+            if not isinstance(code, str) or len(code) > 30000:
+                return
+            raw_slot = (data or {}).get('slot')
+            slot = (self._valid_slot(raw_slot) if raw_slot is not None
+                    else self._pick_new_slot()[0])
+            self.socketio.start_background_task(
+                self._run_manual_compile, code, slot)
+
+        @self.socketio.on('shaderlab_clear')
+        def handle_shaderlab_clear(data=None):
+            from web.shader_lab import NUM_SLOTS
+            if data and data.get('all'):
+                for s in range(NUM_SLOTS):
+                    self.queue_live_shader(None, s)
+                    self._set_live_now(s, None)
+                self._shader_lab_sessions.clear()
+                self.socketio.emit('shaderlab_result',
+                                   {'status': 'cleared', 'slot': None,
+                                    'code': '', 'message': 'Stage cleared.'})
+                return
+            slot = self._valid_slot((data or {}).get('slot') if data else 0)
+            self.queue_live_shader(None, slot)
+            self._set_live_now(slot, None)
+            self._shader_lab_sessions.pop(slot, None)
+            self.socketio.emit('shaderlab_result',
+                               {'status': 'cleared', 'slot': slot,
+                                'code': '', 'message': ''})
+
+        @self.socketio.on('shaderlab_reset_session')
+        def handle_shaderlab_reset(data=None):
+            slot = self._valid_slot((data or {}).get('slot') if data else 0)
+            sess = self._shader_lab_sessions.get(slot)
+            if sess is not None:
+                sess.reset()
+
+        @self.socketio.on('shaderlab_save')
+        def handle_shaderlab_save(data):
+            data = data or {}
+            name = data.get('name')
+            code = data.get('code')
+            prompt = data.get('prompt') or ''
+            if (not isinstance(name, str) or not name.strip()
+                    or not isinstance(code, str) or not code.strip()):
+                return
+            if self._shader_lab_save_pattern(name.strip()[:60], code,
+                                             str(prompt)[:500]):
+                self._shaderlab_emit('shaderlab_library_changed', {})
+
+        @self.socketio.on('shaderlab_load')
+        def handle_shaderlab_load(data):
+            """Play a saved pattern: compile it into the chosen live slot."""
+            name = (data or {}).get('name')
+            if not isinstance(name, str):
+                return
+            raw_slot = (data or {}).get('slot')
+            slot = (self._valid_slot(raw_slot) if raw_slot is not None
+                    else self._pick_new_slot()[0])
+            entry = next((p for p in self._shader_lab_load_library()
+                          if p.get('name') == name), None)
+            if entry and isinstance(entry.get('glsl'), str):
+                self.socketio.start_background_task(
+                    self._run_manual_compile, entry['glsl'], slot,
+                    entry.get('name'), 'library', entry.get('prompt', ''))
+
+        @self.socketio.on('shaderlab_builtin')
+        def handle_shaderlab_builtin(data):
+            """Toss a built-in pattern onto the stage (auto-slot unless a
+            layer is focused)."""
+            from web import shader_patterns
+            pid = (data or {}).get('id')
+            raw_slot = (data or {}).get('slot')
+            if pid not in shader_patterns.PATTERNS:
+                return
+            if raw_slot is not None:
+                slot = self._valid_slot(raw_slot)
+            else:
+                slot, _ = self._pick_new_slot()
+                self._shader_lab_sessions.pop(slot, None)  # fresh conversation
+                self._reserve_slot(slot, pid)  # rapid taps route around it
+            glsl, desc = shader_patterns.instantiate(pid)
+            self.socketio.start_background_task(
+                self._run_manual_compile, glsl, slot, pid, 'builtin', desc)
+
+        @self.socketio.on('shaderlab_restyle')
+        def handle_shaderlab_restyle(data):
+            """Direct manipulation of a builtin layer: recolor (palette
+            dot), shuffle (dice), or cycle audio-reactivity — instant
+            re-instantiation, no LLM."""
+            from web import shader_patterns
+            data = data or {}
+            slot = self._valid_slot(data.get('slot'))
+            with self._dict_lock:
+                now = dict(self._live_shader_now.get(slot) or {})
+            pid = now.get('name')
+            if now.get('origin') != 'builtin' \
+                    or pid not in shader_patterns.PATTERNS:
+                return
+            params = dict(now.get('params') or {})
+            if isinstance(data.get('palette'), str):
+                params['palette'] = data['palette']
+            if isinstance(data.get('audio'), str):
+                params['audio'] = data['audio']
+            if data.get('shuffle'):
+                params.update(shader_patterns.shuffle_params(pid))
+            glsl, desc = shader_patterns.instantiate(pid, params)
+            self.socketio.start_background_task(
+                self._run_manual_compile, glsl, slot, pid, 'builtin',
+                desc, params)
+
+        @self.socketio.on('shaderlab_get')
+        def handle_shaderlab_get(data):
+            """Fetch a saved pattern's code for editing — nothing compiles."""
+            name = (data or {}).get('name')
+            entry = next((p for p in self._shader_lab_load_library()
+                          if p.get('name') == name), None)
+            if entry:
+                self._shaderlab_emit('shaderlab_pattern',
+                                     {'name': entry.get('name'),
+                                      'glsl': entry.get('glsl', ''),
+                                      'prompt': entry.get('prompt', '')})
+
+        @self.socketio.on('shaderlab_params')
+        def handle_shaderlab_params(data):
+            """Live performance controls: per-slot intensity + iKnob0..3.
+            No compile — Stories_OGL forwards them to outstate. A fresh
+            dict replaces the old one so the render thread can read the
+            current dict without copying. Keyed by str(slot)."""
+            data = data or {}
+            slot = str(self._valid_slot(data.get('slot')))
+
+            def _clamp(v, default):
+                try:
+                    return max(0.0, min(1.0, float(v)))
+                except (TypeError, ValueError):
+                    return default
+
+            with self._dict_lock:
+                all_params = dict(self.control_dict.get('live_shader_params')
+                                  or {})
+                cur = dict(all_params.get(slot)
+                           or {'intensity': 1.0, 'knobs': [0.5] * 4})
+                if 'intensity' in data:
+                    cur['intensity'] = _clamp(data['intensity'], 1.0)
+                if isinstance(data.get('knobs'), list):
+                    knobs = list(cur.get('knobs') or [0.5] * 4)
+                    for i, v in enumerate(data['knobs'][:4]):
+                        if v is not None:
+                            knobs[i] = _clamp(v, 0.5)
+                    cur['knobs'] = knobs
+                all_params[slot] = cur
+                self.control_dict['live_shader_params'] = all_params
+            self.live_shader_dirty = True   # fast-path one frame; safe to set
+            self._shaderlab_emit('shaderlab_params', all_params)
+
+        @self.socketio.on('shaderlab_delete')
+        def handle_shaderlab_delete(data):
+            name = (data or {}).get('name')
+            if not isinstance(name, str) or not name.strip():
+                return
+            self._shader_lab_delete_pattern(name)
+            self._shaderlab_emit('shaderlab_library_changed', {})
 
         # Allowed keys for the set_flag WebSocket event
         ALLOWED_FLAGS = {'instant_transitions', 'flip_x'}
@@ -1508,6 +1771,330 @@ class WebController:
                 self.control_dict['request_trigger_event'] = event_name or True
             self._values_cache = None
 
+    # ------------------------------------------------------------------
+    # Shader Lab plumbing (web/worker threads only — no GL here)
+    # ------------------------------------------------------------------
+
+    def _shader_lab_library_path(self):
+        return Path(__file__).parent.parent / 'config' / 'shader_lab_library.json'
+
+    def _shader_lab_load_library(self):
+        try:
+            with open(self._shader_lab_library_path(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def _shader_lab_save_pattern(self, name, code, prompt=''):
+        from web.shader_lab import validate_glsl
+        ok, _ = validate_glsl(code)
+        if not ok:
+            return False
+        lib = [p for p in self._shader_lab_load_library()
+               if p.get('name') != name]
+        lib.append({'name': name, 'glsl': code, 'prompt': prompt,
+                    'created': time.time()})
+        try:
+            path = self._shader_lab_library_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(lib, f, indent=2)
+            return True
+        except OSError as e:
+            print(f"[ShaderLab] Failed to save library: {e}")
+            return False
+
+    def _shader_lab_delete_pattern(self, name):
+        lib = [p for p in self._shader_lab_load_library()
+               if p.get('name') != name]
+        try:
+            with open(self._shader_lab_library_path(), 'w',
+                      encoding='utf-8') as f:
+                json.dump(lib, f, indent=2)
+        except OSError as e:
+            print(f"[ShaderLab] Failed to delete pattern: {e}")
+
+    @staticmethod
+    def _valid_slot(v):
+        from web.shader_lab import NUM_SLOTS
+        try:
+            s = int(v)
+        except (TypeError, ValueError):
+            return 0
+        return s if 0 <= s < NUM_SLOTS else 0
+
+    def _reserve_slot(self, slot, label):
+        """Mark a slot as pending IMMEDIATELY so concurrent wishes route
+        around it (and the UI can show a ghost tile while it builds)."""
+        self._set_live_now(slot, {'name': None, 'origin': 'pending',
+                                  'desc': label, 'prompt': label,
+                                  'pending': True, 'since': time.time()})
+
+    def _release_if_pending(self, slot):
+        """Failure cleanup: remove a reservation that never became real."""
+        with self._dict_lock:
+            pending = bool((self._live_shader_now.get(slot) or {})
+                           .get('pending'))
+        if pending:
+            self._set_live_now(slot, None)
+
+    def _pick_new_slot(self):
+        """Empty slot for a new layer, else the least-recently-touched one.
+        Returns (slot, replaced_name_or_None)."""
+        from web.shader_lab import NUM_SLOTS
+        with self._dict_lock:
+            occ = {s: n for s, n in self._live_shader_now.items() if n}
+        for s in range(NUM_SLOTS):
+            if s not in occ:
+                return s, None
+        oldest = min(occ, key=lambda s: occ[s].get('since') or 0)
+        return oldest, occ[oldest].get('name') or 'the oldest layer'
+
+    def _shader_lab_session_for(self, slot):
+        """Each slot keeps its own conversation."""
+        from web import shader_lab
+        if slot not in self._shader_lab_sessions:
+            self._shader_lab_sessions[slot] = shader_lab.ShaderLabSession()
+        return self._shader_lab_sessions[slot]
+
+    def _set_live_now(self, slot, now):
+        """Record + broadcast what one live slot is showing (or None)."""
+        with self._dict_lock:
+            self._live_shader_now[slot] = now
+            snapshot = dict(self._live_shader_now)
+        self._shaderlab_emit('shaderlab_live', {'slots': snapshot})
+
+    def queue_live_shader(self, code, slot=0):
+        """Queue GLSL source (or None to clear) for one live slot.
+
+        Latest-wins single request key per slot, not an append queue —
+        only the newest source matters. Returns the assigned seq.
+        """
+        with self._dict_lock:
+            self._live_shader_seq += 1
+            seq = self._live_shader_seq
+            self.control_dict[f'request_live_shader_{slot}'] = {
+                'source': code, 'seq': seq}
+        self.live_shader_dirty = True
+        return seq
+
+    def wait_for_compile(self, seq, slot=0, timeout=6.0):
+        """Poll for the compile status of request `seq` on `slot` (worker
+        thread). Returns the status dict, or None on timeout. A status
+        with a HIGHER seq means this request was superseded — returned
+        as-is so the caller can stop gracefully."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._dict_lock:
+                status = self.control_dict.get(f'live_shader_status_{slot}')
+            if status and status.get('seq', -1) >= seq:
+                return dict(status)
+            time.sleep(0.05)
+        return None
+
+    def _shaderlab_emit(self, event, payload):
+        try:
+            self.socketio.emit(event, _sanitize_for_json(payload))
+        except Exception as e:
+            print(f"[ShaderLab] emit failed: {e}")
+
+    def _run_manual_compile(self, code, slot=0, name=None, origin='editor',
+                            prompt='', params=None):
+        """Editor/library path: validate, queue, report — no LLM involved."""
+        from web import shader_lab
+        ok, reason = shader_lab.validate_glsl(code)
+        if not ok:
+            self._release_if_pending(slot)
+            self._shaderlab_emit('shaderlab_result',
+                                 {'status': 'failed', 'error': reason,
+                                  'slot': slot, 'code': code})
+            return
+        self._shaderlab_emit('shaderlab_progress',
+                             {'stage': 'compiling', 'slot': slot})
+        seq = self.queue_live_shader(code, slot)
+        status = self.wait_for_compile(seq, slot)
+        if status is None:
+            self._release_if_pending(slot)
+            self._shaderlab_emit('shaderlab_result',
+                                 {'status': 'failed', 'slot': slot,
+                                  'code': code,
+                                  'error': 'Compile timed out — is the '
+                                           'render loop running?'})
+        elif status.get('seq') != seq:
+            pass  # superseded by a newer request; its own worker reports
+        elif status.get('ok'):
+            # Seed this slot's conversation so follow-up chat refines THIS
+            # code instead of whatever the model last generated.
+            self._shader_lab_session_for(slot).seed(code, name, prompt)
+            self._set_live_now(slot, {'name': name, 'origin': origin,
+                                      'desc': prompt if origin == 'builtin'
+                                              else '',
+                                      'prompt': prompt,
+                                      'params': params or {},
+                                      'knobs': shader_lab.extract_knobs(code),
+                                      'since': time.time()})
+            self._shaderlab_emit('shaderlab_result',
+                                 {'status': 'ok', 'slot': slot,
+                                  'code': code, 'name': name,
+                                  'message': (f'“{name}” compiled — live '
+                                              f'in slot {slot + 1}.'
+                                              if name else
+                                              f'Compiled — live in slot '
+                                              f'{slot + 1}.')})
+        else:
+            self._release_if_pending(slot)
+            self._shaderlab_emit('shaderlab_result',
+                                 {'status': 'failed', 'slot': slot,
+                                  'code': code,
+                                  'error': status.get('error', '')})
+
+    def _run_shader_generation(self, prompt, slot=None, model=None):
+        """Describe -> generate -> compile -> auto-repair loop (worker
+        thread). Max 2 repair rounds (3 compiles total) before the error
+        is surfaced to the person with the code attached.
+
+        slot=None means the wish is routed: refine the layer it talks
+        about, remove/clear on command, else land on a free slot
+        (replacing the oldest when the stage is full)."""
+        from web import shader_lab
+
+        routed_refine = False
+        replaced_note = None
+        if slot is None:
+            with self._dict_lock:
+                occupied = {s: dict(n)
+                            for s, n in self._live_shader_now.items() if n}
+            action, slot, note = shader_lab.route_wish(
+                prompt, occupied, getattr(self, '_last_wish_slot', None))
+            if action == 'clear_all':
+                for s in range(shader_lab.NUM_SLOTS):
+                    self.queue_live_shader(None, s)
+                    self._set_live_now(s, None)
+                self._shader_lab_sessions.clear()
+                self._shaderlab_emit('shaderlab_result',
+                                     {'status': 'cleared', 'slot': None,
+                                      'code': '', 'message': 'Stage cleared.'})
+                return
+            if action == 'remove':
+                name = (occupied.get(slot) or {}).get('name') or 'that layer'
+                self.queue_live_shader(None, slot)
+                self._set_live_now(slot, None)
+                self._shader_lab_sessions.pop(slot, None)
+                self._shaderlab_emit('shaderlab_result',
+                                     {'status': 'cleared', 'slot': slot,
+                                      'code': '',
+                                      'message': f'Removed “{name}”.'})
+                return
+            routed_refine = (action == 'refine')
+            replaced_note = note
+            if action == 'new':
+                self._shader_lab_sessions.pop(slot, None)  # fresh conversation
+                self._reserve_slot(slot, prompt[:80])
+        self._last_wish_slot = slot
+        replaced_msg = (f' (stage was full — replaced “{replaced_note}”)'
+                        if replaced_note else '')
+
+        # Instant path: a clear request that maps onto the prebuilt
+        # parameterized bank compiles in milliseconds — no model call.
+        # instant_match is conservative; anything ambiguous falls through.
+        # Skipped when the wish refines an existing layer — that goes
+        # through its conversation so customizations survive.
+        inst = None
+        if not routed_refine:
+            try:
+                from web import shader_patterns
+                inst = shader_patterns.instant_match(prompt)
+            except Exception as e:
+                print(f"[ShaderLab] instant match error: {e}")
+        if inst is not None:
+            pid, glsl, desc, overrides = inst
+            self._shaderlab_emit('shaderlab_progress',
+                                 {'stage': 'compiling', 'slot': slot})
+            seq = self.queue_live_shader(glsl, slot)
+            status = self.wait_for_compile(seq, slot)
+            if status and status.get('seq') == seq and status.get('ok'):
+                self._shader_lab_session_for(slot).seed(glsl, pid, prompt)
+                self._set_live_now(slot, {
+                    'name': pid, 'origin': 'builtin', 'desc': desc,
+                    'prompt': prompt, 'params': overrides,
+                    'knobs': shader_lab.extract_knobs(glsl),
+                    'since': time.time()})
+                self._shaderlab_emit(
+                    'shaderlab_result',
+                    {'status': 'ok', 'slot': slot, 'code': glsl, 'name': pid,
+                     'message': (f'“{pid}” is on the lights — instant. '
+                                 f'Chat to refine it.{replaced_msg}')})
+                return
+            print(f"[ShaderLab] builtin '{pid}' compile failed — "
+                  f"falling back to codegen")
+
+        sess = self._shader_lab_session_for(slot)
+        if model:
+            sess.set_model(model)
+
+        # Stream the reply as it's written (SDK transport streams tokens;
+        # the CLI returns in one piece, so there this stays at 'thinking').
+        last_emit = [0.0]
+
+        def on_text(text):
+            now = time.time()
+            if now - last_emit[0] < 0.3:
+                return
+            last_emit[0] = now
+            coding = '```' in text
+            self._shaderlab_emit('shaderlab_progress',
+                                 {'stage': 'writing',
+                                  'text': text.split('```', 1)[0].strip()[:300],
+                                  'coding': coding})
+
+        self._shaderlab_emit('shaderlab_progress',
+                             {'stage': 'thinking', 'prompt': prompt,
+                              'slot': slot})
+        glsl, desc, err = sess.generate(prompt, on_text=on_text)
+
+        for attempt in range(3):
+            if err:
+                self._release_if_pending(slot)
+                self._shaderlab_emit('shaderlab_result',
+                                     {'status': 'failed', 'error': err,
+                                      'slot': slot, 'code': glsl or ''})
+                return
+            self._shaderlab_emit('shaderlab_progress',
+                                 {'stage': 'compiling', 'slot': slot})
+            seq = self.queue_live_shader(glsl, slot)
+            status = self.wait_for_compile(seq, slot)
+            if status is None:
+                err = 'Compile timed out — is the render loop running?'
+                continue_repair = False
+            elif status.get('seq') != seq:
+                return  # superseded by a newer request
+            elif status.get('ok'):
+                self._set_live_now(slot, {'name': None, 'origin': 'generated',
+                                          'desc': desc, 'prompt': prompt,
+                                          'knobs':
+                                              shader_lab.extract_knobs(glsl),
+                                          'since': time.time()})
+                self._shaderlab_emit('shaderlab_result',
+                                     {'status': 'ok', 'slot': slot,
+                                      'code': glsl,
+                                      'message': desc + replaced_msg})
+                return
+            else:
+                err = status.get('error', 'unknown compile error')
+                continue_repair = True
+            if continue_repair and attempt < 2:
+                self._shaderlab_emit('shaderlab_progress',
+                                     {'stage': 'repairing',
+                                      'attempt': attempt + 1, 'slot': slot})
+                glsl, desc, err = sess.repair(err, on_text=on_text)
+            else:
+                break
+        self._release_if_pending(slot)
+        self._shaderlab_emit('shaderlab_result',
+                             {'status': 'failed', 'error': err,
+                              'slot': slot, 'code': glsl or ''})
+
     def _start_emitter(self):
         """Start the background thread that pushes state updates via WebSocket."""
         self._emitter_running = True
@@ -1599,6 +2186,10 @@ class WebController:
                                     "pending": list(self.control_dict.get('bt_pending', [])),
                                     "connected": list(self.control_dict.get('bt_connected', [])),
                                 },
+                                "shader_lab": {
+                                    i: copy.copy(self.control_dict.get(
+                                        f'live_shader_status_{i}'))
+                                    for i in range(_shader_slots())},
                             }
 
                         # Emit to all connected clients

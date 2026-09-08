@@ -18,6 +18,7 @@ without touching the window-display layer.
 from __future__ import annotations
 
 import ctypes
+import time
 from typing import Dict
 
 import glfw
@@ -176,9 +177,19 @@ class GroupCanvas:
 
     def update(self, dt: float, state: Dict):
         """Update all effects in draw order."""
+        # Feed the same slowest-effect tracker render() uses: draw-phase
+        # hitches with no slow RENDER pointed at update() (CPU particle
+        # math) as the remaining suspect — name it.
+        slow_name, slow_t = state.get('_fx_slowest', (None, 0.0))
         for effect in sorted(self.effects, key=self._draw_order_key):
             if effect.enabled:
+                _t = time.perf_counter()
                 effect.update(dt, state)
+                _el = time.perf_counter() - _t
+                if _el > slow_t:
+                    slow_name = type(effect).__name__ + '.update'
+                    slow_t = _el
+        state['_fx_slowest'] = (slow_name, slow_t)
 
     def render(self, state: Dict):
         """Render effects into the FBO at native LED resolution.
@@ -190,9 +201,18 @@ class GroupCanvas:
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.width, self.height)
         glScissor(0, 0, self.width, self.height)
+        # Track the frame's slowest effect RENDER (draw-submit stalls park
+        # inside a specific effect's GL calls — the hitch profiler needs
+        # its name, not just 'draw'). Two perf_counter calls per effect.
+        slow_name, slow_t = state.get('_fx_slowest', (None, 0.0))
         for effect in sorted(self.effects, key=self._draw_order_key):
             if effect.enabled:
+                _t = time.perf_counter()
                 effect.render(state)
+                _el = time.perf_counter() - _t
+                if _el > slow_t:
+                    slow_name, slow_t = type(effect).__name__, _el
+        state['_fx_slowest'] = (slow_name, slow_t)
 
     # ------------------------------------------------------------------
     # Frame readback for DMX output

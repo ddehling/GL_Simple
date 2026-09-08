@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lucifera Shader Lab</title>
+    <link rel="stylesheet" href="/static/css/common.css">
+    <style>
+        .container { max-width: 1400px; }   /* denser page than the default 1100 */
+        .lab-layout { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+        .lab-chat { flex: 1 1 480px; min-width: 300px; display: flex; flex-direction: column; }
+        .lab-preview { flex: 0 0 200px; width: 200px; text-align: center; }
+        .lab-preview img {
+            width: 100%; height: auto; image-rendering: pixelated;
+            border: 1px solid #333; border-radius: 6px; background: #000;
+            min-height: 300px;
+        }
+        .lab-log {
+            background: #14141c; border: 1px solid #2a2a38; border-radius: 8px;
+            padding: 12px; min-height: 260px; max-height: 56vh; overflow-y: auto;
+            margin-bottom: 10px; font-size: 0.95em;
+        }
+        .lab-msg { margin: 6px 0; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; }
+        .lab-msg.you { background: #1e2a44; }
+        .lab-msg.lab { background: #1c2b1e; }
+        .lab-msg.err { background: #3a1c1c; }
+        .lab-msg .who { font-weight: bold; opacity: 0.7; font-size: 0.85em; display: block; }
+        .lab-inputrow { display: flex; gap: 8px; }
+        .lab-inputrow input[type=text] {
+            flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #2a2a38;
+            background: #101018; color: #eee; font-size: 1em;
+        }
+        .lab-btn {
+            padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer;
+            background: #4457c9; color: #fff; font-size: 1em;
+        }
+        .lab-btn.secondary { background: #333344; }
+        .lab-btn:disabled { opacity: 0.5; cursor: default; }
+        .lab-status {
+            margin: 8px 0; min-height: 22px; font-size: 0.9em; color: #9ab;
+        }
+        .lab-status.busy::before {
+            content: ''; display: inline-block; width: 10px; height: 10px;
+            border: 2px solid #4457c9; border-top-color: transparent; border-radius: 50%;
+            margin-right: 8px; animation: labspin 0.8s linear infinite; vertical-align: middle;
+        }
+        @keyframes labspin { to { transform: rotate(360deg); } }
+        .lab-banner {
+            background: #40331a; border: 1px solid #6a5522; color: #e8c96a;
+            border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; display: none;
+        }
+        details.lab-editor { margin-top: 18px; }
+        details.lab-editor summary { cursor: pointer; color: #9ab; padding: 6px 0; }
+        .lab-editor textarea {
+            width: 100%; min-height: 260px; font-family: Consolas, monospace;
+            font-size: 0.85em; background: #0d0d14; color: #cde; border: 1px solid #2a2a38;
+            border-radius: 8px; padding: 10px; box-sizing: border-box; tab-size: 4;
+        }
+        .lab-editor .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+        #lab-error {
+            background: #1a0d0d; color: #f0a0a0; border: 1px solid #442222;
+            border-radius: 8px; padding: 10px; white-space: pre-wrap;
+            font-family: Consolas, monospace; font-size: 0.8em; margin-top: 8px; display: none;
+            max-height: 200px; overflow-y: auto;
+        }
+        .lab-saved { margin-top: 14px; }
+        #lab-save-name { width: 160px; }
+        .lab-side-card {
+            background: #14141c; border: 1px solid #2a2a38; border-radius: 8px;
+            padding: 10px 12px; margin-top: 12px; width: 100%; text-align: left;
+            font-size: 0.85em; box-sizing: border-box;
+        }
+        .lab-side-card .card-title {
+            color: #778; font-size: 0.85em; text-transform: uppercase;
+            letter-spacing: 0.06em; margin-bottom: 6px;
+        }
+        .now-dot {
+            display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+            background: #444; margin-right: 6px; vertical-align: baseline;
+        }
+        .now-dot.live { background: #4c8; box-shadow: 0 0 6px #4c8; }
+        .now-dot.err { background: #c55; }
+        /* -- wish sub-row -- */
+        .wish-sub { display: flex; align-items: center; gap: 10px; margin-top: 6px;
+                    font-size: 0.85em; color: #889; }
+        .wish-spacer { flex: 1; }
+        .linkish { background: none; border: none; color: #7c8fe8; cursor: pointer;
+                   font-size: 0.9em; padding: 2px 4px; }
+        .linkish:hover { text-decoration: underline; }
+        #lab-focus b { color: #cde; }
+        #lab-focus a { color: #c66; text-decoration: none; margin-left: 3px; }
+
+        /* -- pattern palette tiles -- */
+        .palette { display: flex; flex-wrap: wrap; gap: 8px; }
+        .pal-tile {
+            width: 100px; height: 58px; border-radius: 10px; cursor: pointer;
+            position: relative; border: 1px solid rgba(255,255,255,0.13);
+            display: flex; flex-direction: column; justify-content: flex-end;
+            padding: 6px 8px; box-sizing: border-box; transition: transform 0.08s;
+        }
+        .pal-tile:hover { transform: scale(1.06); border-color: rgba(255,255,255,0.45); }
+        .pal-tile .pt-name { font-size: 0.8em; font-weight: bold;
+                             text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+        .pal-tile .pt-emoji { position: absolute; top: 4px; right: 7px; font-size: 1.1em; }
+
+        /* -- stage (what's on the lights) -- */
+        .stage-head { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+        #lab-slots {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+            gap: 10px; margin-top: 8px;
+        }
+        #lab-empty-stage { color: #667; font-size: 0.9em; padding: 10px 2px; }
+        .stage-tile {
+            background: #14141c; border: 1px solid #2a2a38; border-radius: 10px;
+            padding: 10px 12px; cursor: pointer;
+        }
+        .stage-tile.focus { border-color: #4457c9; box-shadow: 0 0 8px rgba(68,87,201,0.3); }
+        .stage-tile.pending { border-style: dashed; border-color: #4457c9;
+                              animation: labpulse 1.2s ease-in-out infinite; }
+        @keyframes labpulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1.0; } }
+        .st-top { display: flex; align-items: center; gap: 6px; }
+        .st-name { font-weight: bold; flex: 1; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+        .st-x { background: none; border: none; color: #966; cursor: pointer;
+                font-size: 1.05em; padding: 0 3px; }
+        .st-x:hover { color: #e88; }
+        .st-desc { color: #9ab; font-size: 0.8em; margin-top: 2px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .st-actions { display: flex; gap: 4px; }
+        .st-act { background: none; border: none; cursor: pointer; font-size: 1.0em;
+                  padding: 0 2px; opacity: 0.75; }
+        .st-act:hover { opacity: 1.0; transform: scale(1.15); }
+        .pal-dots { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+        .pal-dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
+                   border: 1px solid rgba(255,255,255,0.25); }
+        .pal-dot:hover { border-color: #fff; transform: scale(1.2); }
+        .now-actions { margin-top: 8px; display: flex; gap: 6px; }
+        .now-actions .lab-btn { padding: 4px 10px; font-size: 0.85em; }
+        .engine-chip {
+            display: inline-block; background: #1c1c26; border: 1px solid #2e2e3e;
+            border-radius: 12px; padding: 2px 9px; margin: 2px; font-size: 0.9em;
+            color: #9ab;
+        }
+        .engine-chip.you { background: #1e3326; border-color: #3a6648; color: #8ec9a0; }
+        #lab-engine-meta { color: #667; margin-top: 6px; font-size: 0.9em; }
+        .saved-title {
+            color: #778; font-size: 0.8em; text-transform: uppercase;
+            letter-spacing: 0.06em; margin: 12px 0 6px;
+        }
+        .pat-row {
+            display: flex; align-items: center; gap: 8px;
+            background: #171721; border: 1px solid #2a2a38; border-radius: 8px;
+            padding: 6px 10px; margin-top: 6px;
+        }
+        .pat-row.live { border-color: #3a6648; background: #14201a; }
+        .pat-row .pat-name { font-weight: bold; font-size: 0.9em; }
+        .pat-row .pat-prompt {
+            flex: 1; color: #667; font-size: 0.8em; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+        }
+        .pat-row .pat-live-tag { color: #8ec9a0; font-size: 0.8em; }
+        .pat-btn {
+            border: 1px solid #33334a; background: #22222e; color: #cde;
+            border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 0.8em;
+        }
+        .pat-btn:hover { background: #33334a; }
+        .builtin-chip {
+            display: inline-block; background: #1a2233; border: 1px solid #2c3c5c;
+            border-radius: 14px; padding: 4px 12px; margin: 3px 3px 0 0;
+            cursor: pointer; font-size: 0.85em; color: #9db8e8;
+        }
+        .builtin-chip:hover { background: #263352; }
+        .pat-btn.danger:hover { background: #55272a; border-color: #7a3a3a; }
+        .knob-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+        .knob-row label {
+            flex: 0 0 62px; color: #9ab; font-size: 0.85em; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+        }
+        .knob-row input[type=range] { flex: 1; min-width: 0; accent-color: #4457c9; }
+        #lab-model {
+            /* common.css sets select { width: 100% }, which as a flex item
+               steals the row from the prompt input — pin it to content size */
+            width: auto; flex: 0 0 auto;
+            padding: 4px 6px; border-radius: 8px; border: 1px solid #2a2a38;
+            background: #101018; color: #9ab; font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Lucifera &mdash; Shader Lab</h1>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <a href="/" class="tab">Controls</a>
+            <a href="/preview" class="tab">Preview</a>
+            <a href="/shaderlab" class="tab active">Shader Lab</a>
+            <a href="/weather_editor" class="tab">Editor</a>
+            <a href="/club" class="tab" id="club-tab" style="display:none">Club</a>
+            <a href="/interaction" class="tab" id="interaction-tab" style="display:none">Interaction</a>
+        </div>
+
+        <div class="lab-banner" id="lab-banner">
+            AI generation unavailable &mdash; no Claude access found
+            (install the Claude Code CLI, set <code>ANTHROPIC_API_KEY</code>, or run
+            <code>ant auth login</code>, then restart). The code editor below still works.
+        </div>
+
+        <div class="lab-layout">
+            <div class="lab-chat">
+                <div class="lab-log" id="lab-log">
+                    <div class="lab-msg lab"><span class="who">Shader Lab</span>Wish
+something onto the lights &mdash; &ldquo;slow purple waves that pulse with the
+bass&rdquo; &mdash; or tap a pattern below. Keep wishing to layer more on
+(&ldquo;add falling snow&rdquo;), change what's there (&ldquo;make the waves
+faster&rdquo;), or take things off (&ldquo;remove the snow&rdquo;,
+&ldquo;clear everything&rdquo;).</div>
+                </div>
+                <div class="lab-status" id="lab-status"></div>
+                <div class="lab-inputrow">
+                    <input type="text" id="lab-prompt" placeholder="Wish something onto the lights..."
+                           autocomplete="off">
+                    <button class="lab-btn" id="lab-generate">&#10022; Make it</button>
+                </div>
+                <div class="wish-sub">
+                    <span id="lab-focus" style="display:none">talking to
+                        <b id="lab-focus-name"></b>
+                        <a href="#" id="lab-unfocus" title="Back to wishing freely">&times;</a></span>
+                    <span class="wish-spacer"></span>
+                    <select id="lab-model" title="Opus writes the best patterns; Sonnet is faster; Haiku is fastest">
+                        <option value="opus">Opus &mdash; best</option>
+                        <option value="sonnet">Sonnet &mdash; fast</option>
+                        <option value="haiku">Haiku &mdash; fastest</option>
+                    </select>
+                    <button class="linkish" id="lab-newsession"
+                            title="Keep the lights as they are but start a fresh conversation">reset chat</button>
+                    <button class="linkish" id="lab-blank"
+                            title="Clear the lights and start over from nothing">start over</button>
+                </div>
+
+                <div class="saved-title" style="margin-top:14px">Pattern palette &mdash; tap to add</div>
+                <div id="lab-builtin-list" class="palette"></div>
+            </div>
+
+            <div class="lab-preview">
+                <img id="lab-frame" alt="Live LED preview">
+                <div style="color:#667; font-size:0.8em; margin-top:6px">live output
+                    (raw canvas &mdash; <a href="/preview" style="color:#88a">fan view</a>
+                    shows the physical layout)</div>
+
+                <div class="lab-side-card">
+                    <div class="card-title">Running in the engine</div>
+                    <div id="lab-engine-list"><span style="color:#667">waiting
+                        for engine state&hellip;</span></div>
+                    <div id="lab-engine-meta"></div>
+                    <div class="now-actions">
+                        <button class="lab-btn secondary" id="lab-stage" disabled
+                                title="Switch to the built-in empty weather set so only your patterns show">Blank
+                            stage</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stage-head">
+            <span class="saved-title" style="margin:0">On the lights now</span>
+            <span style="color:#556; font-size:0.8em">tap a tile to talk to that
+                layer &middot; later tiles draw on top</span>
+            <span class="wish-spacer"></span>
+            <button class="linkish" id="lab-clearstage">clear all</button>
+        </div>
+        <div id="lab-slots"></div>
+
+        <details class="lab-editor" id="lab-editor-details">
+            <summary>Advanced &mdash; shader code &amp; saved patterns</summary>
+            <textarea id="lab-code" spellcheck="false"
+                      placeholder="void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }"></textarea>
+            <div class="row">
+                <button class="lab-btn" id="lab-compile">Compile</button>
+                <span style="color:#667; font-size:0.8em">Ctrl+Enter compiles &middot;
+                iTime, iResolution (128&times;300), iBass, iBeat, iKnob0..3,
+                fanUV(), fbm(), palette()&hellip;</span>
+            </div>
+            <pre id="lab-error"></pre>
+            <div class="saved-title">Saved patterns</div>
+            <div class="lab-inputrow">
+                <input type="text" id="lab-save-name" placeholder="Pattern name">
+                <button class="lab-btn secondary" id="lab-save">Save current</button>
+            </div>
+            <div id="lab-saved-list"></div>
+        </details>
+    </div>
+
+    <script src="/static/js/socket.io.min.js"></script>
+    <script src="/static/js/socket-client.js"></script>
+    <script src="/static/js/shaderlab.js"></script>
+    <script src="/static/js/club_tab.js"></script>
+    <script src="/static/js/interaction_tab.js"></script>
+</body>
+</html>

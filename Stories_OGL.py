@@ -14,6 +14,23 @@ try:
 except (AttributeError, Exception):
     pass
 
+# PyOpenGL wraps EVERY GL call with a glGetError round-trip unless told
+# otherwise — measured as one of the largest Python-side per-frame costs
+# (hundreds of wrapped calls/frame once the shader-lab slots are live).
+# Must be set BEFORE anything imports OpenGL.GL. GL_DEBUG=1 restores the
+# checks for driver-debug sessions.
+if os.environ.get("GL_DEBUG", "") != "1":
+    import OpenGL
+    OpenGL.ERROR_CHECKING = False
+    OpenGL.ERROR_LOGGING = False
+    OpenGL.CONTEXT_CHECKING = False
+
+# Memoize GLSL compiles so event RE-spawns stop paying render-thread
+# driver compiles (a mode-independent hitch source, most visible under
+# fast motion). Must import before anything star-imports OpenGL.GL.
+import renderer.gl_program_cache as _gl_cache
+
+import gc
 import numpy as np
 import time
 import threading
@@ -527,6 +544,11 @@ class EnvironmentalSystem:
 
         # Pass event names to web controller if enabled
         if self.enable_web_control:
+            # Refresh: the earlier web_controls snapshot predates the
+            # manager injecting the built-in "Blank Canvas" set, and the
+            # set-change handler validates against this list.
+            self.web_controller.set('available_sets',
+                                    list(self._weather_sets.keys()))
             from lib.weather_set import IMPLICIT_BACKGROUND_EVENTS
             event_list = self.weather_set.get_event_names()
             # Hide implicitly-scheduled events (narrative_player, sound_pool)
@@ -908,6 +930,7 @@ class EnvironmentalSystem:
     def update(self):
         """Update the environmental system - should be called each frame"""
         self.current_time = time.time()
+        _pf_t0 = time.perf_counter()
 
         # Render-thread: apply a receiver set the background watcher resolved
         # (a previously-missing box came online). Done here, not in the watcher
@@ -924,23 +947,36 @@ class EnvironmentalSystem:
 
         # Apply web control values
         self.apply_web_controls()
+        _pf_t1 = time.perf_counter()
 
         # Handle transitions
+        _pw2 = {}
+        _pw2_t = time.perf_counter()
         self.weather_state.update(self.current_time)
+        _pw2['state'] = round((time.perf_counter() - _pw2_t) * 1000.0, 1)
+        _pw2_t = time.perf_counter()
 
         # Update celestial bodies
         for body in self.celestial_bodies:
             body.update(self.current_time)
             
         # Apply current parameters to scheduler state
+        _pw2['celestial'] = round((time.perf_counter() - _pw2_t) * 1000.0, 1)
+        _pw2_t = time.perf_counter()
         self.send_variables()
+        _pw2['sendvars'] = round((time.perf_counter() - _pw2_t) * 1000.0, 1)
+        _pw2_t = time.perf_counter()
 
         # Random events
         self.random_events()
         self.random_state_change()
+        _pw2['random'] = round((time.perf_counter() - _pw2_t) * 1000.0, 1)
+        self._perf_weather = _pw2
         
         # Update the scheduler
+        _pf_t2 = time.perf_counter()
         self.scheduler.update()
+        _pf_t3 = time.perf_counter()
 
         # Service a narrative-driven weather-transition request, if the
         # narrative_player published one this frame. Backwards compatible
@@ -1004,6 +1040,17 @@ class EnvironmentalSystem:
             png = self.scheduler.state.get('_frame_png')
             if png is not None:
                 self.web_controller.control_dict['_frame_png'] = png
+
+        # Per-frame phase timings for the hitch profiler (read by the main
+        # loop). 'pipeline' sub-phases come from RenderPipeline.update.
+        _pf_end = time.perf_counter()
+        self._perf_phases = {
+            'web': _pf_t1 - _pf_t0,
+            'weather': _pf_t2 - _pf_t1,
+            'scheduler': _pf_t3 - _pf_t2,
+            'tail': _pf_end - _pf_t3,
+            'pipeline': dict(self.scheduler.state.get('_perf_pipeline') or {}),
+        }
 
     def change_weather_set(self, new_set_name: str, immediate: bool = False,
                            initial_weather=None):
@@ -1834,6 +1881,9 @@ class EnvironmentalSystem:
             else:
                 print(f"[WEATHER]   '{event_name}' targets unknown group "
                       f"{target_group!r}; falling back to frame_id={frame_id}")
+        # Hitch-profiler breadcrumb: a hitch within ~1.5s of a spawn is
+        # almost certainly that effect's first-compile / init cost.
+        self.scheduler.state['_last_spawn'] = (event_name, time.time())
         return self.scheduler.schedule_event(start_time, duration, effect_func,
                                              frame_id=frame_id,
                                              allow_duplicates=allow_duplicates,
@@ -1922,7 +1972,12 @@ class EnvironmentalSystem:
         # dolphins) — but it was historically consumed as a frame_id,
         # which silently no-op'd those entries on single-canvas projects
         # (the viewport lookup failed). frame_id moved to the 4th slot.
-        on_transition_events = target_params.get("on_transition_events", [])
+        # The Blank Canvas set borrows a real state for its params but must
+        # not inherit that state's spawned events or ambient bed.
+        suppress_extras = self.weather_set.get_suppress_state_extras()
+        on_transition_events = ([] if suppress_extras
+                                else target_params.get("on_transition_events",
+                                                       []))
         for event_config in on_transition_events:
             if isinstance(event_config, (tuple, list)) and len(event_config) >= 2:
                 event_name, duration = event_config[:2]
@@ -1934,7 +1989,8 @@ class EnvironmentalSystem:
             else:
                 print(f"[WEATHER]   Invalid on_transition_event format: {event_config!r}")
 
-        ambient_sound = target_params.get("ambient_sound")
+        ambient_sound = (None if suppress_extras
+                         else target_params.get("ambient_sound"))
         skip_time = target_params.get("skiptime", 0.0)
         ari = target_params.get("ARI", 0.0)
         engine = self.scheduler.state["soundengine"]
@@ -1963,11 +2019,29 @@ class EnvironmentalSystem:
         if not hasattr(self, '_last_web_check'):
             self._last_web_check = 0
 
+        # Shader Lab fast path: runs EVERY frame (one plain attribute read
+        # when idle) so a live-coding compile round-trip is frame-bound,
+        # not gated behind the 5 Hz throttle below.
+        if getattr(self.web_controller, 'live_shader_dirty', False):
+            self._apply_live_shader_controls()
+
         # Only check every 0.2 seconds instead of every frame (reduces from 30Hz to 5Hz)
         if self.current_time - self._last_web_check < 0.2:
             return
 
         self._last_web_check = self.current_time
+
+        # Sub-phase attribution for the hitch profiler ('web' phase kept
+        # showing 60-70ms spikes with no further detail). Millisecond
+        # granularity, ~10 perf_counter calls per 0.2s — free.
+        _pw = {}
+        _pw_last = time.perf_counter()
+
+        def _pw_mark(name):
+            nonlocal _pw_last
+            now2 = time.perf_counter()
+            _pw[name] = round((now2 - _pw_last) * 1000.0, 1)
+            _pw_last = now2
 
         # Check for project swap first — it invalidates everything else
         # below, so we handle and return early on swap.
@@ -1986,18 +2060,28 @@ class EnvironmentalSystem:
 
         if audio_source_req is not None:
             self.set_audio_source(audio_source_req)
+        _pw_mark('pops')
 
         # Bluetooth sink: drain queued web actions + mirror live state.
         self._apply_bluetooth_controls()
+        _pw_mark('bt')
 
         # Autonomous DJ: drain queued web actions + mirror status.
         self._apply_dj_controls()
+        _pw_mark('dj')
 
         # Generative music: drain queued web actions + mirror status.
         self._apply_gen_controls()
+        _pw_mark('gen')
 
         # Interaction panel: drain queued button/slider presses.
         self._apply_interaction_controls()
+        _pw_mark('interaction')
+
+        # Shader Lab: steady-state status mirroring (the dirty-flag fast
+        # path above handles the latency-sensitive compile window).
+        self._apply_live_shader_controls()
+        _pw_mark('live_shader')
 
         if new_set is not None and new_set != self.weather_set.current_set:
             self.change_weather_set(new_set, immediate=True)
@@ -2036,6 +2120,7 @@ class EnvironmentalSystem:
 
         # Update audio summary frequently (every web check = 0.2s / 5 Hz)
         # This is lightweight: just 32 floats + 2 numbers
+        _pw_mark('controls')
         try:
             current_bands = self.analyzer.get_current_bands(normalize='long') if self.analyzer else None
             if current_bands is not None:
@@ -2059,6 +2144,7 @@ class EnvironmentalSystem:
                     self.web_controller.control_dict['audio_summary'] = audio_summary
         except Exception:
             pass
+        _pw_mark('audio')
 
         # Update status values every 0.5 seconds
         if not hasattr(self, '_last_status_update'):
@@ -2092,7 +2178,10 @@ class EnvironmentalSystem:
                 active_effects = []
 
             # Batch update to minimize lock acquisitions
+            _lk_t = time.perf_counter()
             self.web_controller._dict_lock.acquire()
+            _pw['status_lock_wait'] = round(
+                (time.perf_counter() - _lk_t) * 1000.0, 1)
             try:
                 d = self.web_controller.control_dict
                 d['current_weather_set'] = self.weather_set.current_set
@@ -2129,6 +2218,8 @@ class EnvironmentalSystem:
             finally:
                 self.web_controller._dict_lock.release()
             self._last_status_update = self.current_time
+        _pw_mark('status')
+        self._perf_web = _pw
     
     # Club-page steering settings auto-release so a forgotten setting can't
     # shape the whole night (anti-rut). Re-tapping restarts the clock.
@@ -2449,6 +2540,13 @@ class EnvironmentalSystem:
         if not self.project.raw.get("enable_random_events", True):
             return
 
+        # Blank stage: nothing may schedule events beyond the live slots.
+        # The generic half below is already empty for it, but the
+        # project-specific hook schedules on its own logic (e.g. aurora)
+        # and must be silenced too.
+        if self.weather_set.get_suppress_state_extras():
+            return
+
         # ---- generic set-level random events ----
         random_events, random_event_rate = self.weather_set.get_random_events_config()
         if random_events:
@@ -2558,6 +2656,68 @@ class EnvironmentalSystem:
         if not getattr(bt, 'available', False):
             self.web_controller.set(
                 'bt_unavailable_reason', getattr(bt, 'unavailable_reason', ''))
+
+    # ----------------------------------------------------------------
+    # Shader Lab bridge (web -> renderer/effects/live_shader.py)
+    # ----------------------------------------------------------------
+
+    def _apply_live_shader_controls(self):
+        """Move a pending live-shader source into outstate and mirror the
+        compile status back to the web layer.
+
+        Runs on the render thread. The actual GL compile happens one frame
+        later inside the shader_live_shader event wrapper, which watches
+        ``outstate['live_shader_seq']``. The web worker polls
+        ``control_dict['live_shader_status']`` for the outcome, so the
+        dirty flag stays set (keeping the every-frame fast path alive)
+        until the status for the last requested seq has been mirrored.
+        """
+        wc = self.web_controller
+        if wc is None:
+            return
+        from renderer.effects.live_shader import NUM_SLOTS
+
+        with wc._dict_lock:
+            reqs = [wc.control_dict.pop(f'request_live_shader_{i}', None)
+                    for i in range(NUM_SLOTS)]
+            params = wc.control_dict.get('live_shader_params')
+        if params is not None:
+            # Per-slot performance sliders (intensity + iKnob0..3), keyed by
+            # str(slot). The web layer replaces the whole dict on every
+            # change, so reading without copying is safe here.
+            for i in range(NUM_SLOTS):
+                p = params.get(str(i))
+                if p:
+                    self.scheduler.state[f'live_shader_intensity_{i}'] = \
+                        p.get('intensity', 1.0)
+                    self.scheduler.state[f'live_shader_knobs_{i}'] = \
+                        p.get('knobs')
+
+        pending = getattr(self, '_live_shader_pending', None) or {}
+        for i, req in enumerate(reqs):
+            if req is not None:
+                self.scheduler.state[f'live_shader_source_{i}'] = \
+                    req.get('source')
+                self.scheduler.state[f'live_shader_seq_{i}'] = req.get('seq')
+                pending[i] = req.get('seq')
+        self._live_shader_pending = pending
+
+        # Mirror per-slot compile statuses back; the dirty flag (the
+        # every-frame fast path) stays up until every in-flight request
+        # has its status mirrored.
+        waiting = False
+        for i in range(NUM_SLOTS):
+            status = self.scheduler.state.get(f'live_shader_status_{i}')
+            if status is not None:
+                with wc._dict_lock:
+                    wc.control_dict[f'live_shader_status_{i}'] = dict(status)
+                if pending.get(i) is not None \
+                        and status.get('seq') == pending[i]:
+                    pending[i] = None
+            if pending.get(i) is not None:
+                waiting = True
+        if not waiting:
+            wc.live_shader_dirty = False
 
     # ----------------------------------------------------------------
     # Autonomous DJ bridge (web -> lib/dj/system.py), ~5 Hz
@@ -2729,100 +2889,118 @@ class EnvironmentalSystem:
                     self._dj_sent[k] = h
         self.web_controller.set('dj_info', info)
 
+    def _dj_refresh_idle_vocab(self):
+        """Rebuild the idle DJ page's tag-chip vocabulary — OFF the
+        render thread. The rebuild walks the whole library DB (~65ms
+        measured) and used to run inline in _dj_idle_steer_info every
+        30s: THE mode-independent frame hitch the profiler caught
+        (2026-09-04). sqlite releases the GIL during queries, so this
+        thread barely touches the frame loop."""
+        import time as _t
+        import json as _json
+        vocab, genre_tags = [], []
+        try:
+            from lib.dj.db import LibraryDB
+            from lib.dj import resolve_music_dir
+            db = LibraryDB(resolve_music_dir(
+                self.dj_cfg.get('music_dir', '')))
+            # An armed setlist scopes the chips to ITS songs, so the
+            # prep page steers with the vocabulary of what will play.
+            scope = None
+            if self._dj_pending_setlist:
+                nm = (self._dj_pending_setlist[0]
+                      if isinstance(self._dj_pending_setlist, tuple)
+                      else self._dj_pending_setlist)
+                try:
+                    from lib.dj.setlist import get_setlist
+                    sl = get_setlist(db, name=nm)
+                    if sl:
+                        scope = {e['track_id'] for e in sl['entries']}
+                except Exception:
+                    pass
+            # Mirror DJSystem._refresh_tags: user tags first (always),
+            # then genres/decades/moods/auto — so the idle prep page
+            # shows the SAME chip groups the live page does (genre
+            # chips used to appear only after start; user-reported
+            # 2026-08-16). Counts fold per track across all sources,
+            # matching the live all_tags counting.
+            per_track = {}
+            for r in db.conn.execute("SELECT track_id, tag FROM tags"):
+                if scope is not None and r['track_id'] not in scope:
+                    continue
+                per_track.setdefault(r['track_id'], []).append(r['tag'])
+            user, genre, decade = set(), set(), set()
+            mood, auto = set(), set()
+            counts = {}
+            for r in db.conn.execute(
+                    "SELECT id, auto_tags, enrichment, file_genre,"
+                    " mood_ml FROM tracks WHERE error"
+                    " IS NULL AND missing = 0"):
+                if scope is not None and r['id'] not in scope:
+                    continue
+                folded = set(per_track.get(r['id'], []))
+                user.update(folded)
+                a = _json.loads(r['auto_tags'] or '[]')
+                auto.update(a)
+                folded.update(a)
+                enr = _json.loads(r['enrichment'] or '{}')
+                g = {str(x).lower() for x in (enr.get('genres') or [])}
+                for part in (r['file_genre'] or '').replace(
+                        '/', ',').replace(';', ',').split(','):
+                    part = part.strip().lower()
+                    if part:
+                        g.add(part)
+                genre.update(g)
+                folded.update(g)
+                if enr.get('decade'):
+                    decade.add(enr['decade'])
+                    folded.add(enr['decade'])
+                mm = _json.loads(r['mood_ml'] or '{}')
+                ms = {str(m).lower() for m in (mm.get('moods') or [])}
+                mood.update(ms)
+                folded.update(ms)
+                for t in folded:
+                    counts[t] = counts.get(t, 0) + 1
+            db.close()
+            vocab = [(t, counts.get(t, 0), True) for t in
+                     sorted(user, key=lambda k: (-counts.get(k, 0), k))]
+            seen = set(user)
+
+            def _extend(names, cap=None):
+                rows = sorted(
+                    ((n, counts.get(n, 0)) for n in names
+                     if n not in seen and counts.get(n, 0) > 0),
+                    key=lambda kv: (-kv[1], kv[0]))
+                if cap is not None:
+                    rows = rows[:cap]
+                seen.update(n for n, _ in rows)
+                return [(n, c, False) for n, c in rows]
+
+            genre_rows = _extend(genre, cap=40)
+            genre_tags = sorted(g for g, _, _ in genre_rows)
+            vocab += genre_rows
+            vocab += _extend(decade)
+            vocab += _extend(mood, cap=24)
+            vocab += _extend(auto)
+            vocab = vocab[:128]
+        except Exception as e:
+            print(f"[DJ] idle vocab skipped: {e}")
+        finally:
+            self._dj_idle_vocab = (_t.time(), vocab, genre_tags)
+            self._dj_vocab_refreshing = False
+
     def _dj_idle_steer_info(self):
         import time as _t
         import json as _json
         from lib.dj.themes import BUILTIN_THEMES, get_theme
         stamp, vocab, genre_tags = self._dj_idle_vocab
-        if _t.time() - stamp > 30.0:
-            vocab, genre_tags = [], []
-            try:
-                from lib.dj.db import LibraryDB
-                from lib.dj import resolve_music_dir
-                db = LibraryDB(resolve_music_dir(
-                    self.dj_cfg.get('music_dir', '')))
-                # An armed setlist scopes the chips to ITS songs, so the
-                # prep page steers with the vocabulary of what will play.
-                scope = None
-                if self._dj_pending_setlist:
-                    nm = (self._dj_pending_setlist[0]
-                          if isinstance(self._dj_pending_setlist, tuple)
-                          else self._dj_pending_setlist)
-                    try:
-                        from lib.dj.setlist import get_setlist
-                        sl = get_setlist(db, name=nm)
-                        if sl:
-                            scope = {e['track_id'] for e in sl['entries']}
-                    except Exception:
-                        pass
-                # Mirror DJSystem._refresh_tags: user tags first (always),
-                # then genres/decades/moods/auto — so the idle prep page
-                # shows the SAME chip groups the live page does (genre
-                # chips used to appear only after start; user-reported
-                # 2026-08-16). Counts fold per track across all sources,
-                # matching the live all_tags counting.
-                per_track = {}
-                for r in db.conn.execute("SELECT track_id, tag FROM tags"):
-                    if scope is not None and r['track_id'] not in scope:
-                        continue
-                    per_track.setdefault(r['track_id'], []).append(r['tag'])
-                user, genre, decade = set(), set(), set()
-                mood, auto = set(), set()
-                counts = {}
-                for r in db.conn.execute(
-                        "SELECT id, auto_tags, enrichment, file_genre,"
-                        " mood_ml FROM tracks WHERE error"
-                        " IS NULL AND missing = 0"):
-                    if scope is not None and r['id'] not in scope:
-                        continue
-                    folded = set(per_track.get(r['id'], []))
-                    user.update(folded)
-                    a = _json.loads(r['auto_tags'] or '[]')
-                    auto.update(a)
-                    folded.update(a)
-                    enr = _json.loads(r['enrichment'] or '{}')
-                    g = {str(x).lower() for x in (enr.get('genres') or [])}
-                    for part in (r['file_genre'] or '').replace(
-                            '/', ',').replace(';', ',').split(','):
-                        part = part.strip().lower()
-                        if part:
-                            g.add(part)
-                    genre.update(g)
-                    folded.update(g)
-                    if enr.get('decade'):
-                        decade.add(enr['decade'])
-                        folded.add(enr['decade'])
-                    mm = _json.loads(r['mood_ml'] or '{}')
-                    ms = {str(m).lower() for m in (mm.get('moods') or [])}
-                    mood.update(ms)
-                    folded.update(ms)
-                    for t in folded:
-                        counts[t] = counts.get(t, 0) + 1
-                db.close()
-                vocab = [(t, counts.get(t, 0), True) for t in
-                         sorted(user, key=lambda k: (-counts.get(k, 0), k))]
-                seen = set(user)
-
-                def _extend(names, cap=None):
-                    rows = sorted(
-                        ((n, counts.get(n, 0)) for n in names
-                         if n not in seen and counts.get(n, 0) > 0),
-                        key=lambda kv: (-kv[1], kv[0]))
-                    if cap is not None:
-                        rows = rows[:cap]
-                    seen.update(n for n, _ in rows)
-                    return [(n, c, False) for n, c in rows]
-
-                genre_rows = _extend(genre, cap=40)
-                genre_tags = sorted(g for g, _, _ in genre_rows)
-                vocab += genre_rows
-                vocab += _extend(decade)
-                vocab += _extend(mood, cap=24)
-                vocab += _extend(auto)
-                vocab = vocab[:128]
-            except Exception as e:
-                print(f"[DJ] idle vocab skipped: {e}")
-            self._dj_idle_vocab = (_t.time(), vocab, genre_tags)
+        # Stale vocab rebuilds in a BACKGROUND thread; the stale copy
+        # keeps serving meanwhile (see _dj_refresh_idle_vocab).
+        if _t.time() - stamp > 30.0 and not getattr(
+                self, '_dj_vocab_refreshing', False):
+            self._dj_vocab_refreshing = True
+            threading.Thread(target=self._dj_refresh_idle_vocab,
+                             daemon=True, name='dj-idle-vocab').start()
         theme = get_theme(self.dj_cfg.get('theme', 'groove'))
         wps = self._dj_pending_arc
 
@@ -2855,26 +3033,50 @@ class EnvironmentalSystem:
                           for i in range(25)],
         }
 
-    def _dj_list_setlists(self):
-        """Setlist names available in the library DB, without a running DJ."""
+    def _dj_refresh_disk_info(self):
+        """Background refresh of everything the idle DJ mirror needs from
+        DISK: the resolved music dir and the setlist names. These used to
+        be probed inline at 5 Hz on the render thread — warm-cache cheap,
+        but ONE cold sqlite open stalled a frame 1006ms (profiler,
+        2026-09-04)."""
+        import os as _os
+        import time as _t
+        names, root = [], ''
         try:
             from lib.dj import resolve_music_dir
             from lib.dj.db import LibraryDB
             from lib.dj.setlist import list_setlists
-            import os
             root = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
-            if not os.path.isfile(os.path.join(root, "dj_library.sqlite3")):
-                return []
-            db = LibraryDB(root)
-            names = [s["name"] for s in list_setlists(db)]
-            db.close()
-            return names
+            if _os.path.isfile(_os.path.join(root, "dj_library.sqlite3")):
+                db = LibraryDB(root)
+                names = [s["name"] for s in list_setlists(db)]
+                db.close()
+        except Exception:
+            pass
+        finally:
+            self._dj_disk_cache = (_t.time(), names, root)
+            self._dj_disk_refreshing = False
+
+    def _dj_disk_info(self):
+        """(setlist_names, music_dir) from the cache; kicks a background
+        refresh when stale. Never touches the filesystem on this thread."""
+        stamp, names, root = getattr(self, '_dj_disk_cache', (0.0, [], ''))
+        if time.time() - stamp > 30.0 and not getattr(
+                self, '_dj_disk_refreshing', False):
+            self._dj_disk_refreshing = True
+            threading.Thread(target=self._dj_refresh_disk_info,
+                             daemon=True, name='dj-disk-info').start()
+        return names, root
+
+    def _dj_list_setlists(self):
+        """Setlist names available in the library DB, without a running DJ."""
+        try:
+            return self._dj_disk_info()[0]
         except Exception:
             return []
 
     def _dj_music_dir_display(self):
-        from lib.dj import resolve_music_dir
-        return resolve_music_dir(self.dj_cfg.get("music_dir", ""))
+        return self._dj_disk_info()[1]
 
     def _apply_gen_controls(self):
         """Drain queued generative-music web actions, mirror status, publish
@@ -3161,6 +3363,14 @@ class EnvironmentalSystem:
         if self.enable_web_control and self.web_controller.get('weather_state_locked', False):
             return
 
+        # Blank stage: a single-state set with state extras suppressed has
+        # nothing to transition TO and nothing a transition may do — freeze
+        # the cycler instead of re-entering the same state every few dozen
+        # seconds (each re-entry used to restart the state's ambient bed).
+        if (self.weather_set.get_suppress_state_extras()
+                and len(self.weather_set.get_set_states()) <= 1):
+            return
+
         # A director event may HOLD transitions for a moment (e.g. the club
         # director freezes scene changes while a build-up is running so the
         # drop lands in the room that earned it). Wall-clock deadline in
@@ -3247,6 +3457,48 @@ if __name__ == "__main__":
     # every iteration so a project swap re-paces the loop without
     # restart. ``env_system.frame_time`` is set by ``_compute_frame_time``
     # in __init__ and refreshed in _swap_project_unsafe.
+    # ---- hitch profiler + GIL/GC mitigations -------------------------
+    # A thread may hold the GIL for up to sys.getswitchinterval() before
+    # becoming preemptible. The DJ brain/audio threads run long Python
+    # stretches; 2ms (default 5ms) caps the stall any single slice can
+    # inflict on this render loop.
+    sys.setswitchinterval(0.002)
+    # Everything allocated during boot is permanent — freeze it so cyclic
+    # GC passes stop rescanning it (smaller, rarer, faster collections).
+    gc.freeze()
+
+    _gc_stat = {'last_ms': 0.0, 'worst_ms': 0.0, 'gen2': 0}
+
+    def _gc_cb(phase, info):
+        if phase == 'start':
+            _gc_stat['_t0'] = time.perf_counter()
+        else:
+            ms = (time.perf_counter()
+                  - _gc_stat.pop('_t0', time.perf_counter())) * 1000.0
+            _gc_stat['last_ms'] = ms
+            if ms > _gc_stat['worst_ms']:
+                _gc_stat['worst_ms'] = ms
+            if info.get('generation') == 2:
+                _gc_stat['gen2'] += 1
+    gc.callbacks.append(_gc_cb)
+
+    hitch_log = []      # bounded ring of the window's worst frames
+    hitch_count = 0     # per FPS window
+    worst_work = 0.0
+
+    # Frame pacing uses sleep-then-spin; sleep can overshoot by the OS
+    # timer granularity (up to ~15ms on Windows before Python 3.11).
+    # Measure the real overshoot once and leave that much for the spin,
+    # so pacing jitter can't masquerade as render hitches.
+    _ov = 0.0
+    for _ in range(5):
+        _t0 = time.perf_counter()
+        time.sleep(0.001)
+        _ov = max(_ov, time.perf_counter() - _t0 - 0.001)
+    sleep_margin = min(0.010, max(0.0015, _ov * 1.2))
+    print(f"[Main] frame pacing: sleep overshoot {_ov * 1000.0:.2f}ms "
+          f"-> spin margin {sleep_margin * 1000.0:.2f}ms")
+
     frame_count = 0
     fps_start_time = time.perf_counter()
     work_time_accum = 0.0  # sum of per-frame work time (no waits) over the window
@@ -3272,12 +3524,69 @@ if __name__ == "__main__":
                 break
 
             # Measure pure work time (render + send) before any frame-rate waits
-            work_time_accum += time.perf_counter() - frame_start
+            work = time.perf_counter() - frame_start
+            work_time_accum += work
+            if work > worst_work:
+                worst_work = work
+
+            # Hitch: a frame that blew >1.5x its budget. Record WHERE the
+            # time went and what else was running, so deployment hitches
+            # come home as data instead of anecdotes.
+            if work > frame_time * 1.5 and frame_count > 100:  # skip warmup
+                hitch_count += 1
+                phases = getattr(env_system, '_perf_phases', None) or {}
+                dj = getattr(env_system, '_dj', None)
+                try:
+                    from lib.dj import preflight as _pf
+                    pf_active = _pf.active()
+                except Exception:
+                    pf_active = False
+                spawn = env_system.scheduler.state.get('_last_spawn')
+                rec = {
+                    't': time.time(),
+                    'ms': round(work * 1000.0, 1),
+                    'recent_spawn': (spawn[0] if spawn
+                                     and time.time() - spawn[1] < 1.5
+                                     else None),
+                    'phases': {k: round(v * 1000.0, 1)
+                               for k, v in phases.items() if k != 'pipeline'},
+                    'pipeline': {k: (round(v * 1000.0, 1)
+                                     if isinstance(v, float) else v)
+                                 for k, v in
+                                 (phases.get('pipeline') or {}).items()},
+                    'dj_active': bool(dj is not None and dj.active),
+                    'preflight': pf_active,
+                    'gc_last_ms': round(_gc_stat['last_ms'], 1),
+                    'web_detail': dict(getattr(env_system, '_perf_web',
+                                               None) or {}),
+                    'weather_detail': dict(getattr(env_system,
+                                                   '_perf_weather',
+                                                   None) or {}),
+                }
+                # Coverage check: time the phase timers never saw. A big
+                # value here means the hitch lived OUTSIDE update() (or an
+                # early-return skipped the phase store) — the 255ms ghost
+                # of 2026-09-04 was exactly that shape.
+                accounted = sum(v for v in rec['phases'].values()
+                                if isinstance(v, (int, float)))
+                rec['unaccounted'] = round(rec['ms'] - accounted, 1)
+                hitch_log.append(rec)
+                del hitch_log[:-40]
+                if hitch_count <= 5 or hitch_count % 25 == 0:  # don't spam
+                    allp = dict(rec['phases'])
+                    allp.update({k: v for k, v in rec['pipeline'].items()
+                                 if isinstance(v, (int, float))})
+                    top = max(allp, key=allp.get) if allp else '?'
+                    print(f"[Perf] hitch {rec['ms']}ms "
+                          f"(top: {top}={allp.get(top)}ms, "
+                          f"dj={rec['dj_active']}, pf={rec['preflight']}, "
+                          f"gc_last={rec['gc_last_ms']}ms, "
+                          f"spawn={rec['recent_spawn']})")
 
             # Deadline-based frame pacing: fast frames compensate for slow ones
             remaining = next_deadline - time.perf_counter()
-            if remaining > 0.002:
-                time.sleep(remaining - 0.0015)
+            if remaining > sleep_margin + 0.0005:
+                time.sleep(remaining - sleep_margin)
             while time.perf_counter() < next_deadline:
                 pass
 
@@ -3297,7 +3606,31 @@ if __name__ == "__main__":
                 env_system._current_fps = round(actual_fps, 1)
                 env_system._target_fps = round(target_fps, 1)
                 env_system._uncapped_fps = round(uncapped_fps, 1)
-                print(f"[Main] FPS actual={actual_fps:.1f} target={target_fps:.1f} uncapped={uncapped_fps:.1f}")
+                print(f"[Main] FPS actual={actual_fps:.1f} target={target_fps:.1f} "
+                      f"uncapped={uncapped_fps:.1f} hitches={hitch_count} "
+                      f"worst={worst_work * 1000.0:.1f}ms "
+                      f"gc_worst={_gc_stat['worst_ms']:.1f}ms")
+                # Publish the window's perf picture for /api/perf.
+                if env_system.web_controller is not None:
+                    with env_system.web_controller._dict_lock:
+                        env_system.web_controller.control_dict['perf'] = {
+                            'fps': round(actual_fps, 1),
+                            'target_fps': round(target_fps, 1),
+                            'uncapped_fps': round(uncapped_fps, 1),
+                            'avg_work_ms': round(avg_work * 1000.0, 2),
+                            'worst_ms': round(worst_work * 1000.0, 1),
+                            'hitches_window': hitch_count,
+                            'gc_worst_ms': round(_gc_stat['worst_ms'], 1),
+                            'gc_gen2': _gc_stat['gen2'],
+                            'switch_interval_ms': 2.0,
+                            'sleep_margin_ms': round(sleep_margin * 1000.0, 2),
+                            'gl_error_checking':
+                                os.environ.get('GL_DEBUG', '') == '1',
+                            'gl_cache': _gl_cache.stats(),
+                            'hitch_log': list(hitch_log),
+                        }
+                hitch_count = 0
+                worst_work = 0.0
                 fps_start_time = current_time
                 work_time_accum = 0.0
 
