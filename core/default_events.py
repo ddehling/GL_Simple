@@ -30,4 +30,10 @@ DEFAULT_EVENT_MAP = {
     # with a gap between them; a set can set ``sound_pool_crossfade`` > 0 to
     # play them gaplessly, crossfading each clip into the next.
     "sound_pool": (fx.shader_sound_pool, {}),
+    # Live Shader Lab slot. Renders nothing until a source is published to
+    # ``outstate['live_shader_source']`` by the /shaderlab web page; the
+    # wrapper hot-compiles it on the render thread (renderer/effects/
+    # live_shader.py). Engine infrastructure — the visual content is
+    # user-supplied at runtime, never baked in.
+    "live_shader": (fx.shader_live_shader, {}),
 }

@@ -27,6 +27,7 @@ Two playback modes:
   window. ``probability`` and ``min_cooldown`` are ignored in this mode.
   Driven per weather set by outstate['sound_pool_crossfade'].
 """
+import threading as _threading
 import time as _time
 from pathlib import Path
 from typing import Dict, Optional
@@ -125,6 +126,12 @@ class SoundPoolEffect(ShaderEffect):
         # Engine key of the clip currently playing, so crossfade mode can
         # fade it out as the next clip fades in. None until the first clip.
         self._current_key = None
+        # path -> seconds, filled by a background scan at pool load.
+        # update() runs on the RENDER thread; miniaudio's duration probe
+        # walks every mp3 frame header (47-107ms measured — a frame hitch
+        # per clip rotation, profiler 2026-09-04), so it must never run
+        # inline there.
+        self._durations: dict = {}
 
         # Disabled until a valid pool loads.
         self.enabled = False
@@ -155,6 +162,17 @@ class SoundPoolEffect(ShaderEffect):
         # Drop the handle to the previous pool's clip: it will end on its
         # own, and the new pool's first clip must not try to fade it out.
         self._current_key = None
+        # Duration scan runs off-thread; update() serves a safe default
+        # for any file the scan hasn't reached yet.
+        self._durations = {}
+        _files_snapshot = list(self._files)
+
+        def _scan_durations():
+            for f in _files_snapshot:
+                self._durations[f] = _audio_duration_seconds(f)
+
+        _threading.Thread(target=_scan_durations, daemon=True,
+                          name='soundpool-durations').start()
         self.enabled = True
         print(f'[SoundPool] Loaded {len(self._files)} files from {sound_dir}')
         return True
@@ -213,7 +231,7 @@ class SoundPoolEffect(ShaderEffect):
             # ends), fading it in while the outgoing clip fades out across
             # the same window. No probability gate, no cooldown.
             pick = self._next_pick()
-            dur = _audio_duration_seconds(pick)
+            dur = self._durations.get(pick, 15.0)  # scan may be in flight
             xf = min(self.crossfade, dur)  # never fade longer than the clip
             if self._current_key is not None:
                 engine.fade_out_event(self._current_key, xf)
@@ -229,7 +247,7 @@ class SoundPoolEffect(ShaderEffect):
             return
 
         pick = self._next_pick()
-        dur = _audio_duration_seconds(pick)
+        dur = self._durations.get(pick, 15.0)      # scan may be in flight
         engine.schedule_event(str(pick), volume=self.volume, soundpool=True)
         # Block further picks for the clip's duration + cooldown pad so
         # clips don't overlap themselves.

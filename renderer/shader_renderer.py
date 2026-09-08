@@ -20,6 +20,7 @@ Classes:
 """
 
 import os
+import time
 import OpenGL
 import glfw
 from OpenGL.GL import *
@@ -520,9 +521,43 @@ class ShaderRenderer:
             glfw.terminate()
 
     def sync_gpu(self):
-        """Wait for all GPU operations to complete"""
+        """Submit all pending GPU work (glFlush).
+
+        This used to glFinish() — a full CPU<->GPU pipeline drain, every
+        frame. The hitch profiler (2026-09-04) caught 50-110ms stalls
+        parked exactly here whenever the driver had a slow moment; with a
+        drain the CPU inherits every one of them. The frame readback
+        doesn't need it: get_frame() reads the PREVIOUS frame via
+        ping-pong PBOs, and glMapBufferRange blocks only until that one
+        transfer is done. GL_SYNC_FINISH=1 restores the old drain for
+        driver debugging.
+        """
         self._make_current()
-        glFinish()
+        if os.environ.get("GL_SYNC_FINISH", "") == "1":
+            glFinish()
+            return
+        # Bounded pipelining (frame-latency limiter): let the GPU run up
+        # to 2 frames behind, then block HERE — a known, measured point —
+        # instead of at whatever draw call happens to hit a full driver
+        # queue mid-frame (the profiler caught 70-110ms stalls parked in
+        # the draw loop with no individual effect slow: classic queue
+        # back-pressure). Also keeps LED latency bounded: without a cap,
+        # a persistently slow GPU lets the queue (and visual lag vs the
+        # music) grow without limit.
+        if not hasattr(self, '_frame_fences'):
+            self._frame_fences = []
+            self.last_fence_wait_ms = 0.0
+        self._frame_fences.append(
+            glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0))
+        wait_ms = 0.0
+        while len(self._frame_fences) > 2:
+            old = self._frame_fences.pop(0)
+            _t0 = time.perf_counter()
+            glClientWaitSync(old, GL_SYNC_FLUSH_COMMANDS_BIT,
+                             int(150e6))    # 150ms cap, then carry on
+            wait_ms += (time.perf_counter() - _t0) * 1000.0
+            glDeleteSync(old)
+        self.last_fence_wait_ms = wait_ms
 
 
 class ShaderViewport:

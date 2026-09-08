@@ -173,13 +173,34 @@ class RenderPipeline:
             return
 
         current_time = time.perf_counter()
+        self.state['_ev_slowest'] = (None, 0.0)   # per-frame, see TimedEvent
         self._scheduler.tick(current_time)
+        _pp_t1 = time.perf_counter()
 
         dt = current_time - self.state['last_time']
         self.state['last_time'] = current_time
 
         frames = self._render_shader(dt)
+        _pp_t2 = time.perf_counter()
         self._send_to_displays(frames)
+        _pp_t3 = time.perf_counter()
+        # Sub-phase timings for the hitch profiler: 'events' is the Python
+        # event wrappers (their GL calls included), 'render' the composite
+        # render + GPU sync + framebuffer readback, 'dmx' gamma/brightness
+        # + sACN handoff, 'preview' the optional PNG encode below.
+        _slow = self.state.get('_ev_slowest') or (None, 0.0)
+        self.state['_perf_pipeline'] = {
+            'events': _pp_t1 - current_time,
+            'render': _pp_t2 - _pp_t1,
+            'dmx': _pp_t3 - _pp_t2,
+            'preview': 0.0,
+            'slowest_event': (f"{_slow[0]}:{_slow[1] * 1000.0:.1f}ms"
+                              if _slow[0] else None),
+            'render_detail': dict(self.state.get('_perf_render') or {}),
+            'slowest_fx': (lambda fx: f"{fx[0]}:{fx[1] * 1000.0:.1f}ms"
+                           if fx[0] else None)(
+                self.state.get('_fx_slowest') or (None, 0.0)),
+        }
 
         # PNG-encode the preview composite, ONLY if a client is subscribed.
         # The geometry provider produces the composite (Fan: just frames[0];
@@ -198,23 +219,42 @@ class RenderPipeline:
                 bgr = np.ascontiguousarray(composite[:, :, ::-1])
                 _, png_buf = cv2.imencode('.png', bgr)
                 self.state['_frame_png'] = png_buf.tobytes()
+                self.state['_perf_pipeline']['preview'] = (
+                    time.perf_counter() - now)
 
     def _render_shader(self, dt: float) -> dict:
         """Run effects on each canvas; return frames keyed by group_id."""
+        _t0 = time.perf_counter()
+        self.state['_fx_slowest'] = (None, 0.0)   # per-frame, see GroupCanvas
         self._shader_renderer.clear_window()
+        _t1 = time.perf_counter()
 
         for viewport in self._shader_renderer.viewports:
             viewport.clear()
             viewport.update(dt, self.state)
             viewport.render(self.state)
+        _t2 = time.perf_counter()
 
         self._shader_renderer.sync_gpu()
+        _t3 = time.perf_counter()
         # Dict keyed by group_id so the DMX sender + geometry rasterizer
         # can pull the right canvas for each strip.
-        return {
+        frames = {
             self.group_ids[i]: vp.get_frame()
             for i, vp in enumerate(self._shader_renderer.viewports)
         }
+        _t4 = time.perf_counter()
+        # Render sub-detail for the hitch profiler: names WHICH GL call
+        # eats a driver stall (clear/draw-submit/flush/readback-map).
+        self.state['_perf_render'] = {
+            'clear': round((_t1 - _t0) * 1000.0, 1),
+            'draw': round((_t2 - _t1) * 1000.0, 1),
+            'flush': round((_t3 - _t2) * 1000.0, 1),
+            'readback': round((_t4 - _t3) * 1000.0, 1),
+            'fence': round(getattr(self._shader_renderer,
+                                   'last_fence_wait_ms', 0.0), 1),
+        }
+        return frames
 
     def _send_to_displays(self, frames_dict: dict):
         """Apply gamma + brightness per-group, then hand the dict of corrected
