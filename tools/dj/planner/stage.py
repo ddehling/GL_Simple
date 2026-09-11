@@ -98,13 +98,11 @@ class LaneRow:
         self.track_box.clear()
         n = 0
         for t in self.tab.tracks:
-            label = f"{t.title} — {t.artist or ''}  ({t.bpm:.0f} bpm, {t.camelot or '?'})"
+            label = f"{t.title} - {t.artist or ''}  ({t.bpm:.0f} bpm, {t.camelot or '?'})"
             if text and text not in label.lower():
                 continue
             self.track_box.addItem(label, t.id)
             n += 1
-            if n >= 400:
-                break
         self.track_box.blockSignals(False)
         self._track_changed()
 
@@ -151,8 +149,9 @@ class StageTab(QWidget):
         grid = QGridLayout()
         self.rows = [LaneRow(self, i, grid, 2 * i) for i in range(4)]
         v.addLayout(grid)
-        self.log_lbl = QLabel("Load a track on a lane, pick its stem and section, IN. The first lane in is the clock; "
-                              "the others stretch to it, shift toward its key, and lock on its kicks. IN/OUT land on the next bar.")
+        self.log_lbl = QLabel("Type part of a title to find a track, Load it on a lane, pick its stem and section, IN "
+                              "(the first IN starts the stage). The first lane in is the clock; the others stretch to it, shift "
+                              "toward its key, and lock on its kicks. IN/OUT land on the next bar.")
         self.log_lbl.setWordWrap(True)
         v.addWidget(self.log_lbl)
         v.addStretch(1)
@@ -233,11 +232,13 @@ class StageTab(QWidget):
     def _io(self, i):
         if self.stage is None:
             return
+        if self.engine is None:
+            self._toggle_engine()            # the first IN starts the stage; nothing plays without it
         lane = self.stage.lanes[i]
         row = self.rows[i]
         if lane.state in ("live", "armed"):
             self.stage.release(i)
-            row.io_btn.setText("leaving…")
+            row.io_btn.setText("leaving...")
             return
         bars = row.bars_box.currentText()
         at = self.stage.arm(i, row.stem_box.currentText(), int(row.section_box.currentData() or 0),
@@ -246,7 +247,7 @@ class StageTab(QWidget):
         if at is None:
             row.status.setText(self.stage.log[-1] if self.stage.log else "refused")
             return
-        row.io_btn.setText("armed…")
+        row.io_btn.setText("armed...")
 
     def _gain(self, i, g):
         if self.stage is not None:
@@ -290,7 +291,7 @@ class StageTab(QWidget):
                     bits.append(f"lock {1000 * abs(d['audible_err_beats']) * 60.0 / max(st['master_bpm'] or 120.0, 1):.0f} ms")
             if st["master"] == d["deck"]:
                 bits.append("CLOCK")
-            row.status.setText("  ·  ".join(bits))
+            row.status.setText("  |  ".join(bits))
         m = next((d for d in st["lanes"] if d["deck"] == st["master"]), None)
         if m and m.get("beat_phase") is not None:
             ph = float(m["beat_phase"])
