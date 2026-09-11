@@ -126,6 +126,35 @@ def main():
     rc.next_move()
     pump(int(1.5 * bars * RATE) // block)
     check(len(rc.moves) > before, f"NEXT forced a move: {rc.moves[-1][1] if rc.moves else '-'}")
+    # the performance buttons: LOOP 8 holds every song, BREAK rests all lanes but one and restores them,
+    # DROP puts every lane on the newest song; GOOD / BAD store verdicts that tilt the weights
+    n_songs = len([s for s in rc.songs.values() if not s.leaving])
+    rc.loop(8)
+    pump(int(1.5 * bars * RATE) // block)
+    looped = [d for d, s in rc.songs.items() if (rc._tel_deck(d).get("loop") is not None) and not s.leaving]
+    check(rc.user_loop_bars == 8 and len(looped) >= min(2, n_songs), f"LOOP 8: {len(looped)} of {n_songs} songs looping")
+    rc.loop(8)                                     # again = release
+    pump(int(1.5 * bars * RATE) // block)
+    check(rc.user_loop_bars is None, "LOOP 8 again released the loops")
+    held_before = dict(rc.lanes)
+    ok_b = rc.break_(bars=2)
+    pump(int(1.0 * bars * RATE) // block)
+    resting = [ln for ln, d in rc.lanes.items() if d is None]
+    check(ok_b and len(resting) >= 2, f"BREAK: {len(resting)} lanes resting, {rc.move_log[-1]['lane']} alone")
+    pump(int(2.5 * bars * RATE) // block)
+    back = sum(1 for ln, d in rc.lanes.items() if d is not None and d == held_before.get(ln))
+    check(rc._break is None and back >= 2, f"BREAK over: {back} lanes back where they were")
+    rc.db.add_seam_feedback = lambda *a, **k: None      # the gate never writes verdicts into the library
+    n_v0 = rc.n_verdicts
+    w0 = rc._w("break")
+    rc.rate_last(False)
+    check(rc.n_verdicts == n_v0 + 1 and rc._w("break") < w0, f"BAD on the break stored: weight {w0:.2f} -> {rc._w('break'):.2f}")
+    rc.drop()
+    pump(int(1.5 * bars * RATE) // block)
+    holders = {d for d in rc.lanes.values() if d is not None}
+    check(len(holders) == 1, f"DROP: every lane on one song ({rc.move_log[-1]['text'][:60]})")
+    rc.rate_last(True)
+    check(rc._w("drop") > 0.5, f"GOOD on the drop stored: weight {rc._w('drop'):.2f}")
     paced(max(0, opened_at + total_blocks - len(audio)))
     rc.stop(fade_s=0.5)
     pump(10)

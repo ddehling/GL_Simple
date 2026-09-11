@@ -200,6 +200,34 @@ long_fade). Same 80 pairs after: 54 honoured, every refusal structural (no drop 
 6, off-meter 3, beatless 1), the compiled events of the honoured cuts carry no brake and no echo, A leaves on
 a 0.04 s ramp. The family fallback rarely engages for cuts because `phrase_cut` shares the structural bars.
 
+**Phases 4 and 5 in Remix mode (2026-09-11, "do phase 4 and 5 and we'll evaluate this evening"):**
+*Performing.* Three buttons on the conductor, each a system behaviour on the master's next bar: **DROP**
+(every lane to the newest song at once over half a beat — the morph as a cut; a staged song not yet heard
+drops in whole), **BREAK** (every lane but the most melodic one held — vocals, else other, else bass —
+rests four bars and they all come back on the bar; no song leaves during a break), **LOOP 4 / 8** (every
+live song loops that many bars from its own next downbeat, so the whole combination holds; the same
+button again releases). HOLD and MIX NOW as before. *The nanoKONTROL2* drives the Perform tab in both
+modes, polled from the readout timer (no thread, no device other than MIDI): faders 1–3 = energy lean,
+blend, vocals; knob 1 = change rate / mix speed; PLAY = MIX NOW, STOP = HOLD, REC = DROP, CYCLE = BREAK,
+MARKER ◀ ▶ = LOOP 4 / 8, TRACK ◀ ▶ = BAD / GOOD. Faders move the on-screen sliders, so the screen is the
+truth. *Autonomy.* The energy target is no longer a number you set: it is the theme's arc over a
+90-minute cycle (all-night themes over the night) plus the lean, as in the automixer, and the readout
+shows the arc position. And the conductor LEARNS: **GOOD / BAD** rate the last rated kind of move (entry,
+cross, consolidating cross, rest, return, drop, break); each verdict is stored as `seam_feedback` with
+style `remix:<kind>:<lane>` between the songs involved, and every conductor starts from the record — a
+Laplace rate per (kind, lane), (ups + 1) / (n + 2), scales that kind's chance (0.5 = as set, 1.0 = twice
+as often, 0 = never): the rest chance, the vocal lane's freedom, the consolidating-versus-free split,
+the order lanes are tried for crosses and entries. A handful of verdicts nudges; it does not dictate.
+*Left out on purpose:* Remix mode on the show's live web page. That page is DJSystem inside
+Stories_OGL (visual outstate, analyzer routing, ambient takeover, a queued action channel through the
+web controller) and nobody has heard the mode yet; it stays in the planner until the ear verdict, then
+the same conductor mounts on the show's engine.
+Gate (`_dj_remix_test.py`, extended): LOOP 8 loops every song and releases, BREAK rests three lanes and
+restores them where they were, DROP puts every lane on one song, BAD on the break and GOOD on the drop
+move the weights (0.50 → 0.33 / 0.75) with the library write stubbed — plus the earlier invariants. The
+tab, headless: the real nanoKONTROL2 connected; simulated fader / knob / transport events moved blend,
+energy, mix speed, forced a move and armed LOOP 4.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
