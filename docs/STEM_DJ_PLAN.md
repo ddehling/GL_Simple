@@ -107,6 +107,22 @@ median 0.037 and 0.015 beat with p95 0.045 / 0.055 (n 266 / 224), re-lock after 
 0.038, no bar-to-bar hole while lanes hold, peak 0.82 — **ALL OK**. Deck: `set_stem_gains` keeps an
 in-flight ramp's destination for stems the new call does not name; submix: a `pitch` command.
 
+**The stage as played (2026-09-10, after the user tried the four-lane tab: "nothing is loading, and it's
+amazingly overly complicated. I don't want to have to find multiple stem tracks across different songs"):**
+two defects, one of design. The tab had copied the library when it was built, before the planner loads it,
+so its track box was empty in the real window (and my headless test had handed it a loaded library);
+it reads the planner's library when used now. And four lanes from four songs is not how anyone plays
+this. The Stage tab is now the **pair stage** (`lib/dj/pairstage.py`): song A is the clock and the key,
+song B runs beat-locked to it on the submix's proven one-slave path (stretched inside the wall,
+key-shifted toward A within ±3 semitones), and each of the four stem lanes is an **A / B / off** switch
+that flips on the next bar with a one-beat crossfade — any mixture of the two songs is a state you hold.
+**MORPH → B / → A** hands the lanes over in the default order at 4 / 8 / 16 beats apart (the morph style,
+live); **loop A / loop B** hold a song on 4 / 8 / 16 bars of where it is; Play starts both songs at their
+bodies and opens the device itself. The clock line shows B's grid lock against A in ms (the PLL's own
+error, not the wide audible meter). Driven headless through the real engine with the library arriving
+after the tab was built: load, Play, lanes, MORPH both ways, loop, stop — all as scheduled. The N-lane
+engine (`lib/dj/stage.py`, gated) stays as the general form for when more than two songs are wanted.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

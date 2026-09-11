@@ -4860,9 +4860,10 @@ class Planner(QMainWindow):
         from tools.dj.planner.lab import LabTab
         self.lab_tab = LabTab(self)
         self.tabs.addTab(self.lab_tab, "Lab")
-        # THE STEM STAGE (tools/dj/planner/stage.py, lib/dj/stage.py): up to four stems of four tracks
-        # live at once on one clock - the stem-level plan's phase 3 (docs/STEM_DJ_PLAN.md). Real-time
-        # through the same AudioEngine + DJSubmix a night runs.
+        # THE STEM STAGE (tools/dj/planner/stage.py over lib/dj/pairstage.py): two songs, four stem lanes,
+        # each lane A / B / off on the next bar, MORPH and LOOP - the stem-level plan's phase 3
+        # (docs/STEM_DJ_PLAN.md). Real-time through the same AudioEngine + DJSubmix a night runs.
+        # (lib/dj/stage.py is the general N-lane engine behind it, gated by _dj_stage_test.py.)
         from tools.dj.planner.stage import StageTab
         self.stage_tab = StageTab(self)
         self.tabs.addTab(self.stage_tab, "Stage")
