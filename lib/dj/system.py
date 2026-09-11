@@ -1002,6 +1002,7 @@ class DJSystem:
                       "pair_score": self.plan.get("pair_score"),
                       "pin": ((self.plan.get("diag") or {}).get("style_pin") or {}).get("honored"),
                       "pin_why_not": ((self.plan.get("diag") or {}).get("style_pin") or {}).get("why_not"),
+                      "pin_waived": ((self.plan.get("diag") or {}).get("style_pin") or {}).get("waived"),
                       "morph": self.plan.get("morph_sched_beats"),
                       "speed": (self.plan.get("diag") or {}).get("mix_speed")}
                      if self.plan else None),

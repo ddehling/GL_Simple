@@ -221,6 +221,22 @@ KICK_SCREEN_CUT_S = 0.028     # ...and for the short-dual cut/echo/loop tier
 BAND_CLASH_HI = 1.5           # one side this rhythmic in a band...
 BAND_CLASH_LO = 1.2           # ...against the other below this = a clash
 
+# A refused style pin falls back inside its family before the dice roll: the
+# operator asked for a KIND of seam. Cuts stay cuts (cut_at_drop needs a real
+# drop in B and is refused on most pairs; phrase_cut is the same slam on a
+# phrase boundary for music without one).
+_PIN_FAMILY = {
+    "cut_at_drop": ("phrase_cut", "spinback_cut"),
+    "phrase_cut": ("cut_at_drop", "spinback_cut"),
+    "spinback_cut": ("phrase_cut", "cut_at_drop"),
+    "stem_morph": ("stem_bass_swap", "stem_drum_swap", "long_blend"),
+    "stem_bass_swap": ("stem_morph", "bass_swap"),
+    "stem_drum_swap": ("stem_morph", "drum_bridge"),
+    "bass_swap": ("stem_bass_swap", "long_blend"),
+    "long_blend": ("bass_swap", "filter_sweep"),
+    "echo_out": ("long_fade",),
+}
+
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "loop_build", "long_fade",
           "stem_drum_swap", "acapella_out", "stem_morph")
@@ -3390,9 +3406,13 @@ class Brain:
         # rolled last time - nights ran long_blend x4 by pure chance and
         # read as monotone. Same style as last seam: halved; as the last
         # TWO: off the menu this round.
+        # A PIN is exempt: the operator asked for this style every seam
+        # (the Perform tab's mix type), so "same as the last two" is the
+        # request, not a streak (2026-09-10: cut_at_drop pinned was refused
+        # by anti_streak on 8 of 80 pairs and rolled something else).
         if self.recent_styles:
             last = self.recent_styles[-1]
-            if last in weights:
+            if last in weights and last != force_style:
                 weights[last] *= 0.5
                 if len(self.recent_styles) >= 2 \
                         and self.recent_styles[-2] == last:
@@ -3491,6 +3511,7 @@ class Brain:
         rolled = False              # did a style dice roll actually happen?
         gate_tested = None          # threshold this seam was let through
         cut_trial_tags = None       # cut_drop_shape trial: bars failed
+        pin_waived = None           # the one bar a pinned cut may cross
         # cut_at_drop's vetted entry - set by the gate below when it runs,
         # and NEEDED at plan time, so it cannot live only in that scope.
         cut_pd, cut_step = None, 0.0
@@ -4286,6 +4307,19 @@ class Brain:
                     if _near:
                         cut_pd, cut_step, _tags = _near[0]
                         cut_trial_tags = list(_tags)
+            # A PINNED CUT crosses the kick-offset bar (2026-09-10). The bar
+            # is earned for the dice (kick delta sorts cut verdicts 68 vs
+            # 59 % good), but a pin is the operator asking for a cut; the
+            # alternative was a long blend for a night that asked for
+            # slams. Only that one bar - no drop in B, off-meter, tempo
+            # clash still refuse. The waiver rides diag for the readout.
+            pin_waived = None
+            if force_style in ("cut_at_drop", "phrase_cut", "spinback_cut") \
+                    and weights.get(force_style, 0.0) <= 0.0 \
+                    and reasons and reasons <= {"kick_offset>28ms"}:
+                weights[force_style] = 1.0
+                gated.pop(force_style, None)
+                pin_waived = "kick_offset>28ms"
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if force_style == "long_fade":
                 # Operator pinned the deliberate fade - always available.
@@ -4295,6 +4329,16 @@ class Brain:
                 # Style pin: only reachable when every gate above left it
                 # on the menu - safety gates outrank the pin.
                 style = force_style
+                rolled = True
+            elif force_style in _PIN_FAMILY and any(
+                    weights.get(s, 0.0) > 0.0 for s in _PIN_FAMILY[force_style]):
+                # A refused pin falls back INSIDE ITS FAMILY before the dice
+                # (2026-09-10, user: cut_at_drop pinned, "some shitty echo
+                # effect instead of just cutting" - the pin was refused for
+                # want of a real drop and the whole menu rolled echo_out).
+                # Someone who asked for a cut gets a cut.
+                style = next(s for s in _PIN_FAMILY[force_style]
+                             if weights.get(s, 0.0) > 0.0)
                 rolled = True
             elif menu:
                 styles, ws = zip(*menu)
@@ -4396,7 +4440,8 @@ class Brain:
                 "want": force_style, "honored": style == force_style,
                 "why_not": (None if style == force_style
                             else ", ".join(_reasons) or fade_reason
-                            or "lost_menu")}
+                            or "lost_menu"),
+                "waived": pin_waived}
 
         # Pacing memory (anti-streak reads this next seam) + moment stamp.
         self.recent_styles = (self.recent_styles + [style])[-4:]
@@ -5136,11 +5181,17 @@ class Brain:
             # instead of a plain cut - the platter winds down through the
             # last bar and B's drop slams in. spinback_cut ALWAYS brakes,
             # longer - the dying platter IS the style.
+            # cut_at_drop NEVER brakes and a PINNED cut never brakes
+            # (2026-09-10, user: "instead of just cutting"): the wind-down
+            # read as an effect where a clean slam was asked for. The coin
+            # flip survives only on a dice-rolled phrase_cut.
+            _pinned = bool((plan.get("diag") or {}).get("style_pin"))
             if style == "spinback_cut":
                 _sb = K("spinback_s")
                 ev.append({"at": S_cut - int(_sb * RATE), "cmd": "brake",
                            "deck": active, "duration_s": _sb})
-            elif self.rng.random() < K("brake_chance"):
+            elif style == "phrase_cut" and not _pinned \
+                    and self.rng.random() < K("brake_chance"):
                 _br = K("brake_s")
                 ev.append({"at": S_cut - int(_br * RATE), "cmd": "brake",
                            "deck": active, "duration_s": _br})

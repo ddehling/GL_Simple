@@ -729,6 +729,9 @@ class DJSubmix:
                 "echo": bool(d.echo.active),
                 "loop": d.loop,
                 "braking": d._brake is not None,
+                # per-stem gains as they stand (the remix conductor's lane map, as heard)
+                "stem_gains": ({k: round(float(g), 3) for k, g in getattr(d, "stem_gain", {}).items()}
+                               if d.stems is not None else None),
             }
         def _sync_view(name, st):
             return {"slave": name, "master": st["master"], "audio": st["audio"],

@@ -147,6 +147,59 @@ and why not, the length scaling, the morph schedule, the "why" chips), the night
 position and target, the horizon, the history with verdicts, the system's own event log as it happens,
 and the engine line (both decks, sync bias and audible error, resnaps and nudges, level, errors).
 
+**Remix mode (2026-09-10, after the user on the Perform tab: "this is still just a fancy automixer"):** the
+automixer plays whole songs one seam at a time; a stem system can do what no automixer does — play PARTS
+of several songs together and keep changing them. `lib/dj/remix.py` (`RemixConductor`) runs two or three
+songs live on the submix's three decks, all on one clock (the first song's tempo; the PLL holds the others,
+one session per slave) and shifted toward one key (±3 st). The four stem lanes — drums, bass, other, vocals
+— are each assigned to one live song. Every phrase (4 / 8 / 16 / 32 bars, the mix-speed box) the conductor
+makes one MOVE on the master's next bar with a two-beat crossfade: a lane crosses to another live song, a
+lane rests for a phrase, a new song (the brain's pick against the master, to the theme and the energy
+target) enters through one lane, a song that holds no lane leaves. The brain's pick is decoded in the
+background and STAGED — started beat-locked at its body with every lane closed — so the PLL has settled
+before it is heard. Rules: a tonal lane (bass / other / vocals) only crosses to a song whose shifted key
+fits the songs on the other tonal lanes (Camelot ≥ 0.55; drums are free); a new song takes its lane from
+the OLDEST song; a song's last lane cannot be taken before it has been heard three phrases; a song under
+40 s of body loops its last 8 bars and is evicted after two phrases of looping (its lanes move on a bar
+apart; if it was the clock, the song holding most lanes takes it and the others re-sync); a looping song
+gives lanes but never takes one; a resting lane comes back at the next move. Controls: **blend** (0 =
+every move hands a lane to the newest song, so song follows song as a morph, two songs live; 1 = free
+recombination across three), **vocals** (how freely the vocal lane crosses), **theme**, **energy** (the
+brain's arc target), **MIX NOW** (a move on the next bar), **HOLD** (freeze the lane map; the runway rules
+still apply). The Perform tab has a mode box (Automix / Remix); in Remix the three maps are the decks (song,
+lanes held, master / loop / leaving, PLL lock in ms), the lane line shows which song each lane plays, the
+lists show what is decoding or staged, entries and exits, and every move.
+Gate `tools/tests/_dj_remix_test.py --music D:/Devel/music` (headless, the mixer pulled by hand, ~2× real
+time so decodes arrive as they do live; 300 s rendered at a move every 4 bars): 3 songs live, 32 lane
+moves, 2+ songs heard 88 % of the time, 6 songs entered lane by lane and 5 left, the harmonic guard never
+violated at any block, slave locks median 0.014 / 0.020 beat (p95 < 0.05, n 2498 / 1709), the clock
+handed over once (re-lock median 0.016), peak 0.98, no dead bar, HOLD froze the map, NEXT moved on the
+next bar — **ALL OK**. Two defects the first run found: loop expiry was counted on the master's bar index,
+which wraps inside a loop (now a monotonic bar count), and new songs took lanes from the newest song
+(now the oldest). A second seed after the minimum-stay rule: 11 songs entered and 9 left in 300 s (a move
+every 4 bars; songs stay the three phrases and go), the clock handed over five times, locks median 0.010 /
+0.018 / 0.021 beat, guard clean, no dead bar — ALL OK; it also showed one pick that looped two seconds after
+entering (its body starts near its end), so a pick now needs 90 s of body from its entry point. The tab,
+headless and silent in Remix mode: mode switch hides the seam controls and
+shows blend / vocals, Start builds the conductor on 1073 stem-bearing tracks, five songs came and went in
+two minutes, HOLD and MIX NOW reach the conductor. Not yet heard by the user.
+
+**A pinned cut is a cut (2026-09-10, user: "I don't like how cut at drop uses some shitty echo effect
+instead of just cutting"):** the cut itself was always a 40 ms gain drop with no echo; what played was
+something else. With `cut_at_drop` pinned on 80 random pairs only 29 were honoured — the pin was refused
+by `kick_offset>28ms` (26), `cut_drop_shape` (17), `anti_streak` (8), tempo / meter (9) — and a refused pin
+fell back to the WHOLE dice menu (long_blend, long_fade, bass_swap, echo_out…), so a night pinned to cuts
+played blends and, when the dice said so, the echo throw; and half the honoured cuts wound the platter down
+first (the brake coin flip). Now: `cut_at_drop` never brakes and a pinned cut never brakes (the coin flip
+survives only on a dice-rolled `phrase_cut`); a pin is exempt from `anti_streak` (the pin IS the request);
+a pinned cut crosses the `kick_offset>28ms` bar (earned for the dice — kick delta sorts cut verdicts 68 vs
+59 % good — but a pin asked for a slam, and a long blend is further from that than a 28 ms flam in the
+run-in; the waiver is shown in the readout as "crossed kick_offset>28ms"); and a refused pin falls back
+inside its family before the dice (`_PIN_FAMILY`: cuts → cuts, stem styles → stem styles, echo_out →
+long_fade). Same 80 pairs after: 54 honoured, every refusal structural (no drop shape in B 15, tempo clash
+6, off-meter 3, beatless 1), the compiled events of the honoured cuts carry no brake and no echo, A leaves on
+a 0.04 s ramp. The family fallback rarely engages for cuts because `phrase_cut` shares the structural bars.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
