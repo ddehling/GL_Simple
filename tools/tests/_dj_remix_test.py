@@ -59,6 +59,7 @@ def main():
     gen.send(256)
 
     audio, errs, guard_viol, live_hist, lane_hist = [], {}, 0, [], []
+    hyg = {"vocal_blocks": 0, "vocal_silent": 0, "carve_blocks": 0, "carve_open": 0}
     block = 4410
 
     def pump(n_blocks):
@@ -91,6 +92,44 @@ def main():
                         guard_viol += 1
             live_hist.append(len([s for s in rc.songs.values() if s.entered and not s.leaving]))
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
+            # the vocal rule, as heard: the vocal lane open on a song that is not singing there (by the
+            # conductor's own measured singing map); a stretch counts once it outlasts 1.5 phrases - the
+            # rule acts at the next move, so one phrase of a song's instrumental passage is by design
+            vd = rc.lanes.get("vocals")
+            silent_now = False
+            if vd in rc.songs and float(((decks.get(vd) or {}).get("stem_gains") or {}).get("vocals", 0.0)) > 0.5:
+                sing = rc._singing(rc.songs[vd], float((decks.get(vd) or {}).get("time_s") or 0.0))
+                if sing is not None:
+                    hyg["vocal_blocks"] += 1
+                    silent_now = sing is False
+            if silent_now:
+                hyg["vocal_run"] = hyg.get("vocal_run", 0) + 1
+                if hyg["vocal_run"] > 1.5 * rc.change_bars * rc._bar_clock() / block:
+                    hyg["vocal_silent"] += 1
+                    sec = rc.songs[vd].track.section_at(float((decks.get(vd) or {}).get("time_s") or 0.0)) or {}
+                    hyg.setdefault("vocal_first", (round(len(audio) * block / RATE), rc.songs[vd].track.title[:30], sec.get("kind"),
+                                                   sec.get("vocalness"), rc.move_log[-1]["text"][:70] if rc.move_log else "-"))
+            else:
+                hyg["vocal_run"] = 0
+            # the low carve, as heard: a playing song whose bass and drums stems are both closed (and has
+            # been so for more than a bar: the EQ ramps a beat after the lane lands) has its EQ low down
+            if rc._break is None:
+                for d, song in rc.songs.items():
+                    t = decks.get(d) or {}
+                    g = t.get("stem_gains") or {}
+                    if not t.get("playing") or song.leaving or not song.entered:
+                        continue
+                    lows_open = float(g.get("bass", 0.0)) > 0.05 or float(g.get("drums", 0.0)) > 0.05
+                    key = ("carve_since", d)
+                    if lows_open:
+                        hyg.pop(key, None)
+                        continue
+                    hyg.setdefault(key, len(audio))
+                    if len(audio) - hyg[key] < 1.5 * rc._bar_clock() / block:
+                        continue
+                    hyg["carve_blocks"] += 1
+                    if float((t.get("eq") or [1.0])[0]) > 0.6:
+                        hyg["carve_open"] += 1
 
     # wait (real time) for the first decode, rendering silence meanwhile
     import time
@@ -123,9 +162,13 @@ def main():
     rc.set_hold(False)
     # NEXT: a move within the next bar and a bit
     before = len(rc.moves)
+    n_entered = len([s for s in rc.songs.values() if s.entered and not s.leaving])
     rc.next_move()
     pump(int(1.5 * bars * RATE) // block)
-    check(len(rc.moves) > before, f"NEXT forced a move: {rc.moves[-1][1] if rc.moves else '-'}")
+    if n_entered >= 2:
+        check(len(rc.moves) > before, f"NEXT forced a move: {rc.moves[-1][1] if rc.moves else '-'}")
+    else:
+        print(f"  --   NEXT with {n_entered} song heard: nothing to cross to (not judged)")
     # the performance buttons: LOOP 8 holds every song, BREAK rests all lanes but one and restores them,
     # DROP puts every lane on the newest song; GOOD / BAD store verdicts that tilt the weights
     n_songs = len([s for s in rc.songs.values() if not s.leaving])
@@ -138,23 +181,68 @@ def main():
     check(rc.user_loop_bars is None, "LOOP 8 again released the loops")
     held_before = dict(rc.lanes)
     ok_b = rc.break_(bars=2)
+    rc.db.add_seam_feedback = lambda *a, **k: None      # the gate never writes verdicts into the library
+    n_v0 = rc.n_verdicts
+    w0 = rc._w("break")
+    rc.rate_last(False)                                  # the break is the last move: BAD lands on it
+    check(rc.n_verdicts == n_v0 + 1 and rc._w("break") < w0, f"BAD on the break stored: weight {w0:.2f} -> {rc._w('break'):.2f}")
     pump(int(1.0 * bars * RATE) // block)
     resting = [ln for ln, d in rc.lanes.items() if d is None]
     check(ok_b and len(resting) >= 2, f"BREAK: {len(resting)} lanes resting, {rc.move_log[-1]['lane']} alone")
     pump(int(2.5 * bars * RATE) // block)
     back = sum(1 for ln, d in rc.lanes.items() if d is not None and d == held_before.get(ln))
     check(rc._break is None and back >= 2, f"BREAK over: {back} lanes back where they were")
-    rc.db.add_seam_feedback = lambda *a, **k: None      # the gate never writes verdicts into the library
-    n_v0 = rc.n_verdicts
-    w0 = rc._w("break")
-    rc.rate_last(False)
-    check(rc.n_verdicts == n_v0 + 1 and rc._w("break") < w0, f"BAD on the break stored: weight {w0:.2f} -> {rc._w('break'):.2f}")
     rc.drop()
+    drop_text = rc.move_log[-1]["text"]
+    rc.rate_last(True)                                   # the drop is the last move: GOOD lands on it
+    check(rc._w("drop") > 0.5, f"GOOD on the drop stored: weight {rc._w('drop'):.2f}")
     pump(int(1.5 * bars * RATE) // block)
     holders = {d for d in rc.lanes.values() if d is not None}
-    check(len(holders) == 1, f"DROP: every lane on one song ({rc.move_log[-1]['text'][:60]})")
-    rc.rate_last(True)
-    check(rc._w("drop") > 0.5, f"GOOD on the drop stored: weight {rc._w('drop'):.2f}")
+    check(len(holders) == 1, f"DROP: every lane on one song ({drop_text[:60]})")
+    # snapshots: save the combination, let the conductor move on, recall it
+    paced(int(3 * rc.change_bars * bars * RATE) // block)          # a couple of phrases: 2+ songs again
+    snap = rc.save_snapshot()
+    check(snap is not None and sum(1 for v in snap["lanes"].values() if v) >= 3, f"SAVE: {snap['lanes'] if snap else None} (a resting lane saves as none)")
+    rc.next_move()
+    pump(int(1.5 * bars * RATE) // block)
+    rc.next_move()
+    pump(int(1.5 * bars * RATE) // block)
+    moved = any(rc._song_id(rc.lanes.get(ln)) != snap["lanes"].get(ln) for ln in snap["lanes"])
+    rc.recall_snapshot(-1)
+    from lib.dj.remix import RECALL_PHRASES
+    for _ in range(int(RECALL_PHRASES * rc.change_bars) + 4):   # songs that left must be decoded (5-10 s real) and staged again
+        paced(int(bars * RATE) // block)
+        if rc._recall is None:
+            break
+    paced(int(2 * bars * RATE) // block)
+    same = sum(1 for ln in snap["lanes"] if rc._song_id(rc.lanes.get(ln)) == snap["lanes"].get(ln))
+    notes = [m["text"][:90] for m in rc.move_log if m["kind"].startswith("recall")]
+    check(rc._recall is None and same >= 3, f"RECALL: {same}/4 lanes back on the saved songs (lanes moved in between: {moved}) {notes[-1:] if notes else ''}")
+    # a tempo journey: lean hot, span 4 %: the clock climbs in half-percent steps, every song inside the wall
+    bpm0 = rc.master_bpm
+    rc.set_energy_lean(0.4)
+    rc.set_tempo_span(0.04)
+    paced(int(10 * bars * RATE) // block)
+    rates_ok = all(0.90 <= s.rate <= 1.10 for s in rc.songs.values())
+    check(rc.master_bpm > bpm0 * 1.01 and rates_ok, f"tempo journey: clock {bpm0:.2f} -> {rc.master_bpm:.2f} bpm, every song inside the wall {rates_ok}")
+    rc.set_tempo_span(0.0)
+    rc.set_energy_lean(0.0)
+    # recording: a WAV with the move log beside it
+    import os
+    import tempfile
+    import wave
+    wav = os.path.join(tempfile.gettempdir(), "remix_gate_rec.wav")
+    rc.record(wav)
+    pump(int(2.0 * RATE) // block)
+    rc.record_stop()
+    with wave.open(wav, "rb") as w:
+        nfr = w.getnframes()
+    check(nfr >= int(1.5 * RATE) and os.path.exists(wav[:-4] + ".json"), f"recording: {nfr / RATE:.1f} s of audio + move log json")
+    for p in (wav, wav[:-4] + ".json"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
     paced(max(0, opened_at + total_blocks - len(audio)))
     rc.stop(fade_s=0.5)
     pump(10)
@@ -170,6 +258,20 @@ def main():
     left = [m for _, m in rc.moves if m.endswith("leaves")]
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")
+    # structure, hygiene, shapes
+    if hyg["vocal_blocks"]:
+        frac = hyg["vocal_silent"] / hyg["vocal_blocks"]
+        check(frac < 0.15, f"vocal lane on a silent section: {100 * frac:.0f}% of {hyg['vocal_blocks']} blocks with vocal data"
+              + (f" - first at {hyg['vocal_first'][0]} s: {hyg['vocal_first'][1]} {hyg['vocal_first'][2]} v={hyg['vocal_first'][3]} after '{hyg['vocal_first'][4]}'" if hyg.get("vocal_first") else ""))
+    else:
+        print("  --   no block with vocal data on the vocal lane (rule not exercised)")
+    if hyg["carve_blocks"]:
+        frac = hyg["carve_open"] / hyg["carve_blocks"]
+        check(frac < 0.15, f"low carve: lows still open on {100 * frac:.0f}% of {hyg['carve_blocks']} blocks where a song held neither bass nor drums")
+    shapes = [m for m in rc.move_log if m.get("shape")]
+    check(len(shapes) >= 1, f"shaped moves: {len(shapes)} ({', '.join(sorted({m['shape'] for m in shapes}))})")
+    staged_lm = [line for line in rc.log if "landmark" in line]
+    check(len(staged_lm) >= 1, f"{len(staged_lm)} songs staged on a landmark, e.g. {staged_lm[0][-60:] if staged_lm else '-'}")
     blk_per_bar = bars * RATE / block
     for sl, rows in errs.items():
         if not rows:
@@ -186,8 +288,14 @@ def main():
     mono = x[opened_at * block:-10 * block].mean(axis=1) if len(x) > (opened_at + 12) * block else x.mean(axis=1)
     nb = int(bars * RATE)
     rms = [20 * np.log10(np.sqrt(np.mean(mono[i:i + nb] ** 2)) + 1e-9) for i in range(nb, len(mono) - nb, nb)]
-    dead = sum(1 for r in rms if r < -40.0)
-    check(dead == 0, f"dead bars: {dead} of {len(rms)} (median bar level {np.median(rms):.1f} dBFS)")
+    dead_i = [i for i, r in enumerate(rms) if r < -40.0]
+    dead = len(dead_i)
+    where = ""
+    if dead_i:
+        t_dead = (opened_at * block + (dead_i[0] + 1) * nb) / RATE
+        near = [m for m in rc.move_log if m.get("clock_s") is not None and abs(m["clock_s"] - t_dead) < 12.0]
+        where = f" - first at {t_dead:.0f} s near: " + " | ".join(f"{m['clock_s']:.0f}s {m['text'][:50]}" for m in near[-3:])
+    check(dead == 0, f"dead bars: {dead} of {len(rms)} (median bar level {np.median(rms):.1f} dBFS){where}")
     if "--wav" in sys.argv:
         import soundfile as sf
         out = arg("--wav", "")

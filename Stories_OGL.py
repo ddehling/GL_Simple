@@ -2716,11 +2716,39 @@ class EnvironmentalSystem:
                     self._dj_start()
                 elif action == 'stop':
                     self._dj_stop()
+                    self._remix_stop()
+                elif action == 'remix_start':
+                    self._remix_start()
+                elif action.startswith('remix_'):
+                    rc = getattr(self, '_remix', None)
+                    if rc is None:
+                        continue
+                    if action == 'remix_blend':
+                        rc.set_blend(float(arg))
+                    elif action == 'remix_vocals':
+                        rc.set_vocal_freedom(float(arg))
+                    elif action == 'remix_change':
+                        rc.set_change_bars(int(arg))
+                    elif action == 'remix_tempo':
+                        rc.set_tempo_span(float(arg))
+                    elif action == 'remix_lean':
+                        rc.set_energy_lean(float(arg))
+                    elif action == 'remix_rate':
+                        rc.rate_last(bool(arg))
+                    elif action == 'remix_act':
+                        {"next": rc.next_move, "hold": lambda: rc.set_hold(True),
+                         "unhold": lambda: rc.set_hold(False), "drop": rc.drop,
+                         "break": rc.break_, "loop4": lambda: rc.loop(4),
+                         "loop8": lambda: rc.loop(8), "unloop": lambda: rc.loop(None),
+                         "save": rc.save_snapshot,
+                         "recall": rc.recall_snapshot}.get(str(arg), lambda: None)()
                 elif action == 'theme':
                     # Works idle (arms the start theme) or live (retheme).
                     self.dj_cfg['theme'] = str(arg)
                     if self._dj is not None and self._dj.active:
                         self._dj.set_theme(str(arg))
+                    if getattr(self, '_remix', None) is not None:
+                        self._remix.set_theme(str(arg))
                 elif action == 'set_length':
                     # Works idle (arms the next start) or live. dj_cfg-
                     # backed like theme/persona, so DJ stop/start within
@@ -2803,7 +2831,20 @@ class EnvironmentalSystem:
                 print(f"[DJ] action '{action}' failed: {e}")
 
         # Mirror into the web snapshot + scheduler outstate.
-        if self._dj is not None:
+        if getattr(self, '_remix', None) is not None:
+            # REMIX mode: the automixer's page stays idle (active False) and
+            # the page's Remix panel renders from `remix`; the visuals get
+            # the conductor's outstate in the automixer's vocabulary.
+            rc = self._remix
+            info = {"available": True, "active": False, "state": "idle",
+                    "remix_active": True, "remix": rc.web_status(),
+                    "theme": self.dj_cfg.get("theme", "groove"),
+                    "music_dir": self._dj_music_dir_display(),
+                    "error": rc.last_error or self._dj_last_error}
+            info.update(self._dj_idle_steer_info())
+            for k, v in rc.outstate_keys().items():
+                self.scheduler.state[k] = v
+        elif self._dj is not None:
             info = self._dj.status()
             info.pop("deck_telemetry", None)   # heavy; web uses compact 'decks'
             info["available"] = True
@@ -3055,6 +3096,7 @@ class EnvironmentalSystem:
     def _dj_start(self):
         if self._dj is not None and self._dj.active:
             return
+        self._remix_stop()                    # one of the two owns the soundtrack
         from lib.dj import resolve_music_dir
         from lib.dj.system import DJSystem
         engine = self.scheduler.state.get("soundengine")
@@ -3147,6 +3189,91 @@ class EnvironmentalSystem:
             engine.oneshots_muted = False
             self._restore_state_ambient(engine)
         print("[DJ] stopped - state ambient restored")
+
+    # -- REMIX mode on the show (lib/dj/remix.py) ---------------------------------
+    def _remix_start(self):
+        """The remix conductor on the show's engine: the same soundtrack
+        takeover as the automixer (ambient silenced, oneshots muted, the
+        analyzer on the mix), two or three songs recombined lane by lane."""
+        if getattr(self, '_remix', None) is not None:
+            return
+        self._dj_stop()
+        from lib.dj import resolve_music_dir
+        from lib.dj.db import LibraryDB
+        from lib.dj.brain import load_library
+        from lib.dj.remix import RemixConductor
+        engine = self.scheduler.state.get("soundengine")
+        eng_rate = int(getattr(engine, "sample_rate", 44100)) if engine else 44100
+        if eng_rate != 44100:
+            self._dj_last_error = f"remix needs a 44100 Hz engine ({eng_rate} Hz)"
+            print(f"[DJ] {self._dj_last_error}")
+            return
+        if engine is not None:
+            try:
+                engine.stop_all(duration=1.5)
+                engine.oneshots_muted = True
+            except Exception:
+                pass
+        music = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
+        try:
+            db = LibraryDB(music)
+            lib = [t for t in load_library(db) if not t.excluded]
+            rc = RemixConductor(db, music, lib,
+                                theme=self.dj_cfg.get("theme", "groove"))
+            if engine is not None:
+                engine.attach_track("dj_remix", rc.submix)
+            ok = rc.start(threaded=True)
+        except Exception as e:
+            ok, rc = False, None
+            self._dj_last_error = f"remix start failed: {e}"
+        if not ok:
+            self._dj_last_error = (rc.last_error if rc else None) \
+                or self._dj_last_error or "remix failed to start"
+            print(f"[DJ] {self._dj_last_error}")
+            if engine is not None:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
+            return
+        self._remix = rc
+        self._remix_db = db
+        self._dj_last_error = ""
+        try:
+            engine.stop_ambient()
+        except Exception:
+            pass
+        if self.analyzer is not None:
+            self._dj_prev_source = getattr(self.analyzer, "_active_source",
+                                           None)
+            try:
+                self.set_audio_source("internal")
+            except Exception as e:
+                print(f"[DJ] analyzer source switch failed: {e}")
+        self.scheduler.state['dj_active'] = True
+        print("[DJ] REMIX live on the show's engine")
+
+    def _remix_stop(self):
+        rc = getattr(self, '_remix', None)
+        if rc is None:
+            return
+        try:
+            rc.stop(fade_s=1.5)
+        except Exception as e:
+            print(f"[DJ] remix stop: {e}")
+        self._remix = None
+        try:
+            self._remix_db.close()
+        except Exception:
+            pass
+        self._remix_db = None
+        if self.analyzer is not None and self._dj_prev_source:
+            self.set_audio_source(self._dj_prev_source)
+            self._dj_prev_source = None
+        self.scheduler.state['dj_active'] = False
+        engine = self.scheduler.state.get("soundengine")
+        if engine is not None:
+            engine.oneshots_muted = False
+            self._restore_state_ambient(engine)
+        print("[DJ] remix stopped - state ambient restored")
 
     def _restore_state_ambient(self, engine):
         """Re-trigger the current weather state's ambient bed (used when

@@ -34,13 +34,81 @@ history of what played and how, the night's energy arc with the current
 position, the engine (decks, lock, level, state) and the system's own
 event log as it happens.
 """
+import threading
 import time
 
 from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QPolygonF
 from PyQt6.QtCore import QPointF
-from PyQt6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QListWidget, QPushButton,
+from PyQt6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton,
                              QSlider, QSplitter, QVBoxLayout, QWidget, QGroupBox)
+
+
+class SteerBridge:
+    """What the Perform Copilot may touch. The copilot runs on its own thread; it READS state here and
+    QUEUES control changes and actions, and the tab drains the queue on its timer - no widget and no
+    engine call ever happens off the GUI thread."""
+
+    def __init__(self, tab):
+        self.tab = tab
+        self.q = []
+        self.lock = threading.Lock()
+        self.controls = {}
+
+    def snapshot_controls(self):
+        t = self.tab
+        self.controls = {"mode": t.mode_box.currentText(), "theme": t.theme_box.currentText(),
+                         "blend": t.blend.value() / 100.0, "vocals": t.vocals.value() / 100.0,
+                         "change_bars": REMIX_BARS.get(t.speed_box.currentText(), 8), "mix_speed": t.speed_box.currentText(),
+                         "mix_style": t.style_box.currentText(), "energy_lean": t.energy.value() / 100.0,
+                         "tempo": t.tempo.value() / 1000.0, "hold": t.buttons["HOLD"].isChecked()}
+
+    def state(self):
+        out = {"controls": dict(self.controls)}
+        rc, sysm = self.tab.remix, self.tab.system
+        try:
+            if rc is not None:
+                st = rc.status()
+                songs = st.get("songs") or {}
+                out.update({"mode": "Remix",
+                            "lanes": {ln: (songs.get(d) or {}).get("title") if d else None for ln, d in (st.get("lanes") or {}).items()},
+                            "songs": [{"title": s.get("title"), "lanes": s.get("lanes"), "section": s.get("section"),
+                                       "singing": s.get("singing"), "entered": s.get("entered")} for s in songs.values()],
+                            "clock_bpm": st.get("master_bpm"), "key": st.get("key_centre"), "arc_phase": st.get("arc_phase"),
+                            "energy_target": st.get("energy"), "hold": st.get("hold"), "loop": st.get("user_loop"),
+                            "breaking": st.get("breaking"), "n_snapshots": st.get("n_snapshots"), "recording": st.get("recording"),
+                            "last_moves": [m for _, m in (st.get("moves") or [])[-6:]],
+                            "last_rated": st.get("last_rated")})
+            elif sysm is not None:
+                st = sysm.status()
+                out.update({"mode": "Automix", "state": st.get("state"), "playing": (st.get("current") or {}).get("title"),
+                            "next": (st.get("next") or {}).get("title"), "plan": st.get("plan"),
+                            "arc_phase": st.get("arc_phase"), "energy_target": st.get("arc_heat")})
+            else:
+                out["mode"] = "idle (the operator has not pressed Start)"
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"{type(e).__name__}: {e}"
+        return out
+
+    def steer(self, kw):
+        with self.lock:
+            self.q.append(("steer", dict(kw)))
+        return {"ok": True, "set": kw}
+
+    def act(self, action):
+        with self.lock:
+            self.q.append(("act", action))
+        return {"ok": True, "action": action}
+
+    def rate(self, good):
+        with self.lock:
+            self.q.append(("rate", bool(good)))
+        return {"ok": True, "good": bool(good)}
+
+    def drain(self):
+        with self.lock:
+            items, self.q = self.q, []
+        return items
 
 SPEEDS = (("short", 0.5), ("normal", 1.0), ("long", 2.0), ("marathon", 3.0))
 REMIX_BARS = {"short": 4, "normal": 8, "long": 16, "marathon": 32}      # bars between the conductor's moves
@@ -220,6 +288,15 @@ class PerformTab(QWidget):
         self.vocals.setToolTip("how freely the vocal lane crosses between songs")
         self.vocals.valueChanged.connect(lambda x: self.remix and self.remix.set_vocal_freedom(x / 100.0))
         row.addWidget(self.vocals)
+        self.tempo_lbl = QLabel("   tempo")
+        row.addWidget(self.tempo_lbl)
+        self.tempo = QSlider(Qt.Orientation.Horizontal)
+        self.tempo.setRange(0, 60)
+        self.tempo.setValue(0)
+        self.tempo.setMaximumWidth(120)
+        self.tempo.setToolTip("tempo journey: how far the clock may travel with the arc, 0 (fixed) .. 6 % of the opener's tempo")
+        self.tempo.valueChanged.connect(lambda x: self.remix and self.remix.set_tempo_span(x / 1000.0))
+        row.addWidget(self.tempo)
         row.addStretch(1)
         v.addLayout(row)
         row2 = QHBoxLayout()
@@ -234,20 +311,42 @@ class PerformTab(QWidget):
                                ("LOOP 4", lambda: self._loop(4), "every live song holds 4 bars (press again to release)"),
                                ("LOOP 8", lambda: self._loop(8), "every live song holds 8 bars (press again to release)"),
                                ("GOOD", lambda: self._verdict(True), "the last move was good - the conductor learns"),
-                               ("BAD", lambda: self._verdict(False), "the last move was bad - the conductor learns")):
+                               ("BAD", lambda: self._verdict(False), "the last move was bad - the conductor learns"),
+                               ("SAVE", self._save, "remember this combination (which song plays each lane)"),
+                               ("RECALL", self._recall, "bring the last saved combination back (again: the one before)"),
+                               ("REC", self._rec, "record the output to logs/remix_*.wav with the move log beside it")):
             b = QPushButton(label)
             b.setToolTip(tip)
             b.clicked.connect(fn)
             row2.addWidget(b)
             self.buttons[label] = b
-        for name in ("LOOP 4", "LOOP 8"):
+        for name in ("LOOP 4", "LOOP 8", "REC"):
             self.buttons[name].setCheckable(True)
         self.midi = None
         self._midi_note = ""
+        self._recall_idx = 0
         row2.addStretch(1)
         self.state_lbl = QLabel("")
         row2.addWidget(self.state_lbl)
         v.addLayout(row2)
+        # -- say it: the Perform Copilot maps words onto the same controls ---------------------
+        row3 = QHBoxLayout()
+        self.say_edit = QLineEdit()
+        self.say_edit.setPlaceholderText("tell the DJ: darker · more vocals · slower changes · wilder · drop it · hold this · that was good")
+        self.say_edit.returnPressed.connect(self._say)
+        row3.addWidget(self.say_edit, 1)
+        self.say_btn = QPushButton("SAY")
+        self.say_btn.setToolTip("the copilot reads the live state and sets the controls your words ask for (Claude Code session, no key)")
+        self.say_btn.clicked.connect(self._say)
+        row3.addWidget(self.say_btn)
+        self.say_lbl = QLabel("")
+        self.say_lbl.setWordWrap(True)
+        row3.addWidget(self.say_lbl, 2)
+        v.addLayout(row3)
+        self._bridge = SteerBridge(self)
+        self._copilot = None
+        self._say_thread = None
+        self._say_result = None
         # -- the maps ---------------------------------------------------------------------------
         self.map_now = TrackMap("PLAYING")
         self.map_next = TrackMap("NEXT")
@@ -310,6 +409,7 @@ class PerformTab(QWidget):
             self.remix.set_blend(self.blend.value() / 100.0)
             self.remix.set_vocal_freedom(self.vocals.value() / 100.0)
             self.remix.set_change_bars(REMIX_BARS.get(self.speed_box.currentText(), 8))
+            self.remix.set_tempo_span(self.tempo.value() / 1000.0)
             self._energy(self.energy.value())
             self.engine.attach_track("dj_remix", self.remix.submix)
             ok = self.remix.start(threaded=True)
@@ -433,6 +533,131 @@ class PerformTab(QWidget):
         elif self.system is not None:
             self.system.seam_feedback(up)
 
+    def _save(self):
+        if self.remix is not None:
+            self.remix.save_snapshot()
+            self._recall_idx = 0
+
+    def _recall(self):
+        """RECALL brings back the last saved combination; pressed again, the one before it, and so on."""
+        if self.remix is None or not self.remix.snapshots:
+            return
+        n = len(self.remix.snapshots)
+        self.remix.recall_snapshot(-1 - (self._recall_idx % n))
+        self._recall_idx += 1
+
+    def _rec(self):
+        if self.remix is None:
+            self.buttons["REC"].setChecked(False)
+            return
+        if self.buttons["REC"].isChecked():
+            self.remix.record()
+        else:
+            self.remix.record_stop()
+
+    # -- the Perform Copilot ----------------------------------------------------------------
+    def _say(self):
+        text = self.say_edit.text().strip()
+        if not text:
+            return
+        if self._say_thread is not None and self._say_thread.is_alive():
+            self.say_lbl.setText("(still thinking about the last one)")
+            return
+        if self._copilot is None:
+            try:
+                from tools.dj.planner.perform_copilot import PerformCopilot
+                lib = self.remix.library if self.remix is not None else (getattr(self.planner, "library", None) or [])
+                self._copilot = PerformCopilot(self._bridge, lib, theme_name=self.theme_box.currentText())
+            except Exception as e:  # noqa: BLE001
+                self.say_lbl.setText(f"copilot unavailable: {type(e).__name__}: {e}")
+                return
+        if not self._copilot.available():
+            self.say_lbl.setText(f"copilot unavailable: {self._copilot.why_unavailable()}")
+            return
+        self._bridge.snapshot_controls()
+        self.say_edit.clear()
+        self.say_lbl.setText(f"… {text}")
+        cp = self._copilot
+
+        def work():
+            try:
+                reply = cp.run_turn(text)
+                self._say_result = (text, reply, None)
+            except Exception as e:  # noqa: BLE001
+                self._say_result = (text, None, f"{type(e).__name__}: {e}")
+        self._say_thread = threading.Thread(target=work, daemon=True, name="perform-copilot")
+        self._say_thread.start()
+
+    def _apply_steer(self):
+        """Drain what the copilot queued, on the GUI thread, through the same slots the widgets use."""
+        for kind, arg in self._bridge.drain():
+            try:
+                if kind == "steer":
+                    self._apply_controls(arg)
+                elif kind == "act":
+                    self._apply_action(arg)
+                elif kind == "rate":
+                    self._verdict(bool(arg))
+            except Exception as e:  # noqa: BLE001
+                self.say_lbl.setText(f"steer error: {type(e).__name__}: {e}")
+        res = self._say_result
+        if res is not None:
+            self._say_result = None
+            text, reply, err = res
+            self.say_lbl.setText(f"{text} → {reply if err is None else 'copilot error: ' + err}"[:400])
+
+    def _apply_controls(self, kw):
+        if "blend" in kw:
+            self.blend.setValue(int(round(100 * max(0.0, min(1.0, kw["blend"])))))
+        if "vocals" in kw:
+            self.vocals.setValue(int(round(100 * max(0.0, min(1.0, kw["vocals"])))))
+        if "energy_lean" in kw:
+            self.energy.setValue(int(round(100 * max(-0.4, min(0.4, kw["energy_lean"])))))
+        if "tempo" in kw:
+            self.tempo.setValue(int(round(1000 * max(0.0, min(0.06, kw["tempo"])))))
+        if "change_bars" in kw:
+            name = next((n for n, b in REMIX_BARS.items() if b == int(kw["change_bars"])), None)
+            if name:
+                self.speed_box.setCurrentText(name)
+        if "mix_speed" in kw and kw["mix_speed"] in dict(SPEEDS):
+            self.speed_box.setCurrentText(kw["mix_speed"])
+        if "mix_style" in kw and kw["mix_style"] in STYLE_MENU:
+            self.style_box.setCurrentText(kw["mix_style"])
+        if "theme" in kw:
+            from lib.dj.themes import BUILTIN_THEMES
+            if kw["theme"] in BUILTIN_THEMES:
+                if self.theme_box.findText(kw["theme"]) < 0:
+                    self.theme_box.addItem(kw["theme"])
+                self.theme_box.setCurrentText(kw["theme"])
+
+    def _apply_action(self, action):
+        if action == "next":
+            self._mix_now()
+        elif action in ("hold", "unhold"):
+            b = self.buttons["HOLD"]
+            if b.isCheckable():
+                b.setChecked(action == "hold")
+            self._hold()
+        elif action == "drop":
+            self._drop()
+        elif action == "break":
+            self._break()
+        elif action in ("loop4", "loop8"):
+            bars = 4 if action == "loop4" else 8
+            if self.remix is not None and self.remix.user_loop_bars != bars:
+                self._loop(bars)
+        elif action == "unloop":
+            if self.remix is not None and self.remix.user_loop_bars is not None:
+                self.remix.loop(None)
+                self._sync_loop_buttons()
+        elif action == "save":
+            self._save()
+        elif action == "recall":
+            self._recall()
+        elif action in ("rec", "rec_stop"):
+            self.buttons["REC"].setChecked(action == "rec")
+            self._rec()
+
     # -- nanoKONTROL2 -------------------------------------------------------------------
     # faders: 1 energy lean, 2 blend, 3 vocals; knob 1 change rate / mix speed.
     # transport: PLAY = MIX NOW, STOP = HOLD, REC = DROP, CYCLE = BREAK, MARKER < > = LOOP 4 / 8,
@@ -479,6 +704,8 @@ class PerformTab(QWidget):
                 self.vocals.setValue(int(round(100 * val)))
             elif name == "knob_1":
                 self.speed_box.setCurrentText(speeds[min(len(speeds) - 1, int(val * len(speeds)))])
+            elif name == "knob_2":
+                self.tempo.setValue(int(round(60 * val)))
             elif val is True:                                   # buttons act on press
                 if name == "play":
                     self._mix_now()
@@ -515,6 +742,7 @@ class PerformTab(QWidget):
         # 2026-09-10: a readout bug took the planner down silently). The readout may never do that.
         try:
             self._midi_poll()
+            self._apply_steer()
             self._tick_inner()
         except Exception as e:  # noqa: BLE001
             self.engine_lbl.setText(f"readout error: {type(e).__name__}: {e}")
@@ -615,8 +843,10 @@ class PerformTab(QWidget):
     # -- remix mode -------------------------------------------------------------------------------
     def _mode_changed(self, mode):
         remix = mode == "Remix"
-        for w in (self.blend_lbl, self.blend, self.vocals_lbl, self.vocals):
+        for w in (self.blend_lbl, self.blend, self.vocals_lbl, self.vocals, self.tempo_lbl, self.tempo):
             w.setVisible(remix)
+        for name in ("SAVE", "RECALL", "REC"):
+            self.buttons[name].setVisible(remix)
         for w in (self.style_box,):
             w.setEnabled(not remix)
         self.style_box.setToolTip("Remix mode has no seam styles: the lanes are the mix" if remix else "")
@@ -655,7 +885,11 @@ class PerformTab(QWidget):
                                + ("   BREAK" if st.get("breaking") else "")
                                + f"   blend {st.get('blend', 0):.2f}  vocals {st.get('vocal_freedom', 0):.2f}"
                                + f"   arc {100 * (st.get('arc_phase') or 0):.0f}% energy {st.get('energy', 0):.2f}"
-                               + (f" (lean {st['energy_lean']:+.2f})" if abs(st.get("energy_lean") or 0) > 0.005 else ""))
+                               + (f" (lean {st['energy_lean']:+.2f})" if abs(st.get("energy_lean") or 0) > 0.005 else "")
+                               + (f"   tempo journey ±{100 * st['tempo_span']:.1f}% (opener {st.get('base_bpm') or 0:.1f})" if st.get("tempo_span") else "")
+                               + (f"   snapshots {st['n_snapshots']}" if st.get("n_snapshots") else "")
+                               + ("   RECALL pending" if st.get("recalling") else "")
+                               + (f"   REC {st['recording']}" if st.get("recording") else ""))
         lr = st.get("last_rated") or {}
         learned = f"   verdicts {st.get('n_verdicts', 0)}" + (f"   last: {lr['text'][:60]}" + (f" [{'GOOD' if lr['fb'] else 'BAD'}]" if lr.get("fb") is not None else " (rate it: GOOD / BAD)") if lr else "")
         self.seam_lbl.setText(lane_txt + learned)
@@ -670,6 +904,13 @@ class PerformTab(QWidget):
                 continue
             tags = ",".join(s.get("lanes") or []) or ("staged" if not s.get("entered") else "-")
             flags = (" master" if deck == st.get("master") else "") + (" leaving" if s.get("leaving") else "") + (" loop" if s.get("loop") else "")
+            flags += (f" {s['section']}" if s.get("section") else "") + (" singing" if s.get("singing") else "")
+            if s.get("eq_low") is not None and s["eq_low"] < 0.6:
+                flags += " lows-cut"
+            if s.get("filter") and s["filter"] != "off":
+                flags += f" {s['filter']}"
+            if s.get("echo"):
+                flags += " echo"
             lock = f" lock {s['lock_ms']:.0f} ms" if s.get("lock_ms") is not None else ""
             widget.title = f"{deck.upper()} [{tags}]{flags}{lock}"
             lp = s.get("loop")

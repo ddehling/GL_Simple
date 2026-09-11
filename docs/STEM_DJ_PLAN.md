@@ -228,6 +228,50 @@ move the weights (0.50 → 0.33 / 0.75) with the library write stubbed — plus 
 tab, headless: the real nanoKONTROL2 connected; simulated fader / knob / transport events moved blend,
 energy, mix speed, forced a move and armed LOOP 4.
 
+**The big additions (2026-09-11, "what big additions can we make?" → "do them"):**
+*Sound.* STRUCTURE: a staged song is cued so its landmark (the groove after its first build, else its
+body) lands on the move that lets it in (`ready_k`); a planned move waits up to two bars for a section
+boundary of the master; the vocal lane only crosses into a song that is SINGING there and leaves one whose
+singing stops; a breakdown of the song holding most lanes may become a break (learned, once per song).
+Singing is MEASURED, not trusted: at decode the vocals stem's RMS per section is the song's singing map
+(a section sings above a quarter of the song's loudest singing section and above −45 dBFS; an instrumental
+never sings) — the ML vocalness covers 755 of 1220 tracks and a song with unknown vocals kept alone on the
+vocal lane by an automatic break was three bars of dead air in the gate before this. HYGIENE: songs
+holding neither the bass nor the drums lane lose their lows (EQ low 0.25 under 200 Hz), the `other` lane
+sits at 0.8 under another song's singing, every lane is trimmed toward the first song's stem levels (±6
+dB). SHAPES: moves are planned a bar early; a song giving its last lane leaves through a low-pass sweep to
+260 Hz or a one-beat stutter, a lane that rests throws a dotted-eighth echo (deck FX are per deck, so a
+shape runs only when the song holds exactly the lane that moves); an echo or sweep rings out before the
+deck stops. Anti ping-pong: a lane that moved within two phrases is tried last. The opener comes from the
+theme's tempo window (a 70 bpm half-time read once opened a session nothing could join).
+*Capability.* TEMPO JOURNEY: a span slider (0–6 %, knob 2) lets the clock travel with the arc, at most
+0.5 % per bar, every deck re-rated together so the PLL never absorbs more than its 1.2 % window, no step
+past a song's wall (gate: 121.9 → 126.3 bpm with locks holding). SNAPSHOTS: SAVE remembers the lane map;
+RECALL brings it back, re-decoding and staging songs that left (a live song outside the snapshot gives
+its lanes up to free a deck), then crosses the lanes on one bar; abandoned after four phrases if the
+songs cannot come back. RECORDING: REC taps the submix to logs/remix_*.wav and writes the move log and
+snapshots beside it as JSON. NATURAL-LANGUAGE STEERING: `tools/dj/planner/perform_copilot.py`
+(PerformCopilot on SetCopilot's transports: Claude Code CLI first, no key) with four tools — get_state,
+steer, act, rate — behind a SAY line in the Perform tab; the copilot reads the live state and queues
+control changes through a bridge the tab drains on its timer, so nothing touches a widget or the engine
+off the GUI thread (headless, scripted: "wilder, more vocals, then drop it" set blend 0.95, vocals 0.8,
+4 bars, dropped, rated).
+*Product.* REMIX ON THE SHOW: Stories_OGL `_remix_start` / `_remix_stop` (the automixer's soundtrack
+takeover, the conductor on the show's engine, the analyzer on the mix, the outstate keys in the
+automixer's vocabulary — arc, energy target, next-move ETA as the blend ETA, DROP / entry / recall stamped
+as drops, a BREAK as the moment hole); web actions `remix_start`, `remix_blend/vocals/lean/tempo/change`,
+`remix_act`, `remix_rate` validated and clamped in the web controller (driven through the HTTP twin: bad
+actions 400, values clamped); the DJ page's REMIX button and Remix panel (lanes, songs with section /
+singing / lock, MOVE / HOLD / DROP / BREAK / LOOP 4 / 8 / SAVE / RECALL, sliders, GOOD / BAD, the moves).
+The automixer's page stays idle underneath (`active` false, `remix_active` true), so its renderer is
+untouched. Not yet run on the show machine.
+*Left out:* the remix partner graph (an offline campaign over song pairs) and a fourth deck for a loop bed
+— both wait for the ear verdict on the basic mode.
+Gate (`_dj_remix_test.py`, now also structure / hygiene / shapes / snapshots / tempo / recording): seed 7
+ALL OK — vocal lane on a silent section 4 % of blocks (transients the next move fixes), lows still open 0 %
+of 1759 blocks, shapes echo / filter / stutter, 11 songs staged on landmarks, tempo 118.0 → 122.1, RECALL
+3/4, recording 2 s + JSON; seed 11 exposed the unknown-vocals break (fixed by the measured singing map).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

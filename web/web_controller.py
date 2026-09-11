@@ -1232,7 +1232,14 @@ class WebController:
                       'seek', 'seek_rel', 'to_exit', 'mix_now', 'flavor',
                       'hold', 'reroll', 'seam_fb', 'seam_fb_edit', 'arc',
                       'moment', 'abort',
-                      'persona', 'layer', 'set_length'}
+                      'persona', 'layer', 'set_length',
+                      # REMIX mode (lib/dj/remix.py on the show's engine): the
+                      # conductor's steering, performance actions and verdicts.
+                      'remix_start', 'remix_blend', 'remix_vocals',
+                      'remix_change', 'remix_tempo', 'remix_lean',
+                      'remix_act', 'remix_rate'}
+        REMIX_ACTS = ('next', 'hold', 'unhold', 'drop', 'break', 'loop4',
+                      'loop8', 'unloop', 'save', 'recall')
 
         def queue_dj_action(data):
             """Validate + clamp one DJ control action and queue it for the
@@ -1307,6 +1314,31 @@ class WebController:
                     except (TypeError, ValueError, IndexError):
                         return False
                 arg = pts
+            elif action in ('remix_blend', 'remix_vocals'):
+                try:
+                    arg = max(0.0, min(1.0, float(arg)))
+                except (TypeError, ValueError):
+                    return False
+            elif action == 'remix_lean':
+                try:
+                    arg = max(-0.4, min(0.4, float(arg)))
+                except (TypeError, ValueError):
+                    return False
+            elif action == 'remix_tempo':
+                try:
+                    arg = max(0.0, min(0.06, float(arg)))
+                except (TypeError, ValueError):
+                    return False
+            elif action == 'remix_change':
+                try:
+                    arg = min((4, 8, 16, 32), key=lambda b: abs(b - int(arg)))
+                except (TypeError, ValueError):
+                    return False
+            elif action == 'remix_act':
+                if arg not in REMIX_ACTS:
+                    return False
+            elif action == 'remix_rate':
+                arg = bool(arg)
             elif action == 'flavor':
                 # Sanitize: known sections only, str tags, weights 0..1.
                 if not isinstance(arg, dict):

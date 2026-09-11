@@ -170,6 +170,9 @@
         <!-- Transport is available whenever the DJ subsystem is available. -->
         <div class="transport" id="dj-transport" hidden>
             <button class="btn go" id="dj-start">▶ START DJ</button>
+            <button class="btn go" id="dj-remix-start"
+                    title="REMIX: two or three songs at once, four stem lanes, a move every phrase">
+                ✱ REMIX</button>
             <button class="btn stop hidden" id="dj-stop">■ STOP</button>
             <button class="btn skip hidden" id="dj-skip">⏭ SKIP</button>
             <button class="btn hidden" id="dj-auto">AUTOPILOT</button>
@@ -257,6 +260,48 @@
                 <button class="btn" id="dj-fb-up">👍 GOOD</button>
                 <button class="btn" id="dj-fb-dn">👎 BAD</button>
             </div>
+        </div>
+
+        <!-- REMIX (active in remix mode): the conductor's lanes, songs, steering, moves -->
+        <div class="section-panel hidden" id="dj-remix">
+            <div class="section-header"><h3>Remix</h3></div>
+            <div class="now-sub" id="dj-rx-clock"></div>
+            <div id="dj-rx-lanes" style="margin:6px 0;font-weight:bold;line-height:1.5"></div>
+            <div id="dj-rx-songs" class="now-sub" style="line-height:1.5"></div>
+            <div class="transport" style="margin-top:8px">
+                <button class="btn skip" id="dj-rx-next" title="a move on the next bar">▶▶ MOVE</button>
+                <button class="btn" id="dj-rx-hold" title="freeze the lane map">HOLD</button>
+                <button class="btn go" id="dj-rx-drop" title="every lane to the newest song">✦ DROP</button>
+                <button class="btn" id="dj-rx-break" title="every lane but one rests four bars">BREAK</button>
+            </div>
+            <div class="transport" style="margin-top:6px">
+                <button class="btn" id="dj-rx-loop4">LOOP 4</button>
+                <button class="btn" id="dj-rx-loop8">LOOP 8</button>
+                <button class="btn" id="dj-rx-save" title="remember this combination">SAVE</button>
+                <button class="btn" id="dj-rx-recall" title="bring the last saved one back">RECALL</button>
+            </div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:8px">
+                <span class="now-sub">blend</span><input type="range" id="dj-rx-blend" min="0" max="100" value="70"
+                    title="0: song follows song (a morph) · 1: free recombination of three songs">
+                <span class="now-sub">vocals</span><input type="range" id="dj-rx-vocals" min="0" max="100" value="40"
+                    title="how freely the vocal lane crosses">
+                <span class="now-sub">energy</span><input type="range" id="dj-rx-lean" min="-40" max="40" value="0"
+                    title="lean on the theme's arc">
+                <span class="now-sub">tempo</span><input type="range" id="dj-rx-tempo" min="0" max="60" value="0"
+                    title="tempo journey: how far the clock may travel with the arc (0 .. 6 %)">
+                <span class="now-sub">change</span>
+                <select id="dj-rx-change" title="bars between moves">
+                    <option value="4">every 4 bars</option><option value="8" selected>every 8 bars</option>
+                    <option value="16">every 16 bars</option><option value="32">every 32 bars</option>
+                </select>
+            </div>
+            <div class="transport" style="margin-top:8px">
+                <span class="now-sub" style="align-self:center">last move:</span>
+                <button class="btn" id="dj-rx-good">👍 GOOD</button>
+                <button class="btn" id="dj-rx-bad">👎 BAD</button>
+                <span class="now-sub" id="dj-rx-verdicts" style="align-self:center"></span>
+            </div>
+            <div id="dj-rx-moves" class="now-sub" style="margin-top:8px;max-height:160px;overflow:auto;line-height:1.4"></div>
         </div>
 
         <!-- The night (active) -->
@@ -759,14 +804,18 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 return;
             }
             const on = !!dj.active;
+            const rx = !!dj.remix_active;
             $("dj-transport").hidden = false;
             show($("dj-steer"), true);
             show($("dj-now"), on);
             show($("dj-nightcard"), true);
+            show($("dj-remix"), rx);
+            if (rx) renderRemix(dj.remix || {});
 
             // Transport buttons.
-            show($("dj-start"), !on);
-            show($("dj-stop"), on);
+            show($("dj-start"), !on && !rx);
+            show($("dj-remix-start"), !on && !rx);
+            show($("dj-stop"), on || rx);
             show($("dj-skip"), on);
             show($("dj-auto"), on);
             $("dj-auto").classList.toggle("on", !!dj.autopilot);
@@ -1215,6 +1264,58 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                         {modifier: "master_volume",
                          value: parseFloat($("dj-vol").value)});
         $("dj-reroll").onclick = () => emit("reroll");
+
+        // ---------- REMIX ----------
+        $("dj-remix-start").onclick = () => emit("remix_start");
+        $("dj-rx-next").onclick = () => emit("remix_act", "next");
+        $("dj-rx-drop").onclick = () => emit("remix_act", "drop");
+        $("dj-rx-break").onclick = () => emit("remix_act", "break");
+        $("dj-rx-save").onclick = () => emit("remix_act", "save");
+        $("dj-rx-recall").onclick = () => emit("remix_act", "recall");
+        $("dj-rx-good").onclick = () => emit("remix_rate", true);
+        $("dj-rx-bad").onclick = () => emit("remix_rate", false);
+        let rxHold = false, rxLoop = null;
+        $("dj-rx-hold").onclick = () => { rxHold = !rxHold; emit("remix_act", rxHold ? "hold" : "unhold"); };
+        $("dj-rx-loop4").onclick = () => { rxLoop = rxLoop === 4 ? null : 4; emit("remix_act", rxLoop ? "loop4" : "unloop"); };
+        $("dj-rx-loop8").onclick = () => { rxLoop = rxLoop === 8 ? null : 8; emit("remix_act", rxLoop ? "loop8" : "unloop"); };
+        let rxTouched = 0;
+        $("dj-rx-blend").oninput = () => { rxTouched = Date.now(); emit("remix_blend", $("dj-rx-blend").value / 100); };
+        $("dj-rx-vocals").oninput = () => { rxTouched = Date.now(); emit("remix_vocals", $("dj-rx-vocals").value / 100); };
+        $("dj-rx-lean").oninput = () => { rxTouched = Date.now(); emit("remix_lean", $("dj-rx-lean").value / 100); };
+        $("dj-rx-tempo").oninput = () => { rxTouched = Date.now(); emit("remix_tempo", $("dj-rx-tempo").value / 1000); };
+        $("dj-rx-change").onchange = () => { rxTouched = Date.now(); emit("remix_change", parseInt($("dj-rx-change").value, 10)); };
+        function renderRemix(r) {
+            const songs = r.songs || {};
+            const who = (d) => d && songs[d] ? songs[d].title : "-";
+            $("dj-rx-clock").textContent =
+                `clock ${(r.master_bpm || 0).toFixed(1)} bpm · key ${r.key_centre || "?"} · bar ${r.phrase_bars}/${r.change_bars}`
+                + (r.hold ? " · HOLD" : "") + (r.user_loop ? ` · LOOP ${r.user_loop}` : "") + (r.breaking ? " · BREAK" : "")
+                + ` · arc ${Math.round(100 * (r.arc_phase || 0))}% energy ${(r.energy || 0).toFixed(2)}`
+                + (r.tempo_span ? ` · tempo ±${(100 * r.tempo_span).toFixed(1)}%` : "")
+                + (r.n_snapshots ? ` · ${r.n_snapshots} saved` : "") + (r.recalling ? " · recall pending" : "");
+            $("dj-rx-lanes").innerHTML = ["drums", "bass", "other", "vocals"].map(
+                (ln) => `<span style="opacity:.55">${ln}</span> ${who((r.lanes || {})[ln])}`).join("<br>");
+            $("dj-rx-songs").innerHTML = Object.entries(songs).map(([d, s]) =>
+                `${d.toUpperCase()}${d === r.master ? "*" : ""} ${s.title} <span style="opacity:.6">${s.artist || ""}</span>`
+                + ` <span style="opacity:.6">[${(s.lanes || []).join(",") || (s.entered ? "-" : "staged")}]`
+                + `${s.section ? " " + s.section : ""}${s.singing ? " singing" : ""}${s.loop ? " loop" : ""}${s.leaving ? " leaving" : ""}`
+                + `${s.lock_ms != null ? " lock " + s.lock_ms.toFixed(0) + " ms" : ""}</span>`).join("<br>");
+            $("dj-rx-hold").classList.toggle("on", !!r.hold);
+            $("dj-rx-loop4").classList.toggle("on", r.user_loop === 4);
+            $("dj-rx-loop8").classList.toggle("on", r.user_loop === 8);
+            rxHold = !!r.hold; rxLoop = r.user_loop || null;
+            if (Date.now() - rxTouched > 3000) {      // the server's values win once our own press has round-tripped
+                $("dj-rx-blend").value = Math.round(100 * (r.blend || 0));
+                $("dj-rx-vocals").value = Math.round(100 * (r.vocal_freedom || 0));
+                $("dj-rx-lean").value = Math.round(100 * (r.energy_lean || 0));
+                $("dj-rx-tempo").value = Math.round(1000 * (r.tempo_span || 0));
+                $("dj-rx-change").value = String(r.change_bars || 8);
+            }
+            const lr = r.last_rated;
+            $("dj-rx-verdicts").textContent = `${r.n_verdicts || 0} verdicts` + (lr ? ` · ${lr.text.slice(0, 50)}` + (lr.fb == null ? "" : lr.fb ? " 👍" : " 👎") : "");
+            $("dj-rx-moves").innerHTML = (r.moves || []).slice(-14).reverse().map(
+                ([t, m]) => `<span style="opacity:.5">${t}</span> ${m}`).join("<br>");
+        }
         // The verdict LATCHES (green GOOD / red BAD) until the next mix
         // replaces the last-mix slot. Snapshot state is authoritative,
         // but an optimistic press holds for a few seconds so the 5Hz
