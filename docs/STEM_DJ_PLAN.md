@@ -90,6 +90,23 @@ vocals sequential) renders as scheduled. Measured and left neutral: a lean of bo
 middle (`MORPH_LEAN`) — built on a misread reference bar, null on the clean pairs. Renders in
 `logs/dj_morph_<a>_<b>.wav`; the Seam Lab pins the style by name for the ear.
 
+**Phase 3, the stem stage (2026-09-10, built after the user's verdict on the morph: "generally satisfied
+by the stem mixing, but this is just a mix"):** `lib/dj/stage.py` + the planner's **Stage** tab
+(`tools/dj/planner/stage.py`). Up to four LANES, each one stem of one track looping a bar-aligned
+section (4 / 8 / 16 bars or the whole section) on its own deck, all on one clock: the first lane in
+is the master (its tempo and key), every later lane is stretched to it (inside the deck's 0.90–1.10
+wall, else refused), key-shifted toward its key within ±3 semitones with a harmonic guard (a melodic
+stem whose best fit stays under 0.55 Camelot compatibility is refused unless allowed), brought in and
+taken out on the master's next bar, and held on the master's kicks by the submix PLL — which now
+runs one session per slave (`DJSubmix._syncs`; the proven one-slave body runs unchanged once per
+slave, the two sync gates still ALL PASS). When the master leaves, the next live lane takes the clock
+and the others re-sync to it. The stage does the technical work; the tab exposes only track, stem,
+section, bars, level, IN / OUT. Real-time through the same AudioEngine + DJSubmix a night runs.
+Gate (`tools/tests/_dj_stage_test.py`, three stems of three tracks through the real mixer): lock
+median 0.037 and 0.015 beat with p95 0.045 / 0.055 (n 266 / 224), re-lock after the handover median
+0.038, no bar-to-bar hole while lanes hold, peak 0.82 — **ALL OK**. Deck: `set_stem_gains` keeps an
+in-flight ramp's destination for stems the new call does not name; submix: a `pitch` command.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

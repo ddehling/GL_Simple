@@ -49,14 +49,22 @@ class DJSubmix:
     is_ambient = False
     is_soundpool = False
 
-    def __init__(self):
+    # The PLL's per-slave state: every attribute the one-slave code below reads and writes. Several
+    # slaves (the stem stage's lanes, 2026-09-10) each get a dict of these, swapped into the object
+    # for their turn in _run_pll - the proven single-slave body runs unchanged, once per slave.
+    _SYNC_STATE = ("_sync_bias", "_apll_clock", "_apll_err", "_apll_i", "_apll_hist", "_aud_hist",
+                   "_aud_err", "_aud_stable", "_cal_last", "_cal_applied", "_nudge_clock",
+                   "_stat_resnaps", "_stat_nudges", "_stat_cals")
+
+    def __init__(self, deck_names=("a", "b", "c")):
         # A and B are the transition pair; C is the LOOP LAYER - a
         # percussion bed ridden under whatever A/B are doing (see
         # DJSystem._do_layer). It is never chosen as active_deck or as a
         # sync slave, so every "b" if active == "a" else "a" swap in
         # system.py is blind to it; read() and _snapshot() iterate the
-        # dict, so it mixes and reports with no other change.
-        self.decks = {"a": Deck("a"), "b": Deck("b"), "c": Deck("c")}
+        # dict, so it mixes and reports with no other change. The stem
+        # stage asks for more decks (one per lane) by name.
+        self.decks = {n: Deck(n) for n in deck_names}
         self._q = SimpleQueue()
         self.clock = 0           # output frames rendered since attach
         self.mix_gain = 1.0
@@ -64,16 +72,19 @@ class DJSubmix:
         self._mgain_ramp = None  # (target, per_frame_delta) master-bus ramp
         self.done = False
         self._auto = []          # automation events sorted by 'at'
-        self._sync = None        # {"slave": name, "master": name}
+        self._sync = None        # {"slave": name, "master": name} - the slave whose turn it is / the primary
+        self._syncs = {}         # slave deck name -> {"master", "audio", **per-slave PLL state}
         self._sync_bias = 0.0    # kick-alignment bias (beats) the PLL holds
         self._apll_clock = 0     # last audio-phase measurement clock
         self._apll_err = None    # latest audio-phase error (beats, + = late)
         self._apll_i = 0.0       # integral term (learned tempo bias)
+        self._apll_hist = []
         self._aud_hist = []      # wide-window (audible) readings, meas. only
         self._aud_err = None     # EMA of the wide reading (beats)
         self._aud_stable = False  # 3-stable gate for publishing it
+        self._nudge_clock = 0
         self._fx = []            # active one-shots: [buffer, pos, gain]
-        self._duck = None        # {"on", "depth"} sidechain of the slave
+        self._duck = None        # {"on", "depth"} sidechain of the slave(s)
         self.record_q = None     # set to a queue to tap the mix (recording)
         self._stat_resnaps = 0   # per-sync seam-quality counters (telemetry)
         self._stat_nudges = 0
@@ -180,6 +191,9 @@ class DJSubmix:
                               e.get("ramp_s", 0.05))
         elif cmd == "rate":
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
+        elif cmd == "pitch":
+            # key shift on a loaded deck (the stem stage moves a melodic lane toward the master key)
+            deck.set_pitch(float(e.get("semitones", 0.0)))
         elif cmd == "filter":
             deck.filter.set(mode=e.get("mode"),
                             cutoff_hz=e.get("cutoff_hz"),
@@ -193,8 +207,13 @@ class DJSubmix:
         elif cmd == "jump":
             deck.jump_cut(e["time_s"])
         elif cmd == "sync":
-            self._sync = {"slave": e["slave"], "master": e["master"],
-                          "audio": e.get("audio_pll", True)}
+            # One PLL session per slave (several slaves: the stem stage's lanes, each following the
+            # same master). A fresh state dict is swapped in, the proven one-slave setup runs, the
+            # state is saved back; _run_pll gives every slave its turn the same way.
+            st = self._new_sync_state(e["master"], e.get("audio_pll", True))
+            self._syncs[e["slave"]] = st
+            self._sync = {"slave": e["slave"], "master": st["master"], "audio": st["audio"]}
+            self._load_sync_state(st)
             self._stat_resnaps = 0
             self._stat_nudges = 0
             self._stat_cals = 0
@@ -225,16 +244,46 @@ class DJSubmix:
                 self._sync_bias = (float(b) if b is not None else
                                    self._sync_bias_beats(master, slave))
                 slave.phase_snap(master.beat_phase() + self._sync_bias)
+            self._save_sync_state(st)
         elif cmd == "end_sync":
-            self._sync = None
-            self._sync_bias = 0.0
-            self._apll_err = None
-            self._apll_i = 0.0
-            self._note_audible_err(None)
-            for d in self.decks.values():
-                d.rate_trim = 0.0
-                d.stretch.no_bypass = False
-                d.stretch.phase_trim = 0.0
+            # every slave, or the one named (a stage lane leaving while the others hold)
+            names = [e["slave"]] if e.get("slave") else list(self._syncs)
+            for nm in names:
+                self._syncs.pop(nm, None)
+                d = self.decks.get(nm)
+                if d is not None:
+                    d.rate_trim = 0.0
+                    d.stretch.no_bypass = False
+                    d.stretch.phase_trim = 0.0
+            if not self._syncs:
+                self._sync = None
+                self._sync_bias = 0.0
+                self._apll_err = None
+                self._apll_i = 0.0
+                self._note_audible_err(None)
+                for d in self.decks.values():
+                    d.rate_trim = 0.0
+                    d.stretch.no_bypass = False
+                    d.stretch.phase_trim = 0.0
+            else:
+                first = next(iter(self._syncs))
+                self._sync = {"slave": first, "master": self._syncs[first]["master"],
+                              "audio": self._syncs[first]["audio"]}
+
+    def _new_sync_state(self, master, audio):
+        st = {"master": master, "audio": audio, "_sync_bias": 0.0, "_apll_clock": 0, "_apll_err": None,
+              "_apll_i": 0.0, "_apll_hist": [], "_aud_hist": [], "_aud_err": None, "_aud_stable": False,
+              "_cal_last": None, "_cal_applied": 0.0, "_nudge_clock": 0,
+              "_stat_resnaps": 0, "_stat_nudges": 0, "_stat_cals": 0}
+        return st
+
+    def _load_sync_state(self, st):
+        for k in self._SYNC_STATE:
+            setattr(self, k, st[k])
+
+    def _save_sync_state(self, st):
+        for k in self._SYNC_STATE:
+            st[k] = getattr(self, k)
 
     @staticmethod
     def _sync_bias_beats(master, slave):
@@ -366,6 +415,22 @@ class DJSubmix:
                                  or all(h < 0 for h in hist)))
 
     def _run_pll(self):
+        """Every synced slave gets its turn: its state swapped in, the one-slave PLL below run
+        unchanged, its state saved back. self._sync is left on the primary (first) slave for the
+        telemetry."""
+        if not self._syncs:
+            return
+        for name, st in list(self._syncs.items()):
+            self._sync = {"slave": name, "master": st["master"], "audio": st["audio"]}
+            self._load_sync_state(st)
+            self._run_pll_one()
+            self._save_sync_state(st)
+        first = next(iter(self._syncs))
+        self._sync = {"slave": first, "master": self._syncs[first]["master"],
+                      "audio": self._syncs[first]["audio"]}
+        self._load_sync_state(self._syncs[first])
+
+    def _run_pll_one(self):
         """Continuously trim the slave deck's rate to keep its ACTUAL kicks
         on the master's - audio phase first (the grids sit differently vs
         each track's real kicks, so grid phase alone leaves ~30ms flam),
@@ -540,17 +605,16 @@ class DJSubmix:
             while self._auto and self._auto[0]["at"] <= self.clock:
                 self._apply(self._auto.pop(0))
             self._run_pll()
-            slave = self._sync["slave"] if self._sync else None
-            master = self.decks.get(self._sync["master"]) if self._sync \
-                else None
             for name, d in self.decks.items():
                 if not (d.playing or d.echo.ringing):
                     continue
                 blk = d.read(m)
-                # SIDECHAIN DUCK: pull the incoming deck down a few dB on
-                # each of the master's kicks - overlapping tracks sound
-                # mixed, not stacked. Recovery ~90 ms, kick-shaped.
-                if (self._duck and name == slave and master is not None
+                # SIDECHAIN DUCK: pull the incoming deck (every synced slave)
+                # down a few dB on each of its master's kicks - overlapping
+                # tracks sound mixed, not stacked. Recovery ~90 ms, kick-shaped.
+                st_d = self._syncs.get(name)
+                master = self.decks.get(st_d["master"]) if st_d else None
+                if (self._duck and st_d is not None and master is not None
                         and master.playing and d.playing):
                     beat_s = master.beat_period_s() or 0.5
                     ph0 = master.beat_phase()
@@ -666,24 +730,29 @@ class DJSubmix:
                 "loop": d.loop,
                 "braking": d._brake is not None,
             }
-        sync = dict(self._sync) if self._sync else None
-        if sync is not None:
-            # Kick-alignment bias the PLL is holding: consumers measuring
-            # seam lock from raw deck phases must subtract this, or an
-            # intentionally offset grid reads as flam.
-            sync["bias_beats"] = round(getattr(self, "_sync_bias", 0.0), 4)
-            # Wide-window audible phase error (beats, + = slave late),
-            # published only while 3-stable - the seam self-assessment's
-            # ear where the grid metrics are blind (see _audio_phase_err).
-            sync["audible_err_beats"] = (
-                round(float(self._aud_err), 4)
-                if getattr(self, "_aud_stable", False)
-                and self._aud_err is not None else None)
+        def _sync_view(name, st):
+            return {"slave": name, "master": st["master"], "audio": st["audio"],
+                    # Kick-alignment bias the PLL is holding: consumers measuring
+                    # seam lock from raw deck phases must subtract this, or an
+                    # intentionally offset grid reads as flam.
+                    "bias_beats": round(st["_sync_bias"], 4),
+                    # Wide-window audible phase error (beats, + = slave late),
+                    # published only while 3-stable - the seam self-assessment's
+                    # ear where the grid metrics are blind (see _audio_phase_err).
+                    "audible_err_beats": (round(float(st["_aud_err"]), 4)
+                                          if st["_aud_stable"] and st["_aud_err"] is not None else None)}
+        sync, stats = None, {"resnaps": 0, "nudges": 0, "cals": 0, "cal_applied": 0.0}
+        if self._syncs:
+            # the primary (first) slave keeps the shape every consumer knows; the others ride along
+            first = next(iter(self._syncs))
+            st0 = self._syncs[first]
+            sync = _sync_view(first, st0)
+            if len(self._syncs) > 1:
+                sync["slaves"] = {n: _sync_view(n, s) for n, s in self._syncs.items()}
+            stats = {"resnaps": st0["_stat_resnaps"], "nudges": st0["_stat_nudges"],
+                     "cals": st0["_stat_cals"], "cal_applied": round(st0["_cal_applied"], 4)}
         return {"clock": self.clock, "clock_s": round(self.clock / RATE, 3),
                 "sync": sync,
-                "sync_stats": {"resnaps": self._stat_resnaps,
-                               "nudges": self._stat_nudges,
-                               "cals": self._stat_cals,
-                               "cal_applied": round(self._cal_applied, 4)},
+                "sync_stats": stats,
                 "mix_gain": round(self.mix_gain, 4), "decks": decks,
                 "pending_events": len(self._auto)}

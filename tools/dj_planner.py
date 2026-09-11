@@ -4860,6 +4860,12 @@ class Planner(QMainWindow):
         from tools.dj.planner.lab import LabTab
         self.lab_tab = LabTab(self)
         self.tabs.addTab(self.lab_tab, "Lab")
+        # THE STEM STAGE (tools/dj/planner/stage.py, lib/dj/stage.py): up to four stems of four tracks
+        # live at once on one clock - the stem-level plan's phase 3 (docs/STEM_DJ_PLAN.md). Real-time
+        # through the same AudioEngine + DJSubmix a night runs.
+        from tools.dj.planner.stage import StageTab
+        self.stage_tab = StageTab(self)
+        self.tabs.addTab(self.stage_tab, "Stage")
         # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
         # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
         # engine capability is intact; only the tab is unregistered.
@@ -5099,6 +5105,8 @@ class Planner(QMainWindow):
     def closeEvent(self, ev):
         self.analysis_tab.close()
         self.mix_tab.close()
+        if getattr(self, "stage_tab", None) is not None:
+            self.stage_tab.close()           # the stage's audio device, if it was started
         self.set_tab.seam_player.close()
         self.library_tab.lib_player.close()
         if self.library_tab._enrich is not None \
