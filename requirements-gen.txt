@@ -5,13 +5,20 @@
 #     pip install -r requirements-gen.txt
 #     Debian/Ubuntu: sudo apt install fluidsynth libfluidsynth3 fluid-soundfont-gm
 #     (-> /usr/share/sounds/sf2/FluidR3_GM.sf2; or put an .sf2 in media/soundfonts/)
+#     Windows: unzip fluidsynth-vX-win10-x64-cpp11.zip (github.com/FluidSynth/fluidsynth/releases)
+#     to C:\tools\fluidsynth  (pyfluidsynth looks in C:\tools\fluidsynth\bin by itself) and put
+#     FluidR3 GM (ftp.osuosl.org/pub/musescore/soundfont/fluid-soundfont.tar.gz) at
+#     media/soundfonts/default.sf2 (gitignored).
 #   Strudel patterns (lib/gen/composer/strudel.py): runs IN-PROCESS via an
 #   embedded V8 (mini-racer) with the committed bundle - no node needed.
 #   (Node fallback / rebuilding the bundle: node >= 18, cd tools/gen/strudel
 #   && npm install, ./build_bundle.sh)
 #   SuperCollider backend (lib/gen/backends/sc.py):
 #     Debian/Ubuntu: sudo apt install supercollider-server sc3-plugins
-#     Windows/macOS: the SuperCollider installer provides scsynth.
+#     Windows/macOS: the SuperCollider installer provides scsynth. Without admin rights on Windows,
+#     unzip SuperCollider-X-win64.zip (github.com/supercollider/supercollider/releases) to
+#     C:\tools\SuperCollider and add that folder to the user PATH (supriya searches PATH and
+#     C:\Program Files\SuperCollider*; or set SUPRIYA_SERVER_EXECUTABLE to scsynth.exe).
 pyfluidsynth
 supriya
 soundfile
@@ -22,4 +29,7 @@ music21      # public-domain score corpus for the melody model (tools/gen/melody
 # Song analysis stem reuse (lib/gen/analysis/reuse.py) - optional, heavy; the DJ vocal stack (requirements-dj-vocals.txt) covers it too.
 #   GPU: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 ; then: pip install demucs librosa
 #   (basic-pitch would improve hook transcription but pins an old numpy; the fallback is librosa pyin)
-#   basic-pitch (hook transcription): pip install --no-deps basic-pitch ; pip install onnxruntime pretty_midi resampy mir_eval
+#   basic-pitch (hook transcription): pip install --no-deps basic-pitch ; pip install onnxruntime pretty_midi "resampy<0.4.3" mir_eval
+#   (it then runs on the bundled nmp.onnx model; `pip check` still names tensorflow, which is not needed)
+#   allin1 (section labels in ingest): natten has no Windows wheels - see requirements-dj-structure.txt for the WSL venv;
+#   on Windows `import allin1` fails in this interpreter and ingest falls back to the DJ segmentation.

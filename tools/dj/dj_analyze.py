@@ -35,16 +35,21 @@ def main(argv=None):
     ap.add_argument("--stems", action="store_true",
                     help="include the stem render stage (disk-hungry, "
                     "gates the stem transition styles)")
+    ap.add_argument("--instruments", action="store_true",
+                    help="include the per-song instrument pass (needs "
+                    "stems; the song's own sounds + notes per beat)")
     ap.add_argument("--only", metavar="STAGE",
                     help="run a single stage by name (scan, chroma, stems, "
-                    "rhythm, 'vocal curves', enrich, mood, structure)")
+                    "rhythm, instruments, 'vocal curves', enrich, mood, "
+                    "structure)")
     ap.add_argument("--list", action="store_true",
                     help="print the stage plan and exit")
     a = ap.parse_args(argv)
 
     music_dir = resolve_music_dir(a.dir)
     stages = build_stages(music_dir, include_stems=a.stems or bool(a.only),
-                          headless=True)
+                          headless=True,
+                          include_instruments=a.instruments or bool(a.only))
     if a.only:
         stages = [s for s in stages if s["name"] == a.only]
         if not stages:

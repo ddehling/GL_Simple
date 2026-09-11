@@ -39,19 +39,16 @@ def _colormap():
 _LUT = _colormap()
 
 
-def compute_spectrogram(mono, hop=1024, win=2048, fmin=30.0, fmax=16000.0,
-                        bands=160):
-    """Log-frequency power spectrogram of a mono float32 track.
+def band_power(mono, hop=1024, win=2048, fmin=30.0, fmax=16000.0,
+               bands=160):
+    """Linear log-band power of a mono float32 track: the expensive FFT
+    half of compute_spectrogram, kept LINEAR so several tracks' powers
+    can be summed (the Analysis tab keeps one per stem and sums the
+    checked ones - |a+b|^2 ~ |a|^2 + |b|^2 for uncorrelated stems, which
+    is exactly what a solo/mute picture needs and costs no FFT).
 
-    Returns {"u8": (bands, frames) uint8 intensity, "hop_s": float} or
-    None on a too-short input; coloring happens at paint time (the view
-    peak-pools columns per pixel, so transients survive any zoom).
-
-    Contrast: per-band WHITENING (60% of each band's median offset
-    removed - raw power puts all the brightness in the bass and the top
-    half of the picture reads flat and dim), a 60 dB window off the
-    99.5th percentile, and a gamma curve that keeps the floor dark.
-    Runs off the GUI thread (SpectroWorker)."""
+    Returns ((frames, bands) float32, hop_s) or None on a too-short
+    input. Runs off the GUI thread."""
     mono = np.asarray(mono, dtype=np.float32)
     if len(mono) < win * 4:
         return None
@@ -68,7 +65,30 @@ def compute_spectrogram(mono, hop=1024, win=2048, fmin=30.0, fmax=16000.0,
         # Log-band pooling; duplicate edges (low bands narrower than one
         # fft bin) degrade to single-bin reads, which is correct.
         out[f0:f0 + step] = np.maximum.reduceat(spec, edges[:-1], axis=1)
-    db = 10.0 * np.log10(out + 1e-10)
+    return out, hop / RATE
+
+
+def compute_spectrogram(mono, **kw):
+    """Log-frequency power spectrogram of a mono float32 track.
+
+    Returns {"u8": (bands, frames) uint8 intensity, "hop_s": float} or
+    None on a too-short input; coloring happens at paint time (the view
+    peak-pools columns per pixel, so transients survive any zoom).
+    Runs off the GUI thread (SpectroWorker)."""
+    r = band_power(mono, **kw)
+    return None if r is None else power_to_spec(*r)
+
+
+def power_to_spec(power, hop_s):
+    """Linear band power (frames, bands) -> the display dict. Cheap
+    (no FFT; ~50 ms for a 5-minute song), so the Analysis tab can run it
+    inline when the checked stems change.
+
+    Contrast: per-band WHITENING (60% of each band's median offset
+    removed - raw power puts all the brightness in the bass and the top
+    half of the picture reads flat and dim), a 60 dB window off the
+    99.5th percentile, and a gamma curve that keeps the floor dark."""
+    db = 10.0 * np.log10(np.asarray(power, dtype=np.float32) + 1e-10)
     med = np.median(db, axis=0)
     # Partial whitening only: enough to lift hats/vocals out of the murk,
     # NOT enough to flatten the picture into a uniform orange wall (full
@@ -80,7 +100,7 @@ def compute_spectrogram(mono, hop=1024, win=2048, fmin=30.0, fmax=16000.0,
     x = np.clip((db - (top - 48.0)) * (1.0 / 48.0), 0.0, 1.0)
     u8 = (np.power(x, 1.9, dtype=np.float32) * 255.0).astype(np.uint8)
     return {"u8": np.ascontiguousarray(u8.T[::-1]),   # low freq at bottom
-            "hop_s": hop / RATE}
+            "hop_s": hop_s}
 
 SECTION_COLORS = {
     "intro": QColor(70, 90, 130), "outro": QColor(70, 90, 130),
@@ -118,12 +138,23 @@ class WaveformView(QWidget):
         """samples_mono: float32 mono array (decoded off-thread)."""
         self.track = track
         self.cues = list(cues or [])
+        self.duration = max(len(samples_mono) / RATE, 0.001)
+        self._build_pyramid(samples_mono)
+        self._spec = None
+        self._spec_cache = None
+        if self.mode == "spec":
+            self.mode = "wave"       # until the new track's spectro lands
+        self.view_t0, self.view_t1 = 0.0, self.duration
+        self.playhead = 0.0
+        self.viewChanged.emit(self.view_t0, self.view_t1)
+        self.update()
+
+    def _build_pyramid(self, samples_mono):
+        """Peak pyramids at 64/512/4096 samples-per-pixel-ish levels."""
         n = len(samples_mono)
-        self.duration = max(n / RATE, 0.001)
         self._pyramid = []
         x = samples_mono
         spp = 1
-        # Build peak pyramids at 64/512/4096 samples-per-pixel-ish levels.
         for factor in (64, 8, 8):
             spp *= factor
             m = n // spp
@@ -139,13 +170,12 @@ class WaveformView(QWidget):
                 mx = prev[2][:pm * factor].reshape(pm, factor).max(axis=1)
             self._pyramid.append((spp, mn.astype(np.float32),
                                   mx.astype(np.float32)))
-        self._spec = None
-        self._spec_cache = None
-        if self.mode == "spec":
-            self.mode = "wave"       # until the new track's spectro lands
-        self.view_t0, self.view_t1 = 0.0, self.duration
-        self.playhead = 0.0
-        self.viewChanged.emit(self.view_t0, self.view_t1)
+
+    def set_audio(self, samples_mono):
+        """Swap the audio the WAVEFORM shows (a stem solo/mute mix) without
+        touching the track, cues, view window or playhead. The spectrogram
+        is the caller's job (set_spectrogram) - it is computed off-thread."""
+        self._build_pyramid(np.asarray(samples_mono, dtype=np.float32))
         self.update()
 
     def set_spectrogram(self, spec, show=True):

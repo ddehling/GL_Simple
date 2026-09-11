@@ -2,17 +2,37 @@
 recreate it, score the recreation locally and globally, and send the
 script to the show.
 
-  Ingest     decode + analyse the file (lib/gen/analysis/ingest.py) ->
-             the inferred SongScript (sections table, editable) and its
-             command list (the whitelisted actions that regenerate it)
-  Recreate   render the script offline (lib/gen/script.render) to
-             logs/analysis/<name>/recreation.wav
+  DJ track   THE source: pick a track of the DJ library (stems rendered)
+             and the planner's instrument reading of it becomes this
+             tab's song - lib/dj/gen_link writes script + samples +
+             features under logs/analysis/<title>/ (running the pass
+             first when the track has none) and the tab opens it. There
+             is no file browsing here any more: the library is where
+             songs are analysed (tools/dj_planner.py), this tab is where
+             they are recreated and varied.
+  Replay     the PROGRAMMATIC recreation: every note of the reading
+             played by the song's own sampled instruments on its grid
+             (lib/dj/gen_link.replay -> replay.wav), nothing composed;
+             side B, scorable (Final Voyage: 83 global / 96 structure,
+             against 75 for the composed recreation)
+  Fidelity   the two honest readouts of the linked song, written by the
+             link and shown under the info line (lib/dj/fidelity.py):
+             NOTES AS CODE - how much of the reading the program language
+             holds (events per pattern+op, share of events carried by
+             patterns vs written one by one, verbatim bars, vocal phrase
+             reuse, per voice how much of its stem it explains) - and
+             WAVEFORM vs THE ORIGINAL - the program rendered per stem
+             against the library's real stems (spectral gap in dB, level,
+             rhythm correlation, missed/extra 16ths, onset F1, chroma)
+             and the mix. The button recomputes it.
+  Recreate   the generator's rendition of the script (lib/gen/script.render)
+             to logs/analysis/<name>/recreation.wav - the same kit, banks,
+             pad, drum bars and lines, interpreted by the composer
   Score      per-phrase + global scores (lib/gen/analysis/score.py),
              drawn as two energy strips (original / recreation) and a
              score bar per phrase; the weakest phrases listed
   Save       script.yaml (edits in the table are applied first)
   Play       send the script to the running show (the "script" action)
-  Open       load a previously saved script.yaml
 
 All heavy work runs on a worker thread; the tab polls it at the
 console's refresh rate. The table edits section / bars / energy /
@@ -28,7 +48,8 @@ import numpy as np
 from PyQt6.QtCore import Qt, QRectF, QRect
 from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QImage, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit, QFileDialog,
-                             QTableWidget, QTableWidgetItem, QPlainTextEdit, QProgressBar, QSplitter, QCheckBox, QSlider)
+                             QTableWidget, QTableWidgetItem, QPlainTextEdit, QProgressBar, QSplitter, QCheckBox, QSlider,
+                             QDialog, QListWidget, QListWidgetItem, QScrollArea)
 
 COLS = ["section", "bars", "energy", "density", "brightness", "swing", "layers", "chords", "lanes"]
 SECTION_COLOURS = {"intro": "#4a5a7a", "groove": "#3f7a5a", "build": "#a8772a", "drop": "#b03a3a", "break": "#5a4a8a",
@@ -42,12 +63,100 @@ def _score_colour(v):
     return QColor(r, g, 70)
 
 
+def _tone(good, mid, v, higher_is_better=True):
+    """'#rrggbb' for a figure: green past `good`, amber past `mid`, red otherwise."""
+    if v is None:
+        return "#888"
+    ok = (v >= good) if higher_is_better else (v <= good)
+    so = (v >= mid) if higher_is_better else (v <= mid)
+    return "#6fc47a" if ok else ("#d9b25a" if so else "#d96f64")
+
+
+def fidelity_html(rep):
+    """The two honest readouts of a linked song (lib/dj/fidelity.py) as a
+    compact rich-text block: how much of the notes the program language
+    holds, and how close its render is to the original stems."""
+    n, w = rep.get("notes") or {}, rep.get("waveform") or {}
+    if not n and not w:
+        return ""
+    css = "font-size:11px; color:#ccc"
+    td = "style='padding:1px 8px 1px 0'"
+    out = [f"<div style='{css}'>"]
+    if n:
+        out.append("<b>NOTES AS CODE</b> &nbsp;"
+                   f"{n['events']} events &rarr; {n['patterns']} patterns over {n['entries']} bar entries + {n['ops']} ops "
+                   f"(<b style='color:{_tone(8, 4, n['events_per_entry'])}'>{n['events_per_entry']:.1f}</b> events per pattern+op); "
+                   f"<span style='color:{_tone(0.85, 0.6, n['pattern_share'])}'>{100 * n['pattern_share']:.0f}%</span> of events carried by patterns, "
+                   f"{100 * n['op_share']:.0f}% written one by one; "
+                   f"verbatim <span style='color:{_tone(0.1, 0.4, n['verbatim_share'], False)}'>{n['verbatim_bars']}/{n['bars']} bars</span>; "
+                   f"vocals {n['vocal_phrases']} phrases from {n['vocal_distinct']} recordings")
+        rows = []
+        for v in n.get("voices") or []:
+            ex = v.get("explained")
+            exs = f"<span style='color:{_tone(0.6, 0.25, ex)}'>{100 * ex:.0f}%</span>" if ex is not None else "<span style='color:#888'>–</span>"
+            rows.append(f"<tr><td {td}>{v['id']}</td><td {td}>{v.get('name') or ''}</td><td {td}>{v.get('model') or ''}</td>"
+                        f"<td {td} align=right>{v['patterns']}</td><td {td} align=right>{v['units']}</td><td {td} align=right>{v['ops']}</td><td {td} align=right>{exs}</td></tr>")
+        for g in n.get("pruned") or []:
+            rows.append(f"<tr><td {td} style='color:#999'>{g['id']}</td><td {td} colspan=6 style='color:#999'>dropped: {g['why'][:110]}</td></tr>")
+        if rows:
+            out.append("<table cellspacing=0 style='margin-top:2px'><tr style='color:#999'><th align=left>voice</th><th align=left>sound</th><th align=left>model</th>"
+                       "<th align=right>patterns</th><th align=right>units</th><th align=right>ops</th><th align=right>explains its stem</th></tr>" + "".join(rows) + "</table>")
+        ag = n.get("agreement") or {}
+        if ag:
+            cells = []
+            for stem, r in ag.items():
+                cells.append(f"{stem} <b style='color:{_tone(0.8, 0.5, r['f1'])}'>{r['f1']:.2f}</b> "
+                             f"<span style='color:#999'>(octave-blind {r['f1_octave_blind']:.2f}, onsets {r['onset_f1']:.2f}, {r['n_program']} vs {r['n_transcribed']} notes)</span>")
+            out.append("<div style='margin-top:3px'><b>NOTES vs AN INDEPENDENT TRANSCRIPTION</b> &nbsp;F1 at 60 ms and the same pitch &mdash; "
+                       "the figure that says whether the notes are the song's: &nbsp;" + " &nbsp;·&nbsp; ".join(cells) + "</div>")
+    if w:
+        t0, t1 = w.get("window", [0, 0])
+        out.append(f"<b style='margin-top:4px'>WAVEFORM vs THE ORIGINAL</b> &nbsp;({t0:.0f}–{t1:.0f} s; gap in dB: 0 identical, 6–8 the same part on another instrument, 12+ a different sound)")
+        rows = []
+        for stem in ("drums", "bass", "other", "vocals", "mix"):
+            r = w.get(stem)
+            if not r:
+                continue
+            gap = r.get("spectral")
+            ch = r.get("chroma_r")
+            note = ("the stem’s own phrases reused" if r.get("reused") else
+                    (f"{r.get('voices', 0)} voices" if stem != "mix" else "all stems together"))
+            rows.append(f"<tr><td {td}><b>{stem}</b></td>"
+                        f"<td {td} align=right><b style='color:{_tone(6, 12, gap, False)}'>{gap:.1f} dB</b></td>"
+                        f"<td {td} align=right>{r['level']:+.1f} dB</td>"
+                        f"<td {td} align=right style='color:{_tone(0.8, 0.5, r['activity_r'])}'>{r['activity_r']:.2f}</td>"
+                        f"<td {td} align=right>{100 * r['missed']:.0f}%</td><td {td} align=right>{100 * r['spurious']:.0f}%</td>"
+                        f"<td {td} align=right style='color:{_tone(0.8, 0.5, r['onset_f1'])}'>{r['onset_f1']:.2f}</td>"
+                        f"<td {td} align=right>{(f'{ch:.2f}' if ch is not None else '–')}</td>"
+                        f"<td {td} style='color:#999'>{note}</td></tr>")
+        out.append("<table cellspacing=0 style='margin-top:2px'><tr style='color:#999'><th align=left>stem</th><th align=right>gap</th><th align=right>level</th>"
+                   "<th align=right>rhythm r</th><th align=right>missed</th><th align=right>extra</th><th align=right>onsets F1</th><th align=right>chroma</th><th></th></tr>"
+                   + "".join(rows) + "</table>")
+    wp = rep.get("waveform_played") or {}
+    if wp:
+        # the hybrid program: the table above is the voices alone (the reader's figure); this is what plays -
+        # notes where the voices explain the recording bar by bar, the recording itself elsewhere
+        share = (rep.get("notes") or {}).get("note_share") or {}
+        cells = []
+        for stem in ("drums", "bass", "other", "vocals", "mix"):
+            r = wp.get(stem)
+            if not r:
+                continue
+            ns = (f" <span style='color:{_tone(0.8, 0.4, share[stem])}'>notes on {100 * share[stem]:.0f}%</span>" if stem in share
+                  else (" <span style='color:#999'>phrases</span>" if stem == "vocals" else ""))
+            cells.append(f"{stem} <b style='color:{_tone(6, 12, r['spectral'], False)}'>{r['spectral']:.1f} dB</b>{ns}")
+        out.append("<div style='margin-top:3px'><b>AS PLAYED</b> &nbsp;the hybrid program (notes where the voices explain the recording bar by bar, "
+                   "the recording itself elsewhere): &nbsp;" + " &nbsp;·&nbsp; ".join(cells) + "</div>")
+    out.append("</div>")
+    return "".join(out)
+
+
 class ScoreStrip(QWidget):
     """Original vs recreation energy per bar, section blocks, and the local score per window."""
 
     def __init__(self):
         super().__init__()
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(90)             # the tab has to fit a laptop screen with everything below it
         self.orig = []
         self.recon = []
         self.report = None
@@ -123,7 +232,7 @@ class CompareView(QWidget):
 
     def __init__(self, on_seek=None):
         super().__init__()
-        self.setMinimumHeight(260)
+        self.setMinimumHeight(170)
         self.a = None            # {"rgb","fps","seconds"} original
         self.b = None            # recreation
         self.offset_s = 0.0      # recreation display offset (= original first downbeat)
@@ -274,7 +383,7 @@ class BeatGrid(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumHeight(96)
+        self.setMinimumHeight(72)
         self.grid = None
         self.hits = None
         self.facts = ""
@@ -329,20 +438,25 @@ class AnalysisPage(QWidget):
         self.msg = ""
         self.progress = 0.0
         self._pending = None
+        self.b_offset = None            # side B's display offset (None = the source's first downbeat, i.e. a render from bar 0)
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
-        self.path = QLineEdit(""); self.path.setPlaceholderText("song file (wav/mp3/flac...) or a logs/analysis/<name> folder")
-        top.addWidget(self.path, 1)
-        self.reuse = QCheckBox("reuse stems"); self.reuse.setToolTip("separate the song (demucs) and reuse its drums, bass line, tones, vocal phrases and hook")
-        try:
-            from lib.gen.analysis import reuse as _R
-            self.reuse.setChecked(_R.available())          # on by default when the stack is installed
-        except Exception:  # noqa: BLE001
-            pass
-        top.addWidget(self.reuse)
-        for text, fn in (("Browse", self.browse), ("Ingest", self.ingest), ("Recreate", self.recreate), ("Score", self.score),
-                         ("Tune", self.tune), ("Save", self.save), ("Play", self.play), ("Open", self.open_script)):
-            b = QPushButton(text); b.clicked.connect(fn); top.addWidget(b)
+        self.dj_track = None                               # (id, title, artist) of the library track loaded
+        self.dj_btn = QPushButton("♫ DJ track…"); self.dj_btn.clicked.connect(self.from_dj)
+        self.dj_btn.setToolTip("Pick a track of the DJ library (stems rendered): its instrument reading becomes this tab's song")
+        top.addWidget(self.dj_btn)
+        self.track_lbl = QLabel("no track - pick one from the DJ library"); top.addWidget(self.track_lbl, 1)
+        for text, fn, tip in (("Replay", self.replay, "The PROGRAMMATIC recreation: every note of the planner's reading played by the "
+                                                       "song's own sampled instruments on its grid - nothing composed. Becomes side B."),
+                              ("Recreate", self.recreate, "The generator's rendition of the script (its composer interprets the sections, "
+                                                           "kit, banks and lines). Becomes side B."),
+                              ("Fidelity", self.fidelity_report, "Measure the program: how much of the notes the pattern language holds, and how "
+                                                                 "close its render is to the original stems (lib/dj/fidelity.py). Written on link; "
+                                                                 "this recomputes it."),
+                              ("Score", self.score, "Score side B against the source, per phrase and globally"),
+                              ("Tune", self.tune, "Closed-loop tuning of the script against the source"),
+                              ("Save", self.save, "Save the (edited) script"), ("Play", self.play, "Send the script to the running show")):
+            b = QPushButton(text); b.setToolTip(tip); b.clicked.connect(fn); top.addWidget(b)
         lay.addLayout(top)
         fid = QHBoxLayout()
         fid.addWidget(QLabel("source material"))
@@ -355,6 +469,24 @@ class AnalysisPage(QWidget):
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setTextVisible(False); self.bar.setMaximumHeight(6)
         lay.addWidget(self.bar)
         self.info = QLabel(""); lay.addWidget(self.info)
+        # the two honest readouts (lib/dj/fidelity.py): notes as code, waveform vs the original
+        self.fid_panel = QLabel(""); self.fid_panel.setTextFormat(Qt.TextFormat.RichText); self.fid_panel.setWordWrap(True)
+        self.fid_panel.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # in a scroll box of fixed height: the per-voice table grows with the song and must not push
+        # the compare view and the section table off the screen
+        self.fid_scroll = QScrollArea(); self.fid_scroll.setWidget(self.fid_panel); self.fid_scroll.setWidgetResizable(True)
+        self.fid_scroll.setMaximumHeight(150); self.fid_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.fid_scroll.setVisible(False); lay.addWidget(self.fid_scroll)
+        # one line by default (it has to fit on a laptop screen with the compare view and the table); the
+        # tables open on demand
+        fl = QHBoxLayout()
+        self.fid_line = QLabel(""); self.fid_line.setTextFormat(Qt.TextFormat.RichText); fl.addWidget(self.fid_line, 1)
+        self.fid_more = QPushButton("details ▸"); self.fid_more.setCheckable(True); self.fid_more.setMaximumWidth(90)
+        self.fid_more.setToolTip("Show the per-voice and per-stem fidelity tables")
+        self.fid_more.toggled.connect(lambda on: (self.fid_scroll.setVisible(on and bool(self.fid_panel.text())),
+                                                   self.fid_more.setText("details ▾" if on else "details ▸")))
+        fl.addWidget(self.fid_more)
+        self.fid_row = QWidget(); self.fid_row.setLayout(fl); self.fid_row.setVisible(False); lay.addWidget(self.fid_row)
         self.strip = ScoreStrip(); lay.addWidget(self.strip)
         # compare: original over recreation, with transport
         tr = QHBoxLayout()
@@ -427,11 +559,12 @@ class AnalysisPage(QWidget):
         threading.Thread(target=work, name=f"analysis-{label}", daemon=True).start()
 
     def _folder(self):
-        p = self.path.text().strip()
-        if os.path.isdir(p):
-            return p
-        name = os.path.splitext(os.path.basename(p))[0] or "song"
-        return os.path.join("logs", "analysis", name)
+        if self.folder:
+            return self.folder
+        if self.dj_track:
+            from lib.dj import gen_link as GL
+            return GL.folder_for(self.dj_track[1], self.dj_track[0])
+        return os.path.join("logs", "analysis", "untitled")
 
     def _script_from_table(self):
         if self.script is None:
@@ -502,13 +635,13 @@ class AnalysisPage(QWidget):
                 sections.append((float(t), e["section"]))
                 bar += e["bars"]
         side = {"rgb": d["rgb"], "fps": d["fps"], "seconds": d["seconds"]}
-        self._compare_pending = (which, side, first_bar, bars, sections)
+        offset = first_bar if self.b_offset is None else float(self.b_offset)    # a replay runs in the source's time
+        self._compare_pending = (which, side, offset, bars, sections)
 
     def _source_path(self):
         if self.result and self.result.get("source"):
             return self.result["source"]
-        p = self.path.text().strip()
-        return p if os.path.isfile(p) else None
+        return None
 
     def play_src(self, which):
         if which not in self.player.sources:
@@ -558,42 +691,82 @@ class AnalysisPage(QWidget):
         self.compare.update()
 
     # -- actions --------------------------------------------------------------
-    def browse(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Song", "", "Audio (*.wav *.flac *.mp3 *.ogg *.m4a *.aiff);;All files (*)")
-        if p:
-            self.path.setText(p)
+    def _show_fidelity(self, folder):
+        """Show the folder's fidelity.json (nothing when there is none)."""
+        try:
+            from lib.dj import fidelity as F
+            rep = F.load(folder) if folder else None
+        except Exception:  # noqa: BLE001
+            rep = None
+        html = fidelity_html(rep) if rep else ""
+        self.fid_panel.setText(html)
+        self.fid_row.setVisible(bool(html))
+        self.fid_scroll.setVisible(bool(html) and self.fid_more.isChecked())
+        if rep:
+            n, w = rep.get("notes") or {}, rep.get("waveform") or {}
+            mix = w.get("mix") or {}
+            parts = []
+            if n:
+                parts.append(f"notes as code: <b style='color:{_tone(8, 4, n['events_per_entry'])}'>{n['events_per_entry']:.1f}</b> events per pattern+op, "
+                             f"{100 * n['pattern_share']:.0f}% in patterns, verbatim {n['verbatim_bars']}/{n['bars']} bars")
+            ag = n.get("agreement") or {}
+            if ag:
+                parts.append("notes vs transcription: " + " ".join(f"{s} <b style='color:{_tone(0.8, 0.5, r['f1'])}'>{r['f1']:.2f}</b>" for s, r in ag.items()))
+            if mix:
+                stems = "  ".join(f"{s} {w[s]['spectral']:.0f}" for s in ("drums", "bass", "other", "vocals") if w.get(s))
+                parts.append(f"waveform gap: mix <b style='color:{_tone(6, 12, mix['spectral'], False)}'>{mix['spectral']:.1f} dB</b> ({stems})")
+            self.fid_line.setText("<span style='font-size:11px'>" + " &nbsp;·&nbsp; ".join(parts) + "</span>")
 
-    def ingest(self):
-        p = self.path.text().strip()
-        if not p or not os.path.exists(p):
-            self.msg = "pick a file first"
+    def fidelity_report(self):
+        """Recompute fidelity.json for the linked folder: the program rendered
+        per stem against the library's stems + how programmatic it is."""
+        folder = self.folder or self._folder()
+        if not os.path.exists(os.path.join(folder, "program.json")):
+            self.msg = "no program in this folder - link a DJ track first"
             return
-        folder = self._folder()
 
         def work():
-            from lib.gen import script as S
-            from lib.gen.analysis import ingest as I
-            os.makedirs(folder, exist_ok=True)
+            from lib.dj import fidelity as F, resynth as RS, songprogram as SP
+            with open(os.path.join(folder, "features.json"), encoding="utf-8") as fh:
+                a = (json.load(fh).get("analysis") or {})
+            with open(os.path.join(folder, "instruments.json"), encoding="utf-8") as fh:
+                res = json.load(fh)
+            self.msg = "fidelity: decoding the library's stems"
+            stems = RS.load_stems_mono(a.get("dj_library"), a.get("dj_track_id"))
+            if stems is None:
+                raise FileNotFoundError("the track's stems are not on disk any more")
+            prog = SP.load(folder)
 
-            def prog(x, what):
-                self.progress = x; self.msg = f"ingest: {what}"
-            res = I.ingest(p, progress=prog, reuse=self.reuse.isChecked(), out_dir=folder)
-            self.result = res
-            for r in res["analysis"].get("reuse_reasons", []):
-                print("[analysis]", r)
-            self.script = res["script"]
-            self.folder = folder
-            S.save(self.script, os.path.join(folder, "script.yaml"))
-            with open(os.path.join(folder, "features.json"), "w", encoding="utf-8") as fh:
-                json.dump({"features": res["features"], "bars": res["bars"], "chords": res["chords"],
-                           "analysis": {k: v for k, v in res["analysis"].items() if k != "sections"},
-                           "sections": res["analysis"]["sections"], "source": os.path.abspath(p)}, fh)
-            self.recon_feats = None
+            def prog_msg(what):
+                self.msg = what
+            rep = F.report(prog, stems, res, progress=prog_msg)
+            F.save(rep, folder)
+            self._pending = ("fidelity", folder)
+        self._run("fidelity", work)
+
+    def replay(self):
+        """Side B = the reading played back exactly (lib/dj/gen_link.replay)."""
+        folder = self.folder or self._folder()
+        if not os.path.exists(os.path.join(folder, "instruments.json")):
+            self.msg = "pick a DJ track first"
+            return
+
+        def work():
+            from lib.dj import gen_link as GL
+            from lib.gen.analysis import ingest as I
+
+            def prog(what):
+                self.msg = f"replay: {what}"
+            audio, path = GL.replay(folder, progress=prog)
+            a = (self.result or {}).get("analysis") or {}
+            bpm = float(a.get("bpm") or (self.script or {}).get("bpm") or 120.0)
+            # the replay runs in the SOURCE's time: its bars sit where the original's do
+            self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), bpm, float(a.get("first_bar_s", 0.0)))
             self.report = None
-            self.result["source"] = os.path.abspath(p)
-            self._pending = "table"
-            self._load_compare("a", os.path.abspath(p))
-        self._run("ingest", work)
+            self.b_offset = 0.0
+            self._pending = "strip"
+            self._load_compare("b", path)
+        self._run("replay", work)
 
     def recreate(self):
         sc = self._script_from_table()
@@ -619,6 +792,7 @@ class AnalysisPage(QWidget):
                 S.save(sc, os.path.join(folder, "script.yaml"))
             self.recon_feats = I.features_on_grid(audio.mean(axis=1).astype(np.float32), sc["bpm"], 0.0)
             self.report = None
+            self.b_offset = None                      # the generator starts at bar 0 = t 0
             self._pending = "strip"
             self._load_compare("b", os.path.join(folder, "recreation.wav"))
         self._run("recreate", work)
@@ -712,14 +886,42 @@ class AnalysisPage(QWidget):
         self.console.ctx.emit("script", path)
         self.msg = f"sent {os.path.basename(folder)}/script.yaml to the show"
 
-    def open_script(self):
-        p = self.path.text().strip()
-        cand = os.path.join(p, "script.yaml") if os.path.isdir(p) else p
-        if not cand.lower().endswith((".yaml", ".yml", ".json")) or not os.path.exists(cand):
-            p2, _ = QFileDialog.getOpenFileName(self, "Script", "logs/analysis", "SongScript (*.yaml *.yml *.json)")
-            if not p2:
-                return
-            cand = p2
+    def from_dj(self):
+        """Open a DJ library track's instrument reading as this tab's song."""
+        from lib.dj import resolve_music_dir
+        try:
+            from lib.dj import gen_link as GL
+            root = resolve_music_dir("")
+            tracks = GL.tracks_with_stems(root)
+        except Exception as e:  # noqa: BLE001
+            self.msg = f"DJ library unavailable: {type(e).__name__}: {e}"
+            return
+        if not tracks:
+            self.msg = f"no tracks with stems in {root} (render stems in the DJ planner first)"
+            return
+        dlg = DJTrackDialog(self, tracks)
+        if dlg.exec() != dlg.DialogCode.Accepted or dlg.picked is None:
+            return
+        tid, title = dlg.picked
+        self.dj_track = (tid, title, "")
+        self.track_lbl.setText(f"{title}  (DJ track {tid})  - linking...")
+
+        def work():
+            from lib.dj import gen_link as GL
+
+            def prog(what):
+                self.msg = f"DJ link: {what}"
+            folder = GL.link(root, tid, progress=prog)
+            self._pending = ("open", folder)
+        self._run(f"link '{title[:30]}'", work)
+
+    def open_script(self, cand):
+        """Load a linked folder's script.yaml (+ features.json, audio)."""
+        if os.path.isdir(cand):
+            cand = os.path.join(cand, "script.yaml")
+        if not os.path.exists(cand):
+            self.msg = f"no script at {cand}"
+            return
         from lib.gen import script as S
         self.script = S.load(cand)
         self.folder = os.path.dirname(cand)
@@ -738,6 +940,10 @@ class AnalysisPage(QWidget):
         rec = os.path.join(self.folder, "recreation_tuned.wav")
         if not os.path.exists(rec):
             rec = os.path.join(self.folder, "recreation.wav")
+        self.b_offset = None
+        if not os.path.exists(rec) and os.path.exists(os.path.join(self.folder, "replay.wav")):
+            rec = os.path.join(self.folder, "replay.wav")     # the last replay, in the source's time
+            self.b_offset = 0.0
 
         def work():
             self._load_compare("a", src)
@@ -759,6 +965,31 @@ class AnalysisPage(QWidget):
             t = self._display_pos()
             self.compare.set_cursor(t, self.player.current or "a")
             self.pos_lbl.setText(f"{int(t // 60)}:{t % 60:05.2f}  {'A' if self.player.current == 'a' else 'B'}{' ▶' if self.player.playing else ''}")
+        if isinstance(self._pending, tuple) and self._pending[0] == "fidelity":
+            folder = self._pending[1]
+            self._pending = None
+            self._show_fidelity(folder)
+        if isinstance(self._pending, tuple) and self._pending[0] == "open":
+            folder = self._pending[1]
+            self._pending = None
+            self.open_script(folder)
+            self._show_fidelity(folder)
+            a = (self.result or {}).get("analysis") or {}
+            if self.dj_track:
+                self.track_lbl.setText(f"{self.dj_track[1]}  (DJ track {self.dj_track[0]})  -  {folder}")
+            if self.script:
+                self.info.setText(f"{self.script.get('title')}: DJ track {a.get('dj_track_id', '?')}  {self.script['bpm']:.1f} bpm "
+                                  f"{self.script['key']}  {len(self.script['sections'])} sections  "
+                                  f"{len(a.get('instruments') or [])} instruments read by the planner")
+            if a.get("instruments"):
+                head = "DJ instrument reading:" + chr(10) + chr(10).join(a["instruments"])
+                try:
+                    from lib.dj import songprogram as SP
+                    if os.path.exists(os.path.join(folder, "program.json")):
+                        head = "SONG PROGRAM (what Replay renders):" + chr(10) + SP.describe(SP.load(folder)) + chr(10) * 2 + head
+                except Exception as e:  # noqa: BLE001
+                    head += chr(10) + f"(program unreadable: {type(e).__name__}: {e})"
+                self.cmds.setPlainText(head + chr(10) * 2 + self.cmds.toPlainText())
         if self._pending == "table":
             self._pending = None
             self._fill_table()
@@ -787,6 +1018,46 @@ class AnalysisPage(QWidget):
         if self.msg:
             self.console.notify(self.msg, quiet=True) if hasattr(self.console, "notify") else None
             self.msg = ""
+
+
+class DJTrackDialog(QDialog):
+    """Pick a DJ library track (those with stems); a check marks tracks
+    that already carry an instrument reading."""
+
+    def __init__(self, parent, tracks):
+        super().__init__(parent)
+        self.setWindowTitle("DJ track")
+        self.resize(560, 480)
+        self.tracks = tracks
+        self.picked = None
+        lay = QVBoxLayout(self)
+        self.filter = QLineEdit(); self.filter.setPlaceholderText("filter by title / artist")
+        self.filter.textChanged.connect(self._fill)
+        lay.addWidget(self.filter)
+        self.list = QListWidget(); lay.addWidget(self.list, 1)
+        self.list.itemDoubleClicked.connect(lambda _i: self.accept())
+        lay.addWidget(QLabel("✓ = instrument reading on disk (others run the pass first, ~16 s per minute of audio)"))
+        row = QHBoxLayout()
+        ok = QPushButton("Open"); ok.clicked.connect(self.accept); row.addWidget(ok)
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject); row.addWidget(cancel)
+        lay.addLayout(row)
+        self._fill()
+
+    def _fill(self):
+        q = self.filter.text().strip().lower()
+        self.list.clear()
+        for tid, title, artist, has in self.tracks:
+            if q and q not in title.lower() and q not in artist.lower():
+                continue
+            it = QListWidgetItem(f"{'✓' if has else ' '}  {title} - {artist}")
+            it.setData(Qt.ItemDataRole.UserRole, (tid, title))
+            self.list.addItem(it)
+
+    def accept(self):
+        it = self.list.currentItem()
+        if it is not None:
+            self.picked = it.data(Qt.ItemDataRole.UserRole)
+        super().accept()
 
 
 def register(console):

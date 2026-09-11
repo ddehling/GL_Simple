@@ -110,9 +110,15 @@ def structure_import_results(db, music_dir):
 
 # ------------------------------------------------------------- stage list
 
-def build_stages(music_dir, include_stems=False, headless=False):
+def build_stages(music_dir, include_stems=False, headless=False,
+                 include_instruments=False):
     """The ordered stage list of a full analysis run. Each stage skips
     already-done tracks internally, so re-running is cheap.
+
+    include_instruments adds the per-song instrument pass
+    (dj_instruments.py: the song's own sounds + the note each plays per
+    beat, from the stems) right after rhythm. Opt-in like stems: it needs
+    stems on disk and costs ~16 s of CPU per minute of audio.
 
     NO --refine-grids here: tracks whose grid confidence stays low after
     refinement would re-queue a full re-analysis on EVERY pipeline run
@@ -139,6 +145,14 @@ def build_stages(music_dir, include_stems=False, headless=False):
         # measured from the clean rhythm section instead of the mix.
         {"name": "rhythm",
          "args": [tool("dj_rhythm.py"), "--dir", music_dir]},
+    ]
+    if include_instruments:
+        # Instruments AFTER rhythm and stems: reads the stem files, skips
+        # tracks without them or with a current instruments.json.
+        stages.append({"name": "instruments",
+                       "args": [tool("dj_instruments.py"), "--dir",
+                                music_dir]})
+    stages += [
         {"name": "vocal curves", "skip": None if voc_ok
          else "torch/demucs not installed",
          "args": [tool("dj_scan.py"), "--dir", music_dir, "--revocals"]},

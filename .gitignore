@@ -139,3 +139,6 @@ media/oneshots/*.wav
 media/plugins/*.vst3/
 media/plugins/*.dll
 media/plugins/*.txt
+
+# learned model checkpoints fetched on first use (lib/dj/drumsep.py)
+models/

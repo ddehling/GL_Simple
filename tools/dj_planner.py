@@ -98,7 +98,7 @@ SECTION_COLORS = {
     "breakdown": QColor(90, 70, 130),
 }
 COLS = ["title", "artist", "bpm", "key", "dur", "energy", "genre", "type",
-        "tags", "rhythm", "structure", "stems"]
+        "tags", "rhythm", "structure", "stems", "instr"]
 
 
 # How much each transition style EXPOSES the four seam risk channels
@@ -450,6 +450,24 @@ class LibraryTreeModel(QAbstractItemModel):
                 return " ".join(t.all_tags)
             if c == 11:
                 return "✓" if getattr(t, "has_stems", False) else ""
+            if c == 12:
+                return "✓" if getattr(t, "has_instruments", False) else ""
+        if role == Qt.ItemDataRole.ToolTipRole and c == 12:
+            if getattr(t, "has_instruments", False):
+                try:
+                    from lib.dj import instruments as INS
+                    res = INS.load(self.music_dir, t.id)
+                    names = [f"{s}: " + ", ".join(INS.display_name(i) for i in
+                                                  (res["stems"].get(s) or {}).get("instruments") or [])
+                             for s in INS.STEM_ORDER if (res["stems"].get(s) or {}).get("instruments")]
+                    return "instruments identified -\n" + "\n".join(names) \
+                        + "\n(the Analysis tab shows what each plays per beat)"
+                except Exception:
+                    return "instruments identified (Analysis tab)"
+            return ("no instrument reading yet - Identify instruments in the "
+                    "Analysis tab, or run the '+ instruments' pass"
+                    if getattr(t, "has_stems", False)
+                    else "needs stems first")
         if role == Qt.ItemDataRole.ToolTipRole and c == 11:
             if getattr(t, "has_stems", False):
                 from lib.dj.stems import stem_model_of
@@ -545,6 +563,9 @@ class LibraryProxy(QSortFilterProxyModel):
             if c == 11:                  # stems: rendered tracks together
                 return (getattr(ta, "has_stems", False)
                         < getattr(tb, "has_stems", False))
+            if c == 12:                  # instruments: read tracks together
+                return (getattr(ta, "has_instruments", False)
+                        < getattr(tb, "has_instruments", False))
             ka = (m.data(left, Qt.ItemDataRole.DisplayRole) or "").lower()
             kb = (m.data(right, Qt.ItemDataRole.DisplayRole) or "").lower()
             return ka < kb
@@ -880,6 +901,13 @@ class LibraryTab(QWidget):
             "per track under .stems/; unlocks the stem transition styles). "
             "Off by default because of the disk cost.")
         top.addWidget(self.stems_chk)
+        self.inst_chk = QCheckBox("+ instruments")
+        self.inst_chk.setToolTip(
+            "Include the per-song instrument pass in 'Analyze all' (needs "
+            "stems on disk; ~16 s of CPU per minute of audio): each song's own "
+            "sounds and the note each plays per beat, shown in the "
+            "Analysis tab. Off by default because of the time cost.")
+        top.addWidget(self.inst_chk)
         self.passes_toggle = QPushButton("⚙ Passes")
         self.passes_toggle.setCheckable(True)
         self.passes_toggle.setToolTip(
@@ -1073,7 +1101,7 @@ class LibraryTab(QWidget):
         self.table.setItemDelegateForColumn(9, RhythmDelegate(self.table))
         self.table.setItemDelegateForColumn(10, StripDelegate(self.table))
         for i, w in enumerate((250, 120, 52, 44, 50, 62, 100, 46, 150, 110,
-                               260, 46)):
+                               260, 46, 46)):
             self.table.setColumnWidth(i, w)
         self.table.doubleClicked.connect(
             lambda _: self._open_analysis())
@@ -1416,6 +1444,14 @@ class LibraryTab(QWidget):
                           if getattr(t, "has_stems", False))
             if total and n_stems < total:
                 gaps.append(f"stems {n_stems}/{total}")
+            if n_stems:
+                from lib.dj import instruments as INS
+                n_inst = sum(1 for t in tracks
+                             if getattr(t, "has_stems", False)
+                             and INS.has_instruments(self.planner.music_dir,
+                                                     t.id))
+                if n_inst < n_stems:
+                    gaps.append(f"instruments {n_inst}/{n_stems}")
             n_err = self.planner.db.error_count()
             if n_err:
                 gaps.insert(0, f"⚠ {n_err} failed analysis "
@@ -1777,7 +1813,8 @@ class LibraryTab(QWidget):
         # rationale (stems before vocals, rhythm after stems, no
         # --refine-grids).
         stages = _build_stages(self.planner.music_dir,
-                               include_stems=self.stems_chk.isChecked())
+                               include_stems=self.stems_chk.isChecked(),
+                               include_instruments=self.inst_chk.isChecked())
         self._pipe = stages
         self._pipe_total = len(stages)
         self._pipe_skipped = []
@@ -1982,21 +2019,26 @@ class DecodeWorker(QThread):
 
 
 class SpectroWorker(QThread):
-    """Log-frequency spectrogram of the opened track, off the GUI thread
-    (~1s of FFT for a 5-minute song)."""
-    done = pyqtSignal(int, object)             # track_id, spec dict | None
+    """Log-frequency spectrogram of the opened track (or of a stem
+    solo/mute mix of it), off the GUI thread (~1s of FFT for a 5-minute
+    song). `key` names which stem selection this picture is of; the tab
+    caches by it and drops results for a selection no longer shown."""
+    done = pyqtSignal(int, object, object)     # track_id, key, spec | None
 
-    def __init__(self, track_id, mono):
+    def __init__(self, track_id, audio, key=None):
         super().__init__()
-        self.track_id, self.mono = track_id, mono
+        self.track_id, self.audio, self.key = track_id, audio, key
 
     def run(self):
         try:
             from tools.dj.planner.waveform import compute_spectrogram
-            self.done.emit(self.track_id, compute_spectrogram(self.mono))
+            mono = np.asarray(self.audio, dtype=np.float32)
+            if mono.ndim == 2:
+                mono = mono.mean(axis=1)
+            self.done.emit(self.track_id, self.key, compute_spectrogram(mono))
         except Exception as e:
             print(f"[analysis] spectrogram failed: {e}")
-            self.done.emit(self.track_id, None)
+            self.done.emit(self.track_id, self.key, None)
 
 
 class StemLoadWorker(QThread):
@@ -2024,18 +2066,287 @@ class StemLoadWorker(QThread):
             self.done.emit(self.track_id, f"{type(e).__name__}: {e}")
 
 
+class StemPowerWorker(QThread):
+    """Per-stem linear band power (the FFT half of the spectrogram), once
+    per stem load. With these in hand any solo/mute combination is a sum
+    plus the cheap color mapping, so the picture changes in place the
+    instant a checkbox is toggled - no FFT, no waveform flash."""
+    done = pyqtSignal(int, object)   # track_id, {name: (power, hop_s)}
+
+    def __init__(self, track_id, stems):
+        super().__init__()
+        self.track_id, self.stems = track_id, stems
+
+    def run(self):
+        try:
+            from tools.dj.planner.waveform import band_power
+            powers = {}
+            for name, arr in self.stems.items():
+                r = band_power(np.asarray(arr, dtype=np.float32).mean(axis=1))
+                if r is not None:
+                    powers[name] = r
+            self.done.emit(self.track_id, powers)
+        except Exception as e:
+            print(f"[analysis] stem band power failed: {e}")
+            self.done.emit(self.track_id, {})
+
+
+class InstrumentWorker(QThread):
+    """The per-song instrument pass (lib/dj/instruments.py) on the stems
+    already decoded for the tab, off the GUI thread; the result is stored
+    next to the stems so the next open reads it back."""
+    progress = pyqtSignal(int, str)             # track_id, what
+    done = pyqtSignal(int, object)              # track_id, result | error str
+
+    def __init__(self, music_dir, track, stems):
+        super().__init__()
+        self.music_dir, self.track, self.stems = music_dir, track, stems
+
+    def run(self):
+        try:
+            from lib.dj import instruments as INS
+            tr = self.track
+            beats, down0 = INS.beat_times(tr.grid, tr.downbeat_offset,
+                                          tr.duration_s, bpm=tr.bpm)
+            res = INS.identify(
+                self.stems, beats, down0=down0,
+                progress=lambda s: self.progress.emit(tr.id, s))
+            INS.save(self.music_dir, tr.id, res)
+            self.done.emit(tr.id, res)
+        except Exception as e:
+            self.done.emit(self.track.id, f"{type(e).__name__}: {e}")
+
+
+class MixWorker(QThread):
+    """Sum a few whole-track parts (stems, or cached voice renders) into
+    one (n,2) float32 buffer off the GUI thread - a 5-minute stereo sum
+    is ~100 ms of numpy, too long to stall the GUI thread next to an 80 ms
+    audio device buffer. `masks` gates a part to time windows (the stems
+    source's row solo: the recording only where that sound plays)."""
+    done = pyqtSignal(int, object, object)      # seq, key, (n,2) float32
+
+    def __init__(self, seq, key, n, parts, masks=None):
+        super().__init__()
+        self.seq, self.key, self.n, self.parts, self.masks = seq, key, n, list(parts), dict(masks or {})
+
+    @staticmethod
+    def gate(windows, n, smooth_s=0.01):
+        """0/1 over n samples, 1 inside the windows, edges smoothed by a
+        box of smooth_s (a cumsum box filter: O(n), not a convolution)."""
+        m = np.zeros(n + 1, dtype=np.float32)
+        for a_s, b_s in windows:
+            a, b = int(max(0.0, a_s) * RATE), int(min(n, max(0.0, b_s) * RATE))
+            if b > a:
+                m[a] += 1.0
+                m[b] -= 1.0
+        m = np.minimum(np.cumsum(m[:n]), 1.0)
+        k = max(int(smooth_s * RATE), 2)
+        h = k // 2                               # centred: the ramp straddles the window edge
+        c = np.concatenate([np.zeros(h, dtype=np.float64), np.cumsum(m, dtype=np.float64), np.full(k - h, float(m.sum()))])
+        return ((c[k:] - c[:-k]) / k).astype(np.float32)[:n]
+
+    @staticmethod
+    def limit(out, ceiling=0.98, attack_s=0.005, release_s=0.08):
+        """A look-ahead peak limiter over the sum, in place: the gain is
+        down before a transient (attack) and comes back over release_s.
+        Only the samples over the ceiling are touched - unlike scaling
+        the whole buffer by its single loudest sample, which took a real
+        track down 15 dB for one hot transient."""
+        n = len(out)
+        blk = max(int(0.001 * RATE), 1)
+        m = n // blk
+        if m < 4:
+            np.clip(out, -ceiling, ceiling, out)
+            return
+        peaks = np.abs(out[: m * blk]).reshape(m, blk * out.shape[1]).max(axis=1)
+        if float(peaks.max()) <= ceiling:
+            return
+        from numpy.lib.stride_tricks import sliding_window_view
+        k = max(int(attack_s * 1000), 1)
+        ahead = sliding_window_view(np.concatenate([peaks, np.full(k - 1, peaks[-1])]), k).max(axis=1)
+        req = np.minimum(1.0, ceiling / np.maximum(ahead, 1e-9))
+        step = 1.0 / max(release_s * 1000, 1.0)
+        g = np.empty(m, dtype=np.float64)
+        cur = 1.0
+        for i in range(m):                      # one block per ms: a few hundred thousand steps
+            cur = min(req[i], cur + step)
+            g[i] = cur
+        gain = np.interp(np.arange(n), (np.arange(m) + 0.5) * blk, g).astype(np.float32)
+        out *= gain[:, None]
+        np.clip(out, -1.0, 1.0, out)
+
+    def run(self):
+        try:
+            out = np.zeros((self.n, 2), dtype=np.float32)
+            for i, part in enumerate(self.parts):
+                if part is None:
+                    continue
+                a = np.asarray(part[: self.n], dtype=np.float32)
+                if i in self.masks:
+                    g = self.gate(self.masks[i], len(a))
+                    a = a * (g[:, None] if a.ndim == 2 else g)
+                if a.ndim == 1:
+                    out[: len(a), 0] += a
+                    out[: len(a), 1] += a
+                else:
+                    out[: len(a)] += a
+            self.limit(out)
+            self.done.emit(self.seq, self.key, out)
+        except Exception as e:
+            print(f"[analysis] mix failed: {e}")
+            self.done.emit(self.seq, self.key, None)
+
+
+_PROGRAMS = {}                                  # (track_id, id(result)) -> SongProgram: one entry, built once per reading
+
+
+class ResynthWorker(QThread):
+    """The reconstruction, ONE UNIT AT A TIME: build the SongProgram for
+    this reading (once; ~10 s), then render each requested unit - an
+    instrument id, or "vocals" (the stem's reused phrases, one unit) -
+    over the whole track and hand it over as it lands. The tab caches
+    the units, so after the first pass any solo / mute is a sum, and the
+    mix fills in voice by voice instead of after one long wait."""
+    progress = pyqtSignal(int, str)             # track_id, what
+    unit = pyqtSignal(int, str, object)         # track_id, unit id, mono float16 | None (not in the program)
+    done = pyqtSignal(int, object)              # track_id, None | error str
+    stats = pyqtSignal(int, object)             # track_id, {stem: share of its sounding bars played as notes} (the hybrid program)
+
+    def __init__(self, track_id, result, stems, units, seconds, music_dir=None):
+        super().__init__()
+        self.track_id, self.result, self.stems, self.units, self.seconds = track_id, result, stems, list(units), seconds
+        self.music_dir = music_dir
+
+    def run(self):
+        try:
+            from lib.dj import songprogram as SP, instruments as INS
+            mono = {n: np.asarray(a, dtype=np.float32).mean(axis=1) for n, a in self.stems.items()}
+            if "bass" in mono and "drums" in mono:
+                mono["bass"], _g = INS.clean_bass(mono["bass"], mono["drums"])
+            key = (self.track_id, id(self.result))
+            prog = _PROGRAMS.get(key)
+            if prog is None:
+                prog = self._stored_program(SP, INS)
+            if prog is None:
+                self.progress.emit(self.track_id, "building the song program (~20 s, once per reading)...")
+                # the hybrid program: notes where the voices explain the recording bar by bar, the recording
+                # elsewhere (residual=True; the bar test is a full render per stem - seconds since the fast synthesis)
+                prog = SP.build(self.result, mono, chords=False, residual=True)
+                self._store_program(SP, INS, prog)
+            _PROGRAMS.clear()
+            _PROGRAMS[key] = prog
+            self.stats.emit(self.track_id, (prog.get("stats") or {}).get("note_share") or {})
+            vocal_ids = [i["id"] for i in INS.instruments(self.result) if i["stem"] == "vocals"]
+            for k, u in enumerate(self.units):
+                model = (prog["voices"].get(u) or {}).get("model", "phrases" if u == "vocals" else None)
+                self.progress.emit(self.track_id, f"rendering {k + 1}/{len(self.units)} {u}"
+                                   + (" (additive: the slow one)" if model == "additive" else "") + "...")
+                if u == "vocals":
+                    # no vocal note rows (the reading carries vocals as phrases only): the bare stem name asks
+                    # the renderer for that stem's phrases
+                    ids = vocal_ids + ["vocals"]           # the bare name carries the phrases, the ids any note rows
+                elif u in prog["voices"]:
+                    ids = [u]
+                elif u in ("drums", "bass", "other"):
+                    ids = [u]                            # the stem's "recording" unit: its verbatim bars and phrases only
+                else:
+                    self.unit.emit(self.track_id, u, None)
+                    continue
+                # raw levels (no whole-track peak clamp: the tab limits the SUM), but a voice may
+                # not come out louder than its stem where it plays - one voice 15-20 dB hot used to
+                # drag the whole reconstruction down through the clamp
+                y = SP.render(prog, mono, ids=ids, t0=0.0, t1=self.seconds, limit=None)[:, 0]
+                if u in prog["voices"]:
+                    db = SP.voice_ceiling_db(prog, mono, u, y)
+                    if db < -0.5:
+                        y *= np.float32(10 ** (db / 20.0))
+                        self.progress.emit(self.track_id, f"{u}: {db:+.1f} dB (it rendered louder than its stem)")
+                self.unit.emit(self.track_id, u, y.astype(np.float16))
+            self.done.emit(self.track_id, None)
+        except Exception as e:
+            self.done.emit(self.track_id, f"{type(e).__name__}: {e}")
+
+    # -- the program on disk: built once per reading, loaded on every later open ------------------
+    # The build (profiles, chooser, calibration, patterns) is ~20 s on a 3-minute track and depends only
+    # on the stored reading and the build flags, so it lives next to the reading (.stems/<id>/program/)
+    # and is trusted while the reading file it was built from is unchanged.
+    def _program_dir(self):
+        from lib.dj.stems import stems_dir
+        return os.path.join(stems_dir(self.music_dir, self.track_id), "program") if self.music_dir else None
+
+    def _fingerprint(self, SP, INS):
+        p = INS.path_for(self.music_dir, self.track_id)
+        try:
+            st = os.stat(p)
+        except OSError:
+            return None
+        return {"reading_mtime": int(st.st_mtime), "reading_size": int(st.st_size), "reading_version": self.result.get("version"),
+                "program_version": SP.PROGRAM_VERSION, "chords": False, "residual": True}
+
+    def _stored_program(self, SP, INS):
+        d = self._program_dir()
+        if not d or not os.path.isfile(os.path.join(d, "program.json")):
+            return None
+        want = self._fingerprint(SP, INS)
+        try:
+            with open(os.path.join(d, "program.json"), encoding="utf-8") as fh:
+                head = json.load(fh).get("built_from")
+            if want is None or head != want:
+                return None
+            self.progress.emit(self.track_id, "loading the stored song program...")
+            return SP.load(d)
+        except Exception as e:  # noqa: BLE001 - a stale or half-written store: build again
+            print(f"[analysis] stored program not used: {type(e).__name__}: {e}")
+            return None
+
+    def _store_program(self, SP, INS, prog):
+        d = self._program_dir()
+        fp = self._fingerprint(SP, INS)
+        if not d or fp is None:
+            return
+        try:
+            prog["built_from"] = fp
+            SP.save(prog, d)
+        except Exception as e:  # noqa: BLE001
+            print(f"[analysis] program not stored: {type(e).__name__}: {e}")
+
+
 class AnalysisTab(QWidget):
     def __init__(self, planner):
         super().__init__()
         self.planner = planner
         self.track = None
         self.player = TrackPlayer()
+        self._inst_worker = None         # InstrumentWorker
+        self._instruments = None         # lib/dj/instruments result dict
+        self._beat_table = None          # beat -> [(instrument, event)]
+        self._aud_player = None          # exemplar audition (own device)
+        # THE MIXER: what plays is one of two SOURCES - the stems (real
+        # audio: the original when every stem is lit, else a stem sum,
+        # or the recording gated to a soloed sound's hits) or the
+        # reconstruction (cached per-unit renders summed). The S / M
+        # state lives in the instrument panel (both levels); the stem
+        # lanes mirror its stem level.
+        self._source = "stems"
+        self._units = {}                 # reconstruction cache: unit id -> mono float16 | None
+        self._resynth = None             # ResynthWorker in flight
+        self._note_share = {}            # the hybrid program's note share per stem (from the worker)
+        self._render_queue = []          # units asked for while one runs
+        self._mix_worker = None          # MixWorker in flight
+        self._mix_seq = 0                # the newest mix asked for; older results are dropped
+        self._mix_pending = None         # (key, parts, masks) waiting for the worker
+        self._mix_key = None             # the key of the buffer in the player
         self.selected_cue = None
         self._decoder = None
         self._samples = None             # decoded stereo (playback + stems)
-        self._spectro = None             # SpectroWorker
+        self._spectro = None             # latest SpectroWorker
+        self._spec_workers = set()       # every SpectroWorker still running
+        self._spec_by_sel = {}           # stem selection key -> spec dict
+        self._spec_key = None            # selection the view should show
         self._stem_loader = None         # StemLoadWorker
         self._stems = None               # {name: (n,2) float16}
+        self._power_worker = None        # StemPowerWorker
+        self._stem_power = None          # {name: (band power, hop_s)}
         v = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -2059,33 +2370,67 @@ class AnalysisTab(QWidget):
         self.wave = WaveformView()
         self.wave.seekRequested.connect(self._seek)
         self.wave.cueClicked.connect(self._cue_clicked)
-        v.addWidget(self.wave, 1)
 
-        # STEM LANES: what each demucs stem extracted and where, on the
-        # same time axis (zoom/pan follows the view above).
+        # Below the waveform, on the same time axis (zoom/pan follows the
+        # view above), in a vertical splitter so the operator sizes the
+        # picture against the instrument grid:
+        #   STEM LANES  what each demucs stem extracted and where - shown
+        #               only until instruments are identified (the
+        #               instrument panel carries the envelopes then)
+        #   INSTRUMENTS the song's own sounds and what each plays per beat
         from tools.dj.planner.stemlanes import StemLanes
+        from tools.dj.planner.instrumentlanes import InstrumentLanes
+        from PyQt6.QtWidgets import QScrollArea
         self.lanes = StemLanes()
         self.lanes.hide()
         self.wave.viewChanged.connect(self.lanes.set_view)
         self.lanes.seekRequested.connect(self._lane_seek)
-        v.addWidget(self.lanes)
+        self.inst_lanes = InstrumentLanes()
+        self.inst_lanes.axis_widget = self.wave     # one pixel axis for both
+        self.wave.viewChanged.connect(self.inst_lanes.set_view)
+        self.inst_lanes.seekRequested.connect(self._lane_seek)
+        self.inst_lanes.auditionRequested.connect(self._audition_instrument)
+        self.inst_lanes.eventRequested.connect(self._audition_event)
+        self.inst_lanes.noteRequested.connect(self._audition_note)
+        self.inst_lanes.selectionChanged.connect(self._instrument_selected)
+        # one S / M state: the instrument panel owns it, the stem lanes
+        # (shown before a reading exists) mirror its stem level
+        self.inst_lanes.mixChanged.connect(self._mix_changed)
+        self.inst_lanes.hint.connect(lambda s: self.stems_lbl.setText(s))
+        self.inst_lanes.set_row_mute_enabled(False)
+        self.lanes.stemToggled.connect(self.inst_lanes.toggle_stem)
+        self.inst_scroll = QScrollArea()
+        self.inst_scroll.setWidget(self.inst_lanes)
+        self.inst_scroll.setWidgetResizable(True)
+        self.inst_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.inst_scroll.hide()
+        lower = QWidget()
+        lv = QVBoxLayout(lower)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(2)
+        lv.addWidget(self.lanes)
+        lv.addWidget(self.inst_scroll, 1)
+        self.beat_lbl = _no_width_floor(QLabel(""))
+        self.beat_lbl.setToolTip(
+            "What every identified instrument plays on the beat under the "
+            "playhead, grouped by stem: +n = 16th step inside the beat, "
+            "then the note(s) read for that hit or hold.")
+        self.beat_lbl.hide()
+        lv.addWidget(self.beat_lbl)
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        self.split.addWidget(self.wave)
+        self.split.addWidget(lower)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 2)     # the notes get the larger share once they exist
+        self._split_set = False
+        self.split.setCollapsible(0, False)
+        v.addWidget(self.split, 1)
 
         srow = QHBoxLayout()
         srow.addWidget(QLabel("Stems:"))
         self.stems_lbl = _no_width_floor(QLabel(""))
         srow.addWidget(self.stems_lbl, 1)
-        self.stem_checks = {}
-        for name in ("drums", "bass", "other", "vocals"):
-            cb = QCheckBox(name)
-            cb.setChecked(True)
-            cb.setEnabled(False)
-            cb.setToolTip(
-                f"Include the {name} stem in playback. Uncheck others to "
-                "SOLO one stem and hear exactly what the separation "
-                "extracted (all four checked = the original mix).")
-            cb.toggled.connect(self._stem_mix_changed)
-            self.stem_checks[name] = cb
-            srow.addWidget(cb)
         self.stem_model_box = QComboBox()
         from lib.dj.stems import DEFAULT_STEM_MODEL, STEM_MODELS
         self.stem_model_box.addItems(list(STEM_MODELS))
@@ -2115,6 +2460,35 @@ class AnalysisTab(QWidget):
             "until re-rendered.")
         self.stem_del_btn.clicked.connect(self._delete_stems)
         srow.addWidget(self.stem_del_btn)
+        self.inst_btn = QPushButton("Identify instruments")
+        self.inst_btn.setEnabled(False)
+        self.inst_btn.setToolTip(
+            "Find THIS song's instruments inside its stems - the sounds "
+            "this recording is built from, not a fixed list - and read "
+            "the note each plays on every beat (16th steps). Drum sounds "
+            "by onset timbre with coincidences resolved, plucked sounds "
+            "by harmonic profile with a per-onset pitch, held notes beat "
+            "by beat. ~16 s of CPU per minute of audio; the result is stored next to "
+            "the stems and shown as lanes above. Click an instrument's "
+            "name to hear its exemplar.")
+        self.inst_btn.clicked.connect(self._identify_instruments)
+        srow.addWidget(self.inst_btn)
+        self.inst_all_chk = QCheckBox("all sounds")
+        self.inst_all_chk.setToolTip(
+            "Show every identified sound, including the minor ones (under "
+            "4% of their stem's events) the panel hides by default.")
+        self.inst_all_chk.toggled.connect(self.inst_lanes.set_show_all)
+        srow.addWidget(self.inst_all_chk)
+        self.gen_btn = QPushButton("→ Gen")
+        self.gen_btn.setEnabled(False)
+        self.gen_btn.setToolTip(
+            "Export this reading as generative-console material: kit "
+            "one-shots, lead/keys/bass note banks, the pad sample, per-bar "
+            "drum grids, melody and bass lines and the sections, as "
+            "logs/analysis/<title>/script.yaml. Open it in the gen "
+            "console's Analysis tab (Open) to recreate or vary the song.")
+        self.gen_btn.clicked.connect(self._export_gen)
+        srow.addWidget(self.gen_btn)
         v.addLayout(srow)
 
         tr = QHBoxLayout()
@@ -2123,6 +2497,46 @@ class AnalysisTab(QWidget):
         tr.addWidget(self.play_btn)
         self.time_lbl = QLabel("0:00")
         tr.addWidget(self.time_lbl)
+        tr.addSpacing(20)
+        # THE SOURCE: what the S / M boxes act on
+        from PyQt6.QtWidgets import QRadioButton, QButtonGroup
+        tr.addWidget(QLabel("hear:"))
+        self.src_stems = QRadioButton("stems")
+        self.src_stems.setChecked(True)
+        self.src_stems.setToolTip(
+            "Play the SEPARATED AUDIO: with every stem lit this is the original "
+            "mix; S / M on a stem lane or header plays a stem sum (what the "
+            "separation extracted); S on an instrument row plays the recording "
+            "only where that sound's hits are (an honest check of the reading "
+            "against the real audio). M on a row is not possible here - real "
+            "stems cannot drop one sound.")
+        self.src_recon = QRadioButton("reconstruction")
+        self.src_recon.setEnabled(False)
+        self.src_recon.setToolTip(
+            "Play the RECONSTRUCTION: every instrument row's notes played back "
+            "from the reading (the song's own sampled sounds, or an additive "
+            "model where that measured closer), on the DJ grid. Every row's "
+            "S / M works: mute one sound, solo another. Rendered once per "
+            "voice (the first switch takes ~10 s to build the program, then a "
+            "few seconds per voice, additive voices longer) and cached, so "
+            "later S / M changes are instant. It is not a separation: a "
+            "spurious note in the reading is a wrong note here, which is "
+            "the point - the % beside each name says how much of its stem "
+            "that voice explains.")
+        self._src_group = QButtonGroup(self)
+        self._src_group.addButton(self.src_stems)
+        self._src_group.addButton(self.src_recon)
+        self.src_recon.toggled.connect(self._source_changed)
+        tr.addWidget(self.src_stems)
+        tr.addWidget(self.src_recon)
+        self.sm_clear_btn = QPushButton("clear S/M")
+        self.sm_clear_btn.setToolTip("Un-solo and un-mute every stem and every instrument row.")
+        self.sm_clear_btn.clicked.connect(lambda: self.inst_lanes.clear_solo_mute())
+        tr.addWidget(self.sm_clear_btn)
+        self._mix_timer = QTimer(self)
+        self._mix_timer.setSingleShot(True)
+        self._mix_timer.setInterval(120)           # a burst of S/M clicks -> one mix
+        self._mix_timer.timeout.connect(self._apply_mix)
         tr.addSpacing(20)
         for kind, label in (("in", "Mark IN"), ("out", "Mark OUT"),
                             ("interest", "Mark INTEREST")):
@@ -2136,16 +2550,27 @@ class AnalysisTab(QWidget):
         tr.addStretch(1)
         self.cue_lbl = _no_width_floor(QLabel("click a cue flag to select it"))
         tr.addWidget(self.cue_lbl, 1)
+        self.detail_btn = QPushButton("ⓘ details")
+        self.detail_btn.setCheckable(True)
+        self.detail_btn.setToolTip(
+            "Show the analyzer's text readout (axes, live check, sections "
+            "with energy/busyness/vocalness). Off by default - the "
+            "sections are already drawn on the waveform, and the same "
+            "text is the tooltip of the track line above.")
+        self.detail_btn.toggled.connect(lambda on: self.detail.setVisible(on))
+        tr.addWidget(self.detail_btn)
         v.addLayout(tr)
 
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
-        self.detail.setMaximumHeight(130)
+        self.detail.setMaximumHeight(110)
+        self.detail.hide()
         v.addWidget(self.detail)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(80)
+        self._timer.start(40)            # 25 fps: the panels cache their pictures, a tick is a blit
+        self._readout_beat = None
 
     def refresh_tracklist(self):
         cur = self.track.id if self.track else None
@@ -2168,6 +2593,11 @@ class AnalysisTab(QWidget):
     def open_track(self, track):
         self.track = track
         self.player.pause()
+        self.play_btn.setText("▶ Play")
+        self._mix_seq += 1                       # a mix of the previous track still in flight is dropped
+        self._mix_pending = None
+        self._units = {}
+        self._render_queue = []
         self.info_lbl.setText("decoding...")
         i = self.track_combo.findData(track.id)
         if i >= 0:
@@ -2186,16 +2616,21 @@ class AnalysisTab(QWidget):
             return
         self._samples = samples
         self.player.load(samples)
+        self._mix_key = self._ALL_STEMS
         mono = samples.mean(axis=1)
         self.wave.set_track(track, mono,
                             self.planner.db.cues_for(track.id))
         # Spectrogram (off-thread; the waveform shows until it lands).
-        self._spectro = SpectroWorker(track.id, mono)
-        self._spectro.done.connect(self._spectro_done)
-        self._spectro.start()
+        # Keyed by what is heard: the full mix is the all-stems key, so a
+        # later solo/mute that returns to "everything lit" reuses it.
+        self._spec_by_sel = {}
+        self._start_spectro(mono, self._ALL_STEMS)
         # Stems: show the lanes when this track has them.
         self._stems = None
+        self._stem_power = None
         self.lanes.clear()
+        self._reset_mixer()
+        self._show_instruments(None)
         self._sync_stem_row()
         if getattr(track, "has_stems", False):
             self._load_stems()
@@ -2213,10 +2648,11 @@ class AnalysisTab(QWidget):
             f"energy {_n(s['energy']):.2f}  busy {_n(s['busyness']):.2f}  "
             f"vocal {_n(s['vocalness']):.2f}  rep {_n(s['repetitiveness']):.2f}"
             for s in track.sections)
-        self.detail.setPlainText(
-            f"axes: {json.dumps(axes)}   live: bpm {lc.get('live_bpm')} "
-            f"agrees={lc.get('agrees')} conf {lc.get('mean_conf')}\n"
-            f"sections (v{track.row.get('analysis_version')}):\n{secs}")
+        text = (f"axes: {json.dumps(axes)}   live: bpm {lc.get('live_bpm')} "
+                f"agrees={lc.get('agrees')} conf {lc.get('mean_conf')}\n"
+                f"sections (v{track.row.get('analysis_version')}):\n{secs}")
+        self.detail.setPlainText(text)
+        self.info_lbl.setToolTip(text)
 
     # -- transport ---------------------------------------------------------------
     def _toggle_play(self):
@@ -2224,6 +2660,10 @@ class AnalysisTab(QWidget):
             self.player.pause()
             self.play_btn.setText("▶ Play")
         else:
+            if self.player.samples is None:
+                return                           # still decoding: nothing to play yet
+            if self.player.at_end():
+                self.player.seek(0.0)            # play after the end starts over, not nowhere
             self.planner.claim_playback("analysis")
             self.player.play()
             self.play_btn.setText("⏸ Pause")
@@ -2238,25 +2678,96 @@ class AnalysisTab(QWidget):
             if self.player.playing:
                 self.wave.set_playhead(t)
                 self.lanes.set_playhead(t)
+                self.inst_lanes.set_playhead(t)
+                self._beat_readout(t)
+            elif self.play_btn.text() != "▶ Play":
+                self.play_btn.setText("▶ Play")  # the track ended, or another tab claimed playback
 
     # -- spectrogram --------------------------------------------------------
-    def _spectro_done(self, track_id, spec):
-        if self.track is not None and track_id == self.track.id:
-            self.wave.set_spectrogram(spec,
-                                      show=self.spec_btn.isChecked())
+    _ALL_STEMS = ("bass", "drums", "other", "vocals")   # sorted selection
+
+    def _spectro_done(self, track_id, key, spec):
+        if self.track is None or track_id != self.track.id:
+            return
+        if spec is not None:
+            self._spec_by_sel[key] = spec
+        if key == self._spec_key:        # still the selection on screen
+            self.wave.set_spectrogram(spec, show=self.spec_btn.isChecked())
+
+    def _show_selection_audio(self, buf, key):
+        """Point the waveform AND the spectrogram at one stem selection's
+        audio. The waveform pyramid rebuilds instantly. The spectrogram
+        comes, in order of preference, from the per-selection cache, from
+        summing the per-stem band powers (no FFT, ~50 ms, in place), or -
+        only in the first seconds after a stem load, before those powers
+        exist - from a worker, with the previous picture staying up
+        meanwhile rather than flashing to the waveform."""
+        self._spec_key = key
+        self.wave.set_audio(buf.mean(axis=1) if buf.ndim == 2 else buf)
+        spec = self._spec_by_sel.get(key)
+        if spec is None and not key:
+            # Nothing checked: silence. compute_spectrogram would
+            # auto-range a flat floor up to white, so draw it dark.
+            full = self._spec_by_sel.get(self._ALL_STEMS)
+            if full is not None:
+                spec = {"u8": np.zeros_like(full["u8"]),
+                        "hop_s": full["hop_s"]}
+                self._spec_by_sel[key] = spec
+        if spec is None and key and self._stem_power \
+                and all(n in self._stem_power for n in key):
+            from tools.dj.planner.waveform import power_to_spec
+            power = sum(self._stem_power[n][0] for n in key)
+            spec = power_to_spec(power, self._stem_power[key[0]][1])
+            self._spec_by_sel[key] = spec
+        if spec is not None:
+            self.wave.set_spectrogram(spec, show=self.spec_btn.isChecked())
+            return
+        self._start_spectro(buf, key)     # old picture stays until it lands
+
+    def _stem_power_done(self, track_id, powers):
+        if self.track is None or track_id != self.track.id or not powers:
+            return
+        self._stem_power = powers
+        # A selection that was waiting on a worker (or landed from one)
+        # can now be served in place; re-derive the one on screen if it
+        # is not the cached full mix.
+        key = self._spec_key
+        if key and key != self._ALL_STEMS and key not in self._spec_by_sel \
+                and all(n in powers for n in key):        # a stem selection (gated / reconstruction keys have a worker)
+            buf = self.player.samples if self.player.samples is not None \
+                else self._samples
+            self._show_selection_audio(buf, key)
+
+    def _start_spectro(self, audio, key):
+        """Spawn a spectrogram worker for one selection. Workers are held
+        in a set until they finish: a solo toggled twice in a second
+        would otherwise drop the first QThread while it still runs."""
+        self._spec_key = key
+        w = SpectroWorker(self.track.id, audio, key)
+        w.done.connect(self._spectro_done)
+        w.finished.connect(lambda w=w: self._spec_workers.discard(w))
+        self._spec_workers.add(w)
+        self._spectro = w
+        w.start()
 
     # -- stems ----------------------------------------------------------------
     def _lane_seek(self, t):
         self._seek(t)
         self.wave.set_playhead(t, follow=False)
         self.lanes.set_playhead(t)
+        self.inst_lanes.set_playhead(t)
+        self._beat_readout(t)
 
     def _sync_stem_row(self):
         have = self._stems is not None
         rendering = getattr(self.planner, "_stem_proc", None) is not None
-        for cb in self.stem_checks.values():
-            cb.setEnabled(have)
         self.stem_del_btn.setEnabled(have and not rendering)
+        self.inst_btn.setEnabled(have and self._inst_worker is None)
+        can_recon = have and bool(self._instruments)
+        self.src_recon.setEnabled(can_recon)
+        if not can_recon and self.src_recon.isChecked():
+            self.src_stems.setChecked(True)      # -> _source_changed
+        self.gen_btn.setEnabled(can_recon)
         self.stem_render_btn.setEnabled(self.track is not None
                                         and not rendering)
         if rendering:
@@ -2267,7 +2778,8 @@ class AnalysisTab(QWidget):
                 if self.track is not None else None
             self.stems_lbl.setText(
                 (f"on disk ({model}) - " if model else "on disk - ")
-                + "solo/mute to hear what each stem extracted")
+                + "S / M on a lane hears what that stem extracted"
+                + ("; 'hear: reconstruction' plays the reading back" if can_recon else ""))
         elif self.track is not None \
                 and getattr(self.track, "has_stems", False):
             self.stems_lbl.setText("loading stems...")
@@ -2290,41 +2802,251 @@ class AnalysisTab(QWidget):
             self.stems_lbl.setText("stem load failed: " + payload)
             return
         self._stems = payload["arrs"]
+        # Per-stem band power, so every solo/mute picture is a cheap sum.
+        self._stem_power = None
+        self._power_worker = StemPowerWorker(track_id, self._stems)
+        self._power_worker.done.connect(self._stem_power_done)
+        self._power_worker.start()
         from lib.dj.stems import stem_model_of
         self.lanes.set_stems(payload["envs"], len(self._samples) / RATE,
                              model=stem_model_of(self.planner.music_dir,
                                                  track_id))
         self.lanes.set_view(self.wave.view_t0, self.wave.view_t1)
-        for cb in self.stem_checks.values():
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
-        self.lanes.set_muted(())
+        self.inst_lanes.set_envelopes(payload["envs"])
+        # New stems (a re-render, or the first load): the mixer starts over
+        # on the original, and any cached reconstruction was of the old stems.
+        self._reset_mixer()
+        # A stored instrument reading (current version) shows at once.
+        from lib.dj import instruments as INS
+        self._show_instruments(INS.load(self.planner.music_dir, track_id))
         self._sync_stem_row()
 
-    def _stem_mix_changed(self, *_a):
-        """Solo/mute audition: rebuild the player buffer from the checked
-        stems (all four checked = the ORIGINAL mix - cleaner than a stem
-        sum, which carries separation artifacts)."""
-        if self._stems is None or self._samples is None:
+    # -- the mixer ---------------------------------------------------------------
+    def _reset_mixer(self):
+        """Everything lit, the stems source, the original in the player."""
+        self._units = {}
+        self._render_queue = []
+        _PROGRAMS.clear()
+        self._note_share = {}
+        self.inst_lanes.set_note_share({})
+        self._mix_seq += 1
+        self._mix_pending = None
+        self.inst_lanes.clear_solo_mute(emit=False)
+        self.lanes.set_sm((), ())
+        self.src_stems.blockSignals(True); self.src_recon.blockSignals(True)
+        self.src_stems.setChecked(True)
+        self.src_stems.blockSignals(False); self.src_recon.blockSignals(False)
+        self._source = "stems"
+        self.inst_lanes.set_row_mute_enabled(False)
+        if self._samples is not None and self._mix_key != self._ALL_STEMS:
+            self._set_mix(self._samples, self._ALL_STEMS)
+
+    def _source_changed(self, recon):
+        self._source = "recon" if recon else "stems"
+        self.inst_lanes.set_row_mute_enabled(bool(recon))
+        self._apply_mix()
+
+    def _mix_changed(self):
+        """An S / M box moved (either level): mirror the stem level to the
+        stem lanes and re-mix after the burst."""
+        self.lanes.set_sm(self.inst_lanes.stem_solo, self.inst_lanes.stem_mute)
+        self._mix_timer.start()
+
+    def _units_for(self, ids):
+        """Reconstruction units for the audible instrument ids: every
+        non-vocal id is its own voice; the vocals are one unit."""
+        units = [i for i in ids if not i.startswith("vocals.")]
+        if any(i.startswith("vocals.") for i in ids):
+            units.append("vocals")
+        return units
+
+    def _recon_units(self, ids, stems_on=None):
+        """Every unit the reconstruction sums for the audible ids: the voice units, the vocals unit when the
+        vocals stem has no note rows (its phrases), and - the hybrid program - a "recording" unit per note
+        stem (the bars its voices cannot explain, from the stem itself; silent when there are none). The
+        stem units play whenever the stem's header is audible and no single row is soloed."""
+        from lib.dj import instruments as INS
+        lanes = self.inst_lanes
+        if stems_on is None:
+            stems_on = [s for s in lanes.stems_audible() if s in (self._stems or {})]
+        units = self._units_for(ids)
+        solo_rows = lanes.row_solo_ids()
+        if ("vocals" not in units and "vocals" in stems_on and "vocals" in (self._stems or {}) and not solo_rows
+                and not any(i["stem"] == "vocals" for i in INS.instruments(self._instruments or {}))):
+            units.append("vocals")
+        if not solo_rows:
+            for st in ("drums", "bass", "other"):
+                if st in stems_on and st in (self._stems or {}) and st not in units:
+                    units.append(st)
+        return units
+
+    def _apply_mix(self):
+        """Point the player (and the picture) at what the S / M state and
+        the source say should be heard."""
+        if self._samples is None or self._stems is None:
             return
-        checked = [n for n, cb in self.stem_checks.items()
-                   if cb.isChecked()]
-        self.lanes.set_muted(n for n in self.stem_checks
-                             if n not in checked)
-        pos, was = self.player.time_s(), self.player.playing
-        if len(checked) == len(self.stem_checks):
-            buf = self._samples
-        elif not checked:
-            buf = np.zeros((len(self._samples), 2), dtype=np.float32)
-        else:
-            buf = np.zeros((len(self._samples), 2), dtype=np.float32)
-            for n in checked:
-                buf += self._stems[n].astype(np.float32)
-        self.player.load(buf)
-        self.player.seek(pos)
-        if was:
-            self.player.play()
+        lanes = self.inst_lanes
+        stems_on = [s for s in lanes.stems_audible() if s in self._stems]
+        if self._source == "stems":
+            solo_rows = lanes.row_solo_ids() if self._instruments else []
+            if solo_rows:
+                # the recording, gated to the soloed sounds' hits (each stem by its own rows)
+                parts, masks, by_stem = [], {}, {}
+                for iid in solo_rows:
+                    by_stem.setdefault(iid.split(".")[0], []).append(iid)
+                for stem, ids in by_stem.items():
+                    if stem not in self._stems:
+                        continue
+                    wins = []
+                    for iid in ids:
+                        wins.extend(lanes.event_windows(iid))
+                    masks[len(parts)] = wins
+                    parts.append(self._stems[stem])
+                self._start_mix(("gate",) + tuple(sorted(solo_rows)), parts, masks)
+                self.stems_lbl.setText("hearing the recording gated to " + ", ".join(self._name_of(i) for i in solo_rows)
+                                       + " - the stem only where the reading says that sound plays")
+            elif len(stems_on) == len(self._stems):
+                self._set_mix(self._samples, self._ALL_STEMS)
+                self.stems_lbl.setText("hearing the original mix - S / M on a lane, header or row; "
+                                       "'hear' switches to the reconstruction")
+            elif not stems_on:
+                self._set_mix(np.zeros((len(self._samples), 2), dtype=np.float32), ())
+                self.stems_lbl.setText("every stem is muted - un-mute one (M) or clear S/M")
+            else:
+                self._start_mix(tuple(sorted(stems_on)), [self._stems[s] for s in stems_on])
+                self.stems_lbl.setText("hearing the stems " + " + ".join(stems_on) + " (the separation's output)")
+            return
+        # the reconstruction: cached unit renders summed; missing units are rendered and fill in
+        ids = lanes.audible()
+        units = self._recon_units(ids, stems_on)
+        have = [u for u in units if u in self._units]
+        missing = [u for u in units if u not in self._units]
+        if missing:
+            self._ensure_render(missing)
+        if not units:
+            self._set_mix(np.zeros((len(self._samples), 2), dtype=np.float32), ())
+            self.stems_lbl.setText("reconstruction: every voice is muted - un-mute one (M) or clear S/M")
+            return
+        if not have:
+            return                               # the first voice is on its way: what plays stays until it lands
+        self._start_mix(("recon",) + tuple(have), [self._units[u] for u in have], complete=not missing)
+        how = (f"{len(lanes.solo)} soloed" if lanes.solo else (f"{len(lanes.mute)} muted" if lanes.mute else "everything"))
+        self.stems_lbl.setText(f"hearing the reconstruction ({how}): " + ", ".join(self._name_of(u) for u in have)
+                               + (f"  - {len(missing)} more rendering..." if missing else "") + self._note_share_text())
+
+    def _name_of(self, unit):
+        if unit == "vocals":
+            return "vocals"
+        if unit in ("drums", "bass", "other"):
+            return f"{unit} (the recording where its voices fall short)"
+        from lib.dj import instruments as INS
+        for inst in INS.instruments(self._instruments or {}):
+            if inst["id"] == unit:
+                return f"{INS.display_name(inst)} ({unit})"
+        return unit
+
+    def _set_mix(self, buf, key):
+        """A buffer that needs no work: straight into the player, picture follows."""
+        self._mix_seq += 1
+        self._mix_pending = None
+        self._mix_key = key
+        self.player.replace(buf)
+        self._show_selection_audio(buf, key)
+
+    def _start_mix(self, key, parts, masks=None, complete=True):
+        """Sum parts off-thread; the newest request wins, a burst of
+        clicks while one sums collapses into the last one."""
+        if key == self._mix_key and complete:
+            return                               # already in the player
+        self._mix_seq += 1
+        self._mix_pending = (self._mix_seq, key, parts, masks, complete)
+        if self._mix_worker is None:
+            self._next_mix()
+
+    def _next_mix(self):
+        if self._mix_pending is None:
+            w = self._mix_worker                 # emitted from inside run(): let the thread return first
+            if w is not None:
+                w.wait(5000)
+            self._mix_worker = None
+            return
+        seq, key, parts, masks, complete = self._mix_pending
+        self._mix_pending = None
+        w = MixWorker(seq, key, len(self._samples), parts, masks)
+        w.complete = complete
+        w.done.connect(self._mix_done)
+        w.finished.connect(self._next_mix)
+        self._mix_worker = w
+        w.start()
+
+    def _mix_done(self, seq, key, buf):
+        if buf is None or seq != self._mix_seq or self._samples is None:
+            return                               # superseded, or the track changed
+        self._mix_key = key
+        self.player.replace(buf)
+        if getattr(self._mix_worker, "complete", True):
+            self._show_selection_audio(buf, key)  # a partial reconstruction keeps the last picture
+
+    def _ensure_render(self, units):
+        """Render the units the cache lacks (one worker at a time; asks
+        that arrive while it runs are queued for the next one)."""
+        if self._resynth is not None:
+            self._render_queue = [u for u in units if u not in self._units]
+            return
+        if self.track is None or self._instruments is None or self._stems is None:
+            return
+        w = ResynthWorker(self.track.id, self._instruments, self._stems, units, len(self._samples) / RATE,
+                          music_dir=self.planner.music_dir)
+        w.progress.connect(self._resynth_progress)
+        w.unit.connect(self._resynth_unit)
+        w.done.connect(self._resynth_done)
+        w.stats.connect(self._resynth_stats)
+        self._resynth = w
+        w.start()
+
+    def _resynth_stats(self, track_id, share):
+        """The hybrid program's note share per stem: into the lane headers and the status line."""
+        if self.track is None or track_id != self.track.id:
+            return
+        self._note_share = dict(share or {})
+        self.inst_lanes.set_note_share(self._note_share)
+
+    def _note_share_text(self):
+        if not self._note_share:
+            return ""
+        return "  ·  notes on " + ", ".join(f"{st} {100 * v:.0f}%" for st, v in self._note_share.items()) + " of the bars; the recording elsewhere"
+
+    def _resynth_progress(self, track_id, what):
+        if self.track is not None and track_id == self.track.id and self._source == "recon":
+            self.stems_lbl.setText("reconstruction: " + what)
+
+    def _resynth_unit(self, track_id, unit, audio):
+        if self.track is None or track_id != self.track.id:
+            return
+        self._units[unit] = audio
+        if self._source == "recon":
+            self._mix_timer.start()              # the mix grows by one voice
+
+    def _resynth_done(self, track_id, err):
+        # `done` is emitted from inside run(): when this slot runs the thread may still be returning, and
+        # dropping the last reference to it here destroyed a running QThread ("QThread: Destroyed while
+        # thread '' is still running" at the end of a reconstruction, 2026-09-10). Let it finish first.
+        w = self._resynth
+        if w is not None:
+            w.wait(5000)
+        self._resynth = None
+        if self.track is None or track_id != self.track.id:
+            return
+        if err:
+            self.stems_lbl.setText("reconstruction failed: " + err)
+            self._render_queue = []
+            return
+        queue = [u for u in self._render_queue if u not in self._units]
+        self._render_queue = []
+        if queue:
+            self._ensure_render(queue)
+        elif self._source == "recon":
+            self._apply_mix()
 
     def _render_stems(self):
         """Kick the planner-wide background render for the open track;
@@ -2352,28 +3074,22 @@ class AnalysisTab(QWidget):
             return
         import shutil
         from lib.dj.stems import stems_dir
-        # If a solo/mute mix is loaded, put the original back first.
-        for cb in self.stem_checks.values():
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
-        if self._samples is not None:
-            pos, was = self.player.time_s(), self.player.playing
-            self.player.load(self._samples)
-            self.player.seek(pos)
-            if was:
-                self.player.play()
+        self._reset_mixer()                      # the original back in the player first
         try:
             shutil.rmtree(stems_dir(self.planner.music_dir, self.track.id))
         except OSError as e:
             self.stems_lbl.setText(f"delete failed: {e}")
             return
         self._stems = None
+        self._stem_power = None
         self.lanes.clear()
+        self._show_instruments(None)      # instruments.json went with the dir
         self.track.has_stems = False
+        self.track.has_instruments = False
         for t in self.planner.library_all or self.planner.library:
             if t.id == self.track.id:
                 t.has_stems = False
+                t.has_instruments = False
         self.planner.library_tab.table.viewport().update()  # stems column
         self._sync_stem_row()
 
@@ -2406,8 +3122,218 @@ class AnalysisTab(QWidget):
         self.wave.set_cues(self.planner.db.cues_for(self.track.id))
         self.planner.reload_library(keep_analysis=True)
 
+    # -- instruments ------------------------------------------------------------
+    def _identify_instruments(self):
+        if self.track is None or self._stems is None \
+                or self._inst_worker is not None:
+            return
+        self._inst_worker = InstrumentWorker(
+            self.planner.music_dir, self.track, self._stems)
+        self._inst_worker.progress.connect(self._instruments_progress)
+        self._inst_worker.done.connect(self._instruments_done)
+        self._inst_worker.start()
+        self.stems_lbl.setText("identifying instruments...")
+        self._sync_stem_row()
+
+    def _instruments_progress(self, track_id, what):
+        if self.track is not None and track_id == self.track.id:
+            self.stems_lbl.setText("identifying instruments: " + what)
+
+    def _instruments_done(self, track_id, result):
+        w = self._inst_worker                    # emitted from inside run(): let the thread return first
+        if w is not None:
+            w.wait(5000)
+        self._inst_worker = None
+        if self.track is None or track_id != self.track.id:
+            self._sync_stem_row()
+            return
+        if isinstance(result, str):
+            self.stems_lbl.setText("instrument pass failed: " + result)
+        else:
+            self._show_instruments(result)
+            self.track.has_instruments = True
+            for t in self.planner.library_all or self.planner.library:
+                if t.id == track_id:
+                    t.has_instruments = True
+            self.planner.library_tab.table.viewport().update()   # instr column
+            n = sum(len(s.get("instruments") or [])
+                    for s in result.get("stems", {}).values())
+            why = result.get("reasons") or []
+            gone = result.get("pruned") or []
+            n_gain = sum(1 for g in gone if g.get("kind") == "gain")
+            dropped = (f"  ({len(gone) - n_gain} dropped, {n_gain} levels moved by the check against the stems: "
+                       + "; ".join(f"{g['id']} {g['why']}" for g in gone)[:160] + ")") if gone else ""
+            self.stems_lbl.setText(
+                f"{n} instruments identified"
+                + dropped
+                + (f"  ({'; '.join(why)})" if why else "")
+                + " - click a name to hear it; the % is how much of the stem each explains")
+        self._sync_stem_row()
+
+    def _show_instruments(self, result):
+        """Point the lanes + beat readout at a result (None hides them)."""
+        from lib.dj import instruments as INS
+        if result is not self._instruments:
+            # another reading: the cached voices were of the old one, and its rows are gone
+            self._units = {}
+            self._render_queue = []
+            _PROGRAMS.clear()
+            self.inst_lanes.clear_solo_mute(emit=False)
+            self.lanes.set_sm((), ())
+        self._instruments = result
+        self._beat_table = INS.beat_table(result) if result else None
+        dur = len(self._samples) / RATE if self._samples is not None else 1.0
+        self.inst_lanes.set_result(result, dur, envs=self.lanes.envs)
+        self.inst_lanes.set_view(self.wave.view_t0, self.wave.view_t1)
+        self.inst_scroll.setVisible(bool(result))
+        self.beat_lbl.setVisible(bool(result))
+        self._readout_beat = None
+        if result and not self._split_set:
+            # first reading of the session: the picture keeps a third, the notes take the rest
+            h = max(self.split.height(), 600)
+            self.split.setSizes([int(h * 0.34), int(h * 0.66)])
+            self._split_set = True
+        # the instrument panel carries the stem envelopes in its headers:
+        # the plain stem lanes only show while there is no reading
+        self.lanes.setVisible(bool(self.lanes.envs) and not result)
+        if result:
+            self._beat_readout(self.wave.playhead)
+        if self._source == "recon":
+            self._apply_mix()                    # a new reading while hearing the old one: re-render
+
+    def _beat_readout(self, t):
+        """One line: what every instrument does on the beat under t."""
+        if not self._instruments or self._beat_table is None:
+            return
+        from lib.dj import instruments as INS
+        k = INS.beat_index(self._instruments, t)
+        if k == self._readout_beat:
+            return                      # same beat: the label is right already
+        self._readout_beat = k
+        self.beat_lbl.setText(
+            INS.describe_beat(self._instruments, self._beat_table, k))
+
+    def _stem_slice(self, stem, a_s, b_s, rate=1.0):
+        """(n,2) float32 cut of a stem in memory, faded out, normalised,
+        optionally resampled by `rate` (> 1 = higher pitch)."""
+        if self._stems is None:
+            return None
+        arr = self._stems.get(stem)
+        if arr is None:
+            return None
+        a, b = int(a_s * RATE), int(min(len(arr), b_s * RATE))
+        if b - a < 64:
+            return None
+        seg = np.asarray(arr[a:b], dtype=np.float32).copy()
+        if rate != 1.0 and rate > 0:
+            n_out = int(len(seg) / rate)
+            if n_out < 64:
+                return None
+            xs = np.arange(n_out) * rate
+            seg = np.stack([np.interp(xs, np.arange(len(seg)), seg[:, ch]) for ch in range(seg.shape[1])],
+                           axis=1).astype(np.float32)
+        fi = min(int(0.003 * RATE), len(seg) // 4)
+        seg[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)[:, None]
+        fo = min(int(0.03 * RATE), len(seg) // 3)
+        seg[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)[:, None]
+        peak = float(np.abs(seg).max())
+        if peak > 1e-6:
+            seg *= 0.7 / peak
+        return seg
+
+    def _play_slice(self, seg):
+        if seg is None:
+            return
+        if self._aud_player is None:
+            self._aud_player = TrackPlayer()
+        self._aud_player.load(seg)
+        self._aud_player.play()
+
+    def _audition_instrument(self, inst):
+        """Play the instrument's exemplar: its most isolated hit (or two
+        held beats) cut from the stem in memory."""
+        if not inst.get("exemplar"):
+            return
+        a, b = inst["exemplar"]
+        self._play_slice(self._stem_slice(inst.get("stem"), a, b))
+        from lib.dj import instruments as INS
+        self.stems_lbl.setText(
+            f"playing {INS.display_name(inst)} ({inst['id']}): {INS.facts(inst)}")
+
+    def _audition_event(self, inst, ev):
+        """Play ONE note of an instrument: that event's audio from the
+        stem (a beat long at least, its measured length at most)."""
+        if not self._instruments:
+            return
+        from lib.dj import instruments as INS
+        beats = np.asarray(self._instruments["beats"])
+        period = float(self._instruments.get("period_s") or 0.5)
+        t0 = INS.event_time(beats, ev[0], ev[1])
+        length = max(period, min(2.5, ev[3] * period / INS.STEPS))
+        self._play_slice(self._stem_slice(inst.get("stem"), t0, t0 + length))
+        bar, bib = INS.bar_beat(self._instruments, ev[0])
+        note = f" {INS.note_name(ev[2])}" if ev[2] is not None else ""
+        self.stems_lbl.setText(
+            f"playing {INS.display_name(inst)}{note} from bar {bar}.{bib}"
+            + (f"+{ev[1]}" if ev[1] else "") + f"  (vel {ev[4]:.2f})")
+
+    def _audition_note(self, inst, midi):
+        """The sampler: the exemplar repitched to `midi` (unpitched sounds
+        just retrigger)."""
+        if not inst.get("exemplar"):
+            return
+        from lib.dj import instruments as INS
+        a, b = inst["exemplar"]
+        base = inst.get("exemplar_midi")
+        rate = 1.0
+        if inst.get("pitched") and base is not None:
+            rate = float(2.0 ** ((int(midi) - int(base)) / 12.0))
+        self._play_slice(self._stem_slice(inst.get("stem"), a, b, rate=rate))
+        self.stems_lbl.setText(
+            f"{INS.display_name(inst)}: {INS.note_name(midi) if inst.get('pitched') else 'hit'}"
+            + (f"  (exemplar {INS.note_name(base)} x{rate:.3f})" if inst.get("pitched") and base is not None else ""))
+
+    def _export_gen(self):
+        if self._instruments is None or self._stems is None or self.track is None:
+            return
+        # the same bridge the gen console's "DJ track" button uses: script + samples +
+        # the source and its features, one folder the gen Analysis tab opens whole
+        from lib.dj import gen_link as GL
+        try:
+            folder = GL.link(self.planner.music_dir, self.track.id, stems=self._stems,
+                             progress=self.stems_lbl.setText)
+        except Exception as e:
+            self.stems_lbl.setText(f"gen export failed: {type(e).__name__}: {e}")
+            return
+        self.stems_lbl.setText(f"gen material written: {folder}  (gen console → Analysis → ♫ DJ track)")
+
+    def _instrument_selected(self, inst):
+        if inst is None:
+            return
+        from lib.dj import instruments as INS
+        base = inst.get("exemplar_midi")
+        octave = f"C{(int(base) // 12) - 1}" if base is not None else "its octave"
+        self.stems_lbl.setText(
+            f"sampler: {INS.display_name(inst)} ({inst['id']}) - keys z s x d c v g b h n j m play "
+            f"{octave}..B, q 2 w 3 e r 5 t 6 y 7 u the octave above, [ ] shift octaves; "
+            "click a note cell to hear that very note")
+
     def close(self):
         self.player.close()
+        if self._aud_player is not None:
+            self._aud_player.close()
+        # the tab's workers must finish before their QThread objects go: a window closed during an
+        # identification or a reconstruction render otherwise ends the process with "QThread:
+        # Destroyed while thread is still running" (seen 2026-09-09). Neither can be killed (torch,
+        # basic-pitch), so the long ones are waited out; the short ones get a few seconds.
+        for w in (getattr(self, "_inst_worker", None), getattr(self, "_resynth", None)):
+            if w is not None and w.isRunning():
+                w.wait()
+        short = [getattr(self, n, None) for n in ("_decoder", "_stem_loader", "_power_worker", "_mix_worker", "_spectro")]
+        short += list(getattr(self, "_spec_workers", ()) or ())
+        for w in short:
+            if w is not None and w.isRunning():
+                w.wait(5000)
 
 
 # ==========================================================================

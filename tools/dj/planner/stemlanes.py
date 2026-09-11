@@ -8,6 +8,10 @@ Click = seek (same contract as the main view). Lanes light up where the
 stem actually carries material, so separation quality (and bleed - hi-hat
 ghosts in the vocals lane) is visible at a glance before any stem style
 trusts the files.
+
+Every lane carries S and M buttons like a mixer channel (the same boxes
+the instrument panel draws on its stem headers): stemToggled(stem, "S"|"M")
+fires on a click, the tab owns the state and pushes it back with set_sm().
 """
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF
@@ -25,6 +29,42 @@ LANE_COLORS = {
 }
 LANE_ORDER = ("drums", "bass", "other", "vocals")
 
+SM_W, SM_H = 18, 16               # one S or M box
+SM_GAP = 4
+
+
+def draw_sm(p, x, y, solo, mute, font, enabled=True):
+    """The S and M boxes of one channel at (x, y): lit when on, hollow
+    and dim when the channel cannot take that button right now."""
+    p.setFont(font)
+    for bx, on, label, col in ((x, solo, "S", QColor(255, 210, 80)),
+                               (x + SM_W + SM_GAP, mute, "M", QColor(240, 90, 90))):
+        r = QRectF(bx, y, SM_W, SM_H)
+        if on:
+            p.fillRect(r, col)
+            p.setPen(QColor(20, 20, 24))
+        elif enabled:
+            p.fillRect(r, QColor(40, 40, 50))
+            p.setPen(QColor(140, 140, 155))
+        else:
+            p.fillRect(r, QColor(22, 22, 28))
+            p.setPen(QColor(70, 70, 82))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+        p.setPen(QPen(QColor(70, 70, 82), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(r)
+
+
+def sm_hit(x, y, x0, y0):
+    """Which box of a draw_sm() at (x0, y0) the point (x, y) is in: "S", "M" or None."""
+    if not (y0 <= y < y0 + SM_H):
+        return None
+    if x0 <= x < x0 + SM_W:
+        return "S"
+    if x0 + SM_W + SM_GAP <= x < x0 + 2 * SM_W + SM_GAP:
+        return "M"
+    return None
+
 
 def stem_envelope(arr):
     """(n,2) float array -> per-block mono RMS envelope, normalized to the
@@ -40,6 +80,9 @@ def stem_envelope(arr):
 
 class StemLanes(QWidget):
     seekRequested = pyqtSignal(float)
+    stemToggled = pyqtSignal(str, str)      # stem, "S" | "M"
+
+    SM_X = 74                                # the boxes sit right of the lane name
 
     def __init__(self):
         super().__init__()
@@ -49,7 +92,8 @@ class StemLanes(QWidget):
         self.view_t0 = 0.0
         self.view_t1 = 1.0
         self.playhead = 0.0
-        self.muted = set()           # names currently NOT in the audition mix
+        self.solo = set()            # stem-level solo / mute, mirrored from the tab
+        self.mute = set()
         self.model = None            # separator that rendered these stems
 
     def set_stems(self, envs, duration, model=None):
@@ -72,9 +116,15 @@ class StemLanes(QWidget):
         self.playhead = t
         self.update()
 
-    def set_muted(self, muted):
-        self.muted = set(muted)
+    def set_sm(self, solo, mute):
+        self.solo, self.mute = set(solo), set(mute)
         self.update()
+
+    def audible(self, name):
+        return name in self.solo if self.solo else name not in self.mute
+
+    def _lanes(self):
+        return [n for n in LANE_ORDER if n in self.envs]
 
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -82,7 +132,7 @@ class StemLanes(QWidget):
         if not self.envs:
             return
         W, H = self.width(), self.height()
-        lanes = [n for n in LANE_ORDER if n in self.envs]
+        lanes = self._lanes()
         lane_h = H / max(len(lanes), 1)
         span = max(self.view_t1 - self.view_t0, 1e-6)
         env_rate = RATE / ENV_HOP    # envelope points per second
@@ -90,7 +140,8 @@ class StemLanes(QWidget):
             y0 = k * lane_h
             base = y0 + lane_h - 2
             col = QColor(LANE_COLORS[name])
-            if name in self.muted:
+            silent = not self.audible(name)
+            if silent:
                 col.setAlpha(70)
             env = self.envs[name]
             p.setPen(Qt.PenStyle.NoPen)
@@ -109,10 +160,9 @@ class StemLanes(QWidget):
                     p.drawRect(QRectF(x, base - h, 1.0, h))
             p.setPen(QPen(QColor(60, 60, 70), 1))
             p.drawLine(0, int(y0), W, int(y0))
-            p.setPen(QColor(210, 210, 220)
-                     if name not in self.muted else QColor(130, 130, 140))
-            p.drawText(6, int(y0 + 14),
-                       name + ("  (muted)" if name in self.muted else ""))
+            p.setPen(QColor(210, 210, 220) if not silent else QColor(130, 130, 140))
+            p.drawText(6, int(y0 + 14), name)
+            draw_sm(p, self.SM_X, y0 + 3, name in self.solo, name in self.mute, p.font())
         # Which separator produced these files - always visible so a
         # mixed-model library stays legible at a glance.
         if self.model:
@@ -126,7 +176,17 @@ class StemLanes(QWidget):
         p.drawLine(int(x), 0, int(x), H)
 
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and self.envs:
-            span = max(self.view_t1 - self.view_t0, 1e-6)
-            t = self.view_t0 + ev.position().x() / max(self.width(), 1) * span
-            self.seekRequested.emit(float(np.clip(t, 0, self.duration)))
+        if ev.button() != Qt.MouseButton.LeftButton or not self.envs:
+            return
+        x, y = ev.position().x(), ev.position().y()
+        lanes = self._lanes()
+        lane_h = self.height() / max(len(lanes), 1)
+        k = int(y // lane_h)
+        if 0 <= k < len(lanes):
+            which = sm_hit(x, y, self.SM_X, k * lane_h + 3)
+            if which:
+                self.stemToggled.emit(lanes[k], which)
+                return
+        span = max(self.view_t1 - self.view_t0, 1e-6)
+        t = self.view_t0 + x / max(self.width(), 1) * span
+        self.seekRequested.emit(float(np.clip(t, 0, self.duration)))

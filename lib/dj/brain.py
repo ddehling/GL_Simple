@@ -347,6 +347,10 @@ class TrackInfo:
         # Pre-rendered stems on disk (tools/dj/dj_stems.py)? Stamped by
         # load_library (needs the music root); gates the stem styles.
         self.has_stems = False
+        # Per-song instrument reading next to the stems (lib/dj/instruments,
+        # current version)? Stamped by load_library too; the planner's
+        # library column shows it.
+        self.has_instruments = False
         self.cues = list(cues or [])
         self.mix_ins = [p for p in mix_points if p["kind"] == "in"]
         self.mix_outs = [p for p in mix_points if p["kind"] == "out"]
@@ -673,10 +677,12 @@ def load_library(db):
     # transition styles (stem_drum_swap / acapella_out).
     try:
         from lib.dj.stems import has_stems
+        from lib.dj.instruments import has_instruments
         root = getattr(db, "music_root", None)
         if root:
             for t in out:
                 t.has_stems = has_stems(root, t.id)
+                t.has_instruments = t.has_stems and has_instruments(root, t.id)
                 # ...and remember where to LOOK, so a session that
                 # outlives a stem render can re-check (see
                 # Brain._stems_refresh - 11 tracks rendered mid-session

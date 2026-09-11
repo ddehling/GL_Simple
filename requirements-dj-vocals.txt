@@ -20,3 +20,8 @@
 #   pip install -r requirements-dj-vocals.txt
 torch
 demucs
+# the drum-kit decomposition (lib/dj/drumsep.py) fetches its 167 MB checkpoint into models/ on first use
+gdown
+# basic-pitch (the `other` stem's transcription) on the GPU: 3-7x faster than the CPU provider, identical notes
+# (verified 2026-09-09); needs the CUDA 12 torch build above so the cuDNN DLLs are on the path - import torch first
+onnxruntime-gpu
