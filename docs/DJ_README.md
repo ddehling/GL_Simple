@@ -435,3 +435,7 @@ Sims (not pass/fail — they print distributions you read):
   transition so `_do_abort` is its recall, but the guard stays for any
   future txn-tagged gesture). A half-fired build leaves the deck
   high-passed at 600 Hz and 7 % gain, which is a dead room.
+
+## Direction (2026-09-10)
+
+The note-level reconstruction and generative-music work was measured to its ceiling and archived on `claude/generative-music-integration`. The system continues at the **stem level**: see [STEM_DJ_PLAN.md](STEM_DJ_PLAN.md).

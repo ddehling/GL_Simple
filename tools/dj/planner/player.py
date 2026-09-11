@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 RATE = 44100
+LATENCY_S = 0.08                 # playback device buffer (see _Device)
 
 
 class _Device:
@@ -33,9 +34,14 @@ class _Device:
                 required = yield chunk.astype(np.float32).tobytes()
         g = gen()
         next(g)
+        # A short device buffer: the generator's position runs AHEAD of
+        # what is heard by the buffered amount, and the planner's
+        # playheads are read from that position. 80 ms keeps the picture
+        # honest (the Analysis tab subtracts LATENCY_S too); the default
+        # 200 ms put the playhead a fifth of a second early.
         self.dev = miniaudio.PlaybackDevice(
             output_format=miniaudio.SampleFormat.FLOAT32, nchannels=2,
-            sample_rate=RATE)
+            sample_rate=RATE, buffersize_msec=int(LATENCY_S * 1000))
         self.dev.start(g)
 
     def close(self):
@@ -60,6 +66,19 @@ class TrackPlayer:
             s = np.stack([s, s], axis=1)
         self.samples = s
         self.pos = 0
+
+    def replace(self, samples):
+        """Swap the audio under the playhead (another mix of the same
+        track): the position and the playing state are kept, so a
+        solo or mute changes what is heard without a jump."""
+        s = np.asarray(samples, dtype=np.float32)
+        if s.ndim == 1:
+            s = np.stack([s, s], axis=1)
+        self.samples = s
+        self.pos = int(min(self.pos, max(len(s) - 1, 0)))
+
+    def at_end(self):
+        return self.samples is None or self.pos >= len(self.samples) - 1
 
     def _fetch(self, n):
         if not self.playing or self.samples is None:
@@ -88,6 +107,10 @@ class TrackPlayer:
                                    len(self.samples) - 1))
 
     def time_s(self):
+        """Where the LISTENER is: the fetch position minus the device
+        buffer while playing (paused, the position is exact)."""
+        if self.playing:
+            return max(0.0, self.pos / RATE - LATENCY_S)
         return self.pos / RATE
 
     def close(self):
