@@ -101,6 +101,8 @@ class DJSystem:
         self.autopilot = autopilot
         self.threaded = threaded
         self._theme_name = theme
+        self._mix_style = None       # performance surface: the transition type pinned for every seam (None = the dice)
+        self._mix_speed = 1.0        # performance surface: factor on the overlapped styles' blend length
         # Persona MODE: "auto" (date-seeded nightly rotation), a persona
         # name, or "off"/None (neutral). Resolved onto brain.persona at
         # start() and live via set_persona().
@@ -474,6 +476,30 @@ class DJSystem:
     def request_skip(self):
         with self._lock:
             self._pending.append(("skip", None))
+
+    def request_hold(self):
+        """One more phrase of the current track before the next seam (the "hold" gesture)."""
+        with self._lock:
+            self._pending.append(("hold", None))
+
+    def request_reroll(self):
+        """Veto the planned next track and pick again."""
+        with self._lock:
+            self._pending.append(("reroll", None))
+
+    def set_mix_style(self, style):
+        """PERFORMANCE CONTROL (the planner's Perform tab, 2026-09-10): the transition TYPE for every
+        seam from here - a style name pinned through the same gates the brain runs (a gated-off pin
+        falls back to the dice, logged), or None / "auto" for the brain's choice."""
+        with self._lock:
+            self._pending.append(("mix_style", None if style in (None, "", "auto") else str(style)))
+
+    def set_mix_speed(self, factor):
+        """PERFORMANCE CONTROL: how long the blends run - a factor on every overlapped style's length
+        (0.5 = short and decisive, 1 = the style's own, 2 = long, 3 = marathon), rounded to whole
+        phrases. Cuts and fades keep their length."""
+        with self._lock:
+            self._pending.append(("mix_speed", float(max(0.25, min(4.0, factor)))))
 
     def abort_transition(self):
         """TRAINWRECK RESCUE: recall an armed transition (only before its
@@ -963,6 +989,27 @@ class DJSystem:
             "current": self._track_brief(cur),
             "next": self._track_brief(nxt),
             "style": self.plan["style"] if self.plan else None,
+            "mix_style": self._mix_style,            # the performance surface's pin (None = the dice)
+            "mix_speed": self._mix_speed,
+            "plan_beats": self.plan.get("beats") if self.plan else None,
+            # the seam as planned, for the performance readout
+            "plan": ({"style": self.plan.get("style"), "beats": self.plan.get("beats"),
+                      "rate": round(float(self.plan.get("rate", 1.0)), 4),
+                      "a_rate": round(float(self.plan.get("a_rate") or 1.0), 4),
+                      "pitch_st": self.plan.get("pitch_st", 0),
+                      "out_s": round(float(self.plan.get("out_s", 0.0)), 1),
+                      "in_s": round(float(self.plan.get("in_s", 0.0)), 1),
+                      "pair_score": self.plan.get("pair_score"),
+                      "pin": ((self.plan.get("diag") or {}).get("style_pin") or {}).get("honored"),
+                      "pin_why_not": ((self.plan.get("diag") or {}).get("style_pin") or {}).get("why_not"),
+                      "morph": self.plan.get("morph_sched_beats"),
+                      "speed": (self.plan.get("diag") or {}).get("mix_speed")}
+                     if self.plan else None),
+            "recent_events": list(getattr(self, "_recent_events", []) or [])[-30:],
+            "deck_tel": {k: {kk: v.get(kk) for kk in ("playing", "time_s", "gain", "rate", "loop", "track_id")}
+                         for k, v in (tel.get("decks") or {}).items()},     # ("decks" below is the web page's list)
+            "sync": tel.get("sync"), "sync_stats": tel.get("sync_stats"),
+            "active_deck": self.active_deck,
             # Word-first groove chips for the armed seam ("kick clash",
             # "swung vs straight", "half-time"...) - the operator's WHY
             # before it happens, and an informed ABORT MIX.
@@ -1106,6 +1153,16 @@ class DJSystem:
                     self.plan = None
                     if self.brain.require_tags != old_req:
                         self._horizon = []
+            elif kind == "mix_style":
+                self._mix_style = val
+                self._log({"event": "mix_style", "style": val})
+                if self.state == "playing":
+                    self.plan = None                 # the next plan carries it; an armed seam is left alone
+            elif kind == "mix_speed":
+                self._mix_speed = float(val)
+                self._log({"event": "mix_speed", "factor": self._mix_speed})
+                if self.state == "playing":
+                    self.plan = None
             elif kind == "skip" and self.state in ("playing", "armed"):
                 self._do_skip()
             elif kind == "abort" and self.state == "armed":
@@ -1659,11 +1716,21 @@ class DJSystem:
         hint = getattr(self, "_next_style_hint", None)
         force_style = hint[1] if hint and hint[0] == self.next_track.id \
             else None
+        # the performance surface's mix TYPE: a pin for every seam, under the setlist's per-seam pin
+        if force_style is None and getattr(self, "_mix_style", None):
+            force_style = self._mix_style
         plan = self.brain.plan_transition(self.current, self.next_track,
                                           self._next_meta,
                                           after_s=min(after, deadline),
                                           arc=self.arc_target(),
                                           force_style=force_style)
+        # the performance surface's mix SPEED: the overlapped styles' length scaled, in whole phrases
+        speed = float(getattr(self, "_mix_speed", 1.0) or 1.0)
+        if abs(speed - 1.0) > 1e-3 and plan.get("beats", 0) >= 16 and plan.get("style") not in (
+                "long_fade", "echo_out", "cut_at_drop", "phrase_cut", "spinback_cut", "loop_build"):
+            want = max(8, int(round(plan["beats"] * speed / 8.0)) * 8)
+            plan.setdefault("diag", {})["mix_speed"] = {"factor": speed, "beats": plan["beats"], "to": want}
+            plan["beats"] = want
         if force_style:
             # (hint is NOT consumed here: a hold/steer replan of the same
             # pinned pair keeps the pin; the next queue pop replaces it.)
@@ -3332,6 +3399,13 @@ class DJSystem:
             os.makedirs(self.log_dir, exist_ok=True)
             payload = {"t": round(time.time(), 2),
                        "clock_s": round(self.submix.clock / RATE, 2), **payload}
+            # the last events in memory too: the performance surface shows what the system just did and why
+            ring = getattr(self, "_recent_events", None)
+            if ring is None:
+                ring = self._recent_events = []
+            ring.append(payload)
+            if len(ring) > 80:
+                del ring[:-80]
             p = os.path.join(self.log_dir,
                              f"dj_{time.strftime('%Y%m%d')}.jsonl")
             with open(p, "a", encoding="utf-8") as f:

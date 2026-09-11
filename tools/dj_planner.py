@@ -4860,13 +4860,15 @@ class Planner(QMainWindow):
         from tools.dj.planner.lab import LabTab
         self.lab_tab = LabTab(self)
         self.tabs.addTab(self.lab_tab, "Lab")
-        # THE STEM STAGE (tools/dj/planner/stage.py over lib/dj/pairstage.py): two songs, four stem lanes,
-        # each lane A / B / off on the next bar, MORPH and LOOP - the stem-level plan's phase 3
-        # (docs/STEM_DJ_PLAN.md). Real-time through the same AudioEngine + DJSubmix a night runs.
-        # (lib/dj/stage.py is the general N-lane engine behind it, gated by _dj_stage_test.py.)
-        from tools.dj.planner.stage import StageTab
-        self.stage_tab = StageTab(self)
-        self.tabs.addTab(self.stage_tab, "Stage")
+        # PERFORM (tools/dj/planner/perform.py): the autonomous DJ (lib/dj/system.py) on the real engine,
+        # steered from a few controls - theme, mix type, mix speed, MIX NOW, HOLD, REROLL, the moments,
+        # energy - the stem-level plan's phase 4 (docs/STEM_DJ_PLAN.md). The hand-operated stem stage
+        # (tools/dj/planner/stage.py over lib/dj/pairstage.py, lib/dj/stage.py) stays as engine code
+        # behind the system's stem vocabulary; its tab is not registered.
+        from tools.dj.planner.perform import PerformTab
+        self.perform_tab = PerformTab(self)
+        self.tabs.addTab(self.perform_tab, "Perform")
+        self.stage_tab = None
         # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
         # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
         # engine capability is intact; only the tab is unregistered.
@@ -5106,8 +5108,10 @@ class Planner(QMainWindow):
     def closeEvent(self, ev):
         self.analysis_tab.close()
         self.mix_tab.close()
+        if getattr(self, "perform_tab", None) is not None:
+            self.perform_tab.close()         # the live system and its audio device, if started
         if getattr(self, "stage_tab", None) is not None:
-            self.stage_tab.close()           # the stage's audio device, if it was started
+            self.stage_tab.close()
         self.set_tab.seam_player.close()
         self.library_tab.lib_player.close()
         if self.library_tab._enrich is not None \

@@ -123,6 +123,30 @@ error, not the wide audible meter). Driven headless through the real engine with
 after the tab was built: load, Play, lanes, MORPH both ways, loop, stop — all as scheduled. The N-lane
 engine (`lib/dj/stage.py`, gated) stays as the general form for when more than two songs are wanted.
 
+**Phase 4, the performance surface (2026-09-10, after the user on the pair stage: "it lets me pick 2 songs
+and morph from one to another? That's not what I want, this is way too simple" — then: "I want theme
+control, and I want the ability to trigger mixes, mix speed, and type"):** the target is the SYSTEM as the
+DJ — it chooses, mixes, morphs, loops — and the user steers. Both hand-operated stage tabs were the wrong
+layer and are unregistered (their engine code stays: the system's stem vocabulary). The **Perform** tab
+(`tools/dj/planner/perform.py`) runs the autonomous `DJSystem` on the real engine inside the planner and
+exposes: **theme** (the brain's theme, live), **mix type** (a style pinned for every seam through the same
+gates — `DJSystem.set_mix_style`; auto = the dice), **mix speed** (short ×0.5 / normal / long ×2 / marathon
+×3 on every overlapped style's blend length, whole phrases — `set_mix_speed`; cuts and fades keep theirs),
+**MIX NOW** (the next transition now), **HOLD** (one more phrase), **REROLL** (another next track), **DROP /
+NEXT DROP** (the night's moments), **ABORT MIX**, and an **energy** lean. The readout: state, what plays,
+what comes next with the planned style and blend length, seconds to the blend, the last seam's verdict.
+`stem_morph` sits in the mix-type menu, so the stem morph is one setting away on a real set. Proven on
+one, headless and silent (the engine's mixer pulled by hand — a test must never open the device; one did,
+and played in the user's room): the system started on 1073 tracks, MIX NOW with the pin set gave
+`stem_morph` at 16 beats (32 × the short setting), armed, executed, and the seam's own verdict was clean
+with a maximum phase error of 0.01 beat. Then the user: "the perform tab needs way more information" —
+the readout now carries the playing track's map (sections by kind, energy, playhead, the planned exit and
+the blend window), the next track's map with its entry and window, the seam as planned (style, beats,
+seconds to the blend, exit and entry times, tempo and key shift, pair score, whether the pin was honoured
+and why not, the length scaling, the morph schedule, the "why" chips), the night's arc with the current
+position and target, the horizon, the history with verdicts, the system's own event log as it happens,
+and the engine line (both decks, sync bias and audible error, resnaps and nudges, level, errors).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
