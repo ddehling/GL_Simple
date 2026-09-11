@@ -130,7 +130,7 @@ def _batch_surface(cand, plan):
                              f"this seam was a forced fade")}
     return None
 
-_BLEND_STYLES = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap")
+_BLEND_STYLES = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap", "stem_morph")
 
 _VERDICTS = (("good", "Good (1)"), ("passable", "Passable (2)"),
              ("bad", "Bad (3)"), ("skip", "Skip (4)"))
@@ -180,7 +180,7 @@ def _anchor_note(b, plan):
 _STYLES = sorted(set(get_theme("groove").style_weights) | {
     "stem_drum_swap", "acapella_out", "stem_bass_swap", "drum_bridge",
     "acapella_in", "melody_carry", "phrase_cut", "spinback_cut",
-    "loop_in", "breakdown_swap"})
+    "loop_in", "breakdown_swap", "stem_morph"})
 
 
 def _pre_patch_pick(brain, cur):

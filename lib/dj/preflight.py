@@ -271,7 +271,7 @@ def render_and_measure(music_root, a_id, b_id, plan, theme_name,
                   "gain_db": cand.gain_db, "cue_s": plan["in_s"]})
         if plan.get("style") in ("stem_drum_swap", "drum_bridge",
                                  "stem_bass_swap", "acapella_out",
-                                 "acapella_in", "melody_carry") \
+                                 "acapella_in", "melody_carry", "stem_morph") \
                 or plan.get("duck_vocal_a"):
             from lib.dj.stems import load_stems
             for deck, t, arr in (("a", cur, a), ("b", cand, b)):

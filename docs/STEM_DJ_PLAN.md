@@ -55,6 +55,41 @@ reconstruction.
    night's log through the arm pre-flight harness.
 5. **Autonomy on top.** The brain plans sets from these primitives; the sliders bias it.
 
+## Status
+
+**2026-09-10, Phase 1 read against the engine:** it already exists. `lib/dj/deck.py` is a stem deck —
+stems attached to the track, per-stem gains with ramps summed before the stretcher, keylock engines
+(Rubber Band R3, WSOLA, phase vocoder, varispeed), key shift, loop with an equal-power seam, brake,
+three-band EQ, sweep filter, echo; `lib/dj/submix.py` schedules sample-accurate events on three decks
+(A, B, and C the loop layer) with a beat PLL, transactions and a duck. What Phase 1 lacked is
+per-stem EQ/filter, which no phase needs yet. So Phase 2 starts at once as a **transition style**,
+`stem_morph` in `lib/dj/brain.py`: the blend is one bar-quantised handover per stem in
+`MORPH_ORDER` (drums, bass, other, vocals; `plan["morph_order"]` per seam), B's stem coming in as
+A's goes out over `swap_beats`, both decks EQ-flat (the stems are the carve), the bass handover the
+point of no return, the vocals always sequential and the melodic stem sequential on off-key pairs
+(the harmonic guard from the existing Camelot fit). It goes through every existing gate (stems on
+both sides, grid confidence, tempo wall), the offline renderer (`lib/dj/audition.render_seam`) and
+the Seam Lab's style pin, so it is measured with the same instruments as every other style. The deck
+now keeps an in-flight stem ramp's destination when the next ramp arrives (it froze it before).
+
+**First renders of `stem_morph` (2026-09-10, four compatible pairs through the offline renderer, per-bar
+level across the blend relative to A's last full bar before it):**
+
+| pair | entry | level across the blend |
+|---|---|---|
+| Side by Side → Mirador | intro 30.5 s → groove 61.5 s | flat, worst bar −1.8 dB |
+| Side by Side → Birds Mind | 62.5 s → groove 109 s (a build at 94 s first: one bar −7.1 dB) | flat, worst −1.9 dB |
+| Natural Cause → Zula | already in a body | +1 dB (the reference bar is a dip in A's outro) |
+| Side by Side → A Walk in the Deer Park | 24.7 s → groove 239 s | flat, worst −1.8 dB |
+
+Two things learned and kept: (1) **a morph enters B's body, not its intro** — the mix-in point every
+blend uses put the room 12 dB down by the blend's end, so the plan places B's first groove (a groove
+before a build: the build's bar dipped 7 dB) at the drum handover, one bar into the blend, when B keeps
+120 s of runway; (2) the handover schedule itself (drums 4, bass 12, other 20, vocals 28 beats of 32;
+vocals sequential) renders as scheduled. Measured and left neutral: a lean of both decks through the
+middle (`MORPH_LEAN`) — built on a misread reference bar, null on the clean pairs. Renders in
+`logs/dj_morph_<a>_<b>.wav`; the Seam Lab pins the style by name for the ear.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

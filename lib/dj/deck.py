@@ -151,7 +151,11 @@ class Deck:
         current value). No-op without attached stems."""
         if self.stems is None:
             return
-        targets = {name: float(gains.get(name, self.stem_gain.get(name, 1.0)))
+        # A stem not named here keeps its DESTINATION, not its momentary value: a ramp that arrives
+        # while another is in flight (the stem morph hands stems over back to back) used to freeze
+        # the in-flight stem wherever it stood
+        pending = self._stem_ramp[1] if self._stem_ramp is not None else {}
+        targets = {name: float(gains.get(name, pending.get(name, self.stem_gain.get(name, 1.0))))
                    for name in self.stems}
         if ramp_s <= 0.01:
             self.stem_gain = targets

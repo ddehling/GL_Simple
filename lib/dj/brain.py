@@ -223,7 +223,17 @@ BAND_CLASH_LO = 1.2           # ...against the other below this = a clash
 
 STYLES = ("long_blend", "bass_swap", "cut_at_drop", "loop_roll_exit",
           "loop_build", "long_fade",
-          "stem_drum_swap", "acapella_out")
+          "stem_drum_swap", "acapella_out", "stem_morph")
+# THE STEM MORPH (2026-09-10, the stem-level plan's first move): the blend is one handover per stem,
+# in this order by default - B's drums come in as A's go out, then the bass (one bassline at a time:
+# the point of no return), then the rest, the vocals last and never overlapping. The stems ARE the
+# EQ carve, so the morph runs both decks EQ-flat. plan["morph_order"] overrides the order per seam.
+MORPH_ORDER = ("drums", "bass", "other", "vocals")
+MORPH_LEAN = 1.0               # both decks' gain through the middle of the morph (A from its bass handover to its last
+                               # slot, B from the blend start to its last). 1.0 = off. Measured 0.8 on the first four
+                               # renders (2026-09-10): a null result - the +3 dB it was built for was the harness's
+                               # reference bar sitting in a dip of A's outro, and on the three clean pairs the lean only
+                               # took the blend 0.3 dB deeper. Left as the knob the Seam Lab can turn by ear
 # TEMPO WALL. Widened 0.92-1.08 -> 0.90-1.10 (2026-08-06, operator's
 # call) on the strength of the beat-matching work: verified phase
 # profiles, kick-true anchors and the sync bias now hold a lock that the
@@ -3197,7 +3207,8 @@ class Brain:
                         ("stem_bass_swap", 0.3), ("drum_bridge", 0.2),
                         ("acapella_in", 0.15), ("melody_carry", 0.2),
                         ("phrase_cut", 0.25), ("spinback_cut", 0.15),
-                        ("loop_in", 0.2), ("breakdown_swap", 0.2)):
+                        ("loop_in", 0.2), ("breakdown_swap", 0.2),
+                        ("stem_morph", 0.25)):
             if k not in weights:
                 weights[k] = (dflt * self.style_fb.get(k, 1.0)
                               * self.style_multiplier(k, conds))
@@ -3555,7 +3566,7 @@ class Brain:
                 # profile, above) promotes their tracks.
                 kill(("long_blend", "bass_swap", "filter_sweep",
                       "stem_bass_swap", "melody_carry", "breakdown_swap",
-                      "stem_drum_swap", "drum_bridge"), "grid_conf<0.7")
+                      "stem_drum_swap", "drum_bridge", "stem_morph"), "grid_conf<0.7")
             # cut_at_drop's EXTRA grid bar is GONE (2026-08-13, Gate
             # Check). It required bpm_conf>=0.8 on both sides, against the
             # 0.7 its tier uses, on the strength of a median flam of 0.247
@@ -3665,7 +3676,8 @@ class Brain:
             # acapella paths.
             _overlap = ("long_blend", "bass_swap", "filter_sweep",
                         "stem_bass_swap", "melody_carry",
-                        "breakdown_swap", "stem_drum_swap", "drum_bridge")
+                        "breakdown_swap", "stem_drum_swap", "drum_bridge",
+                        "stem_morph")
             # THE 5.5% STRETCH WALL IS GONE (2026-08-13, Gate Check).
             # Added 2026-08-05 as a hard plan-time wall - a duplicate
             # Swing Star analysed at 79.7bpm paired with 85bpm at 6.2%
@@ -3917,6 +3929,7 @@ class Brain:
                 "melody_carry": ("mid", "high"),
                 "breakdown_swap": ("mid", "high"),
                 "stem_drum_swap": ("low", "mid", "high"),
+                "stem_morph": ("low", "mid", "high"),     # both kits run together through the drum handover
                 "drum_bridge": ("low", "mid", "high"),
             }
             # A exits, B enters: judge each track's bands in the REGION
@@ -4040,8 +4053,8 @@ class Brain:
             b_stems = getattr(cand, "has_stems", False) \
                 or self._stems_refresh(cand)
             if not (a_stems and b_stems):
-                kill(("stem_drum_swap", "stem_bass_swap", "drum_bridge"),
-                     "no_stems")
+                kill(("stem_drum_swap", "stem_bass_swap", "drum_bridge",
+                      "stem_morph"), "no_stems")
             if not a_stems:
                 kill(("acapella_out", "melody_carry"), "no_stems")
             if not b_stems:
@@ -4403,7 +4416,8 @@ class Brain:
                  "stem_bass_swap": 32, "drum_bridge": 16,
                  "acapella_in": 32, "melody_carry": 32,
                  "phrase_cut": 16, "spinback_cut": 16,
-                 "loop_in": 32, "breakdown_swap": 32}[style]
+                 "loop_in": 32, "breakdown_swap": 32,
+                 "stem_morph": 32}[style]        # four handovers, one every 8 beats
         if style == "long_blend":
             # LENGTH VARIETY: the workhorse mostly runs 64 beats; some of
             # the time it stretches to a 96-beat marathon (still a
@@ -4553,7 +4567,7 @@ class Brain:
                                       "filter_sweep", "stem_drum_swap",
                                       "acapella_out", "stem_bass_swap",
                                       "drum_bridge", "acapella_in",
-                                      "melody_carry"))
+                                      "melody_carry", "stem_morph"))
         # THE CUT SPLITS UNDER KEYLOCK TOO (2026-08-12, operator's call).
         # For the blend family the split exists to halve the PITCH shift,
         # which is why it is varispeed-only - under R3 there is no pitch
@@ -4577,6 +4591,30 @@ class Brain:
             plan["loop_start_s"] = max(0.0, out_s - 16 * cur.period_s)
         if style in ("acapella_out", "melody_carry"):
             plan["tail_beats"] = 16   # A's exposed vocal/melody rides B
+        if style == "stem_morph":
+            # THE MORPH ENTERS B'S BODY, NOT ITS INTRO. The mix-in point every blend uses is B's intro
+            # (drums and air under A's outro - right when B rides beneath a full A). A morph hands A's
+            # stems to B's one by one, so by its bass handover B IS the mix: entering at the intro left
+            # the room 12 dB down at the end of the blend (first renders, 2026-09-10: Mirador's entry at
+            # 30 s is a 0.31-energy intro, its groove starts at 61 s). Place B so its first full-body
+            # section (bass_share >= 0.28, at or after the planned entry) starts AT the drum handover,
+            # one bar into the blend: the bass handover then lands 8 beats into B's groove.
+            # a GROOVE first (a build's bass share can pass the bar while the section dips - Birds Mind's
+            # build measured a 7 dB hole one bar into the morph); any other non-intro body as the fallback
+            secs = [s for s in (cand.sections or [])
+                    if s["start_s"] >= plan["in_s"] - 0.5 and s.get("bass_share", 0.3) >= 0.28
+                    and s.get("kind") not in ("intro", "outro")]
+            body = next((s for s in secs if s.get("kind") in ("groove", "drop", "chorus")), None) \
+                or next((s for s in secs if s.get("kind") not in ("build", "break", "breakdown")), None) \
+                or (secs[0] if secs else None)
+            if body is not None:
+                want = max(0.0, body["start_s"] - 4 * cand.period_s)
+                new_in = cand.nearest_phrase(want) if hasattr(cand, "nearest_phrase") else cand.nearest_downbeat(want)
+                # the body must still leave B a set's worth of runway
+                if new_in > plan["in_s"] and cand.duration_s - new_in >= 120.0:
+                    plan.setdefault("diag", {})["morph_entry"] = {"from_s": round(plan["in_s"], 2), "to_s": round(new_in, 2),
+                                                                  "body": body.get("kind"), "body_start_s": round(body["start_s"], 2)}
+                    plan["in_s"] = new_in
         return plan
 
     @staticmethod
@@ -4740,6 +4778,7 @@ class Brain:
         beat_out = cur.period_s / rate_a          # output-domain beat of A
         style = plan["style"]
         rate_b = plan["rate"]
+        morph = style == "stem_morph"             # the per-stem handover (see MORPH_ORDER)
         ev = []
 
         if style == "long_fade":
@@ -5327,6 +5366,23 @@ class Brain:
                           if b_bassy is not None else S0)
             if latest < mid:
                 mid = max(min(mid, latest), min(floor_c, mid))
+        morph_sched = None
+        if morph:
+            # THE PER-STEM HANDOVER SCHEDULE: one slot per stem of plan["morph_order"] across the blend,
+            # each handover on a bar. The bass handover is the point of no return (one bassline at a
+            # time), so `mid` - and everything derived from it: the trim release, the duck's end - is
+            # the bass slot. The handovers themselves are emitted with the other stem styles below.
+            order = [s for s in (plan.get("morph_order") or MORPH_ORDER)
+                     if s in ("drums", "bass", "other", "vocals")] or list(MORPH_ORDER)
+            span_beats = max((end - S0) / RATE / beat_out, 4.0)
+            morph_sched = []
+            for k_m, st_name in enumerate(order):
+                at_beats = round((k_m + 0.5) / len(order) * span_beats / 4.0) * 4.0
+                at_beats = min(max(at_beats, 0.0), max(span_beats - 4.0, 0.0))
+                morph_sched.append((st_name, S0 + int(at_beats * beat_out * RATE)))
+            t_bass = next((t for s_, t in morph_sched if s_ == "bass"), None)
+            mid = max(t_bass if t_bass is not None else morph_sched[min(1, len(morph_sched) - 1)][1], S0 + 1)
+            plan["morph_sched_beats"] = [(s_, round((t - S0) / RATE / beat_out, 1)) for s_, t in morph_sched]
         # A's exit fade spans swap -> blend end however late the swap lands.
         half_exit = max((end - mid) / RATE, 4 * beat_out)
         plan["no_return_at"] = mid               # the bass/mid handover
@@ -5372,9 +5428,10 @@ class Brain:
         # needs its mids/air open from the first bar.
         stem_entry = style in ("stem_drum_swap", "drum_bridge")
         vox_entry = style == "acapella_in"
-        b_low0 = 0.55 if stem_entry else 0.0
-        if stem_entry or vox_entry:
-            b_mid0, b_high0 = 1.0, 1.0
+        morph = style == "stem_morph"
+        b_low0 = 0.55 if stem_entry else (1.0 if morph else 0.0)
+        if stem_entry or vox_entry or morph:
+            b_mid0, b_high0 = 1.0, 1.0           # the morph runs EQ-flat: its stems are the carve
         # QUIET-INTRO ENTRY TRIM: loudness comp (gain_db) levels whole
         # TRACKS, but the blend plays B's entry REGION against A's outro -
         # an atmospheric intro at full fader still sits ~10 dB under A's
@@ -5419,6 +5476,12 @@ class Brain:
             {"at": Sq, "cmd": "sync", "slave": incoming, "master": active,
                  "bias_beats": sync_bias, "audio_pll": sync_audio},
         ]
+        if morph:
+            # B arrives with EVERY stem closed (while still silent at Sq): each one opens at its
+            # handover below. Nothing of B is heard before its drums come in.
+            ev.append({"at": Sq, "cmd": "stem_gains", "deck": incoming,
+                       "gains": {"drums": 0.0, "bass": 0.0, "other": 0.0,
+                                 "vocals": 0.0}, "ramp_s": 0.01})
         if stem_entry:
             ev.append({"at": S0, "cmd": "stem_gains", "deck": incoming,
                        "gains": {"drums": 1.0, "bass": 0.0, "other": 0.0,
@@ -5496,6 +5559,16 @@ class Brain:
                 ev.append({"at": pre, "cmd": "gain", "deck": active,
                            "value": K("pre_dip_gain"),
                            "ramp_s": max((mid - pre) / RATE, 2 * beat_out)})
+        elif morph:
+            # The fader is not the instrument here - B's STEMS bring it in one by one - but the room
+            # mid-morph is half of each song and summed hotter than either (+2 to +3.4 dB for six bars,
+            # Natural Cause -> Zula): B rides at MORPH_LEAN (the trim on top) from the blend start and
+            # rises to nominal by its last handover, the mirror of A's lean-out below.
+            last_slot = morph_sched[-1][1] if morph_sched else mid
+            ev.append({"at": S0, "cmd": "gain", "deck": incoming,
+                       "value": MORPH_LEAN * b_trim, "ramp_s": 0.01})
+            ev.append({"at": mid, "cmd": "gain", "deck": incoming, "value": 1.0,
+                       "ramp_s": max((last_slot - mid) / RATE, max(swap_beats, 4) * beat_out)})
         else:
             ev.append({"at": S0, "cmd": "gain", "deck": incoming,
                        "value": b_trim, "ramp_s": half})
@@ -5516,6 +5589,8 @@ class Brain:
                 {"at": mid, "cmd": "eq", "deck": incoming, "low": 0.75,
                  "mid": 1.0, "high": 1.0, "ramp_s": swap_beats * beat_out},
             ]
+        elif morph:
+            pass                                 # no EQ moves: the stems hand over below
         else:
             ev += [
             # Stage 3 - the swap downbeat: low AND mid hand over. The low
@@ -5603,6 +5678,30 @@ class Brain:
                  "gains": {"drums": 1.0, "bass": 0.0, "other": 1.0,
                            "vocals": 1.0}, "ramp_s": swap_beats * beat_out},
             ]
+        elif morph_sched is not None:
+            # THE HANDOVERS. In each slot B's stem comes in as A's same stem goes out over swap_beats
+            # (the PLL holds the beats together, so both play through the crossfade). Two exceptions,
+            # the harmonic guard: the vocals never overlap, and on an off-key pair neither does the
+            # melodic stem - A's leaves first, B's arrives once it is gone.
+            xf = swap_beats * beat_out
+            b_cam_m = _shift_camelot(cand.camelot, plan.get("pitch_st", 0) or 0)
+            key_ok_m = camelot_compat(cur.camelot, b_cam_m) >= 0.55
+            for st_name, t_k in morph_sched:
+                sequential = st_name == "vocals" or (st_name == "other" and not key_ok_m)
+                if sequential:
+                    ev += [
+                        {"at": max(t_k - int(xf * RATE), S0), "cmd": "stem_gains", "deck": active,
+                         "gains": {st_name: 0.0}, "ramp_s": xf},
+                        {"at": t_k, "cmd": "stem_gains", "deck": incoming,
+                         "gains": {st_name: 1.0}, "ramp_s": 0.5 * xf},
+                    ]
+                else:
+                    ev += [
+                        {"at": t_k, "cmd": "stem_gains", "deck": incoming,
+                         "gains": {st_name: 1.0}, "ramp_s": xf},
+                        {"at": t_k, "cmd": "stem_gains", "deck": active,
+                         "gains": {st_name: 0.0}, "ramp_s": xf},
+                    ]
         elif style == "acapella_in":
             # B's full mix lands at the swap - the voice that rode A's
             # bed gets its own instrumental underneath it.
@@ -5662,6 +5761,18 @@ class Brain:
                 {"at": mid + bridge, "cmd": "gain", "deck": active,
                  "value": 0.0, "ramp_s": 4 * beat_out},
             ]
+        elif morph_sched is not None:
+            # Mid-morph the room is FULLER than either song: B's arrived stems under A's remaining ones
+            # measured +2 to +3.4 dB for six bars (Natural Cause -> Zula, first renders). A leans out to
+            # MORPH_LEAN from the bass handover to its last slot - the DJ's hand easing the outgoing
+            # channel while the incoming takes the parts over - then the fader confirms the empty deck
+            # two beats after the last handover finishes.
+            last_t = morph_sched[-1][1] + int(swap_beats * beat_out * RATE)
+            if last_t > mid + int(2 * beat_out * RATE):
+                ev.append({"at": mid, "cmd": "gain", "deck": active, "value": MORPH_LEAN,
+                           "ramp_s": max((morph_sched[-1][1] - mid) / RATE, 2 * beat_out)})
+            ev.append({"at": min(last_t, end), "cmd": "gain", "deck": active,
+                       "value": 0.0, "ramp_s": 2 * beat_out})
         else:
             ev += [
                 # Outgoing leaves over the rest of the blend (bass already

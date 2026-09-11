@@ -48,7 +48,7 @@ STYLES = ("long_blend", "bass_swap", "cut_at_drop", "filter_sweep",
           "stem_drum_swap", "acapella_out",
           "stem_bass_swap", "drum_bridge", "acapella_in", "melody_carry",
           "phrase_cut", "spinback_cut", "loop_in", "breakdown_swap",
-          "long_fade")
+          "stem_morph", "long_fade")
 
 
 # --------------------------------------------------------------------------

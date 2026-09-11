@@ -54,7 +54,7 @@ _SPIN = ("spinback_s",)
 _ROLL = _BLEND + ("roll_shrink1", "roll_shrink2")
 # Styles whose plan can carry a vocal duck get the duck knobs too.
 _DUCKERS = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap",
-            "melody_carry", "loop_in", "breakdown_swap")
+            "melody_carry", "loop_in", "breakdown_swap", "stem_morph")
 _BY_STYLE = {"long_fade": _FADE, "echo_out": _ECHO, "phrase_cut": _CUT,
              "spinback_cut": _SPIN, "loop_roll_exit": _ROLL}
 

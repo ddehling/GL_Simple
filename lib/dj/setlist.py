@@ -328,7 +328,7 @@ def compile_plan(library, entries, theme, seed=0, pair_memory=None):
                                      "stem_drum_swap", "acapella_out",
                                      "stem_bass_swap", "drum_bridge",
                                      "acapella_in", "melody_carry",
-                                     "loop_in", "breakdown_swap") \
+                                     "loop_in", "breakdown_swap", "stem_morph") \
                 else 0.0
             play -= blend_wall * (a_r - 1.0)  # blend runs at meeting tempo
             entry_in_s = plan["in_s"] + blend_wall * plan["rate"]

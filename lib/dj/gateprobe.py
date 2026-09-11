@@ -23,7 +23,7 @@ from lib.dj.brain import (BAND_CLASH_HI, BAND_CLASH_LO, KICK_SCREEN_BLEND_S,
 # Which styles each screen takes off the menu (mirrors brain's kill lists).
 _OVERLAP = ("long_blend", "bass_swap", "filter_sweep", "stem_bass_swap",
             "melody_carry", "breakdown_swap", "stem_drum_swap",
-            "drum_bridge")
+            "drum_bridge", "stem_morph")
 # The beat-power bars lost the plain blends to Gate Check verdicts
 # (A-side 2026-08-07, B-side 2026-08-13); they still govern the stem +
 # mid-running styles, which is what a trial of them can pin now.
@@ -47,6 +47,7 @@ _STYLE_BANDS = {
     "melody_carry": ("mid", "high"), "breakdown_swap": ("mid", "high"),
     "stem_drum_swap": ("low", "mid", "high"),
     "drum_bridge": ("low", "mid", "high"),
+    "stem_morph": ("low", "mid", "high"),
 }
 
 

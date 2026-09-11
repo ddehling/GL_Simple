@@ -1319,7 +1319,8 @@ class DJSystem:
                         "state": self.state, "style": style,
                         "stem_style": style in (
                             "stem_drum_swap", "acapella_out", "acapella_in",
-                            "stem_bass_swap", "drum_bridge", "melody_carry")
+                            "stem_bass_swap", "drum_bridge", "melody_carry",
+                            "stem_morph")
                         or bool((self.plan or {}).get("duck_vocal_a")),
                         "decoding": bool(getattr(self, "_decoding", None)),
                         # Was the shadow pre-flight worker running when
@@ -1717,9 +1718,9 @@ class DJSystem:
                 if self.current is not None else None
         st = plan["style"]
         need_a = st in ("stem_drum_swap", "acapella_out", "melody_carry",
-                        "drum_bridge", "stem_bass_swap")
+                        "drum_bridge", "stem_bass_swap", "stem_morph")
         need_b = st in ("stem_drum_swap", "drum_bridge", "acapella_in",
-                        "stem_bass_swap")
+                        "stem_bass_swap", "stem_morph")
         duck_a = bool(plan.get("duck_vocal_a"))
         if duck_a and not need_a:
             need_a = True                # the duck needs A's vocal stem
@@ -1741,7 +1742,7 @@ class DJSystem:
                 stems_a = None
         if duck_a and stems_a is None and st not in (
                 "stem_drum_swap", "acapella_out", "melody_carry",
-                "drum_bridge", "stem_bass_swap"):
+                "drum_bridge", "stem_bass_swap", "stem_morph"):
             # Duck-only failure: keep the style, drop the duck (rare -
             # stems were on disk at plan time; one blend risks the
             # vocal overlap rather than tearing up the geometry).
