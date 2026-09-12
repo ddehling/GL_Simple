@@ -523,6 +523,39 @@ another song's singer steps back to 0.6 (was 0.8). The gate gained the opposite 
 resting while the bed sings (< 15 % of singing blocks). The section-chroma guard bites more as the
 measurement pass covers the library (it finished the same night: every stem-bearing track measured).
 
+**The picture and the picker, second pass (2026-09-12, late night).** "The timeline view keeps weirdly
+morphing" - two causes: a live clip that grows a pixel a tick was re-rendered at a new scale every tick
+(now spectrograms render on a fixed 8-bar lattice from the clip's start and only more of it is revealed),
+and the plan ghost was removed and re-added every tick at a jittering bar and, layered, on whatever lane the
+free policy would give (now one steady ghost on the voice lane at the bar the settling allows, kept while
+the plan is the same song within a bar). "It also can't make up its mind" - every dial turn and every
+GOOD / BAD re-sent all steering to the autoDJ, and flavor / persona / arc / pin each make it drop its NEXT
+and pick again; now steering reaches an engine only when it changed (`_send`), GOOD never replans, a dial
+turn nudges the next phrase decision instead of forcing a move, dial-forced seams come at most every two
+minutes after 90 s of play, and an arc drag applies a second after the hand stops. "More info on the
+timeline: zoom, song section info, stem volume info, where songs morph / mix, how the system is building
+across songs" → zoom − / + / now / follow buttons (Ctrl+wheel still zooms; a hand scroll turns follow off);
+a SECTION STRIP along each clip (intro / groove / build / breakdown / outro by colour, the drop as a white
+tick, the measured hook as a gold line); a LEVEL METER per lane, the level heard each bar; and the STORY
+ROW above the lanes: what happened, positioned in time (a song opens, arrives as a voice, the bed passes at
+its hook, fades out, a DROP, a breakdown → new bed as a band over drums + bass, the autoDJ's seam as a band
+with its style and length) and what is planned, dashed ("bed settled: a voice may arrive", "X may take the
+bed at its hook", "seam: long_blend 32 beats → Y"). "The next song picker should be based, at least in
+part, on the last song in the next song list" → with songs queued the list ranks after the last queued
+song (the header says so) and queued songs are marked. "The song picker presents a wall of songs… would
+help if we could add more steering to it and more ways of knowing what the song is" → a filter row
+(instrumental / vocal, calmer / same / hotter and slower / same / faster than the reference, hook only,
+unheard tonight on by default) and a sort (fit, calm → hot, hot → calm, bpm, title, hook); two-line rows -
+who it is, then its character (tempo and key, an energy glyph, sings or instrumental, dark / even / bright,
+genre, year, its mood tags, the hook's time, its length) and the verdict; the search matches tags, genre
+and year too; the tooltip adds the song's shape (its builds, breakdowns and drops with times) and when it
+last played. Also: the engine starts after the Director is ready and the standby engine waits 30 s (an
+underrun at START in the user's log). "Prefer zoom to pan on the scroll; more song structure info" → the
+wheel zooms around the pointer (Ctrl / Shift + wheel pans), the vocals lane carries the singing map (green)
+under its section strip, and a SONG MAP sits under NOW and under NEXT: the whole record's sections by
+colour and energy, its drops, its hook in gold, where it sings, and the playhead - the shape of the song at
+hand without touching the picture's zoom (the tooltip lists the sections with times).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

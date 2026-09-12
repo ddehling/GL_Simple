@@ -28,6 +28,9 @@ MIME = "application/x-dj-clip"
 BG = QColor(18, 18, 22)
 FG = QColor(230, 230, 236)
 DIM = QColor(150, 150, 165)
+# the scanner's section kinds, as a strip along each clip of the Director's picture
+SECTION_COLORS = {"intro": QColor(90, 90, 100), "groove": QColor(60, 110, 190), "build": QColor(215, 140, 50),
+                  "breakdown": QColor(150, 80, 190), "outro": QColor(90, 90, 100)}
 
 
 def _spec_image(spec, col, t0, t1, w, h, hop_s):
@@ -65,7 +68,10 @@ class TimelineCanvas(QWidget):
         if lane_h:
             self.LANE_H = lane_h
         self.readonly = readonly
-        self.setMinimumHeight(self.RULER_H + 4 * self.LANE_H + 8)
+        # the Director's picture carries a STORY row (what happened / is planned, in time) above the lanes,
+        # section strips on the clips and a level meter per lane; a tab that offers marks() gets them
+        self.story_h = 20 if hasattr(tab, "marks") else 0
+        self.setMinimumHeight(self.RULER_H + self.story_h + 4 * self.LANE_H + 8)
         self.setAcceptDrops(not readonly)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.px_per_bar = 14.0
@@ -83,11 +89,23 @@ class TimelineCanvas(QWidget):
         return self.first_bar + (x - self.LEFT) / self.px_per_bar
 
     def lane_at(self, y):
-        i = int((y - self.RULER_H) // self.LANE_H)
+        i = int((y - self.RULER_H - self.story_h) // self.LANE_H)
         return LANES[i] if 0 <= i < 4 else None
 
     def lane_y(self, lane):
-        return self.RULER_H + LANES.index(lane) * self.LANE_H
+        return self.RULER_H + self.story_h + LANES.index(lane) * self.LANE_H
+
+    def zoom(self, f, around_bar=None):
+        """Zoom by factor f, keeping `around_bar` (default: the playhead, else the view's centre) in place."""
+        vb = self.visible_bars()
+        if around_bar is None:
+            ph = self.tab.playhead()
+            around_bar = ph if (ph is not None and self.first_bar <= ph <= self.first_bar + vb) else self.first_bar + vb / 2
+        frac = (around_bar - self.first_bar) / max(vb, 1e-6)
+        self.px_per_bar = max(2.0, min(80.0, self.px_per_bar * f))
+        self.first_bar = max(0.0, around_bar - frac * self.visible_bars())
+        self._img_cache.clear()
+        self.update()
 
     def visible_bars(self):
         return (self.width() - self.LEFT) / self.px_per_bar
@@ -138,7 +156,9 @@ class TimelineCanvas(QWidget):
                 if x1 < self.LEFT or x0 > W:
                     continue
                 col = self.tab.color(c.track_id)
-                rect = QRectF(x0, y + 3, max(2.0, x1 - x0), self.LANE_H - 6)
+                meter_h = 6 if self.story_h else 0
+                sec_h = 5 if self.story_h else 0
+                rect = QRectF(x0, y + 3 + sec_h, max(2.0, x1 - x0), self.LANE_H - 6 - sec_h - meter_h)
                 if c.rest:
                     p.fillRect(rect, QColor(10, 10, 12))
                     p.setPen(QPen(QColor(70, 70, 80), 1, Qt.PenStyle.DashLine if c.ghost else Qt.PenStyle.SolidLine))
@@ -203,6 +223,108 @@ class TimelineCanvas(QWidget):
                     p.setFont(f)
                     p.drawText(QRectF(rect.left() + 4, rect.top() + 1, rect.width() - 8, 16), Qt.AlignmentFlag.AlignVCenter,
                                ("auto · " if c.ghost else "") + f"{t.title[:36]}  @{_mmss(c.start_s)}" + ("" if c.end_bar is None else f"  {c.end_bar - c.bar} bars"))
+                # the song's SECTIONS along the clip (a strip above it): intro / groove / build / breakdown /
+                # outro by colour, the kind written when there is room, the drop (a groove after a build)
+                # as a white tick; the HOOK (measured) as a gold line under the strip
+                if t is not None and self.story_h and not c.ghost:
+                    bar_s = self.tab.bar_s(c.track_id)
+                    f = QFont(self.font())
+                    f.setPointSizeF(7)
+                    p.setFont(f)
+                    sy = y + 3
+                    for i, s in enumerate(t.sections or []):
+                        bb0 = c.bar + (s["start_s"] - c.start_s) / max(bar_s, 1e-6)
+                        bb1 = c.bar + (s["end_s"] - c.start_s) / max(bar_s, 1e-6)
+                        sx0, sx1 = max(self.x_of(bb0), x0), min(self.x_of(bb1), x1)
+                        if sx1 - sx0 < 1.5:
+                            continue
+                        kc = SECTION_COLORS.get(s.get("kind"), QColor(90, 90, 100))
+                        p.fillRect(QRectF(sx0, sy, sx1 - sx0, sec_h), kc)
+                        if sx1 - sx0 > 34:
+                            p.setPen(QColor(230, 230, 236))
+                            p.drawText(QRectF(sx0 + 2, sy - 1, sx1 - sx0 - 4, sec_h + 4), Qt.AlignmentFlag.AlignVCenter, s.get("kind") or "")
+                        if i > 0 and s.get("kind") == "groove" and (t.sections[i - 1].get("kind") in ("build", "breakdown")) and sx0 > x0 + 1:
+                            p.setPen(QPen(QColor(255, 255, 255), 2))
+                            p.drawLine(QPointF(sx0, sy - 1), QPointF(sx0, sy + sec_h + 3))
+                    # the SINGING map on the vocals lane (the ML vocal curve): green where the song sings
+                    if ln == "vocals":
+                        vc = (getattr(t, "axes", None) or {}).get("vc") or []
+                        if len(vc) >= 2:
+                            p.setPen(QPen(QColor(120, 220, 140), 2))
+                            hop = float((t.axes or {}).get("vc_hop") or 8.0)
+                            for tt, v in vc:
+                                if v is None or float(v) < 0.03:
+                                    continue
+                                vb0 = c.bar + (float(tt) - c.start_s) / max(bar_s, 1e-6)
+                                vb1 = c.bar + (float(tt) + hop - c.start_s) / max(bar_s, 1e-6)
+                                vx0, vx1 = max(self.x_of(vb0), x0), min(self.x_of(vb1), x1)
+                                if vx1 > vx0:
+                                    p.drawLine(QPointF(vx0, sy + sec_h + 1), QPointF(vx1, sy + sec_h + 1))
+                    hk = getattr(t, "hook", None)
+                    if hk:
+                        p.setPen(QPen(QColor(240, 200, 90), 2))
+                        length = float(hk.get("end_s", 0) - hk.get("start_s", 0)) or 8 * bar_s
+                        for st in (hk.get("starts") or [hk["start_s"]]):
+                            hb0 = c.bar + (st - c.start_s) / max(bar_s, 1e-6)
+                            hb1 = hb0 + length / max(bar_s, 1e-6)
+                            hx0, hx1 = max(self.x_of(hb0), x0), min(self.x_of(hb1), x1)
+                            if hx1 > hx0:
+                                p.drawLine(QPointF(hx0, sy + sec_h + 1), QPointF(hx1, sy + sec_h + 1))
+                                if hx1 - hx0 > 30:
+                                    p.setPen(QColor(240, 200, 90))
+                                    p.drawText(QRectF(hx0 + 2, sy + sec_h + 1, hx1 - hx0, 10), Qt.AlignmentFlag.AlignVCenter, "hook")
+                                    p.setPen(QPen(QColor(240, 200, 90), 2))
+        # the LEVEL METERS: per lane, the level heard each bar (the Director records it)
+        gains_fn = getattr(self.tab, "lane_gains", None)
+        if self.story_h and gains_fn is not None:
+            gains = gains_fn() or {}
+            for ln in LANES:
+                gl = gains.get(ln) or {}
+                if not gl:
+                    continue
+                y = self.lane_y(ln)
+                base = y + self.LANE_H - 3
+                for bb in range(int(self.first_bar), int(self.first_bar) + vb):
+                    g = gl.get(bb)
+                    if g is None:
+                        continue
+                    c = tl.active(ln, bb)
+                    col = self.tab.color(c.track_id) if c is not None else QColor(120, 120, 130)
+                    x = self.x_of(bb)
+                    p.fillRect(QRectF(x, base - 6 * g, max(1.0, self.px_per_bar - 1), 6 * g), col)
+        # the STORY: what happened where (bands over the lanes it touched, words in the story row) and what
+        # is planned (dashed, dimmer)
+        marks_fn = getattr(self.tab, "marks", None)
+        if self.story_h and marks_fn is not None:
+            f = QFont(self.font())
+            f.setPointSizeF(8)
+            p.setFont(f)
+            sy = self.RULER_H
+            last_x = -1e9
+            row = 0
+            for m in sorted(marks_fn() or [], key=lambda m: m["bar"]):
+                x0 = self.x_of(m["bar"])
+                if x0 > W or (m.get("end_bar") is not None and self.x_of(m["end_bar"]) < self.LEFT) or (m.get("end_bar") is None and x0 < self.LEFT - 2):
+                    continue
+                ghost = bool(m.get("ghost"))
+                lanes = m.get("lanes") or list(LANES)
+                col = QColor(255, 255, 255, 34 if not ghost else 18)
+                pen = QPen(QColor(230, 230, 236, 160 if not ghost else 110), 1, Qt.PenStyle.DashLine if ghost else Qt.PenStyle.SolidLine)
+                if m.get("end_bar") is not None:
+                    x1 = self.x_of(m["end_bar"])
+                    for ln in lanes:
+                        ly = self.lane_y(ln)
+                        p.fillRect(QRectF(max(x0, self.LEFT), ly, x1 - max(x0, self.LEFT), self.LANE_H), col)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(x1, sy), QPointF(x1, H))
+                p.setPen(pen)
+                p.drawLine(QPointF(x0, sy), QPointF(x0, H if len(lanes) == 4 else self.lane_y(lanes[-1]) + self.LANE_H))
+                # the words: two rows so neighbours do not overwrite each other, cut to what fits
+                row = 1 - row if x0 - last_x < 200 else 0
+                last_x = x0
+                p.setPen(QColor(230, 230, 236) if not ghost else QColor(170, 170, 185))
+                txt = ("plan: " if ghost else "") + m.get("text", "")
+                p.drawText(QRectF(x0 + 3, sy + (0 if row == 0 else 9), 200, 11), Qt.AlignmentFlag.AlignVCenter, txt[:38] + ("…" if len(txt) > 38 else ""))
         # playhead
         ph = self.tab.playhead()
         if ph is not None:
@@ -283,13 +405,20 @@ class TimelineCanvas(QWidget):
             super().keyPressEvent(ev)
 
     def wheelEvent(self, ev):
-        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            f = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
+        # the wheel ZOOMS around the pointer (user 2026-09-12: "prefer zoom to pan on the scroll"); with Ctrl
+        # or Shift held, or a horizontal wheel, it pans - and a hand pan stops the tab following the playhead
+        dy, dx = ev.angleDelta().y(), ev.angleDelta().x()
+        pan = bool(ev.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)) or (dx and not dy)
+        if not pan:
+            f = 1.15 if dy > 0 else 1 / 1.15
             bar_under = self.bar_at(ev.position().x())
             self.px_per_bar = max(2.0, min(80.0, self.px_per_bar * f))
             self.first_bar = max(0.0, bar_under - (ev.position().x() - self.LEFT) / self.px_per_bar)
         else:
-            self.first_bar = max(0.0, self.first_bar - ev.angleDelta().y() / 120.0 * 4)
+            self.first_bar = max(0.0, self.first_bar - (dy or dx) / 120.0 * 4)
+            hook = getattr(self.tab, "on_user_scroll", None)
+            if hook is not None:
+                hook()
         self._img_cache.clear()
         self.update()
 

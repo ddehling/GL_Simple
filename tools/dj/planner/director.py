@@ -57,6 +57,77 @@ DIAL_ORDER = ("layers", "mixing", "arc", "length", "energy", "tempo", "pace", "s
               "moments", "fx", "bass", "tone", "level")
 
 
+class SongMap(QWidget):
+    """One record's structure across its whole length: sections by colour (the scanner's intro / groove /
+    build / breakdown / outro), the drops as white ticks, the measured hook in gold, where it sings in green,
+    and the playhead. Under NOW and NEXT - the shape of the song at hand without zooming the picture."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.track = None
+        self.pos_s = None
+        self.setMinimumHeight(16)
+        self.setMaximumHeight(16)
+
+    def set(self, track, pos_s=None):
+        if track is not self.track:
+            self.track = track
+            if track is not None:
+                secs = track.sections or []
+                parts = []
+                for i, s in enumerate(secs):
+                    k = s.get("kind") or "?"
+                    if k == "groove" and i > 0 and secs[i - 1].get("kind") in ("build", "breakdown", "intro"):
+                        k = "DROP"
+                    parts.append(f"{k} {_mmss(s['start_s'])}")
+                hk = getattr(track, "hook", None)
+                tip = [f"{track.title} — {track.artist or ''}   {_mmss(track.duration_s)}", "  ·  ".join(parts)]
+                if hk:
+                    tip.append("hook at " + ", ".join(_mmss(x) for x in (hk.get("starts") or [hk["start_s"]])[:6]) + f"  ({_mmss(hk['end_s'] - hk['start_s'])} long)")
+                self.setToolTip("\n".join(tip))
+            else:
+                self.setToolTip("")
+        self.pos_s = pos_s
+        self.update()
+
+    def paintEvent(self, ev):
+        from PyQt6.QtGui import QPainter, QColor, QPen
+        from PyQt6.QtCore import QRectF, QPointF
+        from tools.dj.planner.timeline import SECTION_COLORS
+        qp = QPainter(self)
+        W, H = self.width(), self.height()
+        qp.fillRect(self.rect(), QColor(20, 20, 26))
+        t = self.track
+        if t is None or not (t.duration_s or 0):
+            return
+        dur = float(t.duration_s)
+        x = lambda s: max(0.0, min(W, W * float(s) / dur))  # noqa: E731
+        secs = t.sections or []
+        for i, s in enumerate(secs):
+            col = QColor(SECTION_COLORS.get(s.get("kind"), QColor(90, 90, 100)))
+            e = s.get("energy")
+            if e is not None:
+                col.setAlpha(int(110 + 145 * max(0.0, min(1.0, float(e)))))
+            qp.fillRect(QRectF(x(s["start_s"]), 2, max(1.0, x(s["end_s"]) - x(s["start_s"])), H - 8), col)
+            if i > 0 and s.get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown"):
+                qp.setPen(QPen(QColor(255, 255, 255), 2))
+                qp.drawLine(QPointF(x(s["start_s"]), 0), QPointF(x(s["start_s"]), H - 4))
+        vc = (getattr(t, "axes", None) or {}).get("vc") or []
+        hop = float((t.axes or {}).get("vc_hop") or 8.0)
+        qp.setPen(QPen(QColor(120, 220, 140), 2))
+        for tt, v in vc:
+            if v is not None and float(v) >= 0.03:
+                qp.drawLine(QPointF(x(tt), H - 4), QPointF(x(float(tt) + hop), H - 4))
+        hk = getattr(t, "hook", None)
+        if hk:
+            qp.setPen(QPen(QColor(240, 200, 90), 3))
+            length = float(hk.get("end_s", 0) - hk.get("start_s", 0)) or 15.0
+            for st in (hk.get("starts") or [hk["start_s"]]):
+                qp.drawLine(QPointF(x(st), H - 1), QPointF(x(st + length), H - 1))
+        if self.pos_s is not None:
+            qp.setPen(QPen(QColor(255, 255, 255), 2))
+            qp.drawLine(QPointF(x(self.pos_s), 0), QPointF(x(self.pos_s), H))
+
+
 class ArcStrip(QWidget):
     """The night's arc as a picture: the plan as a curve (with the ENERGY lean on it), the songs that played
     as dots at their energy, the playhead. Click = 'we are here' (both engines' set clocks move); drag up
@@ -218,6 +289,26 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.state_lbl = QLabel("")
         self.state_lbl.setProperty("dim", "true")
         top.addWidget(self.state_lbl, 1)
+        # the picture's controls: zoom out / in, back to now, follow the playhead
+        self.follow_btn = None
+        for label, tip, fn in (("−", "zoom out (or Ctrl+wheel on the picture)", lambda: self.canvas.zoom(1 / 1.3)),
+                               ("+", "zoom in (or Ctrl+wheel on the picture)", lambda: self.canvas.zoom(1.3)),
+                               ("now", "back to the playhead, following again", self._back_to_now)):
+            b = QPushButton(label)
+            b.setProperty("kind", "small")
+            b.setMinimumHeight(24)
+            b.setMaximumWidth(44 if label != "now" else 52)
+            b.setToolTip(tip)
+            b.clicked.connect(fn)
+            top.addWidget(b)
+        self.follow_btn = QPushButton("follow")
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setChecked(True)
+        self.follow_btn.setProperty("kind", "small")
+        self.follow_btn.setMinimumHeight(24)
+        self.follow_btn.setMaximumWidth(64)
+        self.follow_btn.setToolTip("keep the playhead in view (scrolling the picture by hand turns this off)")
+        top.addWidget(self.follow_btn)
         root.addLayout(top)
         # -- the arc: the night's energy plan, what played against it, where we are; click / drag steer it ----
         self.arc_strip = ArcStrip(self)
@@ -257,7 +348,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.why_lbl = lab(10, dim=True)
         self.why_lbl.setMaximumHeight(70)
         self.lanes_lbl = lab(10, dim=True)
-        for w in (self.now_lbl, self.now_sub, self.next_lbl, self.next_sub, self.intent_lbl, self.lanes_lbl, self.why_lbl):
+        self.now_map = SongMap()
+        self.now_map.setToolTip("the playing record's shape")
+        self.next_map = SongMap()
+        for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.intent_lbl, self.lanes_lbl, self.why_lbl):
             left.addWidget(w)
         srow = QHBoxLayout()
         self.found_h = QLabel("SONGS")
@@ -269,11 +363,62 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.search.textChanged.connect(self._fill_search)
         srow.addWidget(self.search, 1)
         left.addLayout(srow)
+        # STEERING the list: what kind of song, relative to the reference (the last queued song, else the
+        # playing one), and how to sort it
+        frow = QHBoxLayout()
+        frow.setSpacing(4)
+        self.filter_groups = {}
+
+        def fgroup(name, opts, tips):
+            grp = QButtonGroup(self)
+            grp.setExclusive(True)
+            for opt, tip in zip(opts, tips):
+                b = QPushButton(opt)
+                b.setCheckable(True)
+                b.setProperty("kind", "small")
+                b.setMinimumHeight(20)
+                b.setMaximumHeight(22)
+                b.setToolTip(tip)
+                b.setChecked(opt == opts[0])
+                b.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
+                grp.addButton(b)
+                frow.addWidget(b)
+            self.filter_groups[name] = grp
+            frow.addSpacing(8)
+        fgroup("voice", ("any", "inst", "vocal"), ("any song", "instrumentals only", "songs that sing"))
+        fgroup("energy", ("any", "calmer", "same", "hotter"), ("any energy", "calmer than the reference song", "about the same energy", "hotter than the reference song"))
+        fgroup("tempo", ("any", "slower", "same", "faster"), ("any tempo", "slower than the reference", "within 2 bpm", "faster than the reference"))
+        self.f_hook = QPushButton("hook")
+        self.f_hook.setCheckable(True)
+        self.f_hook.setProperty("kind", "small")
+        self.f_hook.setMinimumHeight(20)
+        self.f_hook.setMaximumHeight(22)
+        self.f_hook.setToolTip("only songs with a measured hook (a sung chorus that repeats)")
+        self.f_hook.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
+        frow.addWidget(self.f_hook)
+        self.f_unplayed = QPushButton("unheard")
+        self.f_unplayed.setCheckable(True)
+        self.f_unplayed.setChecked(True)
+        self.f_unplayed.setProperty("kind", "small")
+        self.f_unplayed.setMinimumHeight(20)
+        self.f_unplayed.setMaximumHeight(22)
+        self.f_unplayed.setToolTip("hide what already played tonight")
+        self.f_unplayed.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
+        frow.addWidget(self.f_unplayed)
+        frow.addSpacing(8)
+        self.sort_box = QComboBox()
+        for label, key in (("by fit", "fit"), ("calm → hot", "energy"), ("hot → calm", "energy_desc"), ("by bpm", "bpm"), ("by title", "title"), ("by hook", "hook")):
+            self.sort_box.addItem(label, key)
+        self.sort_box.setToolTip("how the list is ordered; ✓ always above ✗")
+        self.sort_box.currentIndexChanged.connect(lambda _i: (setattr(self, "_found_sig", None), self._fill_search()))
+        frow.addWidget(self.sort_box)
+        frow.addStretch(1)
+        left.addLayout(frow)
         lists = QHBoxLayout()
         self.found = QListWidget()
         self.found.setMinimumHeight(120)
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
-        self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click to put it UP NEXT")
+        self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click to put it UP NEXT · hover a row for the song's shape")
         lists.addWidget(self.found, 3)
         qcol = QVBoxLayout()
         un = QLabel("UP NEXT")
@@ -398,6 +543,26 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def playhead(self):
         return self.director.bar() if self.director is not None else 0.0
+
+    def marks(self):
+        """The story for the picture: what happened where, and what is planned (ghost)."""
+        return self.director.all_marks() if self.director is not None else []
+
+    def lane_gains(self):
+        return self.director.lane_gains() if self.director is not None else {}
+
+    def on_user_scroll(self):
+        if self.follow_btn is not None:
+            self.follow_btn.setChecked(False)
+
+    def _back_to_now(self):
+        if self.follow_btn is not None:
+            self.follow_btn.setChecked(True)
+        if self.director is not None:
+            vb = self.canvas.visible_bars()
+            self.canvas.first_bar = max(0.0, self.director.bar() - vb * 0.33)
+            self.canvas._img_cache.clear()
+            self.canvas.update()
 
     def seek(self, bar):
         pass
@@ -698,9 +863,22 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         q = (text if text is not None else self.search.text()).strip().lower()
         cur = self.found.currentItem().data(Qt.ItemDataRole.UserRole) if self.found.currentItem() else None
         rows = []
+        filters = {}
+        try:
+            for name, grp in self.filter_groups.items():
+                b = grp.checkedButton()
+                if b is not None and b.text() != "any":
+                    filters[name] = b.text()
+            if self.f_hook.isChecked():
+                filters["hook"] = True
+            if self.f_unplayed.isChecked():
+                filters["unplayed"] = True
+        except Exception:
+            filters = {}
+        sort = self.sort_box.currentData() if hasattr(self, "sort_box") else "fit"
         try:
             if self.director is not None:
-                rows = self.director.rank(q, n=60)
+                rows = self.director.rank(q, n=80, filters=filters, sort=sort)
             else:
                 lib = self._library()
                 pool = None
@@ -728,15 +906,48 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.found.clear()
         for r in rows:
             mark = "" if r["ok"] is None else ("✓  " if r["ok"] else "✗  ")
-            it = QListWidgetItem(f"{mark}{r['title'][:38]}  ·  {r['artist'][:22]}   {(r['bpm'] or 0):.0f} bpm {r['camelot'] or ''}"
-                                 + (f"   {r['why']}" if r["why"] else ""))
+            if "energy" in r:
+                # two lines: who it is and what it is like; then why it fits or not
+                e = r.get("energy") or 0.0
+                # words, not glyphs: a block or music-note glyph pulls in a fallback font that breaks the
+                # item's multi-line layout (the third line vanished)
+                eword = "calm" if e < 0.35 else ("warm" if e < 0.55 else ("hot" if e < 0.75 else "peak"))
+                bits = [f"{(r['bpm'] or 0):.0f} {r['camelot'] or ''}".strip(), f"energy {e:.2f} {eword}", "sings" if r.get("sings") else "instrumental"]
+                if r.get("valence"):
+                    bits.append(r["valence"])
+                if r.get("genre"):
+                    bits.append(r["genre"])
+                if r.get("year"):
+                    bits.append(str(r["year"]))
+                if r.get("tags"):
+                    bits.append(", ".join(r["tags"][:4]))
+                if r.get("hook_s") is not None:
+                    bits.append(f"hook {int(r['hook_s']) // 60}:{int(r['hook_s']) % 60:02d}")
+                if r.get("duration_s"):
+                    bits.append(_mmss(r["duration_s"]))
+                line1 = f"{mark}{r['title'][:40]}  ·  {r['artist'][:24]}"
+                line2 = "      " + "  ·  ".join(bits)
+                it = QListWidgetItem(line1 + "\n" + line2 + (f"\n      {r['why']}" if r.get("why") else ""))
+                tip = [f"{r['title']} — {r['artist']}", "  ·  ".join(bits)]
+                if r.get("shape"):
+                    tip.append(f"shape: {r['shape']}")
+                if r.get("why"):
+                    tip.append(("fits: " if r["ok"] else "would be rejected: ") + r["why"])
+                if r.get("last_played_min") is not None:
+                    tip.append(f"played {r['last_played_min']} min ago")
+                it.setToolTip("\n".join(tip))
+            else:
+                it = QListWidgetItem(f"{mark}{r['title'][:38]}  ·  {r['artist'][:22]}   {(r['bpm'] or 0):.0f} bpm {r['camelot'] or ''}"
+                                     + (f"   {r['why']}" if r["why"] else ""))
             it.setData(Qt.ItemDataRole.UserRole, r["id"])
             if r["ok"] is False:
                 it.setForeground(Qt.GlobalColor.gray)
             self.found.addItem(it)
             if r["id"] == cur:
                 self.found.setCurrentItem(it)
-        self.found_h.setText(f"SONGS  {len(rows)}" + ("   ✓ fits  ✗ would be rejected" if self.director is not None else ""))
+        ref = getattr(self.director, "rank_ref", None) if self.director is not None else None
+        self.found_h.setText(f"SONGS  {len(rows)}" + ((f"   ✓ fits after {ref[:22]} (last in UP NEXT)  ✗ would be rejected" if ref
+                                                     else "   ✓ fits  ✗ would be rejected") if self.director is not None else ""))
 
     def _queue(self, tid):
         if self.director is not None:
@@ -744,11 +955,15 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         else:
             self.err_lbl.setText("press START first")
         self._render_queue()
+        self._found_sig = None
+        self._fill_search()                           # the list now ranks after the last queued song
 
     def _unqueue(self, tid):
         if self.director is not None:
             self.director.unqueue(tid)
         self._render_queue()
+        self._found_sig = None
+        self._fill_search()
 
     def _render_queue(self):
         self.queue.clear()
@@ -809,6 +1024,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.next_lbl.setText("NEXT  not chosen yet")
             self.next_sub.setText("")
         self.intent_lbl.setText(st.get("intent") or "")
+        # the song maps: the playing record (by id when the status carries one, else by title) and the next
+        try:
+            lib_by_title = {t.title: t for t in d.library}
+            self.now_map.set(lib_by_title.get((now or {}).get("title")), (now or {}).get("pos_s"))
+            self.next_map.set(lib_by_title.get((nxt or {}).get("title")), None)
+        except Exception:
+            pass
         self.arc_strip.set_arc(st.get("arc"))
         lanes = st.get("lanes")
         self.lanes_lbl.setText("   ".join(f"{ln}: {(t or '-')[:22]}" for ln, t in lanes.items()) if lanes else "")
@@ -841,7 +1063,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self._fill_tags()                         # the library may have been rescanned or retagged meanwhile
         err = st.get("error")
         self.err_lbl.setText(f"ERROR {err}" if err else "")
-        self.canvas.follow(d.bar())
+        if self.follow_btn is None or self.follow_btn.isChecked():
+            self.canvas.follow(d.bar())
         for tid in d.tl.tracks():
             if tid and self.spectro.get(tid) is None and tid not in self.spectro._busy and tid not in self.spectro.errors:
                 t = self.track(tid)

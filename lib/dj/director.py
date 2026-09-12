@@ -133,6 +133,13 @@ class Director:
         self._arc_jump = None
         self._sent = {}                  # per engine: the steering values it already has (see _send)
         self._dial_seam_t = 0.0          # when a dial turn last brought a seam forward
+        # THE STORY on the picture: per-lane levels bar by bar, and marks - what happened where (a seam, a
+        # song arriving as a voice, the bed passing, a breakdown before it lands) and what is planned ahead
+        self._gains = {ln: {} for ln in ("drums", "bass", "other", "vocals")}
+        self.marks = []                  # real: {bar, end_bar, lanes, text, kind}
+        self.plan_marks = []             # planned (ghost), rebuilt every tick
+        self._mark_seen = 0
+        self._last_plan = None
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -1059,6 +1066,14 @@ class Director:
                     self.tl.clips.remove(c)
             self._ghosts = []
             self._ghost_key = None
+
+        def mark(text, kind, lanes=None, bar=None, end_bar=None):
+            self.marks.append({"bar": int(bar if bar is not None else b), "end_bar": (int(end_bar) if end_bar is not None else None),
+                               "lanes": lanes, "text": text, "kind": kind})
+            if len(self.marks) > 400:
+                del self.marks[:-400]
+        self._record_gains(b)
+        self.plan_marks = []
         if self.system is not None:
             sysm = self.system
             cur = sysm.current
@@ -1067,10 +1082,21 @@ class Director:
             tel = (sysm.submix.telemetry or {}).get("decks", {}).get(sysm.active_deck) or {}
             pos = float(tel.get("time_s") or 0.0)
             if self._cur_song != cur.id:
+                first = self._cur_song is None
                 self._cur_song = cur.id
                 self._note_played(cur.id)
                 self.tl.add(cur.id, list(LANES), b, max(0.0, pos - (self.bar() - b) * self._bar_len(cur.id)))
                 self._lane_snap = {ln: cur.id for ln in LANES}
+                # the seam that just happened: its style and length, as a band ending here
+                h = next((x for x in reversed(sysm._history) if x.get("via") != "start"), None)
+                lp = self._last_plan or {}
+                beats = float(lp.get("beats") or 0.0)
+                if first or h is None:
+                    mark(f"{cur.title[:28]} opens", "open")
+                else:
+                    mark(f"seam: {h.get('via') or lp.get('style') or '?'}" + (f" {beats:.0f} beats" if beats else "") + f" → {cur.title[:24]}",
+                         "seam", lanes=list(LANES), bar=b - int(round(beats / 4.0)) if beats else b, end_bar=b)
+                self._last_plan = None
             st = None
             nxt = sysm.next_track
             if nxt is not None:
@@ -1080,8 +1106,14 @@ class Director:
                     st = None
                 eta = (st or {}).get("blend_in_s")
                 plan = (st or {}).get("plan") or {}
+                if plan:
+                    self._last_plan = dict(plan)
                 at = max(b + 1, b + (int(round(eta / self._bar_len(cur.id))) if eta is not None else 24))
                 ghost(("one", nxt.id, at), nxt.id, list(LANES), at, float(plan.get("in_s") or 0.0))
+                beats = float(plan.get("beats") or 0.0)
+                self.plan_marks.append({"bar": at, "end_bar": at + max(1, int(round(beats / 4.0))) if beats else None, "lanes": list(LANES), "ghost": True,
+                                        "text": (f"seam: {plan.get('style')} {beats:.0f} beats → {nxt.title[:24]}" if plan else f"next: {nxt.title[:24]} (seam not planned yet)"),
+                                        "kind": "seam"})
             else:
                 no_ghost()
         elif self.rc is not None:
@@ -1101,14 +1133,61 @@ class Director:
                     else:
                         pos = float(rc._tel_deck(d).get("time_s") or 0.0)
                         self.tl.add(tid, [ln], b, pos)
+            # what happened: the conductor's moves become marks (bands for a bed change with a breakdown)
+            titles = {}
+            for m in rc.move_log:
+                if m["id"] <= self._mark_seen:
+                    continue
+                self._mark_seen = m["id"]
+                k = m["kind"]
+                to_t = self.title(m.get("to_id")) if m.get("to_id") else ""
+                fr_t = self.title(m.get("from_id")) if m.get("from_id") else ""
+                if k == "voice_in":
+                    mark(f"{to_t[:22]} arrives as a voice ({m.get('lane')})", k, lanes=[m.get("lane")])
+                elif k == "bed_to":
+                    strip = "drop out for" in (m.get("text") or "")
+                    land = (rc._land_k - rc.bar_n) if rc._land_k is not None else 0
+                    why = "at its hook" if "at its hook" in m["text"] else ("at its drop" if "at its drop" in m["text"] else "after its phrases")
+                    mark(("breakdown, then " if strip else "") + f"the bed → {to_t[:22]} {why}", k, lanes=["drums", "bass"],
+                         end_bar=(b + land) if land > 0 else None)
+                elif k == "voice_out":
+                    mark(f"{fr_t[:22]} fades out", k, lanes=["other", "vocals"])
+                elif k == "drop":
+                    mark(f"DROP → {to_t[:22]}", k, lanes=list(LANES))
+                elif k in ("break", "break_auto"):
+                    mark(("BREAK: " if k == "break" else "breakdown: ") + f"{m.get('lane')} alone", k, lanes=[ln for ln in LANES if ln != m.get("lane")])
+                elif k in ("rest", "return"):
+                    mark(f"{m.get('lane')} {'rest' if k == 'rest' else 'back'}", k, lanes=[m.get("lane")])
+                elif k in ("loop", "evict", "recall", "save"):
+                    mark(m["text"][:36], k)
             # the plan ahead: the staged song arrives as a VOICE (the arrangement's `other` lane) at the move
-            # the bed's settling allows - one steady ghost, not a lane-hopping one
+            # the bed's settling allows - one steady ghost, not a lane-hopping one; the story row says what
+            # each live song is waiting for
             left = max(0, rc.change_bars - 1 - rc.phrase_bars)
             try:
                 arr = rc._arrangement_status()
                 settle = int(((arr.get("bed") or {}).get("settle_left")) or 0)
                 if arr.get("landing_in_bars"):
                     settle = max(settle, int(arr["landing_in_bars"]) + rc.change_bars)
+                    self.plan_marks.append({"bar": b, "end_bar": b + int(arr["landing_in_bars"]), "lanes": ["drums", "bass"], "ghost": True,
+                                            "text": "the new bed lands", "kind": "bed_to"})
+                bed = arr.get("bed") or {}
+                if bed and settle > 0 and not arr.get("landing_in_bars"):
+                    self.plan_marks.append({"bar": b + settle, "end_bar": None, "lanes": ["other"], "ghost": True,
+                                            "text": f"bed {bed['title'][:18]} settled: a voice may arrive", "kind": "voice_in"})
+                for v in arr.get("voices") or []:
+                    if v.get("leaving"):
+                        self.plan_marks.append({"bar": b + rc.change_bars, "end_bar": None, "lanes": [v["lane"]], "ghost": True,
+                                                "text": f"{v['title'][:18]} fades out", "kind": "voice_out"})
+                    elif v.get("drop_in_bars") is not None and not v.get("may_take_bed_in"):
+                        self.plan_marks.append({"bar": b + int(round(v["drop_in_bars"])), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
+                                                "text": f"{v['title'][:18]} takes the bed at its {v.get('payoff') or 'drop'}", "kind": "bed_to"})
+                    elif v.get("may_take_bed_in"):
+                        self.plan_marks.append({"bar": b + int(v["may_take_bed_in"]), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
+                                                "text": f"{v['title'][:18]} may take the bed (its {'hook or ' if v.get('hook') else ''}drop first)", "kind": "bed_to"})
+                    else:
+                        self.plan_marks.append({"bar": b + int(v.get("must_take_bed_in") or rc.change_bars), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
+                                                "text": f"{v['title'][:18]} takes the bed by then", "kind": "bed_to"})
             except Exception:
                 settle = 0
             if settle > left:
@@ -1122,14 +1201,51 @@ class Director:
             else:
                 no_ghost()
 
+    def _record_gains(self, b):
+        """Per lane, the level actually heard this bar (the holder's stem gain × deck gain; one song: the
+        deck gains), kept as the max within the bar - the picture's level meters."""
+        try:
+            if self.rc is not None:
+                decks = (self.rc.submix.telemetry or {}).get("decks") or {}
+                for ln in self._gains:
+                    g = 0.0
+                    for d, t in decks.items():
+                        if t.get("playing"):
+                            g = max(g, float((t.get("stem_gains") or {}).get(ln, 0.0)) * float(t.get("gain") or 0.0))
+                    self._gains[ln][b] = max(self._gains[ln].get(b, 0.0), min(1.0, g))
+            elif self.system is not None:
+                decks = (self.system.submix.telemetry or {}).get("decks") or {}
+                g = 0.0
+                for d, t in decks.items():
+                    if t.get("playing"):
+                        sg = t.get("stem_gains") or {}
+                        for ln in self._gains:
+                            self._gains[ln][b] = max(self._gains[ln].get(b, 0.0), min(1.0, float(sg.get(ln, 1.0)) * float(t.get("gain") or 0.0)))
+            for ln in self._gains:
+                if len(self._gains[ln]) > 3000:
+                    for k in sorted(self._gains[ln])[:-3000]:
+                        del self._gains[ln][k]
+        except Exception:
+            pass
+
+    def lane_gains(self):
+        return self._gains
+
+    def all_marks(self):
+        return list(self.marks) + list(self.plan_marks)
+
     # -- the song list: what fits from HERE, and what would be rejected -------------------------------------------------
-    def rank(self, query="", n=40):
-        """Songs for the UP NEXT list: the pool (or the library) ranked by fit to the playing song's tempo, key
-        and the arc, each with a verdict - '✓ fits …' or '✗ would be rejected: …' - so a queued song is never a
-        surprise. Layered: also whether the song has stems."""
+    def rank(self, query="", n=40, filters=None, sort="fit"):
+        """Songs for the UP NEXT list: the pool (or the library) ranked by fit to the reference song's tempo, key
+        and the arc (the reference is the last queued song, else the playing one), each with a verdict - '✓ fits
+        …' or '✗ would be rejected: …' - and enough of the song's CHARACTER to know it without recalling it:
+        energy, singing, its tags and genre, year, length, its hook, and a one-line shape for the tooltip.
+        `filters`: {"voice": "inst"|"vocal", "energy": "calmer"|"same"|"hotter", "tempo": "slower"|"same"|
+        "faster", "hook": True, "unplayed": True}; `sort`: fit | energy | energy_desc | bpm | title | hook."""
         import math
         from lib.dj.brain import camelot_compat
         q = (query or "").strip().lower()
+        filters = filters or {}
         pool_ids = None
         if self.pool_name:
             try:
@@ -1151,6 +1267,15 @@ class Director:
             cur = self.rc.songs[self.rc.master].track
             bpm, cam = float(self.rc.master_bpm or cur.bpm), self.rc.key_centre
             arc = self.rc.energy_target()
+        # a chain, not a star: with songs queued, the list ranks against the LAST queued song - that is what
+        # the next pick will follow (user 2026-09-12: "the next song picker should be based, at least in
+        # part, on what the last song in the next song list is")
+        self.rank_ref = None
+        if self.up_next:
+            ref = next((t for t in self.library if t.id == self.up_next[-1]), None)
+            if ref is not None:
+                cur, bpm, cam = ref, float(ref.bpm or bpm or 0), ref.camelot or cam
+                self.rank_ref = ref.title
         brain = self.system.brain if self.system is not None else (self.rc.brain if self.rc is not None else None)
         smin = getattr(brain, "stretch_min", 0.92) if brain else 0.92
         smax = getattr(brain, "stretch_max", 1.08) if brain else 1.08
@@ -1160,9 +1285,44 @@ class Director:
                 continue
             if cur is not None and t.id == cur.id:
                 continue
-            if q and q not in (t.title or "").lower() and q not in (t.artist or "").lower():
+            tags_all = [str(x) for x in (getattr(t, "all_tags", ()) or ())]
+            genre = ", ".join(sorted(getattr(t, "genre_set", None) or [])[:2])
+            year = getattr(t, "year", None)
+            if q:
+                hay = " ".join([(t.title or ""), (t.artist or ""), genre, str(year or ""), " ".join(tags_all)]).lower()
+                if not all(w in hay for w in q.split()):
+                    continue
+            if self.tags and not (set(self.tags) & set(tags_all)):
                 continue
-            if self.tags and not (set(self.tags) & set(getattr(t, "all_tags", ()) or ())):
+            # the song's character, for the filters and the words
+            try:
+                e = float(brain._arc_energy(t)) if brain else t.energy_proxy()
+            except Exception:
+                e = 0.5
+            vocal = (t.axes_rank.get("vocal") if getattr(t, "axes_rank", None) else None)
+            if vocal is None:
+                vocal = (t.axes or {}).get("vocal")
+            sings = (vocal is not None and float(vocal) >= 0.5) or bool(getattr(t, "hook", None))
+            fv = filters.get("voice")
+            if fv == "inst" and sings:
+                continue
+            if fv == "vocal" and not sings:
+                continue
+            fe = filters.get("energy")
+            if fe and cur is not None:
+                try:
+                    e_ref = float(brain._arc_energy(cur)) if brain else cur.energy_proxy()
+                except Exception:
+                    e_ref = 0.5
+                if (fe == "calmer" and e > e_ref - 0.04) or (fe == "hotter" and e < e_ref + 0.04) or (fe == "same" and abs(e - e_ref) > 0.12):
+                    continue
+            ft = filters.get("tempo")
+            if ft and bpm and t.bpm:
+                if (ft == "slower" and t.bpm > bpm - 1.5) or (ft == "faster" and t.bpm < bpm + 1.5) or (ft == "same" and abs(t.bpm - bpm) > 2.0):
+                    continue
+            if filters.get("hook") and not getattr(t, "hook", None):
+                continue
+            if filters.get("unplayed") and any(tid == t.id for tid, _w in self.played):
                 continue
             fit, ok, why = 0.5, True, []
             if bpm:
@@ -1182,10 +1342,6 @@ class Director:
                     why.append(f"key {t.camelot} fit {kc:.2f}" + (" (clash)" if kc < 0.55 else ""))
                     if kc < 0.55 and not layered:
                         why[-1] += " - a fade or a key shift"
-                try:
-                    e = float(brain._arc_energy(t)) if brain else t.energy_proxy()
-                except Exception:
-                    e = 0.5
                 why.append(f"energy {e:.2f} vs {arc:.2f}")
                 fit = (0.45 * (kc if kc is not None else 0.6) + 0.35 * max(0.0, 1.0 - abs(math.log(max(r, 1e-6))) / 0.1)
                        + 0.2 * max(0.0, 1.0 - abs(e - arc) / 0.5)) if reach else 0.0
@@ -1202,9 +1358,34 @@ class Director:
             if when is not None:
                 ok = False
                 why.insert(0, f"played {max(1, int((time.time() - when) / 60))} min ago")
+            if t.id in self.up_next:
+                ok = False
+                why.insert(0, "already queued")
+            # words for a song you do not remember: its moods and genre, when it is from, how long, its shape
+            mood_words = [x.replace("_", " ") for x in tags_all if not x.isdigit() and not x.endswith("s") or x in ("drums", "vocals")][:5]
+            vw = None
+            mv = getattr(t, "ml_valence", None)
+            if mv is not None:
+                vw = "dark" if mv < 0.4 else ("bright" if mv > 0.6 else "even")
+            shape = []
+            secs = t.sections or []
+            for i, s in enumerate(secs):
+                k = s.get("kind")
+                if k in ("build", "breakdown") or (k == "groove" and i > 0 and secs[i - 1].get("kind") in ("build", "breakdown", "intro")):
+                    shape.append(f"{'drop' if k == 'groove' else k} {int(s['start_s']) // 60}:{int(s['start_s']) % 60:02d}")
             rows.append({"id": t.id, "title": t.title, "artist": t.artist or "", "bpm": t.bpm, "camelot": t.camelot,
-                         "ok": ok, "fit": fit, "why": ", ".join(why) if why else ""})
-        rows.sort(key=lambda x: (not x["ok"], -x["fit"], x["title"].lower()))
+                         "ok": ok, "fit": fit, "why": ", ".join(why) if why else "",
+                         "energy": round(e, 2), "sings": bool(sings), "vocal": (round(float(vocal), 2) if vocal is not None else None),
+                         "tags": mood_words, "genre": genre, "year": year, "duration_s": t.duration_s,
+                         "hook_s": (hk["start_s"] if hk else None), "valence": vw,
+                         "shape": " · ".join(shape[:6]), "last_played_min": (int((time.time() - when) / 60) if when is not None else None)})
+        keys = {"fit": lambda x: (not x["ok"], -x["fit"], x["title"].lower()),
+                "energy": lambda x: (not x["ok"], x["energy"], x["title"].lower()),
+                "energy_desc": lambda x: (not x["ok"], -x["energy"], x["title"].lower()),
+                "bpm": lambda x: (not x["ok"], x["bpm"] or 0, x["title"].lower()),
+                "title": lambda x: (not x["ok"], x["title"].lower()),
+                "hook": lambda x: (not x["ok"], x["hook_s"] is None, x["hook_s"] or 0)}
+        rows.sort(key=keys.get(sort, keys["fit"]))
         return rows[:n]
 
     # -- what the operator sees ---------------------------------------------------------------------------------------
