@@ -196,6 +196,7 @@ class DJSystem:
         self._opener = None
         self._pace_x = 1.0
         self._loop_bias = 0
+        self._bpm_lean = 0.0
 
     # -- lifecycle -------------------------------------------------------------
     def start(self):
@@ -656,9 +657,27 @@ class DJSystem:
         if self.brain is None:
             self._loop_bias = level
             return
+        # only the clean loop ENTRY (a loop of the incoming record's bars
+        # riding under the outgoing one); the stutter build and the roll exit
+        # read as effects, not loops (user, 2026-09-12: "looping is bad")
         mult = {0: 1.0, 1: 3.0, 2: 8.0}.get(int(level), 1.0)
-        for k in ("loop_in", "loop_roll_exit", "loop_build"):
-            self.brain.style_fb[k] = mult
+        self.brain.style_fb["loop_in"] = mult
+        for k in ("loop_roll_exit", "loop_build"):
+            self.brain.style_fb.pop(k, None)
+
+    def set_bpm_lean(self, bpm):
+        """The tempo dial: lean the planned tempo journey by this many bpm
+        (slower / faster), inside the theme's window; picks follow it."""
+        self._bpm_lean = float(max(-12.0, min(12.0, bpm)))
+        self._horizon_key = None
+
+    def redraw_exit(self):
+        """Re-draw how long the playing record holds, with the pace as it is
+        NOW (the Director's pace dial must be heard on this record, not the
+        next one). Runs on the step thread; an exit already passed means the
+        seam comes at the next opportunity."""
+        with self._lock:
+            self._pending.append(("redraw", None))
 
     def set_opener(self, track, cue_s, samples=None):
         """Open on THIS track at THIS song time (the Director handing a
@@ -672,7 +691,9 @@ class DJSystem:
         somewhere instead of hovering."""
         theme = self.brain.theme if self.brain else get_theme(self._theme_name)
         lo, hi = theme.bpm_range
-        return lo + (hi - lo) * theme.arc_target(self.arc_progress())
+        # the Director's tempo dial: a lean on the planned journey (slower / faster), inside the window
+        lean = getattr(self, "_bpm_lean", 0.0)
+        return max(lo, min(hi, lo + (hi - lo) * theme.arc_target(self.arc_progress()) + lean))
 
     def _note_energy(self, track):
         e = track.energy_proxy()
@@ -1322,6 +1343,14 @@ class DJSystem:
                 self._do_moment(val or "drop")
             elif kind == "layer":
                 self._do_layer(val)
+            elif kind == "redraw":
+                # the Director's pace dial: this record's hold re-drawn now; a
+                # plan built on the old exit is dropped so the seam re-plans
+                if self.state == "playing" and self.current is not None:
+                    self._draw_exit()
+                    self.plan = None
+                    self.blend_at = None
+                    self._log({"event": "redraw_exit", "played_s": round(self._exit_played or 0.0)})
             elif kind == "seam_fb":
                 self._do_seam_fb(val)
             elif kind == "seam_fb_edit":

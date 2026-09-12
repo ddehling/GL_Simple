@@ -23,8 +23,16 @@ DIAL_LABELS = {
                "a lean on the night's arc; amped, the clock may also travel with it when layered"),
     "pace": ("PACE", {"short": "short bits", "normal": "normal", "long": "long plays"},
              "how long records play before the next seam; layered, how often the lanes move"),
+    "tempo": ("TEMPO", {"slower": "slower", "hold": "hold", "faster": "faster"},
+              "lean the tempo journey: picks aim 6 bpm lower / higher; layered, the clock travels 3 % that way"),
+    "seams": ("SEAMS", {"quick": "quick", "normal": "normal", "long": "long"},
+              "how long the mixes themselves run: blend lengths × 0.5 / 1 / 2; layered, the lanes' crossfade"),
+    "vocals": ("VOCALS", {"none": "none", "some": "some", "lots": "lots"},
+               "how much singing: picks lean toward instrumentals or vocal records; layered, how freely the vocal lane crosses"),
+    "variety": ("VARIETY", {"close": "close", "varied": "varied", "wild": "wild"},
+                "how far the next song may roam from the playing one: close (clean key journeys) · varied · wild (range over pocket)"),
     "loops": ("LOOPS", {"off": "off", "some": "some", "lots": "lots"},
-              "how much the seams loop (loop styles' odds; layered, the clock holds four bars now and then)"),
+              "how much the seams loop (loop entries' odds; layered, eight-bar holds on grooves at phrase boundaries)"),
 }
 
 
@@ -64,7 +72,7 @@ class DirectorTab(QWidget):
         self.songs_box = SetlistBox(self)
         self.songs_box.setMinimumWidth(240)
         self.songs_box.setToolTip("a playlist (the Set tab's saved lists) as the pool of songs; whole library lifts it")
-        self.songs_box.currentIndexChanged.connect(lambda _i: self.director and self.director.set_pool(self.songs_box.currentData()))
+        self.songs_box.currentIndexChanged.connect(self._pool_changed)
         top.addWidget(self.songs_box)
         self.state_lbl = QLabel("")
         self.state_lbl.setProperty("dim", "true")
@@ -111,7 +119,14 @@ class DirectorTab(QWidget):
         self.intent_h.setText("THE DIRECTOR INTENDS")
         self.intent_lbl = big(13)
         self.lanes_lbl = big(12, dim=True)
-        for w in (self.now_h, self.now_lbl, self.now_sub, self.next_h, self.next_lbl, self.next_sub, self.intent_h, self.intent_lbl, self.lanes_lbl):
+        self.why_h = big(10, dim=True)
+        self.why_h.setText("WHY")
+        self.why_lbl = big(12)
+        self.eff_h = big(10, dim=True)
+        self.eff_h.setText("WHAT YOUR DIALS ARE DOING RIGHT NOW")
+        self.eff_lbl = big(11, dim=True)
+        for w in (self.now_h, self.now_lbl, self.now_sub, self.next_h, self.next_lbl, self.next_sub, self.intent_h, self.intent_lbl,
+                  self.lanes_lbl, self.why_h, self.why_lbl, self.eff_h, self.eff_lbl):
             lv.addWidget(w)
         self.recent_h = big(10, dim=True)
         self.recent_h.setText("WHAT JUST HAPPENED")
@@ -130,7 +145,8 @@ class DirectorTab(QWidget):
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(10)
         from lib.dj.director import DIALS, DEFAULTS
-        for row, (name, options) in enumerate(DIALS.items()):
+        for i, (name, options) in enumerate(DIALS.items()):
+            row = 2 * i
             title, labels, tip = DIAL_LABELS[name]
             lab = QLabel(title)
             lab.setProperty("dim", "true")
@@ -142,49 +158,60 @@ class DirectorTab(QWidget):
             for col, opt in enumerate(options):
                 b = QPushButton(labels[opt])
                 b.setCheckable(True)
-                b.setMinimumHeight(44)
+                b.setMinimumHeight(40)
                 b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 b.setToolTip(tip)
                 b.setChecked(opt == DEFAULTS[name])
                 b.clicked.connect(lambda _c, n=name, o=opt: self._dial(n, o))
                 group.addButton(b)
                 grid.addWidget(b, row, 1 + col)
+            # what the dial does, under it, in one line - not hidden in a tooltip
+            cap = QLabel(tip)
+            cap.setProperty("dim", "true")
+            cap.setWordWrap(True)
+            f = cap.font()
+            f.setPointSizeF(9)
+            cap.setFont(f)
+            grid.addWidget(cap, row + 1, 1, 1, 4)
             self.dial_groups[name] = group
+        grid.setVerticalSpacing(4)
         rv.addLayout(grid)
         # up next
-        un = QLabel("UP NEXT  (optional: the Director honours it when it can)")
-        un.setProperty("dim", "true")
-        rv.addWidget(un)
+        self.found_h = QLabel("SONGS")
+        self.found_h.setProperty("dim", "true")
+        rv.addWidget(self.found_h)
         qrow = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("search a song to queue")
+        self.search.setPlaceholderText("filter the songs (empty = the whole pool, ranked by fit to what is playing)")
         self.search.textChanged.connect(self._fill_search)
         qrow.addWidget(self.search, 1)
         rv.addLayout(qrow)
         lists = QHBoxLayout()
         self.found = QListWidget()
-        self.found.setMaximumHeight(120)
+        self.found.setMinimumHeight(150)
+        self.found.setMaximumHeight(220)
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
-        self.found.setToolTip("double-click to queue")
-        lists.addWidget(self.found, 1)
+        self.found.setToolTip("✓ mixable from here · ✗ would be rejected (the reason follows) · double-click to put it UP NEXT")
+        lists.addWidget(self.found, 3)
+        qcol = QVBoxLayout()
+        un = QLabel("UP NEXT  (honoured when it can be)")
+        un.setProperty("dim", "true")
+        qcol.addWidget(un)
         self.queue = QListWidget()
-        self.queue.setMaximumHeight(120)
         self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
-        self.queue.setToolTip("up next, in order · double-click to remove")
-        lists.addWidget(self.queue, 1)
+        self.queue.setToolTip("in order · double-click to remove")
+        qcol.addWidget(self.queue, 1)
+        lists.addLayout(qcol, 2)
         rv.addLayout(lists)
+        QTimer.singleShot(1200, self._fill_search)
         # the moments
         mom = QGridLayout()
         mom.setSpacing(8)
         self.buttons = {}
-        for (label, fn, tip, kind, r, c) in (
-                ("NEXT", self._next, "move on now: the next seam / a move on the next bar", "go", 0, 0),
-                ("HOLD", self._hold, "stay here a while: one more phrase / the lanes frozen a phrase", None, 0, 1),
-                ("DROP", self._drop, "the drop moment / every lane to the newest song", "hot", 1, 0),
-                ("BREAK", self._break, "layered only: every lane but one rests four bars", None, 1, 1)):
+        for (label, fn, kind, r, c) in (("NEXT", self._next, "go", 0, 0), ("HOLD", self._hold, None, 0, 1),
+                                        ("DROP", self._drop, "hot", 1, 0), ("BREAK", self._break, None, 1, 1)):
             b = QPushButton(label)
-            b.setToolTip(tip)
-            b.setMinimumHeight(56)
+            b.setMinimumHeight(64)
             if kind:
                 b.setProperty("kind", kind)
             b.clicked.connect(fn)
@@ -192,13 +219,15 @@ class DirectorTab(QWidget):
             self.buttons[label] = b
         rv.addLayout(mom)
         verd = QHBoxLayout()
-        for label, up, kind in (("👍 GOOD", True, "good"), ("👎 BAD", False, "bad")):
+        for label, up, kind in (("GOOD", True, "good"), ("BAD", False, "bad")):
             b = QPushButton(label)
-            b.setMinimumHeight(44)
+            b.setMinimumHeight(56)
             b.setProperty("kind", kind)
             b.clicked.connect(lambda _c, u=up: self.director and self.director.rate(u))
             verd.addWidget(b)
+            self.buttons[label] = b
         rv.addLayout(verd)
+        self._label_moments("one")
         rv.addStretch(1)
         self.err_lbl = QLabel("")
         self.err_lbl.setProperty("dim", "true")
@@ -267,6 +296,27 @@ class DirectorTab(QWidget):
             self._lib = [t for t in B.load_library(self._db()) if not t.excluded]
         return self._lib
 
+    def _label_moments(self, mode):
+        """The moments say what they will do, in the mode we are in."""
+        one = mode != "layered"
+        texts = {
+            "NEXT": ("NEXT SONG\nmove on to the next song at the next phrase" if one
+                     else "NEXT MOVE\nthe conductor's next lane move on the next bar"),
+            "HOLD": ("STAY\none more phrase of this song before moving on" if one
+                     else "STAY\nfreeze the lanes for a phrase"),
+            "DROP": ("DROP\nbuild for a few bars and land on this song's drop" if one
+                     else "DROP\nevery part to the newest song on the next bar"),
+            "BREAK": ("BREAK\n(needs two or three songs layered)" if one
+                      else "BREAK\nstrip to one part for four bars, then all back"),
+            "GOOD": "👍 THAT WAS GOOD\nthe DJ does more of it",
+            "BAD": "👎 THAT WAS BAD\nthe DJ does less of it",
+        }
+        for k, t in texts.items():
+            if self.buttons[k].text() != t:
+                self.buttons[k].setText(t)
+        self.buttons["BREAK"].setEnabled(not one)
+        self._moments_mode = mode
+
     # -- controls ----------------------------------------------------------------------------------------------
     def _toggle(self):
         if self.director is None:
@@ -307,6 +357,8 @@ class DirectorTab(QWidget):
         self.start_btn.style().polish(self.start_btn)
         self._seen = 0
         self.recent.clear()
+        self._found_sig = None
+        self._fill_search()
         self._timer.start()
 
     def close(self):
@@ -329,6 +381,12 @@ class DirectorTab(QWidget):
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
 
+    def _pool_changed(self, *_):
+        if self.director is not None:
+            self.director.set_pool(self.songs_box.currentData())
+        self._found_sig = None
+        self._fill_search()
+
     def _dial(self, name, opt):
         if self.director is not None:
             self.director.set_dial(name, opt)
@@ -349,23 +407,52 @@ class DirectorTab(QWidget):
         if self.director is not None and not self.director.break_():
             self.err_lbl.setText("BREAK is a layered move: set LAYERS to two or three songs")
 
-    def _fill_search(self, text):
-        q = text.strip().lower()
-        self.found.clear()
-        if len(q) < 2:
-            return
+    def _fill_search(self, text=None):
+        """The song list: with the Director running, the pool ranked by fit to what is playing, each row
+        saying whether it is mixable from here (✓) or would be rejected and why (✗); before START, the
+        library or the chosen playlist alphabetically. An empty box shows everything."""
+        q = (text if text is not None else self.search.text()).strip().lower()
+        cur = self.found.currentItem().data(Qt.ItemDataRole.UserRole) if self.found.currentItem() else None
+        rows = []
         try:
-            lib = self._library()
+            if self.director is not None:
+                rows = self.director.rank(q, n=60)
+            else:
+                lib = self._library()
+                pool = None
+                name = self.songs_box.currentData()
+                if name:
+                    from lib.dj.setlist import get_setlist
+                    sl = get_setlist(self._db(), name=name)
+                    pool = {e["track_id"] for e in (sl or {}).get("entries", [])}
+                for t in sorted(lib, key=lambda t: t.title.lower()):
+                    if pool is not None and t.id not in pool:
+                        continue
+                    if q and q not in t.title.lower() and q not in (t.artist or "").lower():
+                        continue
+                    rows.append({"id": t.id, "title": t.title, "artist": t.artist or "", "bpm": t.bpm, "camelot": t.camelot,
+                                 "ok": None, "why": ""})
+                    if len(rows) >= 60:
+                        break
         except Exception as e:  # noqa: BLE001
-            self.err_lbl.setText(f"library: {e}")
+            self.err_lbl.setText(f"songs: {type(e).__name__}: {e}")
             return
-        for t in lib:
-            if q in t.title.lower() or q in (t.artist or "").lower():
-                it = QListWidgetItem(f"{t.title[:40]}  ·  {t.artist or ''}   {t.bpm:.0f} bpm {t.camelot or ''}")
-                it.setData(Qt.ItemDataRole.UserRole, t.id)
-                self.found.addItem(it)
-                if self.found.count() >= 30:
-                    break
+        sig = tuple((r["id"], r["ok"], r["why"]) for r in rows)
+        if sig == getattr(self, "_found_sig", None):
+            return
+        self._found_sig = sig
+        self.found.clear()
+        for r in rows:
+            mark = "" if r["ok"] is None else ("✓  " if r["ok"] else "✗  ")
+            it = QListWidgetItem(f"{mark}{r['title'][:38]}  ·  {r['artist'][:22]}   {(r['bpm'] or 0):.0f} bpm {r['camelot'] or ''}"
+                                 + (f"   {r['why']}" if r["why"] else ""))
+            it.setData(Qt.ItemDataRole.UserRole, r["id"])
+            if r["ok"] is False:
+                it.setForeground(Qt.GlobalColor.gray)
+            self.found.addItem(it)
+            if r["id"] == cur:
+                self.found.setCurrentItem(it)
+        self.found_h.setText(f"SONGS  {len(rows)} shown" + ("  ·  ranked by fit to what is playing; ✗ = would be rejected" if self.director is not None else ""))
 
     def _queue(self, tid):
         if self.director is not None:
@@ -420,6 +507,8 @@ class DirectorTab(QWidget):
             self.next_lbl.setText("not chosen yet")
             self.next_sub.setText("")
         self.intent_lbl.setText(st.get("intent") or "")
+        self.why_lbl.setText("\n".join(st.get("why") or []) or "…")
+        self.eff_lbl.setText("\n".join(st.get("in_effect") or []))
         lanes = st.get("lanes")
         if lanes:
             self.lanes_lbl.setText("   ".join(f"{ln}: {t or '-'}" for ln, t in lanes.items()))
@@ -433,7 +522,12 @@ class DirectorTab(QWidget):
             for line in reversed(rec):
                 self.recent.addItem(line[:160])
         self._render_queue()
-        self.buttons["BREAK"].setEnabled(st.get("mode") == "layered")
+        if getattr(self, "_moments_mode", None) != st.get("mode"):
+            self._label_moments(st.get("mode"))
+        # the song list follows what is playing (fit and verdicts change with the song)
+        self._songs_tick = getattr(self, "_songs_tick", 0) + 1
+        if self._songs_tick % 12 == 0:
+            self._fill_search()
         err = st.get("error")
         self.err_lbl.setText(f"ERROR {err}" if err else "")
         # the picture

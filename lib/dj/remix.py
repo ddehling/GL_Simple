@@ -167,6 +167,7 @@ class RemixConductor:
         self.user_loop_bars = None       # LOOP 4 / 8 in force
         self._break = None               # (restore_clock, {lane: deck}) while a BREAK runs
         self.tempo_span = 0.0            # tempo journey: 0 = fixed clock
+        self.tempo_lean = 0.0            # the tempo dial: a fixed lean on the clock
         self.base_bpm = None             # the opener's tempo, the journey's centre
         self._tempo_k = None
         self.snapshots = []              # saved combinations
@@ -833,8 +834,11 @@ class RemixConductor:
         live = [s for s in self.songs.values() if not s.leaving]
         cap = 2 if self.blend < 0.5 else 3
         free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
-        # the conductor stages its own picks only with autopilot on; with it off, the crate is the operator's
-        if self.auto > 0.0 and free and len(live) + len(self._decoding) + len(self._pending) < cap:
+        # ONE ON DECK: with autopilot on there is always a next song staged and waiting (decoded, locked,
+        # silent), so a NEXT or a dial turn is heard on the next bar, not after a decode. The cap governs
+        # how many are HEARD at once (the entry in _one_move), not how many are ready.
+        staged_waiting = [s for s in live if not s.entered] + list(self._decoding.values()) + list(self._pending.values())
+        if self.auto > 0.0 and free and not staged_waiting:
             nxt = self._pick_next()
             if nxt is not None:
                 self._decode(nxt, free[0])
@@ -952,9 +956,14 @@ class RemixConductor:
 
     def _one_move_inner(self, at):
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
-        # a staged song comes in through one lane - on the move its landmark was cued for (or any later one)
+        # a staged song comes in through one lane - on the move its landmark was cued for (or any later one),
+        # and only while fewer songs are heard than the cap (the blend dial: two, or three)
+        cap = 2 if self.blend < 0.5 else 3
+        n_entered = len([d for d in live if self.songs[d].entered])
         waiting = [d for d in live if not self.songs[d].entered
                    and (self.songs[d].ready_k is None or self.bar_n + 1 >= self.songs[d].ready_k)]
+        if waiting and n_entered >= cap:
+            waiting = []
         if waiting:
             d = waiting[0]
             lane = self._lane_to_give(d, at)
@@ -1207,6 +1216,20 @@ class RemixConductor:
         """The opener is decoded and waiting (start(hold_open=True))."""
         return "a" in self._pending
 
+    def preload_opener(self, track, samples, stems, rms=None):
+        """The Director hands over a song it already decoded: no decode wait, the opener is pending at
+        once (levels and the singing map measured here unless given, as a decode would). Safe to call
+        from a warming thread."""
+        if rms is None:
+            rms = self._stem_levels(track, stems)
+        with self._lock:
+            self._pending["a"] = (track, samples, stems, rms)
+        self._decoding.pop("a", None)
+
+    def drop_preload(self):
+        with self._lock:
+            self._pending.pop("a", None)
+
     def open_pending(self, at_clock, cue_s):
         """Open the held opener at submix clock `at_clock`, cued so song time `cue_s` sounds then."""
         self._cue_req["a"] = float(max(0.0, cue_s))
@@ -1367,13 +1390,19 @@ class RemixConductor:
         """How far the clock may travel with the arc: 0 = a fixed tempo, 0.06 = +-6 % of the opener's tempo."""
         self.tempo_span = float(max(0.0, min(TEMPO_SPAN_MAX, x)))
 
+    def set_tempo_lean(self, x):
+        """The Director's tempo dial: a fixed lean on the clock, -0.06 .. +0.06 of the opener's tempo
+        (slower / faster), taken in the same half-percent steps."""
+        self.tempo_lean = float(max(-TEMPO_SPAN_MAX, min(TEMPO_SPAN_MAX, x)))
+
     def _tempo_step(self):
         """Once a bar, one small step of the clock toward the arc's tempo, every deck re-rated together so the
         PLL never has to absorb more than its trim window; no step that would push a song past the wall."""
-        if self.master is None or self.tempo_span <= 0.0 or self.base_bpm is None or self._tempo_k == self.bar_n:
+        lean = getattr(self, "tempo_lean", 0.0)
+        if self.master is None or (self.tempo_span <= 0.0 and lean == 0.0) or self.base_bpm is None or self._tempo_k == self.bar_n:
             return
         self._tempo_k = self.bar_n
-        target = self.base_bpm * (1.0 + self.tempo_span * (2.0 * self.energy_target() - 1.0))
+        target = self.base_bpm * (1.0 + self.tempo_span * (2.0 * self.energy_target() - 1.0) + lean)
         ratio = target / max(self.master_bpm, 1e-6)
         if abs(ratio - 1.0) < 0.0015:
             return

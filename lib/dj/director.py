@@ -28,10 +28,21 @@ DIALS = {
     "mixing": ("auto", "blend", "cut", "morph"),
     "layers": ("one", "two", "three"),
     "energy": ("cool", "hold", "amp"),
+    "tempo": ("slower", "hold", "faster"),
     "pace": ("short", "normal", "long"),
+    "seams": ("quick", "normal", "long"),
+    "vocals": ("none", "some", "lots"),
+    "variety": ("close", "varied", "wild"),
     "loops": ("off", "some", "lots"),
 }
-DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "pace": "normal", "loops": "off"}
+DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold", "pace": "normal",
+            "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off"}
+TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
+TEMPO_LEAN_X = {"slower": -0.03, "hold": 0.0, "faster": 0.03}        # the conductor's clock
+SEAM_SPEED = {"quick": 0.5, "normal": 1.0, "long": 2.0}              # the autoDJ's blend length factor / the crossfade
+VOCAL_AXIS = {"none": 0.05, "some": 0.5, "lots": 0.9}                # the brain's vocal axis target
+VOCAL_FREEDOM = {"none": 0.0, "some": 0.4, "lots": 0.9}              # the conductor's vocal lane
+VARIETY_PERSONA = {"close": "purist", "varied": "off", "wild": "crate_digger"}   # how far picks may roam
 MIX_PIN = {"auto": None, "blend": "long_blend", "cut": "cut_at_drop", "morph": "stem_morph"}
 MIX_CROSS = {"auto": 2.0, "blend": 4.0, "cut": 0.5, "morph": 2.0}
 ENERGY_LEAN = {"cool": -0.25, "hold": 0.0, "amp": 0.25}
@@ -78,6 +89,14 @@ class Director:
         self._lane_snap = {}
         self._cur_song = None
         self._ghosts = []                # clip ids of the current plan ahead
+        # WARM HANDOVERS: while the autoDJ plays, a conductor waits with the playing song already decoded
+        # and pending; while the conductor plays, the clock song's samples are decoded for the autoDJ.
+        # Switching LAYERS is then a bar, not a decode.
+        self._rc_warm = None
+        self._warm_id = None
+        self._warm_one = None            # (track_id, samples) for the autoDJ opener
+        self._warm_busy = False
+        self._loop_hold = None           # (release_bar) while a loop hold runs
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -150,10 +169,11 @@ class Director:
         sysm._thread = threading.Thread(target=sysm._run, daemon=True, name="dj-brain")
         sysm._thread.start()
 
-    def _new_conductor(self):
+    def _new_conductor(self, attach=True):
         from lib.dj.remix import RemixConductor
         rc = RemixConductor(self.db, self.music_root, self.library, theme=self.theme)
-        self._attach("dj_remix", rc.submix)
+        if attach:
+            self._attach("dj_remix", rc.submix)
         self._apply_to_conductor(rc)
         return rc
 
@@ -161,7 +181,11 @@ class Director:
         d = self.dials
         sysm.set_mix_style(MIX_PIN[d["mixing"]])
         sysm.set_energy_nudge(ENERGY_LEAN[d["energy"]])
+        sysm.set_bpm_lean(TEMPO_LEAN_BPM[d["tempo"]])
         sysm.set_pace(PACE_X[d["pace"]])
+        sysm.set_mix_speed(SEAM_SPEED[d["seams"]])
+        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}})
+        sysm.set_persona(VARIETY_PERSONA[d["variety"]])
         sysm.set_loop_bias(LOOP_LEVEL[d["loops"]])
         if self.pool_name:
             sysm.load_setlist(self.pool_name, mode="pool")
@@ -169,12 +193,19 @@ class Director:
     def _apply_to_conductor(self, rc):
         d = self.dials
         rc.set_auto(1.0)
-        rc.set_cross_beats(MIX_CROSS[d["mixing"]])
+        rc.set_cross_beats(MIX_CROSS[d["mixing"]] * SEAM_SPEED[d["seams"]])
         rc.set_blend(LAYER_BLEND.get(d["layers"], 0.3))
         rc.set_energy_lean(ENERGY_LEAN[d["energy"]])
         rc.set_tempo_span(0.03 if d["energy"] == "amp" else 0.0)
+        rc.set_tempo_lean(TEMPO_LEAN_X[d["tempo"]])
         rc.set_change_bars(PACE_BARS[d["pace"]])
-        rc.set_vocal_freedom(0.6 if d["layers"] == "three" else 0.4)
+        rc.set_vocal_freedom(VOCAL_FREEDOM[d["vocals"]])
+        try:
+            from lib.dj.persona import PERSONAS
+            name = VARIETY_PERSONA[d["variety"]]
+            rc.brain.persona = PERSONAS.get("neutral" if name == "off" else name, rc.brain.persona)
+        except Exception:
+            pass
         if self.pool_name:
             from lib.dj.setlist import get_setlist
             sl = get_setlist(self.db, name=self.pool_name)
@@ -193,7 +224,83 @@ class Director:
             self._apply_to_system(self.system)
         if self.rc is not None:
             self._apply_to_conductor(self.rc)
+        self._react(name)
         return True
+
+    def _react(self, name):
+        """A dial turn is heard within a phrase, not at some seam minutes away ("I'm not trying to steer
+        a container ship"). One song: pace re-draws this record's hold now; any other dial brings the
+        next seam forward once the record has played 45 s, so the new mixing / energy / loops are heard on
+        the next song within a phrase or two. Layered: a move on the next bar."""
+        if name == "layers":
+            return
+        if name == "loops":
+            self._loop_k = None                       # a hold may come at the very next phrase boundary
+        if self.system is not None and self.system.current is not None:
+            if name == "pace":
+                self.system.redraw_exit()
+            played = self._played_s()
+            if played >= 45.0 and name in ("mixing", "energy", "loops", "pace"):
+                if name != "pace" or self.dials["pace"] == "short":
+                    self.system.request_skip()
+                    self._event(f"{name}: the next seam comes now")
+        if self.rc is not None and self.rc.master is not None:
+            self.rc.next_move()
+
+    def _played_s(self):
+        sysm = self.system
+        if sysm is None or sysm.current is None:
+            return 0.0
+        try:
+            return (sysm.submix.clock - sysm._started_clock) / RATE
+        except Exception:
+            return 0.0
+
+    def _warm_step(self):
+        """Keep the OTHER engine's opener ready for the playing song."""
+        if self._warm_busy or self._switch is not None:
+            return
+        if self.system is not None and self.system.current is not None:
+            cur = self.system.current
+            if self._warm_id == cur.id and self._rc_warm is not None:
+                return
+            self._warm_busy = True
+            track = cur
+
+            def work():
+                try:
+                    from lib.dj.features import decode_file_stereo
+                    from lib.dj.stems import load_stems
+                    samples = decode_file_stereo(self.db.abs(track.path))
+                    stems = load_stems(self.music_root, track.id, expected_len=len(samples))
+                    if not stems:
+                        self._warm_id = track.id
+                        return
+                    rc = self._rc_warm if self._rc_warm is not None else self._new_conductor(attach=False)
+                    rc.drop_preload()
+                    rc.preload_opener(track, samples, stems)
+                    self._rc_warm, self._warm_id = rc, track.id
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"warm: {type(e).__name__}: {e}"
+                    self._warm_id = track.id
+                finally:
+                    self._warm_busy = False
+            threading.Thread(target=work, daemon=True, name="director-warm").start()
+        elif self.rc is not None and self.rc.master is not None:
+            master = self.rc.songs[self.rc.master].track
+            if self._warm_one is not None and self._warm_one[0] == master.id:
+                return
+            self._warm_busy = True
+
+            def work1():
+                try:
+                    from lib.dj.features import decode_file_stereo
+                    self._warm_one = (master.id, decode_file_stereo(self.db.abs(master.path)))
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"warm: {type(e).__name__}: {e}"
+                finally:
+                    self._warm_busy = False
+            threading.Thread(target=work1, daemon=True, name="director-warm").start()
 
     def set_theme(self, name):
         self.theme = name
@@ -282,6 +389,7 @@ class Director:
             self._loops_layered()
         self._feed_up_next()
         self._handover()
+        self._warm_step()
         try:
             self._record()
         except Exception as e:  # noqa: BLE001
@@ -314,17 +422,37 @@ class Director:
                     self.up_next.pop(0)
 
     def _loops_layered(self):
-        """The loops dial in layered mode: now and then the master holds a phrase of four bars."""
+        """The loops dial in layered mode: the clock song holds EIGHT bars of a groove - never a build or a
+        breakdown, never while it is singing - starting on a phrase boundary and released on the bar
+        (user: four-bar holds on whatever was playing, released on a timer, were "bad")."""
         lvl = LOOP_LEVEL[self.dials["loops"]]
         rc = self.rc
-        if lvl == 0 or rc.master is None or rc.user_loop_bars:
+        if rc.master is None:
             return
-        if self._loop_k is None or rc.bar_n - self._loop_k >= rc.change_bars * (4 if lvl == 1 else 2):
-            self._loop_k = rc.bar_n
-            if rc.rng.random() < (0.35 if lvl == 1 else 0.7):
-                rc.song_loop(rc.master, 4)
-                self._event("loop: the clock holds four bars")
-                threading.Timer(4 * 4 * rc._beat_s(), lambda: rc.song_loop(rc.master, None) if rc.master else None).start()
+        if self._loop_hold is not None:
+            deck, release_at = self._loop_hold
+            if rc.bar_n >= release_at or deck not in rc.songs or rc.songs[deck].leaving:
+                if deck in rc.songs:
+                    rc.song_loop(deck, None)
+                self._loop_hold = None
+                self._event("loop released")
+            return
+        if lvl == 0 or rc.phrase_bars != 0:
+            return                                     # only at a phrase boundary
+        if self._loop_k is not None and rc.bar_n - self._loop_k < rc.change_bars * (3 if lvl == 1 else 1):
+            return
+        self._loop_k = rc.bar_n
+        song = rc.songs[rc.master]
+        d = rc._tel_deck(rc.master)
+        t_now = float(d.get("time_s") or 0.0)
+        sec = song.track.section_at(t_now) or {}
+        kinds_ok = ("groove",) if lvl == 1 else ("groove", "breakdown")
+        if sec.get("kind") not in kinds_ok or (lvl == 1 and rc._singing(song, t_now)):
+            return
+        if rc.rng.random() < (0.5 if lvl == 1 else 0.9):
+            if rc.song_loop(rc.master, 8):
+                self._loop_hold = (rc.master, rc.bar_n + 8)
+                self._event(f"loop: {song.track.title[:28]} holds eight bars")
 
     # -- the handover between engines --------------------------------------------------------------------------
     def _bar_clock_of(self, sub, track, deck):
@@ -351,24 +479,31 @@ class Director:
                 return
             if want == "layered" and self.system is not None and self.system.current is not None \
                     and self.system.state == "playing":
-                rc = self._new_conductor()
+                cur = self.system.current
+                warm = self._rc_warm if (self._rc_warm is not None and self._warm_id == cur.id and not self._warm_busy
+                                         and self._rc_warm.decoded()) else None
+                rc = warm if warm is not None else self._new_conductor(attach=False)
+                self._rc_warm, self._warm_id = None, None
+                self._attach("dj_remix", rc.submix)
                 rc.submix.post({"cmd": "mix_gain", "value": 0.0, "ramp_s": 0.0})
-                rc.start(first_track=self.system.current, threaded=False, cue_s=0.0, lanes=set(("drums", "bass", "other", "vocals")), hold_open=True)
+                rc.start(first_track=cur, threaded=False, cue_s=0.0, lanes=set(("drums", "bass", "other", "vocals")), hold_open=True)
                 self._switch = {"to": "layered", "rc": rc, "stage": "decoding", "t": time.time()}
-                self._event(f"layers: handing {self.system.current.title} to the conductor")
+                self._event(f"layers: handing {cur.title} to the conductor" + (" (warm)" if warm is not None else ""))
             elif want == "one" and self.rc is not None and self.rc.master is not None:
                 master = self.rc.songs[self.rc.master].track
                 self._switch = {"to": "one", "track": master, "stage": "decoding", "t": time.time()}
-
-                def work():
-                    try:
-                        from lib.dj.features import decode_file_stereo
-                        self._switch["samples"] = decode_file_stereo(self.db.abs(master.path))
-                        self._switch["stage"] = "ready"
-                    except Exception as e:  # noqa: BLE001
-                        self._switch["error"] = str(e)
-                threading.Thread(target=work, daemon=True).start()
-                self._event(f"layers: handing {master.title} back to the autoDJ")
+                if self._warm_one is not None and self._warm_one[0] == master.id:
+                    self._switch["samples"], self._switch["stage"] = self._warm_one[1], "ready"
+                else:
+                    def work():
+                        try:
+                            from lib.dj.features import decode_file_stereo
+                            self._switch["samples"] = decode_file_stereo(self.db.abs(master.path))
+                            self._switch["stage"] = "ready"
+                        except Exception as e:  # noqa: BLE001
+                            self._switch["error"] = str(e)
+                    threading.Thread(target=work, daemon=True).start()
+                self._event(f"layers: handing {master.title} back to the autoDJ" + (" (warm)" if self._switch["stage"] == "ready" else ""))
             return
         sw = self._switch
         if sw.get("error") or time.time() - sw["t"] > 60:
@@ -515,6 +650,82 @@ class Director:
                     for c in self.tl.add(s.track.id, [lane], b + 1 + left, rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id), ghost=True):
                         self._ghosts.append(c.id)
 
+    # -- the song list: what fits from HERE, and what would be rejected -------------------------------------------------
+    def rank(self, query="", n=40):
+        """Songs for the UP NEXT list: the pool (or the library) ranked by fit to the playing song's tempo, key
+        and the arc, each with a verdict - '✓ fits …' or '✗ would be rejected: …' - so a queued song is never a
+        surprise. Layered: also whether the song has stems."""
+        import math
+        from lib.dj.brain import camelot_compat
+        q = (query or "").strip().lower()
+        pool_ids = None
+        if self.pool_name:
+            try:
+                from lib.dj.setlist import get_setlist
+                sl = get_setlist(self.db, name=self.pool_name)
+                pool_ids = {e["track_id"] for e in (sl or {}).get("entries", [])}
+            except Exception:
+                pool_ids = None
+        cur, bpm, cam, arc = None, None, None, 0.6
+        layered = self.rc is not None
+        if self.system is not None and self.system.current is not None:
+            cur = self.system.current
+            bpm, cam = float(cur.bpm or 0), cur.camelot
+            try:
+                arc = self.system.arc_target()
+            except Exception:
+                arc = 0.6
+        elif self.rc is not None and self.rc.master is not None:
+            cur = self.rc.songs[self.rc.master].track
+            bpm, cam = float(self.rc.master_bpm or cur.bpm), self.rc.key_centre
+            arc = self.rc.energy_target()
+        brain = self.system.brain if self.system is not None else (self.rc.brain if self.rc is not None else None)
+        smin = getattr(brain, "stretch_min", 0.92) if brain else 0.92
+        smax = getattr(brain, "stretch_max", 1.08) if brain else 1.08
+        rows = []
+        for t in self.library:
+            if pool_ids is not None and t.id not in pool_ids:
+                continue
+            if cur is not None and t.id == cur.id:
+                continue
+            if q and q not in (t.title or "").lower() and q not in (t.artist or "").lower():
+                continue
+            fit, ok, why = 0.5, True, []
+            if bpm:
+                ratios = [bpm / max(t.bpm * m, 1e-6) for m in (1.0, 2.0, 0.5)] if t.bpm else [9.0]
+                r = min(ratios, key=lambda x: abs(math.log(x)))
+                if layered:
+                    reach = 0.90 <= (bpm / max(t.bpm, 1e-6)) <= 1.10
+                else:
+                    reach = smin <= r <= smax
+                pct = 100.0 * (r - 1.0)
+                why.append(f"tempo {pct:+.1f}%")
+                if not reach:
+                    ok = False
+                    why[-1] += " (out of reach: would fade)" if not layered else " (outside the wall)"
+                kc = camelot_compat(cam, t.camelot) if (cam and t.camelot) else None
+                if kc is not None:
+                    why.append(f"key {t.camelot} fit {kc:.2f}" + (" (clash)" if kc < 0.55 else ""))
+                    if kc < 0.55 and not layered:
+                        why[-1] += " - a fade or a key shift"
+                try:
+                    e = float(brain._arc_energy(t)) if brain else t.energy_proxy()
+                except Exception:
+                    e = 0.5
+                why.append(f"energy {e:.2f} vs {arc:.2f}")
+                fit = (0.45 * (kc if kc is not None else 0.6) + 0.35 * max(0.0, 1.0 - abs(math.log(max(r, 1e-6))) / 0.1)
+                       + 0.2 * max(0.0, 1.0 - abs(e - arc) / 0.5)) if reach else 0.0
+                if (t.bpm_conf or 0) < 0.5:
+                    why.append("loose grid (beat-matching unreliable)")
+                    fit *= 0.6
+            if layered and not getattr(t, "has_stems", False):
+                ok = False
+                why.append("no stems: cannot be layered")
+            rows.append({"id": t.id, "title": t.title, "artist": t.artist or "", "bpm": t.bpm, "camelot": t.camelot,
+                         "ok": ok, "fit": fit, "why": ", ".join(why) if why else ""})
+        rows.sort(key=lambda x: (not x["ok"], -x["fit"], x["title"].lower()))
+        return rows[:n]
+
     # -- what the operator sees ---------------------------------------------------------------------------------------
     def title(self, tid):
         t = next((x for x in self.library if x.id == tid), None)
@@ -541,6 +752,11 @@ class Director:
                 if plan:
                     eta = st.get("blend_in_s")
                     bits.append(f"next seam: {plan.get('style')} " + (f"in {eta:.0f} s" if eta is not None else "when the exit comes"))
+                played = self._played_s()
+                if played < 45.0:
+                    bits.append(f"a dial turn acts once this record has played 45 s ({45 - played:.0f} s more)")
+                else:
+                    bits.append("a dial turn brings the next seam within a phrase")
                 out["intent"] = ", ".join(bits)
                 out["recent"] = [f"{time.strftime('%H:%M:%S', time.localtime(e.get('t', 0)))}  {e.get('event')}  "
                                  + ", ".join(f"{k} {v}" for k, v in e.items() if k not in ("t", "clock_s", "event") and not isinstance(v, (dict, list)))[:120]
@@ -572,7 +788,76 @@ class Director:
                 out["error"] = out["error"] or st.get("error")
         except Exception as e:  # noqa: BLE001
             out["error"] = f"status: {type(e).__name__}: {e}"
+        try:
+            out["why"], out["in_effect"] = self._explain()
+        except Exception as e:  # noqa: BLE001
+            out["why"], out["in_effect"] = [f"(explain: {type(e).__name__}: {e})"], []
         return out
+
+    def _explain(self):
+        """WHY the DJ is doing what it does, and what each dial is doing right now - in words."""
+        d = self.dials
+        why, eff = [], []
+        if self.system is not None:
+            sysm = self.system
+            st = sysm.status()
+            plan = st.get("plan") or {}
+            nxt = st.get("next") or {}
+            hz = st.get("horizon") or []
+            if nxt:
+                reason = next((h.get("why") for h in hz if h.get("title") == nxt.get("title") and h.get("why")), None)
+                why.append(f"next song {nxt.get('title')}: " + (reason or "the brain's best fit to the theme, the arc and the playing song's tempo and key"))
+            if plan:
+                chips = st.get("seam_chips") or []
+                line = f"the seam will be {plan.get('style')} ({plan.get('beats')} beats)"
+                if d["mixing"] != "auto":
+                    if plan.get("pin"):
+                        line += f" - your '{d['mixing']}' dial" + (f", allowed past {plan['pin_waived']}" if plan.get("pin_waived") else "")
+                    else:
+                        line += f" - your '{d['mixing']}' dial was refused: {plan.get('pin_why_not') or 'gated'}"
+                if chips:
+                    line += "; " + ", ".join(str(c) for c in chips[:4])
+                why.append(line)
+            elif st.get("state") == "playing":
+                why.append("the seam is not planned yet: the brain plans when the record's exit comes into range")
+            exit_s = getattr(sysm, "_exit_played", None)
+            eff.append(f"mixing {d['mixing']}: " + ("the dice choose" if d['mixing'] == 'auto' else f"every seam pinned to {MIX_PIN[d['mixing']]} (family fallback, a refused cut becomes a phrase cut)"))
+            eff.append(f"layers one: the autoDJ, one song at a time")
+            eff.append(f"energy {d['energy']}: arc target {st.get('arc_heat', 0):.2f} with lean {ENERGY_LEAN[d['energy']]:+.2f}")
+            eff.append(f"tempo {d['tempo']}: picks aim at {sysm.bpm_target():.0f} bpm" + (f" ({TEMPO_LEAN_BPM[d['tempo']]:+.0f})" if d['tempo'] != 'hold' else ""))
+            eff.append(f"pace {d['pace']}: this record holds about {exit_s:.0f} s" if exit_s else f"pace {d['pace']}")
+            eff.append(f"seams {d['seams']}: blend lengths ×{SEAM_SPEED[d['seams']]:g}")
+            eff.append(f"vocals {d['vocals']}: picks lean to vocal presence {VOCAL_AXIS[d['vocals']]:.2f}")
+            eff.append(f"variety {d['variety']}: persona {VARIETY_PERSONA[d['variety']] if VARIETY_PERSONA[d['variety']] != 'off' else 'neutral'}")
+            eff.append(f"loops {d['loops']}: loop entries ×{ {0: 1, 1: 3, 2: 8}[LOOP_LEVEL[d['loops']]] } as likely")
+        elif self.rc is not None:
+            rc = self.rc
+            last = rc.move_log[-1] if rc.move_log else None
+            kinds = {"enter": "there was room for another song, so the brain's pick came in through one lane",
+                     "cross_new": "a lane crossed toward the newest song (the layers dial leans that way)",
+                     "cross": "a lane recombined freely between the live songs",
+                     "rest": "a lane rested for a phrase (a breath)", "return": "a resting lane came back",
+                     "leave": "a song held no lane any more, so it left", "loop": "a song ran out of body and looped its last bars",
+                     "evict": "a song had looped long enough; its lanes moved on", "clock": "the clock passed to the song holding most lanes",
+                     "drop": "DROP: every lane to one song", "break": "BREAK", "break_auto": "the song holding most lanes reached a breakdown, so the conductor broke with it",
+                     "manual": "your move", "open": "the opener"}
+            if last is not None:
+                why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
+            for dname, s in rc.songs.items():
+                if s.staged_at is not None and not s.entered and not s.leaving:
+                    fit = f"key fit {s.compat:.2f}" if s.compat is not None else "key unknown"
+                    why.append(f"{s.track.title[:34]} is staged: tempo ×{s.rate:.3f}, {fit}{f' shifted {s.shift:+d}' if s.shift else ''}, "
+                               f"enters at the next move ({max(0, rc.change_bars - 1 - rc.phrase_bars)} bars)")
+            n_live = len([s for s in rc.songs.values() if s.entered and not s.leaving])
+            eff.append(f"mixing {d['mixing']}: lanes cross over {rc.cross_beats:g} beat{'s' if rc.cross_beats != 1 else ''}")
+            eff.append(f"layers {d['layers']}: {n_live} heard now, up to {2 if rc.blend < 0.5 else 3}; moves lean {'toward the newest song' if rc.blend < 0.5 else 'to free recombination'}")
+            eff.append(f"energy {d['energy']}: target {rc.energy_target():.2f}" + (", tempo may climb with it" if rc.tempo_span else ""))
+            eff.append(f"tempo {d['tempo']}: clock {rc.master_bpm or 0:.1f} bpm" + (f" heading {TEMPO_LEAN_X[d['tempo']] * 100:+.0f}%" if d['tempo'] != 'hold' else ""))
+            eff.append(f"pace {d['pace']}: a move every {rc.change_bars} bars")
+            eff.append(f"vocals {d['vocals']}: the vocal lane crosses with freedom {rc.vocal_freedom:.1f}")
+            eff.append(f"variety {d['variety']}: picks by persona {getattr(rc.brain.persona, 'name', 'neutral')}")
+            eff.append(f"loops {d['loops']}: " + ("holding eight bars now" if self._loop_hold else ("eight-bar holds on grooves at phrase boundaries" if d['loops'] != 'off' else "off")))
+        return why, eff
 
     def _event(self, msg):
         self.events.append((time.strftime("%H:%M:%S"), msg))

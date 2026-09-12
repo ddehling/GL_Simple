@@ -4320,6 +4320,26 @@ class Brain:
                 weights[force_style] = 1.0
                 gated.pop(force_style, None)
                 pin_waived = "kick_offset>28ms"
+            # A PINNED CUT IS BINDING (2026-09-12, the Director's mixing dial:
+            # "cut" then played a long_fade with no word why). When the pinned
+            # cut and its family are all refused, phrase_cut - a hard cut on
+            # a shared phrase boundary, which needs nothing but a grid -
+            # goes through every bar except the grid's own (beatless,
+            # off-meter, a grid too loose to place the bar). The operator
+            # asked for a cut; a cut is always physically possible.
+            # ("retired" is the menu's own housekeeping - phrase_cut is retired
+            # from the DICE, not broken; a pin is the operator overriding the
+            # menu, so retirement does not stand against it)
+            _structural = {"beatless_seam", "off_meter_segment", "grid_conf<0.5",
+                           "downbeat_conf", "no_grid"}
+            if force_style in ("cut_at_drop", "phrase_cut", "spinback_cut") \
+                    and weights.get(force_style, 0.0) <= 0.0 \
+                    and not any(weights.get(s, 0.0) > 0.0 for s in _PIN_FAMILY.get(force_style, ())):
+                pc_reasons = set(gated_all.get("phrase_cut") or ())
+                if not (pc_reasons & _structural):
+                    weights["phrase_cut"] = 1.0
+                    gated.pop("phrase_cut", None)
+                    pin_waived = ", ".join(sorted(pc_reasons)) or pin_waived
             menu = [(s, w) for s, w in weights.items() if w > 0]
             if force_style == "long_fade":
                 # Operator pinned the deliberate fade - always available.
