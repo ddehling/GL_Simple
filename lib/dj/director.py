@@ -69,6 +69,15 @@ class Director:
         self._lock = threading.Lock()
         self.events = []                 # (hms, text) the Director's own log
         self.last_error = None
+        # THE PICTURE: what played on each lane, when, and what is planned ahead - kept as a Timeline
+        # (lib/dj/timeline.py) so the same canvas draws it: real clips behind the playhead, ghosts ahead
+        from lib.dj.timeline import Timeline
+        self.tl = Timeline("director")
+        self._bar = 0.0                  # the Director's bar clock across engines (display)
+        self._bar_wall = None
+        self._lane_snap = {}
+        self._cur_song = None
+        self._ghosts = []                # clip ids of the current plan ahead
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -273,6 +282,10 @@ class Director:
             self._loops_layered()
         self._feed_up_next()
         self._handover()
+        try:
+            self._record()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"picture: {type(e).__name__}: {e}"
 
     def _feed_up_next(self):
         """The UP NEXT list: the head goes to the autoDJ as its next track (once per song), or is staged
@@ -424,6 +437,83 @@ class Director:
             self._switch = None
             threading.Timer(HANDOVER_BEATS * beat + 0.4, lambda: old.stop(fade_s=0.05)).start()
             self._event("layers: the autoDJ has the room")
+
+    # -- the picture: the run as a timeline ----------------------------------------------------------------------------
+    def _bpm(self):
+        if self.system is not None and self.system.current is not None:
+            return float(self.system.current.bpm or 120.0)
+        if self.rc is not None and self.rc.master_bpm:
+            return float(self.rc.master_bpm)
+        return 120.0
+
+    def bar(self):
+        """The Director's bar clock: advances with wall time at the playing tempo, across engines."""
+        now = time.time()
+        if self._bar_wall is not None and self.running:
+            self._bar += (now - self._bar_wall) * self._bpm() / 240.0
+        self._bar_wall = now
+        return self._bar
+
+    def _bar_len(self, tid):
+        t = next((x for x in self.library if x.id == tid), None)
+        return 4 * t.period_s if t is not None else 2.0
+
+    def _record(self):
+        """Write what is heard onto the Director's timeline (real clips) and the plan ahead (ghosts)."""
+        b = int(self.bar())
+        LANES = ("drums", "bass", "other", "vocals")
+        for cid in self._ghosts:
+            c = next((x for x in self.tl.clips if x.id == cid), None)
+            if c is not None:
+                self.tl.clips.remove(c)
+        self._ghosts = []
+        if self.system is not None:
+            sysm = self.system
+            cur = sysm.current
+            if cur is None:
+                return
+            tel = (sysm.submix.telemetry or {}).get("decks", {}).get(sysm.active_deck) or {}
+            pos = float(tel.get("time_s") or 0.0)
+            if self._cur_song != cur.id:
+                self._cur_song = cur.id
+                self.tl.add(cur.id, list(LANES), b, max(0.0, pos - (self.bar() - b) * self._bar_len(cur.id)))
+                self._lane_snap = {ln: cur.id for ln in LANES}
+            st = None
+            nxt = sysm.next_track
+            if nxt is not None:
+                try:
+                    st = sysm.status()
+                except Exception:
+                    st = None
+                eta = (st or {}).get("blend_in_s")
+                plan = (st or {}).get("plan") or {}
+                at = b + (int(eta / self._bar_len(cur.id)) if eta is not None else 24)
+                for c in self.tl.add(nxt.id, list(LANES), max(b + 1, at), float(plan.get("in_s") or 0.0), ghost=True):
+                    self._ghosts.append(c.id)
+        elif self.rc is not None:
+            rc = self.rc
+            if rc.master is None:
+                return
+            for ln in LANES:
+                d = rc.lanes.get(ln)
+                s = rc.songs.get(d) if d else None
+                tid = s.track.id if s is not None else None
+                if self._lane_snap.get(ln, "unset") != tid:
+                    self._lane_snap[ln] = tid
+                    if tid is None:
+                        from lib.dj.timeline import Clip
+                        prev = self.tl.active(ln, b - 1)
+                        self.tl.clips.append(Clip(prev.track_id if prev else 0, ln, b, 0.0, end_bar=None, rest=True))
+                    else:
+                        pos = float(rc._tel_deck(d).get("time_s") or 0.0)
+                        self.tl.add(tid, [ln], b, pos)
+            # the plan ahead: staged songs enter on the next move
+            left = max(0, rc.change_bars - 1 - rc.phrase_bars)
+            for d, s in rc.songs.items():
+                if s.staged_at is not None and not s.entered and not s.leaving:
+                    lane = rc._lane_to_give(d, rc._next_bar_clock()) or "drums"
+                    for c in self.tl.add(s.track.id, [lane], b + 1 + left, rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id), ghost=True):
+                        self._ghosts.append(c.id)
 
     # -- what the operator sees ---------------------------------------------------------------------------------------
     def title(self, tid):

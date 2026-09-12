@@ -57,12 +57,16 @@ class TimelineCanvas(QWidget):
     LANE_H = 64
     RULER_H = 22
     LEFT = 64
+    readonly = False                     # the Director's picture: drawn, never edited
 
-    def __init__(self, tab):
+    def __init__(self, tab, lane_h=None, readonly=False):
         super().__init__()
         self.tab = tab
+        if lane_h:
+            self.LANE_H = lane_h
+        self.readonly = readonly
         self.setMinimumHeight(self.RULER_H + 4 * self.LANE_H + 8)
-        self.setAcceptDrops(True)
+        self.setAcceptDrops(not readonly)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.px_per_bar = 14.0
         self.first_bar = 0.0             # scroll
@@ -211,7 +215,7 @@ class TimelineCanvas(QWidget):
         return c, ("trim" if edge else "move")
 
     def mousePressEvent(self, ev):
-        if ev.button() != Qt.MouseButton.LeftButton:
+        if ev.button() != Qt.MouseButton.LeftButton or self.readonly:
             return
         c, mode = self._hit(ev.position())
         self.selected = c
@@ -245,6 +249,8 @@ class TimelineCanvas(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, ev):
+        if self.readonly:
+            return
         c, mode = self._hit(ev.position())
         if c is not None:
             c.end_bar = None if c.end_bar is not None else max(c.bar + 4, int(round(self.bar_at(ev.position().x()))))
@@ -252,7 +258,7 @@ class TimelineCanvas(QWidget):
             self.update()
 
     def keyPressEvent(self, ev):
-        if ev.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.selected is not None:
+        if ev.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.selected is not None and not self.readonly:
             self.tab.timeline.remove(self.selected)
             self.selected = None
             self.tab.changed()

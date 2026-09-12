@@ -71,6 +71,17 @@ class DirectorTab(QWidget):
         top.addWidget(self.state_lbl, 1)
         root.addLayout(top)
 
+        # -- the picture: the run as a timeline (read-only) ----------------------------------------------------------
+        from lib.dj.timeline import Timeline, Spectro
+        from tools.dj.planner.timeline import TimelineCanvas
+        self._empty_tl = Timeline("director")
+        self.spectro = Spectro(planner.music_dir)
+        self._colors = {}
+        self.canvas = TimelineCanvas(self, lane_h=46, readonly=True)
+        self.canvas.px_per_bar = 9.0
+        self.canvas.setToolTip("what played on each lane and when · the playhead · dashed = what the Director plans next · Ctrl+wheel zooms, wheel scrolls")
+        root.addWidget(self.canvas)
+
         split = QSplitter(Qt.Orientation.Horizontal)
         # -- left: what's happening, in words ----------------------------------------------------------------------
         left = QWidget()
@@ -199,6 +210,39 @@ class DirectorTab(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._tick)
+
+    # -- what the canvas asks of its tab ------------------------------------------------------------------------
+    @property
+    def timeline(self):
+        return self.director.tl if self.director is not None else self._empty_tl
+
+    def color(self, tid):
+        from tools.dj.planner.perform import SONG_PALETTE
+        if tid not in self._colors:
+            self._colors[tid] = SONG_PALETTE[len(self._colors) % len(SONG_PALETTE)]
+        return self._colors[tid]
+
+    def track(self, tid):
+        try:
+            return next((t for t in self._library() if t.id == tid), None)
+        except Exception:
+            return None
+
+    def bar_s(self, tid):
+        t = self.track(tid)
+        return 4 * t.period_s if t is not None else 2.0
+
+    def playhead(self):
+        return self.director.bar() if self.director is not None else 0.0
+
+    def seek(self, bar):
+        pass
+
+    def place(self, *a, **k):
+        pass
+
+    def changed(self):
+        self.canvas.update()
 
     # -- data -------------------------------------------------------------------------------------------------
     def _db(self):
@@ -392,3 +436,11 @@ class DirectorTab(QWidget):
         self.buttons["BREAK"].setEnabled(st.get("mode") == "layered")
         err = st.get("error")
         self.err_lbl.setText(f"ERROR {err}" if err else "")
+        # the picture
+        self.canvas.follow(d.bar())
+        for tid in d.tl.tracks():
+            if tid and self.spectro.get(tid) is None and tid not in self.spectro._busy and tid not in self.spectro.errors:
+                t = self.track(tid)
+                if t is not None and getattr(t, "has_stems", False):
+                    self.spectro.request(t)
+        self.canvas.update()
