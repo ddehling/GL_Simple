@@ -131,6 +131,8 @@ class Director:
         self._last_moment_t = 0.0        # when the last moment (yours or the DJ's) happened: peaks are spaced
         self.arc_custom = None           # your bent curve [(progress, energy)] when the arc dial says "yours"
         self._arc_jump = None
+        self._sent = {}                  # per engine: the steering values it already has (see _send)
+        self._dial_seam_t = 0.0          # when a dial turn last brought a seam forward
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -212,17 +214,31 @@ class Director:
         self._apply_to_conductor(rc)
         return rc
 
+    def _send(self, eng, name, value, fn):
+        """Hand a steering value to an engine ONLY when it changed since the last time this engine got it.
+        The autoDJ drops its planned NEXT and picks again on flavor / persona / arc / pin changes; re-sending
+        the same values on every dial turn or verdict made it change its mind constantly (user 2026-09-12:
+        "it can't make up its mind")."""
+        sent = self._sent.setdefault(id(eng), {})
+        key = repr(value)
+        if sent.get(name) == key:
+            return False
+        sent[name] = key
+        fn(value)
+        return True
+
     def _apply_to_system(self, sysm):
         d = self.dials
-        sysm.set_mix_style(MIX_PIN[d["mixing"]])
-        sysm.set_energy_nudge(ENERGY_LEAN[d["energy"]])
-        sysm.set_bpm_lean(TEMPO_LEAN_BPM[d["tempo"]])
-        sysm.set_pace(PACE_X[d["pace"]])
-        sysm.set_mix_speed(SEAM_SPEED[d["seams"]])
-        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}, "require_tags": list(self.tags),
-                         "prefer_tags": dict(self.taste["like"]), "avoid_tags": dict(self.taste["dislike"])})
-        sysm.set_persona(VARIETY_PERSONA[d["variety"]])
-        sysm.set_loop_bias(LOOP_LEVEL[d["loops"]])
+        self._send(sysm, "mix_style", MIX_PIN[d["mixing"]], sysm.set_mix_style)
+        sysm.set_energy_nudge(ENERGY_LEAN[d["energy"]])           # guarded inside (replans only past 0.05)
+        self._send(sysm, "bpm_lean", TEMPO_LEAN_BPM[d["tempo"]], sysm.set_bpm_lean)
+        self._send(sysm, "pace", PACE_X[d["pace"]], sysm.set_pace)
+        self._send(sysm, "mix_speed", SEAM_SPEED[d["seams"]], sysm.set_mix_speed)
+        self._send(sysm, "flavor", {"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}, "require_tags": sorted(self.tags),
+                                    "prefer_tags": dict(sorted(self.taste["like"].items())),
+                                    "avoid_tags": dict(sorted(self.taste["dislike"].items()))}, sysm.set_flavor)
+        self._send(sysm, "persona", VARIETY_PERSONA[d["variety"]], sysm.set_persona)
+        self._send(sysm, "loop_bias", LOOP_LEVEL[d["loops"]], sysm.set_loop_bias)
         try:
             fx = FX_LEVEL[d["fx"]]
             for k in ("filter_sweep", "echo_out"):
@@ -230,11 +246,11 @@ class Director:
         except Exception:
             pass
         self._apply_bus(sysm.submix)
-        sysm.set_arc_waypoints(self._arc_points())
+        self._send(sysm, "arc", [(round(p, 4), round(e, 4)) for p, e in self._arc_points()], sysm.set_arc_waypoints)
         if abs(ARC_LEN_S[d["length"]] - getattr(sysm, "set_cycle_s", 0)) > 1.0:
-            sysm.set_set_length(ARC_LEN_S[d["length"]])
+            self._send(sysm, "set_len", ARC_LEN_S[d["length"]], sysm.set_set_length)
         if self.pool_name:
-            sysm.load_setlist(self.pool_name, mode="pool")
+            self._send(sysm, "pool", self.pool_name, lambda n: sysm.load_setlist(n, mode="pool"))
 
     def _apply_to_conductor(self, rc):
         d = self.dials
@@ -366,10 +382,9 @@ class Director:
         if self.dials["arc"] != "yours":
             self.dials["arc"] = "yours"
             self._event("arc: yours (bent on the strip)")
-        if self.system is not None:
-            self._apply_to_system(self.system)
-        if self.rc is not None:
-            self._apply_to_conductor(self.rc)
+        # the engines get the bent curve once the hand has been still for a second (every mouse move
+        # would replan the next song)
+        self._arc_dirty = time.time()
 
     def arc_status(self):
         """The arc for the strip: where we are, the plan, what actually played (progress, energy)."""
@@ -438,12 +453,16 @@ class Director:
             if name == "pace":
                 self.system.redraw_exit()
             played = self._played_s()
-            if played >= 45.0 and name in ("mixing", "energy", "loops", "pace"):
+            # heard within a phrase - but not on every touch: once the record has played 90 s, and at most
+            # one dial-forced seam every two minutes (three dials in a row skipped three records: "terrible")
+            if played >= 90.0 and name in ("mixing", "energy", "loops", "pace") \
+                    and time.time() - self._dial_seam_t >= 120.0:
                 if name != "pace" or self.dials["pace"] == "short":
                     self.system.request_skip()
+                    self._dial_seam_t = time.time()
                     self._event(f"{name}: the next seam comes now")
-        if self.rc is not None and self.rc.master is not None:
-            self.rc.next_move()
+        if self.rc is not None and self.rc.master is not None and name in ("mixing", "pace", "vocals", "loops", "energy", "moments"):
+            self.rc.nudge_move()                      # the next phrase decides with the new dial - no forced move
 
     def _played_s(self):
         sysm = self.system
@@ -636,10 +655,13 @@ class Director:
         tags = self._learn_song(song_id, up)
         if tags:
             info["learn"] = (info["learn"] or "") + f"; songs tagged {', '.join(tags)} are {'favoured' if up else 'held back'} for the next picks"
-            if self.system is not None:
-                self._apply_to_system(self.system)
-            if self.rc is not None:
-                self._apply_to_conductor(self.rc)
+            # a BAD reaches the engines now (the next pick must change); a GOOD waits for the next steering
+            # change or song - a GOOD must never make the DJ drop the NEXT it had chosen
+            if not up:
+                if self.system is not None:
+                    self._apply_to_system(self.system)
+                if self.rc is not None:
+                    self._apply_to_conductor(self.rc)
         self.last_verdict = info
         self._event(("GOOD" if up else "BAD") + (f": {info['what'][:50]}" if info.get("what") else ""))
         return info
@@ -664,6 +686,12 @@ class Director:
             self._loops_one()
         except Exception as e:  # noqa: BLE001
             self.last_error = f"loops: {type(e).__name__}: {e}"
+        if getattr(self, "_arc_dirty", None) is not None and time.time() - self._arc_dirty >= 1.0:
+            self._arc_dirty = None
+            if self.system is not None:
+                self._apply_to_system(self.system)
+            if self.rc is not None:
+                self._apply_to_conductor(self.rc)
         self._feed_up_next()
         self._handover()
         self._warm_step()
@@ -1004,11 +1032,28 @@ class Director:
         """Write what is heard onto the Director's timeline (real clips) and the plan ahead (ghosts)."""
         b = int(self.bar())
         LANES = ("drums", "bass", "other", "vocals")
-        for cid in self._ghosts:
-            c = next((x for x in self.tl.clips if x.id == cid), None)
-            if c is not None:
-                self.tl.clips.remove(c)
-        self._ghosts = []
+
+        def ghost(key, track_id, lanes, at, start_s):
+            """The plan ahead as a dashed clip - kept where it is while the plan is the same song within a
+            bar of where it was (re-adding it every tick made it hop; user: 'the timeline keeps morphing')."""
+            old = getattr(self, "_ghost_key", None)
+            if old is not None and old[0] == key[0] and old[1] == key[1] and abs(old[2] - key[2]) <= 1 \
+                    and all(any(x.id == cid for x in self.tl.clips) for cid in self._ghosts):
+                return
+            for cid in self._ghosts:
+                c = next((x for x in self.tl.clips if x.id == cid), None)
+                if c is not None:
+                    self.tl.clips.remove(c)
+            self._ghosts = [c.id for c in self.tl.add(track_id, lanes, at, start_s, ghost=True)]
+            self._ghost_key = key
+
+        def no_ghost():
+            for cid in self._ghosts:
+                c = next((x for x in self.tl.clips if x.id == cid), None)
+                if c is not None:
+                    self.tl.clips.remove(c)
+            self._ghosts = []
+            self._ghost_key = None
         if self.system is not None:
             sysm = self.system
             cur = sysm.current
@@ -1030,9 +1075,10 @@ class Director:
                     st = None
                 eta = (st or {}).get("blend_in_s")
                 plan = (st or {}).get("plan") or {}
-                at = b + (int(eta / self._bar_len(cur.id)) if eta is not None else 24)
-                for c in self.tl.add(nxt.id, list(LANES), max(b + 1, at), float(plan.get("in_s") or 0.0), ghost=True):
-                    self._ghosts.append(c.id)
+                at = max(b + 1, b + (int(round(eta / self._bar_len(cur.id))) if eta is not None else 24))
+                ghost(("one", nxt.id, at), nxt.id, list(LANES), at, float(plan.get("in_s") or 0.0))
+            else:
+                no_ghost()
         elif self.rc is not None:
             rc = self.rc
             if rc.master is None:
@@ -1050,13 +1096,26 @@ class Director:
                     else:
                         pos = float(rc._tel_deck(d).get("time_s") or 0.0)
                         self.tl.add(tid, [ln], b, pos)
-            # the plan ahead: staged songs enter on the next move
+            # the plan ahead: the staged song arrives as a VOICE (the arrangement's `other` lane) at the move
+            # the bed's settling allows - one steady ghost, not a lane-hopping one
             left = max(0, rc.change_bars - 1 - rc.phrase_bars)
-            for d, s in rc.songs.items():
-                if s.staged_at is not None and not s.entered and not s.leaving:
-                    lane = rc._lane_to_give(d, rc._next_bar_clock()) or "drums"
-                    for c in self.tl.add(s.track.id, [lane], b + 1 + left, rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id), ghost=True):
-                        self._ghosts.append(c.id)
+            try:
+                arr = rc._arrangement_status()
+                settle = int(((arr.get("bed") or {}).get("settle_left")) or 0)
+                if arr.get("landing_in_bars"):
+                    settle = max(settle, int(arr["landing_in_bars"]) + rc.change_bars)
+            except Exception:
+                settle = 0
+            if settle > left:
+                left = left + rc.change_bars * ((settle - left + rc.change_bars - 1) // rc.change_bars)
+            staged = [(d, s) for d, s in rc.songs.items() if s.staged_at is not None and not s.entered and not s.leaving]
+            if staged:
+                d, s = staged[0]
+                at = b + 1 + left
+                ghost(("layered", s.track.id, at), s.track.id, ["other"], at,
+                      rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id))
+            else:
+                no_ghost()
 
     # -- the song list: what fits from HERE, and what would be rejected -------------------------------------------------
     def rank(self, query="", n=40):

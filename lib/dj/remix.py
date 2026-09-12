@@ -1693,6 +1693,11 @@ class RemixConductor:
     def next_move(self):
         self._force_move = True
 
+    def nudge_move(self):
+        """A dial turned: the next bar is a phrase decision (with the arrangement's waits intact) instead of
+        waiting out the phrase - not a forced move."""
+        self.phrase_bars = max(self.phrase_bars, self.change_bars - 1)
+
     def set_theme(self, name):
         from lib.dj.themes import get_theme
         if self.brain is not None:

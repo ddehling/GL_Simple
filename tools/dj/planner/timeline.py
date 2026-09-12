@@ -151,20 +151,36 @@ class TimelineCanvas(QWidget):
                 drawn = False
                 if sp is not None and sp["stems"].get(ln) is not None and rect.width() > 4:
                     bar_s = self.tab.bar_s(c.track_id)
-                    t0 = c.song_time_at(self.bar_at(x0), bar_s)
-                    t1 = c.song_time_at(self.bar_at(min(x1, W)), bar_s)
-                    key = (c.id, round(t0, 1), round(t1, 1), int(rect.width()), int(rect.height()))
-                    img = self._img_cache.get(key)
-                    if img is None:
-                        img = _spec_image(sp["stems"][ln], col, max(0.0, t0), max(0.0, t1), int(rect.width()), int(rect.height()), sp["hop_s"])
-                        if len(self._img_cache) > 300:
-                            self._img_cache.clear()
-                        self._img_cache[key] = img
-                    if img is not None:
-                        p.setOpacity(0.55 if c.ghost else 1.0)
-                        p.drawImage(rect, img)
-                        p.setOpacity(1.0)
-                        drawn = True
+                    # STABLE PICTURES: the image is rendered on a fixed lattice of 8-bar chunks from the clip's
+                    # own start, at the current zoom, and only the visible part is painted - a live clip that
+                    # grows a pixel a tick used to be re-rendered at a new scale every tick (the spectrogram
+                    # visibly "morphed", user 2026-09-12); scrolling and growth now only reveal more of it
+                    CH = 8
+                    k0 = int((s0 - c.bar) // CH)
+                    k1 = int((min(s1, self.bar_at(W)) - c.bar) // CH)
+                    p.save()
+                    p.setClipRect(rect)
+                    p.setOpacity(0.55 if c.ghost else 1.0)
+                    for k in range(max(0, k0), max(0, k1) + 1):
+                        cb0, cb1 = c.bar + k * CH, c.bar + (k + 1) * CH
+                        cx0, cx1 = self.x_of(cb0), self.x_of(cb1)
+                        if cx1 < x0 or cx0 > x1:
+                            continue
+                        w_px = max(1, int(round(cx1 - cx0)))
+                        t0 = c.song_time_at(cb0, bar_s)
+                        t1 = c.song_time_at(cb1, bar_s)
+                        key = (c.id, k, round(self.px_per_bar, 2), int(rect.height()))
+                        img = self._img_cache.get(key)
+                        if img is None:
+                            img = _spec_image(sp["stems"][ln], col, max(0.0, t0), max(0.0, t1), w_px, int(rect.height()), sp["hop_s"])
+                            if len(self._img_cache) > 600:
+                                self._img_cache.clear()
+                            self._img_cache[key] = img
+                        if img is not None:
+                            p.drawImage(QRectF(cx0, rect.top(), cx1 - cx0, rect.height()), img)
+                            drawn = True
+                    p.setOpacity(1.0)
+                    p.restore()
                 if not drawn:
                     fill = QColor(col)
                     fill.setAlpha(40 if c.ghost else 70)

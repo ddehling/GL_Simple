@@ -1297,10 +1297,12 @@ class DJSystem:
                         self.next_track = None      # replan from the list
                         self.plan = None
             elif kind == "arc":
-                self._arc_waypoints = [(max(0.0, min(1.0, float(p))),
-                                        max(0.0, min(1.0, float(e))))
-                                       for p, e in val][:16]        # the Director hands a 13-point curve
-                self._arc_waypoints.sort()
+                new_pts = sorted((max(0.0, min(1.0, float(p))),
+                                  max(0.0, min(1.0, float(e))))
+                                 for p, e in val)[:16]              # the Director hands a 13-point curve
+                if new_pts == self._arc_waypoints:
+                    continue                                        # the same curve again: no replan
+                self._arc_waypoints = new_pts
                 self._log({"event": "arc", "waypoints": self._arc_waypoints})
                 self._horizon_key = None
                 # A drawn curve is steering too - next pick must obey it.
