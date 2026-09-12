@@ -272,6 +272,34 @@ ALL OK — vocal lane on a silent section 4 % of blocks (transients the next mov
 of 1759 blocks, shapes echo / filter / stutter, 11 songs staged on landmarks, tempo 118.0 → 122.1, RECALL
 3/4, recording 2 s + JSON; seed 11 exposed the unknown-vocals break (fixed by the measured singing map).
 
+**THE INSTRUMENT (2026-09-11, user: "this is still just a fancy automixer… I have almost no information,
+control, or ways to steer the system. It feels like I'm calling into a radio station and asking for a type
+of song"):** the diagnosis was right - every decision sat in the system and the operator's inputs were
+biases on probabilities. The Perform tab is now an instrument the system executes for: **the pad grid**
+(lanes down, songs across; a cell puts that lane on that song on the next bar through the same crossfade,
+shapes, hygiene and harmonic guard; a lit cell is where the lane is; a grey cell says why it is refused -
+"key clash with the other of X", "not singing there now"; a rest column; each column heads with the song,
+its tempo and key fit, its section, singing, lock, a **fader**, LOOP 4 and **OUT**); **the crate** (songs
+that fit the clock now, ranked - tempo inside the wall, key fit with the shift it would take, energy
+against the arc - with the reasons; search; STAGE decodes one onto the free fourth deck, beat-locked and
+key-fitted, silent until you give it a lane); **autopilot as an amount** (0 = only you move lanes, 100 =
+the conductor moves every phrase; with it off nothing is auto-staged either); **songs** = a saved setlist
+as the pool (Remix: the crate and the conductor pick only from it; Automix: the night's pool); verdicts on
+the move itself in the feed (👍 / 👎 per row, clearable); the stage-and-deck layout (dark, large grouped
+buttons, sliders with values, a phrase bar counting down to the next move, colour per song across grid
+and strips, keyboard shortcuts). The nanoKONTROL2 became the instrument's surface: channel strips 1-4 =
+decks A-D (fader = that song's level, S / M / R = drums / bass / other to that song; S of strips 5-8 =
+vocals to A-D), faders 5-8 = energy, blend, vocals, auto. Conductor API behind it: `set_auto`,
+`candidates`, `stage_track`, `why_not`, `assign`, `eject`, `song_loop`, `song_gain`, `rate_id`,
+`set_pool`; DECKS is four now. Headless: autopilot 0 for 20 s produced no conductor move; a crate pick
+staged on B; drums and bass put on it from the grid; the vocal cell refused with "not singing there now";
+a fader; OUT handed the clock over; autopilot 100 resumed the conductor.
+*Where the user wants this to go (2026-09-11):* "finer resolution spectral information, entry and exit
+points, the ability to create paths from entry to exit points via drag and drop, the ability to see
+multiple songs' info at once, and the start of a way to play parts of many songs at once" - an
+ARRANGEMENT surface: songs as rows with stem-level spectral detail, their entry and exit points, paths
+drawn between them that the conductor then plays as parts of many songs. Next.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

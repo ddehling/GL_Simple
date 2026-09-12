@@ -64,7 +64,7 @@ from lib.dj.submix import DJSubmix, RATE
 STEMS = ("drums", "bass", "other", "vocals")
 TONAL = ("bass", "other", "vocals")
 MORPH_ORDER = ("drums", "bass", "other", "vocals")
-DECKS = ("a", "b", "c")
+DECKS = ("a", "b", "c", "d")     # three heard + one staged is the DJ's norm; the fourth is the operator's slot
 LEAD_S = 0.25
 RATE_MIN, RATE_MAX = 0.90, 1.10
 CLASH_BELOW = 0.55
@@ -119,8 +119,11 @@ class Song:
         self.evicted = False
         self.stem_rms = {}               # per-stem RMS over the body (level trims)
         self.vox_sections = None         # the vocals stem's RMS per section: the measured singing map
+        self.env = None                  # per-stem half-second envelopes (the strips' stem picture)
         self.vocal_data = bool(track.sections) and any((s.get("vocalness") or 0) > 0 for s in track.sections)
         self.auto_broke = False
+        self.level = 1.0                 # the operator's fader for this song (deck gain)
+        self.user_loop = None            # the operator's loop on this song, bars
         self.fx_until = None             # a shape's FX is running on this deck until this clock
         self.ready_k = None              # bar count from which a move may let it in (its landmark lands there)
 
@@ -147,6 +150,7 @@ class RemixConductor:
         self.master_bpm = None
         self.key_centre = None           # the session's key: every song is shifted toward it
         self.ref_rms = None              # the first song's stem levels: every later song is trimmed toward them
+        self.pool_name = None            # the setlist the songs are confined to (None = the whole stem library)
         # steering
         self.blend = 0.7
         self.change_bars = 8
@@ -154,6 +158,8 @@ class RemixConductor:
         self.energy_lean = 0.0
         self.hold = False
         self._force_move = False
+        self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
+        self._cands_cache = (0.0, None, [])
         # performing
         self.user_loop_bars = None       # LOOP 4 / 8 in force
         self._break = None               # (restore_clock, {lane: deck}) while a BREAK runs
@@ -238,13 +244,25 @@ class RemixConductor:
         return max(0.05, min(0.95, base + self.energy_lean))
 
     def _pick_first(self):
-        """The opener: inside the theme's tempo window (a 70 bpm half-time read once opened a session
-        nothing could join), a confident grid, room to play."""
+        """The opener: from the pool when one is set, inside the theme's tempo window (a 70 bpm half-time
+        read once opened a session nothing could join), a confident grid, room to play."""
         lo, hi = self.brain.theme.bpm_range
-        cands = [t for t in self.library if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150 and lo <= t.bpm <= hi]
+        lib = [t for t in self.library if self.brain.pool_ids is None or t.id in self.brain.pool_ids] or self.library
+        cands = [t for t in lib if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150 and lo <= t.bpm <= hi]
         if not cands:
-            cands = [t for t in self.library if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150]
-        return self.rng.choice(cands) if cands else self.rng.choice(self.library)
+            cands = [t for t in lib if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150]
+        return self.rng.choice(cands) if cands else self.rng.choice(lib)
+
+    def set_pool(self, track_ids):
+        """Confine the songs to a pool (a saved setlist's tracks); None = the whole stem library. Songs
+        already live finish their part; every pick from now on comes from the pool."""
+        if track_ids is None:
+            self.brain.pool_ids = None
+            self.pool_name = None
+            return 0
+        have = {t.id for t in self.library}
+        self.brain.pool_ids = {int(i) for i in track_ids if int(i) in have}
+        return len(self.brain.pool_ids)
 
     def _pick_next(self):
         """The brain's choice against the master song, to the theme and the arc; must run inside the
@@ -311,6 +329,24 @@ class RemixConductor:
                 acc += float(np.sum(blk * blk))
                 cnt += blk.size
             out[name] = math.sqrt(acc / max(cnt, 1))
+        # per-stem ENVELOPES at half-second resolution (RMS per 0.5 s, each stem scaled by its own 95th
+        # percentile): the strips' stem-level picture - where each stem is present, finer than sections
+        env = {}
+        hop = RATE // 2
+        for name, arr in stems.items():
+            a = np.asarray(arr)
+            n = len(a) // hop
+            if n <= 0:
+                continue
+            vals = np.empty(n, dtype=np.float32)
+            for j in range(0, n, 200):
+                j1 = min(n, j + 200)
+                blk = a[j * hop:j1 * hop].astype(np.float32)
+                blk = blk.reshape(j1 - j, hop, -1)
+                vals[j:j1] = np.sqrt(np.mean(blk * blk, axis=(1, 2)))
+            top = float(np.percentile(vals, 95)) or 1e-6
+            env[name] = np.clip(vals / top, 0.0, 1.0).astype(np.float16)
+        out["_env"] = env
         vox = stems.get("vocals")
         if vox is not None and track.sections:
             a = np.asarray(vox)
@@ -347,6 +383,7 @@ class RemixConductor:
         ])
         song = Song(deck, track)
         rms = dict(rms)
+        song.env = rms.pop("_env", None)
         song.vox_sections = rms.pop("_vox_sections", None)
         if song.vox_sections:
             song.vocal_data = True                    # measured from the stem: every song has a singing map
@@ -762,7 +799,8 @@ class RemixConductor:
         live = [s for s in self.songs.values() if not s.leaving]
         cap = 2 if self.blend < 0.5 else 3
         free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
-        if free and len(live) + len(self._decoding) + len(self._pending) < cap:
+        # the conductor stages its own picks only with autopilot on; with it off, the crate is the operator's
+        if self.auto > 0.0 and free and len(live) + len(self._decoding) + len(self._pending) < cap:
             nxt = self._pick_next()
             if nxt is not None:
                 self._decode(nxt, free[0])
@@ -793,7 +831,10 @@ class RemixConductor:
             self._one_move(self._next_bar_clock())
         elif due and not self.hold:
             self.phrase_bars = 0
-            self._one_move(self._snap_to_section(self._next_bar_clock()))
+            # the autopilot amount: the chance this phrase's move is the conductor's (0 = never: the
+            # operator's grid is the only thing that moves; 1 = every phrase, the autonomous mode)
+            if self.auto >= 1.0 or self.rng.random() < self.auto:
+                self._one_move(self._snap_to_section(self._next_bar_clock()))
 
     def _auto_break(self):
         """The song holding most lanes reaches a breakdown: the conductor may break with it, once per song."""
@@ -968,6 +1009,163 @@ class RemixConductor:
             if self._lane_ok(deck, lane, at):
                 return lane
         return None
+
+    # -- the instrument: the operator's own moves ---------------------------------------------------------------
+    def set_auto(self, x):
+        """Autopilot amount 0..1: the chance the conductor takes each phrase's move (0 = only you move)."""
+        self.auto = float(max(0.0, min(1.0, x)))
+
+    def candidates(self, n=12, query=None):
+        """The crate: songs that fit the clock NOW, ranked - tempo inside the wall, key fit to the session
+        key (with the shift it would take), energy against the arc - with the reasons. From the pool when
+        one is set. Cached for two seconds; a `query` filters titles and artists."""
+        now = time.time()
+        if self._cands_cache[1] == query and now - self._cands_cache[0] < 2.0:
+            return self._cands_cache[2][:n]
+        out = []
+        if self.master is not None and self.master_bpm:
+            busy = {s.track.id for s in self.songs.values()} | {t.id for t in self._decoding.values()} | {p[0].id for p in self._pending.values()}
+            target = self.energy_target()
+            q = (query or "").strip().lower()
+            for t in self.library:
+                if t.id in busy or (self.brain.pool_ids is not None and t.id not in self.brain.pool_ids):
+                    continue
+                if q and q not in (t.title or "").lower() and q not in (t.artist or "").lower():
+                    continue
+                rate = self.master_bpm / max(t.bpm, 1e-6)
+                if not (RATE_MIN <= rate <= RATE_MAX) or (t.bpm_conf or 0) < 0.5:
+                    continue
+                if (t.duration_s - self._body_start(t)) / rate < MIN_RUNWAY_S:
+                    continue
+                shift, compat = self._key_fit(t)
+                try:
+                    e = float(self.brain._arc_energy(t))
+                except Exception:
+                    e = 0.5
+                fit_key = compat if compat is not None else 0.6
+                fit_tempo = max(0.0, 1.0 - abs(math.log(rate)) / 0.1)
+                fit_e = max(0.0, 1.0 - abs(e - target) / 0.5)
+                score = 0.5 * fit_key + 0.3 * fit_tempo + 0.2 * fit_e
+                why = []
+                why.append(f"{'+' if rate >= 1 else ''}{100 * (rate - 1):.1f}% tempo")
+                if compat is not None:
+                    why.append(f"key {t.camelot}{f' shifted {shift:+d}' if shift else ''} fit {compat:.2f}")
+                else:
+                    why.append("key unknown")
+                why.append(f"energy {e:.2f} vs {target:.2f}")
+                out.append({"id": t.id, "title": t.title, "artist": t.artist, "bpm": t.bpm, "camelot": t.camelot,
+                            "rate": rate, "shift": shift, "compat": compat, "energy": e, "score": score, "why": ", ".join(why)})
+            out.sort(key=lambda c: -c["score"])
+        self._cands_cache = (now, query, out)
+        return out[:n]
+
+    def stage_track(self, track_id):
+        """The operator picks a song from the crate: it decodes and stages on a free deck (beat-locked,
+        key-fitted, silent) and appears as a grid column. Returns (ok, message)."""
+        t = self._track(int(track_id))
+        if t is None:
+            return False, "not in the stem library"
+        if self.master is None:
+            return False, "nothing is playing yet"
+        busy = {s.track.id for s in self.songs.values()} | {x.id for x in self._decoding.values()} | {p[0].id for p in self._pending.values()}
+        if t.id in busy:
+            return False, "already on a deck"
+        rate = self.master_bpm / max(t.bpm, 1e-6)
+        if not (RATE_MIN <= rate <= RATE_MAX):
+            return False, f"{t.bpm:.0f} bpm is outside the tempo wall for this clock ({rate:.3f})"
+        free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
+        if not free:
+            return False, "no free deck - eject one first"
+        self._decode(t, free[0])
+        self._note(f"{t.title} staging on {free[0].upper()} (your pick)")
+        return True, f"{t.title} → deck {free[0].upper()}"
+
+    def why_not(self, lane, deck):
+        """Why the grid cell (lane, deck) is refused right now; None when it is allowed."""
+        s = self.songs.get(deck)
+        if s is None:
+            return "no song on that deck"
+        if s.leaving:
+            return "leaving"
+        if s.staged_at is None:
+            return "still decoding"
+        at = self._next_bar_clock()
+        if lane in TONAL:
+            for other in TONAL:
+                if other == lane:
+                    continue
+                od = self.lanes.get(other)
+                if od is None or od == deck or od not in self.songs:
+                    continue
+                o = self.songs[od]
+                if o.track.camelot and s.track.camelot and _compat(o.key(), s.key()) < CLASH_BELOW:
+                    return f"key clash with the {other} of {o.track.title[:24]} ({o.key()} vs {s.key()})"
+        if lane == "vocals" and self._singing(s, self._song_time_at(deck, at)) is False:
+            return "not singing there now"
+        return None
+
+    def assign(self, lane, deck):
+        """The operator puts `lane` on `deck` (None = rest) on the next bar, through the same crossfade,
+        shapes and hygiene the conductor uses. Refused with the reason when the guard says no."""
+        if lane not in STEMS or self.master is None:
+            return False, "no clock"
+        if deck is not None:
+            why = self.why_not(lane, deck)
+            if why:
+                return False, why
+        if self.lanes.get(lane) == deck:
+            return True, "already there"
+        at = self._next_bar_clock()
+        frm = self.lanes.get(lane)
+        if self._break is not None:
+            self._break = None
+        tag = self._cross(lane, deck, at)
+        self._hygiene(at + int(XFADE_BEATS * self._beat_s() * RATE))
+        self.phrase_bars = 0
+        to_title = self.songs[deck].track.title if deck in self.songs else None
+        self._move("manual", lane, self._song_id(frm), self._song_id(deck),
+                   f"you: {lane} → {to_title}" if deck is not None else f"you: {lane} rests", shape=tag)
+        return True, f"{lane} → {to_title or 'rest'} on the next bar"
+
+    def eject(self, deck):
+        """The operator takes a song off: its lanes move to the other songs (or rest), it leaves a bar later."""
+        s = self.songs.get(deck)
+        if s is None or s.leaving:
+            return False
+        if s.held(self.lanes):
+            s.evicted = True
+            self._evict(deck)
+        else:
+            self._leave_song(deck, self._next_bar_clock())
+        self._move("eject", None, s.track.id, None, f"you: {s.track.title} out")
+        return True
+
+    def song_loop(self, deck, bars):
+        """Loop one song `bars` bars from its next downbeat (None releases)."""
+        s = self.songs.get(deck)
+        if s is None or s.leaving:
+            return False
+        at = self._next_bar_clock()
+        if bars is None:
+            self.submix.post({"at": at, "cmd": "release_loop", "deck": deck})
+            s.user_loop = None
+            self._move("song_unloop", None, s.track.id, None, f"you: {s.track.title} loop released")
+            return True
+        start = s.track.nearest_downbeat(self._song_time_at(deck, at))
+        bar = self._bar_s(s.track, start)
+        self.submix.post({"at": at, "cmd": "loop", "deck": deck, "start_s": start, "end_s": start + int(bars) * bar})
+        s.user_loop = int(bars)
+        self._move("song_loop", None, s.track.id, None, f"you: {s.track.title} loops {bars} bars")
+        return True
+
+    def song_gain(self, deck, level):
+        """One song's level, 0..1.5 (the deck gain; lanes keep their trims)."""
+        s = self.songs.get(deck)
+        if s is None:
+            return False
+        s.level = float(max(0.0, min(1.5, level)))
+        self.submix.post({"cmd": "gain", "deck": deck, "value": s.level, "ramp_s": 0.1})
+        return True
 
     # -- steering ------------------------------------------------------------------------------------------------
     def set_blend(self, x):
@@ -1260,6 +1458,37 @@ class RemixConductor:
                 break
         else:
             return None
+        return self._rate(m, up)
+
+    def rate_id(self, move_id, up):
+        """GOOD / BAD (or None to clear) on one specific move, by the id the feed shows."""
+        m = next((x for x in self.move_log if x.get("id") == move_id), None)
+        if m is None or m["kind"] not in RATED_KINDS:
+            return None
+        if up is None:
+            if m.get("fb") is not None:
+                self._unrate(m)
+            return m
+        if m.get("fb") is not None:
+            self._unrate(m)
+        return self._rate(m, up)
+
+    def _unrate(self, m):
+        up = m.pop("fb")
+        row = m.pop("fb_row", None)
+        if row:
+            try:
+                self.db.delete_seam_feedback(row)
+            except Exception:
+                pass
+        for key in ((m["kind"], m.get("lane")), (m["kind"], None)):
+            n, u = self._tally.get(key, (0, 0))
+            n, u = max(0, n - 1), max(0, u - (1 if up else 0))
+            self._tally[key] = (n, u)
+            self.move_w[key] = (u + 1.0) / (n + 2.0)
+        self.n_verdicts = max(0, getattr(self, "n_verdicts", 0) - 1)
+
+    def _rate(self, m, up):
         m["fb"] = bool(up)
         style = f"remix:{m['kind']}:{m.get('lane') or ''}"
         a = m.get("from_id") or m.get("to_id") or 0
@@ -1293,6 +1522,15 @@ class RemixConductor:
                "decoding": {d: t.title for d, t in self._decoding.items()}, "ready": sorted(self._pending),
                "clock_s": tel.get("clock_s"), "n_verdicts": getattr(self, "n_verdicts", 0),
                "tempo_span": self.tempo_span, "base_bpm": self.base_bpm, "n_snapshots": len(self.snapshots),
+               "auto": self.auto,
+               "grid": {d: {ln: self.why_not(ln, d) for ln in STEMS} for d, s in self.songs.items() if not s.leaving},
+               "candidates": self.candidates(10),
+               "pool": (None if self.brain is None or self.brain.pool_ids is None else len(self.brain.pool_ids)),
+               "pool_name": getattr(self, "pool_name", None),
+               "lane_age": {ln: (self.bar_n - self.lane_k[ln]) if ln in self.lane_k else None for ln in STEMS},
+               "feed": [{"id": x.get("id"), "hms": x.get("hms"), "kind": x["kind"], "lane": x.get("lane"), "text": x["text"],
+                         "fb": x.get("fb"), "shape": x.get("shape"), "rateable": x["kind"] in RATED_KINDS}
+                        for x in self.move_log[-40:]],
                "recalling": self._recall is not None,
                "recording": (self.record_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if self._rec_thread is not None and self.record_path else None),
                "last_rated": ({"text": last_rated["text"], "fb": last_rated.get("fb")} if last_rated else None),
@@ -1305,11 +1543,12 @@ class RemixConductor:
                 err = (float(t["beat_phase"]) - float(m["beat_phase"]) - float(v.get("bias_beats") or 0.0) + 0.5) % 1.0 - 0.5
                 lock = abs(err) * self._beat_s() * 1000.0
             sec = s.track.section_at(float(t.get("time_s") or 0.0)) or {}
-            out["songs"][d] = {"title": s.track.title, "artist": s.track.artist, "bpm": s.track.bpm, "camelot": s.track.camelot,
+            out["songs"][d] = {"id": s.track.id, "title": s.track.title, "artist": s.track.artist, "bpm": s.track.bpm, "camelot": s.track.camelot,
                                "duration_s": s.track.duration_s, "rate": s.rate, "shift": s.shift, "compat": s.compat,
                                "playing": bool(t.get("playing")), "time_s": t.get("time_s"), "loop": t.get("loop"),
                                "lanes": s.held(self.lanes), "entered": s.entered, "leaving": s.leaving,
-                               "lock_ms": lock, "map": self._map(s.track), "section": sec.get("kind"),
+                               "level": s.level, "user_loop": s.user_loop, "staged": s.staged_at is not None,
+                               "lock_ms": lock, "map": self._map(s.track, s), "section": sec.get("kind"),
                                "singing": self._singing(s, float(t.get("time_s") or 0.0)),
                                "eq_low": (t.get("eq") or [None])[0], "filter": t.get("filter"), "echo": t.get("echo"),
                                "trims": {ln: round(self._trim(d, ln), 2) for ln in STEMS}}
@@ -1343,20 +1582,38 @@ class RemixConductor:
                 "dj_next_drop_eta": None, "dj_moment_eta": None, "dj_moment_hole": self._break is not None,
                 "dj_blend_eta": eta, "dj_swap_eta": None, "dj_style": "remix"}
 
-    def _map(self, t):
+    def _map(self, t, song=None):
+        """A song's geography for the strips: sections, the energy curve, the analyser's entry and exit
+        points, and - once the song is on a deck - each stem's half-second envelope (up to 240 points)."""
         secs = [[round(x["start_s"], 1), round(x["end_s"], 1), x["kind"], round(x.get("vocalness") or 0.0, 2)] for x in (t.sections or [])][:40]
         curve = t.row.get("energy_curve") or []
         if curve:
             idx = [int(i * (len(curve) - 1) / 23) for i in range(24)]
             curve = [round(float(curve[i]), 2) for i in idx]
-        return {"duration": round(t.duration_s, 1), "sections": secs, "energy": curve}
+        out = {"duration": round(t.duration_s, 1), "sections": secs, "energy": curve,
+               "ins": [round(float(p["time_s"]), 1) for p in sorted(t.mix_ins or [], key=lambda p: -p.get("score", 0))[:3]],
+               "outs": [round(float(p["time_s"]), 1) for p in sorted(t.mix_outs or [], key=lambda p: -p.get("score", 0))[:3]]}
+        env = getattr(song, "env", None) if song is not None else None
+        if env:
+            stems = {}
+            for name, arr in env.items():
+                n = len(arr)
+                if n == 0:
+                    continue
+                m = min(240, n)
+                idx = np.linspace(0, n - 1, m).astype(int)
+                stems[name] = [round(float(v), 2) for v in np.asarray(arr, dtype=np.float32)[idx]]
+            out["stems"] = stems
+        return out
 
     def _move(self, kind, lane, from_id, to_id, msg, shape=None):
         if shape:
             msg = f"{msg} · {shape}"
         self.moves.append((time.strftime("%H:%M:%S"), msg))
-        self.move_log.append({"t": time.time(), "clock_s": self._tel().get("clock_s"), "kind": kind, "lane": lane,
-                              "from_id": from_id, "to_id": to_id, "text": msg, "fb": None, "shape": shape})
+        self._move_seq = getattr(self, "_move_seq", 0) + 1
+        self.move_log.append({"id": self._move_seq, "t": time.time(), "clock_s": self._tel().get("clock_s"), "kind": kind,
+                              "lane": lane, "from_id": from_id, "to_id": to_id, "text": msg, "fb": None, "shape": shape,
+                              "hms": time.strftime("%H:%M:%S")})
         if len(self.moves) > 200:
             del self.moves[:-200]
             del self.move_log[:-200]

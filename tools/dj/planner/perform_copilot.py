@@ -23,11 +23,12 @@ TOOLS = [
      "description": "Set one or more controls. Remix: blend 0..1 (0 = song follows song as a morph, 1 = free "
                     "recombination of three songs), vocals 0..1 (how freely the vocal lane crosses), change_bars "
                     "4|8|16|32 (bars between moves: faster = fewer bars), energy_lean -0.4..0.4 (on the theme's "
-                    "arc), tempo 0..0.06 (how far the clock may travel with the arc), theme (a theme name). "
+                    "arc), tempo 0..0.06 (how far the clock may travel with the arc), auto 0..1 (autopilot amount: "
+                    "0 = only the operator moves lanes, 1 = the conductor moves every phrase), theme (a theme name). "
                     "Automix: energy_lean, theme, mix_style (a seam style or 'auto'), mix_speed short|normal|long|marathon.",
      "input_schema": {"type": "object", "properties": {
          "blend": {"type": "number"}, "vocals": {"type": "number"}, "change_bars": {"type": "integer"},
-         "energy_lean": {"type": "number"}, "tempo": {"type": "number"}, "theme": {"type": "string"},
+         "energy_lean": {"type": "number"}, "tempo": {"type": "number"}, "auto": {"type": "number"}, "theme": {"type": "string"},
          "mix_style": {"type": "string"}, "mix_speed": {"type": "string"}}}},
     {"name": "act",
      "description": "One performance action, on the next bar: next (a move now / the next transition now), hold "
@@ -75,7 +76,7 @@ class PerformCopilot(SetCopilot):
     def _t_steer(self, args):
         clean = {}
         for k, v in (args or {}).items():
-            if k in ("blend", "vocals", "energy_lean", "tempo"):
+            if k in ("blend", "vocals", "energy_lean", "tempo", "auto"):
                 try:
                     clean[k] = float(v)
                 except (TypeError, ValueError):
