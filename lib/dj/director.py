@@ -1305,10 +1305,17 @@ class Director:
             rc = self.rc
             if rc.master is None:
                 return
+            # the clip in charge of a lane is the song SOUNDING loudest on it (telemetry), not the plan: a bed
+            # change is drawn when the new drums and bass land, not when it was decided (user: "parts of a
+            # song were playing longer than they were displayed")
+            snd = getattr(self, "_last_sounding", None) or self._sounding()
+            by_tid = {s.track.id: d for d, s in rc.songs.items()}
             for ln in LANES:
-                d = rc.lanes.get(ln)
-                s = rc.songs.get(d) if d else None
-                tid = s.track.id if s is not None else None
+                per = snd.get(ln) or {}
+                tid = max(per, key=per.get) if per else None
+                if tid is not None and per[tid] < 0.15:
+                    tid = None
+                d = by_tid.get(tid)
                 if self._lane_snap.get(ln, "unset") != tid:
                     self._lane_snap[ln] = tid
                     if tid is None:
@@ -1316,7 +1323,7 @@ class Director:
                         prev = self.tl.active(ln, b - 1)
                         self.tl.clips.append(Clip(prev.track_id if prev else 0, ln, b, 0.0, end_bar=None, rest=True))
                     else:
-                        pos = float(rc._tel_deck(d).get("time_s") or 0.0)
+                        pos = float(rc._tel_deck(d).get("time_s") or 0.0) if d else 0.0
                         self.tl.add(tid, [ln], b, pos)
             # what happened: the conductor's moves become marks (bands for a bed change with a breakdown)
             titles = {}
@@ -1387,26 +1394,54 @@ class Director:
             else:
                 no_ghost()
 
+    def _sounding(self):
+        """Per lane, what is SOUNDING now: {lane: {track_id: level}} from the deck telemetry (stem gain × deck
+        gain, decks that play) - the truth the picture draws from, not the plan."""
+        out = {ln: {} for ln in ("drums", "bass", "other", "vocals")}
+        if self.rc is not None:
+            decks = (self.rc.submix.telemetry or {}).get("decks") or {}
+            by_deck = {d: s.track.id for d, s in self.rc.songs.items()}
+            for d, t in decks.items():
+                if not t.get("playing"):
+                    continue
+                tid = by_deck.get(d) or t.get("track_id")
+                if tid is None:
+                    continue
+                sg = t.get("stem_gains") or {}
+                dg = float(t.get("gain") or 0.0)
+                for ln in out:
+                    g = min(1.0, float(sg.get(ln, 0.0)) * dg)
+                    if g > 0.02:
+                        out[ln][tid] = max(out[ln].get(tid, 0.0), g)
+        elif self.system is not None:
+            decks = (self.system.submix.telemetry or {}).get("decks") or {}
+            for d, t in decks.items():
+                if not t.get("playing"):
+                    continue
+                tid = t.get("track_id")
+                if tid is None:
+                    continue
+                sg = t.get("stem_gains") or {}
+                dg = float(t.get("gain") or 0.0)
+                for ln in out:
+                    g = min(1.0, float(sg.get(ln, 1.0)) * dg)
+                    if g > 0.02:
+                        out[ln][tid] = max(out[ln].get(tid, 0.0), g)
+        return out
+
     def _record_gains(self, b):
-        """Per lane, the level actually heard this bar (the holder's stem gain × deck gain; one song: the
-        deck gains), kept as the max within the bar - the picture's level meters."""
+        """Per lane and bar, every song sounding on that stem and its level (the max within the bar) - the
+        picture's meters stack them, so two songs on one stem show as two colours (user: "I can't tell if
+        multiple parts of different songs are going in the same stem")."""
         try:
-            if self.rc is not None:
-                decks = (self.rc.submix.telemetry or {}).get("decks") or {}
-                for ln in self._gains:
-                    g = 0.0
-                    for d, t in decks.items():
-                        if t.get("playing"):
-                            g = max(g, float((t.get("stem_gains") or {}).get(ln, 0.0)) * float(t.get("gain") or 0.0))
-                    self._gains[ln][b] = max(self._gains[ln].get(b, 0.0), min(1.0, g))
-            elif self.system is not None:
-                decks = (self.system.submix.telemetry or {}).get("decks") or {}
-                g = 0.0
-                for d, t in decks.items():
-                    if t.get("playing"):
-                        sg = t.get("stem_gains") or {}
-                        for ln in self._gains:
-                            self._gains[ln][b] = max(self._gains[ln].get(b, 0.0), min(1.0, float(sg.get(ln, 1.0)) * float(t.get("gain") or 0.0)))
+            snd = self._sounding()
+            self._last_sounding = snd
+            for ln, per in snd.items():
+                cell = self._gains[ln].setdefault(b, {})
+                if not isinstance(cell, dict):
+                    cell = self._gains[ln][b] = {}
+                for tid, g in per.items():
+                    cell[tid] = max(cell.get(tid, 0.0), g)
             for ln in self._gains:
                 if len(self._gains[ln]) > 3000:
                     for k in sorted(self._gains[ln])[:-3000]:

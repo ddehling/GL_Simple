@@ -288,10 +288,24 @@ class TimelineCanvas(QWidget):
                     g = gl.get(bb)
                     if g is None:
                         continue
-                    c = tl.active(ln, bb)
-                    col = self.tab.color(c.track_id) if c is not None else QColor(120, 120, 130)
                     x = self.x_of(bb)
-                    p.fillRect(QRectF(x, base - 6 * g, max(1.0, self.px_per_bar - 1), 6 * g), col)
+                    w = max(1.0, self.px_per_bar - 1)
+                    if isinstance(g, dict):
+                        # every song sounding on this stem this bar, STACKED in its own colour: two songs on
+                        # one stem read as two colours (the crossfade, the autoDJ's blend, a doubled lane)
+                        total = sum(g.values())
+                        if total <= 0:
+                            continue
+                        scale = 6.0 / max(1.0, total)
+                        yy = base
+                        for tid, gg in sorted(g.items(), key=lambda kv: -kv[1]):
+                            h = gg * scale
+                            p.fillRect(QRectF(x, yy - h, w, h), self.tab.color(tid))
+                            yy -= h
+                    else:
+                        c = tl.active(ln, bb)
+                        col = self.tab.color(c.track_id) if c is not None else QColor(120, 120, 130)
+                        p.fillRect(QRectF(x, base - 6 * g, w, 6 * g), col)
         # the STORY: what happened where (bands over the lanes it touched, words in the story row) and what
         # is planned (dashed, dimmer)
         marks_fn = getattr(self.tab, "marks", None)

@@ -605,6 +605,15 @@ handover can inherit - it now lives on the engine. And an interference of my own
 smokes and gates run on the same machine, log to the same dj_*.jsonl and write to the same play_history as
 the user's live session; while the user listens, runs go at idle priority, one at a time, and the log
 cannot tell the sessions apart (open: a session id in the log rows).
+"The button layout has become unreadable again" → the NEXT SONGS row had put eleven buttons on one line,
+and word-wrapped labels drove the tab's MINIMUM height to 977 px in a 1600-wide window, so on a 1080 screen
+Qt squeezed everything: programs on two rows of four, moods at three rows with a "+N more…" chip, the dial
+grid tighter, the picture's lanes 34 px, the arc strip 48, the wrapped labels capped. "Parts of a song were
+playing longer than they were displayed… I can't tell if multiple parts of different songs are going in the
+same stem" → the picture now takes each lane's clip from what is SOUNDING (deck telemetry: stem gain × deck
+gain), so a bed change is drawn when the new drums and bass land, not when it was decided; and the level
+meter under each lane stacks every song sounding on that stem in its own colour - a crossfade, the autoDJ's
+blend or a doubled lane read as two colours.
 
 ## Rules carried over (they were earned)
 

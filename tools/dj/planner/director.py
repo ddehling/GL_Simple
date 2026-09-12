@@ -139,8 +139,8 @@ class ArcStrip(QWidget):
         self.tab = tab
         self.arc = None
         self._press = None
-        self.setMinimumHeight(58)
-        self.setMaximumHeight(58)
+        self.setMinimumHeight(48)
+        self.setMaximumHeight(48)
         self.setToolTip("the night's arc: the plan (curve), what played (dots at each song's energy), where we are (line)\n"
                         "click = we are here on the arc · drag up / down = bend the plan there (ARC becomes 'yours')")
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -288,6 +288,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         top.addWidget(self.songs_box)
         self.state_lbl = QLabel("")
         self.state_lbl.setProperty("dim", "true")
+        self.state_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # a long line never widens the tab
         top.addWidget(self.state_lbl, 1)
         # the picture's controls: zoom out / in, back to now, follow the playhead
         self.follow_btn = None
@@ -319,7 +320,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         from tools.dj.planner.timeline import TimelineCanvas
         self._empty_tl = Timeline("director")
         self.spectro = Spectro(planner.music_dir)
-        self.canvas = TimelineCanvas(self, lane_h=40, readonly=True)
+        self.canvas = TimelineCanvas(self, lane_h=34, readonly=True)
         self.canvas.px_per_bar = 9.0
         self.canvas.setToolTip("what played on each lane and when · the playhead · dashed = what the Director plans next · Ctrl+wheel zooms, wheel scrolls")
         root.addWidget(self.canvas)
@@ -348,6 +349,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.why_lbl = lab(10, dim=True)
         self.why_lbl.setMaximumHeight(70)
         self.lanes_lbl = lab(10, dim=True)
+        # word-wrapped labels drive the tab's MINIMUM height up as the window narrows (a 1600-wide window
+        # demanded 977 px and the whole tab was squeezed unreadable): cap them, one line where one line does
+        for w, h in ((self.now_lbl, 30), (self.now_sub, 20), (self.next_lbl, 24), (self.next_sub, 20), (self.intent_lbl, 40), (self.lanes_lbl, 20)):
+            w.setMaximumHeight(h)
+        for w in (self.now_lbl, self.now_sub, self.next_lbl, self.next_sub, self.lanes_lbl):
+            w.setWordWrap(False)
         self.now_map = SongMap()
         self.now_map.setToolTip("the playing record's shape")
         self.next_map = SongMap()
@@ -419,7 +426,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         left.addLayout(frow)
         lists = QHBoxLayout()
         self.found = QListWidget()
-        self.found.setMinimumHeight(120)
+        self.found.setMinimumHeight(80)
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
         self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click to put it UP NEXT · hover a row for the song's shape")
         lists.addWidget(self.found, 3)
@@ -441,27 +448,29 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         from lib.dj.director import DIALS, DEFAULTS
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(3)
         self.dial_groups, self._dial_labels = {}, {}
         for i, name in enumerate(DIAL_ORDER):
             options = DIALS[name]
             title, labels, tip = DIAL_LABELS[name]
+            # one line per dial - the heading to the LEFT of its buttons (two rows per dial put the right
+            # column at 679 px minimum and a 1080 screen squeezed everything unreadable)
             cell = QWidget()
-            cv = QVBoxLayout(cell)
-            cv.setContentsMargins(0, 0, 0, 0)
-            cv.setSpacing(2)
+            row = QHBoxLayout(cell)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
             head = QLabel(title)
             head.setProperty("dim", "true")
             head.setToolTip(tip)
-            cv.addWidget(head)
-            row = QHBoxLayout()
-            row.setSpacing(4)
+            head.setFixedWidth(64)
+            row.addWidget(head)
             group = QButtonGroup(self)
             group.setExclusive(True)
             for opt in options:
                 b = QPushButton(labels[opt])
                 b.setCheckable(True)
-                b.setMinimumHeight(22)
+                b.setMinimumHeight(20)
+                b.setMaximumHeight(22)
                 b.setProperty("kind", "small")
                 b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 b.setToolTip(tip)
@@ -469,7 +478,6 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 b.clicked.connect(lambda _c, n=name, o=opt: self._dial(n, o))
                 group.addButton(b)
                 row.addWidget(b)
-            cv.addLayout(row)
             grid.addWidget(cell, i // 2, i % 2)
             self.dial_groups[name] = group
             self._dial_labels[name] = head
@@ -488,6 +496,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         QTimer.singleShot(1500, self._fill_tags)
         # OVER THE NEXT SONGS: programs that step the dials at every song change (a bed change when layered)
         from lib.dj.director import PROGRAMS
+        # (a header row with the song count and stop; the seven programs on two rows of four - eleven buttons
+        #  on one line squeezed the whole column unreadable)
         prow = QHBoxLayout()
         prow.setSpacing(4)
         ph = QLabel("NEXT SONGS")
@@ -508,32 +518,36 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.setToolTip(f"over {n} songs")
             self.prog_n.addButton(b, n)
             prow.addWidget(b)
-        prow.addSpacing(6)
+        prow.addStretch(1)
+        self.prog_cancel = QPushButton("stop")
+        self.prog_cancel.setProperty("kind", "small")
+        self.prog_cancel.setMinimumHeight(20)
+        self.prog_cancel.setMaximumHeight(22)
+        self.prog_cancel.setMaximumWidth(48)
+        self.prog_cancel.setToolTip("end the program now: your dials come back")
+        self.prog_cancel.clicked.connect(lambda: self.director and self.director.cancel_program())
+        self.prog_cancel.setVisible(False)
+        prow.addWidget(self.prog_cancel)
+        right.addLayout(prow)
+        pgrid = QGridLayout()
+        pgrid.setSpacing(4)
         self.prog_btns = {}
-        for key, (label, tip, _fn) in PROGRAMS.items():
+        for i, (key, (label, tip, _fn)) in enumerate(PROGRAMS.items()):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setProperty("kind", "small")
             b.setMinimumHeight(20)
             b.setMaximumHeight(22)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setToolTip(tip)
             b.clicked.connect(lambda _c, k=key: self._program(k))
             self.prog_btns[key] = b
-            prow.addWidget(b)
-        self.prog_cancel = QPushButton("stop")
-        self.prog_cancel.setProperty("kind", "small")
-        self.prog_cancel.setMinimumHeight(20)
-        self.prog_cancel.setMaximumHeight(22)
-        self.prog_cancel.setMaximumWidth(44)
-        self.prog_cancel.setToolTip("end the program now: your dials come back")
-        self.prog_cancel.clicked.connect(lambda: self.director and self.director.cancel_program())
-        self.prog_cancel.setVisible(False)
-        prow.addWidget(self.prog_cancel)
-        prow.addStretch(1)
-        right.addLayout(prow)
+            pgrid.addWidget(b, i // 4, i % 4)
+        right.addLayout(pgrid)
         self.prog_lbl = QLabel("")
         self.prog_lbl.setProperty("dim", "true")
         self.prog_lbl.setWordWrap(True)
+        self.prog_lbl.setMaximumHeight(34)
         right.addWidget(self.prog_lbl)
         mom = QGridLayout()
         mom.setSpacing(6)
@@ -553,6 +567,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.verdict_lbl = QLabel("")
         self.verdict_lbl.setProperty("dim", "true")
         self.verdict_lbl.setWordWrap(True)
+        self.verdict_lbl.setMaximumHeight(54)
         self.verdict_lbl.setToolTip("what your last GOOD / BAD rated, what the DJ learned from it, and what it did about it")
         right.addWidget(self.verdict_lbl)
         self.err_lbl = QLabel("")
@@ -694,8 +709,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             for tag in getattr(t, "all_tags", ()) or ():
                 counts[tag] = counts.get(tag, 0) + 1
         min_n = 5 if pool is None else 2
-        top = [tag for tag, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])) if n >= min_n][:36]
-        sig = (pool, len(tracks), tuple(top))
+        ranked = [tag for tag, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])) if n >= min_n]
+        limit = 36 if getattr(self, "_mood_more", False) else 18        # three rows fit a 1080 screen; "more…" opens six
+        top = ranked[:limit]
+        hidden = len(ranked) - len(top)
+        sig = (pool, len(tracks), tuple(top), hidden)
         if not force and sig == getattr(self, "_tags_sig", None):
             return
         self._tags_sig = sig
@@ -716,6 +734,26 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.clicked.connect(self._tags_changed)
             self.mood_row.addWidget(b, i // 6, i % 6)
             self.mood_chips[tag] = b
+        # the last cell toggles more / fewer chips (not a mood, never lit)
+        old = getattr(self, "_mood_toggle", None)
+        if old is not None:
+            self.mood_row.removeWidget(old)
+            old.setParent(None)
+            old.deleteLater()
+            self._mood_toggle = None
+        if hidden > 0 or getattr(self, "_mood_more", False):
+            t = QPushButton(f"+{hidden} more…" if hidden > 0 else "fewer")
+            t.setProperty("kind", "small")
+            t.setMinimumHeight(20)
+            t.setMaximumHeight(22)
+            t.setToolTip("show more of the library's tags (or fewer)")
+
+            def _toggle():
+                self._mood_more = not getattr(self, "_mood_more", False)
+                self._fill_tags(force=True)
+            t.clicked.connect(_toggle)
+            self.mood_row.addWidget(t, len(top) // 6, len(top) % 6)
+            self._mood_toggle = t
         self.mood_h.setText(f"MOOD  ·  {len(tracks)} songs in {('playlist ' + pool) if pool else 'the library'}"
                             + (f"  ·  {len(counts) - len(top)} rarer tags hidden" if len(counts) > len(top) else ""))
         if lit and lit - set(top):
