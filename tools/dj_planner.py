@@ -4868,6 +4868,11 @@ class Planner(QMainWindow):
         from tools.dj.planner.perform import PerformTab
         self.perform_tab = PerformTab(self)
         self.tabs.addTab(self.perform_tab, "Perform")
+        # The Timeline: one continuous run of bars with four lane tracks; songs' parts (spectrogram
+        # clips) placed on them from a song viewer; the conductor plays it (lib/dj/timeline.py).
+        from tools.dj.planner.timeline import TimelineTab
+        self.timeline_tab = TimelineTab(self)
+        self.tabs.addTab(self.timeline_tab, "Timeline")
         self.stage_tab = None
         # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
         # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
@@ -5110,6 +5115,8 @@ class Planner(QMainWindow):
         self.mix_tab.close()
         if getattr(self, "perform_tab", None) is not None:
             self.perform_tab.close()         # the live system and its audio device, if started
+        if getattr(self, "timeline_tab", None) is not None:
+            self.timeline_tab.close()
         if getattr(self, "stage_tab", None) is not None:
             self.stage_tab.close()
         self.set_tab.seam_player.close()

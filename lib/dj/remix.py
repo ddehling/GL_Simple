@@ -160,6 +160,8 @@ class RemixConductor:
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self._cands_cache = (0.0, None, [])
+        self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
+        self._open_lanes = None          # lanes the opener comes up on (None = all)
         # performing
         self.user_loop_bars = None       # LOOP 4 / 8 in force
         self._break = None               # (restore_clock, {lane: deck}) while a BREAK runs
@@ -192,13 +194,18 @@ class RemixConductor:
         self._thread = None
 
     # -- lifecycle -----------------------------------------------------------------------
-    def start(self, first_track=None, threaded=True):
+    def start(self, first_track=None, threaded=True, cue_s=None, lanes=None):
+        """Open. `first_track` picks the opener (else the conductor does); `cue_s` opens it at that song
+        time instead of its body and `lanes` opens only those lanes (the timeline player's exact starts)."""
         if self.brain is None:
             self.last_error = "no stem-bearing tracks in the library (run tools/dj/dj_stems.py)"
             return False
         first = first_track or self._pick_first()
         self.running = True
         self.start_clock = self.submix.clock
+        if cue_s is not None:
+            self._cue_req["a"] = float(max(0.0, cue_s))
+        self._open_lanes = set(lanes) if lanes is not None else None
         self._decode(first, "a")
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True, name="remix")
@@ -664,16 +671,18 @@ class RemixConductor:
         self.master, self.master_bpm, self.key_centre = deck, float(t.bpm), t.camelot
         self.base_bpm = float(t.bpm)
         song.rate, song.staged_at, song.entered, song.entered_k = 1.0, at, True, 0
+        cue = self._cue_req.pop(deck, None)
+        open_lanes = self._open_lanes if self._open_lanes is not None else set(STEMS)
         self.submix.post_many([
-            {"at": at, "cmd": "cue", "deck": deck, "time_s": self._body_start(t)},
+            {"at": at, "cmd": "cue", "deck": deck, "time_s": cue if cue is not None else self._body_start(t)},
             {"at": at, "cmd": "rate", "deck": deck, "value": 1.0},
-            {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {s: 1.0 for s in STEMS}, "ramp_s": 0.01},
+            {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {s: (1.0 if s in open_lanes else 0.0) for s in STEMS}, "ramp_s": 0.01},
             {"at": at, "cmd": "gain", "deck": deck, "value": 1.0, "ramp_s": 0.05},
             {"at": at, "cmd": "start", "deck": deck},
         ])
-        self.lanes = {s: deck for s in STEMS}
+        self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
         self.brain.note_played(t)
-        self._move("open", None, None, t.id, f"{t.title} opens on every lane: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
+        self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
 
     def _stage_song(self, deck):
         """Mount a decoded song, start it beat-locked with every lane closed, cued so its LANDMARK lands on
@@ -692,16 +701,31 @@ class RemixConductor:
         song.shift, song.compat = self._key_fit(t)
         at = self._next_bar_clock()
         song.staged_at = at
-        # bars until the move that can let it in (moves are planned a bar early; the PLL wants two bars)
-        to_move = self.change_bars - self.phrase_bars
-        if to_move < 3:
-            to_move += self.change_bars
-        song.ready_k = self.bar_n + to_move - 1                  # the move that may let it in, in bars
-        landmark = self._landmark(t)
-        bar_song = self._bar_s(t, landmark)
-        cue = landmark - (to_move - 1) * bar_song              # it starts on the NEXT bar
-        if cue < 0.0:
-            cue = landmark - bar_song * math.floor(landmark / bar_song)      # the same phase, as early as it goes
+        req = self._cue_req.pop(deck, None)
+        if req is not None:
+            # the timeline player's exact start: song time `song_time` must arrive at timeline bar `at_bar`;
+            # the deck starts on the NEXT bar (bar_n + 1) and then advances one song bar per clock bar
+            if isinstance(req, tuple):
+                song_time, at_bar = req
+                bar_song = self._bar_s(t, song_time)
+                cue = song_time - (at_bar - self.bar_n - 1) * bar_song
+                if cue < 0.0:
+                    cue = song_time - bar_song * math.floor(song_time / bar_song)
+            else:
+                cue = float(req)
+            song.ready_k = self.bar_n
+            landmark, to_move = cue, 1
+        else:
+            # bars until the move that can let it in (moves are planned a bar early; the PLL wants two bars)
+            to_move = self.change_bars - self.phrase_bars
+            if to_move < 3:
+                to_move += self.change_bars
+            song.ready_k = self.bar_n + to_move - 1                  # the move that may let it in, in bars
+            landmark = self._landmark(t)
+            bar_song = self._bar_s(t, landmark)
+            cue = landmark - (to_move - 1) * bar_song              # it starts on the NEXT bar
+            if cue < 0.0:
+                cue = landmark - bar_song * math.floor(landmark / bar_song)      # the same phase, as early as it goes
         self.submix.post_many([
             {"at": at, "cmd": "cue", "deck": deck, "time_s": t.nearest_downbeat(cue)},
             {"at": at, "cmd": "rate", "deck": deck, "value": rate},
@@ -1104,14 +1128,15 @@ class RemixConductor:
             return "not singing there now"
         return None
 
-    def assign(self, lane, deck):
+    def assign(self, lane, deck, force=False):
         """The operator puts `lane` on `deck` (None = rest) on the next bar, through the same crossfade,
-        shapes and hygiene the conductor uses. Refused with the reason when the guard says no."""
+        shapes and hygiene the conductor uses. Refused with the reason when the guard says no - unless
+        `force` (the timeline: the operator placed it; only a missing or leaving song still refuses)."""
         if lane not in STEMS or self.master is None:
             return False, "no clock"
         if deck is not None:
             why = self.why_not(lane, deck)
-            if why:
+            if why and (not force or why in ("no song on that deck", "leaving", "still decoding")):
                 return False, why
         if self.lanes.get(lane) == deck:
             return True, "already there"
@@ -1166,6 +1191,41 @@ class RemixConductor:
         s.level = float(max(0.0, min(1.5, level)))
         self.submix.post({"cmd": "gain", "deck": deck, "value": s.level, "ramp_s": 0.1})
         return True
+
+    # -- the timeline player's hands ----------------------------------------------------------------------------
+    def stage_for_bar(self, track_id, song_time_s, at_bar):
+        """Stage a song so that its time `song_time_s` arrives exactly at clock bar `at_bar` (bars counted
+        as bar_n). Decodes onto a free deck; the cue is computed when the deck actually starts."""
+        t = self._track(int(track_id))
+        if t is None or self.master is None:
+            return False, "no such song / no clock"
+        busy = {s.track.id for s in self.songs.values()} | {x.id for x in self._decoding.values()} | {p[0].id for p in self._pending.values()}
+        if t.id in busy:
+            return True, "already on a deck"
+        rate = self.master_bpm / max(t.bpm, 1e-6)
+        if not (RATE_MIN <= rate <= RATE_MAX):
+            return False, f"{t.bpm:.0f} bpm is outside the tempo wall ({rate:.3f})"
+        free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
+        if not free:
+            return False, "no free deck"
+        self._cue_req[free[0]] = (float(song_time_s), int(at_bar))
+        self._decode(t, free[0])
+        return True, free[0]
+
+    def jump(self, deck, song_time_s, at_bar):
+        """Re-cue a live song so that `song_time_s` lands on clock bar `at_bar` (a clip that starts
+        elsewhere in a song already playing). Posted on the bar; the PLL re-locks from there."""
+        s = self.songs.get(deck)
+        if s is None or self.master is None:
+            return False
+        at = self._next_bar_clock() + (int(at_bar) - self.bar_n - 1) * self._bar_clock()
+        if at < self._clock():
+            return False
+        self.submix.post({"at": at, "cmd": "cue", "deck": deck, "time_s": s.track.nearest_downbeat(float(song_time_s))})
+        return True
+
+    def deck_of(self, track_id):
+        return next((d for d, s in self.songs.items() if s.track.id == track_id and not s.leaving), None)
 
     # -- steering ------------------------------------------------------------------------------------------------
     def set_blend(self, x):
