@@ -366,6 +366,12 @@ crate) and Timeline tabs are off the tab bar; their code stays as engine tools. 
 became the autoDJ's next; LAYERS two handed the playing song to the conductor in 12 s (lanes then crossed
 to two more songs); cut / short / lots / amp applied live; LAYERS one handed the same song back at the same
 position in 10 s and the autoDJ kept playing with the pins set. Not yet heard by the user.
+*The picture (same day, "there needs to be some kind of timeline view with a visual representation of
+what is going on"):* the Director keeps its run as a Timeline and the tab draws it read-only above the
+words - the four lanes across bars with what played as spectrogram clips (one-song mode: each record
+fills the lanes from the bar it started; layered: every lane change is a clip from that song's position,
+rests dark), the playhead on the Director's bar clock across both engines, and the plan ahead as dashed
+ghosts (the autoDJ's next song at the seam's projected bar; staged songs on their entry lane).
 
 ## Rules carried over (they were earned)
 
