@@ -26,7 +26,7 @@ DIAL_LABELS = {
               "lean the tempo journey: picks aim 6 bpm lower / higher; layered, the clock travels 3 % that way"),
     "pace": ("PACE", {"short": "short", "normal": "normal", "long": "long"},
              "how long records play before the next seam (never before the payoff); layered, the phrase length the arrangement moves in: "
-             "a new bed settles three of them before the next voice arrives, a voice is heard two before it may take the bed"),
+             "a new bed settles four of them before the next voice arrives, a voice is heard three before it may take the bed (at its hook or drop)"),
     "seams": ("SEAMS", {"quick": "quick", "normal": "normal", "long": "long"},
               "how long the mixes themselves run: blend lengths × 0.5 / 1 / 2; layered, the lanes' crossfade"),
     "vocals": ("VOCALS", {"none": "none", "some": "some", "lots": "lots"},

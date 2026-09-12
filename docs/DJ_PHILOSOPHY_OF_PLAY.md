@@ -62,8 +62,10 @@ that carries it and the dial that bends it. The user's ear outranks all of it.*
 
 - Not a set of hard gates. Every principle is a lean the dials can overrule; a floor that is dying is the
   operator's call (NEXT, DROP, the energy dial), and the arrangement steps aside for it.
-- Not the last word. The numbers (3 settle phrases, 2-5 voice phrases, 4-bar strip, 8/4-minute moment
-  spacing) are first guesses from the literature; the user's ear at a party decides them.
+- Not the last word. The numbers (4 settle phrases, 3-6 voice phrases, 4-bar strip, 8/4-minute moment
+  spacing, entry key fit 0.68) are first guesses from the literature, already moved once by the user's ear
+  ("too busy, too much vocal rest, some clashing" → longer settle, no random rests, the vocal lane kept bar
+  by bar from the stem's own envelope, stricter arrivals); the user's ear at a party decides them.
 
 ## Sources
 

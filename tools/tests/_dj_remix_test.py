@@ -116,6 +116,14 @@ def main():
                                                    sec.get("vocalness"), rc.move_log[-1]["text"][:70] if rc.move_log else "-"))
             else:
                 hyg["vocal_run"] = 0
+            # the opposite failure ("large sections of vocal rest"): the vocal lane RESTING while the bed sings
+            bed_d = rc.lanes.get("drums")
+            if rc._break is None and rc._recall is None and bed_d in rc.songs and rc.songs[bed_d].entered:
+                bt = float((decks.get(bed_d) or {}).get("time_s") or 0.0)
+                if rc._singing(rc.songs[bed_d], bt) is True:
+                    hyg["bed_sings"] = hyg.get("bed_sings", 0) + 1
+                    if rc.lanes.get("vocals") is None:
+                        hyg["bed_sings_rested"] = hyg.get("bed_sings_rested", 0) + 1
             # the low carve, as heard: a playing song whose bass and drums stems are both closed (and has
             # been so for more than a bar: the EQ ramps a beat after the lane lands) has its EQ low down
             if rc._break is None:
@@ -283,6 +291,9 @@ def main():
               + (f" - first at {hyg['vocal_first'][0]} s: {hyg['vocal_first'][1]} {hyg['vocal_first'][2]} v={hyg['vocal_first'][3]} after '{hyg['vocal_first'][4]}'" if hyg.get("vocal_first") else ""))
     else:
         print("  --   no block with vocal data on the vocal lane (rule not exercised)")
+    if hyg.get("bed_sings"):
+        fr = hyg.get("bed_sings_rested", 0) / hyg["bed_sings"]
+        check(fr < 0.15, f"vocal lane resting while the bed sings: {100 * fr:.0f}% of {hyg['bed_sings']} singing blocks")
     if hyg["carve_blocks"]:
         frac = hyg["carve_open"] / hyg["carve_blocks"]
         check(frac < 0.15, f"low carve: lows still open on {100 * frac:.0f}% of {hyg['carve_blocks']} blocks where a song held neither bass nor drums")

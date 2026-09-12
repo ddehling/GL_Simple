@@ -503,8 +503,24 @@ the dial's terms): once per record at most, on a groove, after the record's payo
 and with a minute of runway, a drum loop cut from another record rides under the playing one on deck C
 (some = a third of records, lots = most); the tooltip and WHAT YOUR DIALS ARE DOING say when one is
 riding. Never heard by the user with real DJ ears - the layer was shelved for exactly that reason, so the
-dial's default stays off. Still open: the remaining fade cases under a pinned cut, the settle / voice /
-strip numbers, and the user's ear on all of it.
+dial's default stays off. Still open: the remaining fade cases under a pinned cut (80-pair probe unchanged:
+55 drop cuts, 14 phrase cuts, 11 fades - 6 tempo clash, 5 off-meter), the settle / voice / strip numbers,
+and the user's ear on all of it.
+
+**The user's ear, first verdict on the philosophy (2026-09-12, late): "too busy, too happy to have large
+sections of vocal rest, and some clashing."** Busy → settle 3 → 4 phrases, a voice 2 → 3 phrases before it
+may take the bed (6 at most), the random "breath" rests removed (a phrase with nothing to do is a phrase
+of music). Vocal rests → the cause was the singing test: it read the vocal stem per SECTION (a verse under a
+quarter of the chorus's level counted as silence, so the lane rested for whole verses) and the lane only
+came back at the next phrase move; now `_singing` reads the stem's own half-second envelope two bars ahead
+(singing above 0.12 of its loud level, silent below 0.05, the section map and the ML curve only as
+fallbacks), and `_vocal_tick` keeps the vocal lane every BAR: rest when the singing stops for two bars,
+back on the bed the bar it sings again. Clashes → a song ARRIVING on a tonal lane must fit the room's keys
+at 0.68 (what already plays keeps the 0.55 tolerance), staged songs are shifted two semitones at most (three
+sounded wrong), the conductor's pick refuses songs that cannot be shifted to fit, and a melody under
+another song's singer steps back to 0.6 (was 0.8). The gate gained the opposite vocal measure: the lane
+resting while the bed sings (< 15 % of singing blocks). The section-chroma guard bites more as the
+measurement pass covers the library.
 
 ## Rules carried over (they were earned)
 

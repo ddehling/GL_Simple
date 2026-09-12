@@ -80,7 +80,7 @@ BREAK_BARS = 4                   # BREAK: every lane but one rests this long
 SET_CYCLE_S = 90 * 60.0          # the theme's arc runs over this, as in the automixer
 SNAP_BARS = 2                    # a planned move waits up to this long for a section boundary of the master
 LOW_CARVE = 0.25                 # EQ low on songs holding neither bass nor drums
-OTHER_DUCK = 0.8                 # the `other` lane under another song's vocal
+OTHER_DUCK = 0.6                 # the `other` lane under another song's vocal (-4.4 dB: a melody under a singer steps back)
 VOCAL_MIN = 0.35                 # section vocalness for the vocal lane to cross INTO a song
 VOCAL_GONE = 0.2                 # ...and below this the vocal lane leaves it
 TRIM_MIN, TRIM_MAX = 0.5, 2.0    # per-stem level trim toward the first song's levels (-6 .. +6 dB)
@@ -88,9 +88,12 @@ AUTO_BREAK_CHANCE = 0.5          # a breakdown of the song holding most lanes ma
 TEMPO_STEP = 0.005               # the clock moves at most this much per bar on a tempo journey
 TEMPO_SPAN_MAX = 0.06            # ...and at most this far from the opener's tempo
 RECALL_PHRASES = 8               # a RECALL whose songs cannot come back within this many phrases is abandoned
-VOICE_PHRASES = 2                # the arrangement policy: a voice is heard this many phrases before it MAY take the bed
-VOICE_MAX_PHRASES = 5            # ...and takes it by then even if its drop never comes (a voice is not a home)
-SETTLE_PHRASES = 3               # a new bed is heard for this many phrases before the next voice arrives (let it breathe)
+VOICE_PHRASES = 3                # the arrangement policy: a voice is heard this many phrases before it MAY take the bed
+VOICE_MAX_PHRASES = 6            # ...and takes it by then even if its drop never comes (a voice is not a home)
+SETTLE_PHRASES = 4               # a new bed is heard for this many phrases before the next voice arrives (let it breathe)
+ENTRY_FIT = 0.68                 # a song ARRIVING on a tonal lane must fit the room's keys this well (CLASH_BELOW keeps what plays)
+KEY_SHIFTS = (1, -1, 2, -2)      # a staged song is shifted at most two semitones to fit the room (three sounded wrong)
+SING_ON, SING_OFF = 0.12, 0.05   # the vocal stem's own envelope (of its loud level): singing above, silent below
 STRIP_BARS = 4                   # the breakdown before a bed lands: the old bed's drums + bass out for this many bars
 DROP_LOOK_BARS = 2               # a voice's drop counts as "now" when its groove starts within this many bars
 RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto",
@@ -335,13 +338,17 @@ class RemixConductor:
         saved = set(self.brain.veto_ids)
         try:
             self.brain.veto_ids |= busy
-            for _ in range(6):
+            for _ in range(8):
                 cand, meta = self.brain.choose_next(ms.track, self.energy_target(), self.master_bpm)
                 if cand is None:
                     return None
                 rate = self.master_bpm / max(cand.bpm, 1e-6)
                 runway = (cand.duration_s - self._body_start(cand)) / rate
-                if RATE_MIN <= rate <= RATE_MAX and cand.id not in busy and runway >= MIN_RUNWAY_S:
+                # the room's key: a song that cannot be shifted (two semitones at most) to fit the key centre
+                # better than ENTRY_FIT is not picked - it could only clash ("some clashing", user 2026-09-12)
+                _shift, fit = self._key_fit(cand)
+                key_ok = fit is None or fit >= ENTRY_FIT
+                if RATE_MIN <= rate <= RATE_MAX and cand.id not in busy and runway >= MIN_RUNWAY_S and key_ok:
                     return cand
                 self.brain.veto_ids.add(cand.id)
         finally:
@@ -564,7 +571,7 @@ class RemixConductor:
         if not self.key_centre or not track.camelot:
             return 0, None
         best = (0, _compat(self.key_centre, track.camelot))
-        for s in (1, -1, 2, -2, 3, -3):
+        for s in KEY_SHIFTS:
             c = _compat(self.key_centre, _shift(track.camelot, s))
             if c > best[1] + 1e-9:
                 best = (s, c)
@@ -597,6 +604,10 @@ class RemixConductor:
         song = self.songs.get(deck)
         if song is None:
             return False
+        # a song ARRIVING in the room (no tonal lane yet) must fit better than one already heard: the ear
+        # forgives a combination it knows, not a new clash
+        arriving = not any(self.lanes.get(ln) == deck for ln in TONAL)
+        floor = ENTRY_FIT if arriving else CLASH_BELOW
         for other in TONAL:
             if other == lane:
                 continue
@@ -607,14 +618,26 @@ class RemixConductor:
             if o is None:
                 continue
             fit = self._pair_fit(o, song, at)
-            if fit is not None and fit < CLASH_BELOW:
+            if fit is not None and fit < floor:
                 return False
         return True
 
-    def _singing(self, song, t):
-        """Is the song singing at its own time `t`? Measured from the vocals stem per section (RMS above a
-        quarter of the song's loudest singing section and above -45 dBFS); the ML vocalness when the stem
-        map is missing; None when nothing is known."""
+    def _singing(self, song, t, span_s=None):
+        """Is the song singing at its own time `t`? First the vocal stem's own half-second ENVELOPE over the
+        next two bars (SING_ON of its loud level = singing, SING_OFF = silent; a quiet verse is still singing -
+        the per-section read below called whole verses silent, user 2026-09-12: "large sections of vocal
+        rest"); then the section map (RMS per section); then the ML vocalness; None when nothing is known."""
+        env = (song.env or {}).get("vocals") if song.env else None
+        if env is not None and len(env) > 4:
+            span = span_s if span_s is not None else 2 * self._bar_s(song.track, t)
+            i0 = max(0, int(t * 2))
+            i1 = min(len(env), int((t + span) * 2) + 1)
+            if i1 > i0:
+                peak = float(np.max(np.asarray(env[i0:i1], dtype=np.float32)))
+                if peak >= SING_ON:
+                    return True
+                if peak < SING_OFF:
+                    return False
         secs = song.track.sections or []
         idx = next((i for i, s in enumerate(secs) if s["start_s"] <= t < s["end_s"]), len(secs) - 1 if secs else None)
         if idx is None:
@@ -643,6 +666,21 @@ class RemixConductor:
         if s is None:
             return False
         return self._singing(s, self._song_time_at(deck, at)) is False
+
+    def _sings_through(self, deck, at, bars):
+        """Does the song on `deck` keep singing through the next `bars` bars (from the vocal stem's envelope:
+        most of the half-seconds above the silent line)? True / False, None when unmeasured."""
+        s = self.songs.get(deck)
+        env = (s.env or {}).get("vocals") if (s is not None and s.env) else None
+        if env is None or len(env) < 4:
+            return None
+        t = self._song_time_at(deck, at)
+        span = bars * self._bar_s(s.track, t)
+        i0, i1 = max(0, int(t * 2)), min(len(env), int((t + span) * 2) + 1)
+        if i1 - i0 < 2:
+            return None
+        seg = np.asarray(env[i0:i1], dtype=np.float32)
+        return bool(np.mean(seg >= SING_OFF) >= 0.6 and float(seg.max()) >= SING_ON)
 
     def _lane_ok(self, deck, lane, at):
         return self._tonal_ok(deck, lane, at) and (lane != "vocals" or self._vocal_ok(deck, at))
@@ -932,6 +970,8 @@ class RemixConductor:
         self._recall_step()
         if self._recall is not None:
             return                                    # a recall in progress owns the lanes
+        if getattr(self, "policy", "arrangement") == "arrangement" and not self.hold:
+            self._vocal_tick()
         self._auto_break()
         # a move is PLANNED a bar early (shapes need the bar) and lands on the phrase boundary
         due = self.phrase_bars >= self.change_bars - 1
@@ -1163,19 +1203,14 @@ class RemixConductor:
         voices = {d for ln in ("other", "vocals") for d in [self.lanes.get(ln)] if d is not None and d != bed}
         max_voices = 2 if self.blend >= 0.5 else 1
         bar = self.bar_n
-        # 0. housekeeping first: a vocal lane whose song stopped singing rests; a rested lane of the bed
-        #    comes back after a phrase (the bed is whole again)
-        vd = self.lanes.get("vocals")
-        if vd is not None and vd in self.songs and self._vocal_gone(vd, at):
-            tag = self._cross("vocals", None, at)
-            self._move("rest", "vocals", self._song_id(vd), None, "vocals rest (the singing stopped)", shape=tag)
-            return tag
+        # 0. housekeeping first: a rested `other` of the bed comes back after a phrase (the bed is whole again);
+        #    the VOCAL lane is kept bar by bar in _vocal_tick, not here
         if bed is not None:
-            for ln in ("other", "vocals"):
-                if self.lanes.get(ln) is None and bar - self.lane_k.get(ln, -10 ** 6) >= self.change_bars and self._lane_ok(bed, ln, at):
-                    tag = self._cross(ln, bed, at)
-                    self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
-                    return tag
+            ln = "other"
+            if self.lanes.get(ln) is None and bar - self.lane_k.get(ln, -10 ** 6) >= self.change_bars and self._lane_ok(bed, ln, at):
+                tag = self._cross(ln, bed, at)
+                self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
+                return tag
         # a bed change in flight (the strip, then the landing) owns the arrangement until it lands
         if self._land_k is not None:
             if bar < self._land_k:
@@ -1243,7 +1278,10 @@ class RemixConductor:
         if waiting and len(voices) < max_voices:
             d = waiting[0]
             s = self.songs[d]
-            lane = "vocals" if (self._vocal_ok(d, at) and self.rng.random() < self.vocal_freedom + 0.3
+            # a song arrives on the VOCAL lane only when it keeps singing through the coming phrase (one
+            # arrived and fell silent three seconds later in the gate) and the bed is not singing itself
+            lane = "vocals" if (self._vocal_ok(d, at) and self._sings_through(d, at, self.change_bars) is not False
+                                and self.rng.random() < self.vocal_freedom + 0.3
                                 and (bed is None or self._singing(self.songs[bed], self._song_time_at(bed, at)) is not True)) else "other"
             if not self._lane_ok(d, lane, at):
                 lane = "other" if lane == "vocals" else None
@@ -1264,14 +1302,36 @@ class RemixConductor:
                 s.voice_since = bar
                 self._move("voice_in", lane, self._song_id(frm), s.track.id, f"{s.track.title} arrives as a voice ({lane}) over the bed", shape=tag)
                 return tag
-        # 4. with nothing to do, an occasional breath: the bed's own voice rests a phrase (rarely)
-        if bed is not None and len(entered) >= 2 and self.rng.random() < 0.08:
-            for ln in ("vocals", "other"):
-                if self.lanes.get(ln) == bed:
-                    tag = self._cross(ln, None, at)
-                    self._move("rest", ln, self._song_id(bed), None, f"the bed's {ln} rests a phrase", shape=tag)
-                    return tag
+        # (no random rests: "too busy, and too happy to have large sections of vocal rest" - user 2026-09-12;
+        #  a phrase with nothing to do is a phrase of music)
         return None
+
+    def _vocal_tick(self):
+        """Every bar, the vocal lane follows the singing: it rests when the song on it falls silent for the
+        next two bars, and comes back on the bed the moment the bed sings again - not at the next phrase
+        move. Never during a break or a recall, never while a bed change is in flight."""
+        if self._break is not None or self._recall is not None or (self._land_k is not None and self.bar_n < self._land_k):
+            return
+        if getattr(self, "_vtick_k", None) == self.bar_n:
+            return
+        self._vtick_k = self.bar_n
+        at = self._next_bar_clock()
+        bed = self._bed_deck()
+        vd = self.lanes.get("vocals")
+        since = self.bar_n - self.lane_k.get("vocals", -10 ** 6)
+        # dwell: a lane that just came back holds four bars before it may rest, one that just rested holds two
+        # before it may come back (a sparse vocal flipped rest / back within seconds in the gate)
+        if vd is not None and vd in self.songs:
+            if since >= 4 and self._vocal_gone(vd, at):
+                self._cross("vocals", None, at, beats=2.0, shape=False)
+                self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
+            return
+        if bed is None or bed not in self.songs or not self.songs[bed].entered or since < 2:
+            return
+        if self._vocal_ok(bed, at) and self._singing(self.songs[bed], self._song_time_at(bed, at)) is True \
+                and self._tonal_ok(bed, "vocals", at):
+            self._cross("vocals", bed, at, beats=1.0, shape=False)
+            self._move("return", "vocals", None, self._song_id(bed), f"vocals back on {self.songs[bed].track.title[:30]} (singing again)")
 
     def _one_move_inner(self, at):
         if getattr(self, "policy", "arrangement") == "arrangement":
