@@ -257,6 +257,9 @@ class DJSystem:
             n = self.brain.load_pair_memory(self.db)
             if n:
                 print(f"[DJ] pair memory: {n} remembered seams")
+            nw = self.brain.load_play_counts(self.db)
+            if nw:
+                print(f"[DJ] freshness: {nw} songs played in the last 30 days lean away")
         except Exception as e:
             print(f"[DJ] pair memory skipped: {e}")
         # LOOSE-GRID TAIL: the ceiling on tonight's repertoire, stated up

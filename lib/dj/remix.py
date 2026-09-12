@@ -154,6 +154,11 @@ class RemixConductor:
         self.db, self.music_root = db, music_root
         self.library = [t for t in library if getattr(t, "has_stems", False) and not getattr(t, "excluded", False)]
         self.brain = Brain(list(self.library), get_theme(theme or "groove"), seed=seed) if self.library else None
+        if self.brain is not None:
+            try:
+                self.brain.load_play_counts(db)       # cross-night freshness: the worn songs lean away here too
+            except Exception:
+                pass
         self.rng = random.Random(seed)
         self.submix = DJSubmix(deck_names=DECKS)
         self.songs = {}                  # deck -> Song

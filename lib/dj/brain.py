@@ -1404,6 +1404,25 @@ class Brain:
             groove = "swingclash" if sd > 0.055 else "swingok"
         return (key, off, conf, groove)
 
+    def load_play_counts(self, db, days=30.0):
+        """CROSS-NIGHT FRESHNESS: how often each song has REALLY played in the last `days` (plays the
+        autoDJ ended normally after 45 s or more - headless runs and stopped sessions leave no end and do
+        not count). Selection leans away from the worn ones (s_worn), so the same ten songs stop opening
+        every set (user 2026-09-12: "'Need You Now' will almost always play in the first few songs")."""
+        try:
+            self.play_counts = db.play_counts(days=days)
+        except Exception:
+            self.play_counts = {}
+        return len(self.play_counts)
+
+    def _worn(self, cand):
+        """1.0 for a song that has not played lately, down to 0.4 for one that plays every other night."""
+        pc = getattr(self, "play_counts", None)
+        if not pc:
+            return 1.0
+        n = pc.get(self.ckey.get(cand.id, cand.id), pc.get(cand.id, 0))
+        return max(0.4, 1.0 / (1.0 + 0.12 * n))
+
     def load_pair_memory(self, db, days=90.0):
         """CROSS-NIGHT TASTE: thumbs on seams and bail-out skips persist
         as pair-level multipliers - a seam that worked last Saturday gets
@@ -2222,6 +2241,10 @@ class Brain:
         s_flavor = self._flavor_score(cand)
         s_pairmem = self.pair_memory.get(
             (getattr(current, "id", None), cand.id), 1.0)
+        # CROSS-NIGHT FRESHNESS (load_play_counts): the night's own no-repeat forgets at dawn, so the
+        # best-fitting few won every night (measured 2026-09-12: two songs took a quarter of 80 picks
+        # from random starting points; one of them opened most sets). A soft lean, never a wall.
+        s_worn = self._worn(cand)
         total = (s_rate * s_key * s_energy * s_mood * s_spec * s_var * s_style
                  * s_valence * s_dance * s_cohere * s_class * s_rhythm
                  * s_pers
@@ -2229,6 +2252,7 @@ class Brain:
                  * s_skip * s_pair
                  * s_flavor
                  * s_pairmem
+                 * s_worn
                  * self.rng.uniform(1.0 - dice_w, 1.0 + dice_w))
         # STRETCH WALL: beyond ~5.5% the time-stretch is audible as feel
         # (WSOLA stays clean but the groove drags/rushes). Soft, not zero -
@@ -2299,7 +2323,7 @@ class Brain:
                  "persona": s_pers, "recency": s_recency, "skip": s_skip,
                  "pair": s_pair, "flavor": s_flavor, "pairmem": s_pairmem,
                  "wall": s_wall, "conf": s_conf, "blend": s_blend,
-                 "exit_chain": s_exit_chain, "bpm_arc": s_bpm_arc}
+                 "exit_chain": s_exit_chain, "bpm_arc": s_bpm_arc, "worn": s_worn}
         return total, {"rate": rate, "eff_bpm": eff_bpm, "pair": pair,
                        "pitch_st": pitch_st, "forced_fade": forced_fade,
                        "terms": terms}
@@ -2512,6 +2536,7 @@ class Brain:
                 * (0.25 + sum(self.theme.mood_weights.get(m, 0.0) * f
                               for m, f in cand.mood_hist.items())) \
                 * self._recency_penalty(cand, now) \
+                * self._worn(cand) \
                 * self._flavor_score(cand) * self.rng.uniform(0.9, 1.1)
             cands.append((s, cand))
         if not cands and self.pool_ids is not None:

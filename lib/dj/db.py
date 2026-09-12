@@ -655,6 +655,8 @@ class LibraryDB:
 
     # -- play history ----------------------------------------------------------
     def log_play_start(self, track_id, transition_style=None, theme=None):
+        if os.environ.get("DJ_NO_PLAY_LOG", "") == "1":
+            return None                # a headless gate / smoke: its plays are not the night's history
         cur = self.conn.execute(
             "INSERT INTO play_history (track_id, started_at,"
             " transition_style, theme) VALUES (?, ?, ?, ?)",
@@ -730,6 +732,18 @@ class LibraryDB:
             "UPDATE play_history SET ended_at = ?, skipped = ? WHERE id = ?",
             (time.time(), 1 if skipped else 0, history_id))
         self.conn.commit()
+
+    def play_counts(self, days=30.0, min_s=45.0):
+        """{track_id: real plays in the last `days`}: plays that ENDED normally after min_s - a stopped or
+        headless session leaves no end and does not count (the freshness lean, brain.load_play_counts)."""
+        since = time.time() - days * 86400.0
+        out = {}
+        for r in self.conn.execute(
+                "SELECT track_id, COUNT(*) AS n FROM play_history"
+                " WHERE started_at > ? AND ended_at IS NOT NULL AND ended_at - started_at >= ?"
+                " GROUP BY track_id", (since, min_s)):
+            out[r["track_id"]] = int(r["n"])
+        return out
 
     def recent_plays(self, hours=12.0):
         return [dict(r) for r in self.conn.execute(

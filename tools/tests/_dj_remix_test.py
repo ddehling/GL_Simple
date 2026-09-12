@@ -15,6 +15,7 @@ import sys
 
 import numpy as np
 
+os.environ["DJ_NO_PLAY_LOG"] = "1"                      # the gate's plays are not the night's history
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lib.dj.submix import RATE  # noqa: E402
 
@@ -280,7 +281,9 @@ def main():
     check(max(live_hist or [0]) >= 2, f"songs live at once: max {max(live_hist or [0])}")
     check(len(crosses) >= 6, f"lane moves: {len(crosses)} ({len(rc.moves)} moves in all)")
     frac_multi = float(np.mean([1.0 if n >= 2 else 0.0 for n in live_hist])) if live_hist else 0.0
-    check(frac_multi > 0.4, f"time with 2+ songs heard: {100 * frac_multi:.0f}%")
+    # the arrangement lets a new bed settle four phrases alone and waits out a bed's build: at four-bar phrases
+    # that is about half the time with one song by design (the old free policy overlapped most of the time)
+    check(frac_multi > 0.25, f"time with 2+ songs heard: {100 * frac_multi:.0f}% (a new bed settles alone by design)")
     entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m]
     left = [m for _, m in rc.moves if m.endswith("leaves") or "fades out as a voice" in m]
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")

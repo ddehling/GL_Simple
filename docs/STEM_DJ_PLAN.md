@@ -614,6 +614,18 @@ same stem" → the picture now takes each lane's clip from what is SOUNDING (dec
 gain), so a bed change is drawn when the new drums and bass land, not when it was decided; and the level
 meter under each lane stacks every song sounding on that stem in its own colour - a crossfade, the autoDJ's
 blend or a doubled lane read as two colours.
+"Certain songs just play more frequently than others… 'Need You Now' will almost always play in the first
+few songs of a set" - measured: 1,296 plays in 30 days over 384 of 1,073 songs, a top twelve with 16-28
+plays each; from 80 random playing songs the picker gave 40 distinct winners, two of them taking a quarter of
+the picks (Need You Now 10, Kirghiz 9); the opener choice gave 16 distinct openers over 30 seeds. Why: the
+night's no-repeat forgets at dawn, and the evidence gates (verified grids, beat power, blendability in and
+out) leave a small elite that satisfies everything at the arc's energy, so the same few win every night -
+Need You Now's terms were energy 1.00 at the target, blend 1.00, exit_chain 1.00 while the runners-up lost
+0.1-0.45 on energy. Fix: CROSS-NIGHT FRESHNESS - `db.play_counts` (plays that ENDED normally after 45 s, so
+headless runs and stopped sessions do not count), `brain.load_play_counts` at every start, and a soft lean
+`s_worn = 1 / (1 + 0.12 × plays_30d)` (floor 0.4) in both the pick and the opener. And the history was
+polluted: my gates and smokes logged plays all day (the gate's seed-7 opener sat at the top of the 30-day
+list); headless runs now set DJ_NO_PLAY_LOG and log nothing.
 
 ## Rules carried over (they were earned)
 
