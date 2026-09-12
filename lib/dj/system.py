@@ -192,6 +192,10 @@ class DJSystem:
         self._record = bool(record)
         self._rec_thread = None
         self.record_path = None
+        # the Director's hooks: a prepared opener, the pace multiplier, the loop bias
+        self._opener = None
+        self._pace_x = 1.0
+        self._loop_bias = 0
 
     # -- lifecycle -------------------------------------------------------------
     def start(self):
@@ -206,6 +210,8 @@ class DJSystem:
         self.brain = Brain(lib, get_theme(self._theme_name), seed=self._seed,
                            stretch_max=self._stretch_max)
         self.brain.persona = self._resolve_persona(self._persona_mode)
+        if getattr(self, "_loop_bias", 0):
+            self.set_loop_bias(self._loop_bias)
         if self.brain.persona.name != "neutral":
             print(f"[DJ] tonight: {self.brain.persona.name} - "
                   f"{self.brain.persona.tagline}")
@@ -633,6 +639,32 @@ class DJSystem:
         """Arm and run the planned transition immediately (test the mix)."""
         with self._lock:
             self._pending.append(("mix_now", None))
+
+    # -- the Director's hooks (lib/dj/director.py) -------------------------------
+    def set_pace(self, x):
+        """How long records play: a multiplier on the drawn play length
+        (0.6 = short bits, 1.0 = the theme as designed, 1.5 = long plays).
+        The comedown cap still bounds every draw; a pace above 1 never
+        rides a record past it."""
+        self._pace_x = float(max(0.4, min(2.0, x)))
+
+    def set_loop_bias(self, level):
+        """How much the seams loop: 0 = as the dice have it, 1 = the loop
+        styles (loop_in, loop_roll_exit, loop_build) three times as likely,
+        2 = eight times. Goes through the brain's style multipliers, so the
+        gates still decide what is safe."""
+        if self.brain is None:
+            self._loop_bias = level
+            return
+        mult = {0: 1.0, 1: 3.0, 2: 8.0}.get(int(level), 1.0)
+        for k in ("loop_in", "loop_roll_exit", "loop_build"):
+            self.brain.style_fb[k] = mult
+
+    def set_opener(self, track, cue_s, samples=None):
+        """Open on THIS track at THIS song time (the Director handing a
+        song over from the stem conductor), with pre-decoded samples so
+        the opener starts within a block of the call."""
+        self._opener = (track, float(cue_s), samples)
 
     def bpm_target(self):
         """The night's PLANNED BPM journey: the tempo rides the same shape
@@ -1550,6 +1582,46 @@ class DJSystem:
 
     def _start_first(self):
         first = None
+        opener = getattr(self, "_opener", None)
+        if opener is not None:
+            # the Director hands a song over from the stem conductor: THIS
+            # track at THIS song time, samples already decoded, no ramp
+            # (the two submixes crossfade on their master buses)
+            self._opener = None
+            track, cue_s, samples = opener
+            first = next((x for x in self.brain.library if x.id == track.id), track)
+            if samples is None:
+                samples = self._decode(first)
+            if samples is None:
+                self.last_error = "opener decode failed"
+                return
+            self.submix.post_many([
+                {"cmd": "load", "deck": self.active_deck, "samples": samples,
+                 "track_id": first.id, "grid": first.grid,
+                 "gain_db": first.gain_db,
+                 "kick_offset_s": first.kick_offset_s, "cue_s": float(cue_s)},
+                {"cmd": "gain", "deck": self.active_deck, "value": 1.0,
+                 "ramp_s": 0.02},
+                {"cmd": "start", "deck": self.active_deck},
+            ])
+            self.current = first
+            self.state = "playing"
+            self._started_clock = self.submix.clock
+            self._draw_exit()
+            self.brain.note_played(first)
+            self._note_pool_played(first)
+            self._note_energy(first)
+            ph, ci = self._arc_slot()
+            self._hist_n += 1
+            self._history.append({"t": time.strftime("%H:%M"), "n": self._hist_n,
+                                  "title": first.title, "artist": first.artist,
+                                  "via": "handover", "phase": round(ph, 4),
+                                  "cyc": ci,
+                                  "energy": round(first.energy_proxy(), 3)})
+            self._history_id = self.db.log_play_start(first.id, theme=self._theme_name)
+            self._log({"event": "play", "track": first.title, "artist": first.artist,
+                       "bpm": first.bpm, "camelot": first.camelot, "via": "handover"})
+            return
         while self._setlist_queue and first is None:
             entry = self._setlist_queue.pop(0)
             first = next((x for x in self.brain.library
@@ -3024,7 +3096,8 @@ class DJSystem:
         # PERSONA pacing: monk lets records breathe ~1.3x, showman rotates
         # ~0.8x. Neutral is exactly the legacy draw.
         drawn = (theme.min_play_s + frac * span) \
-            * getattr(self.brain.persona, "play_len_x", 1.0)
+            * getattr(self.brain.persona, "play_len_x", 1.0) \
+            * getattr(self, "_pace_x", 1.0)
         # NEVER ASK FOR MORE OF A RECORD THAN IT HAS (2026-08-07). The
         # theme budgets are absolute seconds and predate any measurement of
         # this library: groove's valley draw medians 330s against a median
@@ -3046,7 +3119,8 @@ class DJSystem:
         # comedown the way the uncapped budget did.
         if self.current is not None and self.current.duration_s > 0:
             cap = EXIT_MAX_FRAC * getattr(self.brain.persona,
-                                          "play_len_x", 1.0)
+                                          "play_len_x", 1.0) \
+                * min(1.0, getattr(self, "_pace_x", 1.0))
             # THE BUDGET RIDES THE REMAINDER, NOT THE RECORD (2026-08-12,
             # with the deep-entry candidates in TrackInfo). A track
             # entered at its 55% mark has 45% left, but a duration-based

@@ -159,6 +159,7 @@ class RemixConductor:
         self.hold = False
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
+        self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
         self._cands_cache = (0.0, None, [])
         self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
         self._open_lanes = None          # lanes the opener comes up on (None = all)
@@ -194,9 +195,10 @@ class RemixConductor:
         self._thread = None
 
     # -- lifecycle -----------------------------------------------------------------------
-    def start(self, first_track=None, threaded=True, cue_s=None, lanes=None):
+    def start(self, first_track=None, threaded=True, cue_s=None, lanes=None, hold_open=False):
         """Open. `first_track` picks the opener (else the conductor does); `cue_s` opens it at that song
-        time instead of its body and `lanes` opens only those lanes (the timeline player's exact starts)."""
+        time instead of its body and `lanes` opens only those lanes (the timeline player's exact starts);
+        `hold_open` decodes but waits for open_pending() (the Director's handover on a chosen bar)."""
         if self.brain is None:
             self.last_error = "no stem-bearing tracks in the library (run tools/dj/dj_stems.py)"
             return False
@@ -206,6 +208,8 @@ class RemixConductor:
         if cue_s is not None:
             self._cue_req["a"] = float(max(0.0, cue_s))
         self._open_lanes = set(lanes) if lanes is not None else None
+        self._hold_open = bool(hold_open)
+        self._open_at = None
         self._decode(first, "a")
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True, name="remix")
@@ -668,6 +672,9 @@ class RemixConductor:
             return
         t = song.track
         at = self.submix.clock + int(LEAD_S * RATE)
+        if getattr(self, "_open_at", None) is not None:
+            at = max(at, int(self._open_at))           # the Director's handover bar
+            self._open_at = None
         self.master, self.master_bpm, self.key_centre = deck, float(t.bpm), t.camelot
         self.base_bpm = float(t.bpm)
         song.rate, song.staged_at, song.entered, song.entered_k = 1.0, at, True, 0
@@ -771,9 +778,12 @@ class RemixConductor:
         song.leaving, song.leave_clock = True, stop_at + int(0.5 * RATE)
         self._move("leave", None, song.track.id, None, f"{song.track.title} leaves")
 
-    def _cross(self, lane, to_deck, at, beats=XFADE_BEATS, shape=True):
-        """Lane `lane` goes to `to_deck` (None = rest) at clock `at`, crossing over `beats`. When the
-        song giving the lane holds nothing else, the move gets a shape. Returns the shape's name."""
+    def _cross(self, lane, to_deck, at, beats=None, shape=True):
+        """Lane `lane` goes to `to_deck` (None = rest) at clock `at`, crossing over `beats` (default: the
+        mixing dial's cross_beats). When the song giving the lane holds nothing else, the move gets a
+        shape. Returns the shape's name."""
+        if beats is None:
+            beats = self.cross_beats
         xf = beats * self._beat_s()
         frm = self.lanes.get(lane)
         ev, tag = [], None
@@ -801,7 +811,7 @@ class RemixConductor:
         if not self.running:
             return
         if self.master is None:
-            if "a" in self._pending:
+            if "a" in self._pending and not getattr(self, "_hold_open", False):
                 self._open_first("a")
             return
         # songs that finished leaving free their decks
@@ -1191,6 +1201,23 @@ class RemixConductor:
         s.level = float(max(0.0, min(1.5, level)))
         self.submix.post({"cmd": "gain", "deck": deck, "value": s.level, "ramp_s": 0.1})
         return True
+
+    # -- the Director's hands ---------------------------------------------------------------------------------------
+    def decoded(self):
+        """The opener is decoded and waiting (start(hold_open=True))."""
+        return "a" in self._pending
+
+    def open_pending(self, at_clock, cue_s):
+        """Open the held opener at submix clock `at_clock`, cued so song time `cue_s` sounds then."""
+        self._cue_req["a"] = float(max(0.0, cue_s))
+        self._open_at = int(at_clock)
+        self._hold_open = False
+        if "a" in self._pending and self.master is None:
+            self._open_first("a")
+
+    def set_cross_beats(self, beats):
+        """How a lane crosses: 0.5 beat = a cut, 2 = the house crossfade, 4 = a long blend."""
+        self.cross_beats = float(max(0.1, min(16.0, beats)))
 
     # -- the timeline player's hands ----------------------------------------------------------------------------
     def stage_for_bar(self, track_id, song_time_s, at_bar):

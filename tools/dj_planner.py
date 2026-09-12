@@ -4865,14 +4865,15 @@ class Planner(QMainWindow):
         # energy - the stem-level plan's phase 4 (docs/STEM_DJ_PLAN.md). The hand-operated stem stage
         # (tools/dj/planner/stage.py over lib/dj/pairstage.py, lib/dj/stage.py) stays as engine code
         # behind the system's stem vocabulary; its tab is not registered.
-        from tools.dj.planner.perform import PerformTab
-        self.perform_tab = PerformTab(self)
-        self.tabs.addTab(self.perform_tab, "Perform")
-        # The Timeline: one continuous run of bars with four lane tracks; songs' parts (spectrogram
-        # clips) placed on them from a song viewer; the conductor plays it (lib/dj/timeline.py).
-        from tools.dj.planner.timeline import TimelineTab
-        self.timeline_tab = TimelineTab(self)
-        self.tabs.addTab(self.timeline_tab, "Timeline")
+        # The DIRECTOR (2026-09-12): high-level behaviour over the autoDJ and the stem conductor - six
+        # dials (songs, mixing, layers, energy, pace, loops) and four moments; the operator never touches
+        # songs' parts, timing or levels. The Perform tab (grid / crate) and the Timeline tab stay in the
+        # code as engine tools (tools/dj/planner/perform.py, timeline.py) but are off the tab bar.
+        from tools.dj.planner.director import DirectorTab
+        self.director_tab = DirectorTab(self)
+        self.tabs.addTab(self.director_tab, "Director")
+        self.perform_tab = None
+        self.timeline_tab = None
         self.stage_tab = None
         # Layer Lab (tools/dj/planner/layerlab.py) is SHELVED, not
         # deleted - see docs/DJ_README.md "Loop layer (SHELVED)". The
@@ -5113,6 +5114,8 @@ class Planner(QMainWindow):
     def closeEvent(self, ev):
         self.analysis_tab.close()
         self.mix_tab.close()
+        if getattr(self, "director_tab", None) is not None:
+            self.director_tab.close()        # the engines and the audio device, if started
         if getattr(self, "perform_tab", None) is not None:
             self.perform_tab.close()         # the live system and its audio device, if started
         if getattr(self, "timeline_tab", None) is not None:
