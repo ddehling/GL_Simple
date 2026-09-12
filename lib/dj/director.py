@@ -148,6 +148,7 @@ class Director:
             return False
         self.mode = want
         self.running = True
+        self._t_start = time.time()
         self._event(f"started: {self.describe_dials()}")
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True, name="director")
@@ -476,6 +477,10 @@ class Director:
     def _warm_step(self):
         """Keep the OTHER engine's opener ready for the playing song."""
         if self._warm_busy or self._switch is not None:
+            return
+        # not in the first half minute: the standby engine's brain is seconds of GIL, and the start already
+        # cost the audio thread one (the user's log: an underrun right after START)
+        if time.time() - getattr(self, "_t_start", 0.0) < 30.0:
             return
         if self.system is not None and self.system.current is not None:
             cur = self.system.current

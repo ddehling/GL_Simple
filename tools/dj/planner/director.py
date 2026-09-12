@@ -529,8 +529,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.planner.analysis_tab.player.stop()
         except Exception:
             pass
+        # the engine is STARTED LAST: loading the library and building the brain hold the GIL for seconds,
+        # and an engine already running underran on that ("the render thread cannot keep up", user's log
+        # 2026-09-12); nothing is heard before the first engine is ready anyway
         self.engine = AudioEngine()
-        self.engine.start()
         self.director = Director(self.planner.music_dir, engine=self.engine, theme=self.theme_box.currentText())
         for name, group in self.dial_groups.items():
             for b in group.buttons():
@@ -545,6 +547,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.err_lbl.setText(self.director.last_error or "could not start")
             self.close()
             return
+        self.engine.start()
         self.start_btn.setText("■  STOP")
         self.start_btn.setProperty("kind", "hot")
         self.start_btn.style().unpolish(self.start_btn)
