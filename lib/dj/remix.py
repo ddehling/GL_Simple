@@ -160,6 +160,7 @@ class RemixConductor:
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
+        self.avoid_ids = set()           # songs played tonight by any engine (the Director's memory): never picked again
         self._cands_cache = (0.0, None, [])
         self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
         self._open_lanes = None          # lanes the opener comes up on (None = all)
@@ -259,7 +260,8 @@ class RemixConductor:
         """The opener: from the pool when one is set, inside the theme's tempo window (a 70 bpm half-time
         read once opened a session nothing could join), a confident grid, room to play."""
         lo, hi = self.brain.theme.bpm_range
-        lib = [t for t in self.library if self.brain.pool_ids is None or t.id in self.brain.pool_ids] or self.library
+        avoid = set(getattr(self, "avoid_ids", ()) or ())
+        lib = [t for t in self.library if (self.brain.pool_ids is None or t.id in self.brain.pool_ids) and t.id not in avoid] or self.library
         cands = [t for t in lib if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150 and lo <= t.bpm <= hi]
         if not cands:
             cands = [t for t in lib if (t.bpm_conf or 0) >= 0.7 and t.duration_s >= 150]
@@ -283,6 +285,7 @@ class RemixConductor:
         if ms is None:
             return None
         busy = {s.track.id for s in self.songs.values()} | {t.id for t in self._decoding.values()} | {p[0].id for p in self._pending.values()}
+        busy |= set(getattr(self, "avoid_ids", ()) or ())        # the Director's played list: no repeats across engines
         saved = set(self.brain.veto_ids)
         try:
             self.brain.veto_ids |= busy
@@ -690,6 +693,7 @@ class RemixConductor:
         ])
         self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
         self.brain.note_played(t)
+        self._log_play(t)
         self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
 
     def _stage_song(self, deck):
@@ -744,6 +748,7 @@ class RemixConductor:
             {"at": at, "cmd": "sync", "slave": deck, "master": self.master, "bias_beats": 0.0, "audio_pll": True},
         ])
         self.brain.note_played(t)
+        self._log_play(t)
         fit = f", key fit {song.compat:.2f}" if song.compat is not None else ""
         self._note(f"{t.title} staged on {deck.upper()} (rate {rate:.3f}, shift {song.shift:+d} st{fit}; landmark {landmark:.0f}s in {to_move} bars)")
         return True
@@ -1442,6 +1447,14 @@ class RemixConductor:
 
     def _track(self, tid):
         return next((t for t in self.library if t.id == tid), None)
+
+    def _log_play(self, t):
+        """Every song the conductor brings in counts as PLAYED in the library's history (the autoDJ seeds
+        its no-repeat memory from it) - the two engines share one night."""
+        try:
+            self.db.log_play_start(t.id, transition_style="remix", theme=getattr(self.brain.theme, "name", None))
+        except Exception:
+            pass
 
     def _recall_step(self):
         snap = self._recall

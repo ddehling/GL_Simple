@@ -2355,16 +2355,11 @@ class DJSystem:
         build = eta
         build_beats = int(round(build / beat))
         hole = hit - int(beat * RATE)
-        from lib.dj import fx as _fx
-        # No synth riser (the whoosh verdict); the dying deck's own
-        # sweep + trim + loop-roll carry the build, plus the snare roll.
-        roll_beats = 8 if build_beats >= 12 else 4
-        roll = {"at": hit - int(roll_beats * beat * RATE), "cmd": "fx_play",
-                "samples": _fx.at_peak(_fx.make_roll(beat, roll_beats), 0.5)}
-        impact = {"at": hit, "cmd": "fx_play",
-                  "samples": _fx.at_peak(_fx.make_impact(), 0.85)}
-        dur = build - 5.0 * beat
-        anchor = self._snap_beat(pos + dur * rate, period)
+        # THE BUILD IS THE MUSIC ITSELF (2026-09-12, user: "get rid of the
+        # fucking stutter cut"): the dying deck's high-pass sweep and a
+        # push in level, then the one-beat hole and the cold landing. The
+        # shrinking loop-roll (1 -> 1/2 -> 1/4 beat), the synthesized snare
+        # roll and the impact sample are gone - they were the stutter.
         ev = [
             # -- the build on the DYING deck. Sweep starts at 30 Hz,
             # under the sub (a 45 Hz/q1.1 start measurably shoved a
@@ -2376,13 +2371,6 @@ class DJSystem:
              "cutoff_hz": 600.0, "ramp_s": build},
             {"at": hit - int(build * RATE), "cmd": "gain", "deck": deck,
              "value": min(1.3 * g0, 1.35), "ramp_s": 0.9 * build},
-            roll,
-            {"at": hit - int(5 * beat * RATE), "cmd": "loop", "deck": deck,
-             "start_s": anchor, "end_s": anchor + period},
-            {"at": hit - int(3 * beat * RATE), "cmd": "loop", "deck": deck,
-             "start_s": anchor, "end_s": anchor + period / 2.0},
-            {"at": hit - int(2 * beat * RATE), "cmd": "loop", "deck": deck,
-             "start_s": anchor, "end_s": anchor + period / 4.0},
             {"at": hole, "cmd": "clear_loop", "deck": deck},
             {"at": hole, "cmd": "gain", "deck": deck, "value": 0.0,
              "ramp_s": 0.06},
@@ -2399,7 +2387,6 @@ class DJSystem:
             # -- the landing: THE NEXT TRACK'S DROP, cold ----------------
             {"at": hit, "cmd": "gain", "deck": self._other(deck),
              "value": 1.0, "ramp_s": 0.05},
-            impact,
             {"at": hit + int(0.25 * RATE), "cmd": "stop", "deck": deck},
             # Insurance: the incoming deck must never stay muted.
             {"at": hit + int(beat * RATE), "cmd": "gain",

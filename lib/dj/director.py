@@ -97,6 +97,10 @@ class Director:
         self._warm_one = None            # (track_id, samples) for the autoDJ opener
         self._warm_busy = False
         self._loop_hold = None           # (release_bar) while a loop hold runs
+        # ONE NIGHT'S MEMORY across both engines: everything either has played (user: "the system keeps
+        # reusing songs" - every handover built a fresh brain that knew nothing of the other's plays)
+        self.played = []                 # (track_id, when)
+        self._noted = set()
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -156,6 +160,7 @@ class Director:
         self._apply_to_system(sysm)
         if not sysm.start():
             raise RuntimeError(sysm.last_error or "autoDJ failed to start")
+        self._seed_brain(sysm.brain)                  # what the conductor played tonight counts here too
         self._attach("dj_submix", sysm.submix)
         self._apply_to_system(sysm)
         return sysm
@@ -192,6 +197,10 @@ class Director:
 
     def _apply_to_conductor(self, rc):
         d = self.dials
+        rc.avoid_ids = self._played_ids()             # nothing played tonight comes back
+        if not getattr(rc, "_seeded", False):
+            self._seed_brain(rc.brain)
+            rc._seeded = True
         rc.set_auto(1.0)
         rc.set_cross_beats(MIX_CROSS[d["mixing"]] * SEAM_SPEED[d["seams"]])
         rc.set_blend(LAYER_BLEND.get(d["layers"], 0.3))
@@ -383,6 +392,10 @@ class Director:
             self.system.step()
         if self.rc is not None:
             self.rc.step()
+            for s in self.rc.songs.values():
+                if s.staged_at is not None:
+                    self._note_played(s.track.id)
+            self.rc.avoid_ids = self._played_ids()
             if self._hold_until is not None and self.rc.bar_n >= self._hold_until:
                 self.rc.set_hold(False)
                 self._hold_until = None
@@ -573,6 +586,26 @@ class Director:
             threading.Timer(HANDOVER_BEATS * beat + 0.4, lambda: old.stop(fade_s=0.05)).start()
             self._event("layers: the autoDJ has the room")
 
+    # -- one night's memory --------------------------------------------------------------------------------------------
+    def _note_played(self, tid):
+        if tid is None or tid in self._noted:
+            return
+        self._noted.add(tid)
+        self.played.append((int(tid), time.time()))
+
+    def _played_ids(self, hours=3.0):
+        cutoff = time.time() - hours * 3600.0
+        return {tid for tid, when in self.played if when >= cutoff}
+
+    def _seed_brain(self, brain):
+        for tid, when in self.played:
+            t = next((x for x in self.library if x.id == tid), None)
+            if t is not None:
+                try:
+                    brain.note_played(t, when=when)
+                except Exception:
+                    pass
+
     # -- the picture: the run as a timeline ----------------------------------------------------------------------------
     def _bpm(self):
         if self.system is not None and self.system.current is not None:
@@ -611,6 +644,7 @@ class Director:
             pos = float(tel.get("time_s") or 0.0)
             if self._cur_song != cur.id:
                 self._cur_song = cur.id
+                self._note_played(cur.id)
                 self.tl.add(cur.id, list(LANES), b, max(0.0, pos - (self.bar() - b) * self._bar_len(cur.id)))
                 self._lane_snap = {ln: cur.id for ln in LANES}
             st = None
@@ -721,6 +755,10 @@ class Director:
             if layered and not getattr(t, "has_stems", False):
                 ok = False
                 why.append("no stems: cannot be layered")
+            when = next((w for tid, w in reversed(self.played) if tid == t.id), None)
+            if when is not None:
+                ok = False
+                why.insert(0, f"played {max(1, int((time.time() - when) / 60))} min ago")
             rows.append({"id": t.id, "title": t.title, "artist": t.artist or "", "bpm": t.bpm, "camelot": t.camelot,
                          "ok": ok, "fit": fit, "why": ", ".join(why) if why else ""})
         rows.sort(key=lambda x: (not x["ok"], -x["fit"], x["title"].lower()))

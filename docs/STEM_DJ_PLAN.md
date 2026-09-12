@@ -396,6 +396,16 @@ holds on grooves (lots: also breakdowns) at phrase boundaries, released on the b
 only the clean loop entry. Open: the right column is tall (ten dials with captions); the remaining fade
 cases under a pinned cut; the user's verdict on the handover's sound.
 
+**Same evening: "the system keeps reusing songs" and "get rid of the fucking stutter cut".** Repeats:
+every handover built a fresh engine whose brain knew nothing of the other's plays, and the conductor never
+logged its plays to the history the autoDJ seeds from - now the Director keeps ONE played list for the
+night, seeds every new brain from it, the conductor refuses anything on it and logs its plays to
+play_history, and the song list marks "✗ played N min ago". The stutter: the DROP moment's build was the
+dying deck's loop shrinking 1 → ½ → ¼ beat under a synthesized snare roll, then an impact sample on the
+landing - removed; the build is the music itself (the high-pass sweep and a push on the dying track), the
+one-beat hole, and the next track's drop cold. (The loop-roll seam styles were already retired on the same
+verdict in August; the loops dial in one-song mode therefore has almost nothing to bias - open.)
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
