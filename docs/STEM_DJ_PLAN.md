@@ -473,6 +473,39 @@ bars), refuses when nothing is loud enough, and your BREAK ends a running auto b
 while loops hold, within two phrases of a DROP, or while a bed change is in flight; the strip before a bed
 lands only when the voice is audible through it.
 
+**The measurement work (2026-09-12, night): what is inside the parts.** "Is the system aware of the song
+components?" - it knew the parts a DJ works with (four stems, section labels, the grid, a whole-track key
+and chroma, a vocal curve) but not the content inside them: which part is the hook, what chords sound in
+each section. `lib/dj/measure.py` reads both from the stems on disk (no GPU, ~4 s a track, resumable, run
+with `dj_scan.py --measure`; stored in tracks.axes and preserved across rescans): SECTION CHROMA - a
+12-bin profile per section from bass + other + vocals, silence gated out - and the HOOK - per-bar loudness
+and a chroma + timbre signature of the vocal stem, four-bar windows scored by loudness × repetition (self-
+similarity), an ML "chorus" label as a bonus, the ML vocal curve to tell bleed from singing (a demucs
+fraction: 0.1 is a sung chorus, instrumentals read 0.0), every occurrence listed with the FIRST as the
+payoff. Checked on three songs: a vocal house track's hook landed on its ML chorus (63 s, again at 171-192
+s), two instrumentals got none. Consumers, all evidence-gated: the conductor's tonal guard and `why_not`
+compare the sections that actually overlap ("the chords clash right now… keys agree, the sections do
+not"); a voice takes the bed at its HOOK or its drop, whichever comes first (`_payoff_in_bars`); the
+brain's seam score refines the key term with the chroma at the planned out / in points; the song list says
+"hook at 1:03 ×5". Gate ALL OK with the guard live (4 bed changes, 2 at the payoff, 0 dead bars). The
+library pass is running as this is written.
+
+**Uncompleted parts of the plan, continued (same night):** Phase 4's surface - the nanoKONTROL2 drives
+the Director (faders 1-8: energy, tempo, pace, seams, vocals, variety, bass, level, each fader's travel cut
+into the dial's options; knobs 1-8: mixing, layers, loops, moments, fx, tone, arc, length; PLAY / STOP /
+REC / CYCLE = NEXT / STAY / DROP / BREAK; TRACK < > = BAD / GOOD; MARKER < > = arc back / ahead 10 %) -
+and the Director on the show's web page (★ DIRECTOR next to REMIX: the arc strip (tap = we are here),
+NOW / NEXT / intent / lanes / WHY, the four moments, GOOD / BAD with the verdict line, every dial as a
+button row; `director_*` actions through the one queued channel; the visuals get the arc heat and the
+playing engine's outstate). Neither has been run on the show machine or with the controller plugged in.
+The loops dial in one-song mode now reaches the autoDJ's shelved LOOP LAYER (Phase 3's un-shelving, in
+the dial's terms): once per record at most, on a groove, after the record's payoff (first drop or hook)
+and with a minute of runway, a drum loop cut from another record rides under the playing one on deck C
+(some = a third of records, lots = most); the tooltip and WHAT YOUR DIALS ARE DOING say when one is
+riding. Never heard by the user with real DJ ears - the layer was shelved for exactly that reason, so the
+dial's default stays off. Still open: the remaining fade cases under a pinned cut, the settle / voice /
+strip numbers, and the user's ear on all of it.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

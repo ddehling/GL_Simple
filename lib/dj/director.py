@@ -660,6 +660,10 @@ class Director:
                 self.rc.set_hold(False)
                 self._hold_until = None
             self._loops_layered()
+        try:
+            self._loops_one()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"loops: {type(e).__name__}: {e}"
         self._feed_up_next()
         self._handover()
         self._warm_step()
@@ -697,6 +701,61 @@ class Director:
                 if not ok and msg not in ("no free deck - eject one first", "already on a deck"):
                     self._event(f"up next {self.title(head)}: {msg}")
                     self.up_next.pop(0)
+
+    def _loops_one(self):
+        """The LOOPS dial in one-song mode: the autoDJ's LOOP LAYER - a drum loop cut from another record
+        rides under the playing one for a stretch (deck C, never over an armed seam, never from the song it
+        plays under). Once per record at most, on a groove, with the record's payoff behind it (its first
+        drop or hook heard) and enough runway ahead; some = a third of records, lots = most."""
+        level = LOOP_LEVEL[self.dials["loops"]]
+        sysm = self.system
+        if level <= 0 or sysm is None or sysm.current is None:
+            return
+        if sysm.state != "playing":
+            self._loop_note = f"the autoDJ is {sysm.state}"
+            return
+        cur = sysm.current
+        if getattr(self, "_loop_song", None) != cur.id:
+            self._loop_song, self._loop_tried = cur.id, False
+        if getattr(sysm, "_layer_txn", None):
+            self._loop_note = "a loop is riding now"
+            return
+        if self._loop_tried:
+            return
+        played = self._played_s()
+        pos = None
+        try:
+            pos = sysm._pos_s()
+        except Exception:
+            pass
+        if pos is None or played < 30.0:
+            self._loop_note = "this record has not played 30 s yet"
+            return
+        sec = cur.section_at(pos) or {}
+        if sec.get("kind") != "groove":
+            self._loop_note = f"waiting for a groove (now: {sec.get('kind') or '?'})"
+            return
+        # the payoff first: past the first drop (a groove after a build / breakdown) or past the hook
+        secs = cur.sections or []
+        first_drop = next((secs[i]["start_s"] for i in range(1, len(secs))
+                           if secs[i].get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown")), None)
+        hook = getattr(cur, "hook", None)
+        payoff = min([x for x in (first_drop, hook["start_s"] if hook else None) if x is not None] or [0.0])
+        if pos < payoff:
+            self._loop_note = f"the record's payoff comes first ({payoff - pos:.0f} s)"
+            return
+        left = (cur.duration_s or 0.0) - pos
+        if left < 60.0:
+            self._loop_note = "too close to the record's end"
+            return
+        self._loop_tried = True
+        import random
+        if random.random() < {1: 0.35, 2: 0.75}[level]:
+            sysm.layer()
+            self._loop_note = "a drum loop was asked for on this record"
+            self._event(f"loops: a drum loop from another record rides under {cur.title[:30]} for a stretch")
+        else:
+            self._loop_note = "the dice let this record play plain"
 
     def _loops_layered(self):
         """The loops dial in layered mode: the clock song holds EIGHT bars of a groove - never a build or a
@@ -1072,6 +1131,9 @@ class Director:
             if layered and not getattr(t, "has_stems", False):
                 ok = False
                 why.append("no stems: cannot be layered")
+            hk = getattr(t, "hook", None)
+            if hk:
+                why.append(f"hook at {int(hk['start_s']) // 60}:{int(hk['start_s']) % 60:02d}" + (f" ×{len(hk.get('starts') or [])}" if len(hk.get("starts") or []) > 1 else ""))
             when = next((w for tid, w in reversed(self.played) if tid == t.id), None)
             if when is not None:
                 ok = False
@@ -1087,7 +1149,8 @@ class Director:
         return t.title if t else f"#{tid}"
 
     def status(self):
-        out = {"mode": self.mode, "dials": dict(self.dials), "theme": self.theme, "pool": self.pool_name,
+        out = {"mode": self.mode, "dials": dict(self.dials), "dials_menu": {k: list(v) for k, v in DIALS.items()},
+               "theme": self.theme, "pool": self.pool_name,
                "up_next": [{"id": t, "title": self.title(t)} for t in self.up_next],
                "switching": None if self._switch is None else self._switch.get("to"),
                "events": list(self.events[-12:]), "error": self.last_error, "now": None, "next": None,
@@ -1248,7 +1311,14 @@ class Director:
             eff.append(f"seams {d['seams']}: blend lengths ×{SEAM_SPEED[d['seams']]:g}")
             eff.append(f"vocals {d['vocals']}: picks lean to vocal presence {VOCAL_AXIS[d['vocals']]:.2f}")
             eff.append(f"variety {d['variety']}: persona {VARIETY_PERSONA[d['variety']] if VARIETY_PERSONA[d['variety']] != 'off' else 'neutral'}")
-            eff.append(f"loops {d['loops']}: loop entries ×{ {0: 1, 1: 3, 2: 8}[LOOP_LEVEL[d['loops']]] } as likely")
+            riding = bool(getattr(sysm, "_layer_txn", None))
+            denied = getattr(sysm, "_layer_denied", None)
+            note = getattr(self, "_loop_note", None)
+            eff.append(f"loops {d['loops']}: " + ("off" if d['loops'] == 'off' else
+                       ("a drum loop from another record is riding under this one now" if riding else
+                        f"loop entries ×{ {1: 3, 2: 8}[LOOP_LEVEL[d['loops']]] } as likely; a drum loop from another record may ride under a groove once per record"
+                        + (f" - {note}" if note else "")
+                        + (f" - the autoDJ refused the last one: {denied[0]}" if denied and time.time() - denied[1] < 120 else ""))))
         elif self.rc is not None:
             rc = self.rc
             last = rc.move_log[-1] if rc.move_log else None

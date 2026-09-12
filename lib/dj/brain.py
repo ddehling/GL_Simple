@@ -341,6 +341,12 @@ class TrackInfo:
         self.sections = sections
         self.loops = loops
         self.axes = row.get("axes") or {}
+        # Measured from the stems (lib/dj/measure.py): a 12-bin chroma per section (the chords in each
+        # part) and the HOOK (the loudest, most repeated sung passage). None until measured.
+        sc = self.axes.get("secchroma")
+        self.sec_chroma = sc if isinstance(sc, list) and len(sc) == len(sections) else None
+        hk = self.axes.get("hook")
+        self.hook = hk if isinstance(hk, dict) and hk.get("end_s") else None
         # Library-percentile overlay for the axes whose RAW values saturate
         # (hypnotic/hardness/energy) - filled by load_library; empty on
         # tracks built outside a library context (beatport previews).
@@ -470,6 +476,24 @@ class TrackInfo:
             if s["start_s"] <= t < s["end_s"]:
                 return s
         return self.sections[-1] if self.sections else None
+
+    def sec_chroma_at(self, t):
+        """The measured chroma of the section sounding at t, or None (unmeasured, or a silent section)."""
+        if not self.sec_chroma:
+            return None
+        for i, s in enumerate(self.sections):
+            if s["start_s"] <= t < s["end_s"]:
+                return self.sec_chroma[i]
+        return self.sec_chroma[-1] if self.sec_chroma else None
+
+    def hook_at(self, t, ahead_s=0.0):
+        """Seconds from t until the hook starts (negative while inside it), or None without a hook."""
+        h = self.hook
+        if not h:
+            return None
+        if t >= h["end_s"]:
+            return None
+        return h["start_s"] - t
 
     def ml_segment_at(self, t):
         """ML structure label at time t ('' when the pass hasn't run)."""
@@ -2081,6 +2105,20 @@ class Brain:
             s_spec = 0.7 + 0.6 * cand.spectral.get("high_share", 0.2) * 3.0
         pair = self.best_pair(current, cand) if current is not None else None
         s_pair = pair["score"] if pair else (0.5 if current is None else 0.15)
+        # SECTION CHROMA AT THE SEAM (lib/dj/measure.py, from the stems): the chords that actually overlap
+        # at the planned out / in points, not the songs' average key. Evidence-gated: unmeasured tracks
+        # keep the whole-track reading above.
+        if pair is not None and getattr(current, "sec_chroma", None) and getattr(cand, "sec_chroma", None):
+            try:
+                pa = current.sec_chroma_at(pair["out_s"])
+                pb = cand.sec_chroma_at(pair["in_s"])
+                if pa and pb:
+                    semis = 12.0 * math.log(rate) / math.log(2.0) if stretch_engine_name() == "vari" else float(pitch_st)
+                    ss = chroma_key_compat(pa, pb, semis)
+                    if ss is not None:
+                        s_key = 0.6 * s_key + 0.4 * ss
+            except Exception:
+                pass
         # TRANSITION-AWARE SELECTION: a candidate whose best seam would be
         # FORCED to long_fade (loose grid on either side, beatless seam, or
         # two sung passages over each other - the same gates plan_transition

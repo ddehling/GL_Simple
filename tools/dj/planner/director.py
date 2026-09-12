@@ -329,7 +329,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         # MOOD: the library's own tags as toggles - only songs carrying a lit tag may play (none lit = all)
         mood_h = QLabel("MOOD")
         mood_h.setProperty("dim", "true")
-        mood_h.setToolTip("the library's tags; light one or more and only songs carrying at least one of them may play (none lit = everything)")
+        mood_h.setToolTip("the tags of the songs in play (the chosen playlist, else the whole library); light one or more and only songs "
+                          "carrying at least one of them may play (none lit = everything); the chips follow the playlist box")
+        self.mood_h = mood_h
         right.addWidget(mood_h)
         self.mood_row = QGridLayout()
         self.mood_row.setSpacing(4)
@@ -449,28 +451,58 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._moments_mode = mode
 
     # -- mood chips -----------------------------------------------------------------------------------------------
-    def _fill_tags(self):
+    def _pool_tracks(self):
+        """The songs in play: the chosen playlist's tracks, else the library (the Director's when running)."""
+        lib = self._library()
+        name = self.songs_box.currentData()
+        if not name:
+            return lib, None
         try:
-            lib = self._library()
+            from lib.dj.setlist import get_setlist
+            sl = get_setlist(self._db(), name=name)
+            ids = {e["track_id"] for e in (sl or {}).get("entries", [])}
+            return [t for t in lib if t.id in ids], name
+        except Exception:
+            return lib, None
+
+    def _fill_tags(self, force=False):
+        """The MOOD chips follow the songs in play: rebuilt from the chosen playlist (else the library) whenever
+        the playlist box changes or the library reloads; lit chips stay lit when their tag is still there."""
+        try:
+            tracks, pool = self._pool_tracks()
         except Exception:
             return
         counts = {}
-        for t in lib:
+        for t in tracks:
             for tag in getattr(t, "all_tags", ()) or ():
                 counts[tag] = counts.get(tag, 0) + 1
-        top = [tag for tag, n in sorted(counts.items(), key=lambda kv: -kv[1]) if n >= 5][:36]
+        min_n = 5 if pool is None else 2
+        top = [tag for tag, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])) if n >= min_n][:36]
+        sig = (pool, len(tracks), tuple(top))
+        if not force and sig == getattr(self, "_tags_sig", None):
+            return
+        self._tags_sig = sig
+        lit = {tag for tag, b in self.mood_chips.items() if b.isChecked()}
+        for b in list(self.mood_chips.values()):
+            self.mood_row.removeWidget(b)
+            b.setParent(None)
+            b.deleteLater()
+        self.mood_chips = {}
         for i, tag in enumerate(top):
-            if tag in self.mood_chips:
-                continue
             b = QPushButton(tag.replace("_", " "))
             b.setCheckable(True)
             b.setProperty("kind", "small")
             b.setMinimumHeight(20)
             b.setMaximumHeight(22)
-            b.setToolTip(f"{counts[tag]} songs")
+            b.setToolTip(f"{counts[tag]} of the {len(tracks)} songs in play carry '{tag}'")
+            b.setChecked(tag in lit)
             b.clicked.connect(self._tags_changed)
             self.mood_row.addWidget(b, i // 6, i % 6)
             self.mood_chips[tag] = b
+        self.mood_h.setText(f"MOOD  ·  {len(tracks)} songs in {('playlist ' + pool) if pool else 'the library'}"
+                            + (f"  ·  {len(counts) - len(top)} rarer tags hidden" if len(counts) > len(top) else ""))
+        if lit and lit - set(top):
+            self._tags_changed()                      # a lit tag left with the pool: the filter follows
 
     def _tags_changed(self, *_):
         tags = [tag for tag, b in self.mood_chips.items() if b.isChecked()]
@@ -518,11 +550,90 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
         self._found_sig = None
+        self._fill_tags()                             # the Director's library is the one in play now
         self._fill_search()
+        self._midi_open()
         self._timer.start()
+
+    # -- nanoKONTROL2: the dials and moments under your hands -------------------------------------------------
+    # faders 1-8: ENERGY, TEMPO, PACE, SEAMS, VOCALS, VARIETY, BASS, LEVEL (each fader's travel is cut into the
+    # dial's options); knobs 1-8: MIXING, LAYERS, LOOPS, MOMENTS, FX, TONE, ARC, LENGTH.
+    # transport: PLAY = NEXT, STOP = HOLD, REC = DROP, CYCLE = BREAK, TRACK < > = BAD / GOOD,
+    # MARKER < > = arc back / ahead 10 %. Polled from the readout timer; never a thread.
+    MIDI_FADERS = ("energy", "tempo", "pace", "seams", "vocals", "variety", "bass", "level")
+    MIDI_KNOBS = ("mixing", "layers", "loops", "moments", "fx", "tone", "arc", "length")
+
+    def _midi_open(self):
+        self.midi = None
+        self._midi_note = ""
+        try:
+            from lib.midi_controller import KorgNanoKontrol2
+            ctl = KorgNanoKontrol2(auto_connect=True)
+            if ctl.input_device is not None:
+                self.midi = ctl
+        except Exception as e:  # noqa: BLE001
+            self._midi_note = f"nanoKONTROL2: {type(e).__name__}: {e}"
+            return
+        self._midi_note = "nanoKONTROL2 connected" if self.midi is not None else ""
+
+    def _midi_close(self):
+        if getattr(self, "midi", None) is not None:
+            try:
+                self.midi.disconnect()
+            except Exception:
+                pass
+        self.midi = None
+
+    def _midi_poll(self):
+        ctl = getattr(self, "midi", None)
+        if ctl is None or self.director is None:
+            return
+        try:
+            changes = ctl.update()
+        except Exception as e:  # noqa: BLE001
+            self._midi_note = f"nanoKONTROL2: {type(e).__name__}: {e}"
+            self.midi = None
+            return
+        if not changes:
+            return
+        from lib.dj.director import DIALS
+        d = self.director
+
+        def pick(name, val):
+            opts = DIALS[name]
+            opt = opts[min(len(opts) - 1, int(float(val) * len(opts)))]
+            if d.dials.get(name) != opt:
+                d.set_dial(name, opt)
+        for name, val in changes.items():
+            if name.startswith("slider_"):
+                i = int(name.split("_")[1])
+                if 1 <= i <= len(self.MIDI_FADERS):
+                    pick(self.MIDI_FADERS[i - 1], val)
+            elif name.startswith("knob_"):
+                i = int(name.split("_")[1])
+                if 1 <= i <= len(self.MIDI_KNOBS):
+                    pick(self.MIDI_KNOBS[i - 1], val)
+            elif val is True:                                   # transport buttons act on press
+                if name == "play":
+                    d.next()
+                elif name == "stop":
+                    d.hold()
+                elif name == "record":
+                    d.drop()
+                elif name == "cycle":
+                    d.break_()
+                elif name == "track_prev":
+                    d.rate(False)
+                elif name == "track_next":
+                    d.rate(True)
+                elif name == "marker_prev":
+                    d.arc_jump(max(0.0, d.arc_progress() - 0.1))
+                elif name == "marker_next":
+                    d.arc_jump(min(0.999, d.arc_progress() + 0.1))
 
     def close(self):
         self._timer.stop()
+        self._midi_close()
         if self.director is not None:
             try:
                 self.director.stop(fade_s=1.5)
@@ -541,10 +652,20 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # coming back to the tab: the chips and the list follow whatever the library is NOW (a rescan, new
+        # tags, a new playlist), and a cached library from before the planner had loaded its own is dropped
+        if getattr(self.planner, "library", None):
+            self._lib = None
+        QTimer.singleShot(0, self._fill_tags)
+        QTimer.singleShot(0, self._fill_search)
+
     def _pool_changed(self, *_):
         if self.director is not None:
             self.director.set_pool(self.songs_box.currentData())
         self._found_sig = None
+        self._fill_tags()
         self._fill_search()
 
     def _dial(self, name, opt):
@@ -646,6 +767,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         d = self.director
         if d is None:
             return
+        self._midi_poll()
         st = d.status()
         now, nxt = st.get("now"), st.get("next")
         mode = "one song at a time" if st.get("mode") == "one" else ("songs layered" if st.get("mode") else "-")
@@ -654,7 +776,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.state_lbl.setText(f"{mode}   ·   {st.get('theme')}   ·   {st.get('pool') or 'whole library'}"
                                + (f"   ·   switching to {st['switching']}…" if st.get("switching") else "")
                                + (f"   ·   ⚠ DOUBLED: {', '.join(doubled)} (two songs' {'stems' if doubled != ['mix'] else 'mixes'} at once)" if doubled else "")
-                               + (f"   ·   {last[:60]}" if last else ""))
+                               + (f"   ·   {last[:60]}" if last else "")
+                               + (f"   ·   {self._midi_note}" if getattr(self, "_midi_note", "") else ""))
         lv = st.get("last_verdict")
         if lv:
             age = time.time() - lv.get("t", 0)
@@ -711,6 +834,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._songs_tick = getattr(self, "_songs_tick", 0) + 1
         if self._songs_tick % 12 == 0:
             self._fill_search()
+        if self._songs_tick % 40 == 0:
+            self._fill_tags()                         # the library may have been rescanned or retagged meanwhile
         err = st.get("error")
         self.err_lbl.setText(f"ERROR {err}" if err else "")
         self.canvas.follow(d.bar())

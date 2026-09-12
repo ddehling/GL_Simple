@@ -2717,8 +2717,24 @@ class EnvironmentalSystem:
                 elif action == 'stop':
                     self._dj_stop()
                     self._remix_stop()
+                    self._director_stop()
                 elif action == 'remix_start':
                     self._remix_start()
+                elif action == 'director_start':
+                    self._director_start()
+                elif action.startswith('director_'):
+                    d = getattr(self, '_director', None)
+                    if d is None:
+                        continue
+                    if action == 'director_dial':
+                        d.set_dial(arg['name'], arg['value'])
+                    elif action == 'director_act':
+                        {"next": d.next, "hold": d.hold, "drop": d.drop,
+                         "break": d.break_}.get(str(arg), lambda: None)()
+                    elif action == 'director_rate':
+                        d.rate(bool(arg))
+                    elif action == 'director_arc':
+                        d.arc_jump(float(arg))
                 elif action.startswith('remix_'):
                     rc = getattr(self, '_remix', None)
                     if rc is None:
@@ -2831,7 +2847,32 @@ class EnvironmentalSystem:
                 print(f"[DJ] action '{action}' failed: {e}")
 
         # Mirror into the web snapshot + scheduler outstate.
-        if getattr(self, '_remix', None) is not None:
+        if getattr(self, '_director', None) is not None:
+            # THE DIRECTOR: the page's Director panel renders from `director`
+            # (dials, moments, the arc, WHY); the visuals get the arc heat
+            # and the playing engine's outstate.
+            d = self._director
+            try:
+                dst = d.status()
+            except Exception as e:
+                dst = {"error": f"status: {e}"}
+            info = {"available": True, "active": False, "state": "idle",
+                    "director_active": True, "director": dst,
+                    "theme": self.dj_cfg.get("theme", "groove"),
+                    "music_dir": self._dj_music_dir_display(),
+                    "error": dst.get("error") or self._dj_last_error}
+            info.update(self._dj_idle_steer_info())
+            try:
+                arc = dst.get("arc") or {}
+                self.scheduler.state["dj_arc_phase"] = arc.get("progress")
+                self.scheduler.state["dj_arc_heat"] = arc.get("target")
+                src = d.rc if d.rc is not None else d.system
+                if src is not None and hasattr(src, "outstate_keys"):
+                    for k, v in src.outstate_keys().items():
+                        self.scheduler.state[k] = v
+            except Exception:
+                pass
+        elif getattr(self, '_remix', None) is not None:
             # REMIX mode: the automixer's page stays idle (active False) and
             # the page's Remix panel renders from `remix`; the visuals get
             # the conductor's outstate in the automixer's vocabulary.
@@ -3250,6 +3291,81 @@ class EnvironmentalSystem:
                 print(f"[DJ] analyzer source switch failed: {e}")
         self.scheduler.state['dj_active'] = True
         print("[DJ] REMIX live on the show's engine")
+
+    # -- THE DIRECTOR on the show (lib/dj/director.py) ----------------------------
+    def _director_start(self):
+        """The Director on the show's engine: the autoDJ as it is, the stem
+        conductor when LAYERS asks for it, both submixes on the engine, the
+        same soundtrack takeover as the automixer."""
+        if getattr(self, '_director', None) is not None:
+            return
+        self._dj_stop()
+        self._remix_stop()
+        from lib.dj import resolve_music_dir
+        from lib.dj.director import Director
+        engine = self.scheduler.state.get("soundengine")
+        eng_rate = int(getattr(engine, "sample_rate", 44100)) if engine else 44100
+        if eng_rate != 44100:
+            self._dj_last_error = f"the Director needs a 44100 Hz engine ({eng_rate} Hz)"
+            print(f"[DJ] {self._dj_last_error}")
+            return
+        if engine is not None:
+            try:
+                engine.stop_all(duration=1.5)
+                engine.oneshots_muted = True
+            except Exception:
+                pass
+        music = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
+        try:
+            d = Director(music, engine=None, theme=self.dj_cfg.get("theme", "groove"),
+                         attach=(engine.attach_track if engine is not None else None))
+            ok = d.start(threaded=True)
+        except Exception as e:
+            ok, d = False, None
+            self._dj_last_error = f"director start failed: {e}"
+        if not ok:
+            self._dj_last_error = (d.last_error if d else None) \
+                or self._dj_last_error or "the Director failed to start"
+            print(f"[DJ] {self._dj_last_error}")
+            if engine is not None:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
+            return
+        self._director = d
+        self._dj_last_error = ""
+        try:
+            engine.stop_ambient()
+        except Exception:
+            pass
+        if self.analyzer is not None:
+            self._dj_prev_source = getattr(self.analyzer, "_active_source", None)
+            try:
+                self.set_audio_source("internal")
+            except Exception as e:
+                print(f"[DJ] analyzer source switch failed: {e}")
+        self.scheduler.state['dj_active'] = True
+        print("[DJ] THE DIRECTOR live on the show's engine")
+
+    def _director_stop(self):
+        d = getattr(self, '_director', None)
+        if d is None:
+            return
+        try:
+            d.stop(fade_s=1.5)
+        except Exception as e:
+            print(f"[DJ] director stop: {e}")
+        self._director = None
+        if self.analyzer is not None and self._dj_prev_source:
+            self.set_audio_source(self._dj_prev_source)
+            self._dj_prev_source = None
+        self.scheduler.state['dj_active'] = False
+        engine = self.scheduler.state.get("soundengine")
+        if engine is not None:
+            try:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
+            except Exception:
+                pass
 
     def _remix_stop(self):
         rc = getattr(self, '_remix', None)

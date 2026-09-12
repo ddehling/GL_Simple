@@ -572,7 +572,25 @@ class RemixConductor:
                 break
         return best
 
-    def _tonal_ok(self, deck, lane):
+    def _pair_fit(self, a, b, at=None):
+        """Harmonic fit 0.3..1 of two live songs as they sound NOW: the Camelot tier of their (shifted) keys,
+        refined by the measured chroma of the sections each is in at clock `at` when both have one (a bed in
+        its breakdown and a voice at its hook are chords, not keys). None when neither is known."""
+        cam = _compat(a.key(), b.key()) if (a.track.camelot and b.track.camelot) else None
+        sc = None
+        if at is not None and a.track.sec_chroma and b.track.sec_chroma:
+            pa = a.track.sec_chroma_at(self._song_time_at(a.deck, at))
+            pb = b.track.sec_chroma_at(self._song_time_at(b.deck, at))
+            if pa and pb:
+                from lib.dj.brain import chroma_key_compat
+                sc = chroma_key_compat(pa, pb, semitones=float(b.shift - a.shift))
+        if cam is None:
+            return sc
+        if sc is None:
+            return cam
+        return 0.45 * cam + 0.55 * sc
+
+    def _tonal_ok(self, deck, lane, at=None):
         """May `lane` cross to the song on `deck` next to the songs on the other tonal lanes?"""
         if lane not in TONAL:
             return True
@@ -586,9 +604,10 @@ class RemixConductor:
             if od is None or od == deck:
                 continue
             o = self.songs.get(od)
-            if o is None or not o.track.camelot or not song.track.camelot:
+            if o is None:
                 continue
-            if _compat(o.key(), song.key()) < CLASH_BELOW:
+            fit = self._pair_fit(o, song, at)
+            if fit is not None and fit < CLASH_BELOW:
                 return False
         return True
 
@@ -626,7 +645,7 @@ class RemixConductor:
         return self._singing(s, self._song_time_at(deck, at)) is False
 
     def _lane_ok(self, deck, lane, at):
-        return self._tonal_ok(deck, lane) and (lane != "vocals" or self._vocal_ok(deck, at))
+        return self._tonal_ok(deck, lane, at) and (lane != "vocals" or self._vocal_ok(deck, at))
 
     def _takeable(self, lane):
         """May a move take `lane` from its holder? Not when it is the holder's last lane and the holder is
@@ -1055,7 +1074,30 @@ class RemixConductor:
                     return max(0.0, d)
         return None
 
-    def _bed_to(self, d, at, d_bars):
+    def _hook_in_bars(self, deck, at, look_bars):
+        """Bars of the song on `deck` until its next HOOK occurrence starts (0 while inside one that has just
+        begun), or None without a measured hook or none within `look_bars`."""
+        s = self.songs.get(deck)
+        h = s.track.hook if s is not None else None
+        if not h:
+            return None
+        t_at = self._song_time_at(deck, at)
+        bar = self._bar_s(s.track, t_at)
+        for st in (h.get("starts") or [h["start_s"]]):
+            d = (st - t_at) / max(bar, 1e-6)
+            if -DROP_LOOK_BARS <= d <= look_bars + 0.05:
+                return max(0.0, d)
+        return None
+
+    def _payoff_in_bars(self, deck, at, look_bars):
+        """(bars, what) to the song's nearest payoff within the window: its drop or its hook; (None, None)."""
+        d = self._drop_in_bars(deck, at, look_bars)
+        h = self._hook_in_bars(deck, at, look_bars)
+        if h is not None and (d is None or h <= d):
+            return h, "hook"
+        return d, ("drop" if d is not None else None)
+
+    def _bed_to(self, d, at, d_bars, what="drop"):
         """The BED (drums + bass together) passes to the voice on `d`. With `strip_before_bed`, the old
         bed's drums and bass drop out STRIP_BARS before the landing - a breakdown of the room - and the new
         drums and bass land as a cut on the bar (the release); else the two lanes cross on the bar. When
@@ -1064,7 +1106,7 @@ class RemixConductor:
         bar_c = self._bar_clock()
         land = at + int(round(d_bars)) * bar_c if d_bars else at
         strip = bool(self.strip_before_bed) and old is not None and old in self.songs and old != d
-        why = "at its drop" if d_bars is not None else "after its phrases as a voice"
+        why = f"at its {what}" if d_bars is not None else "after its phrases as a voice"
         tag = None
         if strip:
             strip_at = land - STRIP_BARS * bar_c
@@ -1180,11 +1222,11 @@ class RemixConductor:
                     return tag
                 self.wait_why = f"{s.track.title[:28]}'s bass would clash with the room: it stays a voice"
                 continue
-            d_bars = self._drop_in_bars(d, at, self.change_bars)
+            d_bars, what = self._payoff_in_bars(d, at, self.change_bars)
             if d_bars is None and heard < VOICE_MAX_PHRASES * self.change_bars and not bed_out:
-                self.wait_why = f"{s.track.title[:28]} waits for its drop before it takes the bed"
+                self.wait_why = f"{s.track.title[:28]} waits for its {'hook or drop' if s.track.hook else 'drop'} before it takes the bed"
                 continue
-            return self._bed_to(d, at, d_bars)
+            return self._bed_to(d, at, d_bars, what or "drop")
         # 3. a staged song arrives as a voice over the bed - once the bed has SETTLED (heard as itself for
         #    SETTLE_PHRASES), never while the bed is building to its drop; a breakdown of the bed or a bed
         #    running out opens the door early
@@ -1420,7 +1462,11 @@ class RemixConductor:
                 if od is None or od == deck or od not in self.songs:
                     continue
                 o = self.songs[od]
-                if o.track.camelot and s.track.camelot and _compat(o.key(), s.key()) < CLASH_BELOW:
+                fit = self._pair_fit(o, s, at)
+                if fit is not None and fit < CLASH_BELOW:
+                    cam = _compat(o.key(), s.key()) if (o.track.camelot and s.track.camelot) else None
+                    if cam is not None and cam >= CLASH_BELOW:
+                        return f"the chords clash right now with the {other} of {o.track.title[:24]} (keys {o.key()} / {s.key()} agree, the sections do not)"
                     return f"key clash with the {other} of {o.track.title[:24]} ({o.key()} vs {s.key()})"
         if lane == "vocals" and self._singing(s, self._song_time_at(deck, at)) is False:
             return "not singing there now"
@@ -2014,11 +2060,12 @@ class RemixConductor:
                     continue
                 s = self.songs[d]
                 heard = bar - s.voice_since if s.voice_since is not None else 0
-                drop = self._drop_in_bars(d, at, 4 * self.change_bars)
+                drop, what = self._payoff_in_bars(d, at, 4 * self.change_bars)
                 out["voices"].append({"deck": d, "title": s.track.title, "lane": ln, "heard_bars": heard, "leaving": bool(s.was_bed),
                                       "may_take_bed_in": max(0, VOICE_PHRASES * self.change_bars - heard),
                                       "must_take_bed_in": max(0, VOICE_MAX_PHRASES * self.change_bars - heard),
-                                      "drop_in_bars": (None if drop is None else round(drop, 1)), "kind": self._kind_at(d, at)})
+                                      "drop_in_bars": (None if drop is None else round(drop, 1)), "payoff": what,
+                                      "kind": self._kind_at(d, at), "hook": bool(s.track.hook)})
             if self._land_k is not None:
                 out["landing_in_bars"] = max(0, self._land_k - bar)
         except Exception as e:  # noqa: BLE001

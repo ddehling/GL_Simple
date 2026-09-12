@@ -173,6 +173,9 @@
             <button class="btn go" id="dj-remix-start"
                     title="REMIX: two or three songs at once, four stem lanes, a move every phrase">
                 ✱ REMIX</button>
+            <button class="btn go" id="dj-director-start"
+                    title="THE DIRECTOR: the autoDJ with dials for how the night plays - layers, mixing, arc, energy, pace, moments - and the moments under your thumb">
+                ★ DIRECTOR</button>
             <button class="btn stop hidden" id="dj-stop">■ STOP</button>
             <button class="btn skip hidden" id="dj-skip">⏭ SKIP</button>
             <button class="btn hidden" id="dj-auto">AUTOPILOT</button>
@@ -302,6 +305,31 @@
                 <span class="now-sub" id="dj-rx-verdicts" style="align-self:center"></span>
             </div>
             <div id="dj-rx-moves" class="now-sub" style="margin-top:8px;max-height:160px;overflow:auto;line-height:1.4"></div>
+        </div>
+
+        <!-- THE DIRECTOR (active in director mode): the arc, the dials, the moments, why -->
+        <div class="section-panel hidden" id="dj-director">
+            <div class="section-header"><h3>Director</h3></div>
+            <div class="now-sub" id="dj-dr-state"></div>
+            <canvas id="dj-dr-arc" height="56" title="the night's arc: the plan, what played, where we are - tap = we are here"
+                    style="width:100%;display:block;border-radius:8px;background:#15151c;margin:6px 0"></canvas>
+            <div id="dj-dr-now" style="font-weight:bold;font-size:1.1em"></div>
+            <div class="now-sub" id="dj-dr-next"></div>
+            <div class="now-sub" id="dj-dr-intent" style="margin-top:4px"></div>
+            <div class="now-sub" id="dj-dr-lanes"></div>
+            <div class="now-sub" id="dj-dr-why" style="opacity:.8;margin-top:4px;line-height:1.35"></div>
+            <div class="transport" style="margin-top:8px">
+                <button class="btn skip" id="dj-dr-next-btn" title="one song: move on at the next phrase · layered: the next lane move">▶▶ NEXT</button>
+                <button class="btn" id="dj-dr-hold" title="stay on this: the next seam or move waits a phrase">STAY</button>
+                <button class="btn go" id="dj-dr-drop" title="one song: build and land on the drop · layered: every part to the newest song">✦ DROP</button>
+                <button class="btn" id="dj-dr-break" title="layered: strip to one part for four bars">BREAK</button>
+            </div>
+            <div class="transport" style="margin-top:6px">
+                <button class="btn" id="dj-dr-good">👍 GOOD</button>
+                <button class="btn" id="dj-dr-bad">👎 BAD</button>
+                <span class="now-sub" id="dj-dr-verdict" style="align-self:center;line-height:1.3"></span>
+            </div>
+            <div id="dj-dr-dials" style="margin-top:8px"></div>
         </div>
 
         <!-- The night (active) -->
@@ -805,17 +833,21 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             }
             const on = !!dj.active;
             const rx = !!dj.remix_active;
+            const dr = !!dj.director_active;
             $("dj-transport").hidden = false;
-            show($("dj-steer"), true);
+            show($("dj-steer"), !dr);
             show($("dj-now"), on);
-            show($("dj-nightcard"), true);
+            show($("dj-nightcard"), !dr);
             show($("dj-remix"), rx);
             if (rx) renderRemix(dj.remix || {});
+            show($("dj-director"), dr);
+            if (dr) renderDirector(dj.director || {});
 
             // Transport buttons.
-            show($("dj-start"), !on && !rx);
-            show($("dj-remix-start"), !on && !rx);
-            show($("dj-stop"), on || rx);
+            show($("dj-start"), !on && !rx && !dr);
+            show($("dj-remix-start"), !on && !rx && !dr);
+            show($("dj-director-start"), !on && !rx && !dr);
+            show($("dj-stop"), on || rx || dr);
             show($("dj-skip"), on);
             show($("dj-auto"), on);
             $("dj-auto").classList.toggle("on", !!dj.autopilot);
@@ -1264,6 +1296,71 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                         {modifier: "master_volume",
                          value: parseFloat($("dj-vol").value)});
         $("dj-reroll").onclick = () => emit("reroll");
+
+        // ---------- THE DIRECTOR ----------
+        $("dj-director-start").onclick = () => emit("director_start");
+        $("dj-dr-next-btn").onclick = () => emit("director_act", "next");
+        $("dj-dr-hold").onclick = () => emit("director_act", "hold");
+        $("dj-dr-drop").onclick = () => emit("director_act", "drop");
+        $("dj-dr-break").onclick = () => emit("director_act", "break");
+        $("dj-dr-good").onclick = () => emit("director_rate", true);
+        $("dj-dr-bad").onclick = () => emit("director_rate", false);
+        $("dj-dr-arc").onclick = (ev) => {
+            const c = $("dj-dr-arc"), r = c.getBoundingClientRect();
+            emit("director_arc", Math.max(0, Math.min(0.999, (ev.clientX - r.left - 10) / Math.max(1, r.width - 20))));
+        };
+        let drDialsSig = "", drTouched = 0;
+        function renderDirector(d) {
+            const dials = d.dials || {}, menu = d.dials_menu || {};
+            const doubled = (d.doubled || []).length ? ` · ⚠ DOUBLED: ${d.doubled.join(", ")}` : "";
+            const last = (d.events || []).slice(-1)[0];
+            $("dj-dr-state").textContent = `${d.mode === "one" ? "one song at a time" : (d.mode ? "songs layered" : "starting…")} · ${d.theme || ""}`
+                + (d.switching ? ` · switching to ${d.switching}…` : "") + doubled + (last ? ` · ${last[1]}` : "") + (d.error ? ` · ⚠ ${d.error}` : "");
+            const now = d.now || {}, nx = d.next || {};
+            $("dj-dr-now").textContent = now.title ? `${now.title}  —  ${now.artist || ""}  ${Math.round(now.bpm || 0)} bpm ${now.camelot || ""}` : "…";
+            $("dj-dr-next").textContent = nx.title ? `NEXT ${nx.title} — ${nx.artist || ""}` + (nx.eta_s != null ? ` in about ${Math.round(nx.eta_s)} s` : "") + (nx.how ? ` · ${nx.how}` : "") : "";
+            $("dj-dr-intent").textContent = d.intent || "";
+            const lanes = d.lanes || {};
+            $("dj-dr-lanes").textContent = Object.keys(lanes).length ? Object.entries(lanes).map(([ln, t]) => `${ln}: ${t || "-"}`).join("   ") : "";
+            $("dj-dr-why").innerHTML = (d.why || []).map((w) => `<div>${w}</div>`).join("");
+            const lv = d.last_verdict;
+            $("dj-dr-verdict").textContent = lv ? `${lv.up ? "👍" : "👎"} ${lv.what || ""}` + (lv.learn ? ` → ${lv.learn}` : "") + (lv.did ? ` → ${lv.did}` : "") : "";
+            // the dials as button groups, rebuilt only when the menu changes; the lit one follows the server
+            const sig = JSON.stringify(menu);
+            if (sig !== drDialsSig) {
+                drDialsSig = sig;
+                $("dj-dr-dials").innerHTML = Object.entries(menu).map(([name, opts]) =>
+                    `<div style="display:flex;gap:4px;align-items:center;margin:3px 0;flex-wrap:wrap"><span class="now-sub" style="width:64px;text-transform:uppercase">${name}</span>`
+                    + opts.map((o) => `<button class="theme-btn" data-dial="${name}" data-opt="${o}">${o}</button>`).join("") + `</div>`).join("");
+                for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
+                    b.onclick = () => { drTouched = Date.now(); emit("director_dial", {name: b.dataset.dial, value: b.dataset.opt}); };
+            }
+            for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
+                b.classList.toggle("on", dials[b.dataset.dial] === b.dataset.opt);
+            drawDirectorArc(d.arc || {});
+        }
+        function drawDirectorArc(a) {
+            const c = $("dj-dr-arc"), ctx = c.getContext("2d");
+            const W = c.width = c.clientWidth || 600, H = c.height, pad = 10;
+            ctx.clearRect(0, 0, W, H);
+            const curve = a.curve || [];
+            if (!curve.length) { ctx.fillStyle = "#9a9aa6"; ctx.font = "12px sans-serif"; ctx.fillText("ARC", pad, 14); return; }
+            const xy = (p, e) => [pad + p * (W - 2 * pad), (H - 8) - e * (H - 26)];
+            ctx.beginPath(); ctx.moveTo(...xy(0, 0));
+            for (const [p, e] of curve) ctx.lineTo(...xy(p, e));
+            ctx.lineTo(...xy(1, 0)); ctx.closePath(); ctx.fillStyle = "rgba(74,122,217,0.28)"; ctx.fill();
+            ctx.beginPath(); curve.forEach(([p, e], i) => { const [x, y] = xy(p, e); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+            ctx.strokeStyle = "#7da2e3"; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = "#f0c85a";
+            for (const [pp, e] of (a.played || [])) { const [x, y] = xy(pp, e); ctx.beginPath(); ctx.arc(x, y, 3, 0, 6.29); ctx.fill(); }
+            const p = a.progress || 0, [x] = xy(p, 0);
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, H - 8); ctx.stroke();
+            if (a.target != null) { const [tx, ty] = xy(p, a.target); ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(tx, ty, 3.5, 0, 6.29); ctx.fill(); }
+            ctx.fillStyle = "#e6e6ea"; ctx.font = "12px sans-serif";
+            const len = a.length_s || 1, el = a.elapsed_s || 0;
+            ctx.fillText(`ARC ${a.shape || ""} · ${a.word || ""} · ${Math.round(el / 60)} of ${Math.round(len / 60)} min`
+                + (a.target != null ? ` · target ${a.target.toFixed(2)}` : "") + (a.peak_in_s > 60 ? ` · peak in ${Math.round(a.peak_in_s / 60)} min` : ""), pad, 13);
+        }
 
         // ---------- REMIX ----------
         $("dj-remix-start").onclick = () => emit("remix_start");

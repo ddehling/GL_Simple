@@ -272,7 +272,8 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
 # every grid-refine rescan silently WIPED the fine demucs vocal curves, and
 # the next vocal-curves pass re-measured all of them on GPU - the "scanning
 # tools redo everything" loop.
-_KEEP_AXES_KEYS = ("vocal", "vocal_src", "vc", "vc_hop", "grid_refined_v")
+_KEEP_AXES_KEYS = ("vocal", "vocal_src", "vc", "vc_hop", "grid_refined_v",
+                   "secchroma", "hook", "measure_v")      # lib/dj/measure.py: from the stems, minutes per library
 
 
 def _vocal_snapshot(db, abs_path):

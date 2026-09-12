@@ -1237,9 +1237,14 @@ class WebController:
                       # conductor's steering, performance actions and verdicts.
                       'remix_start', 'remix_blend', 'remix_vocals',
                       'remix_change', 'remix_tempo', 'remix_lean',
-                      'remix_act', 'remix_rate'}
+                      'remix_act', 'remix_rate',
+                      # THE DIRECTOR (lib/dj/director.py on the show's engine):
+                      # dials, moments, verdicts, the arc.
+                      'director_start', 'director_dial', 'director_act',
+                      'director_rate', 'director_arc'}
         REMIX_ACTS = ('next', 'hold', 'unhold', 'drop', 'break', 'loop4',
                       'loop8', 'unloop', 'save', 'recall')
+        DIRECTOR_ACTS = ('next', 'hold', 'drop', 'break')
 
         def queue_dj_action(data):
             """Validate + clamp one DJ control action and queue it for the
@@ -1339,6 +1344,26 @@ class WebController:
                     return False
             elif action == 'remix_rate':
                 arg = bool(arg)
+            elif action == 'director_dial':
+                # {name, value}: both must be known to the Director's DIALS
+                try:
+                    from lib.dj.director import DIALS as _DD
+                    name, val = str(arg.get('name')), str(arg.get('value'))
+                    if name not in _DD or val not in _DD[name]:
+                        return False
+                    arg = {'name': name, 'value': val}
+                except Exception:
+                    return False
+            elif action == 'director_act':
+                if arg not in DIRECTOR_ACTS:
+                    return False
+            elif action == 'director_rate':
+                arg = bool(arg)
+            elif action == 'director_arc':
+                try:
+                    arg = max(0.0, min(0.999, float(arg)))
+                except (TypeError, ValueError):
+                    return False
             elif action == 'flavor':
                 # Sanitize: known sections only, str tags, weights 0..1.
                 if not isinstance(arg, dict):

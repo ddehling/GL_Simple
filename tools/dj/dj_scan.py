@@ -287,6 +287,11 @@ def main():
                     help="ONLY re-run the ML vocal pass, upgrading tracks "
                          "measured at the old coarse 24s hop to the fine "
                          "8s vocal curve (no audio re-analysis)")
+    ap.add_argument("--measure", action="store_true",
+                    help="ONLY measure structure from the stems on disk: per-section chroma "
+                         "(the chords in each part) and the HOOK (the loudest, most repeated sung "
+                         "passage); resumable, no GPU, no re-analysis")
+    ap.add_argument("--force-measure", action="store_true", help="with --measure: redo measured tracks too")
     args = ap.parse_args()
     if args.track:
         return cmd_track(args)
@@ -296,7 +301,28 @@ def main():
         return cmd_retag(args)
     if args.revocals:
         return cmd_revocals(args)
+    if args.measure:
+        return cmd_measure(args)
     return cmd_scan(args)
+
+
+def cmd_measure(args):
+    from lib.dj.db import LibraryDB
+    from lib.dj.measure import measure_pass
+    root = resolve_music_dir(args.dir)
+    db = LibraryDB(root)
+    print(f"Measuring section chroma + hooks from the stems in {root}", flush=True)
+
+    def cb(d, t, n):
+        _bar(d, t, n)
+        print(f"\nPROGRESS {d} {t} {d} 0 {n[:40]}", flush=True)
+
+    v = measure_pass(db, root, progress_cb=cb, force=args.force_measure)
+    print()
+    print(f"measured {v.get('measured', 0)} of {v.get('todo', 0)} to do ({v.get('with_stems', 0)} tracks with stems)"
+          + (f", {v['errors']} errors" if v.get("errors") else ""))
+    db.close()
+    return 0
 
 
 if __name__ == "__main__":
