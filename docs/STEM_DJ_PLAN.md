@@ -373,6 +373,29 @@ fills the lanes from the bar it started; layered: every lane change is a clip fr
 rests dark), the playhead on the Director's bar clock across both engines, and the plan ahead as dashed
 ghosts (the autoDJ's next song at the seam's projected bar; staged songs on their entry lane).
 
+**The Director at the controls (2026-09-12, the user's first hours on it):** "it shouldn't be taking so
+long to switch directions. I'm not trying to steer a container ship" → any dial turn in one-song mode
+brings the next seam forward once the record has played 45 s (pace re-draws the record's hold at once);
+layered, a dial turn forces a move on the next bar; the handover song is kept WARM in the other engine so
+switching layers is a bar or two (2–4 s measured, 7–9 s back); the conductor keeps one song staged and
+ready. "It isn't clear why the DJ is doing things, or how I can steer it" → WHY (the next song's reason,
+the seam and why, a refused dial named with what plays instead; layered, the last move's reason and why a
+song is staged) and WHAT YOUR DIALS ARE DOING RIGHT NOW (per dial, the concrete effect this moment); a
+pinned cut is BINDING (a refused drop cut becomes a phrase cut through anything but a missing grid; 80
+pairs: 55 drop cuts + 14 phrase cuts, 11 fades for tempo clash / off-meter / beatless). "We probably need
+several more controls" → TEMPO (slower / hold / faster), SEAMS (quick / normal / long mixes), VOCALS (none /
+some / lots), VARIETY (close / varied / wild) - ten dials, each with its one-line caption. "It isn't clear
+what these do" → the moments say what they do in the mode we are in ("NEXT SONG - move on at the next
+phrase" / "NEXT MOVE - the conductor's next lane move on the next bar"; "STAY"; "DROP - build and land on
+this song's drop" / "every part to the newest song"; "BREAK - strip to one part for four bars"; "THAT WAS
+GOOD - the DJ does more of it"). "The song search shows nothing when there is no text, and it doesn't
+show if songs are likely to be rejected" → the list shows the whole pool with an empty box, ranked by fit
+to what is playing, each row ✓ mixable from here or ✗ would be rejected with the reason (tempo out of
+reach, key clash, loose grid, no stems), refreshed as the song changes. "Looping is bad" → eight-bar
+holds on grooves (lots: also breakdowns) at phrase boundaries, released on the bar; one-song mode biases
+only the clean loop entry. Open: the right column is tall (ten dials with captions); the remaining fade
+cases under a pinned cut; the user's verdict on the handover's sound.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
