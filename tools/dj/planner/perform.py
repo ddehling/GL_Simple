@@ -73,12 +73,17 @@ QWidget#perform QListWidget { background: #16161b; color: #dcdce2; border: 1px s
 QWidget#perform QSlider::groove:horizontal { height: 10px; background: #2a2a33; border-radius: 5px; }
 QWidget#perform QSlider::sub-page:horizontal { background: #4a7ad9; border-radius: 5px; }
 QWidget#perform QSlider::handle:horizontal { width: 20px; margin: -6px 0; background: #b9cdf5; border-radius: 10px; }
+QWidget#perform QLabel { color: #e6e6ea; }
 QWidget#perform QLabel[dim="true"] { color: #9a9aa6; }
 QWidget#perform QLabel[chip="true"] { color: #e6e6ea; background: #22222a; border: 1px solid #33333e; border-radius: 5px; padding: 3px 8px; }
 QWidget#perform QToolButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 1px 5px; font-size: 12pt; }
 QWidget#perform QToolButton:hover { border-color: #3a3a46; }
 QWidget#perform QToolButton:checked { background: #3b5b8a; }
 QWidget#perform QSplitter::handle { background: #22222a; }
+QWidget#perform QScrollArea { background: transparent; border: none; }
+QWidget#perform QScrollArea > QWidget > QWidget { background: #121216; }
+QWidget#perform QScrollBar:vertical { background: #1a1a20; width: 10px; }
+QWidget#perform QScrollBar::handle:vertical { background: #3a3a46; border-radius: 5px; min-height: 24px; }
 """
 
 

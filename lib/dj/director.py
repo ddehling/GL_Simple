@@ -35,8 +35,22 @@ DIALS = {
     "variety": ("close", "varied", "wild"),
     "loops": ("off", "some", "lots"),
 }
+DIALS.update({
+    # how the music is PLAYED, not only how it transitions
+    "bass": ("flat", "boost", "heavy"),
+    "tone": ("dark", "neutral", "bright"),
+    "level": ("quiet", "normal", "loud"),
+    "moments": ("rare", "some", "lots"),
+    "fx": ("none", "some", "lots"),
+})
 DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold", "pace": "normal",
-            "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off"}
+            "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off",
+            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "some"}
+BASS_LOW = {"flat": 1.0, "boost": 1.3, "heavy": 1.6}                # the mix bus EQ, low band (< 200 Hz)
+TONE_HIGH = {"dark": 0.7, "neutral": 1.0, "bright": 1.3}             # the mix bus EQ, high band (> 2.5 kHz)
+LEVEL_GAIN = {"quiet": 0.6, "normal": 0.85, "loud": 1.0}             # the mix bus gain
+MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
+FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
 TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
 TEMPO_LEAN_X = {"slower": -0.03, "hold": 0.0, "faster": 0.03}        # the conductor's clock
 SEAM_SPEED = {"quick": 0.5, "normal": 1.0, "long": 2.0}              # the autoDJ's blend length factor / the crossfade
@@ -67,6 +81,7 @@ class Director:
         self.theme = theme
         self.dials = dict(DEFAULTS)
         self.pool_name = None
+        self.tags = []                   # MOOD: only songs carrying one of these may play (empty = all)
         self.up_next = []                # track ids, in order
         self.system = None               # the autoDJ, when layers = one
         self.rc = None                   # the conductor, when layers = two / three
@@ -101,6 +116,7 @@ class Director:
         # reusing songs" - every handover built a fresh brain that knew nothing of the other's plays)
         self.played = []                 # (track_id, when)
         self._noted = set()
+        self.last_verdict = None         # what the last GOOD / BAD did (the tab shows it)
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -189,9 +205,16 @@ class Director:
         sysm.set_bpm_lean(TEMPO_LEAN_BPM[d["tempo"]])
         sysm.set_pace(PACE_X[d["pace"]])
         sysm.set_mix_speed(SEAM_SPEED[d["seams"]])
-        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}})
+        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}, "require_tags": list(self.tags)})
         sysm.set_persona(VARIETY_PERSONA[d["variety"]])
         sysm.set_loop_bias(LOOP_LEVEL[d["loops"]])
+        try:
+            fx = FX_LEVEL[d["fx"]]
+            for k in ("filter_sweep", "echo_out"):
+                sysm.brain.style_fb[k] = 0.3 if fx == 0.0 else (1.0 if fx < 1.0 else 2.5)
+        except Exception:
+            pass
+        self._apply_bus(sysm.submix)
         if self.pool_name:
             sysm.load_setlist(self.pool_name, mode="pool")
 
@@ -201,6 +224,11 @@ class Director:
         if not getattr(rc, "_seeded", False):
             self._seed_brain(rc.brain)
             rc._seeded = True
+        rc.policy = "arrangement"                     # a bed and voices, one change at a time
+        try:
+            rc.brain.set_require_tags(self.tags)
+        except Exception:
+            pass
         rc.set_auto(1.0)
         rc.set_cross_beats(MIX_CROSS[d["mixing"]] * SEAM_SPEED[d["seams"]])
         rc.set_blend(LAYER_BLEND.get(d["layers"], 0.3))
@@ -209,6 +237,8 @@ class Director:
         rc.set_tempo_lean(TEMPO_LEAN_X[d["tempo"]])
         rc.set_change_bars(PACE_BARS[d["pace"]])
         rc.set_vocal_freedom(VOCAL_FREEDOM[d["vocals"]])
+        rc.fx_level = FX_LEVEL[d["fx"]]
+        self._apply_bus(rc.submix)
         try:
             from lib.dj.persona import PERSONAS
             name = VARIETY_PERSONA[d["variety"]]
@@ -342,6 +372,17 @@ class Director:
     def clear_queue(self):
         self.up_next = []
 
+    def set_tags(self, tags):
+        """MOOD: a hard tag filter on picks in both engines (empty = everything). Heard on the next pick."""
+        self.tags = [str(t) for t in (tags or [])]
+        if self.system is not None:
+            self._apply_to_system(self.system)
+            if self.system.current is not None and self._played_s() >= 45.0:
+                self.system.request_reroll()
+        if self.rc is not None:
+            self._apply_to_conductor(self.rc)
+        self._event("mood: " + (", ".join(self.tags) if self.tags else "everything"))
+
     def describe_dials(self):
         d = self.dials
         return (f"{d['layers']} song{'s' if d['layers'] != 'one' else ''} · {d['mixing']} mixing · energy {d['energy']} · "
@@ -378,11 +419,36 @@ class Director:
         return False
 
     def rate(self, up):
+        """GOOD / BAD: say WHAT was rated, what the DJ learns from it, and - on a BAD - change the music
+        now (a fresh move layered; the next seam brought forward in one-song mode), so the button is
+        visibly consequential."""
+        up = bool(up)
+        info = {"up": up, "t": time.time(), "what": None, "learn": None, "did": None, "style": None}
         if self.system is not None:
-            self.system.seam_feedback(bool(up))
+            h = next((x for x in reversed(self.system._history) if x.get("via") != "start"), None)
+            style = h.get("via") if h else None
+            self.system.seam_feedback(up)
+            info["what"] = f"the mix into {h.get('title')} ({style})" if h else "the last mix"
+            info["style"] = style
+            info["learn"] = (f"tonight {style} seams are {'favoured' if up else 'held back'} (the style weight rebuilds from your verdicts, "
+                             f"and the pair is remembered as {'good' if up else 'rough'})" if style else "stored")
+            if not up and self.system.current is not None and self._played_s() >= 45.0:
+                self.system.request_skip()
+                info["did"] = "moving on to the next song at the next phrase"
         if self.rc is not None:
-            self.rc.rate_last(bool(up))
-        self._event("GOOD" if up else "BAD")
+            m = self.rc.rate_last(up)
+            if m is not None:
+                w = self.rc._w(m["kind"], m.get("lane"))
+                info["what"] = m["text"]
+                info["learn"] = f"moves of that kind ({m['kind'].replace('_', ' ')}{', ' + m['lane'] if m.get('lane') else ''}) now weigh {w:.2f} (0.50 = neutral): {'more' if up else 'less'} of them"
+            else:
+                info["what"] = "nothing left to rate"
+            if not up and self.rc.master is not None:
+                self.rc.next_move()
+                info["did"] = "a different move on the next bar"
+        self.last_verdict = info
+        self._event(("GOOD" if up else "BAD") + (f": {info['what'][:50]}" if info.get("what") else ""))
+        return info
 
     # -- the tick ---------------------------------------------------------------------------------------------
     def step(self):
@@ -403,6 +469,10 @@ class Director:
         self._feed_up_next()
         self._handover()
         self._warm_step()
+        try:
+            self._auto_moments()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"moments: {type(e).__name__}: {e}"
         try:
             self._record()
         except Exception as e:  # noqa: BLE001
@@ -535,7 +605,7 @@ class Director:
                 beat = 60.0 / max(sysm.current.bpm, 60.0)
                 rc.open_pending(T_rc, song_t)
                 sysm.submix.post({"at": T_sys, "cmd": "mix_gain", "value": 0.0, "ramp_s": HANDOVER_BEATS * beat})
-                rc.submix.post({"at": T_rc, "cmd": "mix_gain", "value": 1.0, "ramp_s": HANDOVER_BEATS * beat})
+                rc.submix.post({"at": T_rc, "cmd": "mix_gain", "value": self.level_gain, "ramp_s": HANDOVER_BEATS * beat})
                 sw["stage"], sw["done_at"] = "crossing", T_sys + int((HANDOVER_BEATS * beat + 0.3) * RATE)
                 return
             rc.step()
@@ -576,7 +646,7 @@ class Director:
             beat = 60.0 / max(sw["track"].bpm, 60.0)
             sysm.step()                                    # the opener starts now, at song time song_t
             self._spawn(sysm)                              # and from here the autoDJ runs as it does live
-            sysm.submix.post({"cmd": "mix_gain", "value": 1.0, "ramp_s": HANDOVER_BEATS * beat})
+            sysm.submix.post({"cmd": "mix_gain", "value": self.level_gain, "ramp_s": HANDOVER_BEATS * beat})
             rc.submix.post({"cmd": "mix_gain", "value": 0.0, "ramp_s": HANDOVER_BEATS * beat})
             old = rc
             self.rc = None
@@ -585,6 +655,47 @@ class Director:
             self._switch = None
             threading.Timer(HANDOVER_BEATS * beat + 0.4, lambda: old.stop(fade_s=0.05)).start()
             self._event("layers: the autoDJ has the room")
+
+    # -- how the music is played: the bus, the DJ's own moments -----------------------------------------------------
+    @property
+    def level_gain(self):
+        return LEVEL_GAIN[self.dials["level"]]
+
+    def _apply_bus(self, sub):
+        """BASS / TONE on the mix bus EQ, LEVEL on the bus gain (never while a handover crossfade owns it)."""
+        d = self.dials
+        sub.post({"cmd": "master_eq", "low": BASS_LOW[d["bass"]], "mid": 1.0, "high": TONE_HIGH[d["tone"]], "ramp_s": 0.5})
+        if self._switch is None:
+            sub.post({"cmd": "mix_gain", "value": self.level_gain, "ramp_s": 0.4})
+
+    def _auto_moments(self):
+        """The MOMENTS dial: the DJ makes its own moments. One song: a double-drop into the next song
+        (the nextdrop moment) once per record, when the record has played 60 % and the next has a drop.
+        Layered: a BREAK at a breakdown of the bed song (the conductor's auto break, scaled) and now and
+        then a DROP onto a voice that has been heard two phrases - the bed and voice become one song."""
+        rate = MOMENT_RATE[self.dials["moments"]]
+        if rate <= 0.0:
+            return
+        if self.system is not None and self.system.current is not None and self.system.state == "playing":
+            cur = self.system.current
+            if getattr(self, "_moment_song", None) != cur.id:
+                self._moment_song, self._moment_done = cur.id, False
+            if not self._moment_done and cur.duration_s and self._played_s() >= 0.6 * cur.duration_s:
+                self._moment_done = True
+                import random
+                if random.random() < rate:
+                    self.system.moment("nextdrop")
+                    self._event("moment: double-drop into the next song")
+        elif self.rc is not None and self.rc.master is not None:
+            from lib.dj.remix import AUTO_BREAK_CHANCE
+            self.rc.auto_break_scale = rate / 0.5
+            if self.rc.phrase_bars == 0 and getattr(self, "_moment_k", None) != self.rc.bar_n:
+                self._moment_k = self.rc.bar_n
+                voices = [s for d, s in self.rc.songs.items() if s.entered and not s.leaving and d != self.rc.lanes.get("drums")
+                          and s.voice_since is not None and self.rc.bar_n - s.voice_since >= 2 * self.rc.change_bars]
+                if voices and self.rc.rng.random() < rate * 0.35:
+                    self.rc.drop()
+                    self._event("moment: DROP onto the voice - bed and voice become one song")
 
     # -- one night's memory --------------------------------------------------------------------------------------------
     def _note_played(self, tid):
@@ -724,6 +835,8 @@ class Director:
                 continue
             if q and q not in (t.title or "").lower() and q not in (t.artist or "").lower():
                 continue
+            if self.tags and not (set(self.tags) & set(getattr(t, "all_tags", ()) or ())):
+                continue
             fit, ok, why = 0.5, True, []
             if bpm:
                 ratios = [bpm / max(t.bpm * m, 1e-6) for m in (1.0, 2.0, 0.5)] if t.bpm else [9.0]
@@ -830,6 +943,34 @@ class Director:
             out["why"], out["in_effect"] = self._explain()
         except Exception as e:  # noqa: BLE001
             out["why"], out["in_effect"] = [f"(explain: {type(e).__name__}: {e})"], []
+        # DOUBLED: the same stem from two songs audible at once (a crossfade in flight, or the autoDJ's blend)
+        doubled = []
+        try:
+            if self.rc is not None:
+                decks = (self.rc.submix.telemetry or {}).get("decks") or {}
+                for ln in ("drums", "bass", "other", "vocals"):
+                    n = sum(1 for d, t in decks.items() if t.get("playing") and float((t.get("stem_gains") or {}).get(ln, 0.0)) > 0.15
+                            and float(t.get("gain") or 0.0) > 0.1)
+                    if n > 1:
+                        doubled.append(ln)
+            elif self.system is not None:
+                decks = (self.system.submix.telemetry or {}).get("decks") or {}
+                up = [d for d, t in decks.items() if t.get("playing") and float(t.get("gain") or 0.0) > 0.1]
+                if len(up) > 1:
+                    style = (self.system.plan or {}).get("style") or ""
+                    doubled = ["drums", "bass", "other", "vocals"] if not style.startswith(("stem_", "acapella", "drum_bridge", "bass_swap")) else ["mix"]
+        except Exception:
+            pass
+        out["doubled"] = doubled
+        lv = self.last_verdict
+        if lv is not None:
+            lv = dict(lv)
+            if lv.get("style") and self.system is not None:
+                try:
+                    lv["weight"] = round(float(self.system.brain.style_fb.get(lv["style"], 1.0)), 2)
+                except Exception:
+                    pass
+        out["last_verdict"] = lv
         return out
 
     def _explain(self):
@@ -878,7 +1019,10 @@ class Director:
                      "leave": "a song held no lane any more, so it left", "loop": "a song ran out of body and looped its last bars",
                      "evict": "a song had looped long enough; its lanes moved on", "clock": "the clock passed to the song holding most lanes",
                      "drop": "DROP: every lane to one song", "break": "BREAK", "break_auto": "the song holding most lanes reached a breakdown, so the conductor broke with it",
-                     "manual": "your move", "open": "the opener"}
+                     "manual": "your move", "open": "the opener",
+                     "voice_in": "a new song arrives as a VOICE over the bed (drums + bass stay where they are)",
+                     "bed_to": "the voice has been heard two phrases, so the BED (drums + bass together) passes to it - the morph",
+                     "voice_out": "the old bed song, now only a voice, fades out; one song's journey is complete"}
             if last is not None:
                 why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
             for dname, s in rc.songs.items():

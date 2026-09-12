@@ -88,7 +88,9 @@ AUTO_BREAK_CHANCE = 0.5          # a breakdown of the song holding most lanes ma
 TEMPO_STEP = 0.005               # the clock moves at most this much per bar on a tempo journey
 TEMPO_SPAN_MAX = 0.06            # ...and at most this far from the opener's tempo
 RECALL_PHRASES = 8               # a RECALL whose songs cannot come back within this many phrases is abandoned
-RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto")
+VOICE_PHRASES = 2                # the arrangement policy: a voice is heard this many phrases before it takes the bed
+RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto",
+               "voice_in", "bed_to", "voice_out")
 
 
 def _compat(c1, c2):
@@ -126,6 +128,8 @@ class Song:
         self.user_loop = None            # the operator's loop on this song, bars
         self.fx_until = None             # a shape's FX is running on this deck until this clock
         self.ready_k = None              # bar count from which a move may let it in (its landmark lands there)
+        self.was_bed = False             # arrangement policy: it held the bed and is now a voice on its way out
+        self.voice_since = None          # bar count since it has been a voice
 
     def held(self, lanes):
         return [s for s in STEMS if lanes.get(s) == self.deck]
@@ -161,6 +165,8 @@ class RemixConductor:
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
         self.avoid_ids = set()           # songs played tonight by any engine (the Director's memory): never picked again
+        self.policy = "arrangement"      # "arrangement" (a bed and voices, one change at a time) | "free" (any lane, any song)
+        self.fx_level = 1.0              # the Director's FX dial: the chance a move gets a shape (0 = plain crossfades)
         self._cands_cache = (0.0, None, [])
         self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
         self._open_lanes = None          # lanes the opener comes up on (None = all)
@@ -794,7 +800,8 @@ class RemixConductor:
         frm = self.lanes.get(lane)
         ev, tag = [], None
         if frm is not None and frm in self.songs and frm != to_deck:
-            if shape and len(self.songs[frm].held(self.lanes)) == 1 and not self.songs[frm].leaving:
+            if shape and len(self.songs[frm].held(self.lanes)) == 1 and not self.songs[frm].leaving \
+                    and self.rng.random() < getattr(self, "fx_level", 1.0):
                 tag = self._shape_rest(frm, at) if to_deck is None else self._shape_exit(frm, at)
             ev.append({"at": at, "cmd": "stem_gains", "deck": frm, "gains": {lane: 0.0}, "ramp_s": xf})
         if to_deck is not None and to_deck in self.songs:
@@ -897,7 +904,7 @@ class RemixConductor:
         if sec.get("kind") != "breakdown":
             return
         s.auto_broke = True
-        if self.rng.random() < AUTO_BREAK_CHANCE * 2 * self._w("break_auto"):
+        if self.rng.random() < AUTO_BREAK_CHANCE * 2 * self._w("break_auto") * getattr(self, "auto_break_scale", 1.0):
             self.break_(bars=BREAK_BARS, kind="break_auto")
 
     def _keep_runway(self, k):
@@ -959,7 +966,89 @@ class RemixConductor:
             self._hygiene(at + int(XFADE_BEATS * self._beat_s() * RATE))
         return tag
 
+    # -- the ARRANGEMENT policy: a bed and voices -----------------------------------------------------------------
+    # Drums and bass belong together: the BED. Other and vocals are VOICES. One thing changes per move, and
+    # every song makes the same journey: it arrives as a voice over the current bed; when it has been heard
+    # for VOICE_PHRASES it takes the bed (drums and bass together, under its voice - the classic morph); the
+    # old bed song is now a voice and leaves after a phrase. Layers "three" allows a second voice.
+    def _bed_deck(self):
+        return self.lanes.get("drums")
+
+    def _arrangement_move(self, at):
+        live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
+        entered = [d for d in live if self.songs[d].entered]
+        bed = self._bed_deck()
+        voices = {d for ln in ("other", "vocals") for d in [self.lanes.get(ln)] if d is not None and d != bed}
+        max_voices = 2 if self.blend >= 0.5 else 1
+        bar = self.bar_n
+        # 0. housekeeping first: a vocal lane whose song stopped singing rests; a rested lane of the bed
+        #    comes back after a phrase (the bed is whole again)
+        vd = self.lanes.get("vocals")
+        if vd is not None and vd in self.songs and self._vocal_gone(vd, at):
+            tag = self._cross("vocals", None, at)
+            self._move("rest", "vocals", self._song_id(vd), None, "vocals rest (the singing stopped)", shape=tag)
+            return tag
+        if bed is not None:
+            for ln in ("other", "vocals"):
+                if self.lanes.get(ln) is None and bar - self.lane_k.get(ln, -10 ** 6) >= self.change_bars and self._lane_ok(bed, ln, at):
+                    tag = self._cross(ln, bed, at)
+                    self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
+                    return tag
+        # 1. the old bed song, now only a voice, leaves after a phrase
+        for d in list(voices):
+            s = self.songs[d]
+            if getattr(s, "was_bed", False) and bar - getattr(s, "voice_since", bar) >= self.change_bars:
+                tag = None
+                for ln in ("other", "vocals"):
+                    if self.lanes.get(ln) == d:
+                        to = bed if (bed is not None and self._lane_ok(bed, ln, at)) else None
+                        tag = self._cross(ln, to, at) or tag
+                self._move("voice_out", None, s.track.id, self._song_id(bed), f"{s.track.title} fades out as a voice; the bed carries on", shape=tag)
+                return tag
+        # 2. a voice that has been heard long enough takes the bed (drums + bass together, under its voice)
+        for d in sorted(voices, key=lambda x: getattr(self.songs[x], "voice_since", 0)):
+            s = self.songs[d]
+            if getattr(s, "was_bed", False):
+                continue
+            if bar - getattr(s, "voice_since", bar) >= VOICE_PHRASES * self.change_bars and self._lane_ok(d, "bass", at):
+                old = bed
+                tag = self._cross("drums", d, at)
+                self._cross("bass", d, at)
+                if old is not None and old in self.songs:
+                    self.songs[old].was_bed = True
+                    self.songs[old].voice_since = bar
+                    # the old bed song keeps whatever voice it holds for a phrase, then leaves (step 1)
+                    if not self.songs[old].held(self.lanes):
+                        pass
+                self._move("bed_to", "drums", self._song_id(old), s.track.id, f"the bed passes to {s.track.title}: its drums and bass under the voice", shape=tag)
+                return tag
+        # 3. a staged song arrives as a voice over the bed
+        waiting = [d for d in live if not self.songs[d].entered and (self.songs[d].ready_k is None or bar + 1 >= self.songs[d].ready_k)]
+        if waiting and len(voices) < max_voices:
+            d = waiting[0]
+            s = self.songs[d]
+            lane = "vocals" if (self._vocal_ok(d, at) and self.rng.random() < self.vocal_freedom + 0.3
+                                and (bed is None or self._singing(self.songs[bed], self._song_time_at(bed, at)) is not True)) else "other"
+            if not self._lane_ok(d, lane, at):
+                lane = "other" if lane == "vocals" else None
+            if lane is not None and self._lane_ok(d, lane, at):
+                frm = self.lanes.get(lane)
+                tag = self._cross(lane, d, at)
+                s.voice_since = bar
+                self._move("voice_in", lane, self._song_id(frm), s.track.id, f"{s.track.title} arrives as a voice ({lane}) over the bed", shape=tag)
+                return tag
+        # 4. with nothing to do, an occasional breath: the bed's own voice rests a phrase (rarely)
+        if bed is not None and len(entered) >= 2 and self.rng.random() < 0.08:
+            for ln in ("vocals", "other"):
+                if self.lanes.get(ln) == bed:
+                    tag = self._cross(ln, None, at)
+                    self._move("rest", ln, self._song_id(bed), None, f"the bed's {ln} rests a phrase", shape=tag)
+                    return tag
+        return None
+
     def _one_move_inner(self, at):
+        if getattr(self, "policy", "arrangement") == "arrangement":
+            return self._arrangement_move(at)
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
         # a staged song comes in through one lane - on the move its landmark was cued for (or any later one),
         # and only while fewer songs are heard than the cap (the blend dial: two, or three)
@@ -1344,7 +1433,9 @@ class RemixConductor:
         at = self._next_bar_clock()
         # the lane that stays must be AUDIBLE for the whole break: vocals only while that song is singing
         # (a silent vocal stem alone is dead air - one bar of it showed in the gate), else other, bass, drums
-        order = [ln for ln in ("vocals", "other", "bass", "drums") if ln in held]
+        # `other` first: a melodic stem is rarely silent for a bar; vocals only when singing at both ends
+        # of the break (sparse vocals still left dead bars in the gate when kept alone)
+        order = [ln for ln in ("other", "vocals", "bass", "drums") if ln in held]
         keep = next((ln for ln in order if ln != "vocals" or (self._vocal_ok(held[ln], at) and self._vocal_ok(held[ln], at + int(bars) * self._bar_clock()))), order[-1])
         back = at + int(bars) * self._bar_clock()
         xf = 1.0 * self._beat_s()

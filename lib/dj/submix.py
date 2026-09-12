@@ -68,6 +68,8 @@ class DJSubmix:
         self._q = SimpleQueue()
         self.clock = 0           # output frames rendered since attach
         self.mix_gain = 1.0
+        from lib.dj.eq import ThreeBandEQ
+        self.master_eq = ThreeBandEQ()   # the mix bus's own EQ (the Director's BASS / TONE); bit-exact bypass while flat
         self._fade = None        # (per_frame_delta, target)
         self._mgain_ramp = None  # (target, per_frame_delta) master-bus ramp
         self.done = False
@@ -122,6 +124,12 @@ class DJSubmix:
             # Pre-rendered one-shot (riser/impact) - the third mini-layer.
             self._fx.append([np.asarray(e["samples"], dtype=np.float32),
                              0, float(e.get("gain", 1.0))])
+            return
+        if cmd == "master_eq":
+            # the Director's BASS / TONE dials: a three-band EQ on the mix bus
+            # itself (deck EQs belong to the seam automation and are reset by it)
+            self.master_eq.set_gains(e.get("low"), e.get("mid"), e.get("high"),
+                                     e.get("ramp_s", 0.5))
             return
         if cmd == "mix_gain":
             # MASTER-BUS gain, the one gesture that works while a seam
@@ -651,6 +659,9 @@ class DJSubmix:
             self.clock += m
             pos += m
 
+        # the mix bus EQ (BASS / TONE) - a bit-exact bypass while flat
+        if not self.master_eq.is_flat:
+            out = self.master_eq.process(out).astype(np.float32, copy=False)
         # Soft peak guard: two hot tracks + an impact one-shot can stack
         # past full scale. Per-SAMPLE 3:1 soft knee above 0.92 - no
         # frame-level normalization (that reads as pumping; see the fan

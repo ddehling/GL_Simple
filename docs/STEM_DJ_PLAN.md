@@ -406,6 +406,36 @@ landing - removed; the build is the music itself (the high-pass sweep and a push
 one-beat hole, and the next track's drop cold. (The loop-roll seam styles were already retired on the same
 verdict in August; the loops dial in one-song mode therefore has almost nothing to bias - open.)
 
+**Later the same evening: the layout, the play, and a philosophy of play.** "The button and text layout is
+bad… messed up fullscreen / doesn't show everything", "too much explanatory text that could be in
+tooltips", "the interface rolls off the screen while large parts of it are taken up by nearly pointless
+reporting windows", "buttons are way bigger than they need to be" (then: "I'm not asking for less buttons,
+I'm asking for the button size to be smaller") → the tab is compact: no scroll areas, every caption a
+tooltip (the dial's live effect is the tooltip's first line), dial buttons 22 px in two columns, the
+picture on top, NOW / NEXT / lanes / WHY and the song list + UP NEXT on the left, dials / MOOD / moments /
+verdict on the right; fits 1900×1000 without clipping. "The DJ needs a philosophy of musical play that isn't
+just schizophrenically jamming everything together at random" → the conductor's ARRANGEMENT policy: at any
+moment one BED (drums + bass of one song, moved together) and one or two VOICES (other / vocals of other
+songs) over it; a voice that has been heard two phrases may take the bed (its drums + bass slide under, the
+old bed's song leaves after a phrase, its vocals come back "the bed is whole again"); housekeeping rests a
+vocal lane whose song stops singing; the old free policy stays behind `policy="free"`. The move log now reads
+as a story (arrives as a voice → the bed passes → leaves → vocals return); gate ALL OK: 0 dead bars, guard
+0 violations, low carve 0 %, locks p95 ≤ 0.06 beat. "I need feedback when I hit the bad button that it
+actually does things and can improve based on it" → GOOD / BAD print under the buttons what was rated, what
+the DJ learned (the move-kind weight, 0.50 = neutral) and what it did - BAD also acts at once (one song: the
+seam comes now; layered: a different move on the next bar). "I need more options, like bass boost, moment
+level, and things about how the music will be played, not just how it transitions" → five play dials: BASS
+(flat / boost / heavy) and TONE (dark / neutral / bright) on a new mix-bus EQ in the submix (bit-exact bypass
+while flat), LEVEL (quiet / normal / loud) on the bus gain, MOMENTS (rare / some / lots: the DJ's own
+double-drops into the next song once per record, and layered its own breaks and drops onto a heard voice),
+FX (none / some / lots: filter sweeps and echoes on lane moves; none = clean crosses only). "If we're playing
+multiple of the same stem layer from different songs simultaneously, I'd like an indication" → ⚠ DOUBLED in
+the state line whenever two songs' stems sound on one lane (a crossfade in flight, or a blend). "Probably
+need more moods" → 36 MOOD chips from the library's own tags (≥ 5 songs each); lit chips restrict both
+engines and the song list. Fourteen dials now; the buttons follow the Director's dials, so a dial turned by a
+script or the copilot shows. Open: the user's ear on all of it; whether fourteen dials is already too many
+for a live show; the MOMENTS dial's auto-drop rate.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
