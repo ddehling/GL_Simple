@@ -185,6 +185,10 @@ def main():
     # the performance buttons: LOOP 8 holds every song, BREAK rests all lanes but one and restores them,
     # DROP puts every lane on the newest song; GOOD / BAD store verdicts that tilt the weights
     n_songs = len([s for s in rc.songs.values() if not s.leaving])
+    for _ in range(12):                              # a bed change in flight defers the hold to its landing bar
+        if rc._land_k is None:
+            break
+        pump(int(bars * RATE) // block)
     rc.loop(8)
     pump(int(1.5 * bars * RATE) // block)
     looped = [d for d, s in rc.songs.items() if (rc._tel_deck(d).get("loop") is not None) and not s.leaving]
@@ -310,7 +314,21 @@ def main():
         if len(settled) < 10:
             continue
         med, p95 = float(np.median(settled)), float(np.percentile(settled, 95))
-        check(med < 0.05 and p95 < 0.15, f"deck {sl} lock: median {med:.3f} beat, p95 {p95:.3f} (n {len(settled)})")
+        ok_lock = med < 0.05 and p95 < 0.15
+        if not ok_lock:
+            # where the lock broke: runs of blocks past 0.15 beat, with the move nearest each run's start
+            bad = [k for (k, e) in rows if k >= first + 2 * blk_per_bar and e > 0.15]
+            runs = []
+            for k in bad:
+                if runs and k - runs[-1][1] <= 20:
+                    runs[-1][1] = k
+                else:
+                    runs.append([k, k])
+            for k0, k1 in runs[:4]:
+                t0 = k0 * block / RATE
+                near = min(rc.move_log, key=lambda m: abs((m.get("clock_s") or -1e9) - t0)) if rc.move_log else None
+                print(f"       deck {sl} off-lock {t0:.0f}-{k1 * block / RATE:.0f} s near: {near['clock_s']:.0f}s {near['text'][:70]}" if near and near.get("clock_s") is not None else f"       deck {sl} off-lock {t0:.0f}-{k1 * block / RATE:.0f} s")
+        check(ok_lock, f"deck {sl} lock: median {med:.3f} beat, p95 {p95:.3f} (n {len(settled)})")
     x = np.concatenate(audio, axis=0)
     peak = float(np.abs(x).max())
     check(peak < 0.99, f"peak {peak:.3f}")

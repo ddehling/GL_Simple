@@ -963,6 +963,13 @@ class RemixConductor:
             self.phrase_bars += n
             self.bar_n += n
             self.bar_k = k
+        # a bed change that was in flight has landed: the arrangement is free again, a deferred LOOP comes now
+        if self._land_k is not None and self.bar_n >= self._land_k:
+            self._land_k = None
+            b = getattr(self, "_loop_after_land", None)
+            if b:
+                self._loop_after_land = None
+                self.loop(b)
         self._keep_runway(self.bar_n)
         self._tempo_step()
         if self._break is not None:
@@ -978,7 +985,11 @@ class RemixConductor:
         if self._force_move:
             self._force_move = False
             self.phrase_bars = 0
-            self._one_move(self._next_bar_clock())
+            self._forced = True                       # NEXT: the arrangement's waits are waived for this move
+            try:
+                self._one_move(self._next_bar_clock())
+            finally:
+                self._forced = False
         elif due and not self.hold:
             self.phrase_bars = 0
             # the autopilot amount: the chance this phrase's move is the conductor's (0 = never: the
@@ -1235,13 +1246,14 @@ class RemixConductor:
         #    VOICE_MAX_PHRASES regardless, at once when the bed is running out
         bed_s = self.songs.get(bed) if bed is not None else None
         bed_kind = self._kind_at(bed, at) if bed is not None else None
-        bed_out = bed_s is not None and (bed_s.loop is not None or bed_kind == "outro")
+        forced = bool(getattr(self, "_forced", False))          # NEXT pressed: no settling, no waiting for a payoff
+        bed_out = bed_s is not None and (bed_s.loop is not None or bed_kind == "outro") or forced
         for d in sorted(voices, key=lambda x: getattr(self.songs[x], "voice_since", 0)):
             s = self.songs[d]
             if getattr(s, "was_bed", False):
                 continue
             heard = bar - (s.voice_since if s.voice_since is not None else bar)
-            if heard < VOICE_PHRASES * self.change_bars:
+            if heard < (1 if forced else VOICE_PHRASES) * self.change_bars:
                 continue
             if not self._lane_ok(d, "bass", at):
                 if heard >= VOICE_MAX_PHRASES * self.change_bars:
@@ -1322,7 +1334,7 @@ class RemixConductor:
         # dwell: a lane that just came back holds four bars before it may rest, one that just rested holds two
         # before it may come back (a sparse vocal flipped rest / back within seconds in the gate)
         if vd is not None and vd in self.songs:
-            if since >= 4 and self._vocal_gone(vd, at):
+            if since >= self.change_bars and self._vocal_gone(vd, at):     # on for a phrase before it may rest
                 self._cross("vocals", None, at, beats=2.0, shape=False)
                 self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
             return
@@ -1781,6 +1793,12 @@ class RemixConductor:
         bar (the whole combination holds); the same bars again, or None, releases every loop."""
         if self.master is None:
             return False
+        if bars and self._land_k is not None and self.bar_n < self._land_k:
+            # a bed change is landing (the strip is running, the new drums and bass are scheduled): a loop
+            # now would wrap the songs under those events - the hold comes on the bar the bed lands
+            self._loop_after_land = bars
+            self._note(f"LOOP {bars} waits for the new bed to land ({self._land_k - self.bar_n} bars)")
+            return True
         at = self._next_bar_clock()
         if bars is None or self.user_loop_bars == bars:
             for d, s in self.songs.items():

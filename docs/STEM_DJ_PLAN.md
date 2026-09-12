@@ -483,7 +483,8 @@ and a chroma + timbre signature of the vocal stem, four-bar windows scored by lo
 similarity), an ML "chorus" label as a bonus, the ML vocal curve to tell bleed from singing (a demucs
 fraction: 0.1 is a sung chorus, instrumentals read 0.0), every occurrence listed with the FIRST as the
 payoff. Checked on three songs: a vocal house track's hook landed on its ML chorus (63 s, again at 171-192
-s), two instrumentals got none. Consumers, all evidence-gated: the conductor's tonal guard and `why_not`
+s), two instrumentals got none. The library pass ran the same night: 1073 of 1073 stem-bearing tracks
+measured, 588 with a hook (the rest read as instrumentals). Consumers, all evidence-gated: the conductor's tonal guard and `why_not`
 compare the sections that actually overlap ("the chords clash right now… keys agree, the sections do
 not"); a voice takes the bed at its HOOK or its drop, whichever comes first (`_payoff_in_bars`); the
 brain's seam score refines the key term with the chroma at the planned out / in points; the song list says
@@ -520,7 +521,7 @@ at 0.68 (what already plays keeps the 0.55 tolerance), staged songs are shifted 
 sounded wrong), the conductor's pick refuses songs that cannot be shifted to fit, and a melody under
 another song's singer steps back to 0.6 (was 0.8). The gate gained the opposite vocal measure: the lane
 resting while the bed sings (< 15 % of singing blocks). The section-chroma guard bites more as the
-measurement pass covers the library.
+measurement pass covers the library (it finished the same night: every stem-bearing track measured).
 
 ## Rules carried over (they were earned)
 
