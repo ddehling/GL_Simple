@@ -341,6 +341,32 @@ planned "Kirghiz in through drums at bar 4, Look Of Today in through bass at 8, 
 12, Need You Now in through other at 16…" and the plan became the music; DROP put every lane on one song;
 BREAK rested three lanes and they came back; HOLD stopped new plans. Not yet heard by the user.
 
+**THE DIRECTOR (2026-09-12) - the agreed surface.** After "I can't even tell what you're trying to build,
+we need to basically start from the beginning", the design restarted from the show: parties and events;
+the autoDJ preserved as is; "a semi-active system where I control high level behavior. What kind of
+songs, maybe the next few songs (not always though), what kind of mixing, and potential high level
+performances: are multiple songs being mixed, are we hard cutting, are we amping up the baseline, are we
+playing songs for short or long bits, are we looping things. I don't want to deal with arranging things
+like individual stems or their timing or volume." Agreed on paper first: six dials and song selectors.
+`lib/dj/director.py` owns one engine at a time - the autoDJ (`DJSystem`, behaviour untouched) or the
+stem conductor (`RemixConductor`) - and translates: **songs** (theme, a playlist as the pool, UP NEXT
+honoured when it can be), **mixing** auto/blend/cut/morph (seam-family pins; the conductor's crossfade
+0.5/2/4 beats), **layers** one/two/three (which engine; the conductor's blend 0.3/0.85), **energy**
+cool/hold/amp (the arc lean ±0.25; a 3 % tempo journey when amped and layered), **pace** short/normal/
+long (`DJSystem.set_pace` 0.6/1/1.5 on the drawn play length, still capped; the conductor's change rate
+4/8/16 bars), **loops** off/some/lots (`set_loop_bias`: loop_in / loop_roll_exit / loop_build ×1/×3/×8
+through the brain's style multipliers; layered, the clock holds four bars now and then). Moments NEXT /
+HOLD / DROP / BREAK, a verdict. Changing LAYERS between one and two/three HANDS THE PLAYING SONG ACROSS:
+the other engine opens on the same song at the same song time on a bar of the song (the conductor holds
+its decoded opener for `open_pending`; the autoDJ takes a prepared opener via `set_opener` and its live
+thread is spawned after that first step) and the two master buses crossfade over a beat. The tab
+(`tools/dj/planner/director.py`): left in words - NOW, NEXT, THE DIRECTOR INTENDS, WHAT JUST HAPPENED;
+right the six dials as segmented buttons, UP NEXT, the four moments, GOOD / BAD. The Perform (grid /
+crate) and Timeline tabs are off the tab bar; their code stays as engine tools. Headless: a queued song
+became the autoDJ's next; LAYERS two handed the playing song to the conductor in 12 s (lanes then crossed
+to two more songs); cut / short / lots / amp applied live; LAYERS one handed the same song back at the same
+position in 10 s and the autoDJ kept playing with the pins set. Not yet heard by the user.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
