@@ -97,7 +97,7 @@ SING_ON, SING_OFF = 0.12, 0.05   # the vocal stem's own envelope (of its loud le
 STRIP_BARS = 4                   # the breakdown before a bed lands: the old bed's drums + bass out for this many bars
 DROP_LOOK_BARS = 2               # a voice's drop counts as "now" when its groove starts within this many bars
 RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto",
-               "voice_in", "bed_to", "voice_out")
+               "voice_in", "bed_to", "voice_out", "moment_in")
 
 
 def _compat(c1, c2):
@@ -179,6 +179,9 @@ class RemixConductor:
         self._land_at = None             # ...and its clock (hygiene waits for it)
         self.wait_why = None             # arrangement: why the last phrase passed without a move, in words
         self.strip_before_bed = False    # the Director's MOMENTS: a four-bar breakdown before a new bed lands
+        self.bass_moments = False        # the Director's MOMENTS: a bed change is bass-first (the bassline takes over, drums follow)
+        self.lane_boost = {}             # lane -> (gain multiplier, until bar): a tactical "loud" on a lane, then back to its trim
+        self._drums_follow = None        # deck whose drums complete a bass-first bed change when _land_k comes
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
@@ -678,7 +681,20 @@ class RemixConductor:
                 vs = self.songs[vd]
                 if self._singing(vs, self._song_time_at(vd, at if at is not None else self._clock())) is not False:
                     g *= OTHER_DUCK
+        b = self.lane_boost.get(lane)
+        if b is not None and self.lanes.get(lane) == deck and self.bar_n < b[1]:
+            g *= b[0]                                 # a tactical "loud" on this lane (the peak guard keeps the bus honest)
         return g
+
+    def _boost_step(self):
+        """A lane's "loud" ends: back to its trim over a bar."""
+        for lane, (mult, until) in list(self.lane_boost.items()):
+            if self.bar_n >= until:
+                del self.lane_boost[lane]
+                d = self.lanes.get(lane)
+                if d is not None and d in self.songs:
+                    self.submix.post({"at": self._next_bar_clock(), "cmd": "stem_gains", "deck": d,
+                                      "gains": {lane: self._lane_gain(d, lane)}, "ramp_s": 4 * self._beat_s()})
 
     def _hygiene(self, at):
         """After a move lands: lows only on the songs carrying the bass or the drums lane; the `other` lane
@@ -934,15 +950,20 @@ class RemixConductor:
             self.phrase_bars += n
             self.bar_n += n
             self.bar_k = k
-        # a bed change that was in flight has landed: the arrangement is free again, a deferred LOOP comes now
+        # a bed change that was in flight has landed: the arrangement is free again, a deferred LOOP comes now;
+        # a bass-first change still owes its drums - that move comes NOW, not at the next phrase
         if self._land_k is not None and self.bar_n >= self._land_k:
-            self._land_k = None
-            b = getattr(self, "_loop_after_land", None)
-            if b:
-                self._loop_after_land = None
-                self.loop(b)
+            if self._drums_follow is not None:
+                self._force_move = True               # _arrangement_move's landing block crosses the drums
+            else:
+                self._land_k = None
+                b = getattr(self, "_loop_after_land", None)
+                if b:
+                    self._loop_after_land = None
+                    self.loop(b)
         self._keep_runway(self.bar_n)
         self._tempo_step()
+        self._boost_step()
         if self._break is not None:
             return
         self._recall_step()
@@ -1130,6 +1151,20 @@ class RemixConductor:
         strip = bool(self.strip_before_bed) and old is not None and old in self.songs and old != d
         why = f"at its {what}" if d_bars is not None else "after its phrases as a voice"
         tag = None
+        # THE BASS MOMENT (MOMENTS on, no strip): the bassline takes over first - at the payoff, loud for a
+        # phrase, the old bed's bass gone - and the drums follow at the next phrase. The classic bass swap:
+        # the room feels the new song's low end before it knows the song has changed.
+        if not strip and self.bass_moments and old is not None and old in self.songs and old != d:
+            self.lane_boost["bass"] = (1.25, self.bar_n + 2 * self.change_bars)
+            tag = self._cross("bass", d, land, beats=1.0, shape=False)
+            bars_to_land = int(round((land - at) / max(bar_c, 1))) + 1
+            self._land_k = self.bar_n + bars_to_land + self.change_bars
+            self._land_at = land
+            self._drums_follow = d
+            s.bed_since = self.bar_n + bars_to_land
+            self._move("bed_to", "bass", self._song_id(old), s.track.id,
+                       f"the bassline of {s.track.title} takes over {why}, loud; its drums follow at the phrase", shape=tag)
+            return tag
         if strip:
             strip_at = land - STRIP_BARS * bar_c
             if strip_at < at:
@@ -1185,13 +1220,24 @@ class RemixConductor:
         voices = {d for ln in ("other", "vocals") for d in [self.lanes.get(ln)] if d is not None and d != bed}
         max_voices = 2 if self.blend >= 0.5 else 1
         bar = self.bar_n
-        # a bed change in flight (the strip, then the landing) owns the arrangement until it lands - and never
-        # for longer than four phrases (a stuck landing froze the room once)
+        # a bed change in flight (the strip, then the landing; or the bassline in and the drums to follow)
+        # owns the arrangement until it lands - and never for longer than four phrases (a stuck landing
+        # froze the room once)
         if self._land_k is not None:
             if bar < self._land_k and self._land_k - bar <= 4 * self.change_bars:
-                self.wait_why = "the bed is changing: the breakdown, then the new drums and bass land"
+                self.wait_why = ("the bassline has taken over: the drums follow at the phrase" if self._drums_follow
+                                 else "the bed is changing: the breakdown, then the new drums and bass land")
                 return None
             self._land_k = None
+            d = self._drums_follow
+            self._drums_follow = None
+            if d is not None and d in self.songs and not self.songs[d].leaving:
+                old = self.lanes.get("drums")
+                tag = self._cross("drums", d, at)
+                if old is not None and old in self.songs and old != d:
+                    self.songs[old].was_bed, self.songs[old].voice_since, self.songs[old].bed_since = True, bar, None
+                self._move("bed_to", "drums", self._song_id(old), self._song_id(d), f"the drums of {self.songs[d].track.title} follow: the bed is its", shape=tag)
+                return tag
         # 0. housekeeping first. THE BED IS NEVER EMPTY: a drums or bass lane left with nobody (a break whose
         #    song left before it ended, an eviction with no target, a landing that never came - the user heard
         #    "the bass track empty for minutes") goes back to the bed song at once, or to the song holding most
@@ -1244,7 +1290,7 @@ class RemixConductor:
         bed_out = bed_s is not None and (bed_s.loop is not None or bed_kind == "outro") or forced
         for d in sorted(voices, key=lambda x: getattr(self.songs[x], "voice_since", 0)):
             s = self.songs[d]
-            if getattr(s, "was_bed", False):
+            if getattr(s, "was_bed", False) or d == self._drums_follow:
                 continue
             heard = bar - (s.voice_since if s.voice_since is not None else bar)
             if heard < (1 if forced else VOICE_PHRASES) * self.change_bars:
@@ -1561,6 +1607,56 @@ class RemixConductor:
         self._move("manual", lane, self._song_id(frm), self._song_id(deck),
                    f"you: {lane} → {to_title}" if deck is not None else f"you: {lane} rests", shape=tag)
         return True, f"{lane} → {to_title or 'rest'} on the next bar"
+
+    def bring(self, lane, deck, boost=1.0, bars=8, when="bar"):
+        """THE TACTICAL MOVE: this song's `lane` in, on the next bar (or the next phrase), `boost` loud for
+        `bars` bars, the previous holder's stem gone in a beat. The guard still speaks (a key clash refuses)
+        but the arrangement's waits do not apply - you asked. Returns (ok, message)."""
+        if lane not in STEMS or self.master is None or deck not in self.songs:
+            return False, "no such song on a deck"
+        s = self.songs[deck]
+        if s.leaving or s.staged_at is None:
+            return False, "still decoding" if s.staged_at is None else "leaving"
+        why = self.why_not(lane, deck)
+        if why:
+            return False, why
+        at = self._next_bar_clock()
+        if when == "phrase":
+            left = max(0, self.change_bars - 1 - self.phrase_bars)
+            at += left * self._bar_clock()
+        if self._break is not None:
+            self._break = None
+        if boost and boost != 1.0:
+            self.lane_boost[lane] = (float(boost), self.bar_n + int(bars) + (0 if when != "phrase" else max(0, self.change_bars - 1 - self.phrase_bars)))
+        frm = self.lanes.get(lane)
+        tag = self._cross(lane, deck, at, beats=1.0, shape=False)
+        if s.voice_since is None:
+            s.voice_since = self.bar_n
+        self._hygiene(at + int(self._beat_s() * RATE))
+        self.phrase_bars = 0
+        self._move("moment_in", lane, self._song_id(frm), s.track.id,
+                   f"you: the {lane} of {s.track.title} in" + (", loud" if boost and boost != 1.0 else "") + (" at the phrase" if when == "phrase" else " now"), shape=tag)
+        return True, f"the {lane} of {s.track.title[:24]} comes in {'at the phrase' if when == 'phrase' else 'on the next bar'}"
+
+    def release(self, lane):
+        """The lane back to the bed (the song holding the drums) on the next bar; the boost ends."""
+        if lane not in STEMS or self.master is None:
+            return False, "no clock"
+        bed = self.lanes.get("drums") if lane != "drums" else None
+        if bed is None:
+            bed = max((d for d, s in self.songs.items() if s.entered and not s.leaving), key=lambda d: len(self.songs[d].held(self.lanes)), default=None)
+        if bed is None or self.lanes.get(lane) == bed:
+            return False, "already the bed's"
+        self.lane_boost.pop(lane, None)
+        at = self._next_bar_clock()
+        if lane == "vocals" and not self._vocal_ok(bed, at):
+            tag = self._cross(lane, None, at, beats=1.0, shape=False)
+            self._move("moment_out", lane, None, None, f"you: the {lane} rests (the bed is not singing there)", shape=tag)
+            return True, f"{lane} rests"
+        frm = self.lanes.get(lane)
+        tag = self._cross(lane, bed, at, beats=1.0, shape=False)
+        self._move("moment_out", lane, self._song_id(frm), self._song_id(bed), f"you: the {lane} back to {self.songs[bed].track.title}", shape=tag)
+        return True, f"{lane} back to the bed"
 
     def eject(self, deck):
         """The operator takes a song off: its lanes move to the other songs (or rest), it leaves a bar later."""

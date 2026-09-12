@@ -626,6 +626,19 @@ headless runs and stopped sessions do not count), `brain.load_play_counts` at ev
 `s_worn = 1 / (1 + 0.12 × plays_30d)` (floor 0.4) in both the pick and the opener. And the history was
 polluted: my gates and smokes logged plays all day (the gate's seed-7 opener sat at the top of the 30-day
 list); headless runs now set DJ_NO_PLAY_LOG and log nothing.
+"I don't see how we can make it do big moments where a DJ really amps up the bass with a bassline from one
+song while another plays… it doesn't seem responsive enough and tactical enough" → three pieces. (1) THE
+TACTICAL MOVE: `RemixConductor.bring(lane, deck, boost, when)` - this song's stem in on the NEXT BAR (or at
+the phrase), +30 % loud for a phrase (`lane_boost`, the peak guard keeps the bus honest), the previous
+holder's stem gone in a beat; the guard still refuses a clash, the arrangement's waits do not apply;
+`release(lane)` sends it back to the bed. (2) THE BASS MOMENT in the arrangement: with MOMENTS on (mixing
+auto / cut) a bed change is bass-first - at the voice's payoff its bassline takes over, loud, the old bed's
+bass gone, and its drums follow at the next phrase (the classic bass swap: the room feels the new low end
+before it knows the song changed). (3) THE READY ROW under UP NEXT: every song on a deck with four stem
+buttons (bass / drums / melody / vocal), lit where it holds the lane, greyed with the reason where the guard
+refuses, LOUD and PHRASE toggles; right-click any song in the list = stage it and bring a chosen stem the
+moment it is ready (`Director.stem_in` / `stem_out`, a pending stem move fires when the decode lands). The
+gate brings a live song's bass in loud and releases it, and counts bass-first bed changes.
 
 ## Rules carried over (they were earned)
 

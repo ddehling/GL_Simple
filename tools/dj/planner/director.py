@@ -438,7 +438,41 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue = QListWidget()
         self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
         qcol.addWidget(self.queue, 1)
+        # READY: the songs on decks right now (layered) with a button per stem - THIS song's bassline in, now,
+        # loud ("I don't see how we can make it do big moments where a DJ really amps up the bass with a
+        # bassline from one song while another plays"); a lit button = that song holds the lane, press again
+        # = back to the bed; LOUD makes the next moves loud for a phrase; PHRASE times them to the phrase
+        rh = QHBoxLayout()
+        rlab = QLabel("READY")
+        rlab.setProperty("dim", "true")
+        rlab.setToolTip("layered: the songs on decks and the stems you can bring in from each, on the next bar (or at the phrase); "
+                        "lit = that song holds the lane; press a lit one = back to the bed; right-click any song in the list to stage it "
+                        "and bring a stem in the moment it is ready")
+        rh.addWidget(rlab)
+        rh.addStretch(1)
+        self.loud_btn = QPushButton("LOUD")
+        self.loud_btn.setCheckable(True)
+        self.loud_btn.setChecked(True)
+        self.loud_btn.setProperty("kind", "small")
+        self.loud_btn.setMinimumHeight(20)
+        self.loud_btn.setMaximumHeight(22)
+        self.loud_btn.setToolTip("stem moves come in +30 % for a phrase, then settle to their level")
+        rh.addWidget(self.loud_btn)
+        self.phrase_btn = QPushButton("PHRASE")
+        self.phrase_btn.setCheckable(True)
+        self.phrase_btn.setProperty("kind", "small")
+        self.phrase_btn.setMinimumHeight(20)
+        self.phrase_btn.setMaximumHeight(22)
+        self.phrase_btn.setToolTip("stem moves land at the next phrase instead of the next bar")
+        rh.addWidget(self.phrase_btn)
+        qcol.addLayout(rh)
+        self.ready_grid = QGridLayout()
+        self.ready_grid.setSpacing(3)
+        self._ready_rows = {}
+        qcol.addLayout(self.ready_grid)
         lists.addLayout(qcol, 2)
+        self.found.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.found.customContextMenuRequested.connect(self._song_menu)
         left.addLayout(lists, 1)
         body.addLayout(left, 5)
 
@@ -930,6 +964,69 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if self.director is not None:
             self.director.set_dial(name, opt)
 
+    def _stem(self, tid, lane, held):
+        if self.director is None:
+            self.err_lbl.setText("press START first")
+            return
+        if held:
+            msg = self.director.stem_out(lane)
+        else:
+            msg = self.director.stem_in(tid, lane, loud=self.loud_btn.isChecked(), when="phrase" if self.phrase_btn.isChecked() else "bar")
+        self.err_lbl.setText(msg or "")
+
+    def _song_menu(self, pos):
+        it = self.found.itemAt(pos)
+        if it is None or self.director is None:
+            return
+        tid = it.data(Qt.ItemDataRole.UserRole)
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        title = self.director.title(tid)[:28]
+        for lane, word in (("bass", "bassline"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocals")):
+            a = m.addAction(f"{word} of {title} in {'at the phrase' if self.phrase_btn.isChecked() else 'now'}" + (" · loud" if self.loud_btn.isChecked() else ""))
+            a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
+        m.addSeparator()
+        q = m.addAction("put it UP NEXT")
+        q.triggered.connect(lambda _c, t=tid: self._queue(t))
+        m.exec(self.found.mapToGlobal(pos))
+
+    def _fill_ready(self, rows):
+        """The READY rows follow the decks: one line per song, four stem buttons, lit where it holds the lane."""
+        sig = tuple((r["id"], r["bed"], r["staged"], tuple((ln, v["held"], v["loud"], bool(v["why"])) for ln, v in r["lanes"].items())) for r in rows)
+        if sig == getattr(self, "_ready_sig", None):
+            return
+        self._ready_sig = sig
+        for w in list(self._ready_rows.values()):
+            for x in w:
+                self.ready_grid.removeWidget(x)
+                x.setParent(None)
+                x.deleteLater()
+        self._ready_rows = {}
+        for i, r in enumerate(rows[:4]):
+            name = QLabel(("● " if r["bed"] else ("○ " if r["staged"] else "… ")) + r["title"][:20])
+            name.setProperty("dim", "true")
+            name.setToolTip(("the bed (drums + bass)" if r["bed"] else ("staged and ready" if r["staged"] else "decoding")) + f": {r['title']}"
+                            + (f"\nhook in {r['hook_in_bars']:.0f} bars" if r.get("hook_in_bars") is not None else "")
+                            + (f"\ndrop in {r['drop_in_bars']:.0f} bars" if r.get("drop_in_bars") is not None else ""))
+            name.setMaximumWidth(150)
+            self.ready_grid.addWidget(name, i, 0)
+            ws = [name]
+            for j, (lane, word) in enumerate((("bass", "bass"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocal"))):
+                v = r["lanes"][lane]
+                b = QPushButton(word + (" ♪" if v["loud"] else ""))
+                b.setCheckable(True)
+                b.setChecked(v["held"])
+                b.setProperty("kind", "small")
+                b.setMinimumHeight(20)
+                b.setMaximumHeight(22)
+                b.setEnabled(r["staged"] and (v["held"] or not v["why"]))
+                b.setToolTip((f"{r['title'][:28]} holds the {lane}" + (" (loud)" if v["loud"] else "") + " - press = back to the bed") if v["held"]
+                             else (f"refused: {v['why']}" if v["why"] else f"the {lane} of {r['title'][:28]} in"))
+                b.clicked.connect(lambda _c, t=r["id"], ln=lane, h=v["held"]: self._stem(t, ln, h))
+                self.ready_grid.addWidget(b, i, 1 + j)
+                ws.append(b)
+            self._ready_rows[r["id"]] = ws
+
     def _program(self, key):
         if self.director is None:
             self.err_lbl.setText("press START first")
@@ -1110,6 +1207,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                + (f"   ·   ⚠ DOUBLED: {', '.join(doubled)} (two songs' {'stems' if doubled != ['mix'] else 'mixes'} at once)" if doubled else "")
                                + (f"   ·   {last[:60]}" if last else "")
                                + (f"   ·   {self._midi_note}" if getattr(self, "_midi_note", "") else ""))
+        try:
+            self._fill_ready(st.get("ready") or [])
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"ready: {type(e).__name__}: {e}")
         # the program over the next songs: which is lit, where it stands
         ps = st.get("program")
         for k, b in self.prog_btns.items():

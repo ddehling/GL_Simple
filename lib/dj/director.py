@@ -348,6 +348,9 @@ class Director:
         # only when you asked for cuts: the four-bar drop-out before a bed lands read as "fading things out
         # for no reason" under auto mixing
         rc.strip_before_bed = d["moments"] != "rare" and d["mixing"] == "cut"
+        # the bass moment: with MOMENTS on and mixing auto / cut, a bed change is bass-first - the bassline
+        # takes over at the payoff, loud, the drums follow at the phrase
+        rc.bass_moments = d["moments"] != "rare" and d["mixing"] in ("auto", "cut")
         rc.set_arc_waypoints(self._arc_points())
         rc.set_arc_length(ARC_LEN_S[d["length"]])
         try:
@@ -751,6 +754,76 @@ class Director:
             return True
         return False
 
+    # -- tactical stem moves: THIS song's bassline (drums, vocals, melody) in, now, loud -------------------------
+    def stem_in(self, track_id, lane, loud=True, when="bar"):
+        """Bring one song's `lane` under what plays - on the next bar (or the next phrase), loud for a
+        phrase. A song not yet on a deck is staged first and comes in the moment it is ready. Layered
+        mode only (one song: the autoDJ owns its decks). Returns a sentence."""
+        if self.rc is None or self.rc.master is None:
+            return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
+        rc = self.rc
+        deck = next((d for d, s in rc.songs.items() if s.track.id == int(track_id) and not s.leaving), None)
+        boost = 1.3 if loud else 1.0
+        if deck is None:
+            ok, msg = rc.stage_track(int(track_id))
+            if not ok:
+                self._event(f"stem in refused: {msg}")
+                return msg
+            self._pending_stem = {"track_id": int(track_id), "lane": lane, "boost": boost, "when": when, "t": time.time()}
+            self._event(f"{lane} of {self.title(int(track_id))[:24]}: staging, in as soon as it is ready")
+            return f"{self.title(int(track_id))[:24]} is being staged; its {lane} comes in the moment it is ready"
+        ok, msg = rc.bring(lane, deck, boost=boost, when=when)
+        self._event(("moment: " if ok else "refused: ") + msg)
+        return msg
+
+    def stem_out(self, lane):
+        if self.rc is None or self.rc.master is None:
+            return "not layered"
+        ok, msg = self.rc.release(lane)
+        self._event(("moment: " if ok else "refused: ") + msg)
+        return msg
+
+    def _pending_stem_step(self):
+        p = getattr(self, "_pending_stem", None)
+        if p is None or self.rc is None:
+            return
+        if time.time() - p["t"] > 90.0:
+            self._pending_stem = None
+            self._event("the staged song never became ready: the stem move is dropped")
+            return
+        deck = next((d for d, s in self.rc.songs.items() if s.track.id == p["track_id"] and s.staged_at is not None and not s.leaving), None)
+        if deck is None:
+            return
+        self._pending_stem = None
+        ok, msg = self.rc.bring(p["lane"], deck, boost=p["boost"], when=p["when"])
+        self._event(("moment: " if ok else "refused: ") + msg)
+
+    def ready(self):
+        """The songs you can move stems from right now (layered): every live or staged song that is not the
+        bed, with what it holds, what each lane would say, and its loud state."""
+        out = []
+        rc = self.rc
+        if rc is None or rc.master is None:
+            return out
+        bed = rc.lanes.get("drums")
+        at = rc._next_bar_clock()
+        for d, s in rc.songs.items():
+            if s.leaving:
+                continue
+            held = s.held(rc.lanes)
+            lanes = {}
+            for ln in ("drums", "bass", "other", "vocals"):
+                if rc.lanes.get(ln) == d:
+                    lanes[ln] = {"held": True, "why": None, "loud": bool(rc.lane_boost.get(ln) and rc.bar_n < rc.lane_boost[ln][1])}
+                else:
+                    lanes[ln] = {"held": False, "why": ("still decoding" if s.staged_at is None else rc.why_not(ln, d)), "loud": False}
+            out.append({"id": s.track.id, "title": s.track.title, "deck": d, "bed": d == bed, "staged": s.staged_at is not None,
+                        "entered": s.entered, "held": held, "lanes": lanes,
+                        "hook_in_bars": rc._hook_in_bars(d, at, 64) if s.staged_at is not None else None,
+                        "drop_in_bars": rc._drop_in_bars(d, at, 64) if s.staged_at is not None else None})
+        out.sort(key=lambda r: (r["bed"], not r["entered"], r["title"]))
+        return out
+
     # -- taste: what your verdicts say about the SONGS -------------------------------------------------------
     def _learn_song(self, track_id, up):
         """A verdict also teaches SONG choice: the rated song's tags lean the next picks toward (GOOD) or
@@ -835,6 +908,7 @@ class Director:
                 self.rc.set_hold(False)
                 self._hold_until = None
             self._loops_layered()
+            self._pending_stem_step()
         try:
             self._loops_one()
         except Exception as e:  # noqa: BLE001
@@ -1768,6 +1842,11 @@ class Director:
         except Exception as e:  # noqa: BLE001
             out["arc"] = {"error": f"{type(e).__name__}: {e}"}
         out["program"] = self.program_status()
+        try:
+            out["ready"] = self.ready()
+        except Exception as e:  # noqa: BLE001
+            out["ready"] = []
+            out["error"] = out.get("error") or f"ready: {type(e).__name__}: {e}"
         out["programs"] = {k: (v[0], v[1]) for k, v in PROGRAMS.items()}
         if out["program"]:
             ps = out["program"]

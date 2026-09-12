@@ -49,6 +49,7 @@ def main():
     rc.set_blend(0.8)
     rc.set_vocal_freedom(0.6)
     rc.strip_before_bed = True                            # the philosophy: a breakdown before a new bed lands
+    rc.bass_moments = False                               # (the strip path here; the bass-first path is checked below)
     ok = rc.start(threaded=False)
     check(ok, "conductor started" + (f" ({rc.last_error})" if not ok else ""))
     if not ok:
@@ -218,6 +219,25 @@ def main():
     moved_since = [m for _, m in rc.moves[n_mv_b:] if "the bed passes" in m or "fades out" in m or "DROP" in m]
     check(rc._break is None and (back >= 2 or moved_since),
           f"BREAK over: {back} lanes back where they were" + (f" (then the arrangement moved on: {moved_since[0][:40]})" if moved_since and back < 2 else ""))
+    # THE TACTICAL MOVE: a live song's bass in on the next bar, loud - the guard may refuse (key), then any lane it allows
+    others = [dd for dd, s in rc.songs.items() if s.staged_at is not None and not s.leaving and dd != rc.lanes.get("drums")]
+    if others:
+        dd = others[0]
+        ok_b2, msg_b = False, "-"
+        for ln in ("bass", "other", "drums"):
+            ok_b2, msg_b = rc.bring(ln, dd, boost=1.3, when="bar")
+            if ok_b2:
+                lane_b = ln
+                break
+        pump(int(2.5 * bars * RATE) // block)
+        check(ok_b2 and rc.lanes.get(lane_b) == dd and rc.lane_boost.get(lane_b) is not None,
+              f"BRING: the {lane_b if ok_b2 else '?'} of {rc.songs[dd].track.title[:22]} in on the next bar, loud ({msg_b})")
+        held_now = rc.lanes.get(lane_b) if ok_b2 else None
+        ok_r, msg_r = rc.release(lane_b) if ok_b2 else (False, "-")
+        pump(int(1.5 * bars * RATE) // block)
+        check(ok_r and rc.lanes.get(lane_b) != held_now, f"RELEASE: the {lane_b if ok_b2 else '?'} back to the bed ({msg_r})")
+    rc.bass_moments = True                                # from here the bed changes bass-first
+    rc.strip_before_bed = False
     rc.drop()
     drop_text = rc.move_log[-1]["text"]
     w0 = rc._w("drop")
@@ -245,6 +265,22 @@ def main():
     same = sum(1 for ln in snap["lanes"] if rc._song_id(rc.lanes.get(ln)) == snap["lanes"].get(ln))
     notes = [m["text"][:90] for m in rc.move_log if m["kind"].startswith("recall")]
     check(rc._recall is None and same >= 2, f"RECALL: {same}/4 lanes back on the saved songs (lanes moved in between: {moved}) {notes[-1:] if notes else ''}")
+    # THE BASS MOMENT: with a voice heard and MOMENTS on, a bed change is bass-first - the bassline takes over
+    # (loud) and the drums follow at the phrase; NEXT forces the change once a voice is there
+    t_bm = len(rc.moves)
+    for _ in range(int(8 * rc.change_bars)):
+        if any(dd != rc.lanes.get("drums") and s.entered and not s.leaving and s.voice_since is not None
+               and rc.bar_n - s.voice_since >= rc.change_bars for dd, s in rc.songs.items()):
+            break
+        pump(int(bars * RATE) // block)
+    rc.next_move()
+    pump(int(1.5 * bars * RATE) // block)
+    took = [m for _, m in rc.moves[t_bm:] if "takes over" in m]
+    pump(int((2 * rc.change_bars + 3) * bars * RATE) // block)       # the drums follow a phrase after the landing
+    followed = [m for _, m in rc.moves[t_bm:] if "drums of" in m and "follow" in m]
+    clash = [m for _, m in rc.moves[t_bm:] if "clash" in m]
+    check((len(took) >= 1 and len(followed) >= 1) or bool(clash),
+          f"BASS MOMENT: {len(took)} bassline takeovers, {len(followed)} drums followed" + (f" (voice refused: {clash[0][:50]})" if clash and not took else ""))
     # a tempo journey: lean hot, span 4 %: the clock climbs in half-percent steps, every song inside the wall
     bpm0 = rc.master_bpm
     rc.set_energy_lean(0.4)
@@ -289,10 +325,12 @@ def main():
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
     # the philosophy of play: bed changes land at the voice's drop when one is near, after a breakdown;
     # the arrangement says why a phrase passed without a move (settling, building, waiting for a drop)
-    beds = [m for _, m in rc.moves if "the bed passes" in m]
-    at_drop = [m for m in beds if "at its drop" in m]
+    beds = [m for _, m in rc.moves if "the bed passes" in m or "takes over" in m]
+    at_drop = [m for m in beds if "at its drop" in m or "at its hook" in m]
     strips = [m for m in beds if "drop out for" in m]
-    check(len(beds) >= 2 and len(strips) >= 1, f"bed changes: {len(beds)}, {len(at_drop)} at the voice's drop, {len(strips)} with a breakdown first")
+    bass_first = [m for m in beds if "takes over" in m]
+    follows = [m for _, m in rc.moves if "drums of" in m and "follow" in m]
+    check(len(beds) >= 2 and len(strips) >= 1, f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first ({len(follows)} drums followed)")
     arr = st.get("arrangement") or {}
     check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")
