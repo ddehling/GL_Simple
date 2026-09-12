@@ -42,14 +42,22 @@ DIALS.update({
     "level": ("quiet", "normal", "loud"),
     "moments": ("rare", "some", "lots"),
     "fx": ("none", "some", "lots"),
+    # the ARC: the night's energy plan - its shape and how long it runs; "yours" = a curve you bent on the strip
+    "arc": ("theme", "steady", "build", "waves", "down", "yours"),
+    "length": ("45m", "90m", "3h", "night"),
 })
 DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold", "pace": "normal",
             "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off",
-            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "some"}
+            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "some",
+            "arc": "theme", "length": "90m"}
+ARC_SHAPE = {"theme": None, "steady": "flat", "build": "rise", "waves": "peak_wave", "down": "wind_down", "yours": "yours"}
+ARC_LEN_S = {"45m": 45 * 60.0, "90m": 90 * 60.0, "3h": 3 * 3600.0, "night": 6 * 3600.0}
+ARC_POINTS = 13                                                      # a chosen shape is handed to the engines as this many waypoints
 BASS_LOW = {"flat": 1.0, "boost": 1.3, "heavy": 1.6}                # the mix bus EQ, low band (< 200 Hz)
 TONE_HIGH = {"dark": 0.7, "neutral": 1.0, "bright": 1.3}             # the mix bus EQ, high band (> 2.5 kHz)
 LEVEL_GAIN = {"quiet": 0.6, "normal": 0.85, "loud": 1.0}             # the mix bus gain
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
+MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
 TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
 TEMPO_LEAN_X = {"slower": -0.03, "hold": 0.0, "faster": 0.03}        # the conductor's clock
@@ -117,6 +125,12 @@ class Director:
         self.played = []                 # (track_id, when)
         self._noted = set()
         self.last_verdict = None         # what the last GOOD / BAD did (the tab shows it)
+        # TASTE: what GOOD / BAD said about SONGS tonight (their tags), fed to both brains as a lean on the
+        # next picks - "more like that" / "less like that" - fading as newer verdicts arrive
+        self.taste = {"like": {}, "dislike": {}}
+        self._last_moment_t = 0.0        # when the last moment (yours or the DJ's) happened: peaks are spaced
+        self.arc_custom = None           # your bent curve [(progress, energy)] when the arc dial says "yours"
+        self._arc_jump = None
 
     # -- lifecycle ---------------------------------------------------------------------------------------
     def start(self, threaded=True):
@@ -205,7 +219,8 @@ class Director:
         sysm.set_bpm_lean(TEMPO_LEAN_BPM[d["tempo"]])
         sysm.set_pace(PACE_X[d["pace"]])
         sysm.set_mix_speed(SEAM_SPEED[d["seams"]])
-        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}, "require_tags": list(self.tags)})
+        sysm.set_flavor({"axis_targets": {"vocal": VOCAL_AXIS[d["vocals"]]}, "require_tags": list(self.tags),
+                         "prefer_tags": dict(self.taste["like"]), "avoid_tags": dict(self.taste["dislike"])})
         sysm.set_persona(VARIETY_PERSONA[d["variety"]])
         sysm.set_loop_bias(LOOP_LEVEL[d["loops"]])
         try:
@@ -215,6 +230,9 @@ class Director:
         except Exception:
             pass
         self._apply_bus(sysm.submix)
+        sysm.set_arc_waypoints(self._arc_points())
+        if abs(ARC_LEN_S[d["length"]] - getattr(sysm, "set_cycle_s", 0)) > 1.0:
+            sysm.set_set_length(ARC_LEN_S[d["length"]])
         if self.pool_name:
             sysm.load_setlist(self.pool_name, mode="pool")
 
@@ -238,6 +256,16 @@ class Director:
         rc.set_change_bars(PACE_BARS[d["pace"]])
         rc.set_vocal_freedom(VOCAL_FREEDOM[d["vocals"]])
         rc.fx_level = FX_LEVEL[d["fx"]]
+        # the bed changes with a four-bar breakdown first (tension, then the new drums and bass land) when
+        # moments are allowed and the mixing is not a blend or a morph (those cross the bed gradually)
+        rc.strip_before_bed = d["moments"] != "rare" and d["mixing"] in ("auto", "cut")
+        rc.set_arc_waypoints(self._arc_points())
+        rc.set_arc_length(ARC_LEN_S[d["length"]])
+        try:
+            rc.brain.flavor["prefer_tags"] = dict(self.taste["like"])
+            rc.brain.flavor["avoid_tags"] = dict(self.taste["dislike"])
+        except Exception:
+            pass
         self._apply_bus(rc.submix)
         try:
             from lib.dj.persona import PERSONAS
@@ -250,6 +278,137 @@ class Director:
             sl = get_setlist(self.db, name=self.pool_name)
             rc.set_pool([e["track_id"] for e in (sl or {}).get("entries", [])])
             rc.pool_name = self.pool_name
+
+    # -- the arc: the night's energy plan ------------------------------------------------------------------
+    def _theme_obj(self):
+        from lib.dj.themes import get_theme
+        try:
+            if self.system is not None and self.system.brain is not None:
+                return self.system.brain.theme
+            if self.rc is not None and self.rc.brain is not None:
+                return self.rc.brain.theme
+        except Exception:
+            pass
+        return get_theme(self.theme)
+
+    def _arc_points(self):
+        """The arc as waypoints for the engines: [] for the theme's own curve; a chosen shape sampled over the
+        theme's energy floor and swing; your bent curve as it is."""
+        shape = ARC_SHAPE[self.dials["arc"]]
+        if shape is None:
+            return []
+        if shape == "yours":
+            return list(self.arc_custom or [])
+        import dataclasses
+        th = dataclasses.replace(self._theme_obj(), arc=shape)
+        return [(i / (ARC_POINTS - 1), th.arc_target(i / (ARC_POINTS - 1))) for i in range(ARC_POINTS)]
+
+    def _arc_engine(self):
+        return self.system if self.system is not None else self.rc
+
+    def arc_progress(self):
+        eng = self._arc_engine()
+        try:
+            return float(eng.arc_progress()) if eng is not None else 0.0
+        except Exception:
+            return 0.0
+
+    def arc_length_s(self):
+        return ARC_LEN_S[self.dials["length"]]
+
+    def arc_curve(self, n=48):
+        """The plan: (progress, energy) samples of the base curve with the ENERGY dial's lean on it."""
+        pts = self._arc_points()
+        lean = ENERGY_LEAN[self.dials["energy"]]
+        th = self._theme_obj()
+
+        def base(p):
+            if pts:
+                xs = [x for x, _ in pts]
+                ys = [y for _, y in pts]
+                if p <= xs[0]:
+                    return ys[0]
+                if p >= xs[-1]:
+                    return ys[-1]
+                for i in range(len(xs) - 1):
+                    if xs[i] <= p <= xs[i + 1]:
+                        f = (p - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
+                        return ys[i] + f * (ys[i + 1] - ys[i])
+            return th.arc_target(p)
+        return [(i / (n - 1), max(0.0, min(1.0, base(i / (n - 1)) + lean))) for i in range(n)]
+
+    def arc_jump(self, p):
+        """'We are here': both engines' set clocks move so the arc reads `p` now (the next pick follows)."""
+        p = max(0.0, min(0.999, float(p)))
+        if self.system is not None:
+            self.system.set_arc_progress(p)
+        if self.rc is not None:
+            self.rc.set_arc_progress(p)
+        self._arc_jump = (p, time.time())
+        self._event(f"arc: we are at {100 * p:.0f} % of the {self.dials['length']} arc")
+
+    def arc_bend(self, p, e):
+        """Bend the curve: the waypoint nearest `p` (on a 13-point grid of the current curve) moves to energy
+        `e`; the arc dial becomes 'yours'."""
+        p, e = max(0.0, min(1.0, float(p))), max(0.0, min(1.0, float(e)))
+        cur = self.arc_curve(ARC_POINTS)
+        lean = ENERGY_LEAN[self.dials["energy"]]
+        pts = [(x, max(0.0, min(1.0, y - lean))) for x, y in cur]     # the base, without the lean
+        if self.dials["arc"] == "yours" and self.arc_custom:
+            pts = list(self.arc_custom)
+        i = min(range(len(pts)), key=lambda k: abs(pts[k][0] - p))
+        pts[i] = (pts[i][0], max(0.0, min(1.0, e - lean)))
+        # neighbours follow a little, so a bend is a hill, not a spike
+        for k, w in ((i - 1, 0.5), (i + 1, 0.5)):
+            if 0 <= k < len(pts):
+                pts[k] = (pts[k][0], max(0.0, min(1.0, pts[k][1] + w * (pts[i][1] - pts[k][1]))))
+        self.arc_custom = pts
+        if self.dials["arc"] != "yours":
+            self.dials["arc"] = "yours"
+            self._event("arc: yours (bent on the strip)")
+        if self.system is not None:
+            self._apply_to_system(self.system)
+        if self.rc is not None:
+            self._apply_to_conductor(self.rc)
+
+    def arc_status(self):
+        """The arc for the strip: where we are, the plan, what actually played (progress, energy)."""
+        eng = self._arc_engine()
+        p = self.arc_progress()
+        length = self.arc_length_s()
+        target = None
+        try:
+            target = float(eng.arc_target()) if self.system is not None else float(eng.energy_target())
+        except Exception:
+            pass
+        curve = self.arc_curve()
+        # the peak ahead: the highest point of the plan after now
+        ahead = [(x, y) for x, y in curve if x >= p]
+        peak = max(ahead, key=lambda t: t[1]) if ahead else None
+        word = "steady"
+        try:
+            later = next((y for x, y in curve if x >= min(1.0, p + 0.06)), curve[-1][1])
+            now_y = next((y for x, y in curve if x >= p), curve[-1][1])
+            word = "building" if later > now_y + 0.03 else ("easing" if later < now_y - 0.03 else ("at the peak" if now_y >= 0.7 else "steady"))
+        except Exception:
+            pass
+        played = []
+        by_id = {t.id: t for t in self.library}
+        try:
+            for tid, when in self.played[-40:]:
+                t = by_id.get(tid)
+                if t is None:
+                    continue
+                age = time.time() - when
+                pp = p - age / length
+                if 0.0 <= pp <= 1.0:
+                    played.append((round(pp, 4), round(float(t.energy_proxy()), 3), t.title))
+        except Exception:
+            pass
+        return {"progress": p, "length_s": length, "elapsed_s": p * length, "target": target, "shape": self.dials["arc"],
+                "word": word, "curve": curve, "played": played,
+                "peak_in_s": ((peak[0] - p) * length if peak else None), "peak_energy": (peak[1] if peak else None),
+                "heard": (played[-1][1] if played else None)}
 
     # -- the dials ------------------------------------------------------------------------------------------
     def set_dial(self, name, value):
@@ -409,14 +568,38 @@ class Director:
             self.system.moment("drop")
         if self.rc is not None:
             self.rc.drop()
+        self._last_moment_t = time.time()
         self._event("DROP")
 
     def break_(self):
         if self.rc is not None:
             self.rc.break_()
+            self._last_moment_t = time.time()
             self._event("BREAK")
             return True
         return False
+
+    # -- taste: what your verdicts say about the SONGS -------------------------------------------------------
+    def _learn_song(self, track_id, up):
+        """A verdict also teaches SONG choice: the rated song's tags lean the next picks toward (GOOD) or
+        away from (BAD) songs like it. Older leans fade by half with every new verdict, so the night follows
+        your last few words, not a ledger."""
+        t = next((x for x in self.library if x.id == track_id), None) if track_id is not None else None
+        if t is None:
+            return None
+        tags = [str(x) for x in (getattr(t, "all_tags", None) or [])][:3]
+        if not tags:
+            return None
+        for side in ("like", "dislike"):
+            for k in list(self.taste[side]):
+                self.taste[side][k] = round(self.taste[side][k] * 0.5, 3)
+                if self.taste[side][k] < 0.08:
+                    del self.taste[side][k]
+        side, other = ("like", "dislike") if up else ("dislike", "like")
+        for tag in tags:
+            self.taste[side][tag] = min(1.0, self.taste[side].get(tag, 0.0) + 0.6)
+            self.taste[other].pop(tag, None)
+        return tags
 
     def rate(self, up):
         """GOOD / BAD: say WHAT was rated, what the DJ learns from it, and - on a BAD - change the music
@@ -424,6 +607,7 @@ class Director:
         visibly consequential."""
         up = bool(up)
         info = {"up": up, "t": time.time(), "what": None, "learn": None, "did": None, "style": None}
+        song_id = None
         if self.system is not None:
             h = next((x for x in reversed(self.system._history) if x.get("via") != "start"), None)
             style = h.get("via") if h else None
@@ -432,7 +616,9 @@ class Director:
             info["style"] = style
             info["learn"] = (f"tonight {style} seams are {'favoured' if up else 'held back'} (the style weight rebuilds from your verdicts, "
                              f"and the pair is remembered as {'good' if up else 'rough'})" if style else "stored")
-            if not up and self.system.current is not None and self._played_s() >= 45.0:
+            cur = self.system.current
+            song_id = cur.id if cur is not None else None
+            if not up and cur is not None and self._played_s() >= 45.0:
                 self.system.request_skip()
                 info["did"] = "moving on to the next song at the next phrase"
         if self.rc is not None:
@@ -441,11 +627,19 @@ class Director:
                 w = self.rc._w(m["kind"], m.get("lane"))
                 info["what"] = m["text"]
                 info["learn"] = f"moves of that kind ({m['kind'].replace('_', ' ')}{', ' + m['lane'] if m.get('lane') else ''}) now weigh {w:.2f} (0.50 = neutral): {'more' if up else 'less'} of them"
+                song_id = m.get("to_id") or m.get("from_id")
             else:
                 info["what"] = "nothing left to rate"
             if not up and self.rc.master is not None:
                 self.rc.next_move()
                 info["did"] = "a different move on the next bar"
+        tags = self._learn_song(song_id, up)
+        if tags:
+            info["learn"] = (info["learn"] or "") + f"; songs tagged {', '.join(tags)} are {'favoured' if up else 'held back'} for the next picks"
+            if self.system is not None:
+                self._apply_to_system(self.system)
+            if self.rc is not None:
+                self._apply_to_conductor(self.rc)
         self.last_verdict = info
         self._event(("GOOD" if up else "BAD") + (f": {info['what'][:50]}" if info.get("what") else ""))
         return info
@@ -676,6 +870,15 @@ class Director:
         rate = MOMENT_RATE[self.dials["moments"]]
         if rate <= 0.0:
             return
+        # PEAKS ARE SPACED AND EARNED: never closer than MOMENT_GAP_S to the last moment (yours or the
+        # DJ's), and at "some" only while the arc asks for heat (a peak in the warm-up is a peak wasted)
+        spaced = time.time() - self._last_moment_t >= MOMENT_GAP_S[self.dials["moments"]]
+        hot = True
+        try:
+            heat = self.system.arc_target() if self.system is not None else (self.rc.energy_target() if self.rc is not None else 0.5)
+            hot = heat >= 0.45 or self.dials["moments"] == "lots" or self.dials["energy"] == "amp"
+        except Exception:
+            pass
         if self.system is not None and self.system.current is not None and self.system.state == "playing":
             cur = self.system.current
             if getattr(self, "_moment_song", None) != cur.id:
@@ -683,18 +886,19 @@ class Director:
             if not self._moment_done and cur.duration_s and self._played_s() >= 0.6 * cur.duration_s:
                 self._moment_done = True
                 import random
-                if random.random() < rate:
+                if spaced and hot and random.random() < rate:
                     self.system.moment("nextdrop")
+                    self._last_moment_t = time.time()
                     self._event("moment: double-drop into the next song")
         elif self.rc is not None and self.rc.master is not None:
-            from lib.dj.remix import AUTO_BREAK_CHANCE
-            self.rc.auto_break_scale = rate / 0.5
+            self.rc.auto_break_scale = rate / 0.5 if spaced else 0.0
             if self.rc.phrase_bars == 0 and getattr(self, "_moment_k", None) != self.rc.bar_n:
                 self._moment_k = self.rc.bar_n
                 voices = [s for d, s in self.rc.songs.items() if s.entered and not s.leaving and d != self.rc.lanes.get("drums")
                           and s.voice_since is not None and self.rc.bar_n - s.voice_since >= 2 * self.rc.change_bars]
-                if voices and self.rc.rng.random() < rate * 0.35:
+                if voices and spaced and hot and self.rc.rng.random() < rate * 0.35:
                     self.rc.drop()
+                    self._last_moment_t = time.time()
                     self._event("moment: DROP onto the voice - bed and voice become one song")
 
     # -- one night's memory --------------------------------------------------------------------------------------------
@@ -900,6 +1104,12 @@ class Director:
                                    "how": plan.get("style"), "beats": plan.get("beats")}
                 bits = [f"one song at a time", f"{self.dials['mixing']} mixing" if self.dials["mixing"] != "auto" else "mixing as the dice fall",
                         f"energy {self.dials['energy']}", f"{self.dials['pace']} plays"]
+                try:
+                    # the arc in words: where the night's energy is heading over the next stretch (the strip's reading)
+                    a = self.arc_status()
+                    bits.append(f"arc {a['word']} (target {a['target']:.2f}, {a['elapsed_s'] / 60:.0f} of {a['length_s'] / 60:.0f} min)")
+                except Exception:
+                    pass
                 if plan:
                     eta = st.get("blend_in_s")
                     bits.append(f"next seam: {plan.get('style')} " + (f"in {eta:.0f} s" if eta is not None else "when the exit comes"))
@@ -933,7 +1143,31 @@ class Director:
                         "vocal lane free" if self.rc.vocal_freedom > 0.5 else "vocals cautious", f"energy {self.dials['energy']}"]
                 left = st.get("change_bars", 8) - 1 - st.get("phrase_bars", 0)
                 bits.append(f"next move in {max(0, left)} bars" + (" (held)" if st.get("hold") else ""))
+                # the arrangement's plan, in words: the bed and how long it has to settle, each voice and what it waits for
+                arr = st.get("arrangement") or {}
+                bed = arr.get("bed")
+                if bed:
+                    b = f"bed: {bed['title'][:26]}"
+                    if bed.get("since_bars") is not None:
+                        b += f" for {bed['since_bars']} bars"
+                    if arr.get("landing_in_bars") is not None:
+                        b += f" (a new bed lands in {arr['landing_in_bars']} bars)"
+                    elif bed.get("settle_left"):
+                        b += f", settles {bed['settle_left']} more before a new voice"
+                    elif bed.get("kind") == "build":
+                        b += " (building to its drop)"
+                    bits.append(b)
+                for v in arr.get("voices") or []:
+                    if v.get("leaving"):
+                        bits.append(f"{v['title'][:26]} fades out as a voice")
+                    elif v.get("may_take_bed_in"):
+                        bits.append(f"voice {v['title'][:26]}: heard {v['heard_bars']} bars, may take the bed in {v['may_take_bed_in']}")
+                    elif v.get("drop_in_bars") is not None:
+                        bits.append(f"voice {v['title'][:26]} takes the bed at its drop in ~{v['drop_in_bars']:.0f} bars")
+                    else:
+                        bits.append(f"voice {v['title'][:26]} takes the bed by {v['must_take_bed_in']} bars (no drop in sight)")
                 out["intent"] = ", ".join(bits)
+                out["wait_why"] = arr.get("wait_why")
                 out["lanes"] = {ln: (songs.get(d) or {}).get("title") if d else None for ln, d in lanes.items()}
                 out["recent"] = [f"{t}  {m}" for t, m in (st.get("moves") or [])[-8:]]
                 out["error"] = out["error"] or st.get("error")
@@ -962,6 +1196,10 @@ class Director:
         except Exception:
             pass
         out["doubled"] = doubled
+        try:
+            out["arc"] = self.arc_status()
+        except Exception as e:  # noqa: BLE001
+            out["arc"] = {"error": f"{type(e).__name__}: {e}"}
         lv = self.last_verdict
         if lv is not None:
             lv = dict(lv)
@@ -1003,6 +1241,8 @@ class Director:
             eff.append(f"mixing {d['mixing']}: " + ("the dice choose" if d['mixing'] == 'auto' else f"every seam pinned to {MIX_PIN[d['mixing']]} (family fallback, a refused cut becomes a phrase cut)"))
             eff.append(f"layers one: the autoDJ, one song at a time")
             eff.append(f"energy {d['energy']}: arc target {st.get('arc_heat', 0):.2f} with lean {ENERGY_LEAN[d['energy']]:+.2f}")
+            eff.append(f"arc {d['arc']}: " + ("the theme's own curve" if d['arc'] == 'theme' else ("your bent curve" if d['arc'] == 'yours' else f"a {d['arc']} curve over the theme's energy floor and swing")) + f", {100 * sysm.arc_progress():.0f} % through")
+            eff.append(f"length {d['length']}: the arc runs {ARC_LEN_S[d['length']] / 60:.0f} min")
             eff.append(f"tempo {d['tempo']}: picks aim at {sysm.bpm_target():.0f} bpm" + (f" ({TEMPO_LEAN_BPM[d['tempo']]:+.0f})" if d['tempo'] != 'hold' else ""))
             eff.append(f"pace {d['pace']}: this record holds about {exit_s:.0f} s" if exit_s else f"pace {d['pace']}")
             eff.append(f"seams {d['seams']}: blend lengths ×{SEAM_SPEED[d['seams']]:g}")
@@ -1020,11 +1260,13 @@ class Director:
                      "evict": "a song had looped long enough; its lanes moved on", "clock": "the clock passed to the song holding most lanes",
                      "drop": "DROP: every lane to one song", "break": "BREAK", "break_auto": "the song holding most lanes reached a breakdown, so the conductor broke with it",
                      "manual": "your move", "open": "the opener",
-                     "voice_in": "a new song arrives as a VOICE over the bed (drums + bass stay where they are)",
-                     "bed_to": "the voice has been heard two phrases, so the BED (drums + bass together) passes to it - the morph",
+                     "voice_in": "a new song arrives as a VOICE over the bed once the bed has settled (drums + bass stay where they are)",
+                     "bed_to": "the voice was heard two phrases and reached its drop (or ran out of phrases), so the BED (drums + bass together) passes to it",
                      "voice_out": "the old bed song, now only a voice, fades out; one song's journey is complete"}
             if last is not None:
                 why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
+            if rc.wait_why:
+                why.append(f"the last phrase passed without a move: {rc.wait_why}")
             for dname, s in rc.songs.items():
                 if s.staged_at is not None and not s.entered and not s.leaving:
                     fit = f"key fit {s.compat:.2f}" if s.compat is not None else "key unknown"
@@ -1034,6 +1276,8 @@ class Director:
             eff.append(f"mixing {d['mixing']}: lanes cross over {rc.cross_beats:g} beat{'s' if rc.cross_beats != 1 else ''}")
             eff.append(f"layers {d['layers']}: {n_live} heard now, up to {2 if rc.blend < 0.5 else 3}; moves lean {'toward the newest song' if rc.blend < 0.5 else 'to free recombination'}")
             eff.append(f"energy {d['energy']}: target {rc.energy_target():.2f}" + (", tempo may climb with it" if rc.tempo_span else ""))
+            eff.append(f"arc {d['arc']}: " + ("the theme's own curve" if d['arc'] == 'theme' else ("your bent curve" if d['arc'] == 'yours' else f"a {d['arc']} curve")) + f", {100 * rc.arc_progress():.0f} % through")
+            eff.append(f"length {d['length']}: the arc runs {ARC_LEN_S[d['length']] / 60:.0f} min")
             eff.append(f"tempo {d['tempo']}: clock {rc.master_bpm or 0:.1f} bpm" + (f" heading {TEMPO_LEAN_X[d['tempo']] * 100:+.0f}%" if d['tempo'] != 'hold' else ""))
             eff.append(f"pace {d['pace']}: a move every {rc.change_bars} bars")
             eff.append(f"vocals {d['vocals']}: the vocal lane crosses with freedom {rc.vocal_freedom:.1f}")

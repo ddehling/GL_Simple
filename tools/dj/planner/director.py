@@ -25,7 +25,8 @@ DIAL_LABELS = {
     "tempo": ("TEMPO", {"slower": "slower", "hold": "hold", "faster": "faster"},
               "lean the tempo journey: picks aim 6 bpm lower / higher; layered, the clock travels 3 % that way"),
     "pace": ("PACE", {"short": "short", "normal": "normal", "long": "long"},
-             "how long records play before the next seam; layered, how often the lanes move"),
+             "how long records play before the next seam (never before the payoff); layered, the phrase length the arrangement moves in: "
+             "a new bed settles three of them before the next voice arrives, a voice is heard two before it may take the bed"),
     "seams": ("SEAMS", {"quick": "quick", "normal": "normal", "long": "long"},
               "how long the mixes themselves run: blend lengths × 0.5 / 1 / 2; layered, the lanes' crossfade"),
     "vocals": ("VOCALS", {"none": "none", "some": "some", "lots": "lots"},
@@ -41,12 +42,135 @@ DIAL_LABELS = {
     "level": ("LEVEL", {"quiet": "quiet", "normal": "normal", "loud": "loud"},
               "the mix bus gain: 60 % · 85 % · 100 %"),
     "moments": ("MOMENTS", {"rare": "rare", "some": "some", "lots": "lots"},
-                "how often the DJ makes its own moments: one song, a double-drop into the next song once a record is 60 % through; layered, breaks at breakdowns and drops onto a voice"),
+                "how often the DJ makes its own moments, spaced at least 8 min (some) / 4 min (lots) apart and only while the arc is warm: "
+                "one song, a double-drop into the next song; layered, breaks at breakdowns, drops onto a voice, and every bed change "
+                "as a four-bar breakdown before the new drums and bass land (rare = clean crosses only)"),
     "fx": ("FX", {"none": "none", "some": "some", "lots": "lots"},
            "shapes on moves (filter-out, stutter-out, echo) and the filter / echo seams' odds"),
+    "arc": ("ARC", {"theme": "theme", "steady": "steady", "build": "build", "waves": "waves", "down": "down", "yours": "yours"},
+            "the night's energy plan, drawn on the strip above: the theme's own curve · steady · a build to the end · waves (two swells "
+            "with a breather) · a wind-down · yours (drag up / down on the strip to bend the curve; click on it = we are here)"),
+    "length": ("LENGTH", {"45m": "45 m", "90m": "90 m", "3h": "3 h", "night": "night"},
+               "how long the arc runs; changing it puts you at the same point of the new length"),
 }
-DIAL_ORDER = ("layers", "mixing", "energy", "tempo", "pace", "seams", "vocals", "variety", "loops",
+DIAL_ORDER = ("layers", "mixing", "arc", "length", "energy", "tempo", "pace", "seams", "vocals", "variety", "loops",
               "moments", "fx", "bass", "tone", "level")
+
+
+class ArcStrip(QWidget):
+    """The night's arc as a picture: the plan as a curve (with the ENERGY lean on it), the songs that played
+    as dots at their energy, the playhead. Click = 'we are here' (both engines' set clocks move); drag up
+    or down = bend the curve there (the ARC dial becomes 'yours')."""
+    PAD = 10
+
+    def __init__(self, tab):
+        super().__init__(tab)
+        self.tab = tab
+        self.arc = None
+        self._press = None
+        self.setMinimumHeight(58)
+        self.setMaximumHeight(58)
+        self.setToolTip("the night's arc: the plan (curve), what played (dots at each song's energy), where we are (line)\n"
+                        "click = we are here on the arc · drag up / down = bend the plan there (ARC becomes 'yours')")
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def set_arc(self, arc):
+        self.arc = arc
+        self.update()
+
+    def _xy(self, p, e):
+        w, h = self.width(), self.height()
+        return self.PAD + p * (w - 2 * self.PAD), (h - 8) - e * (h - 26)
+
+    def _pe(self, x, y):
+        w, h = self.width(), self.height()
+        return (max(0.0, min(1.0, (x - self.PAD) / max(1.0, w - 2 * self.PAD))),
+                max(0.0, min(1.0, ((h - 8) - y) / max(1.0, h - 26))))
+
+    def paintEvent(self, ev):
+        from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QPolygonF
+        from PyQt6.QtCore import QPointF
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        qp.fillRect(self.rect(), QColor(20, 20, 26))
+        a = self.arc or {}
+        curve = a.get("curve") or []
+        qp.setPen(QColor(154, 154, 166))
+        if not curve:
+            qp.drawText(self.PAD, 16, "ARC - the night's energy plan appears when the Director starts")
+            return
+        w, h = self.width(), self.height()
+        # quarter ticks with minutes
+        length = float(a.get("length_s") or 1.0)
+        for q in (0.0, 0.25, 0.5, 0.75, 1.0):
+            x, _ = self._xy(q, 0.0)
+            qp.setPen(QColor(50, 50, 60))
+            qp.drawLine(int(x), 18, int(x), h - 8)
+            qp.setPen(QColor(120, 120, 135))
+            qp.drawText(int(x) + 3, h - 1, f"{q * length / 60:.0f}m")
+        # the plan
+        path = QPainterPath()
+        x0, y0 = self._xy(0.0, 0.0)
+        path.moveTo(x0, y0)
+        for p, e in curve:
+            x, y = self._xy(p, e)
+            path.lineTo(x, y)
+        x1, _ = self._xy(1.0, 0.0)
+        path.lineTo(x1, y0)
+        path.closeSubpath()
+        qp.fillPath(path, QColor(74, 122, 217, 70))
+        qp.setPen(QPen(QColor(125, 162, 227), 1.6))
+        qp.drawPolyline(QPolygonF([QPointF(*self._xy(p, e)) for p, e in curve]))
+        # what played
+        qp.setPen(Qt.PenStyle.NoPen)
+        for pp, e, _title in a.get("played") or []:
+            x, y = self._xy(pp, e)
+            qp.setBrush(QColor(240, 200, 90))
+            qp.drawEllipse(QPointF(x, y), 3.2, 3.2)
+        # where we are
+        p = float(a.get("progress") or 0.0)
+        x, _ = self._xy(p, 0.0)
+        qp.setPen(QPen(QColor(255, 255, 255), 1.2))
+        qp.drawLine(int(x), 16, int(x), h - 8)
+        tgt = a.get("target")
+        if tgt is not None:
+            _, y = self._xy(p, float(tgt))
+            qp.setBrush(QColor(255, 255, 255))
+            qp.drawEllipse(QPointF(x, y), 3.5, 3.5)
+        # the words
+        el = float(a.get("elapsed_s") or 0.0)
+        txt = f"ARC {a.get('shape')} · {a.get('word')} · {el / 60:.0f} of {length / 60:.0f} min"
+        if tgt is not None:
+            txt += f" · target {tgt:.2f}"
+        if a.get("heard") is not None:
+            txt += f" · last song {a['heard']:.2f}"
+        if a.get("peak_in_s") is not None and a.get("peak_in_s") > 60:
+            txt += f" · peak ({a.get('peak_energy', 0):.2f}) in {a['peak_in_s'] / 60:.0f} min"
+        qp.setPen(QColor(230, 230, 236))
+        qp.drawText(self.PAD, 13, txt)
+
+    def mousePressEvent(self, ev):
+        self._press = (ev.position().x(), ev.position().y(), False)
+
+    def mouseMoveEvent(self, ev):
+        if self._press is None or self.tab.director is None:
+            return
+        x0, y0, moved = self._press
+        if moved or abs(ev.position().y() - y0) > 4:
+            p, e = self._pe(ev.position().x(), ev.position().y())
+            self.tab.director.arc_bend(p, e)
+            self._press = (x0, y0, True)
+            self.set_arc(self.tab.director.arc_status())
+
+    def mouseReleaseEvent(self, ev):
+        if self._press is None:
+            return
+        x0, y0, moved = self._press
+        self._press = None
+        if not moved and self.tab.director is not None:
+            p, _ = self._pe(ev.position().x(), ev.position().y())
+            self.tab.director.arc_jump(p)
+            self.set_arc(self.tab.director.arc_status())
 
 
 class DirectorTab(QWidget):
@@ -95,6 +219,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.state_lbl.setProperty("dim", "true")
         top.addWidget(self.state_lbl, 1)
         root.addLayout(top)
+        # -- the arc: the night's energy plan, what played against it, where we are; click / drag steer it ----
+        self.arc_strip = ArcStrip(self)
+        root.addWidget(self.arc_strip)
 
         # -- the picture ----------------------------------------------------------------------------------------------
         from lib.dj.timeline import Timeline, Spectro
@@ -556,6 +683,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.next_lbl.setText("NEXT  not chosen yet")
             self.next_sub.setText("")
         self.intent_lbl.setText(st.get("intent") or "")
+        self.arc_strip.set_arc(st.get("arc"))
         lanes = st.get("lanes")
         self.lanes_lbl.setText("   ".join(f"{ln}: {(t or '-')[:22]}" for ln, t in lanes.items()) if lanes else "")
         self.why_lbl.setText("\n".join(st.get("why") or []))

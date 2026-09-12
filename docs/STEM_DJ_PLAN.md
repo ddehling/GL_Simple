@@ -436,6 +436,43 @@ engines and the song list. Fourteen dials now; the buttons follow the Director's
 script or the copilot shows. Open: the user's ear on all of it; whether fourteen dials is already too many
 for a live show; the MOMENTS dial's auto-drop rate.
 
+**A philosophy of play (2026-09-12, evening, `/goal improve the philosophy of play`):** researched how
+DJs choose and mix (measured mixes: Kim et al. 2020 on 1,557 mixes - tempo barely touched, key almost never
+transposed, transitions in multiples of 32 beats, ~4 min per track; Kell & Tzanetakis 2013 on 114 Essential
+Mixes - timbral continuity, tempo and loudness held, key not significant, evenly sized steps beat
+nearest-neighbour ordering; practice literature - phrase mixing, the payoff before the exit, 2.5 / 3.5 / 5
+minute plays, waves not constant peaks, one or two big tricks a set, texture contrast, follow what works).
+Written up with sources and a principle → mechanism → dial table in `docs/DJ_PHILOSOPHY_OF_PLAY.md`. Code:
+the conductor's arrangement follows the songs' own structure - a voice takes the bed AT ITS OWN DROP when
+one comes within a phrase (`_drop_in_bars`), by five phrases regardless; a new bed SETTLES three phrases
+before the next voice arrives, nothing arrives while the bed builds to its drop, a breakdown of the bed opens
+the door early; with MOMENTS on and mixing auto / cut, a bed change is a four-bar BREAKDOWN first (the old
+bed's drums + bass out) and the new drums and bass land as a cut (`_bed_to`, `strip_before_bed`); the
+conductor says why a phrase passed without a move (`wait_why`) and reports the arrangement (bed, settle
+left, each voice's drop ETA). The Director spaces its own moments (8 / 4 minutes since the last moment, yours
+or its own) and at "some" makes them only while the arc is warm; GOOD / BAD now also teach SONG choice (the
+rated song's tags as prefer / avoid leans on both brains, halving per verdict); the intent line reads the
+arrangement in words ("bed: X for 12 bars, settles 12 more"; "voice Y takes the bed at its drop in ~6 bars";
+one song: "arc building (target 0.62)"). Also fixed a live crash the user hit: a song given a voice lane
+outside the policy (an evict, a recall) had no `voice_since` and the subtraction killed the Director thread.
+Gate: strips on, checks for bed changes at the voice's drop and with a breakdown first. Open: the settle /
+voice / strip numbers are first guesses from the literature - the user's ear at a party decides them.
+*"We need arc info and control" (same evening):* the ARC STRIP under the top row - the night's plan as a
+curve (the ENERGY lean on it), the songs that played as dots at their energy, the playhead with the target,
+quarter ticks in minutes, and the words ("ARC waves · building · 32 of 90 min · target 0.62 · last song 0.58
+· peak (0.94) in 22 min"); click on it = "we are here" (both engines' set clocks move: `set_arc_progress`),
+drag up / down = bend the plan there (13 waypoints, neighbours follow; the ARC dial becomes "yours"). Two
+dials: ARC (theme / steady / build / waves / down / yours - a chosen shape is sampled over the theme's energy
+floor and swing and handed to both engines as waypoints; the conductor got `_arc_base` / waypoints / a length
+/ a progress jump of its own) and LENGTH (45 m / 90 m / 3 h / night → `set_set_length` and the conductor's
+`arc_len_s`). The autoDJ's waypoint cap went 8 → 16 for the 13-point curves. Also from the gate: a voice
+lane is never taken from a voice that has not had its turn (new voices were displacing the previous one
+before it could take the bed); a voice that can never take the bed (bass clash) fades out after its phrases;
+a BREAK keeps the stem that is measured loudest over its span (a kept `other` that fell silent gave dead
+bars), refuses when nothing is loud enough, and your BREAK ends a running auto break; auto breaks never come
+while loops hold, within two phrases of a DROP, or while a bed change is in flight; the strip before a bed
+lands only when the voice is audible through it.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

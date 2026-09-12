@@ -88,7 +88,11 @@ AUTO_BREAK_CHANCE = 0.5          # a breakdown of the song holding most lanes ma
 TEMPO_STEP = 0.005               # the clock moves at most this much per bar on a tempo journey
 TEMPO_SPAN_MAX = 0.06            # ...and at most this far from the opener's tempo
 RECALL_PHRASES = 8               # a RECALL whose songs cannot come back within this many phrases is abandoned
-VOICE_PHRASES = 2                # the arrangement policy: a voice is heard this many phrases before it takes the bed
+VOICE_PHRASES = 2                # the arrangement policy: a voice is heard this many phrases before it MAY take the bed
+VOICE_MAX_PHRASES = 5            # ...and takes it by then even if its drop never comes (a voice is not a home)
+SETTLE_PHRASES = 3               # a new bed is heard for this many phrases before the next voice arrives (let it breathe)
+STRIP_BARS = 4                   # the breakdown before a bed lands: the old bed's drums + bass out for this many bars
+DROP_LOOK_BARS = 2               # a voice's drop counts as "now" when its groove starts within this many bars
 RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto",
                "voice_in", "bed_to", "voice_out")
 
@@ -130,6 +134,8 @@ class Song:
         self.ready_k = None              # bar count from which a move may let it in (its landmark lands there)
         self.was_bed = False             # arrangement policy: it held the bed and is now a voice on its way out
         self.voice_since = None          # bar count since it has been a voice
+        self.bed_since = None            # bar count since it holds the bed (drums + bass)
+        self.bed_lands_k = None          # bar count when a planned bed change lands on it (the strip is running)
 
     def held(self, lanes):
         return [s for s in STEMS if lanes.get(s) == self.deck]
@@ -161,6 +167,10 @@ class RemixConductor:
         self.vocal_freedom = 0.4
         self.energy_lean = 0.0
         self.hold = False
+        self._land_k = None              # arrangement: bar count when a planned bed change lands (a strip is running)
+        self._land_at = None             # ...and its clock (hygiene waits for it)
+        self.wait_why = None             # arrangement: why the last phrase passed without a move, in words
+        self.strip_before_bed = False    # the Director's MOMENTS: a four-bar breakdown before a new bed lands
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
@@ -252,15 +262,45 @@ class RemixConductor:
         if self.start_clock is None:
             return 0.0
         elapsed = (self.submix.clock - self.start_clock) / RATE
+        length = float(getattr(self, "arc_len_s", 0) or 0) or SET_CYCLE_S
         theme = self.brain.theme
-        if getattr(theme, "arc", "") == "all_night":
-            return min(1.0, elapsed / (6 * 3600.0))
-        return (elapsed % SET_CYCLE_S) / SET_CYCLE_S
+        if getattr(theme, "arc", "") == "all_night" and not getattr(self, "arc_waypoints", None):
+            return min(1.0, elapsed / max(length, 6 * 3600.0 if length == SET_CYCLE_S else length))
+        return (elapsed % length) / length
+
+    def _arc_base(self, progress):
+        """The theme's arc, or the Director's drawn / chosen curve (waypoints) when one is set."""
+        pts = getattr(self, "arc_waypoints", None)
+        if pts:
+            xs = [p for p, _ in pts]
+            ys = [e for _, e in pts]
+            if progress <= xs[0]:
+                return ys[0]
+            if progress >= xs[-1]:
+                return ys[-1]
+            for i in range(len(xs) - 1):
+                if xs[i] <= progress <= xs[i + 1]:
+                    f = (progress - xs[i]) / max(xs[i + 1] - xs[i], 1e-6)
+                    return ys[i] + f * (ys[i + 1] - ys[i])
+        return self.brain.theme.arc_target(progress) if self.brain else 0.6
 
     def energy_target(self):
-        """The theme's arc at this point of the set, plus the lean."""
-        base = self.brain.theme.arc_target(self.arc_progress()) if self.brain else 0.6
-        return max(0.05, min(0.95, base + self.energy_lean))
+        """The arc at this point of the set, plus the lean."""
+        return max(0.05, min(0.95, self._arc_base(self.arc_progress()) + self.energy_lean))
+
+    # -- the arc: the Director's hands ---------------------------------------------------------------------------
+    def set_arc_waypoints(self, pts):
+        self.arc_waypoints = sorted((max(0.0, min(1.0, float(p))), max(0.0, min(1.0, float(e)))) for p, e in (pts or []))[:16]
+
+    def set_arc_length(self, seconds):
+        self.arc_len_s = float(max(1800.0, min(12 * 3600.0, seconds)))
+
+    def set_arc_progress(self, p):
+        """'We are HERE on the arc': move the set's start so that progress reads `p` now."""
+        if self.start_clock is None:
+            return
+        length = float(getattr(self, "arc_len_s", 0) or 0) or SET_CYCLE_S
+        self.start_clock = int(self.submix.clock - max(0.0, min(0.999, float(p))) * length * RATE)
 
     def _pick_first(self):
         """The opener: from the pool when one is set, inside the theme's tempo window (a 70 bpm half-time
@@ -698,6 +738,7 @@ class RemixConductor:
             {"at": at, "cmd": "start", "deck": deck},
         ])
         self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
+        song.bed_since = self.bar_n
         self.brain.note_played(t)
         self._log_play(t)
         self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
@@ -887,9 +928,13 @@ class RemixConductor:
                 self._one_move(self._snap_to_section(self._next_bar_clock()))
 
     def _auto_break(self):
-        """The song holding most lanes reaches a breakdown: the conductor may break with it, once per song."""
-        if self._break is not None or self.hold:
+        """The song holding most lanes reaches a breakdown: the conductor may break with it, once per song -
+        never while loops hold the room, within two phrases of a DROP (peaks are spaced) or while a bed
+        change is in flight."""
+        if self._break is not None or self.hold or self.user_loop_bars or self._land_k is not None:
             return
+        if getattr(self, "_drop_k", None) is not None and self.bar_n - self._drop_k < 4 * self.change_bars:
+            return                                    # a DROP is a peak: four phrases of plain play before another moment
         counts = {}
         for d in self.lanes.values():
             if d is not None:
@@ -918,8 +963,8 @@ class RemixConductor:
                 continue
             held = song.held(self.lanes)
             if not held:
-                if not song.entered or self._break is not None:
-                    continue                          # staged and waiting, or resting through a BREAK
+                if not song.entered or self._break is not None or (self._land_k is not None and k < self._land_k):
+                    continue                          # staged and waiting, resting through a BREAK, or the old bed still sounding until the new one lands
                 if song.idle_k is None:
                     song.idle_k = k
                 elif k - song.idle_k >= 1:
@@ -930,7 +975,9 @@ class RemixConductor:
             if song.loop is None and not d.get("loop"):
                 left = (song.track.duration_s - time_s) / rate
                 sec = song.track.section_at(time_s) or {}
-                if left < RUNWAY_S or sec.get("kind") == "outro":
+                # an "outro" label with minutes of body left is a mis-segmentation, not an ending (the gate
+                # caught a voice looping "its last 8 bars" with 217 s to go - the loop wrap threw its lock)
+                if left < RUNWAY_S or (sec.get("kind") == "outro" and left < MIN_RUNWAY_S):
                     bar = self._bar_s(song.track, time_s)
                     start = song.track.nearest_downbeat(max(0.0, time_s - LOOP_BARS * bar))
                     self.submix.post({"at": self._next_bar_clock(), "cmd": "loop", "deck": deck,
@@ -960,10 +1007,103 @@ class RemixConductor:
 
     def _one_move(self, at):
         tag = None
+        self.wait_why = None
         try:
             tag = self._one_move_inner(at)
         finally:
-            self._hygiene(at + int(XFADE_BEATS * self._beat_s() * RATE))
+            # hygiene (the low carve, the duck) reads the lane map, which already shows a bed change that
+            # LANDS later: it waits for the landing rather than thinning the bed that still plays
+            t_h = at
+            if self._land_at is not None and self._land_at > at:
+                t_h = self._land_at
+            self._land_at = None
+            self._hygiene(t_h + int(XFADE_BEATS * self._beat_s() * RATE))
+        return tag
+
+    # -- the arrangement's reading of a song's structure --------------------------------------------------------
+    def _kind_at(self, deck, at):
+        sec = self._section_at_clock(deck, at) or {}
+        return sec.get("kind")
+
+    def _stem_level_span(self, deck, lane, at0, at1):
+        """The song's own stem envelope (0..1 of its 95th percentile, half-second steps) - its MINIMUM over the
+        span of clocks at0..at1, so a stem that drops out mid-span reads as quiet; None when unknown."""
+        s = self.songs.get(deck)
+        env = (s.env or {}).get(lane) if s is not None else None
+        if env is None or len(env) == 0:
+            return None
+        t0, t1 = self._song_time_at(deck, at0), self._song_time_at(deck, at1)
+        i0, i1 = int(max(0.0, min(t0, t1)) * 2), int(max(t0, t1) * 2) + 1
+        i0, i1 = min(i0, len(env) - 1), min(max(i1, i0 + 1), len(env))
+        return float(np.percentile(np.asarray(env[i0:i1], dtype=np.float32), 25))
+
+    def _drop_in_bars(self, deck, at, look_bars):
+        """Bars of the song on `deck` from clock `at` to its next GROOVE that follows a build, a breakdown or
+        the intro (its drop, in this library's vocabulary) - 0 when the drop is right there, None when none
+        comes within `look_bars` bars."""
+        s = self.songs.get(deck)
+        if s is None:
+            return None
+        t_at = self._song_time_at(deck, at)
+        secs = s.track.sections or []
+        bar = self._bar_s(s.track, t_at)
+        for i in range(1, len(secs)):
+            if secs[i].get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown", "intro"):
+                b = s.track.nearest_downbeat(secs[i]["start_s"])
+                d = (b - t_at) / max(bar, 1e-6)
+                if -DROP_LOOK_BARS <= d <= look_bars + 0.05:
+                    return max(0.0, d)
+        return None
+
+    def _bed_to(self, d, at, d_bars):
+        """The BED (drums + bass together) passes to the voice on `d`. With `strip_before_bed`, the old
+        bed's drums and bass drop out STRIP_BARS before the landing - a breakdown of the room - and the new
+        drums and bass land as a cut on the bar (the release); else the two lanes cross on the bar. When
+        `d_bars` is given the landing is put on the voice's own drop."""
+        s, old = self.songs[d], self._bed_deck()
+        bar_c = self._bar_clock()
+        land = at + int(round(d_bars)) * bar_c if d_bars else at
+        strip = bool(self.strip_before_bed) and old is not None and old in self.songs and old != d
+        why = "at its drop" if d_bars is not None else "after its phrases as a voice"
+        tag = None
+        if strip:
+            strip_at = land - STRIP_BARS * bar_c
+            if strip_at < at:
+                strip_at, land = at, at + STRIP_BARS * bar_c
+            # the breakdown must be HEARD: something the voice plays through the strip (its lane's stem over
+            # the span), else the bed crosses plainly - a silent breakdown is dead air, not tension
+            voice_lanes = [ln for ln in ("other", "vocals") if self.lanes.get(ln) == d]
+            lv = max([self._stem_level_span(d, ln, strip_at, land) or 0.0 for ln in voice_lanes] or [0.0])
+            if lv < 0.3:                              # a third of the stem's own loud level, through the whole strip
+                strip = False
+                land = at + int(round(d_bars)) * bar_c if d_bars else at
+                self._note(f"no breakdown before {s.track.title}'s bed: its voice would be too quiet ({lv:.2f})")
+        if strip:
+            beats = DROP_BEATS if self.cross_beats <= 1.0 else 1.0
+            ev = [{"at": strip_at, "cmd": "stem_gains", "deck": old, "gains": {"drums": 0.0, "bass": 0.0}, "ramp_s": 1.0 * self._beat_s()}]
+            for ln in ("drums", "bass"):
+                ev.append({"at": land, "cmd": "stem_gains", "deck": d, "gains": {ln: self._lane_gain(d, ln, land)}, "ramp_s": beats * self._beat_s()})
+            self.submix.post_many(ev)
+            for ln in ("drums", "bass"):
+                self.lanes[ln] = d
+                self.lane_k[ln] = self.bar_n
+            text = (f"the bed passes to {s.track.title} {why}: {self.songs[old].track.title}'s drums and bass drop out for "
+                    f"{STRIP_BARS} bars, then {s.track.title}'s land")
+        else:
+            tag = self._cross("drums", d, land)
+            self._cross("bass", d, land)
+            text = f"the bed passes to {s.track.title} {why}: its drums and bass under the voice"
+        # bars until the landing, counted from NOW: the move is planned a bar before `at`
+        bars_to_land = int(round((land - at) / max(bar_c, 1))) + 1
+        self._land_k = self.bar_n + bars_to_land if bars_to_land > 1 else None
+        self._land_at = land if bars_to_land > 1 else None
+        s.bed_since = self.bar_n + bars_to_land
+        s.was_bed = False
+        if old is not None and old in self.songs:
+            self.songs[old].was_bed = True
+            self.songs[old].voice_since = self.bar_n + bars_to_land
+            self.songs[old].bed_since = None
+        self._move("bed_to", "drums", self._song_id(old), s.track.id, text, shape=tag)
         return tag
 
     # -- the ARRANGEMENT policy: a bed and voices -----------------------------------------------------------------
@@ -994,10 +1134,18 @@ class RemixConductor:
                     tag = self._cross(ln, bed, at)
                     self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
                     return tag
+        # a bed change in flight (the strip, then the landing) owns the arrangement until it lands
+        if self._land_k is not None:
+            if bar < self._land_k:
+                self.wait_why = "the bed is changing: the breakdown, then the new drums and bass land"
+                return None
+            self._land_k = None
         # 1. the old bed song, now only a voice, leaves after a phrase
         for d in list(voices):
             s = self.songs[d]
-            if getattr(s, "was_bed", False) and bar - getattr(s, "voice_since", bar) >= self.change_bars:
+            if s.voice_since is None:
+                s.voice_since = bar                   # a lane came to it outside the policy (an evict, a recall, your grid)
+            if getattr(s, "was_bed", False) and bar - s.voice_since >= self.change_bars:
                 tag = None
                 for ln in ("other", "vocals"):
                     if self.lanes.get(ln) == d:
@@ -1005,25 +1153,51 @@ class RemixConductor:
                         tag = self._cross(ln, to, at) or tag
                 self._move("voice_out", None, s.track.id, self._song_id(bed), f"{s.track.title} fades out as a voice; the bed carries on", shape=tag)
                 return tag
-        # 2. a voice that has been heard long enough takes the bed (drums + bass together, under its voice)
+        # 2. a voice that has been heard long enough takes the bed (drums + bass together, under its voice) -
+        #    AT ITS OWN DROP when one comes within the window (the payoff lands the change), by
+        #    VOICE_MAX_PHRASES regardless, at once when the bed is running out
+        bed_s = self.songs.get(bed) if bed is not None else None
+        bed_kind = self._kind_at(bed, at) if bed is not None else None
+        bed_out = bed_s is not None and (bed_s.loop is not None or bed_kind == "outro")
         for d in sorted(voices, key=lambda x: getattr(self.songs[x], "voice_since", 0)):
             s = self.songs[d]
             if getattr(s, "was_bed", False):
                 continue
-            if bar - getattr(s, "voice_since", bar) >= VOICE_PHRASES * self.change_bars and self._lane_ok(d, "bass", at):
-                old = bed
-                tag = self._cross("drums", d, at)
-                self._cross("bass", d, at)
-                if old is not None and old in self.songs:
-                    self.songs[old].was_bed = True
-                    self.songs[old].voice_since = bar
-                    # the old bed song keeps whatever voice it holds for a phrase, then leaves (step 1)
-                    if not self.songs[old].held(self.lanes):
-                        pass
-                self._move("bed_to", "drums", self._song_id(old), s.track.id, f"the bed passes to {s.track.title}: its drums and bass under the voice", shape=tag)
-                return tag
-        # 3. a staged song arrives as a voice over the bed
+            heard = bar - (s.voice_since if s.voice_since is not None else bar)
+            if heard < VOICE_PHRASES * self.change_bars:
+                continue
+            if not self._lane_ok(d, "bass", at):
+                if heard >= VOICE_MAX_PHRASES * self.change_bars:
+                    # it has had its phrases and can never take the bed (its bass clashes with the room):
+                    # it fades out as a voice so the next song can come
+                    tag = None
+                    for ln in ("other", "vocals"):
+                        if self.lanes.get(ln) == d:
+                            to = bed if (bed is not None and self._lane_ok(bed, ln, at)) else None
+                            tag = self._cross(ln, to, at) or tag
+                    s.was_bed = True
+                    self._move("voice_out", None, s.track.id, self._song_id(bed), f"{s.track.title} fades out as a voice (its bass would clash with the room)", shape=tag)
+                    return tag
+                self.wait_why = f"{s.track.title[:28]}'s bass would clash with the room: it stays a voice"
+                continue
+            d_bars = self._drop_in_bars(d, at, self.change_bars)
+            if d_bars is None and heard < VOICE_MAX_PHRASES * self.change_bars and not bed_out:
+                self.wait_why = f"{s.track.title[:28]} waits for its drop before it takes the bed"
+                continue
+            return self._bed_to(d, at, d_bars)
+        # 3. a staged song arrives as a voice over the bed - once the bed has SETTLED (heard as itself for
+        #    SETTLE_PHRASES), never while the bed is building to its drop; a breakdown of the bed or a bed
+        #    running out opens the door early
         waiting = [d for d in live if not self.songs[d].entered and (self.songs[d].ready_k is None or bar + 1 >= self.songs[d].ready_k)]
+        if waiting and len(voices) < max_voices and bed_s is not None:
+            since = bar - bed_s.bed_since if bed_s.bed_since is not None else 10 ** 6
+            settle_left = SETTLE_PHRASES * self.change_bars - since
+            if bed_kind == "build" and not bed_out:
+                self.wait_why = f"{bed_s.track.title[:28]} is building to its drop: nothing arrives on top of it"
+                waiting = []
+            elif settle_left > 0 and not bed_out and bed_kind != "breakdown":
+                self.wait_why = f"the bed settles {settle_left} more bars before the next song arrives"
+                waiting = []
         if waiting and len(voices) < max_voices:
             d = waiting[0]
             s = self.songs[d]
@@ -1031,6 +1205,17 @@ class RemixConductor:
                                 and (bed is None or self._singing(self.songs[bed], self._song_time_at(bed, at)) is not True)) else "other"
             if not self._lane_ok(d, lane, at):
                 lane = "other" if lane == "vocals" else None
+
+            def _free(ln):
+                # a voice lane may be taken from the bed or from a voice on its way out - never from a voice
+                # that has not had its turn (a song is heard until it takes the bed or fades out)
+                h = self.lanes.get(ln)
+                return h is None or h == bed or h not in self.songs or self.songs[h].was_bed or self.songs[h].leaving
+            if lane is not None and not _free(lane):
+                alt = "other" if lane == "vocals" else "vocals"
+                lane = alt if (_free(alt) and self._lane_ok(d, alt, at) and (alt != "vocals" or self._vocal_ok(d, at))) else None
+                if lane is None:
+                    self.wait_why = "the voice lanes are taken by a song that has not had its turn yet"
             if lane is not None and self._lane_ok(d, lane, at):
                 frm = self.lanes.get(lane)
                 tag = self._cross(lane, d, at)
@@ -1419,14 +1604,30 @@ class RemixConductor:
                 self._cross(lane, to, at, beats=DROP_BEATS, shape=False)
         self._hygiene(at)
         self.phrase_bars = 0
+        # the arrangement: the song that took every lane is the bed now, freshly settled; nothing is in flight
+        self._land_k, self._land_at = None, None
+        self._drop_k = self.bar_n
+        for d, s in self.songs.items():
+            if d == newest:
+                s.bed_since, s.was_bed, s.voice_since = self.bar_n, False, None
+            elif s.entered and not s.leaving:
+                s.was_bed, s.voice_since, s.bed_since = True, self.bar_n, None
         self._move("drop", None, None, self._song_id(newest), f"DROP: every lane to {self.songs[newest].track.title}")
         return True
 
     def break_(self, bars=BREAK_BARS, kind="break"):
         """Every lane but one rests for `bars` bars, then they all come back on the bar. The lane that
         stays is the most melodic one held (vocals, else other, else bass, else drums)."""
-        if self.master is None or self._break is not None:
+        if self.master is None:
             return False
+        if self._break is not None:
+            if kind != "break":
+                return False                          # an auto break never interrupts a break
+            # YOUR break during an auto break: the running one ends now (its lanes come back), yours starts
+            for lane, d in self._break[1].items():
+                if d in self.songs and not self.songs[d].leaving:
+                    self.lanes[lane] = d
+            self._break = None
         held = {ln: d for ln, d in self.lanes.items() if d is not None and d in self.songs}
         if len(held) < 2:
             return False
@@ -1436,7 +1637,21 @@ class RemixConductor:
         # `other` first: a melodic stem is rarely silent for a bar; vocals only when singing at both ends
         # of the break (sparse vocals still left dead bars in the gate when kept alone)
         order = [ln for ln in ("other", "vocals", "bass", "drums") if ln in held]
-        keep = next((ln for ln in order if ln != "vocals" or (self._vocal_ok(held[ln], at) and self._vocal_ok(held[ln], at + int(bars) * self._bar_clock()))), order[-1])
+        back_at = at + int(bars) * self._bar_clock()
+        # ...and MEASURED: the stem kept must actually sound through the break (a voice that just arrived at
+        # a sparse bar, a pad that drops out - the gate heard dead bars from a kept `other`): the loudest
+        # held stem over the break's span wins, melodic ones with a small edge; nothing loud enough = no break
+        best, best_lv = None, 0.0
+        for ln in order:
+            if ln == "vocals" and not (self._vocal_ok(held[ln], at) and self._vocal_ok(held[ln], back_at)):
+                continue
+            lv = self._stem_level_span(held[ln], ln, at, back_at)
+            lv = lv * (1.15 if ln in ("other", "vocals") else 1.0) if lv is not None else (0.5 if ln in ("other", "bass", "drums") else 0.0)
+            if lv > best_lv:
+                best, best_lv = ln, lv
+        if best is None or best_lv < 0.12:
+            return False
+        keep = best
         back = at + int(bars) * self._bar_clock()
         xf = 1.0 * self._beat_s()
         ev, restore = [], {}
@@ -1516,10 +1731,13 @@ class RemixConductor:
     # -- snapshots ---------------------------------------------------------------------------------------------------------
     def save_snapshot(self):
         """Remember this combination: which song plays each lane (and the songs' titles for the readout)."""
-        lanes = {ln: self._song_id(d) for ln, d in self.lanes.items()}
+        held = dict(self.lanes)
+        if self._break is not None:
+            held.update(self._break[1])               # a SAVE during a break remembers the combination the break interrupted
+        lanes = {ln: self._song_id(d) for ln, d in held.items()}
         if not any(lanes.values()):
             return None
-        titles = {self._song_id(d): self.songs[d].track.title for d in self.lanes.values() if d in self.songs}
+        titles = {self._song_id(d): self.songs[d].track.title for d in held.values() if d in self.songs}
         snap = {"t": time.strftime("%H:%M:%S"), "lanes": lanes, "titles": titles, "bar_n": self.bar_n}
         self.snapshots.append(snap)
         self._move("save", None, None, None, "SAVE: " + ", ".join(f"{ln} {titles.get(t, '-')[:18]}" for ln, t in lanes.items() if t))
@@ -1743,6 +1961,7 @@ class RemixConductor:
                "clock_s": tel.get("clock_s"), "n_verdicts": getattr(self, "n_verdicts", 0),
                "tempo_span": self.tempo_span, "base_bpm": self.base_bpm, "n_snapshots": len(self.snapshots),
                "auto": self.auto,
+               "arrangement": self._arrangement_status(),
                "grid": {d: {ln: self.why_not(ln, d) for ln in STEMS} for d, s in self.songs.items() if not s.leaving},
                "candidates": self.candidates(10),
                "pool": (None if self.brain is None or self.brain.pool_ids is None else len(self.brain.pool_ids)),
@@ -1772,6 +1991,38 @@ class RemixConductor:
                                "singing": self._singing(s, float(t.get("time_s") or 0.0)),
                                "eq_low": (t.get("eq") or [None])[0], "filter": t.get("filter"), "echo": t.get("echo"),
                                "trims": {ln: round(self._trim(d, ln), 2) for ln in STEMS}}
+        return out
+
+    def _arrangement_status(self):
+        """The arrangement in words and numbers: who is the bed and for how long, who is a voice and what
+        it waits for, what is in flight, and why the last phrase passed without a move."""
+        out = {"bed": None, "voices": [], "landing_in_bars": None, "wait_why": self.wait_why,
+               "settle_phrases": SETTLE_PHRASES, "voice_phrases": VOICE_PHRASES, "strip": bool(self.strip_before_bed)}
+        try:
+            bar = self.bar_n
+            at = self._next_bar_clock()
+            bed = self._bed_deck()
+            if bed is not None and bed in self.songs:
+                s = self.songs[bed]
+                since = bar - s.bed_since if s.bed_since is not None else None
+                out["bed"] = {"deck": bed, "title": s.track.title, "since_bars": since,
+                              "settle_left": (max(0, SETTLE_PHRASES * self.change_bars - since) if since is not None else 0),
+                              "kind": self._kind_at(bed, at)}
+            for ln in ("other", "vocals"):
+                d = self.lanes.get(ln)
+                if d is None or d == bed or d not in self.songs:
+                    continue
+                s = self.songs[d]
+                heard = bar - s.voice_since if s.voice_since is not None else 0
+                drop = self._drop_in_bars(d, at, 4 * self.change_bars)
+                out["voices"].append({"deck": d, "title": s.track.title, "lane": ln, "heard_bars": heard, "leaving": bool(s.was_bed),
+                                      "may_take_bed_in": max(0, VOICE_PHRASES * self.change_bars - heard),
+                                      "must_take_bed_in": max(0, VOICE_MAX_PHRASES * self.change_bars - heard),
+                                      "drop_in_bars": (None if drop is None else round(drop, 1)), "kind": self._kind_at(d, at)})
+            if self._land_k is not None:
+                out["landing_in_bars"] = max(0, self._land_k - bar)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"{type(e).__name__}: {e}"
         return out
 
     def web_status(self):

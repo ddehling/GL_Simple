@@ -47,6 +47,7 @@ def main():
     rc.set_change_bars(4)
     rc.set_blend(0.8)
     rc.set_vocal_freedom(0.6)
+    rc.strip_before_bed = True                            # the philosophy: a breakdown before a new bed lands
     ok = rc.start(threaded=False)
     check(ok, "conductor started" + (f" ({rc.last_error})" if not ok else ""))
     if not ok:
@@ -58,7 +59,7 @@ def main():
     next(gen)
     gen.send(256)
 
-    audio, errs, guard_viol, live_hist, lane_hist = [], {}, 0, [], []
+    audio, errs, guard_viol, live_hist, lane_hist, tel_hist = [], {}, 0, [], [], []
     hyg = {"vocal_blocks": 0, "vocal_silent": 0, "carve_blocks": 0, "carve_open": 0}
     block = 4410
 
@@ -92,6 +93,10 @@ def main():
                         guard_viol += 1
             live_hist.append(len([s for s in rc.songs.values() if s.entered and not s.leaving]))
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
+            if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
+                tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
+                                                          bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"))
+                                                      for d, t in decks.items()}))
             # the vocal rule, as heard: the vocal lane open on a song that is not singing there (by the
             # conductor's own measured singing map); a stretch counts once it outlasts 1.5 phrases - the
             # rule acts at the next move, so one phrase of a song's instrumental passage is by design
@@ -181,6 +186,7 @@ def main():
     check(rc.user_loop_bars is None, "LOOP 8 again released the loops")
     held_before = dict(rc.lanes)
     ok_b = rc.break_(bars=2)
+    n_mv_b = len(rc.moves)
     rc.db.add_seam_feedback = lambda *a, **k: None      # the gate never writes verdicts into the library
     n_v0 = rc.n_verdicts
     w0 = rc._w("break")
@@ -191,7 +197,9 @@ def main():
     check(ok_b and len(resting) >= 2, f"BREAK: {len(resting)} lanes resting, {rc.move_log[-1]['lane']} alone")
     pump(int(2.5 * bars * RATE) // block)
     back = sum(1 for ln, d in rc.lanes.items() if d is not None and d == held_before.get(ln))
-    check(rc._break is None and back >= 2, f"BREAK over: {back} lanes back where they were")
+    moved_since = [m for _, m in rc.moves[n_mv_b:] if "the bed passes" in m or "fades out" in m or "DROP" in m]
+    check(rc._break is None and (back >= 2 or moved_since),
+          f"BREAK over: {back} lanes back where they were" + (f" (then the arrangement moved on: {moved_since[0][:40]})" if moved_since and back < 2 else ""))
     rc.drop()
     drop_text = rc.move_log[-1]["text"]
     w0 = rc._w("drop")
@@ -259,6 +267,14 @@ def main():
     entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m]
     left = [m for _, m in rc.moves if m.endswith("leaves") or "fades out as a voice" in m]
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
+    # the philosophy of play: bed changes land at the voice's drop when one is near, after a breakdown;
+    # the arrangement says why a phrase passed without a move (settling, building, waiting for a drop)
+    beds = [m for _, m in rc.moves if "the bed passes" in m]
+    at_drop = [m for m in beds if "at its drop" in m]
+    strips = [m for m in beds if "drop out for" in m]
+    check(len(beds) >= 2 and len(strips) >= 1, f"bed changes: {len(beds)}, {len(at_drop)} at the voice's drop, {len(strips)} with a breakdown first")
+    arr = st.get("arrangement") or {}
+    check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")
     # structure, hygiene, shapes
     if hyg["vocal_blocks"]:
@@ -297,6 +313,10 @@ def main():
         t_dead = (opened_at * block + (dead_i[0] + 1) * nb) / RATE
         near = [m for m in rc.move_log if m.get("clock_s") is not None and abs(m["clock_s"] - t_dead) < 12.0]
         where = f" - first at {t_dead:.0f} s near: " + " | ".join(f"{m['clock_s']:.0f}s {m['text'][:50]}" for m in near[-3:])
+        b0 = int(t_dead * RATE) // block
+        for k, master, decks_pic in [r for r in tel_hist if b0 - 20 <= r[0] <= b0 + 40][::2]:
+            if True:
+                print(f"       decks at {k * block / RATE:.0f} s (master {master}): " + "; ".join(f"{d}={pic[4]} g{pic[0]} {pic[1]} {'▶' if pic[2] else '■'} t{pic[3]}" for d, pic in decks_pic.items()))
     check(dead == 0, f"dead bars: {dead} of {len(rms)} (median bar level {np.median(rms):.1f} dBFS){where}")
     if "--wav" in sys.argv:
         import soundfile as sf

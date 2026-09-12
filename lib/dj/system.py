@@ -572,6 +572,12 @@ class DJSystem:
         with self._lock:
             self._pending.append(("set_len", float(seconds)))
 
+    def set_arc_progress(self, p):
+        """'We are HERE on the arc' (the Director's arc strip): move the set's start clock so that the arc
+        position reads `p` now. Selection replans on the next pick."""
+        with self._lock:
+            self._pending.append(("arc_pos", float(p)))
+
     def hold(self):
         """Push the planned exit one phrase later (crowd's loving it)."""
         with self._lock:
@@ -1293,11 +1299,22 @@ class DJSystem:
             elif kind == "arc":
                 self._arc_waypoints = [(max(0.0, min(1.0, float(p))),
                                         max(0.0, min(1.0, float(e))))
-                                       for p, e in val][:8]
+                                       for p, e in val][:16]        # the Director hands a 13-point curve
                 self._arc_waypoints.sort()
                 self._log({"event": "arc", "waypoints": self._arc_waypoints})
                 self._horizon_key = None
                 # A drawn curve is steering too - next pick must obey it.
+                if self.state == "playing" \
+                        and not getattr(self, "_next_requested", False):
+                    self.next_track = None
+                    self.plan = None
+            elif kind == "arc_pos":
+                p = max(0.0, min(0.999, float(val)))
+                theme = self.brain.theme if self.brain else get_theme(self._theme_name)
+                length = (self.night_hours * 3600.0 if theme.arc == "all_night" else self.set_cycle_s)
+                self._set_start_clock = int(self.submix.clock - p * length * RATE)
+                self._log({"event": "arc_pos", "progress": p})
+                self._horizon_key = None
                 if self.state == "playing" \
                         and not getattr(self, "_next_requested", False):
                     self.next_track = None
